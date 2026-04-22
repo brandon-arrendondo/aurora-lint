@@ -26,7 +26,6 @@ rules_templates/cwe/
 data/benchmarks.db
 data/benchmarks.db-wal
 data/benchmarks.db-shm
-todo-sqlite-cli.db
 todo-sqlite-cli.db-wal
 todo-sqlite-cli.db-shm
 
