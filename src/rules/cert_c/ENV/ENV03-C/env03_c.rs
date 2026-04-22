@@ -448,7 +448,14 @@ fn walk_for_taint(node: &Node, source: &str, found: &mut bool) {
         if let Some(function) = node.child_by_field_name("function") {
             let name = get_node_text(&function, source);
             let ident = trailing_identifier(name);
+            // Check exact match first, then case-insensitive for UPPERCASE macro
+            // aliases (e.g. Juliet's `#define GETENV getenv`).
             if TAINT_SOURCES.contains(&ident) {
+                *found = true;
+                return;
+            }
+            let lower = ident.to_lowercase();
+            if lower != ident && TAINT_SOURCES.contains(&lower.as_str()) {
                 *found = true;
                 return;
             }
@@ -783,14 +790,23 @@ fn walk_pointer_aliases(
         "assignment_expression" => {
             if let Some(lhs) = node.child_by_field_name("left") {
                 let lhs = strip_casts_and_parens(lhs);
-                if lhs.kind() == "identifier" {
-                    let op_is_plain = node_operator(node, source)
-                        .map(|op| op == "=")
-                        .unwrap_or(true);
-                    if op_is_plain {
+                let op_is_plain = node_operator(node, source)
+                    .map(|op| op == "=")
+                    .unwrap_or(true);
+                if lhs.kind() == "identifier" && op_is_plain {
+                    let rhs = node.child_by_field_name("right");
+                    if rhs_is_safe(rhs.as_ref(), out, source, summaries) {
+                        out.insert(get_node_text(&lhs, source).to_string());
+                    }
+                } else if lhs.kind() == "field_expression" && op_is_plain {
+                    // union_var.member = safe_value → mark the aggregate variable
+                    // as a safe source. Only `.` access (local aggregate), not `->`
+                    // (pointer dereference). Handles Juliet v34: union data flow
+                    // where the same slot is read back through the other member alias.
+                    if let Some(base) = field_expr_dot_base(&lhs, source) {
                         let rhs = node.child_by_field_name("right");
                         if rhs_is_safe(rhs.as_ref(), out, source, summaries) {
-                            out.insert(get_node_text(&lhs, source).to_string());
+                            out.insert(base);
                         }
                     }
                 }
@@ -991,6 +1007,14 @@ fn rhs_is_safe(
         // Juliet v42-style goodG2B(Source) wrappers without masking the
         // corresponding `data = badSource(...)` bad paths.
         "call_expression" => call_is_clean(&rhs, source, summaries),
+        // `data = union_var.member` — safe if the union/struct aggregate was
+        // itself populated only from safe sources. Only `.` access (local
+        // aggregate), not `->` (pointer to potentially external data).
+        // This suppresses Juliet v34 FPs where goodG2B writes a safe buffer
+        // to one union member and reads it back through the other alias.
+        "field_expression" => field_expr_dot_base(&rhs, source)
+            .map(|base| safe_sources.contains(&base as &str))
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -1009,6 +1033,39 @@ fn call_is_clean(call: &Node, source: &str, summaries: &HashMap<String, Function
         Some(s) => !s.has_env03_taint_source && !s.returns_tainted,
         None => false,
     }
+}
+
+/// If `node` is a `field_expression` using the `.` (dot) operator, return the
+/// base identifier name. Returns `None` for `->` access or when the base is
+/// not a simple identifier (pointer arithmetic, nested field, etc.).
+fn field_expr_dot_base(node: &Node, source: &str) -> Option<String> {
+    // Distinguish `.` from `->` via the unnamed operator child.
+    let mut is_dot = false;
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if !child.is_named() {
+                match get_node_text(&child, source) {
+                    "." => {
+                        is_dot = true;
+                        break;
+                    }
+                    "->" => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+    if !is_dot {
+        return None;
+    }
+    node.child_by_field_name("argument").and_then(|arg| {
+        let base = strip_casts_and_parens(arg);
+        if base.kind() == "identifier" {
+            Some(get_node_text(&base, source).to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn node_operator<'a>(node: &'a Node<'a>, source: &'a str) -> Option<&'a str> {
