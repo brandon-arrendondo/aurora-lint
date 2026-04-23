@@ -948,7 +948,22 @@ fn check_writes(
                                 let second_safe = match second {
                                     Some(n) => {
                                         let s = strip_casts_and_parens(*n);
-                                        matches!(s.kind(), "string_literal" | "concatenated_string")
+                                        match s.kind() {
+                                            "string_literal" | "concatenated_string" => true,
+                                            // ALL_CAPS identifiers are compile-time macro constants
+                                            // (e.g. Juliet CWE-426 GOOD_OS_COMMAND = "/usr/bin/ls").
+                                            // Lowercase identifiers remain conservative.
+                                            "identifier" => {
+                                                let nm = get_node_text(&s, source);
+                                                safe_sources.contains(nm)
+                                                    || nm.chars().all(|c| {
+                                                        c.is_ascii_uppercase()
+                                                            || c == '_'
+                                                            || c.is_ascii_digit()
+                                                    })
+                                            }
+                                            _ => false,
+                                        }
                                     }
                                     None => false,
                                 };
