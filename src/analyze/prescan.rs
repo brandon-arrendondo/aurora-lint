@@ -1836,18 +1836,24 @@ fn collect_static_pointer_globals(node: &Node, source: &str, out: &mut HashSet<S
         let Some(child) = node.child(i) else { continue };
         match child.kind() {
             "declaration" => {
-                let mut has_static = false;
+                let mut has_extern = false;
                 for j in 0..child.child_count() {
                     if let Some(tc) = child.child(j) {
                         if tc.kind() == "storage_class_specifier"
-                            && tc.utf8_text(source.as_bytes()).unwrap_or("") == "static"
+                            && tc.utf8_text(source.as_bytes()).unwrap_or("") == "extern"
                         {
-                            has_static = true;
+                            has_extern = true;
                             break;
                         }
                     }
                 }
-                if !has_static {
+                // Collect file-scope pointer definitions: static (internal linkage) and
+                // implicitly-extern (no storage class, external linkage). Skip extern
+                // declarations (forward declarations without storage) — they are not
+                // definitions, so no writers live in the same TU. This handles both the
+                // Juliet v45 pattern (static globals) and the v68 pattern (extern-linkage
+                // globals defined in one file and read as extern in another).
+                if has_extern {
                     continue;
                 }
                 for j in 0..child.child_count() {
@@ -2875,5 +2881,32 @@ mod tests {
             .get("Config")
             .unwrap()
             .contains_key("timeout"));
+    }
+
+    #[test]
+    fn test_global_writers_non_static_extern_linkage() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("a.c"),
+            "char *g_clean;\nstatic void write_clean(void) {\n    static char buf[64] = \"ls \";\n    g_clean = buf;\n}\n",
+        ).unwrap();
+        std::fs::write(
+            dir.path().join("b.c"),
+            "extern char *g_clean;\nvoid sink(void) { char *d = g_clean; system(d); }\n",
+        )
+        .unwrap();
+        let dirs = vec![dir.path().to_string_lossy().to_string()];
+        let ctx = prescan_directories(&dirs, None, false).unwrap();
+        assert!(
+            ctx.global_writers.contains_key("g_clean"),
+            "g_clean should be tracked as a file-scope global: {:?}",
+            ctx.global_writers.keys().collect::<Vec<_>>()
+        );
+        let writers = ctx.global_writers.get("g_clean").unwrap();
+        assert!(
+            writers.contains("write_clean"),
+            "write_clean should be a writer of g_clean: {:?}",
+            writers
+        );
     }
 }
