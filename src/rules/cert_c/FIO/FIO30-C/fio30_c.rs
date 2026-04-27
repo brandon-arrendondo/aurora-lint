@@ -20,7 +20,7 @@
 //! - Variables assigned from user input sources
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::const_eval;
+use crate::analyze::{const_eval, init_state};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use std::collections::{HashMap, HashSet};
@@ -58,6 +58,9 @@ impl CertRule for Fio30C {
 
             // Collect macro aliases (e.g., #define GETENV getenv)
             analyzer.macro_aliases = const_eval::collect_macro_aliases(node, source);
+
+            // Collect file-scope constants for dead-branch elimination (staticTrue/staticFalse)
+            analyzer.file_scope_constants = init_state::collect_file_scope_constants(node, source);
 
             // Pre-scan: find which wrapper functions receive tainted data
             analyzer.find_tainted_wrapper_calls(node, source);
@@ -126,6 +129,8 @@ struct FormatStringAnalyzer {
     taint_source_functions: HashSet<String>,
     // Global/static variables that are assigned tainted data in any function
     tainted_globals: HashSet<String>,
+    // File-scope constants for dead-branch elimination (staticTrue/staticFalse patterns)
+    file_scope_constants: HashMap<String, i64>,
 }
 
 impl FormatStringAnalyzer {
@@ -140,6 +145,7 @@ impl FormatStringAnalyzer {
             macro_aliases: HashMap::new(),
             taint_source_functions: HashSet::new(),
             tainted_globals: HashSet::new(),
+            file_scope_constants: HashMap::new(),
         }
     }
 
@@ -420,6 +426,39 @@ impl FormatStringAnalyzer {
                 self.process_string_manipulation_call(node, source);
                 // Check for format string vulnerabilities
                 self.check_format_string_call(node, source, violations);
+            }
+            "if_statement" => {
+                // Dead-branch elimination: skip branches with compile-time constant conditions.
+                // Prevents taint from dead branches (e.g. if(staticFalse){ fgets(...) })
+                // from flowing into the live branch.
+                if let Some(cond) = node.child_by_field_name("condition") {
+                    let cond_val =
+                        const_eval::try_evaluate_expr(&cond, source, &self.file_scope_constants);
+                    match cond_val {
+                        Some(v) if v != 0 => {
+                            // Condition always true: only process then-block
+                            if let Some(consequence) = node.child_by_field_name("consequence") {
+                                self.analyze_node(&consequence, source, violations);
+                            }
+                            return;
+                        }
+                        Some(0) => {
+                            // Condition always false: only process else-block
+                            if let Some(alternative) = node.child_by_field_name("alternative") {
+                                self.analyze_node(&alternative, source, violations);
+                            }
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                // Unknown condition: fall through to normal recursive processing
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        self.analyze_node(&child, source, violations);
+                    }
+                }
+                return;
             }
             _ => {}
         }

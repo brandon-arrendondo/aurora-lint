@@ -818,6 +818,7 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
                 "-" => val.checked_neg(),
                 "+" => Some(val),
                 "~" => Some(!val),
+                "!" => Some(if val == 0 { 1 } else { 0 }),
                 _ => None,
             }
         }
