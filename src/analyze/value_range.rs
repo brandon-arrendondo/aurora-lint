@@ -528,6 +528,53 @@ struct RangeConditionInfo {
     false_range: Option<ValueRange>,
 }
 
+/// Return true if this branch edge is provably dead because the predecessor's
+/// condition evaluates to a compile-time constant that contradicts the edge
+/// direction. Uses only macro/literal evaluation (empty VarRangeMap) so that
+/// only genuine compile-time constants (e.g. `if(1)`, `if(staticTrue)`) are
+/// pruned, not runtime-narrowed ranges.
+fn is_dead_constant_edge(
+    pred_id: BlockId,
+    edge_kind: &CfgEdge,
+    cfg: &FunctionCfg,
+    body: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> bool {
+    let is_true = matches!(edge_kind, CfgEdge::TrueBranch);
+    let is_false = matches!(edge_kind, CfgEdge::FalseBranch);
+    if !is_true && !is_false {
+        return false;
+    }
+    let pred_block = match cfg.get_block(pred_id) {
+        Some(b) => b,
+        None => return false,
+    };
+    let (cond_start, cond_end) = match pred_block.condition_range {
+        Some(r) => r,
+        None => return false,
+    };
+    let cond_node = match find_node_at_range(body, cond_start, cond_end) {
+        Some(n) => n,
+        None => return false,
+    };
+    // Evaluate with empty var-ranges: only compile-time constants are resolved
+    let empty = VarRangeMap::new();
+    if let Some(val) = const_eval::try_evaluate_range(&cond_node, source, macros, &empty) {
+        // Only act on definite constants (min == max)
+        if val.min == val.max {
+            let c = val.min;
+            if is_true && c == 0 {
+                return true; // always-false condition → true branch never taken
+            }
+            if is_false && c != 0 {
+                return true; // always-true condition → false branch never taken
+            }
+        }
+    }
+    false
+}
+
 /// Apply edge refinement: given a predecessor's exit ranges and the edge type,
 /// refine ranges based on the predecessor's condition.
 fn apply_range_edge_refinement(
@@ -977,6 +1024,11 @@ pub fn analyze_value_ranges(
         let mut first = true;
 
         for (pred_id, edge_kind) in &preds {
+            // Skip branches that are provably dead due to a constant condition
+            if is_dead_constant_edge(*pred_id, edge_kind, cfg, &body, source, macros) {
+                continue;
+            }
+
             let pred_exit = exit_ranges.get(pred_id).cloned().unwrap_or_default();
 
             let refined = apply_range_edge_refinement(
