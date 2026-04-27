@@ -241,6 +241,8 @@ pub fn collect_macro_constants(root: &Node, source: &str) -> MacroConstantMap {
     collect_preproc_defs(root, source, &mut raw_defs);
     // Also collect file-scope `static const int NAME = VALUE;` declarations
     collect_static_const_defs(root, source, &mut raw_defs);
+    // Also collect file-scope `static int NAME = VALUE;` (no const) when never reassigned
+    collect_non_const_static_defs(root, source, &mut raw_defs);
     // Collect `enum { NAME = VALUE, ... }` enumerators as compile-time constants
     collect_enum_constants(root, source, &mut raw_defs);
 
@@ -351,6 +353,115 @@ fn collect_static_const_defs(root: &Node, source: &str, defs: &mut Vec<(String, 
             }
         }
     }
+}
+
+/// Collect file-scope `static int NAME = VALUE;` declarations (no `const`) that
+/// are never reassigned in the file. These behave as effective compile-time
+/// constants in Juliet and similar controlled test patterns.
+fn collect_non_const_static_defs(root: &Node, source: &str, defs: &mut Vec<(String, String)>) {
+    let mut candidates: Vec<(String, String, usize)> = Vec::new();
+
+    for i in 0..root.child_count() {
+        let child = match root.child(i) {
+            Some(c) => c,
+            None => continue,
+        };
+        if child.kind() != "declaration" {
+            continue;
+        }
+        let decl_text = child.utf8_text(source.as_bytes()).unwrap_or("");
+        // Must have `static` but NOT `const` (const handled by collect_static_const_defs)
+        if !decl_text.contains("static") || decl_text.contains("const") {
+            continue;
+        }
+        let has_int_type = decl_text.contains("int")
+            || decl_text.contains("long")
+            || decl_text.contains("short")
+            || decl_text.contains("_Bool");
+        if !has_int_type {
+            continue;
+        }
+        let decl_end = child.end_byte();
+
+        for j in 0..child.named_child_count() {
+            let gc = match child.named_child(j) {
+                Some(c) => c,
+                None => continue,
+            };
+            if gc.kind() != "init_declarator" {
+                continue;
+            }
+            let mut name = None;
+            let mut value = None;
+            for k in 0..gc.named_child_count() {
+                if let Some(ggc) = gc.named_child(k) {
+                    if ggc.kind() == "identifier" && name.is_none() {
+                        name = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                    } else if ggc.kind() == "number_literal" && name.is_some() {
+                        value = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            if let (Some(n), Some(v)) = (name, value) {
+                candidates.push((n, v, decl_end));
+            }
+        }
+    }
+
+    let source_bytes = source.as_bytes();
+    for (name, value, decl_end) in candidates {
+        if !static_var_assigned_after(source_bytes, &name, decl_end) {
+            defs.push((name, value));
+        }
+    }
+}
+
+/// Return true if `name` appears as an assignment target after `after_offset` bytes.
+/// Checks for `=` (not `==`), compound assignments, and `++`/`--`.
+fn static_var_assigned_after(source: &[u8], name: &str, after_offset: usize) -> bool {
+    let name_b = name.as_bytes();
+    let n = source.len();
+    let m = name_b.len();
+
+    let mut i = after_offset;
+    while i + m <= n {
+        if &source[i..i + m] != name_b {
+            i += 1;
+            continue;
+        }
+        // Word boundary before
+        let before_ok = i == 0 || {
+            let b = source[i - 1];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+        let after_pos = i + m;
+        // Word boundary after
+        let after_ok = after_pos >= n || {
+            let b = source[after_pos];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+        if before_ok && after_ok {
+            let mut j = after_pos;
+            while j < n && (source[j] == b' ' || source[j] == b'\t') {
+                j += 1;
+            }
+            if j < n {
+                let next = source[j];
+                let is_assign = next == b'=' && (j + 1 >= n || source[j + 1] != b'=');
+                let is_compound =
+                    matches!(next, b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^')
+                        && j + 1 < n
+                        && source[j + 1] == b'=';
+                let is_inc = (next == b'+' && j + 1 < n && source[j + 1] == b'+')
+                    || (next == b'-' && j + 1 < n && source[j + 1] == b'-');
+                if is_assign || is_compound || is_inc {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Collect enumerator names + value expressions from any `enum { ... }` in the
