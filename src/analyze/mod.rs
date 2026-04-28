@@ -488,7 +488,14 @@ fn compute_vra_if_needed(
 
     // Only compute macros and same-file summaries when VRA is actually needed
     let macros = const_eval::collect_macro_constants(root_node, source);
-    let file_summaries = function_summary::compute_summaries(root_node, source, &macros, true, &[]);
+    let file_summaries = function_summary::compute_summaries(
+        root_node,
+        source,
+        &macros,
+        true,
+        &[],
+        &std::collections::HashMap::new(),
+    );
 
     // Merge prescan (cross-file) summaries with same-file summaries by reference.
     // Only clone+extend if both sides are non-empty; otherwise use whichever is available.

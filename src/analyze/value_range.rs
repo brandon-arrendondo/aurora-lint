@@ -1734,8 +1734,14 @@ int f(int x) {
         let source = code.to_string();
         let root = tree.root_node();
         let macros = const_eval::collect_macro_constants(&root, &source);
-        let summaries =
-            crate::analyze::function_summary::compute_summaries(&root, &source, &macros, true, &[]);
+        let summaries = crate::analyze::function_summary::compute_summaries(
+            &root,
+            &source,
+            &macros,
+            true,
+            &[],
+            &std::collections::HashMap::new(),
+        );
 
         // Find the last function_definition (the caller)
         fn find_functions<'a>(node: &Node<'a>, out: &mut Vec<Node<'a>>) {
