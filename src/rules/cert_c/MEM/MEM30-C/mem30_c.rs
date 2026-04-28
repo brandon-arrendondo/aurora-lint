@@ -2184,14 +2184,21 @@ impl MemoryAnalyzer {
                 return true;
             }
         }
-        // Check if any union member sharing this base is freed
+        // Check if any union member sharing this base is freed.
+        // Require that var_name is `base->...` or `base.member` — not `base`
+        // itself, which would incorrectly trigger on `free(base->field)` and
+        // then flag the subsequent `free(base)` as a use-after-free.
         for (base, members) in &self.union_members {
-            if var_name.starts_with(base) {
-                for member in members {
-                    if self.freed_vars.contains(member) || self.realloc_invalidated.contains(member)
-                    {
-                        return true;
-                    }
+            let rest = match var_name.strip_prefix(base.as_str()) {
+                Some(r) => r,
+                None => continue,
+            };
+            if !rest.starts_with("->") && !rest.starts_with('.') {
+                continue; // var_name IS the base, not a member of it
+            }
+            for member in members {
+                if self.freed_vars.contains(member) || self.realloc_invalidated.contains(member) {
+                    return true;
                 }
             }
         }
