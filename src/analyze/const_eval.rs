@@ -206,6 +206,81 @@ fn resolve_sizeof_type(type_text: &str) -> Option<i64> {
 // Macro constant collection
 // ---------------------------------------------------------------------------
 
+/// Collect `#define NAME "string"` patterns and return a map from name → raw quoted value.
+/// Used to check whether a macro expands to an absolute path string.
+pub fn collect_string_literal_macros(root: &Node, source: &str) -> HashMap<String, String> {
+    let mut raw_defs: Vec<(String, String)> = Vec::new();
+    collect_preproc_defs(root, source, &mut raw_defs);
+
+    let mut string_macros = HashMap::new();
+    for (name, value) in raw_defs {
+        let v = value.trim();
+        if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
+            string_macros.insert(name, v.to_string());
+        } else if v.starts_with("L\"") && v.ends_with('"') && v.len() >= 3 {
+            // Wide string literal L"..." — strip the L prefix, keep "..."
+            string_macros.insert(name, v[1..].to_string());
+        }
+    }
+    string_macros
+}
+
+fn is_absolute_path_inner(inner: &str) -> bool {
+    inner.starts_with('/')
+        || (inner.len() >= 3
+            && inner
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphabetic())
+                .unwrap_or(false)
+            && inner.chars().nth(1) == Some(':')
+            && (inner.chars().nth(2) == Some('\\') || inner.chars().nth(2) == Some('/')))
+        || inner.starts_with("\\\\")
+}
+
+/// Return true if `name` is a macro whose value is a relative-path OS command string —
+/// non-empty, not starting with a space or dash (argument fragment), and not an absolute path.
+/// This distinguishes `BAD_OS_COMMAND = "ls -la"` (relative command) from
+/// `SAFE_CMD_ARGS = " -la"` (argument fragment) and `GOOD_OS_COMMAND = "/usr/bin/ls"` (absolute).
+pub fn is_relative_command_macro(string_macros: &HashMap<String, String>, name: &str) -> bool {
+    let Some(value) = string_macros.get(name) else {
+        return false;
+    };
+    let inner = &value[1..value.len() - 1];
+    // Must be non-empty after trimming
+    if inner.trim().is_empty() {
+        return false;
+    }
+    // Starts with space or dash → argument fragment, not a standalone command
+    if inner.starts_with(' ') || inner.starts_with('-') {
+        return false;
+    }
+    // Absolute path → safe
+    !is_absolute_path_inner(inner)
+}
+
+/// Return true if `name` is a macro whose string value is safe to use as a
+/// `strcpy`/`strcat` source for a command variable. Safe means either an
+/// absolute-path macro or an argument-fragment macro (value starts with
+/// whitespace or `–` — these are option strings appended to an established path,
+/// never standalone relative-command names).
+pub fn is_safe_command_macro(string_macros: &HashMap<String, String>, name: &str) -> bool {
+    let Some(value) = string_macros.get(name) else {
+        return false;
+    };
+    let inner = &value[1..value.len() - 1];
+    // Absolute path → safe
+    if is_absolute_path_inner(inner) {
+        return true;
+    }
+    // Empty string → safe (no-op strcat)
+    if inner.is_empty() {
+        return true;
+    }
+    // Argument fragment (starts with space or dash) → safe to append
+    inner.starts_with(' ') || inner.starts_with('-')
+}
+
 /// Collect `#define ALIAS func_name` patterns where the value is a single C identifier.
 /// These represent macro aliases for function names (e.g., `#define SYSTEM system`).
 /// Returns a map from alias → target identifier.

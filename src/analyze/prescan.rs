@@ -85,6 +85,9 @@ pub fn prescan_directories(
                     .map(|(alias, _)| alias.clone())
                     .collect();
 
+                // Collect string-literal macros for CWE-426 relative-path detection.
+                let file_string_macros = const_eval::collect_string_literal_macros(&root, &source);
+
                 // Compute function summaries for this file
                 let file_summaries = function_summary::compute_summaries(
                     &root,
@@ -92,6 +95,7 @@ pub fn prescan_directories(
                     &file_macros,
                     needs_vra,
                     &file_taint_aliases,
+                    &file_string_macros,
                 );
                 for (name, summary) in file_summaries {
                     // When multiple files define `static` functions with
@@ -102,6 +106,8 @@ pub fn prescan_directories(
                         Some(existing) => {
                             existing.has_env03_taint_source |= summary.has_env03_taint_source;
                             existing.returns_tainted |= summary.returns_tainted;
+                            existing.has_relative_command_write |=
+                                summary.has_relative_command_write;
                             existing
                                 .returns_from_callees
                                 .extend(summary.returns_from_callees);
@@ -227,8 +233,15 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         })
         .map(|(alias, _)| alias.clone())
         .collect();
-    let mut function_summaries =
-        function_summary::compute_summaries(root, source, &macros, false, &taint_aliases);
+    let string_macros = const_eval::collect_string_literal_macros(root, source);
+    let mut function_summaries = function_summary::compute_summaries(
+        root,
+        source,
+        &macros,
+        false,
+        &taint_aliases,
+        &string_macros,
+    );
 
     let mut callsite_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
     let mut callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>> =
@@ -2342,12 +2355,15 @@ pub fn resolve_includes(
                     .map(|(alias, _)| alias.clone())
                     .collect();
 
+                let header_string_macros =
+                    const_eval::collect_string_literal_macros(&root, &hsource);
                 let file_summaries = function_summary::compute_summaries(
                     &root,
                     &hsource,
                     &header_macros,
                     needs_vra,
                     &header_taint_aliases,
+                    &header_string_macros,
                 );
                 for (name, summary) in file_summaries {
                     context.function_summaries.insert(name, summary);

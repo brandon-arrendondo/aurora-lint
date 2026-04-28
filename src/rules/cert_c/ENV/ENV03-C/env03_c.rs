@@ -97,6 +97,9 @@ pub struct Env03C {
     /// and `returns_tainted == false`. Targets Juliet CWE-78 variant 45
     /// (goodG2BSink pattern).
     global_writers: RefCell<HashMap<String, HashSet<String>>>,
+    /// Per-file `#define NAME "string"` map for checking whether a strcpy/strcat
+    /// source macro expands to an absolute path (safe) vs. a relative command.
+    file_string_macros: RefCell<HashMap<String, String>>,
 }
 
 impl Env03C {
@@ -107,6 +110,7 @@ impl Env03C {
             function_summaries: RefCell::new(HashMap::new()),
             callers: RefCell::new(HashMap::new()),
             global_writers: RefCell::new(HashMap::new()),
+            file_string_macros: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -162,6 +166,8 @@ impl CertRule for Env03C {
         let mut aliases = self.project_aliases.borrow().clone();
         aliases.extend(const_eval::collect_macro_aliases(node, source));
         *self.current_aliases.borrow_mut() = aliases;
+        *self.file_string_macros.borrow_mut() =
+            const_eval::collect_string_literal_macros(node, source);
 
         let mut violations = Vec::new();
         self.check_all_calls(node, source, &mut violations);
@@ -365,7 +371,15 @@ impl Env03C {
 
         let summaries = self.function_summaries.borrow();
         let global_writers = self.global_writers.borrow();
-        !is_command_var_locally_safe(scope, var_name, source, &summaries, &global_writers)
+        let string_macros = self.file_string_macros.borrow();
+        !is_command_var_locally_safe(
+            scope,
+            var_name,
+            source,
+            &summaries,
+            &global_writers,
+            &string_macros,
+        )
     }
 
     /// Return true when we can prove every caller of `scope`'s function
@@ -387,7 +401,7 @@ impl Env03C {
         let summaries = self.function_summaries.borrow();
         for caller in caller_set {
             match summaries.get(caller) {
-                Some(s) if !s.has_env03_taint_source => {}
+                Some(s) if !s.has_env03_taint_source && !s.has_relative_command_write => {}
                 _ => return false,
             }
         }
@@ -670,6 +684,7 @@ fn is_command_var_locally_safe(
     source: &str,
     summaries: &HashMap<String, FunctionSummary>,
     global_writers: &HashMap<String, HashSet<String>>,
+    string_macros: &HashMap<String, String>,
 ) -> bool {
     let body = match scope.child_by_field_name("body") {
         Some(b) => b,
@@ -684,6 +699,7 @@ fn is_command_var_locally_safe(
         &local_buffers,
         source,
         summaries,
+        string_macros,
         &mut all_safe,
     );
     all_safe
@@ -872,6 +888,7 @@ fn check_writes(
     safe_sources: &HashSet<String>,
     source: &str,
     summaries: &HashMap<String, FunctionSummary>,
+    string_macros: &HashMap<String, String>,
     all_safe: &mut bool,
 ) {
     if !*all_safe {
@@ -895,7 +912,15 @@ fn check_writes(
                 // Fall through to recursion
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
-                        check_writes(&child, var, safe_sources, source, summaries, all_safe);
+                        check_writes(
+                            &child,
+                            var,
+                            safe_sources,
+                            source,
+                            summaries,
+                            string_macros,
+                            all_safe,
+                        );
                         if !*all_safe {
                             return;
                         }
@@ -955,12 +980,16 @@ fn check_writes(
                                             // Lowercase identifiers remain conservative.
                                             "identifier" => {
                                                 let nm = get_node_text(&s, source);
+                                                // A local safe buffer, or a macro that
+                                                // expands to an absolute path or an argument
+                                                // fragment (starts with space/dash — safe
+                                                // to append). ALL-CAPS alone is not sufficient:
+                                                // BAD_OS_COMMAND is also all-caps.
                                                 safe_sources.contains(nm)
-                                                    || nm.chars().all(|c| {
-                                                        c.is_ascii_uppercase()
-                                                            || c == '_'
-                                                            || c.is_ascii_digit()
-                                                    })
+                                                    || const_eval::is_safe_command_macro(
+                                                        string_macros,
+                                                        nm,
+                                                    )
                                             }
                                             _ => false,
                                         }
@@ -982,7 +1011,15 @@ fn check_writes(
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            check_writes(&child, var, safe_sources, source, summaries, all_safe);
+            check_writes(
+                &child,
+                var,
+                safe_sources,
+                source,
+                summaries,
+                string_macros,
+                all_safe,
+            );
             if !*all_safe {
                 return;
             }
@@ -1045,7 +1082,7 @@ fn call_is_clean(call: &Node, source: &str, summaries: &HashMap<String, Function
     let raw = get_node_text(&func, source);
     let name = trailing_identifier(raw);
     match summaries.get(name) {
-        Some(s) => !s.has_env03_taint_source && !s.returns_tainted,
+        Some(s) => !s.has_env03_taint_source && !s.returns_tainted && !s.has_relative_command_write,
         None => false,
     }
 }
