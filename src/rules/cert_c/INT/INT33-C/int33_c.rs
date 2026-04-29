@@ -441,6 +441,15 @@ impl Int33C {
     fn is_divisor_checked(&self, div_node: &Node, divisor: &Node, source: &str) -> bool {
         let divisor_text = ast_utils::get_node_text(divisor, source);
 
+        // Fast path: compile-time constant expression — evaluate and check non-zero.
+        // Covers macros like `BRIGHTNESS_MAX 255`, enum values, and numeric literals.
+        {
+            let macros = self.file_macros.borrow();
+            if let Some(val) = const_eval::try_evaluate_expr(divisor, source, &macros) {
+                return val != 0;
+            }
+        }
+
         // Extract base variable name from complex expressions
         let base_var_name = Self::extract_base_variable(divisor, source);
 
