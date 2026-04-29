@@ -1002,8 +1002,15 @@ fn collect_int_assignments_in_node(node: &Node, source: &str, vals: &mut HashMap
             ) {
                 if left.kind() == "identifier" {
                     let name = left.utf8_text(source.as_bytes()).unwrap_or("");
-                    if let Some(v) = parse_int_literal(&right, source) {
-                        vals.insert(name.to_string(), v);
+                    match parse_int_literal(&right, source) {
+                        Some(v) => {
+                            vals.insert(name.to_string(), v);
+                        }
+                        None => {
+                            // Non-literal RHS (e.g. LLONG_MAX macro, rand(), fscanf result):
+                            // invalidate any earlier constant we tracked for this variable.
+                            vals.remove(name);
+                        }
                     }
                 }
             }
