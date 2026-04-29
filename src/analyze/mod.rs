@@ -488,7 +488,7 @@ fn compute_vra_if_needed(
 
     // Only compute macros and same-file summaries when VRA is actually needed
     let macros = const_eval::collect_macro_constants(root_node, source);
-    let file_summaries = function_summary::compute_summaries(
+    let mut file_summaries = function_summary::compute_summaries(
         root_node,
         source,
         &macros,
@@ -496,6 +496,18 @@ fn compute_vra_if_needed(
         &[],
         &std::collections::HashMap::new(),
     );
+
+    // Augment same-file summaries with caller constant arg propagation so that
+    // VRA can narrow parameter ranges (e.g. goodG2B passes data=2 to goodG2BSink).
+    {
+        let mut callsite_int_args = std::collections::HashMap::new();
+        prescan::collect_callsite_int_args_from_tree(root_node, source, &mut callsite_int_args);
+        prescan::aggregate_callsite_int_args(
+            &callsite_int_args,
+            &mut file_summaries,
+            &std::collections::HashSet::new(),
+        );
+    }
 
     // Merge prescan (cross-file) summaries with same-file summaries by reference.
     // Only clone+extend if both sides are non-empty; otherwise use whichever is available.
