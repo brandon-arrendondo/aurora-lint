@@ -35,6 +35,7 @@ pub fn prescan_directories(
     let mut callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>> =
         HashMap::new();
     let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
+    let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
     let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
     let mut source_files: Vec<PathBuf> = Vec::new();
     let mut parser = CParser::new()?;
@@ -157,6 +158,7 @@ pub fn prescan_directories(
                         &mut callsite_field_args,
                         &mut callsite_pointee_args,
                     );
+                    collect_callsite_int_args_from_tree(&root, &source, &mut callsite_int_args);
                     source_files.push(entry.path().to_path_buf());
                 }
             }
@@ -175,6 +177,13 @@ pub fn prescan_directories(
 
     // Aggregate pointee null states from address-of arguments (variant 63)
     aggregate_callsite_pointee_null_states(&callsite_pointee_args, &mut function_summaries);
+
+    // Aggregate integer constant args: narrow param ranges for goodG2B-style FP suppression
+    aggregate_callsite_int_args(
+        &callsite_int_args,
+        &mut function_summaries,
+        &header_declared_functions,
+    );
 
     // Iterative propagation: resolve parameter null states through relay chains.
     // Each pass resolves one additional hop. Runs up to MAX_PROPAGATION_PASSES
@@ -247,6 +256,7 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
     let mut callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>> =
         HashMap::new();
     let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
+    let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
     collect_callsite_args_from_tree(
         root,
         source,
@@ -254,11 +264,13 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         &mut callsite_field_args,
         &mut callsite_pointee_args,
     );
+    collect_callsite_int_args_from_tree(root, source, &mut callsite_int_args);
 
     let empty_headers = HashSet::new();
     aggregate_callsite_null_states(&callsite_args, &mut function_summaries, &empty_headers);
     aggregate_callsite_field_null_states(&callsite_field_args, &mut function_summaries);
     aggregate_callsite_pointee_null_states(&callsite_pointee_args, &mut function_summaries);
+    aggregate_callsite_int_args(&callsite_int_args, &mut function_summaries, &empty_headers);
 
     let known_functions: HashSet<String> = function_summaries.keys().cloned().collect();
 
@@ -854,6 +866,261 @@ fn aggregate_callsite_pointee_null_states(
                         .insert(param_idx, aggregated);
                 }
             }
+        }
+    }
+}
+
+/// Aggregate integer constant call-site args into `callsite_param_const_int`.
+///
+/// For each parameter index, if every call site within the project passes the
+/// same integer constant literal, that constant is stored so VRA can narrow the
+/// parameter's entry range. Functions visible to external callers (header-declared)
+/// are skipped — we can't know what external code passes.
+pub(crate) fn aggregate_callsite_int_args(
+    callsite_int_args: &HashMap<String, Vec<Vec<Option<i64>>>>,
+    summaries: &mut HashMap<String, FunctionSummary>,
+    header_declared: &HashSet<String>,
+) {
+    for (callee_name, call_sites) in callsite_int_args {
+        if header_declared.contains(callee_name) {
+            continue;
+        }
+        if let Some(summary) = summaries.get_mut(callee_name) {
+            let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
+            for param_idx in 0..max_params {
+                let mut agreed: Option<i64> = None;
+                let mut any_site = false;
+                let mut disagree = false;
+                for site in call_sites {
+                    match site.get(param_idx) {
+                        Some(Some(v)) => {
+                            any_site = true;
+                            match agreed {
+                                None => agreed = Some(*v),
+                                Some(existing) if existing == *v => {}
+                                _ => {
+                                    disagree = true;
+                                    break;
+                                }
+                            }
+                        }
+                        Some(None) => {
+                            // Non-constant arg — can't narrow
+                            disagree = true;
+                            break;
+                        }
+                        None => {}
+                    }
+                }
+                if !disagree && any_site {
+                    if let Some(v) = agreed {
+                        summary.callsite_param_const_int.insert(param_idx, v);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Collect integer constant call-site argument values from a translation unit.
+///
+/// For each function call, records the constant value (if determinable) for each
+/// argument. Tracks local variable assignments (`data = 2`) to resolve identifiers.
+pub(crate) fn collect_callsite_int_args_from_tree(
+    node: &Node,
+    source: &str,
+    callsite_int_args: &mut HashMap<String, Vec<Vec<Option<i64>>>>,
+) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "function_definition" => {
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let local_ints = collect_local_var_int_values(&body, source);
+                        collect_int_calls_in_node(&body, source, &local_ints, callsite_int_args);
+                    }
+                }
+                kind if kind.starts_with("preproc_") => {
+                    collect_callsite_int_args_from_tree(&child, source, callsite_int_args);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Collect the last constant integer assignment to each local variable in a function body.
+/// Variables passed by address to any call are invalidated (fscanf-style side effects).
+fn collect_local_var_int_values(body: &Node, source: &str) -> HashMap<String, i64> {
+    let mut result = HashMap::new();
+    collect_int_assignments_in_node(body, source, &mut result);
+    // Invalidate any variable that appears as &var in a call — it may be written via pointer.
+    invalidate_address_taken_vars(body, source, &mut result);
+    result
+}
+
+/// Remove from `vals` any variable whose address is taken in a call expression (&var).
+fn invalidate_address_taken_vars(node: &Node, source: &str, vals: &mut HashMap<String, i64>) {
+    if node.kind() == "call_expression" {
+        if let Some(args_node) = node.child_by_field_name("arguments") {
+            for i in 0..args_node.child_count() {
+                if let Some(arg) = args_node.child(i) {
+                    // tree-sitter-c uses "pointer_expression" for &var and *var
+                    if arg.kind() == "pointer_expression" {
+                        let op = arg
+                            .child_by_field_name("operator")
+                            .or_else(|| arg.child(0))
+                            .and_then(|n| n.utf8_text(source.as_bytes()).ok());
+                        if op == Some("&") {
+                            let operand =
+                                arg.child_by_field_name("argument").or_else(|| arg.child(1));
+                            if let Some(operand) = operand {
+                                if operand.kind() == "identifier" {
+                                    let name = operand.utf8_text(source.as_bytes()).unwrap_or("");
+                                    vals.remove(name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            invalidate_address_taken_vars(&child, source, vals);
+        }
+    }
+}
+
+fn collect_int_assignments_in_node(node: &Node, source: &str, vals: &mut HashMap<String, i64>) {
+    match node.kind() {
+        "assignment_expression" => {
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                if left.kind() == "identifier" {
+                    let name = left.utf8_text(source.as_bytes()).unwrap_or("");
+                    if let Some(v) = parse_int_literal(&right, source) {
+                        vals.insert(name.to_string(), v);
+                    }
+                }
+            }
+            // Also recurse into RHS
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    collect_int_assignments_in_node(&child, source, vals);
+                }
+            }
+        }
+        "init_declarator" => {
+            if let (Some(decl), Some(val_node)) = (
+                node.child_by_field_name("declarator"),
+                node.child_by_field_name("value"),
+            ) {
+                let name = extract_init_decl_name(&decl, source);
+                if !name.is_empty() {
+                    if let Some(v) = parse_int_literal(&val_node, source) {
+                        vals.insert(name, v);
+                    }
+                }
+            }
+        }
+        _ => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    collect_int_assignments_in_node(&child, source, vals);
+                }
+            }
+        }
+    }
+}
+
+/// Parse a tree-sitter node as an integer literal, handling negation.
+fn parse_int_literal(node: &Node, source: &str) -> Option<i64> {
+    match node.kind() {
+        "number_literal" => {
+            let text = node.utf8_text(source.as_bytes()).ok()?.trim();
+            // Strip common suffixes (UL, LL, U, L)
+            let text = text.trim_end_matches(['u', 'U', 'l', 'L']);
+            text.parse::<i64>().ok()
+        }
+        "unary_expression" => {
+            // Handle negation: -2
+            let op = node
+                .child(0)
+                .map(|n| n.utf8_text(source.as_bytes()).unwrap_or(""));
+            if op == Some("-") {
+                if let Some(operand) = node.child(1) {
+                    return parse_int_literal(&operand, source).map(|v| -v);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Extract the simple identifier name from a declarator node (for init_declarator).
+fn extract_init_decl_name(node: &Node, source: &str) -> String {
+    match node.kind() {
+        "identifier" => node.utf8_text(source.as_bytes()).unwrap_or("").to_string(),
+        "pointer_declarator" | "array_declarator" | "function_declarator" => {
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                extract_init_decl_name(&inner, source)
+            } else {
+                String::new()
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// Walk call expressions in a function body, recording integer constant args.
+fn collect_int_calls_in_node(
+    node: &Node,
+    source: &str,
+    local_ints: &HashMap<String, i64>,
+    callsite_int_args: &mut HashMap<String, Vec<Vec<Option<i64>>>>,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(function) = node.child_by_field_name("function") {
+            if function.kind() == "identifier" {
+                let callee = function.utf8_text(source.as_bytes()).unwrap_or("");
+                if !callee.is_empty() {
+                    if let Some(args_node) = node.child_by_field_name("arguments") {
+                        let mut arg_vals = Vec::new();
+                        for i in 0..args_node.child_count() {
+                            if let Some(arg) = args_node.child(i) {
+                                if matches!(arg.kind(), "," | "(" | ")") {
+                                    continue;
+                                }
+                                let val = if let Some(v) = parse_int_literal(&arg, source) {
+                                    Some(v)
+                                } else if arg.kind() == "identifier" {
+                                    let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+                                    local_ints.get(name).copied().map(Some).unwrap_or(None)
+                                } else {
+                                    None
+                                };
+                                arg_vals.push(val);
+                            }
+                        }
+                        if !arg_vals.is_empty() {
+                            callsite_int_args
+                                .entry(callee.to_string())
+                                .or_default()
+                                .push(arg_vals);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_int_calls_in_node(&child, source, local_ints, callsite_int_args);
         }
     }
 }

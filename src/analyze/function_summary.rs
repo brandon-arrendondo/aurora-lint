@@ -73,6 +73,13 @@ pub struct FunctionSummary {
     /// clean, regardless of `has_env03_taint_source`.
     #[serde(default)]
     pub has_relative_command_write: bool,
+    /// Integer constant values for parameters where ALL call sites within the
+    /// project pass the same constant literal. Maps parameter index → value.
+    /// Absent entry means callers disagree or pass non-constant arguments.
+    /// Used by VRA to narrow parameter entry ranges so integer overflow rules
+    /// suppress goodG2B-style FPs where data is provably a small constant.
+    #[serde(default)]
+    pub callsite_param_const_int: HashMap<usize, i64>,
 }
 
 /// Names of functions that read externally-controlled data into their
@@ -1012,7 +1019,7 @@ fn collect_return_expressions<'a>(node: &Node<'a>, out: &mut Vec<Node<'a>>) {
     }
 }
 
-fn extract_function_name(func_node: &Node, source: &str) -> Option<String> {
+pub fn extract_function_name(func_node: &Node, source: &str) -> Option<String> {
     let declarator = func_node.child_by_field_name("declarator")?;
     let name = extract_leaf_identifier(&declarator, source);
     if name.is_empty() {

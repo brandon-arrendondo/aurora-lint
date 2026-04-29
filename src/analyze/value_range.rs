@@ -964,6 +964,25 @@ pub fn analyze_value_ranges(
     if let Some(declarator) = func_node.child_by_field_name("declarator") {
         collect_param_ranges(&declarator, source, &mut initial_state);
     }
+    // Narrow parameter ranges when ALL callers pass the same integer constant.
+    // This suppresses goodG2B-style FPs where data=2 is always safe but VRA
+    // would otherwise assign the full type range (e.g. [INT64_MIN, INT64_MAX]).
+    if let Some(func_name) = super::function_summary::extract_function_name(func_node, source) {
+        if let Some(summary) = summaries.get(&func_name) {
+            if !summary.callsite_param_const_int.is_empty() {
+                let param_names = super::function_summary::collect_param_names(func_node, source);
+                for (&param_idx, &const_val) in &summary.callsite_param_const_int {
+                    if let Some(name) = param_names.get(param_idx) {
+                        if !name.is_empty() {
+                            if let Some(typed_range) = initial_state.get_mut(name) {
+                                typed_range.range = ValueRange::new(const_val, const_val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Collect types for uninitialized local declarations (e.g. `int data;`).
     // These are NOT added to the initial state (would cause stale entry ranges),
     // but passed as a fallback type lookup so that assignments like `data = atoi()`
