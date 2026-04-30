@@ -305,7 +305,9 @@ impl Arr39C {
                     let op = &source[operator_node.start_byte()..operator_node.end_byte()];
                     if op == "+" || op == "-" {
                         if let Some(left) = node.child_by_field_name("left") {
-                            if self.looks_like_pointer_node(&left, source) {
+                            if self.looks_like_pointer_node(&left, source)
+                                && !self.is_char_pointer(&left, source)
+                            {
                                 return true;
                             }
                         }
@@ -546,26 +548,12 @@ impl Arr39C {
         for _ in 0..5 {
             // Check up to 5 levels up
             if let Some(parent) = current.parent() {
-                let parent_text = &source[parent.start_byte()..parent.end_byte()];
-
-                // Check for char* casts
+                // Check for char* / u8* / uint8_t* casts
                 if parent.kind() == "cast_expression" {
-                    if parent_text.contains("unsigned char *")
-                        || parent_text.contains("unsigned char*")
-                        || parent_text.contains("signed char *")
-                        || parent_text.contains("signed char*")
-                    // But NOT if it's casting TO a char* from something else
-                    // We need to check the actual type declarator
-                    {
-                        // Check type declarator specifically
-                        if let Some(type_node) = parent.child_by_field_name("type") {
-                            let type_text = &source[type_node.start_byte()..type_node.end_byte()];
-                            if type_text.contains("unsigned char")
-                                || type_text.contains("signed char")
-                                || (type_text.contains("char") && !type_text.contains("wchar"))
-                            {
-                                return true;
-                            }
+                    if let Some(type_node) = parent.child_by_field_name("type") {
+                        let type_text = &source[type_node.start_byte()..type_node.end_byte()];
+                        if Self::is_byte_type(type_text) {
+                            return true;
                         }
                     }
                 }
@@ -577,6 +565,20 @@ impl Arr39C {
         }
 
         false
+    }
+
+    /// Returns true for single-byte pointer types: char*, unsigned char*, u8*, uint8_t*, etc.
+    fn is_byte_type(type_text: &str) -> bool {
+        let t = type_text.trim();
+        // Standard char types
+        if (t.contains("char") && !t.contains("wchar"))
+            || t.contains("unsigned char")
+            || t.contains("signed char")
+        {
+            return true;
+        }
+        // Embedded/vendor byte aliases
+        matches!(t, "u8" | "uint8_t" | "UINT8" | "uint8_T" | "byte" | "BYTE")
     }
 
     fn looks_like_pointer_node(&self, node: &Node, source: &str) -> bool {

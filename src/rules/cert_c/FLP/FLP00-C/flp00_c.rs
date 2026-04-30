@@ -151,6 +151,10 @@ impl Flp00C {
         // member access (`obj.field`) and is the primary source of false positives.
         if node.kind() == "number_literal" {
             let text = get_node_text(node, source);
+            // Skip hex literals — 0xFF ends with 'f' but is not float
+            if text.starts_with("0x") || text.starts_with("0X") {
+                return false;
+            }
             // Decimal point, scientific notation, or explicit float suffix
             if text.contains('.')
                 || text.ends_with('f')

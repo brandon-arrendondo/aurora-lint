@@ -113,6 +113,17 @@ impl Exp15C {
         if let Some(body) = node.child_by_field_name(body_field) {
             let is_empty_body = self.is_empty_statement(&body, source);
             if is_empty_body {
+                // Suppress for while/for loops that are intentional hardware spin-polls.
+                // Key signal: no compound_statement follows immediately as a sibling.
+                // When a programmer accidentally semicolons a loop, the intended body
+                // `{ ... }` appears as the next sibling (a detached compound_statement).
+                // True busy-waits like `while (_txif0 == 0);` have no following block.
+                if statement_type == "while" || statement_type == "for" {
+                    if !Self::next_sibling_is_compound(node) {
+                        return;
+                    }
+                }
+
                 let start_point = node.start_position();
                 let statement_text = get_node_text(node, source);
                 let first_line = statement_text.lines().next().unwrap_or(statement_text);
@@ -121,20 +132,43 @@ impl Exp15C {
                     rule_id: self.rule_id().to_string(),
                     severity: Severity::High,
                     message: format!(
-                        "Semicolon on same line as {} statement: '{}' - This creates an empty statement and likely indicates a programming error",
+                        "Empty {} body after condition: '{}' - This likely indicates a programming error",
                         statement_type, first_line.trim()
                     ),
                     file_path: String::new(),
                     line: start_point.row + 1,
                     column: start_point.column + 1,
-                    suggestion: Some(format!(
-                        "Remove the semicolon after the {} condition. The semicolon creates an empty statement, causing the block to execute unconditionally.",
-                        statement_type
-                    )),
+                    suggestion: Some(
+                        "If this is an intentional spin-wait, add a comment inside the braces. Otherwise, remove the semicolon.".to_string(),
+                    ),
                     ..Default::default()
                 });
             }
         }
+    }
+
+    /// Returns true if the immediately next sibling of `node` is a compound_statement.
+    /// This detects the "accidental semicolon" pattern:
+    ///   `while (cond);`  followed by `{ body }` — the `{ body }` is the detached block.
+    fn next_sibling_is_compound(node: &Node) -> bool {
+        if let Some(parent) = node.parent() {
+            let mut found_self = false;
+            for i in 0..parent.child_count() {
+                if let Some(child) = parent.child(i) {
+                    if found_self {
+                        // Skip whitespace/comment nodes
+                        if child.kind() == "comment" || child.is_extra() {
+                            continue;
+                        }
+                        return child.kind() == "compound_statement";
+                    }
+                    if child.id() == node.id() {
+                        found_self = true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Returns true if `node` represents an empty C statement (bare ";").
