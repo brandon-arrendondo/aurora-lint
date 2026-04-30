@@ -257,7 +257,10 @@ impl Int10C {
         if node.kind() == "identifier" {
             let name = get_node_text(node, source);
             if let Some(t) = type_map.get(name) {
-                return t.contains("size_t") || t.contains("unsigned") || t.contains("uint");
+                return t.contains("size_t")
+                    || t.contains("unsigned")
+                    || t.contains("uint")
+                    || is_short_unsigned_typedef(t);
             }
         }
         // For field expressions like self->field, we can't resolve the type
@@ -315,4 +318,9 @@ impl Int10C {
 
         false
     }
+}
+
+/// Recognizes common short unsigned typedef names: u8, u16, u32, u64, u128.
+fn is_short_unsigned_typedef(s: &str) -> bool {
+    matches!(s, "u8" | "u16" | "u32" | "u64" | "u128")
 }

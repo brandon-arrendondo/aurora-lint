@@ -2,21 +2,21 @@
 //
 // This rule detects function declarators that lack proper type information:
 // 1. Old K&R style function definitions (identifier-list form)
-// 2. Function calls without declarations (implicit functions)
-// 3. Function pointer declarations that don't match actual function signatures
+// 2. Function pointer declarations that don't match actual function signatures
 //
 // Detection strategy:
 // 1. Find K&R style function definitions (parameters declared after closing paren)
-// 2. Find function calls where the function is not declared
-// 3. Find function pointer assignments where signature doesn't match
+// 2. Find function pointer assignments where signature doesn't match
+//
+// Note: implicit function declaration (calling before declaring) is handled by
+// DCL31-C to avoid duplicate violations.
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
-use crate::utility::cert_c::std_functions;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use tree_sitter::Node;
 
 pub struct Dcl07C {
@@ -37,16 +37,10 @@ impl Dcl07C {
         node: &Node<'a>,
         source: &'a str,
         violations: &mut Vec<RuleViolation>,
-        declarations: &HashMap<String, usize>,
     ) {
         // Check for K&R style function definitions
         if node.kind() == "function_definition" {
             self.check_kr_style_function(node, source, violations);
-        }
-
-        // Check for function calls without declarations
-        if node.kind() == "call_expression" {
-            self.check_function_call(node, source, violations, declarations);
         }
 
         // Check for function pointer mismatches
@@ -57,155 +51,7 @@ impl Dcl07C {
         // Recurse into children
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, declarations);
-            }
-        }
-    }
-
-    /// Check for function calls without proper declarations
-    fn check_function_call<'a>(
-        &self,
-        call_node: &Node<'a>,
-        source: &'a str,
-        violations: &mut Vec<RuleViolation>,
-        declarations: &HashMap<String, usize>,
-    ) {
-        // Get function name
-        if let Some(func) = call_node.child_by_field_name("function") {
-            // Skip indirect calls through function pointers or struct members.
-            // e.g., self->callback(args), obj.handler(args), array[i](args)
-            // These are not direct calls to named functions — they cannot be
-            // "declared" in the traditional sense.
-            if func.kind() != "identifier" {
-                return;
-            }
-
-            let func_name = get_node_text(&func, source);
-
-            // Skip ALL_CAPS identifiers — in C, all-uppercase names are macros by
-            // convention. Tree-sitter cannot expand macros, so it sees macro
-            // invocations like SAFE_PRINT(x) or CU_ASSERT_EQUAL(a,b) as function
-            // calls. They are never truly undeclared functions.
-            if is_macro_like_name(func_name) {
-                return;
-            }
-
-            // `defined` is a preprocessor operator, not a function.
-            if func_name == "defined" {
-                return;
-            }
-
-            // Skip standard library functions
-            if self.is_standard_function(func_name) {
-                return;
-            }
-
-            // Check if function was declared before this call
-            if !declarations.contains_key(func_name) {
-                // Skip if known from pre-scanned directories
-                if self.cross_file_functions.borrow().contains(func_name) {
-                    return;
-                }
-
-                // Skip calls inside preprocessor conditionals (#ifdef, #if, #elif).
-                // The corresponding declaration may be in a conditionally-included
-                // header that tree-sitter cannot see.
-                if is_inside_preproc_conditional(call_node) {
-                    return;
-                }
-
-                violations.push(RuleViolation {
-                    rule_id: self.rule_id().to_string(),
-                    line: call_node.start_position().row + 1,
-                    column: call_node.start_position().column + 1,
-                    message: format!(
-                        "Function '{}' called without prior declaration or prototype",
-                        func_name
-                    ),
-                    severity: self.severity(),
-                    file_path: String::new(),
-                    suggestion: Some(format!(
-                        "Declare function '{}' before calling it, or include appropriate header",
-                        func_name
-                    )),
-                    requires_manual_review: None,
-                });
-            }
-        }
-    }
-
-    /// Check if a function is a known standard library function.
-    /// Tree-sitter cannot follow #include directives, so we unconditionally
-    /// skip known standard functions to avoid false positives from transitive includes.
-    fn is_standard_function(&self, name: &str) -> bool {
-        std_functions::is_known_standard_function(name)
-    }
-
-    /// Collect all function declarations and definitions
-    fn collect_declarations<'a>(&self, node: &Node<'a>, source: &'a str) -> HashMap<String, usize> {
-        let mut declarations = HashMap::new();
-        self.collect_declarations_recursive(node, source, &mut declarations);
-        declarations
-    }
-
-    /// Recursively collect function declarations
-    fn collect_declarations_recursive<'a>(
-        &self,
-        node: &Node<'a>,
-        source: &'a str,
-        declarations: &mut HashMap<String, usize>,
-    ) {
-        // Collect function-like macro names (#define FOO(...) ...)
-        // so that macro invocations aren't flagged as undeclared functions.
-        if node.kind() == "preproc_function_def" {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let name = get_node_text(&name_node, source);
-                declarations.insert(name.to_string(), node.start_position().row);
-            }
-        }
-
-        // Check for function definitions
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if let Some(name) = self.get_function_name(&declarator, source) {
-                    let line = node.start_position().row;
-                    declarations.insert(name.to_string(), line);
-                }
-            }
-        }
-
-        // Check for function declarations
-        if node.kind() == "declaration" {
-            // Look for function declarator in this declaration
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "function_declarator" {
-                        if let Some(name) = self.get_function_name(&child, source) {
-                            let line = node.start_position().row;
-                            declarations.insert(name.to_string(), line);
-                        }
-                    } else if child.kind() == "init_declarator" {
-                        // Check inside init_declarator
-                        for j in 0..child.child_count() {
-                            if let Some(grandchild) = child.child(j) {
-                                if grandchild.kind() == "function_declarator" {
-                                    if let Some(name) = self.get_function_name(&grandchild, source)
-                                    {
-                                        let line = node.start_position().row;
-                                        declarations.insert(name.to_string(), line);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_declarations_recursive(&child, source, declarations);
+                self.check_node(&child, source, violations);
             }
         }
     }
@@ -549,8 +395,7 @@ impl CertRule for Dcl07C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         let mut funcs = context.known_functions.clone();
-        // Macro aliases (#define ALIAS target) define valid call targets —
-        // ALIAS(...) is a macro invocation, not an undeclared function.
+        funcs.extend(context.header_declared_functions.clone());
         for alias_name in context.macro_aliases.keys() {
             funcs.insert(alias_name.clone());
         }
@@ -559,41 +404,7 @@ impl CertRule for Dcl07C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-
-        // First pass: collect all function declarations and definitions
-        let declarations = self.collect_declarations(node, source);
-
-        // Second pass: check for violations
-        self.check_node(node, source, &mut violations, &declarations);
+        self.check_node(node, source, &mut violations);
         violations
     }
-}
-
-/// Returns true if the name looks like a C macro rather than a function.
-///
-/// By C convention, macro names are ALL_CAPS (may include digits and underscores).
-/// Tree-sitter sees macro invocations like `SAFE_PRINT(x)` as function calls
-/// because it cannot expand preprocessor definitions. Skipping all-uppercase
-/// names avoids these false positives.
-fn is_macro_like_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-}
-
-/// Returns true if the node is nested inside a preprocessor conditional block
-/// (#ifdef, #ifndef, #if, #elif). Calls inside these blocks may reference
-/// functions declared in conditionally-included headers that tree-sitter
-/// cannot resolve.
-fn is_inside_preproc_conditional(node: &Node) -> bool {
-    let mut current = *node;
-    while let Some(parent) = current.parent() {
-        match parent.kind() {
-            "preproc_ifdef" | "preproc_if" | "preproc_elif" => return true,
-            _ => {}
-        }
-        current = parent;
-    }
-    false
 }
