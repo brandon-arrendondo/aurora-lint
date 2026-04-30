@@ -35,6 +35,8 @@ pub fn prescan_directories(
     let mut callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>> =
         HashMap::new();
     let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
+    let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
+    let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
     let mut source_files: Vec<PathBuf> = Vec::new();
     let mut parser = CParser::new()?;
 
@@ -84,6 +86,9 @@ pub fn prescan_directories(
                     .map(|(alias, _)| alias.clone())
                     .collect();
 
+                // Collect string-literal macros for CWE-426 relative-path detection.
+                let file_string_macros = const_eval::collect_string_literal_macros(&root, &source);
+
                 // Compute function summaries for this file
                 let file_summaries = function_summary::compute_summaries(
                     &root,
@@ -91,6 +96,7 @@ pub fn prescan_directories(
                     &file_macros,
                     needs_vra,
                     &file_taint_aliases,
+                    &file_string_macros,
                 );
                 for (name, summary) in file_summaries {
                     // When multiple files define `static` functions with
@@ -101,6 +107,8 @@ pub fn prescan_directories(
                         Some(existing) => {
                             existing.has_env03_taint_source |= summary.has_env03_taint_source;
                             existing.returns_tainted |= summary.returns_tainted;
+                            existing.has_relative_command_write |=
+                                summary.has_relative_command_write;
                             existing
                                 .returns_from_callees
                                 .extend(summary.returns_from_callees);
@@ -128,6 +136,18 @@ pub fn prescan_directories(
                     collect_global_var_null_states(&root, &source, &mut global_var_null_states);
                 }
 
+                // Collect file-scope static pointer globals and their writer
+                // functions. Scoped per-file: each file's static names are
+                // paired with writers from that same file only. Cross-file
+                // collisions (same static name in two TUs) fall back to
+                // conservative union — any writer across files poisons the
+                // merged set — which is acceptable for taint classification.
+                if !is_header {
+                    let mut file_statics: HashSet<String> = HashSet::new();
+                    collect_static_pointer_globals(&root, &source, &mut file_statics);
+                    collect_global_writers(&root, &source, &file_statics, &mut global_writers);
+                }
+
                 // Collect call-site argument null states in the same pass
                 // (avoids re-parsing all files in a second directory walk)
                 if !is_header {
@@ -138,6 +158,7 @@ pub fn prescan_directories(
                         &mut callsite_field_args,
                         &mut callsite_pointee_args,
                     );
+                    collect_callsite_int_args_from_tree(&root, &source, &mut callsite_int_args);
                     source_files.push(entry.path().to_path_buf());
                 }
             }
@@ -156,6 +177,13 @@ pub fn prescan_directories(
 
     // Aggregate pointee null states from address-of arguments (variant 63)
     aggregate_callsite_pointee_null_states(&callsite_pointee_args, &mut function_summaries);
+
+    // Aggregate integer constant args: narrow param ranges for goodG2B-style FP suppression
+    aggregate_callsite_int_args(
+        &callsite_int_args,
+        &mut function_summaries,
+        &header_declared_functions,
+    );
 
     // Iterative propagation: resolve parameter null states through relay chains.
     // Each pass resolves one additional hop. Runs up to MAX_PROPAGATION_PASSES
@@ -191,6 +219,7 @@ pub fn prescan_directories(
         struct_field_types,
         global_constants,
         global_var_null_states,
+        global_writers,
     })
 }
 
@@ -213,13 +242,21 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         })
         .map(|(alias, _)| alias.clone())
         .collect();
-    let mut function_summaries =
-        function_summary::compute_summaries(root, source, &macros, false, &taint_aliases);
+    let string_macros = const_eval::collect_string_literal_macros(root, source);
+    let mut function_summaries = function_summary::compute_summaries(
+        root,
+        source,
+        &macros,
+        false,
+        &taint_aliases,
+        &string_macros,
+    );
 
     let mut callsite_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
     let mut callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>> =
         HashMap::new();
     let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
+    let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
     collect_callsite_args_from_tree(
         root,
         source,
@@ -227,22 +264,30 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         &mut callsite_field_args,
         &mut callsite_pointee_args,
     );
+    collect_callsite_int_args_from_tree(root, source, &mut callsite_int_args);
 
     let empty_headers = HashSet::new();
     aggregate_callsite_null_states(&callsite_args, &mut function_summaries, &empty_headers);
     aggregate_callsite_field_null_states(&callsite_field_args, &mut function_summaries);
     aggregate_callsite_pointee_null_states(&callsite_pointee_args, &mut function_summaries);
+    aggregate_callsite_int_args(&callsite_int_args, &mut function_summaries, &empty_headers);
 
     let known_functions: HashSet<String> = function_summaries.keys().cloned().collect();
 
     let mut struct_field_types = HashMap::new();
     collect_struct_definitions(root, source, &mut struct_field_types);
 
+    let mut file_statics: HashSet<String> = HashSet::new();
+    collect_static_pointer_globals(root, source, &mut file_statics);
+    let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
+    collect_global_writers(root, source, &file_statics, &mut global_writers);
+
     ProjectContext {
         known_functions,
         function_summaries,
         macro_constants: macros,
         struct_field_types,
+        global_writers,
         ..ProjectContext::default()
     }
 }
@@ -821,6 +866,268 @@ fn aggregate_callsite_pointee_null_states(
                         .insert(param_idx, aggregated);
                 }
             }
+        }
+    }
+}
+
+/// Aggregate integer constant call-site args into `callsite_param_const_int`.
+///
+/// For each parameter index, if every call site within the project passes the
+/// same integer constant literal, that constant is stored so VRA can narrow the
+/// parameter's entry range. Functions visible to external callers (header-declared)
+/// are skipped — we can't know what external code passes.
+pub(crate) fn aggregate_callsite_int_args(
+    callsite_int_args: &HashMap<String, Vec<Vec<Option<i64>>>>,
+    summaries: &mut HashMap<String, FunctionSummary>,
+    header_declared: &HashSet<String>,
+) {
+    for (callee_name, call_sites) in callsite_int_args {
+        if header_declared.contains(callee_name) {
+            continue;
+        }
+        if let Some(summary) = summaries.get_mut(callee_name) {
+            let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
+            for param_idx in 0..max_params {
+                let mut agreed: Option<i64> = None;
+                let mut any_site = false;
+                let mut disagree = false;
+                for site in call_sites {
+                    match site.get(param_idx) {
+                        Some(Some(v)) => {
+                            any_site = true;
+                            match agreed {
+                                None => agreed = Some(*v),
+                                Some(existing) if existing == *v => {}
+                                _ => {
+                                    disagree = true;
+                                    break;
+                                }
+                            }
+                        }
+                        Some(None) => {
+                            // Non-constant arg — can't narrow
+                            disagree = true;
+                            break;
+                        }
+                        None => {}
+                    }
+                }
+                if !disagree && any_site {
+                    if let Some(v) = agreed {
+                        summary.callsite_param_const_int.insert(param_idx, v);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Collect integer constant call-site argument values from a translation unit.
+///
+/// For each function call, records the constant value (if determinable) for each
+/// argument. Tracks local variable assignments (`data = 2`) to resolve identifiers.
+pub(crate) fn collect_callsite_int_args_from_tree(
+    node: &Node,
+    source: &str,
+    callsite_int_args: &mut HashMap<String, Vec<Vec<Option<i64>>>>,
+) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "function_definition" => {
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let local_ints = collect_local_var_int_values(&body, source);
+                        collect_int_calls_in_node(&body, source, &local_ints, callsite_int_args);
+                    }
+                }
+                kind if kind.starts_with("preproc_") => {
+                    collect_callsite_int_args_from_tree(&child, source, callsite_int_args);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Collect the last constant integer assignment to each local variable in a function body.
+/// Variables passed by address to any call are invalidated (fscanf-style side effects).
+fn collect_local_var_int_values(body: &Node, source: &str) -> HashMap<String, i64> {
+    let mut result = HashMap::new();
+    collect_int_assignments_in_node(body, source, &mut result);
+    // Invalidate any variable that appears as &var in a call — it may be written via pointer.
+    invalidate_address_taken_vars(body, source, &mut result);
+    result
+}
+
+/// Remove from `vals` any variable whose address is taken in a call expression (&var).
+fn invalidate_address_taken_vars(node: &Node, source: &str, vals: &mut HashMap<String, i64>) {
+    if node.kind() == "call_expression" {
+        if let Some(args_node) = node.child_by_field_name("arguments") {
+            for i in 0..args_node.child_count() {
+                if let Some(arg) = args_node.child(i) {
+                    // tree-sitter-c uses "pointer_expression" for &var and *var
+                    if arg.kind() == "pointer_expression" {
+                        let op = arg
+                            .child_by_field_name("operator")
+                            .or_else(|| arg.child(0))
+                            .and_then(|n| n.utf8_text(source.as_bytes()).ok());
+                        if op == Some("&") {
+                            let operand =
+                                arg.child_by_field_name("argument").or_else(|| arg.child(1));
+                            if let Some(operand) = operand {
+                                if operand.kind() == "identifier" {
+                                    let name = operand.utf8_text(source.as_bytes()).unwrap_or("");
+                                    vals.remove(name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            invalidate_address_taken_vars(&child, source, vals);
+        }
+    }
+}
+
+fn collect_int_assignments_in_node(node: &Node, source: &str, vals: &mut HashMap<String, i64>) {
+    match node.kind() {
+        "assignment_expression" => {
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                if left.kind() == "identifier" {
+                    let name = left.utf8_text(source.as_bytes()).unwrap_or("");
+                    match parse_int_literal(&right, source) {
+                        Some(v) => {
+                            vals.insert(name.to_string(), v);
+                        }
+                        None => {
+                            // Non-literal RHS (e.g. LLONG_MAX macro, rand(), fscanf result):
+                            // invalidate any earlier constant we tracked for this variable.
+                            vals.remove(name);
+                        }
+                    }
+                }
+            }
+            // Also recurse into RHS
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    collect_int_assignments_in_node(&child, source, vals);
+                }
+            }
+        }
+        "init_declarator" => {
+            if let (Some(decl), Some(val_node)) = (
+                node.child_by_field_name("declarator"),
+                node.child_by_field_name("value"),
+            ) {
+                let name = extract_init_decl_name(&decl, source);
+                if !name.is_empty() {
+                    if let Some(v) = parse_int_literal(&val_node, source) {
+                        vals.insert(name, v);
+                    }
+                }
+            }
+        }
+        _ => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    collect_int_assignments_in_node(&child, source, vals);
+                }
+            }
+        }
+    }
+}
+
+/// Parse a tree-sitter node as an integer literal, handling negation.
+fn parse_int_literal(node: &Node, source: &str) -> Option<i64> {
+    match node.kind() {
+        "number_literal" => {
+            let text = node.utf8_text(source.as_bytes()).ok()?.trim();
+            // Strip common suffixes (UL, LL, U, L)
+            let text = text.trim_end_matches(['u', 'U', 'l', 'L']);
+            text.parse::<i64>().ok()
+        }
+        "unary_expression" => {
+            // Handle negation: -2
+            let op = node
+                .child(0)
+                .map(|n| n.utf8_text(source.as_bytes()).unwrap_or(""));
+            if op == Some("-") {
+                if let Some(operand) = node.child(1) {
+                    return parse_int_literal(&operand, source).map(|v| -v);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Extract the simple identifier name from a declarator node (for init_declarator).
+fn extract_init_decl_name(node: &Node, source: &str) -> String {
+    match node.kind() {
+        "identifier" => node.utf8_text(source.as_bytes()).unwrap_or("").to_string(),
+        "pointer_declarator" | "array_declarator" | "function_declarator" => {
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                extract_init_decl_name(&inner, source)
+            } else {
+                String::new()
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// Walk call expressions in a function body, recording integer constant args.
+fn collect_int_calls_in_node(
+    node: &Node,
+    source: &str,
+    local_ints: &HashMap<String, i64>,
+    callsite_int_args: &mut HashMap<String, Vec<Vec<Option<i64>>>>,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(function) = node.child_by_field_name("function") {
+            if function.kind() == "identifier" {
+                let callee = function.utf8_text(source.as_bytes()).unwrap_or("");
+                if !callee.is_empty() {
+                    if let Some(args_node) = node.child_by_field_name("arguments") {
+                        let mut arg_vals = Vec::new();
+                        for i in 0..args_node.child_count() {
+                            if let Some(arg) = args_node.child(i) {
+                                if matches!(arg.kind(), "," | "(" | ")") {
+                                    continue;
+                                }
+                                let val = if let Some(v) = parse_int_literal(&arg, source) {
+                                    Some(v)
+                                } else if arg.kind() == "identifier" {
+                                    let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+                                    local_ints.get(name).copied().map(Some).unwrap_or(None)
+                                } else {
+                                    None
+                                };
+                                arg_vals.push(val);
+                            }
+                        }
+                        if !arg_vals.is_empty() {
+                            callsite_int_args
+                                .entry(callee.to_string())
+                                .or_default()
+                                .push(arg_vals);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_int_calls_in_node(&child, source, local_ints, callsite_int_args);
         }
     }
 }
@@ -1808,6 +2115,130 @@ fn collect_prescan_pointer_globals(
     }
 }
 
+/// Collect names of file-scope `static <type> *<name>[ = ...];` declarations.
+/// Narrowed to pointer types because they are the taint-relevant read-site
+/// pattern that ENV03-C/ENV33-C watch for (`char *data = g_static;`).
+fn collect_static_pointer_globals(node: &Node, source: &str, out: &mut HashSet<String>) {
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        match child.kind() {
+            "declaration" => {
+                let mut has_extern = false;
+                for j in 0..child.child_count() {
+                    if let Some(tc) = child.child(j) {
+                        if tc.kind() == "storage_class_specifier"
+                            && tc.utf8_text(source.as_bytes()).unwrap_or("") == "extern"
+                        {
+                            has_extern = true;
+                            break;
+                        }
+                    }
+                }
+                // Collect file-scope pointer definitions: static (internal linkage) and
+                // implicitly-extern (no storage class, external linkage). Skip extern
+                // declarations (forward declarations without storage) — they are not
+                // definitions, so no writers live in the same TU. This handles both the
+                // Juliet v45 pattern (static globals) and the v68 pattern (extern-linkage
+                // globals defined in one file and read as extern in another).
+                if has_extern {
+                    continue;
+                }
+                for j in 0..child.child_count() {
+                    let Some(decl) = child.child(j) else { continue };
+                    match decl.kind() {
+                        "init_declarator" => {
+                            if let Some(inner) = decl.child_by_field_name("declarator") {
+                                if inner.kind() == "pointer_declarator" {
+                                    let name = extract_declarator_name(&inner, source);
+                                    if !name.is_empty() {
+                                        out.insert(name);
+                                    }
+                                }
+                            }
+                        }
+                        "pointer_declarator" => {
+                            let name = extract_declarator_name(&decl, source);
+                            if !name.is_empty() {
+                                out.insert(name);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            k if k.starts_with("preproc_") => {
+                collect_static_pointer_globals(&child, source, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// For each function definition in `node`, record the function name as a
+/// writer of any file-scope static global in `file_globals` that it assigns
+/// to (plain `=` assignment with an identifier LHS). Feeds
+/// [`ProjectContext::global_writers`] so consumers (ENV03-C) can decide
+/// whether a read from the global brings in taint.
+fn collect_global_writers(
+    node: &Node,
+    source: &str,
+    file_globals: &HashSet<String>,
+    writers: &mut HashMap<String, HashSet<String>>,
+) {
+    if file_globals.is_empty() {
+        return;
+    }
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        match child.kind() {
+            "function_definition" => {
+                if let Some(func_name) = extract_function_name(&child, source) {
+                    if let Some(body) = child.child_by_field_name("body") {
+                        scan_body_for_global_writes(
+                            &body,
+                            source,
+                            &func_name,
+                            file_globals,
+                            writers,
+                        );
+                    }
+                }
+            }
+            k if k.starts_with("preproc_") => {
+                collect_global_writers(&child, source, file_globals, writers);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn scan_body_for_global_writes(
+    node: &Node,
+    source: &str,
+    func_name: &str,
+    file_globals: &HashSet<String>,
+    writers: &mut HashMap<String, HashSet<String>>,
+) {
+    if node.kind() == "assignment_expression" {
+        if let Some(left) = node.child_by_field_name("left") {
+            if left.kind() == "identifier" {
+                let name = left.utf8_text(source.as_bytes()).unwrap_or("");
+                if file_globals.contains(name) {
+                    writers
+                        .entry(name.to_string())
+                        .or_default()
+                        .insert(func_name.to_string());
+                }
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            scan_body_for_global_writes(&child, source, func_name, file_globals, writers);
+        }
+    }
+}
+
 /// Check if a declarator node contains a pointer indicator (`*`).
 fn has_pointer_in_declarator(node: &Node) -> bool {
     for i in 0..node.child_count() {
@@ -2198,12 +2629,15 @@ pub fn resolve_includes(
                     .map(|(alias, _)| alias.clone())
                     .collect();
 
+                let header_string_macros =
+                    const_eval::collect_string_literal_macros(&root, &hsource);
                 let file_summaries = function_summary::compute_summaries(
                     &root,
                     &hsource,
                     &header_macros,
                     needs_vra,
                     &header_taint_aliases,
+                    &header_string_macros,
                 );
                 for (name, summary) in file_summaries {
                     context.function_summaries.insert(name, summary);
@@ -2737,5 +3171,32 @@ mod tests {
             .get("Config")
             .unwrap()
             .contains_key("timeout"));
+    }
+
+    #[test]
+    fn test_global_writers_non_static_extern_linkage() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("a.c"),
+            "char *g_clean;\nstatic void write_clean(void) {\n    static char buf[64] = \"ls \";\n    g_clean = buf;\n}\n",
+        ).unwrap();
+        std::fs::write(
+            dir.path().join("b.c"),
+            "extern char *g_clean;\nvoid sink(void) { char *d = g_clean; system(d); }\n",
+        )
+        .unwrap();
+        let dirs = vec![dir.path().to_string_lossy().to_string()];
+        let ctx = prescan_directories(&dirs, None, false).unwrap();
+        assert!(
+            ctx.global_writers.contains_key("g_clean"),
+            "g_clean should be tracked as a file-scope global: {:?}",
+            ctx.global_writers.keys().collect::<Vec<_>>()
+        );
+        let writers = ctx.global_writers.get("g_clean").unwrap();
+        assert!(
+            writers.contains("write_clean"),
+            "write_clean should be a writer of g_clean: {:?}",
+            writers
+        );
     }
 }

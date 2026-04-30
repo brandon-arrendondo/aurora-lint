@@ -66,6 +66,20 @@ pub struct FunctionSummary {
     /// taint propagation in prescan.
     #[serde(default)]
     pub returns_from_callees: HashSet<String>,
+    /// True if this function calls strcpy/strcat/wcscpy/wcscat with a second
+    /// argument that is a known non-absolute-path macro (e.g.,
+    /// `BAD_OS_COMMAND = "ls -la"`). Used by ENV03-C's caller-aware
+    /// suppression: a sink's callers that set relative-path commands are NOT
+    /// clean, regardless of `has_env03_taint_source`.
+    #[serde(default)]
+    pub has_relative_command_write: bool,
+    /// Integer constant values for parameters where ALL call sites within the
+    /// project pass the same constant literal. Maps parameter index → value.
+    /// Absent entry means callers disagree or pass non-constant arguments.
+    /// Used by VRA to narrow parameter entry ranges so integer overflow rules
+    /// suppress goodG2B-style FPs where data is provably a small constant.
+    #[serde(default)]
+    pub callsite_param_const_int: HashMap<usize, i64>,
 }
 
 /// Names of functions that read externally-controlled data into their
@@ -91,8 +105,25 @@ pub const ENV03_TAINT_SOURCE_FUNCTIONS: &[&str] = &[
     "sscanf",
     "vscanf",
     "vfscanf",
+    // Wide-character input — mirror the narrow-char taint sources.
+    // Juliet's wchar_t_console / wchar_t_file variants read via fgetws,
+    // and without these the caller's summary is (incorrectly) clean,
+    // causing caller-aware suppression to drop the bad-path TP.
+    "fgetws",
+    "getwchar",
+    "getwc",
+    "fgetwc",
+    "wscanf",
+    "fwscanf",
+    "swscanf",
+    "vwscanf",
+    "vfwscanf",
+    "_getws",
+    "_getws_s",
     "getenv",
     "secure_getenv",
+    "_wgetenv",
+    "_wgetenv_s",
     "ReadFile",
     "ReadConsole",
     "ReadConsoleA",
@@ -113,6 +144,80 @@ fn body_contains_alias(body_text: &str, aliases: &[String]) -> bool {
         .any(|alias| body_text.contains(&format!("{}(", alias)))
 }
 
+/// True if the function body calls strcpy/strcat/wcscpy/wcscat with a second
+/// argument that is a macro identifier whose string value is a non-absolute path.
+/// Detects CWE-426 patterns like `strcpy(data, BAD_OS_COMMAND)` where
+/// `BAD_OS_COMMAND = "ls -la"`.
+fn body_has_relative_command_write(
+    body: &Node,
+    source: &str,
+    string_macros: &HashMap<String, String>,
+) -> bool {
+    let mut found = false;
+    walk_for_relative_command_write(body, source, string_macros, &mut found);
+    found
+}
+
+fn walk_for_relative_command_write(
+    node: &Node,
+    source: &str,
+    string_macros: &HashMap<String, String>,
+    found: &mut bool,
+) {
+    if *found {
+        return;
+    }
+    if node.kind() == "call_expression" {
+        if let Some(func) = node.child_by_field_name("function") {
+            let raw = func.utf8_text(source.as_bytes()).unwrap_or("");
+            let ident = raw
+                .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+                .next()
+                .unwrap_or(raw);
+            if matches!(
+                ident,
+                "strcpy"
+                    | "strcat"
+                    | "stncpy"
+                    | "strncat"
+                    | "wcscpy"
+                    | "wcscat"
+                    | "wcsncpy"
+                    | "wcsncat"
+            ) {
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    let named: Vec<_> = (0..args.child_count())
+                        .filter_map(|i| args.child(i))
+                        .filter(|c| c.is_named())
+                        .collect();
+                    // Second named arg is the source string for str/wcs copy/cat
+                    if let Some(second) = named.get(1) {
+                        let s = *second;
+                        if s.kind() == "identifier" {
+                            let nm = s.utf8_text(source.as_bytes()).unwrap_or("");
+                            if const_eval::is_relative_command_macro(string_macros, nm) {
+                                *found = true;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Don't recurse into call_expression arguments here — the call
+        // itself was checked; inner calls are handled by the outer loop.
+        return;
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            walk_for_relative_command_write(&child, source, string_macros, found);
+            if *found {
+                return;
+            }
+        }
+    }
+}
+
 /// Compute function summaries for all function definitions in the AST.
 ///
 /// When `compute_return_ranges` is true, also computes return value ranges
@@ -124,6 +229,7 @@ pub fn compute_summaries(
     macros: &MacroConstantMap,
     compute_return_ranges: bool,
     taint_source_aliases: &[String],
+    string_macros: &HashMap<String, String>,
 ) -> HashMap<String, FunctionSummary> {
     let mut summaries = HashMap::new();
 
@@ -133,6 +239,7 @@ pub fn compute_summaries(
         macros,
         compute_return_ranges,
         taint_source_aliases,
+        string_macros,
         &mut summaries,
     );
 
@@ -145,6 +252,7 @@ fn collect_function_summaries(
     macros: &MacroConstantMap,
     compute_return_ranges: bool,
     taint_source_aliases: &[String],
+    string_macros: &HashMap<String, String>,
     summaries: &mut HashMap<String, FunctionSummary>,
 ) {
     if node.kind() == "function_definition" {
@@ -155,6 +263,7 @@ fn collect_function_summaries(
                 macros,
                 compute_return_ranges,
                 taint_source_aliases,
+                string_macros,
             );
             summaries.insert(name, summary);
         }
@@ -172,6 +281,7 @@ fn collect_function_summaries(
                             macros,
                             compute_return_ranges,
                             taint_source_aliases,
+                            string_macros,
                         );
                         summaries.insert(name, summary);
                     }
@@ -183,6 +293,7 @@ fn collect_function_summaries(
                         macros,
                         compute_return_ranges,
                         taint_source_aliases,
+                        string_macros,
                         summaries,
                     );
                 }
@@ -203,6 +314,7 @@ fn analyze_function(
     macros: &MacroConstantMap,
     compute_return_ranges: bool,
     taint_source_aliases: &[String],
+    string_macros: &HashMap<String, String>,
 ) -> FunctionSummary {
     let mut summary = FunctionSummary::default();
 
@@ -254,6 +366,15 @@ fn analyze_function(
         // poison the caller's summary.
         summary.has_env03_taint_source = body_contains_taint_source(body_text)
             || body_contains_alias(body_text, taint_source_aliases);
+
+        // Detect CWE-426-style relative-path command writes: strcpy/strcat
+        // with a macro identifier whose value is a known non-absolute path.
+        // Used alongside `has_env03_taint_source` to prevent caller-aware
+        // suppression from masking CWE-426 sinks.
+        if !string_macros.is_empty() {
+            summary.has_relative_command_write =
+                body_has_relative_command_write(&body, source, string_macros);
+        }
 
         // Seed return-value taint: a function that directly calls a taint
         // source and returns non-void may carry that taint back to callers.
@@ -898,7 +1019,7 @@ fn collect_return_expressions<'a>(node: &Node<'a>, out: &mut Vec<Node<'a>>) {
     }
 }
 
-fn extract_function_name(func_node: &Node, source: &str) -> Option<String> {
+pub fn extract_function_name(func_node: &Node, source: &str) -> Option<String> {
     let declarator = func_node.child_by_field_name("declarator")?;
     let name = extract_leaf_identifier(&declarator, source);
     if name.is_empty() {
@@ -1000,7 +1121,7 @@ mod tests {
         parser.set_language(&tree_sitter_c::language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let macros = const_eval::collect_macro_constants(&tree.root_node(), code);
-        compute_summaries(&tree.root_node(), code, &macros, true, &[])
+        compute_summaries(&tree.root_node(), code, &macros, true, &[], &HashMap::new())
     }
 
     #[test]

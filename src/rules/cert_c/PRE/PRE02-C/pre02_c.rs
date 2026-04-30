@@ -116,7 +116,7 @@ impl Pre02C {
         // Find the closing ')' of the cast type
         let mut depth = 0;
         let mut cast_end = 0;
-        for (i, c) in trimmed.chars().enumerate() {
+        for (i, c) in trimmed.char_indices() {
             if c == '(' {
                 depth += 1;
             } else if c == ')' {

@@ -759,11 +759,32 @@ fn is_read_context(node: &Node, source: &str) -> bool {
         "binary_expression" | "unary_expression" | "conditional_expression" => true,
         // Function call argument — usually a read, but check for output args
         // of known initializing functions (e.g., fgets(input, ...) is a write to input)
-        "argument_list" => is_read_in_argument_list(node, &parent, source),
+        "argument_list" => {
+            // Special case: `__asm("..." : "=r"(var) ...)` is misparsed by
+            // tree-sitter as call_expression("__asm", [ERROR, "=r"(var), ...]).
+            // The output operand `"=r"(var)` becomes call_expression("=r", [var]).
+            // Detect this: identifier inside argument_list of a call whose
+            // function is a string_literal with "=" (output constraint).
+            if let Some(call_gp) = parent.parent() {
+                if call_gp.kind() == "call_expression" {
+                    if let Some(func) = call_gp.child_by_field_name("function") {
+                        if func.kind() == "string_literal" {
+                            let constraint = get_node_text(&func, source);
+                            if constraint.contains('=') {
+                                return false; // output operand of misparsed __asm
+                            }
+                        }
+                    }
+                }
+            }
+            is_read_in_argument_list(node, &parent, source)
+        }
         // Return statement — reading
         "return_statement" => true,
         // Comma expression
         "comma_expression" => true,
+        // GNU asm output operands are writes ("=r"(var)) — not reads
+        "gnu_asm_output_operand" => false,
         _ => true,
     }
 }

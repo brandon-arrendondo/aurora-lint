@@ -390,6 +390,14 @@ fn process_statement(
         "init_declarator" => {
             // Part of a declaration processed at the statement level
         }
+        // GNU inline assembly: `asm("..." : "=r"(var) : ...)`.
+        // Output operands (first `:` list) write into their `value` field
+        // identifier, initializing those variables from the caller's
+        // perspective. Mark all output-operand identifiers as Initialized
+        // so reads after the asm statement do not falsely flag.
+        "gnu_asm_expression" => {
+            process_gnu_asm(node, source, state);
+        }
         _ => {
             // Recursively search for init-relevant expressions in nested nodes
             // (e.g., call inside binary_expression inside parenthesized_expression)
@@ -798,6 +806,9 @@ fn process_expression(
                 }
             }
         }
+        "gnu_asm_expression" => {
+            process_gnu_asm(node, source, state);
+        }
         _ => {}
     }
 }
@@ -815,10 +826,99 @@ fn find_and_process_init_expressions(
         "assignment_expression" | "call_expression" | "comma_expression" | "update_expression" => {
             process_expression(node, source, state, tracked_vars, config);
         }
+        "gnu_asm_expression" => {
+            process_gnu_asm(node, source, state);
+        }
         _ => {
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
                     find_and_process_init_expressions(&child, source, state, tracked_vars, config);
+                }
+            }
+        }
+    }
+}
+
+/// Handle `__asm("..." : "=r"(var) ...)` which tree-sitter-c misparsed as a
+/// `call_expression`. The output operands become nested `call_expression` nodes
+/// with a `string_literal` as the function. Find any such operand whose
+/// constraint contains `=` and mark its identifier argument as Initialized.
+fn process_misparsed_asm_call(node: &Node, source: &str, state: &mut InitStateMap) {
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return;
+    };
+    collect_asm_output_inits(&args, source, state);
+}
+
+/// Recursively walk an argument-list (or ERROR node inside it) looking for
+/// `"=r"(var)` / `"=m"(var)` patterns — misparsed asm output operands.
+/// When found, mark the identifier argument as Initialized.
+fn collect_asm_output_inits(node: &Node, source: &str, state: &mut InitStateMap) {
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        match child.kind() {
+            "call_expression" => {
+                let Some(func) = child.child_by_field_name("function") else {
+                    continue;
+                };
+                if func.kind() != "string_literal" {
+                    continue;
+                }
+                let constraint = func.utf8_text(source.as_bytes()).unwrap_or("");
+                if !constraint.contains('=') {
+                    continue; // input operand
+                }
+                let Some(inner_args) = child.child_by_field_name("arguments") else {
+                    continue;
+                };
+                for j in 0..inner_args.child_count() {
+                    let Some(ident) = inner_args.child(j) else {
+                        continue;
+                    };
+                    if ident.kind() == "identifier" {
+                        let name = ident.utf8_text(source.as_bytes()).unwrap_or("");
+                        if !name.is_empty() {
+                            if let Some(info) = state.get_mut(name) {
+                                info.state = InitState::Initialized;
+                                info.allocation_count = None;
+                            }
+                        }
+                    }
+                }
+            }
+            "ERROR" => {
+                // Output operand may be nested inside an ERROR node
+                collect_asm_output_inits(&child, source, state);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Mark variables written by GNU inline asm output operands as initialized.
+///
+/// Output operands appear as `gnu_asm_output_operand` nodes under the
+/// `output_operands` field of the `gnu_asm_expression`. Each operand has a
+/// `value` field that is the destination identifier (e.g., `result` in
+/// `"=r"(result)`). These are written by the asm, not read, so they should
+/// be treated as freshly initialized after the statement.
+fn process_gnu_asm(node: &Node, source: &str, state: &mut InitStateMap) {
+    let Some(output_list) = node.child_by_field_name("output_operands") else {
+        return;
+    };
+    for i in 0..output_list.child_count() {
+        let Some(child) = output_list.child(i) else {
+            continue;
+        };
+        if child.kind() != "gnu_asm_output_operand" {
+            continue;
+        }
+        if let Some(val) = child.child_by_field_name("value") {
+            let name = val.utf8_text(source.as_bytes()).unwrap_or("");
+            if !name.is_empty() {
+                if let Some(info) = state.get_mut(name) {
+                    info.state = InitState::Initialized;
+                    info.allocation_count = None;
                 }
             }
         }
@@ -838,6 +938,39 @@ fn process_call_expression(
         None => return,
     };
     let func_name = func.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    let func_name_lower = func_name.to_lowercase();
+
+    // Misparsed asm output operand: `"=r"(var)` or `"+r"(var)`.
+    // tree-sitter-c sees the constraint string as the callee function.
+    // Mark the identifier argument as initialized — it is written by the asm.
+    if func.kind() == "string_literal" && func_name.contains('=') {
+        if let Some(args) = node.child_by_field_name("arguments") {
+            for i in 0..args.child_count() {
+                if let Some(arg) = args.child(i) {
+                    if arg.kind() == "identifier" {
+                        let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+                        if !name.is_empty() {
+                            if let Some(info) = state.get_mut(name) {
+                                info.state = InitState::Initialized;
+                                info.allocation_count = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // `__asm(...)` / `__ASM(...)` are not recognised as gnu_asm_expression by
+    // tree-sitter-c (only `asm` and `__asm__` are). They parse as call_expression,
+    // and the output operands `"=r"(var)` become nested call_expressions whose
+    // function is a string_literal. Walk the argument list and mark any identifier
+    // that is the sole argument of a string_literal-function call with `=` in it.
+    if func_name_lower.starts_with("__asm") || func_name_lower == "asm" {
+        process_misparsed_asm_call(node, source, state);
+        return;
+    }
 
     // va_start initializes its first argument (the va_list variable)
     if func_name == "va_start" || func_name == "va_copy" {
