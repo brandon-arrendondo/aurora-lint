@@ -218,13 +218,46 @@ SQLite first, falling back to legacy text files for old runs. 46 Juliet runs
 
 ---
 
+## Task tracking
+
+This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
+`.todo-sqlite-cli` marker at the repo root.
+
+**Before planning or coding, ask the DB — do not read PLAN.md for tasks
+(PLAN.md only holds the benchmark/competitor header summary):**
+
+- `todo-sqlite-cli next` — the single task to work on right now.
+- `todo-sqlite-cli list` — all active (in-progress + pending), in-progress
+  first then by priority.
+- `todo-sqlite-cli show <id>` — full task detail.
+- Every command supports `--json`.
+
+**When picking up work:** `todo-sqlite-cli start <id>` before coding,
+`todo-sqlite-cli done <id>` when committed.
+
+**When a new task surfaces:**
+`todo-sqlite-cli add "title" --details "..." --tag <area> --priority <1-5>`
+(1 = highest). `--depends-on <id>` links prerequisites; tasks with unmet
+deps are skipped by `next` and shown `[blocked]` in `list`.
+
+Original PLAN.md task IDs (prior to the 2026-04-20 import) are preserved
+as `plan-id:NN` tags; CLI IDs are independent AUTOINCREMENT integers.
+
+**Release history** also lives in the DB — each CHANGELOG entry is a
+`release`-tagged done task with `completed_at` set to the release date.
+Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
+`--since`/`--until`), or slice by section with
+`todo-sqlite-cli list --status done --tag changed`
+(also: `benchmark`, `added`, `fixed`, `task`).
+
+---
+
 ## Documentation
 
 | File | Contents |
 |------|----------|
 | `README.md` | Tool overview, installation, usage, CLI reference |
-| `CHANGELOG.txt` | Version history, per-release fixes and features |
-| `PLAN.md` | Roadmap: immediate, medium-term, long-term priorities |
+| `PLAN.md` | Benchmark/competitor header summary. Tasks live in `todo-sqlite-cli.db` — see Task tracking section above. |
 | `JULIET_RESULTS.md` | Juliet benchmark data by sqc version |
 | `REALWORLD_RESULTS.md` | Real-world codebase results (5 projects × 3 tools) |
 | `docs/index.rst` | Developer guide: advanced usage, CI/CD, benchmarks, testing, contributing |

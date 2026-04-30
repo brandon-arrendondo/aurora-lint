@@ -32,6 +32,11 @@ use tree_sitter::Node;
 /// If none of these appear in the containing function, a local-variable
 /// command argument to system/popen is treated as program-controlled
 /// (no taint path) and the ENV03-C warning is suppressed.
+///
+/// Must stay in sync with
+/// `function_summary::ENV03_TAINT_SOURCE_FUNCTIONS` so that the
+/// scope-local scan here and the cross-function summary bit agree on
+/// which calls introduce taint.
 const TAINT_SOURCES: &[&str] = &[
     // Sockets / network
     "recv",
@@ -53,9 +58,23 @@ const TAINT_SOURCES: &[&str] = &[
     "sscanf",
     "vscanf",
     "vfscanf",
+    // Wide-character input
+    "fgetws",
+    "getwchar",
+    "getwc",
+    "fgetwc",
+    "wscanf",
+    "fwscanf",
+    "swscanf",
+    "vwscanf",
+    "vfwscanf",
+    "_getws",
+    "_getws_s",
     // Environment / command line
     "getenv",
     "secure_getenv",
+    "_wgetenv",
+    "_wgetenv_s",
     // Windows stdin / registry
     "ReadFile",
     "ReadConsole",
@@ -72,6 +91,15 @@ pub struct Env03C {
     /// Reverse call graph: callee_name → set of caller names. Built from
     /// ProjectContext's forward `call_graph`.
     callers: RefCell<HashMap<String, HashSet<String>>>,
+    /// File-scope static pointer writers from prescan: global_name → writer
+    /// function names. A read like `char *data = g_static;` is treated as
+    /// clean iff every writer's summary has `has_env03_taint_source == false`
+    /// and `returns_tainted == false`. Targets Juliet CWE-78 variant 45
+    /// (goodG2BSink pattern).
+    global_writers: RefCell<HashMap<String, HashSet<String>>>,
+    /// Per-file `#define NAME "string"` map for checking whether a strcpy/strcat
+    /// source macro expands to an absolute path (safe) vs. a relative command.
+    file_string_macros: RefCell<HashMap<String, String>>,
 }
 
 impl Env03C {
@@ -81,6 +109,8 @@ impl Env03C {
             current_aliases: RefCell::new(HashMap::new()),
             function_summaries: RefCell::new(HashMap::new()),
             callers: RefCell::new(HashMap::new()),
+            global_writers: RefCell::new(HashMap::new()),
+            file_string_macros: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -115,6 +145,7 @@ impl CertRule for Env03C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.global_writers.borrow_mut() = context.global_writers.clone();
 
         // Invert the forward call_graph (caller → callees) into a reverse
         // map (callee → callers) for fast lookup.
@@ -135,6 +166,8 @@ impl CertRule for Env03C {
         let mut aliases = self.project_aliases.borrow().clone();
         aliases.extend(const_eval::collect_macro_aliases(node, source));
         *self.current_aliases.borrow_mut() = aliases;
+        *self.file_string_macros.borrow_mut() =
+            const_eval::collect_string_literal_macros(node, source);
 
         let mut violations = Vec::new();
         self.check_all_calls(node, source, &mut violations);
@@ -325,8 +358,28 @@ impl Env03C {
             return true;
         }
 
+        // Command var is a local, not a parameter. But if it's initialized
+        // solely from parameter-derived expressions (*p, p[i], p.f, p->f,
+        // chained through casts and intermediate locals), then taint is
+        // upstream — defer to the same caller-aware check. Juliet variants
+        // 63/64/66/67 use this shape: a cross-file sink receives data via
+        // pointer-to-pointer / void* / array / struct parameter, then copies
+        // it into a local before the popen call.
+        if is_command_var_parameter_derived(scope, var_name, source) {
+            return !self.callers_are_all_clean(scope, source);
+        }
+
         let summaries = self.function_summaries.borrow();
-        !is_command_var_locally_safe(scope, var_name, source, &summaries)
+        let global_writers = self.global_writers.borrow();
+        let string_macros = self.file_string_macros.borrow();
+        !is_command_var_locally_safe(
+            scope,
+            var_name,
+            source,
+            &summaries,
+            &global_writers,
+            &string_macros,
+        )
     }
 
     /// Return true when we can prove every caller of `scope`'s function
@@ -348,7 +401,7 @@ impl Env03C {
         let summaries = self.function_summaries.borrow();
         for caller in caller_set {
             match summaries.get(caller) {
-                Some(s) if !s.has_env03_taint_source => {}
+                Some(s) if !s.has_env03_taint_source && !s.has_relative_command_write => {}
                 _ => return false,
             }
         }
@@ -409,7 +462,14 @@ fn walk_for_taint(node: &Node, source: &str, found: &mut bool) {
         if let Some(function) = node.child_by_field_name("function") {
             let name = get_node_text(&function, source);
             let ident = trailing_identifier(name);
+            // Check exact match first, then case-insensitive for UPPERCASE macro
+            // aliases (e.g. Juliet's `#define GETENV getenv`).
             if TAINT_SOURCES.contains(&ident) {
+                *found = true;
+                return;
+            }
+            let lower = ident.to_lowercase();
+            if lower != ident && TAINT_SOURCES.contains(&lower.as_str()) {
                 *found = true;
                 return;
             }
@@ -431,6 +491,172 @@ fn trailing_identifier(name: &str) -> &str {
     name.rsplit(|c: char| !c.is_alphanumeric() && c != '_')
         .next()
         .unwrap_or(name)
+}
+
+/// Return true when every write to `var_name` in `scope` is an expression
+/// derived from a function parameter via deref (`*p`), subscript (`p[i]`),
+/// field access (`p.f` / `p->f`), or cast (`(T)p`) — possibly chained
+/// through intermediate locals that are themselves parameter-derived.
+///
+/// Targets Juliet CWE-78 variants 63/64/66/67 where a cross-file "sink"
+/// function receives tainted-or-not data via a pointer-to-pointer / void*
+/// / array / struct parameter and copies it into a local before calling
+/// popen/system. Combined with `callers_are_all_clean`, this suppresses
+/// the goodG2BSink FP without affecting the badSink TP (the bad caller
+/// has recv/fgets so its summary is tainted).
+///
+/// Requires at least one write so an uninitialised pointer never counts.
+fn is_command_var_parameter_derived(scope: &Node, var_name: &str, source: &str) -> bool {
+    let Some(body) = scope.child_by_field_name("body") else {
+        return false;
+    };
+    let params: HashSet<String> = collect_param_names(scope, source).into_iter().collect();
+    if params.is_empty() {
+        return false;
+    }
+
+    // Collect every variable's write-RHS list once, then iterate a
+    // fixpoint: add `v` to `derived` when every RHS evaluates to a
+    // parameter-derived expression under the current `derived` set.
+    let mut writes: HashMap<String, Vec<Node>> = HashMap::new();
+    collect_variable_writes(&body, source, &mut writes);
+
+    let mut derived = params.clone();
+    loop {
+        let before = derived.len();
+        for (name, rhs_list) in &writes {
+            if derived.contains(name) {
+                continue;
+            }
+            if !rhs_list.is_empty()
+                && rhs_list
+                    .iter()
+                    .all(|r| is_param_derived_expr(r, &derived, source))
+            {
+                derived.insert(name.clone());
+            }
+        }
+        if derived.len() == before {
+            break;
+        }
+    }
+
+    // The var itself must be present (has at least one write) and every
+    // write must be derived — i.e. var_name was added to derived by the
+    // loop above. Parameters aren't command vars here (handled earlier).
+    !params.contains(var_name) && derived.contains(var_name)
+}
+
+/// Parameter-declarator identifiers for a `function_definition` node.
+fn collect_param_names(scope: &Node, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let Some(decl) = scope.child_by_field_name("declarator") else {
+        return names;
+    };
+    let Some(params) = find_parameter_list(&decl) else {
+        return names;
+    };
+    for i in 0..params.child_count() {
+        let Some(child) = params.child(i) else {
+            continue;
+        };
+        if child.kind() != "parameter_declaration" {
+            continue;
+        }
+        let Some(pd) = child.child_by_field_name("declarator") else {
+            continue;
+        };
+        if let Some(name) = extract_declarator_name(&pd, source) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+fn find_parameter_list<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+    if node.kind() == "function_declarator" {
+        for i in 0..node.child_count() {
+            if let Some(c) = node.child(i) {
+                if c.kind() == "parameter_list" {
+                    return Some(c);
+                }
+            }
+        }
+    }
+    // Nested declarators (e.g. pointer_declarator → function_declarator).
+    for i in 0..node.child_count() {
+        if let Some(c) = node.child(i) {
+            if let Some(found) = find_parameter_list(&c) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Gather `(var_name, Vec<rhs>)` for every assignment to a named local
+/// variable under `body`. Covers both `init_declarator` (declaration with
+/// initializer) and plain `lhs = rhs` assignment expressions. Only `=` is
+/// tracked; compound assignments like `+=` are ignored (they mean the
+/// write isn't purely derived from the RHS).
+fn collect_variable_writes<'a>(
+    node: &Node<'a>,
+    source: &str,
+    writes: &mut HashMap<String, Vec<Node<'a>>>,
+) {
+    match node.kind() {
+        "init_declarator" => {
+            if let Some(decl) = node.child_by_field_name("declarator") {
+                if let Some(name) = extract_declarator_name(&decl, source) {
+                    if let Some(value) = node.child_by_field_name("value") {
+                        writes.entry(name).or_default().push(value);
+                    }
+                }
+            }
+        }
+        "assignment_expression" => {
+            if let Some(lhs) = node.child_by_field_name("left") {
+                let lhs = strip_casts_and_parens(lhs);
+                if lhs.kind() == "identifier" {
+                    let op_is_plain = node_operator(node, source)
+                        .map(|op| op == "=")
+                        .unwrap_or(true);
+                    if op_is_plain {
+                        if let Some(rhs) = node.child_by_field_name("right") {
+                            let name = get_node_text(&lhs, source).to_string();
+                            writes.entry(name).or_default().push(rhs);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_variable_writes(&child, source, writes);
+        }
+    }
+}
+
+/// True if `expr` is a parameter-derived expression given the current
+/// `derived` set. Peels casts/parens, then unwraps deref, subscript, and
+/// field access to reach an identifier, which must be in `derived`.
+fn is_param_derived_expr(expr: &Node, derived: &HashSet<String>, source: &str) -> bool {
+    let e = strip_casts_and_parens(*expr);
+    match e.kind() {
+        "identifier" => derived.contains(get_node_text(&e, source)),
+        "pointer_expression" | "unary_expression" => e
+            .child_by_field_name("argument")
+            .is_some_and(|a| is_param_derived_expr(&a, derived, source)),
+        "subscript_expression" => e
+            .child_by_field_name("argument")
+            .is_some_and(|a| is_param_derived_expr(&a, derived, source)),
+        "field_expression" => e
+            .child_by_field_name("argument")
+            .is_some_and(|a| is_param_derived_expr(&a, derived, source)),
+        _ => false,
+    }
 }
 
 /// Can we prove the local variable `var_name` in this function scope is
@@ -457,12 +683,14 @@ fn is_command_var_locally_safe(
     var_name: &str,
     source: &str,
     summaries: &HashMap<String, FunctionSummary>,
+    global_writers: &HashMap<String, HashSet<String>>,
+    string_macros: &HashMap<String, String>,
 ) -> bool {
     let body = match scope.child_by_field_name("body") {
         Some(b) => b,
         None => return false,
     };
-    let local_buffers = collect_local_literal_buffers(&body, source, summaries);
+    let local_buffers = collect_local_literal_buffers(&body, source, summaries, global_writers);
 
     let mut all_safe = true;
     check_writes(
@@ -471,6 +699,7 @@ fn is_command_var_locally_safe(
         &local_buffers,
         source,
         summaries,
+        string_macros,
         &mut all_safe,
     );
     all_safe
@@ -480,12 +709,26 @@ fn is_command_var_locally_safe(
 /// sources for the command variable. Starts with `char`/`wchar_t` arrays
 /// initialized from string literals (or macros), then iterates to fold in
 /// pointer variables initialized from an already-safe identifier.
+///
+/// Also seeds with file-scope static globals whose every writer function
+/// has a taint-free summary — the Juliet v45 goodG2BSink pattern where
+/// `char *data = g_goodG2BData;` reads a global that's only written by
+/// functions that don't introduce taint.
 fn collect_local_literal_buffers(
     body: &Node,
     source: &str,
     summaries: &HashMap<String, FunctionSummary>,
+    global_writers: &HashMap<String, HashSet<String>>,
 ) -> HashSet<String> {
     let mut buffers = HashSet::new();
+    for (global_name, writers) in global_writers {
+        if writers.iter().all(|w| match summaries.get(w) {
+            Some(s) => !s.has_env03_taint_source && !s.returns_tainted,
+            None => false,
+        }) {
+            buffers.insert(global_name.clone());
+        }
+    }
     // Pass 1: arrays with literal/macro initializers.
     walk_buffer_decls(body, source, &mut buffers);
     // Passes 2+: propagate through pointer aliases until fixpoint.
@@ -563,14 +806,23 @@ fn walk_pointer_aliases(
         "assignment_expression" => {
             if let Some(lhs) = node.child_by_field_name("left") {
                 let lhs = strip_casts_and_parens(lhs);
-                if lhs.kind() == "identifier" {
-                    let op_is_plain = node_operator(node, source)
-                        .map(|op| op == "=")
-                        .unwrap_or(true);
-                    if op_is_plain {
+                let op_is_plain = node_operator(node, source)
+                    .map(|op| op == "=")
+                    .unwrap_or(true);
+                if lhs.kind() == "identifier" && op_is_plain {
+                    let rhs = node.child_by_field_name("right");
+                    if rhs_is_safe(rhs.as_ref(), out, source, summaries) {
+                        out.insert(get_node_text(&lhs, source).to_string());
+                    }
+                } else if lhs.kind() == "field_expression" && op_is_plain {
+                    // union_var.member = safe_value → mark the aggregate variable
+                    // as a safe source. Only `.` access (local aggregate), not `->`
+                    // (pointer dereference). Handles Juliet v34: union data flow
+                    // where the same slot is read back through the other member alias.
+                    if let Some(base) = field_expr_dot_base(&lhs, source) {
                         let rhs = node.child_by_field_name("right");
                         if rhs_is_safe(rhs.as_ref(), out, source, summaries) {
-                            out.insert(get_node_text(&lhs, source).to_string());
+                            out.insert(base);
                         }
                     }
                 }
@@ -636,6 +888,7 @@ fn check_writes(
     safe_sources: &HashSet<String>,
     source: &str,
     summaries: &HashMap<String, FunctionSummary>,
+    string_macros: &HashMap<String, String>,
     all_safe: &mut bool,
 ) {
     if !*all_safe {
@@ -659,7 +912,15 @@ fn check_writes(
                 // Fall through to recursion
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
-                        check_writes(&child, var, safe_sources, source, summaries, all_safe);
+                        check_writes(
+                            &child,
+                            var,
+                            safe_sources,
+                            source,
+                            summaries,
+                            string_macros,
+                            all_safe,
+                        );
                         if !*all_safe {
                             return;
                         }
@@ -712,7 +973,26 @@ fn check_writes(
                                 let second_safe = match second {
                                     Some(n) => {
                                         let s = strip_casts_and_parens(*n);
-                                        matches!(s.kind(), "string_literal" | "concatenated_string")
+                                        match s.kind() {
+                                            "string_literal" | "concatenated_string" => true,
+                                            // ALL_CAPS identifiers are compile-time macro constants
+                                            // (e.g. Juliet CWE-426 GOOD_OS_COMMAND = "/usr/bin/ls").
+                                            // Lowercase identifiers remain conservative.
+                                            "identifier" => {
+                                                let nm = get_node_text(&s, source);
+                                                // A local safe buffer, or a macro that
+                                                // expands to an absolute path or an argument
+                                                // fragment (starts with space/dash — safe
+                                                // to append). ALL-CAPS alone is not sufficient:
+                                                // BAD_OS_COMMAND is also all-caps.
+                                                safe_sources.contains(nm)
+                                                    || const_eval::is_safe_command_macro(
+                                                        string_macros,
+                                                        nm,
+                                                    )
+                                            }
+                                            _ => false,
+                                        }
                                     }
                                     None => false,
                                 };
@@ -731,7 +1011,15 @@ fn check_writes(
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            check_writes(&child, var, safe_sources, source, summaries, all_safe);
+            check_writes(
+                &child,
+                var,
+                safe_sources,
+                source,
+                summaries,
+                string_macros,
+                all_safe,
+            );
             if !*all_safe {
                 return;
             }
@@ -771,6 +1059,14 @@ fn rhs_is_safe(
         // Juliet v42-style goodG2B(Source) wrappers without masking the
         // corresponding `data = badSource(...)` bad paths.
         "call_expression" => call_is_clean(&rhs, source, summaries),
+        // `data = union_var.member` — safe if the union/struct aggregate was
+        // itself populated only from safe sources. Only `.` access (local
+        // aggregate), not `->` (pointer to potentially external data).
+        // This suppresses Juliet v34 FPs where goodG2B writes a safe buffer
+        // to one union member and reads it back through the other alias.
+        "field_expression" => field_expr_dot_base(&rhs, source)
+            .map(|base| safe_sources.contains(&base as &str))
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -786,9 +1082,42 @@ fn call_is_clean(call: &Node, source: &str, summaries: &HashMap<String, Function
     let raw = get_node_text(&func, source);
     let name = trailing_identifier(raw);
     match summaries.get(name) {
-        Some(s) => !s.has_env03_taint_source && !s.returns_tainted,
+        Some(s) => !s.has_env03_taint_source && !s.returns_tainted && !s.has_relative_command_write,
         None => false,
     }
+}
+
+/// If `node` is a `field_expression` using the `.` (dot) operator, return the
+/// base identifier name. Returns `None` for `->` access or when the base is
+/// not a simple identifier (pointer arithmetic, nested field, etc.).
+fn field_expr_dot_base(node: &Node, source: &str) -> Option<String> {
+    // Distinguish `.` from `->` via the unnamed operator child.
+    let mut is_dot = false;
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if !child.is_named() {
+                match get_node_text(&child, source) {
+                    "." => {
+                        is_dot = true;
+                        break;
+                    }
+                    "->" => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+    if !is_dot {
+        return None;
+    }
+    node.child_by_field_name("argument").and_then(|arg| {
+        let base = strip_casts_and_parens(arg);
+        if base.kind() == "identifier" {
+            Some(get_node_text(&base, source).to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn node_operator<'a>(node: &'a Node<'a>, source: &'a str) -> Option<&'a str> {

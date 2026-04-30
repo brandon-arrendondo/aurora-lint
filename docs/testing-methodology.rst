@@ -48,10 +48,10 @@ under ``src/rules/cert_c/<CATEGORY>/<RULE-ID>/tests/``:
         testcases_proper_signal_handling.c
         ...
 
-**Current coverage**: 2,831 unit tests across 283 rules (average 10 tests/rule),
-with 2,632 C test case files.
+**Current coverage**: 3,322 tests across 290 rules (~3,070 C test files,
+~1,820 fail + ~1,250 pass). All tests pass; zero duplicates.
 
-Tests are auto-generated into Rust test functions from ``.c`` files -- no embedded
+Tests are auto-generated into Rust test functions from ``.c`` files — no embedded
 ``#[cfg(test)]`` modules in rule implementation files. Run tests with:
 
 ::
@@ -242,3 +242,132 @@ exist (Goseva2015). Valid comparison strategies:
 
 For academic context on tool effectiveness, FP rates, and the Juliet benchmark
 methodology, see :doc:`bibliography`.
+
+Test Infrastructure Details
+---------------------------
+
+Build-Time Test Generation
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. **Test files**: ``.c`` files in ``src/rules/cert_c/CATEGORY/RULE-ID/tests/{fail,pass}/``
+2. **Build-time generation**: ``build.rs`` walks the test directories and generates
+   Rust test functions in ``$OUT_DIR/integration_tests.rs``
+3. **Test harness**: ``src/rules/cert_c/integration.rs`` includes the generated
+   tests, records results, and produces ``docs/test-summary.md``
+4. **Test logic**:
+
+   - ``fail/`` tests: parse the C file, run the rule, assert violations > 0
+   - ``pass/`` tests: parse the C file, run the rule, assert violations == 0
+
+5. **Disabled rules**: if ``RULE-ID.toml`` has ``enabled = false``, tests are
+   generated with ``#[ignore]``
+
+Test File Naming Conventions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+=================  ==================  ======  ====================================
+Prefix             Origin              Count   Description
+=================  ==================  ======  ====================================
+``wiki_*``         CERT wiki examples  ~1,120  Directly from CERT C Coding Standard
+``testcases_*``    AI-generated        ~1,860  Broader pattern coverage
+Other              Mixed               ~80     Various
+=================  ==================  ======  ====================================
+
+Test Distribution by Rule Size
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+=================  ======  =========================================
+Test Count Range   Rules   Examples
+=================  ======  =========================================
+1–2 tests          3       Remaining sparse rules
+3–5 tests          167     Most wiki-sourced rules
+6–10 tests         70      DCL06-C, ENV31-C, INT36-C, etc.
+11–20 tests        12      INT31-C, DCL37-C, EXP43-C, etc.
+21–50 tests        30      Most "large suite" rules
+51–100 tests       8       ARR30-C, STR31-C, INT32-C, MEM31-C, etc.
+=================  ======  =========================================
+
+What Tests Do NOT Cover
+~~~~~~~~~~~~~~~~~~~~~~~
+
+- **Inter-procedural analysis**: No tests exercise ``-d`` directory scanning,
+  prescan, or cross-file function resolution
+- **Project context**: No tests exercise ``set_project_context()`` or
+  ``set_function_cfgs()``
+- **CFG/dataflow**: The CFG builder, null state analysis, value-range analysis,
+  and init state analysis have embedded Rust unit tests but no integration-level
+  C test coverage
+- **CLI flags**: No tests for ``--diff``, ``--export``, ``--format``, ``-I``,
+  ``--save-prescan``, ``--load-prescan``
+- **Suppression**: No tests for ``.sqc-suppress.toml`` hash-based suppression
+
+Coverage Gate
+~~~~~~~~~~~~~
+
+Line coverage is enforced at **75%** via ``scripts/coverage-gate.sh``, shared by
+the pre-commit hook and ADO CI pipeline. The script:
+
+- Runs tests via ``cargo llvm-cov``
+- Produces ``lcov.info`` (publishable as CI artifact)
+- Excludes from threshold: ``ui/`` (GUI), ``main.rs`` (CLI entry),
+  ``integration.rs`` (test harness), ``progress.rs`` (terminal I/O),
+  ``export/`` (SARIF/Excel output), ``files/`` (git/directory I/O),
+  ``manifest/`` (TOML config loading)
+- Fails with clear output showing current coverage and largest uncovered files
+
+Embedded Rust Unit Tests
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Files in ``src/analyze/`` with ``#[cfg(test)]`` modules:
+
+=========================  ======  ======
+File                       Lines   Tests
+=========================  ======  ======
+prescan.rs                 2,741   31
+const_eval.rs              2,071   43
+value_range.rs             1,778   13
+init_state.rs              1,729   6
+null_state.rs              1,720   9
+function_summary.rs        1,175   14
+suppression.rs             1,070   34
+dataflow.rs                988     19
+cfg.rs                     761     7
+mod.rs                     705     10
+context.rs                 93      0
+=========================  ======  ======
+
+Rule implementation files with embedded tests (against project convention):
+INT34-C, INT33-C, CON31-C, FIO01-C, EXP32-C, EXP30-C, EXP33-C, EXP08-C,
+EXP42-C, DCL08-C, STR10-C.
+
+Known Rule Implementation Gaps
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The following rule-level analysis limitations were discovered during test coverage
+work. These are cases where valid C patterns should pass/fail but the rule
+implementation cannot detect them correctly.
+
+- **INT00-C**: ``find_type_in_source()`` only matches ``TYPE VAR;`` or
+  ``TYPE VAR,``, not ``TYPE VAR = expr;``. Variables with initializers get type
+  "unknown", so format specifier checks cannot validate ``%ld`` with
+  ``long x = 42;``.
+
+- **INT08-C**: Rule does not recognize ``SHRT_MAX`` / ``CHAR_MAX`` guard checks
+  before narrow-type arithmetic.
+
+- **INT34-C**: ``is_likely_unsigned()`` parameter declaration check doesn't
+  traverse tree-sitter's function parameter hierarchy. Also,
+  ``checks_shift_bounds()`` doesn't handle reversed comparison form
+  ``N <= var`` (only ``var >= N``).
+
+- **POS50-C**: ``is_declared_in_function()`` doesn't distinguish ``static`` from
+  automatic storage. Static locals passed to ``pthread_create()`` produce FPs.
+
+- **FLP00-C**: Only detects float equality in ``if``-conditions, not in return
+  statements or assignments.
+
+- **EXP40-C**: ``is_const_qualified()`` returns false for identifiers — cannot
+  determine if a variable was declared ``const`` without a symbol table.
+
+- **STR03-C**: ``strncpy()`` and ``snprintf()`` always trigger violations
+  regardless of whether null-termination is manually added afterward.

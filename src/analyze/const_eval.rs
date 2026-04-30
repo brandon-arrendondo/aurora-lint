@@ -206,6 +206,81 @@ fn resolve_sizeof_type(type_text: &str) -> Option<i64> {
 // Macro constant collection
 // ---------------------------------------------------------------------------
 
+/// Collect `#define NAME "string"` patterns and return a map from name → raw quoted value.
+/// Used to check whether a macro expands to an absolute path string.
+pub fn collect_string_literal_macros(root: &Node, source: &str) -> HashMap<String, String> {
+    let mut raw_defs: Vec<(String, String)> = Vec::new();
+    collect_preproc_defs(root, source, &mut raw_defs);
+
+    let mut string_macros = HashMap::new();
+    for (name, value) in raw_defs {
+        let v = value.trim();
+        if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
+            string_macros.insert(name, v.to_string());
+        } else if v.starts_with("L\"") && v.ends_with('"') && v.len() >= 3 {
+            // Wide string literal L"..." — strip the L prefix, keep "..."
+            string_macros.insert(name, v[1..].to_string());
+        }
+    }
+    string_macros
+}
+
+fn is_absolute_path_inner(inner: &str) -> bool {
+    inner.starts_with('/')
+        || (inner.len() >= 3
+            && inner
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphabetic())
+                .unwrap_or(false)
+            && inner.chars().nth(1) == Some(':')
+            && (inner.chars().nth(2) == Some('\\') || inner.chars().nth(2) == Some('/')))
+        || inner.starts_with("\\\\")
+}
+
+/// Return true if `name` is a macro whose value is a relative-path OS command string —
+/// non-empty, not starting with a space or dash (argument fragment), and not an absolute path.
+/// This distinguishes `BAD_OS_COMMAND = "ls -la"` (relative command) from
+/// `SAFE_CMD_ARGS = " -la"` (argument fragment) and `GOOD_OS_COMMAND = "/usr/bin/ls"` (absolute).
+pub fn is_relative_command_macro(string_macros: &HashMap<String, String>, name: &str) -> bool {
+    let Some(value) = string_macros.get(name) else {
+        return false;
+    };
+    let inner = &value[1..value.len() - 1];
+    // Must be non-empty after trimming
+    if inner.trim().is_empty() {
+        return false;
+    }
+    // Starts with space or dash → argument fragment, not a standalone command
+    if inner.starts_with(' ') || inner.starts_with('-') {
+        return false;
+    }
+    // Absolute path → safe
+    !is_absolute_path_inner(inner)
+}
+
+/// Return true if `name` is a macro whose string value is safe to use as a
+/// `strcpy`/`strcat` source for a command variable. Safe means either an
+/// absolute-path macro or an argument-fragment macro (value starts with
+/// whitespace or `–` — these are option strings appended to an established path,
+/// never standalone relative-command names).
+pub fn is_safe_command_macro(string_macros: &HashMap<String, String>, name: &str) -> bool {
+    let Some(value) = string_macros.get(name) else {
+        return false;
+    };
+    let inner = &value[1..value.len() - 1];
+    // Absolute path → safe
+    if is_absolute_path_inner(inner) {
+        return true;
+    }
+    // Empty string → safe (no-op strcat)
+    if inner.is_empty() {
+        return true;
+    }
+    // Argument fragment (starts with space or dash) → safe to append
+    inner.starts_with(' ') || inner.starts_with('-')
+}
+
 /// Collect `#define ALIAS func_name` patterns where the value is a single C identifier.
 /// These represent macro aliases for function names (e.g., `#define SYSTEM system`).
 /// Returns a map from alias → target identifier.
@@ -241,6 +316,8 @@ pub fn collect_macro_constants(root: &Node, source: &str) -> MacroConstantMap {
     collect_preproc_defs(root, source, &mut raw_defs);
     // Also collect file-scope `static const int NAME = VALUE;` declarations
     collect_static_const_defs(root, source, &mut raw_defs);
+    // Also collect file-scope `static int NAME = VALUE;` (no const) when never reassigned
+    collect_non_const_static_defs(root, source, &mut raw_defs);
     // Collect `enum { NAME = VALUE, ... }` enumerators as compile-time constants
     collect_enum_constants(root, source, &mut raw_defs);
 
@@ -351,6 +428,115 @@ fn collect_static_const_defs(root: &Node, source: &str, defs: &mut Vec<(String, 
             }
         }
     }
+}
+
+/// Collect file-scope `static int NAME = VALUE;` declarations (no `const`) that
+/// are never reassigned in the file. These behave as effective compile-time
+/// constants in Juliet and similar controlled test patterns.
+fn collect_non_const_static_defs(root: &Node, source: &str, defs: &mut Vec<(String, String)>) {
+    let mut candidates: Vec<(String, String, usize)> = Vec::new();
+
+    for i in 0..root.child_count() {
+        let child = match root.child(i) {
+            Some(c) => c,
+            None => continue,
+        };
+        if child.kind() != "declaration" {
+            continue;
+        }
+        let decl_text = child.utf8_text(source.as_bytes()).unwrap_or("");
+        // Must have `static` but NOT `const` (const handled by collect_static_const_defs)
+        if !decl_text.contains("static") || decl_text.contains("const") {
+            continue;
+        }
+        let has_int_type = decl_text.contains("int")
+            || decl_text.contains("long")
+            || decl_text.contains("short")
+            || decl_text.contains("_Bool");
+        if !has_int_type {
+            continue;
+        }
+        let decl_end = child.end_byte();
+
+        for j in 0..child.named_child_count() {
+            let gc = match child.named_child(j) {
+                Some(c) => c,
+                None => continue,
+            };
+            if gc.kind() != "init_declarator" {
+                continue;
+            }
+            let mut name = None;
+            let mut value = None;
+            for k in 0..gc.named_child_count() {
+                if let Some(ggc) = gc.named_child(k) {
+                    if ggc.kind() == "identifier" && name.is_none() {
+                        name = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                    } else if ggc.kind() == "number_literal" && name.is_some() {
+                        value = ggc.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            if let (Some(n), Some(v)) = (name, value) {
+                candidates.push((n, v, decl_end));
+            }
+        }
+    }
+
+    let source_bytes = source.as_bytes();
+    for (name, value, decl_end) in candidates {
+        if !static_var_assigned_after(source_bytes, &name, decl_end) {
+            defs.push((name, value));
+        }
+    }
+}
+
+/// Return true if `name` appears as an assignment target after `after_offset` bytes.
+/// Checks for `=` (not `==`), compound assignments, and `++`/`--`.
+fn static_var_assigned_after(source: &[u8], name: &str, after_offset: usize) -> bool {
+    let name_b = name.as_bytes();
+    let n = source.len();
+    let m = name_b.len();
+
+    let mut i = after_offset;
+    while i + m <= n {
+        if &source[i..i + m] != name_b {
+            i += 1;
+            continue;
+        }
+        // Word boundary before
+        let before_ok = i == 0 || {
+            let b = source[i - 1];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+        let after_pos = i + m;
+        // Word boundary after
+        let after_ok = after_pos >= n || {
+            let b = source[after_pos];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+        if before_ok && after_ok {
+            let mut j = after_pos;
+            while j < n && (source[j] == b' ' || source[j] == b'\t') {
+                j += 1;
+            }
+            if j < n {
+                let next = source[j];
+                let is_assign = next == b'=' && (j + 1 >= n || source[j + 1] != b'=');
+                let is_compound =
+                    matches!(next, b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^')
+                        && j + 1 < n
+                        && source[j + 1] == b'=';
+                let is_inc = (next == b'+' && j + 1 < n && source[j + 1] == b'+')
+                    || (next == b'-' && j + 1 < n && source[j + 1] == b'-');
+                if is_assign || is_compound || is_inc {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Collect enumerator names + value expressions from any `enum { ... }` in the
@@ -707,6 +893,7 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
                 "-" => val.checked_neg(),
                 "+" => Some(val),
                 "~" => Some(!val),
+                "!" => Some(if val == 0 { 1 } else { 0 }),
                 _ => None,
             }
         }

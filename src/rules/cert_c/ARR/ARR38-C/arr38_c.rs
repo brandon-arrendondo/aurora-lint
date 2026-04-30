@@ -242,6 +242,30 @@ impl Arr38C {
                     );
                 }
             }
+            // Also handle multi-declarator declarations: "wchar_t data[150], dest[100]"
+            // The first declarator is handled above; pick up subsequent ones here.
+            if let Some(comma_pos) = text.find(',') {
+                let rest = &text[comma_pos + 1..];
+                let fragments: Vec<&str> = rest.split(',').collect();
+                for fragment in &fragments {
+                    let fragment = fragment.trim().trim_end_matches(';').trim();
+                    if !fragment.contains('[') {
+                        continue;
+                    }
+                    if let Some(var_name) = self.extract_array_var_name(fragment) {
+                        if let Some(size) = self.extract_array_size(fragment) {
+                            buffer_info.insert(
+                                var_name.clone(),
+                                BufferInfo {
+                                    size: Some(size),
+                                    size_expr: size.to_string(),
+                                    alloc_type: "array".to_string(),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         // Check for malloc/calloc/aligned_alloc/alloca/ALLOCA assignments
@@ -472,6 +496,7 @@ impl Arr38C {
                         source,
                         function_name,
                         violations,
+                        buffer_info,
                         pointer_offsets,
                     );
                 }
@@ -643,6 +668,7 @@ impl Arr38C {
         source: &str,
         function_name: &str,
         violations: &mut Vec<RuleViolation>,
+        buffer_info: &HashMap<String, BufferInfo>,
         pointer_offsets: &HashMap<String, PointerOffsetInfo>,
     ) {
         let args = self.get_function_arguments(node, source);
@@ -682,22 +708,45 @@ impl Arr38C {
 
             // Check for hardcoded counts that likely exceed buffer
             if self.is_hardcoded_large_count(size_arg) {
-                let start_point = node.start_position();
-                violations.push(RuleViolation {
-                    rule_id: self.rule_id().to_string(),
-                    severity: Severity::High,
-                    message: format!(
-                        "Function '{}' called with hardcoded count {} that may exceed buffer bounds",
-                        function_name, size_arg
-                    ),
-                    file_path: String::new(),
-                    line: start_point.row + 1,
-                    column: start_point.column + 1,
-                    suggestion: Some(
-                        "Use array size (e.g., sizeof(dest)/sizeof(wchar_t)) instead".to_string(),
-                    ),
-                    ..Default::default()
-                });
+                // Suppress if the element count is provably within the destination buffer.
+                // buffer_info sizes are stored in bytes (element_count * sizeof(element)).
+                // Wide memory functions use element counts, so compare count * sizeof(wchar_t)
+                // against the buffer byte size.
+                let dest_arg = &args[0];
+                // buffer_info.size stores element counts; compare directly.
+                let count_fits = if let Some(count) = self.try_parse_size(size_arg) {
+                    if let Some(buf_info) = buffer_info.get(dest_arg.trim()) {
+                        if let Some(buf_elems) = buf_info.size {
+                            count <= buf_elems
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !count_fits {
+                    let start_point = node.start_position();
+                    violations.push(RuleViolation {
+                        rule_id: self.rule_id().to_string(),
+                        severity: Severity::High,
+                        message: format!(
+                            "Function '{}' called with hardcoded count {} that may exceed buffer bounds",
+                            function_name, size_arg
+                        ),
+                        file_path: String::new(),
+                        line: start_point.row + 1,
+                        column: start_point.column + 1,
+                        suggestion: Some(
+                            "Use array size (e.g., sizeof(dest)/sizeof(wchar_t)) instead"
+                                .to_string(),
+                        ),
+                        ..Default::default()
+                    });
+                }
             }
         }
     }
@@ -1908,9 +1957,19 @@ impl Arr38C {
                 let size_arg_owned = size_arg.to_string();
                 let resolved_size = size_vars.get(size_arg.trim()).unwrap_or(&size_arg_owned);
 
-                // Try to parse size as a number
+                // Try to parse size as a number.
+                // For N*sizeof(T) expressions (byte counts for typed arrays), normalize
+                // by dividing out the element size to get an element count for comparison.
+                // BufferInfo.size stores element counts, not byte sizes.
                 if let Some(size_val) = self.try_parse_size(resolved_size) {
-                    if size_val > buf_size {
+                    let cmp_val = if let Some(elem_count) =
+                        self.extract_elem_count_from_byte_expr(resolved_size)
+                    {
+                        elem_count
+                    } else {
+                        size_val
+                    };
+                    if cmp_val > buf_size {
                         let start_point = node.start_position();
                         return Some(RuleViolation {
                             rule_id: self.rule_id().to_string(),
@@ -2237,7 +2296,14 @@ impl Arr38C {
                     .map(|s| s.as_str())
                     .unwrap_or(size_arg);
                 if let Some(size_val) = self.try_parse_size(resolved) {
-                    return size_val <= buf_size;
+                    let cmp_val = if let Some(elem_count) =
+                        self.extract_elem_count_from_byte_expr(resolved)
+                    {
+                        elem_count
+                    } else {
+                        size_val
+                    };
+                    return cmp_val <= buf_size;
                 }
             }
         }
@@ -2318,6 +2384,29 @@ impl Arr38C {
             "twoIntsStruct" => Some(8), // Common Juliet struct
             _ => None,
         }
+    }
+
+    /// If `expr` is of the form `N*sizeof(T)`, return N (the element count).
+    /// Returns None for other expressions (not a typed byte-count pattern).
+    fn extract_elem_count_from_byte_expr(&self, expr: &str) -> Option<usize> {
+        let expr = expr.trim();
+        if let Some(star_pos) = expr.find('*') {
+            let left = expr[..star_pos].trim();
+            let right = expr[star_pos + 1..].trim();
+            // N*sizeof(T) form
+            if right.starts_with("sizeof(") {
+                if let Ok(n) = left.parse::<usize>() {
+                    return Some(n);
+                }
+            }
+            // sizeof(T)*N form
+            if left.starts_with("sizeof(") {
+                if let Ok(n) = right.parse::<usize>() {
+                    return Some(n);
+                }
+            }
+        }
+        None
     }
 
     /// Extract array variable name from declaration
@@ -2441,13 +2530,13 @@ impl Arr38C {
         if let Some(eq_pos) = text.find('=') {
             // Make sure it's not == or !=
             if eq_pos > 0 {
-                let char_before = text.chars().nth(eq_pos - 1);
+                let char_before = text[..eq_pos].chars().next_back();
                 if char_before == Some('!') || char_before == Some('=') {
                     return None;
                 }
             }
             if text.len() > eq_pos + 1 {
-                let char_after = text.chars().nth(eq_pos + 1);
+                let char_after = text[eq_pos + 1..].chars().next();
                 if char_after == Some('=') {
                     return None;
                 }

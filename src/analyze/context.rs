@@ -37,6 +37,14 @@ pub struct ProjectContext {
     /// translation units (Juliet CWE-476 variant 68 pattern).
     #[serde(default)]
     pub global_var_null_states: HashMap<String, NullState>,
+    /// File-scope `static` variable writers: maps static-variable name to the
+    /// set of function names that assign to it. Used by ENV03-C (and other
+    /// taint-aware rules) to decide whether a `char *data = g_static;` read
+    /// brings in taint — if every writer's summary is taint-free, the global
+    /// is treated as clean. Targets Juliet CWE-78 variant 45 (goodG2BSink
+    /// pattern).
+    #[serde(default)]
+    pub global_writers: HashMap<String, HashSet<String>>,
 }
 
 impl ProjectContext {
