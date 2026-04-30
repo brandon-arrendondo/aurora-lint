@@ -2054,8 +2054,9 @@ fn find_pointer_source_array_recursive(
             };
 
             // Extract the source name (up to '[', '+', ',', ';', or whitespace)
+            // Use char_indices() to get byte offsets (not char indices) for safe slicing.
             let mut end_pos = 0;
-            for (i, c) in after_eq.chars().enumerate() {
+            for (i, c) in after_eq.char_indices() {
                 if c == '[' || c == '+' || c == ',' || c == ';' || c.is_whitespace() || c == ')' {
                     end_pos = i;
                     break;
