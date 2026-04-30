@@ -130,13 +130,17 @@ impl Msc37C {
 
     /// Check if the last statement in a compound statement is a return
     fn ends_with_return(&self, compound_stmt: &Node) -> bool {
-        // Get the last non-brace child
+        // Get the last non-brace, non-comment, non-preprocessor child.
+        // Comments (e.g., `return val; // note`) and preprocessor directives
+        // after a return would otherwise become the "last child" and cause false positives.
         let mut last_stmt = None;
         for i in 0..compound_stmt.child_count() {
             if let Some(child) = compound_stmt.child(i) {
-                if child.kind() != "{" && child.kind() != "}" {
-                    last_stmt = Some(child);
+                let kind = child.kind();
+                if kind == "{" || kind == "}" || kind == "comment" || kind.starts_with("preproc_") {
+                    continue;
                 }
+                last_stmt = Some(child);
             }
         }
 

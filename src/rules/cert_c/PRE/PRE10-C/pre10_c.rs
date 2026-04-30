@@ -155,28 +155,28 @@ impl Pre10C {
     }
 
     fn is_wrapped_in_do_while(&self, text: &str) -> bool {
-        // Remove line continuations and extra whitespace
-        let cleaned = text
-            .replace("\\\n", " ")
-            .replace("\\\r\n", " ")
-            .trim()
-            .to_string();
+        // Remove line continuations, collapse whitespace for robust matching
+        let raw = text.replace("\\\r\n", " ").replace("\\\n", " ");
+        let normalized: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
 
         // Check for do-while(0) pattern
-        // Pattern: starts with "do" and ends with "while (0)" or "while(0)"
-        let starts_with_do = cleaned.starts_with("do")
-            && (cleaned.chars().nth(2) == Some('{')
-                || cleaned.chars().nth(2) == Some(' ')
-                || cleaned.chars().nth(2) == Some('\t'));
+        let starts_with_do = normalized.starts_with("do {") || normalized.starts_with("do{");
 
         if !starts_with_do {
             return false;
         }
 
-        // Check if it ends with while (0) or while(0)
-        cleaned.ends_with("while (0)")
-            || cleaned.ends_with("while(0)")
-            || cleaned.ends_with("while ( 0 )")
-            || cleaned.ends_with("while( 0 )")
+        // Accept both with and without trailing semicolon (some macros use `} while(0);`)
+        let endings = [
+            "while ( 0 )",
+            "while(0)",
+            "while (0)",
+            "while( 0 )",
+            "while ( 0 );",
+            "while(0);",
+            "while (0);",
+            "while( 0 );",
+        ];
+        endings.iter().any(|e| normalized.ends_with(e))
     }
 }
