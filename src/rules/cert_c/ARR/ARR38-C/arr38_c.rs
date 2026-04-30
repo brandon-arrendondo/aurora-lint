@@ -2530,13 +2530,13 @@ impl Arr38C {
         if let Some(eq_pos) = text.find('=') {
             // Make sure it's not == or !=
             if eq_pos > 0 {
-                let char_before = text.chars().nth(eq_pos - 1);
+                let char_before = text[..eq_pos].chars().next_back();
                 if char_before == Some('!') || char_before == Some('=') {
                     return None;
                 }
             }
             if text.len() > eq_pos + 1 {
-                let char_after = text.chars().nth(eq_pos + 1);
+                let char_after = text[eq_pos + 1..].chars().next();
                 if char_after == Some('=') {
                     return None;
                 }
