@@ -18,6 +18,7 @@ ehthumbs.db
 Thumbs.db
 
 # SqC specific
+.todo-sqlite-cli
 sqc-results.json
 mcp_servers/remote_hosts.json
 *.log
