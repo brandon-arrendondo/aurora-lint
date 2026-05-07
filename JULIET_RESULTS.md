@@ -699,7 +699,7 @@ Juliet test files contain preprocessor-guarded sections:
 
 - **SqC**: `./target/release/sqc testcases/CWE{id}/ -d testcases/ -d testcasesupport/ --export results.csv`
 - **Parallelism**: Configurable via `JOBS` parameter (default: 12). Each CWE category is scanned as a separate sqc process; `xargs -P $JOBS` controls concurrency
-- **Ground truth analysis**: `scripts/analyze_juliet_results.py`
+- **Ground truth analysis**: `bench/analyzer.py` (via `python -m bench juliet`)
 - **Total runtime**: Captured by MCP benchmark server (`total_duration_seconds` in `get_status()` and `get_results()`). Also logged in `benchmark.log` via per-CWE `START:`/`DONE:` timestamps
 
 ### Limitations
@@ -778,7 +778,6 @@ The analysis script now outputs all rules, and all 16 existing benchmark runs ha
 ## Scripts and Data Locations
 
 ```
-scripts/analyze_juliet_results.py      Ground truth analysis (OMITBAD/OMITGOOD)
 bench/                                 Python benchmark module (python -m bench juliet)
 
 ~/data/benchmarks/juliet-test-suite-c/

@@ -14,15 +14,6 @@ repos:
 
   - repo: local
     hooks:
-      - id: reset-file-permissions
-        name: reset file permissions
-        description: Unlock all files before running checks
-        entry: bash -c 'scripts/work_active_helpers.sh unlock-all 2>&1'
-        language: system
-        pass_filenames: false
-        always_run: true
-        verbose: true
-
       - id: cargo-fmt
         name: cargo fmt (auto-fix)
         description: Format Rust code with rustfmt

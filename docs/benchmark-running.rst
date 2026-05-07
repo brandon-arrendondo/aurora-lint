@@ -35,7 +35,7 @@ Table                    Purpose
 =======================  =============================================================
 
 Historical data from ``JULIET_RESULTS.md`` and ``REALWORLD_RESULTS.md`` has been
-backfilled via ``scripts/backfill_juliet_results.py``.
+backfilled into the database.
 
 Benchmark Workflow Protocol
 ---------------------------
@@ -258,7 +258,7 @@ Issue                                    Solution
 Old results consuming disk               ``clear_results()``
 Results show wrong version               Ensure version bump + commit before build
 SQLite locked                            WAL handles concurrent reads; check for zombies
-Historical run not found                 Run ``scripts/backfill_juliet_results.py``
+Historical run not found                 Data predates SQLite migration; not available
 =======================================  =============================================
 
 Resolved Issues

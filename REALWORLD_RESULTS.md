@@ -39,7 +39,7 @@ MCP-based benchmark infrastructure across 3 hosts (cppcheck 2.10, clang-tidy 21.
 - Scan time correlates with LOC more than file count. sqlite's amalgamated `sqlite3.c` (~250K lines) dominates its scan time despite having fewer files than curl
 - When comparing across machines, record CPU model and core count
 - First-run (cold cache) adds ~50-60% overhead vs warm cache
-- **mosquitto** is used as the CI/CD benchmark target (see `conf/ado_build.yaml`, Benchmark stage). Expected CI time: ~8-12 min on ADO ubuntu-latest agent
+- **mosquitto** is used as the CI/CD benchmark target. Expected CI time: ~8-12 min on a standard CI agent
 
 ### sqc Version History
 

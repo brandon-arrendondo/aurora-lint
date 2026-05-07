@@ -103,10 +103,13 @@ For advanced usage, CI/CD integration details, interactive UI reference, testing
 | File | Contents |
 |------|----------|
 | [Developer Guide](docs/index.rst) | Advanced usage, CI/CD, UI reference, testing, architecture, contributing |
-| [CHANGELOG.md](CHANGELOG.md) | Version history and per-release changes |
 | [JULIET_RESULTS.md](JULIET_RESULTS.md) | Juliet benchmark data: TP/FP history, per-CWE results |
 | [REALWORLD_RESULTS.md](REALWORLD_RESULTS.md) | Real-world results: sqc vs cppcheck vs clang-tidy |
 
+## AI Assistance
+
+This project was developed with assistance from [Claude](https://claude.ai) (Anthropic). Claude was used throughout the development process for code generation, rule implementation, analysis, and documentation.
+
 ## License
 
-MIT OR Apache-2.0
+See [LICENSE](LICENSE).

@@ -9,13 +9,7 @@
 
 **If NOT in a /work-active session, ignore this section.**
 
-When working on proposals from `/work-active` command (implementing CERT C rules), **ALWAYS** use the helper script workflow:
-
-### Setup (Run Once Per Session)
-```bash
-scripts/work_active_helpers.sh verify-precommit
-scripts/work_active_helpers.sh list-proposals SUBDIR
-```
+When working on proposals from `/work-active` command (implementing CERT C rules):
 
 **IMPORTANT: On every continuation (especially after context compaction):**
 - ALWAYS re-read your current active proposal before continuing work
@@ -28,28 +22,11 @@ cat AGENTS/PROPOSALS/ACTIVE/{SELECTED_SUBDIR}/{CURRENT_PROPOSAL}.md
 ```
 
 ### For EACH Rule Implementation
-```bash
-# 1. Lock all files except the specific rule you're implementing
-scripts/work_active_helpers.sh lock-for-impl RULE_ID
 
-# Alternative: Manual mode (specify exact files)
-# scripts/work_active_helpers.sh lock-except \
-#   "src/rules/cert_c/CATEGORY/RULE_ID/rule_id_c.rs" \
-#   "src/rules/cert_c/CATEGORY/RULE_ID/RULE_ID.toml"
-
-# 2. Implement rule (only unlocked files are writable)
-# - Create src/rules/cert_c/CATEGORY/RULE_ID/rule_id_c.rs
-# - IMPORTANT: Do NOT add embedded unit tests (no #[cfg(test)] modules)
-# - Test cases come from .c files in tests/ directory (auto-generated)
-# - Test files are LOCKED (chmod 000) - read test examples from proposal markdown
-
-# 3. Unlock before registration in mod.rs
-scripts/work_active_helpers.sh unlock-all
-
-# 4. Register in mod.rs and enable in TOML
-# 5. Build and test
-# 6. Commit and move proposal to STAGED
-```
+1. Create `src/rules/cert_c/CATEGORY/RULE_ID/rule_id_c.rs`
+2. Register in `mod.rs` and enable in the TOML
+3. Build and test
+4. Commit and move proposal to STAGED
 
 ### Implementation Rules (CRITICAL)
 
@@ -63,26 +40,6 @@ scripts/work_active_helpers.sh unlock-all
 - Embedded tests are redundant (same stub pattern with different hardcoded C)
 - Poor separation of responsibilities (implementation vs. testing)
 - Test infrastructure auto-generates tests from `.c` files
-
-### Key Commands
-- `lock-for-impl RULE_ID` - Lock all except rule implementation (tests LOCKED)
-- `lock-for-test RULE_ID` - Lock all except rule test files (impl LOCKED)
-- `lock-except FILE1 FILE2...` - Manual mode: lock all except specified files
-- `unlock-all` - Restore write permissions in configured dirs
-- `extract-rule-id FILE` - Get rule ID from proposal filename
-
-### Lock Configuration
-- Lock scope configured in `.claude/lock-list.yaml`
-- Default: locks all files in `src/` directory
-- Exclusions: `.git/`, `target/`, `tmp/`, `scripts/`
-- Test files are LOCKED during implementation (chmod 000 - no read or write)
-- Get test case context from proposal markdown, NOT from locked test files
-
-### Why This Matters
-- Prevents accidental modifications to test files and shared infrastructure
-- Enforces single-rule focus through file-level access control
-- Maintains code isolation during development
-- chmod 000 protection blocks even AI tools from modifying locked files
 
 **If this workflow wasn't followed earlier in the session, start following it NOW.**
 
@@ -223,8 +180,7 @@ SQLite first, falling back to legacy text files for old runs. 46 Juliet runs
 This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 `.todo-sqlite-cli` marker at the repo root.
 
-**Before planning or coding, ask the DB — do not read PLAN.md for tasks
-(PLAN.md only holds the benchmark/competitor header summary):**
+**Before planning or coding, ask the DB:**
 
 - `todo-sqlite-cli next` — the single task to work on right now.
 - `todo-sqlite-cli list` — all active (in-progress + pending), in-progress
@@ -240,7 +196,7 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 (1 = highest). `--depends-on <id>` links prerequisites; tasks with unmet
 deps are skipped by `next` and shown `[blocked]` in `list`.
 
-Original PLAN.md task IDs (prior to the 2026-04-20 import) are preserved
+Original task IDs (prior to the 2026-04-20 import) are preserved
 as `plan-id:NN` tags; CLI IDs are independent AUTOINCREMENT integers.
 
 **Release history** also lives in the DB — each CHANGELOG entry is a
@@ -257,7 +213,6 @@ Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
 | File | Contents |
 |------|----------|
 | `README.md` | Tool overview, installation, usage, CLI reference |
-| `PLAN.md` | Benchmark/competitor header summary. Tasks live in `todo-sqlite-cli.db` — see Task tracking section above. |
 | `JULIET_RESULTS.md` | Juliet benchmark data by sqc version |
 | `REALWORLD_RESULTS.md` | Real-world codebase results (5 projects × 3 tools) |
 | `docs/index.rst` | Developer guide: advanced usage, CI/CD, benchmarks, testing, contributing |
