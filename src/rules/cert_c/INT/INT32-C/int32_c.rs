@@ -1671,6 +1671,18 @@ impl Int32C {
             }
         }
 
+        // ALL_CAPS identifiers (including those with digits/underscores) are macros whose
+        // type cannot be determined without macro expansion. Hardware register addresses
+        // (e.g., AFE_INT_EN) look like signed integer literals to the type inference but
+        // are actually pointer-width constants. Treat as not_applicable to avoid FPs.
+        if !text.is_empty()
+            && text
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            return "not_applicable".to_string();
+        }
+
         // Variable names that suggest unsigned integers
         if text.starts_with("u") || text.contains("size") || text.contains("len") {
             return "unsigned".to_string();
@@ -1748,6 +1760,7 @@ impl Int32C {
             || type_str.contains("uint")
             || type_str.starts_with("unsigned ")
             || type_str == "SIZE_MAX"
+            || is_short_unsigned_typedef(type_str)
     }
 
     fn could_be_int_min(&self, node: &Node, source: &str) -> bool {
@@ -2589,4 +2602,10 @@ fn is_simple_c_identifier(s: &str) -> bool {
             .next()
             .is_some_and(|c| c.is_alphabetic() || c == '_')
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Recognizes common short unsigned typedef names: u8, u16, u32, u64, u128.
+/// These are MCU/embedded typedefs not caught by the "uint" substring check.
+fn is_short_unsigned_typedef(s: &str) -> bool {
+    matches!(s, "u8" | "u16" | "u32" | "u64" | "u128")
 }

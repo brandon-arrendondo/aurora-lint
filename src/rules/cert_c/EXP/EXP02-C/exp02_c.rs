@@ -81,6 +81,13 @@ impl Exp02C {
                             {
                                 return;
                             }
+                            // Also exempt: guard && (--countdown) — intentional hardware
+                            // busy-wait countdown pattern, e.g. (reg & mask) && (--timeout)
+                            if self.is_guard_pattern(&left, source)
+                                && Self::is_simple_decrement(&right)
+                            {
+                                return;
+                            }
                         }
 
                         // Check if the right operand has side effects
@@ -129,6 +136,10 @@ impl Exp02C {
                 if let Some(op) = node.child_by_field_name("operator") {
                     let op_text = get_node_text(&op, source);
                     if matches!(op_text, "==" | "!=" | "<" | ">" | "<=" | ">=") {
+                        return true;
+                    }
+                    // Bitwise AND/OR/XOR: (reg & mask) is a flag/condition test
+                    if matches!(op_text, "&" | "|" | "^") {
                         return true;
                     }
                     if matches!(op_text, "&&" | "||") {
@@ -182,6 +193,36 @@ impl Exp02C {
             }
         }
         false
+    }
+
+    /// Returns true if `node` is a simple pre/post decrement of a single identifier:
+    /// `--var`, `var--`, or parenthesized forms. Used to detect countdown patterns like
+    /// `(hardware_flag) && (--timeout)` which are intentional and not EXP02-C violations.
+    fn is_simple_decrement(node: &Node) -> bool {
+        match node.kind() {
+            "update_expression" => {
+                // Tree-sitter-c: update_expression has an "argument" field (the operand)
+                // and a fixed-position operator child (++ or --)
+                if let Some(arg) = node.child_by_field_name("argument") {
+                    // Check operator is --
+                    let is_decrement = (0..node.child_count())
+                        .any(|i| node.child(i).map(|c| c.kind() == "--").unwrap_or(false));
+                    return is_decrement && arg.kind() == "identifier";
+                }
+                false
+            }
+            "parenthesized_expression" => {
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if !matches!(child.kind(), "(" | ")") {
+                            return Self::is_simple_decrement(&child);
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
     }
 
     /// Check if a call_expression is used as a getter in a field access pattern:

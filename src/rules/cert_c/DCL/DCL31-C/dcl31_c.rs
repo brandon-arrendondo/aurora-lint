@@ -184,6 +184,13 @@ impl Dcl31C {
                     return;
                 }
 
+                // Names starting with '_' are compiler/implementation-defined intrinsics
+                // (e.g., _nop(), _clrwdt() on Holtek MCUs). We cannot know their
+                // declarations without vendor headers, so skip them.
+                if func_name.starts_with('_') {
+                    return;
+                }
+
                 // Skip known standard library functions unconditionally.
                 // Tree-sitter cannot follow #include directives, so header-aware
                 // checking produces FPs whenever headers are included transitively.
@@ -294,8 +301,8 @@ impl CertRule for Dcl31C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         let mut funcs = context.known_functions.clone();
-        // Macro aliases (#define ALIAS target) define valid call targets —
-        // ALIAS(...) is a macro invocation, not an undeclared function.
+        // Header-declared functions (extern prototypes in .h files) are valid targets.
+        funcs.extend(context.header_declared_functions.clone());
         for alias_name in context.macro_aliases.keys() {
             funcs.insert(alias_name.clone());
         }

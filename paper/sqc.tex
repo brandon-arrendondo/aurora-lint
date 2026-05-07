@@ -302,6 +302,24 @@ matchers (e.g., MSC24-C: obsolete function detection) to complex
 multi-pass analyzers (e.g., EXP34-C: null dereference detection
 using CFG-based dataflow with inter-procedural call-site propagation).
 
+\textbf{UTF-8 source encoding.}  Tree-sitter represents all source
+positions as byte offsets into the raw UTF-8 source file.  Industrial
+C codebases routinely embed non-ASCII content in comments and string
+literals: comments written in Chinese, Japanese, Arabic, Cyrillic, or
+other scripts are common in embedded and international software
+projects.  Rule implementations that inspect raw source text must
+therefore use byte-indexed string operations throughout.
+Character-counted indices produce incorrect slices---or runtime panics
+in languages with strict Unicode safety---when a multi-byte sequence
+falls before a slice boundary.  For example, a Chinese full-width
+parenthesis (\texttt{U+FF08}, three UTF-8 bytes) encountered during
+real-world analysis triggered a panic in the ARR00-C and PRE02-C
+checkers, both of which were using \texttt{chars().enumerate()} indices
+(character positions) as byte offsets.  SqC enforces the requirement
+for byte-safe slicing through \texttt{char\_indices()}-based iteration
+and includes UTF-8 regression test cases in each affected rule's test
+suite.
+
 \subsection{Standard Function Database}
 \label{sec:stdlib-db}
 
@@ -366,6 +384,16 @@ hostap & 504 & 539,617 & \texttt{dcee604} \\
 \caption{Real-world benchmark codebases.}
 \label{tab:realworld-codebases}
 \end{table}
+
+Real-world analysis revealed a robustness requirement absent from the
+Juliet benchmark: industrial embedded codebases frequently contain
+comments written in non-Latin scripts.  Running SqC against a battery
+management system codebase with Chinese-language function comments
+uncovered a latent crash in three rule checkers caused by unsafe
+UTF-8 string slicing (\cref{sec:architecture}).  The Juliet test suite
+contains only ASCII source, so this class of defect is invisible to
+benchmark-only validation; it surfaced exclusively through real-world
+deployment.
 
 An important caveat for interpreting the cross-tool results: SqC
 implements 290 rules while cppcheck and clang-tidy implement

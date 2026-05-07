@@ -64,16 +64,9 @@ impl Mem05C {
 
         // Check for recursive functions (potential stack overflow)
         if node.kind() == "function_definition" {
-            let text = node.utf8_text(source.as_bytes()).unwrap_or("");
-
-            // Extract function name from declaration
             if let Some(func_name) = self.extract_function_name(node, source) {
-                // Check if function calls itself (simple recursion detection).
-                // Use word-boundary matching to avoid matching substrings
-                // (e.g., pthread_mutex_init contains mutex_init).
-                let call_count = Self::count_word_matches(text, &func_name);
-                if call_count > 1 {
-                    if true {
+                if let Some(body) = node.child_by_field_name("body") {
+                    if Self::body_calls_function(&body, source, &func_name) {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             severity: self.severity(),
@@ -97,6 +90,27 @@ impl Mem05C {
         for child in node.children(&mut cursor) {
             self.check_node(&child, source, violations);
         }
+    }
+
+    /// Returns true if `body` (a compound_statement) contains a direct call to `func_name`.
+    /// Uses AST traversal of call_expression nodes to avoid matching occurrences in
+    /// string literals, comments, or the function's own declaration.
+    fn body_calls_function(node: &Node, source: &str, func_name: &str) -> bool {
+        if node.kind() == "call_expression" {
+            if let Some(function) = node.child_by_field_name("function") {
+                let callee = function.utf8_text(source.as_bytes()).unwrap_or("");
+                if callee == func_name {
+                    return true;
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if Self::body_calls_function(&child, source, func_name) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Check if a size expression is likely a preprocessor macro constant.
@@ -156,30 +170,6 @@ impl Mem05C {
                 .chars()
                 .next()
                 .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
-    }
-
-    /// Count word-boundary matches of `word` followed by `(` in `text`.
-    /// A word boundary means the character before the match (if any) is not
-    /// alphanumeric or underscore.
-    fn count_word_matches(text: &str, word: &str) -> usize {
-        let pattern = format!("{}(", word);
-        let mut count = 0;
-        let mut search_start = 0;
-        while let Some(pos) = text[search_start..].find(&pattern) {
-            let abs_pos = search_start + pos;
-            // Check word boundary: char before match must not be alphanumeric/_
-            let is_word_boundary = if abs_pos == 0 {
-                true
-            } else {
-                let prev = text.as_bytes()[abs_pos - 1];
-                !(prev.is_ascii_alphanumeric() || prev == b'_')
-            };
-            if is_word_boundary {
-                count += 1;
-            }
-            search_start = abs_pos + pattern.len();
-        }
-        count
     }
 
     fn extract_function_name(&self, node: &Node, source: &str) -> Option<String> {
