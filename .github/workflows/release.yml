@@ -33,7 +33,7 @@ jobs:
           mkdir -p dist
           cp target/release/sqc dist/
           cp docs/sqc.1 dist/
-          cp README.md LICENSE dist/ 2>/dev/null || true
+          cp README.md LICENSE dist/
           tar -czf sqc-linux-x86_64.tar.gz -C dist .
 
       - uses: actions/upload-artifact@v4
@@ -41,28 +41,33 @@ jobs:
           name: sqc-linux-x86_64
           path: sqc-linux-x86_64.tar.gz
 
-  # ── Windows x86_64 binary ───────────────────────────────────────────
+  # ── Windows x86_64 binary (cross-compiled from Linux) ──────────────
+  # NOTE: src/rules/cert_c/CON/ is a Windows reserved device name — native
+  # Windows runners cannot check out the repo. Cross-compile instead.
   windows:
     name: Windows x86_64
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
-        run: cargo build --release
+      - name: Install MinGW cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Build Windows binary
+        run: cargo build --release --target x86_64-pc-windows-gnu
 
       - name: Package zip
-        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target\release\sqc.exe -Destination dist\
-          Copy-Item README.md -Destination dist\ -ErrorAction SilentlyContinue
-          Copy-Item LICENSE -Destination dist\ -ErrorAction SilentlyContinue
-          Compress-Archive -Path dist\* -DestinationPath sqc-windows-x86_64.zip
+          mkdir -p dist
+          cp target/x86_64-pc-windows-gnu/release/sqc.exe dist/
+          cp README.md LICENSE dist/ 2>/dev/null || true
+          cd dist && zip -r ../sqc-windows-x86_64.zip .
 
       - uses: actions/upload-artifact@v4
         with:
