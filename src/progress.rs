@@ -69,7 +69,10 @@ impl CLIProgressReporter {
 
     /// Clear the current line
     fn clear_line(&self) {
-        let last_len = *self.last_line_length.lock().unwrap();
+        let last_len = *self
+            .last_line_length
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if last_len > 0 {
             print!("\r{}\r", " ".repeat(last_len));
             io::stdout().flush().unwrap_or(());
@@ -77,7 +80,10 @@ impl CLIProgressReporter {
     }
 
     fn write_progress(&self, message: &str) {
-        *self.last_line_length.lock().unwrap() = message.len();
+        *self
+            .last_line_length
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = message.len();
         print!("\r{}", message);
         io::stdout().flush().unwrap_or(());
     }
@@ -133,7 +139,7 @@ impl ProgressReporter for CLIProgressReporter {
             self.write_progress(&message);
         } else {
             // Default: per-file progress bar — only update when file changes
-            let mut last = self.last_file.lock().unwrap();
+            let mut last = self.last_file.lock().unwrap_or_else(|e| e.into_inner());
             if *last != current {
                 *last = current;
                 drop(last); // release before I/O
@@ -199,20 +205,28 @@ impl GUIProgressReporter {
     /// Get current progress state for display
     #[allow(dead_code)]
     pub fn get_state(&self) -> (usize, usize, String, String) {
-        let current = *self.current_file.lock().unwrap();
-        let total = *self.total_files.lock().unwrap();
-        let file = self.file_path.lock().unwrap().clone();
-        let rule = self.rule_id.lock().unwrap().clone();
+        let current = *self.current_file.lock().unwrap_or_else(|e| e.into_inner());
+        let total = *self.total_files.lock().unwrap_or_else(|e| e.into_inner());
+        let file = self
+            .file_path
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let rule = self
+            .rule_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         (current, total, file, rule)
     }
 }
 
 impl ProgressReporter for GUIProgressReporter {
     fn report_file(&self, current: usize, total: usize, file_path: &str, rule_id: &str) {
-        *self.current_file.lock().unwrap() = current;
-        *self.total_files.lock().unwrap() = total;
-        *self.file_path.lock().unwrap() = file_path.to_string();
-        *self.rule_id.lock().unwrap() = rule_id.to_string();
+        *self.current_file.lock().unwrap_or_else(|e| e.into_inner()) = current;
+        *self.total_files.lock().unwrap_or_else(|e| e.into_inner()) = total;
+        *self.file_path.lock().unwrap_or_else(|e| e.into_inner()) = file_path.to_string();
+        *self.rule_id.lock().unwrap_or_else(|e| e.into_inner()) = rule_id.to_string();
     }
 
     fn report_complete(&self, _total_violations: usize) {

@@ -25,7 +25,7 @@ struct TestResult {
 
 // Record a test result
 pub fn record_test_result(test_name: &str, passed: bool, expected_to_fail: bool) {
-    let mut results = TEST_RESULTS.lock().unwrap();
+    let mut results = TEST_RESULTS.lock().unwrap_or_else(|e| e.into_inner());
     results.insert(
         test_name.to_string(),
         TestResult {
@@ -127,7 +127,7 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
             let mut fail_tests = Vec::new();
             let mut pass_tests = Vec::new();
 
-            let results = TEST_RESULTS.lock().unwrap();
+            let results = TEST_RESULTS.lock().unwrap_or_else(|e| e.into_inner());
 
             if tests_dir.exists() {
                 let fail_dir = tests_dir.join("fail");
