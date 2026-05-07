@@ -50,6 +50,9 @@ impl CertRule for Mem30C {
 struct GlobalTracker {
     /// Global variable declarations
     global_vars: HashSet<String>,
+    /// Subset of global_vars that are pointer or array types — only these can hold
+    /// stack addresses, so stack-escape checks are gated on this set.
+    global_pointer_vars: HashSet<String>,
     /// Functions that free specific global variables: function_name -> freed_globals
     functions_that_free: HashMap<String, HashSet<String>>,
     /// Functions that access specific global variables: function_name -> accessed_globals
@@ -74,6 +77,7 @@ impl GlobalTracker {
     fn new() -> Self {
         Self {
             global_vars: HashSet::new(),
+            global_pointer_vars: HashSet::new(),
             functions_that_free: HashMap::new(),
             functions_that_access: HashMap::new(),
             stack_escape_violations: Vec::new(),
@@ -108,14 +112,31 @@ impl GlobalTracker {
     fn extract_global_declarations(&mut self, node: &Node, source: &str) {
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" || child.kind() == "pointer_declarator" {
+                if child.kind() == "pointer_declarator" {
                     let name = self.extract_declarator_name(&child, source);
                     if !name.is_empty() {
-                        self.global_vars.insert(name);
+                        self.global_vars.insert(name.clone());
+                        self.global_pointer_vars.insert(name);
+                    }
+                } else if child.kind() == "init_declarator" {
+                    let name = self.extract_declarator_name(&child, source);
+                    if !name.is_empty() {
+                        self.global_vars.insert(name.clone());
+                        // init_declarator contains a pointer_declarator if declared as pointer
+                        if declarator_contains_pointer_or_array(&child) {
+                            self.global_pointer_vars.insert(name);
+                        }
+                    }
+                } else if child.kind() == "array_declarator" {
+                    let name = self.extract_declarator_name(&child, source);
+                    if !name.is_empty() {
+                        self.global_vars.insert(name.clone());
+                        self.global_pointer_vars.insert(name);
                     }
                 } else if child.kind() == "identifier" {
                     let name = get_node_text(&child, source).to_string();
                     self.global_vars.insert(name);
+                    // plain identifier declarator → scalar, not a pointer
                 }
             }
         }
@@ -472,7 +493,9 @@ impl GlobalTracker {
                 // Check for VLA/stack pointer escape to global
                 if let Some(left) = node.child_by_field_name("left") {
                     let left_var = self.extract_base_variable(&left, source);
-                    if self.global_vars.contains(&left_var) {
+                    // Only pointer/array globals can actually hold a stack address;
+                    // scalar integer globals (u8/u16/u32 counters, state vars, etc.) cannot.
+                    if self.global_pointer_vars.contains(&left_var) {
                         // Check if right side is a local array/VLA
                         if let Some(right) = node.child_by_field_name("right") {
                             if self.is_local_array_or_vla(&right, source, params, func_name) {
@@ -2356,4 +2379,23 @@ impl MemoryAnalyzer {
             }
         }
     }
+}
+
+/// Returns true if the declarator node (e.g., an init_declarator) contains a
+/// pointer_declarator or array_declarator child, meaning the variable is a
+/// pointer or array rather than a scalar integer.
+fn declarator_contains_pointer_or_array(node: &tree_sitter::Node) -> bool {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "pointer_declarator" | "array_declarator" => return true,
+                _ => {
+                    if declarator_contains_pointer_or_array(&child) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
