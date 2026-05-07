@@ -1,0 +1,304 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Linux x86_64 binary ─────────────────────────────────────────────
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev libgtk-3-dev
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          cp target/release/sqc dist/
+          cp docs/sqc.1 dist/
+          cp README.md LICENSE dist/ 2>/dev/null || true
+          tar -czf sqc-linux-x86_64.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sqc-linux-x86_64
+          path: sqc-linux-x86_64.tar.gz
+
+  # ── Windows x86_64 binary ───────────────────────────────────────────
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\release\sqc.exe -Destination dist\
+          Copy-Item README.md -Destination dist\ -ErrorAction SilentlyContinue
+          Copy-Item LICENSE -Destination dist\ -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist\* -DestinationPath sqc-windows-x86_64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sqc-windows-x86_64
+          path: sqc-windows-x86_64.zip
+
+  # ── Debian package ──────────────────────────────────────────────────
+  deb:
+    name: Debian package
+    runs-on: ubuntu-latest
+    needs: linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sqc-linux-x86_64
+          path: .
+
+      - name: Extract tarball
+        run: mkdir -p dist && tar -xzf sqc-linux-x86_64.tar.gz -C dist
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build .deb
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          PKG_DIR="sqc_${VERSION}_amd64"
+          mkdir -p "${PKG_DIR}/DEBIAN" \
+                   "${PKG_DIR}/usr/bin" \
+                   "${PKG_DIR}/usr/share/man/man1" \
+                   "${PKG_DIR}/usr/share/doc/sqc"
+
+          cat > "${PKG_DIR}/DEBIAN/control" << EOF
+          Package: sqc
+          Version: ${VERSION}
+          Section: devel
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Brandon Arrendondo <brandon@arrendondo.dev>
+          Homepage: https://github.com/brandon-arrendondo/tools_sqc
+          Description: CERT C compliance checker
+           Software Code Quality (sqc) is a fast CERT C static analyzer
+           built on tree-sitter for accurate C language analysis.
+          EOF
+          sed -i 's/^          //' "${PKG_DIR}/DEBIAN/control"
+
+          cp dist/sqc "${PKG_DIR}/usr/bin/"
+          chmod 755 "${PKG_DIR}/usr/bin/sqc"
+          gzip -c dist/sqc.1 > "${PKG_DIR}/usr/share/man/man1/sqc.1.gz"
+          cp README.md "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
+          cp LICENSE "${PKG_DIR}/usr/share/doc/sqc/copyright" 2>/dev/null || true
+
+          dpkg-deb --build --root-owner-group "${PKG_DIR}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sqc-deb
+          path: sqc_*.deb
+
+  # ── RPM package ─────────────────────────────────────────────────────
+  rpm:
+    name: RPM package
+    runs-on: ubuntu-latest
+    needs: linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rpm tools
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sqc-linux-x86_64
+          path: .
+
+      - name: Extract tarball
+        run: mkdir -p dist && tar -xzf sqc-linux-x86_64.tar.gz -C dist
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build .rpm
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+          TARDIR="sqc-${VERSION}"
+          mkdir -p "${TARDIR}/bin" "${TARDIR}/man" "${TARDIR}/doc"
+          cp dist/sqc "${TARDIR}/bin/"
+          cp dist/sqc.1 "${TARDIR}/man/"
+          cp README.md "${TARDIR}/doc/" 2>/dev/null || true
+          cp LICENSE "${TARDIR}/doc/" 2>/dev/null || true
+          tar -czf "rpmbuild/SOURCES/sqc-${VERSION}.tar.gz" "${TARDIR}"
+          rm -rf "${TARDIR}"
+
+          cat > rpmbuild/SPECS/sqc.spec << 'SPEC_EOF'
+          Name:           sqc
+          Version:        VERSION_PLACEHOLDER
+          Release:        1%{?dist}
+          Summary:        CERT C compliance checker
+          License:        MIT
+          URL:            https://github.com/brandon-arrendondo/tools_sqc
+          Source0:        %{name}-%{version}.tar.gz
+
+          %description
+          Software Code Quality (sqc) is a fast CERT C static analyzer
+          built on tree-sitter for accurate C language analysis.
+
+          %prep
+          %setup -q
+
+          %install
+          mkdir -p %{buildroot}%{_bindir}
+          mkdir -p %{buildroot}%{_mandir}/man1
+          mkdir -p %{buildroot}%{_docdir}/%{name}
+          install -m 755 bin/sqc %{buildroot}%{_bindir}/sqc
+          install -m 644 man/sqc.1 %{buildroot}%{_mandir}/man1/sqc.1
+          install -m 644 doc/README.md %{buildroot}%{_docdir}/%{name}/README.md
+          install -m 644 doc/LICENSE %{buildroot}%{_docdir}/%{name}/LICENSE
+
+          %files
+          %{_bindir}/sqc
+          %{_mandir}/man1/sqc.1*
+          %doc %{_docdir}/%{name}/README.md
+          %license %{_docdir}/%{name}/LICENSE
+          SPEC_EOF
+
+          sed -i 's/^          //' rpmbuild/SPECS/sqc.spec
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/" rpmbuild/SPECS/sqc.spec
+          rpmbuild --define "_topdir $(pwd)/rpmbuild" -bb rpmbuild/SPECS/sqc.spec
+          cp rpmbuild/RPMS/x86_64/sqc-*.rpm .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sqc-rpm
+          path: sqc-*.rpm
+
+  # ── AppImage ────────────────────────────────────────────────────────
+  appimage:
+    name: AppImage
+    runs-on: ubuntu-latest
+    needs: linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FUSE
+        run: sudo apt-get update && sudo apt-get install -y libfuse2
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sqc-linux-x86_64
+          path: .
+
+      - name: Extract tarball
+        run: mkdir -p dist && tar -xzf sqc-linux-x86_64.tar.gz -C dist
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download appimagetool
+        run: |
+          curl -Lo appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+
+      - name: Create AppDir
+        run: |
+          APPDIR="sqc.AppDir"
+          mkdir -p "${APPDIR}/usr/bin" \
+                   "${APPDIR}/usr/share/man/man1" \
+                   "${APPDIR}/usr/share/doc/sqc" \
+                   "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
+
+          cp dist/sqc "${APPDIR}/usr/bin/"
+          chmod 755 "${APPDIR}/usr/bin/sqc"
+          cp dist/sqc.1 "${APPDIR}/usr/share/man/man1/"
+          cp LICENSE "${APPDIR}/usr/share/doc/sqc/" 2>/dev/null || true
+          cp assets/icon.png "${APPDIR}/sqc.png"
+          cp assets/icon.png "${APPDIR}/usr/share/icons/hicolor/256x256/apps/sqc.png"
+
+          cat > "${APPDIR}/sqc.desktop" << 'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=sqc
+          Exec=sqc
+          Icon=sqc
+          Comment=CERT C compliance checker
+          Categories=Development;
+          Terminal=true
+          NoDisplay=true
+          DESKTOP
+
+          cat > "${APPDIR}/AppRun" << 'APPRUN'
+          #!/bin/bash
+          HERE=$(dirname "$(readlink -f "$0")")
+          export PATH="${HERE}/usr/bin:${PATH}"
+          exec "${HERE}/usr/bin/sqc" "$@"
+          APPRUN
+          chmod +x "${APPDIR}/AppRun"
+
+      - name: Build AppImage
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          ARCH=x86_64 ./appimagetool sqc.AppDir "sqc-${VERSION}-x86_64.AppImage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sqc-appimage
+          path: sqc-*.AppImage
+
+  # ── GitHub Release ──────────────────────────────────────────────────
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [linux, windows, deb, rpm, appimage]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/sqc-linux-x86_64/*.tar.gz
+            artifacts/sqc-windows-x86_64/*.zip
+            artifacts/sqc-deb/*.deb
+            artifacts/sqc-rpm/*.rpm
+            artifacts/sqc-appimage/*.AppImage
