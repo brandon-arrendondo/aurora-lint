@@ -1,117 +1,5 @@
 # Claude Code Project Instructions
 
-## /work-active Workflow (CONDITIONAL)
-
-**ONLY follow this workflow IF:**
-- Current git branch matches pattern `claude-work-active-*` (check with `git branch --show-current`)
-- OR you're explicitly working on proposals from `AGENTS/PROPOSALS/ACTIVE/`
-- OR the user invoked `/work-active` earlier in this session
-
-**If NOT in a /work-active session, ignore this section.**
-
-When working on proposals from `/work-active` command (implementing CERT C rules):
-
-**IMPORTANT: On every continuation (especially after context compaction):**
-- ALWAYS re-read your current active proposal before continuing work
-- Verify you're following the Implementation Constraints section
-- Check Implementation Log to see what's already been completed
-
-```bash
-# Re-read current proposal (replace with actual file path)
-cat AGENTS/PROPOSALS/ACTIVE/{SELECTED_SUBDIR}/{CURRENT_PROPOSAL}.md
-```
-
-### For EACH Rule Implementation
-
-1. Create `src/rules/cert_c/CATEGORY/RULE_ID/rule_id_c.rs`
-2. Register in `mod.rs` and enable in the TOML
-3. Build and test
-4. Commit and move proposal to STAGED
-
-### Implementation Rules (CRITICAL)
-
-**NEVER add embedded unit tests in rule implementation files:**
-- ❌ NO `#[cfg(test)]` modules in `src/rules/cert_c/*/*/*.rs` files
-- ❌ NO inline test functions with hardcoded C code snippets
-- ✅ Test cases come from `.c` files in `tests/` directory (auto-generated into Rust tests)
-- ✅ If no test cases exist for a rule, implement WITHOUT tests (this is acceptable)
-
-**Why:**
-- Embedded tests are redundant (same stub pattern with different hardcoded C)
-- Poor separation of responsibilities (implementation vs. testing)
-- Test infrastructure auto-generates tests from `.c` files
-
-**If this workflow wasn't followed earlier in the session, start following it NOW.**
-
----
-
-## /gather-opinions Workflow (CONDITIONAL)
-
-**ONLY follow this workflow IF:**
-- Current git branch matches pattern `opinions/*` (check with `git branch --show-current`)
-- OR the user invoked `/gather-opinions` earlier in this session
-
-**If NOT in a /gather-opinions session, ignore this section.**
-
-### Branch Name Format
-```
-opinions/{persona-slug}-{reviewer}-{date}
-```
-
-### On Every Continuation (CRITICAL - After Context Compaction)
-
-**Step 1: Detect workflow from branch name**
-```bash
-git branch --show-current
-# If matches opinions/*, you are in /gather-opinions workflow
-```
-
-**Step 2: Extract persona from branch and re-read persona file**
-```bash
-# Parse persona slug from branch name (between opinions/ and reviewer name)
-# Then read the matching persona file from AGENTS/PERSONAS/
-cat AGENTS/PERSONAS/{matching-persona}.md
-```
-
-**Step 3: Re-read the workflow definition (source of truth)**
-```bash
-cat .claude/commands/gather-opinions.md
-```
-
-**Step 4: Check TodoWrite state for current progress**
-- The TodoWrite tool persists across compaction
-- Expect exactly 6 todos:
-
-  *Workflow steps for current proposal:*
-  1. "LOCK + Read proposal {PROPOSAL}" - `in_progress` or `completed`
-  2. "Read ALL related_files for {RULE_ID}" - `pending`, `in_progress`, or `completed`
-  3. "Form opinion on {PROPOSAL}" - `pending`, `in_progress`, or `completed`
-  4. "Record + commit + UNLOCK {PROPOSAL}" - `pending` or `in_progress`
-
-  *Tracking:*
-  5. "Next: {NEXT_PROPOSAL}" - `pending`
-  6. "Progress: N/TOTAL reviewed" - `in_progress`
-
-- **⚠️ Do NOT modify this structure or batch proposals** - it enables recovery
-- Resume from whichever workflow step (1-4) is `in_progress`
-- If todos have deviated from this structure, reset to correct format before continuing
-- **CRITICAL:** Step 2 requires reading ALL files in `related_files` frontmatter - no skipping
-
-**Anti-pattern to watch for:** If Claude starts batching proposals or modifying the 6-todo structure for "efficiency," this BREAKS the workflow. The number of proposals is irrelevant - never batch, regardless of scale.
-
-**Step 5: Continue the workflow as defined in gather-opinions.md**
-
-### Why This Matters
-
-- Branch name encoding enables workflow recovery after compaction
-- Re-reading persona file ensures consistent analysis perspective
-- gather-opinions.md is the single source of truth for workflow steps
-- TodoWrite tracking ensures no proposals are skipped across compactions
-
-**If this workflow wasn't followed earlier in the session, start following it NOW.**
-
----
-
 ## Benchmark Workflow (CRITICAL)
 
 See `docs/index.rst` (Benchmark Setup / Running Benchmarks sections) for full MCP server tool reference and troubleshooting.
@@ -228,8 +116,6 @@ Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
 - `data/` - Benchmark database (benchmarks.db), prescan caches
 - `scripts/` - Workflow helpers, coverage gate
 - `docs/` - Developer guide (index.rst), bibliography
-- `AGENTS/PROPOSALS/ACTIVE/` - Proposals to implement
-- `AGENTS/PROPOSALS/STAGED/` - Completed proposals
 
 ## Build & Test
 
@@ -239,6 +125,19 @@ cargo test --package sqc --lib -- rules::cert_c::RULE_ID::tests  # inline unit t
 cargo test --package sqc --lib -- RULE_ID  # all tests (inline + generated from .c files)
 cargo fmt
 ```
+
+## Rule Implementation
+
+**NEVER add embedded unit tests in rule implementation files:**
+- ❌ NO `#[cfg(test)]` modules in `src/rules/cert_c/*/*/*.rs` files
+- ❌ NO inline test functions with hardcoded C code snippets
+- ✅ Test cases come from `.c` files in `tests/` directory (auto-generated into Rust tests)
+- ✅ If no test cases exist for a rule, implement WITHOUT tests (this is acceptable)
+
+For each new rule:
+1. Create `src/rules/cert_c/CATEGORY/RULE_ID/rule_id_c.rs`
+2. Register in `mod.rs` and enable in the TOML
+3. Build and test
 
 ## Git Commit Rules (CRITICAL)
 
@@ -251,12 +150,3 @@ cargo fmt
 - All pre-commit hooks must pass before commit succeeds
 - If hooks fail, FIX the underlying issue (don't bypass)
 - Standard commit message format without AI attribution
-
-**Example Commit:**
-```bash
-git add files...
-git commit -m "P2-RULE-ID: Implementation complete
-
-- Brief description of changes
-- Test results"
-```
