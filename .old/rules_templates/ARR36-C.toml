@@ -1,8 +1,0 @@
-[metadata]
-name = "ARR36-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for ARR36-C: Do not subtract or compare two pointers that do not refer to the same array"
-cert_version = "2016"
-
-[rules.cert_c.ARR36-C]
-enabled = true

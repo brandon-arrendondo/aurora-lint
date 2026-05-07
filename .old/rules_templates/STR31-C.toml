@@ -1,8 +1,0 @@
-[metadata]
-name = "STR31-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for STR31-C: Guarantee that storage for strings has sufficient space for character data and the null terminator"
-cert_version = "2016"
-
-[rules.cert_c.STR31-C]
-enabled = true

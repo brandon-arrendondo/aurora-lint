@@ -1,8 +1,0 @@
-[metadata]
-name = "DCL00-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for DCL00-C: Const-qualify immutable objects"
-cert_version = "2016"
-
-[rules.cert_c.DCL00-C]
-enabled = true

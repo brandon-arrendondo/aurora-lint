@@ -1,8 +1,0 @@
-[metadata]
-name = "ARR38-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for ARR38-C: Guarantee that library functions do not form invalid pointers"
-cert_version = "2016"
-
-[rules.cert_c.ARR38-C]
-enabled = true

@@ -1,8 +1,0 @@
-[metadata]
-name = "EXP34-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for EXP34-C: Do not dereference null pointers"
-cert_version = "2016"
-
-[rules.cert_c.EXP34-C]
-enabled = true

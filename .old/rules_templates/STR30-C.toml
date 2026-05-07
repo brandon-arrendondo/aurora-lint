@@ -1,8 +1,0 @@
-[metadata]
-name = "STR30-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for STR30-C: Do not attempt to modify string literals"
-cert_version = "2016"
-
-[rules.cert_c.STR30-C]
-enabled = true

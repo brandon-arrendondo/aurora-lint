@@ -1,8 +1,0 @@
-[metadata]
-name = "MSC00-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for MSC00-C: Compile cleanly at high warning levels"
-cert_version = "2016"
-
-[rules.cert_c.MSC00-C]
-enabled = false

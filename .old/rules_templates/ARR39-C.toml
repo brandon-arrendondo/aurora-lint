@@ -1,8 +1,0 @@
-[metadata]
-name = "ARR39-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for ARR39-C: Do not add or subtract a scaled integer to a pointer"
-cert_version = "2016"
-
-[rules.cert_c.ARR39-C]
-enabled = true

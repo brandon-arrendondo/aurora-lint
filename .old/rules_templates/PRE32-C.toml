@@ -1,8 +1,0 @@
-[metadata]
-name = "PRE32-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for PRE32-C: Do not use preprocessor directives in invocations of function-like macros"
-cert_version = "2016"
-
-[rules.cert_c.PRE32-C]
-enabled = true

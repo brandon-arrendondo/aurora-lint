@@ -1,8 +1,0 @@
-[metadata]
-name = "MEM30-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for MEM30-C: Do not access freed memory"
-cert_version = "2016"
-
-[rules.cert_c.MEM30-C]
-enabled = true

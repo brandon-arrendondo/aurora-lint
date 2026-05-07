@@ -1,8 +1,0 @@
-[metadata]
-name = "PRE31-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for PRE31-C: Avoid side effects in arguments to unsafe macros"
-cert_version = "2016"
-
-[rules.cert_c.PRE31-C]
-enabled = true

@@ -1,8 +1,0 @@
-[metadata]
-name = "FIO30-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for FIO30-C: Exclude user input from format strings"
-cert_version = "2016"
-
-[rules.cert_c.FIO30-C]
-enabled = true

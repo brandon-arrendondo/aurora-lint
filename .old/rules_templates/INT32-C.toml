@@ -1,8 +1,0 @@
-[metadata]
-name = "INT32-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for INT32-C: Ensure that operations on signed integers do not result in overflow"
-cert_version = "2016"
-
-[rules.cert_c.INT32-C]
-enabled = true

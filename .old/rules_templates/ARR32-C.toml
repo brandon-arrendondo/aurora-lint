@@ -1,8 +1,0 @@
-[metadata]
-name = "ARR32-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for ARR32-C: Ensure size arguments for variable length arrays are in a valid range"
-cert_version = "2016"
-
-[rules.cert_c.ARR32-C]
-enabled = true

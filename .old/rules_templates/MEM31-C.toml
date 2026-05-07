@@ -1,8 +1,0 @@
-[metadata]
-name = "MEM31-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for MEM31-C: Free dynamically allocated memory when no longer needed"
-cert_version = "2016"
-
-[rules.cert_c.MEM31-C]
-enabled = true

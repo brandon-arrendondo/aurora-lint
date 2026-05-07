@@ -1,8 +1,0 @@
-[metadata]
-name = "EXP33-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for EXP33-C: Do not read uninitialized memory"
-cert_version = "2016"
-
-[rules.cert_c.EXP33-C]
-enabled = true

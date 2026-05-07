@@ -1,8 +1,0 @@
-[metadata]
-name = "ARR37-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for ARR37-C: Do not add or subtract an integer to a pointer to a non-array object"
-cert_version = "2016"
-
-[rules.cert_c.ARR37-C]
-enabled = true

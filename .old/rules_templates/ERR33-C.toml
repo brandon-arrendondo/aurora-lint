@@ -1,8 +1,0 @@
-[metadata]
-name = "ERR33-C Rule Configuration"
-version = "1.0.0"
-description = "Configuration for ERR33-C: Detect and handle standard library errors"
-cert_version = "2016"
-
-[rules.cert_c.ERR33-C]
-enabled = true
