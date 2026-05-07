@@ -1,2 +1,0 @@
-[registries.ELEC_SW_Rust_Packages]
-index = "sparse+https://pkgs.dev.azure.com/bissell/ELEC_SW/_packaging/ELEC_SW_Rust_Packages/Cargo/index/"
