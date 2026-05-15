@@ -1317,6 +1317,21 @@ pub fn get_var_info_at_with_config(
             if let Some(stmt_node) = find_node_at_range(body, start, end) {
                 process_statement(&stmt_node, source, &mut state, &mut tracked, config);
             }
+        } else {
+            // Statement contains byte_offset. For switch statements, replay
+            // same-case sub-statements that precede the target.
+            if let Some(stmt_node) = find_node_at_range(body, start, end) {
+                if stmt_node.kind() == "switch_statement" {
+                    replay_within_switch_case(
+                        &stmt_node,
+                        source,
+                        &mut state,
+                        &mut tracked,
+                        config,
+                        byte_offset,
+                    );
+                }
+            }
         }
     }
 
@@ -1664,6 +1679,135 @@ fn collect_constants_recursive(node: &Node, source: &str, constants: &mut HashMa
                     collect_constants_recursive(&child, source, constants);
                 }
                 _ => {}
+            }
+        }
+    }
+}
+
+/// Collect zero-argument functions with a single `return LITERAL;` body.
+/// These are constant-valued functions that can be used in dead-branch elimination
+/// (e.g., `staticReturnsTrue()`, `globalReturnsFalse()`).
+pub fn collect_constant_functions(root: &Node, source: &str) -> HashMap<String, i64> {
+    let mut result = HashMap::new();
+    collect_constant_functions_in(root, source, &mut result);
+    result
+}
+
+fn collect_constant_functions_in(node: &Node, source: &str, result: &mut HashMap<String, i64>) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "function_definition" => {
+                    if let Some((name, val)) = extract_constant_function(&child, source) {
+                        result.insert(name, val);
+                    }
+                }
+                "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
+                | "preproc_ifndef" => {
+                    collect_constant_functions_in(&child, source, result);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// If `func_node` is a zero-argument function whose body is exactly `return LITERAL;`,
+/// return `(name, value)`. Otherwise return `None`.
+fn extract_constant_function(func_node: &Node, source: &str) -> Option<(String, i64)> {
+    let declarator = func_node.child_by_field_name("declarator")?;
+    let func_decl = find_function_declarator(&declarator)?;
+
+    // Params must be empty or just "void"
+    let params = func_decl.child_by_field_name("parameters")?;
+    let named_count = params.named_child_count();
+    if named_count > 1 {
+        return None;
+    }
+    if named_count == 1 {
+        let p = params.named_child(0)?;
+        let text = p.utf8_text(source.as_bytes()).ok()?;
+        if text != "void" {
+            return None;
+        }
+    }
+
+    // Extract function name
+    let name = get_declarator_name(&func_decl, source);
+    if name.is_empty() {
+        return None;
+    }
+
+    // Body must contain exactly one return_statement with a constant value
+    let body = func_node.child_by_field_name("body")?;
+    let mut return_val: Option<i64> = None;
+    let mut non_return_stmts = 0usize;
+    for i in 0..body.child_count() {
+        if let Some(stmt) = body.child(i) {
+            match stmt.kind() {
+                "{" | "}" => {}
+                "return_statement" => {
+                    // Find the expression child (skip 'return' keyword and ';')
+                    for j in 0..stmt.child_count() {
+                        if let Some(child) = stmt.child(j) {
+                            if child.kind() != "return" && child.kind() != ";" {
+                                let empty: HashMap<String, i64> = HashMap::new();
+                                return_val =
+                                    const_eval::try_evaluate_expr(&child, source, &empty);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    non_return_stmts += 1;
+                }
+            }
+        }
+    }
+
+    if non_return_stmts > 0 {
+        return None;
+    }
+
+    return_val.map(|v| (name, v))
+}
+
+/// Replay init-state transfers for sub-statements within the same switch case
+/// as `byte_offset`, processing only those that end before `byte_offset`.
+fn replay_within_switch_case(
+    switch_node: &Node,
+    source: &str,
+    state: &mut InitStateMap,
+    tracked: &mut HashSet<String>,
+    config: &InitAnalysisConfig,
+    byte_offset: usize,
+) {
+    // Find the switch body (compound_statement)
+    for i in 0..switch_node.child_count() {
+        if let Some(child) = switch_node.child(i) {
+            if child.kind() == "compound_statement" {
+                // Find the case_statement whose range contains byte_offset
+                for j in 0..child.child_count() {
+                    if let Some(case_node) = child.child(j) {
+                        if case_node.kind() == "case_statement"
+                            && case_node.start_byte() < byte_offset
+                            && case_node.end_byte() > byte_offset
+                        {
+                            // Replay sub-statements of this case that end before byte_offset
+                            for k in 0..case_node.child_count() {
+                                if let Some(stmt) = case_node.child(k) {
+                                    if stmt.end_byte() <= byte_offset {
+                                        process_statement(&stmt, source, state, tracked, config);
+                                    } else if stmt.start_byte() >= byte_offset {
+                                        break;
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+                break;
             }
         }
     }

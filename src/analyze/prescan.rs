@@ -100,6 +100,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         collect_struct_definitions(&root, &source, &mut result.struct_field_types);
 
         collect_global_constants(&root, &source, &mut result.global_constants);
+        collect_constant_return_functions(&root, &source, &mut result.global_constants);
 
         if !is_header {
             collect_global_var_null_states(&root, &source, &mut result.global_var_null_states);
@@ -2364,6 +2365,154 @@ fn collect_global_constants(root: &Node, source: &str, constants: &mut HashMap<S
             }
         }
     }
+}
+
+/// Collect non-static zero-argument functions with a single `return LITERAL;` body
+/// into the constants map. This enables dead-branch elimination for patterns like
+/// `if(globalReturnsTrue())` and `if(globalReturnsFalse())`.
+fn collect_constant_return_functions(
+    root: &Node,
+    source: &str,
+    constants: &mut HashMap<String, i64>,
+) {
+    for i in 0..root.child_count() {
+        if let Some(child) = root.child(i) {
+            match child.kind() {
+                "function_definition" => {
+                    collect_one_constant_function(&child, source, constants);
+                }
+                "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
+                | "preproc_ifndef" => {
+                    collect_constant_return_functions(&child, source, constants);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn collect_one_constant_function(
+    func_node: &Node,
+    source: &str,
+    constants: &mut HashMap<String, i64>,
+) {
+    // Skip static functions (handled per-file by init_state)
+    if let Some(type_node) = func_node.child_by_field_name("type") {
+        let type_text = type_node.utf8_text(source.as_bytes()).unwrap_or("");
+        if type_text.contains("static") {
+            return;
+        }
+    }
+    // Check storage class in the declaration specifiers
+    for i in 0..func_node.child_count() {
+        if let Some(child) = func_node.child(i) {
+            if child.kind() == "storage_class_specifier" {
+                let text = child.utf8_text(source.as_bytes()).unwrap_or("");
+                if text == "static" {
+                    return;
+                }
+            }
+        }
+    }
+
+    let declarator = match func_node.child_by_field_name("declarator") {
+        Some(d) => d,
+        None => return,
+    };
+    let func_decl = match find_func_declarator(&declarator) {
+        Some(d) => d,
+        None => return,
+    };
+
+    // Params must be empty or just "void"
+    let params = match func_decl.child_by_field_name("parameters") {
+        Some(p) => p,
+        None => return,
+    };
+    let named_count = params.named_child_count();
+    if named_count > 1 {
+        return;
+    }
+    if named_count == 1 {
+        if let Some(p) = params.named_child(0) {
+            let text = p.utf8_text(source.as_bytes()).unwrap_or("");
+            if text != "void" {
+                return;
+            }
+        }
+    }
+
+    // Get function name
+    let name = extract_func_name(&func_decl, source);
+    if name.is_empty() {
+        return;
+    }
+
+    // Body must have exactly one return_statement with a literal value
+    let body = match func_node.child_by_field_name("body") {
+        Some(b) => b,
+        None => return,
+    };
+    let mut return_val: Option<i64> = None;
+    let mut non_return_stmts = 0usize;
+    for i in 0..body.child_count() {
+        if let Some(stmt) = body.child(i) {
+            match stmt.kind() {
+                "{" | "}" => {}
+                "return_statement" => {
+                    for j in 0..stmt.child_count() {
+                        if let Some(child) = stmt.child(j) {
+                            if child.kind() != "return" && child.kind() != ";" {
+                                let empty: HashMap<String, i64> = HashMap::new();
+                                return_val =
+                                    const_eval::try_evaluate_expr(&child, source, &empty);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    non_return_stmts += 1;
+                }
+            }
+        }
+    }
+
+    if non_return_stmts == 0 {
+        if let Some(val) = return_val {
+            constants.insert(name, val);
+        }
+    }
+}
+
+fn find_func_declarator<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+    if node.kind() == "function_declarator" {
+        return Some(*node);
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if let Some(found) = find_func_declarator(&child) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn extract_func_name(func_decl: &Node, source: &str) -> String {
+    for i in 0..func_decl.child_count() {
+        if let Some(child) = func_decl.child(i) {
+            match child.kind() {
+                "identifier" => {
+                    return child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                }
+                "pointer_declarator" => {
+                    return extract_func_name(&child, source);
+                }
+                _ => {}
+            }
+        }
+    }
+    String::new()
 }
 
 /// Extract declarator name from an init_declarator node.

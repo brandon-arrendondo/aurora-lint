@@ -112,10 +112,13 @@ impl CertRule for Exp33C {
             // Collect file-scope constants for dead-branch elimination.
             // Merge with prescan global constants (file-scope wins on conflict).
             let file_constants = init_state::collect_file_scope_constants(node, source);
+            // Also collect zero-arg constant-return functions (e.g., staticReturnsTrue()).
+            let fn_constants = init_state::collect_constant_functions(node, source);
             {
                 let mut constants = self.file_scope_constants.borrow_mut();
-                // File-scope constants override prescan globals
+                // File-scope constants and constant functions override prescan globals
                 constants.extend(file_constants);
+                constants.extend(fn_constants);
             }
 
             // Pre-scan for realloc wrapper functions

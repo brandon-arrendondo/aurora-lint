@@ -906,6 +906,19 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
             // sizeof(type) or sizeof(expr)
             resolve_sizeof_node(node, source)
         }
+        "call_expression" => {
+            // Zero-argument calls to known constant functions (e.g., staticReturnsTrue())
+            let func = node.child_by_field_name("function")?;
+            if func.kind() != "identifier" {
+                return None;
+            }
+            let name = func.utf8_text(source.as_bytes()).ok()?;
+            let args = node.child_by_field_name("arguments")?;
+            if args.named_child_count() != 0 {
+                return None;
+            }
+            macros.get(name).copied()
+        }
         _ => None,
     }
 }
