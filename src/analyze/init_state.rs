@@ -88,6 +88,10 @@ pub struct VarInfo {
     pub is_unsigned_char: bool,
     pub is_array: bool,
     pub is_static: bool,
+    /// True for `char` or `wchar_t` arrays. Used to distinguish char buffers
+    /// (CWE-665: strcat reads from uninit buffer) from int/double/struct arrays
+    /// (CWE-457: content read via subscript) for array-decay suppression logic.
+    pub is_char_type: bool,
     /// Element count from `malloc(N * sizeof(T))` / `ALLOCA(N * sizeof(T))`.
     /// Used to detect partial initialization loops.
     pub allocation_count: Option<usize>,
@@ -100,6 +104,7 @@ impl VarInfo {
             is_unsigned_char: false,
             is_array: false,
             is_static: false,
+            is_char_type: false,
             allocation_count: None,
         }
     }
@@ -419,6 +424,8 @@ fn process_declaration(
     let is_unsigned_char = type_text.contains("unsigned char")
         || type_text.contains("uint8_t")
         || type_text.contains("BYTE");
+    let is_char_type = (type_text.contains("char") || type_text.contains("wchar_t"))
+        && !is_unsigned_char;
     let is_static = type_text.contains("static") || type_text.contains("_Thread_local");
 
     // Process each declarator
@@ -438,6 +445,7 @@ fn process_declaration(
                         let is_array = is_array_declarator(&child);
                         let mut info = VarInfo::new(init_state);
                         info.is_unsigned_char = is_unsigned_char;
+                        info.is_char_type = is_char_type;
                         info.is_array = is_array;
                         info.is_static = is_static;
                         if matches!(init_state, InitState::MallocUninitialized) {
@@ -462,6 +470,7 @@ fn process_declaration(
                         let is_array = false;
                         let mut info = VarInfo::new(init_state);
                         info.is_unsigned_char = is_unsigned_char;
+                        info.is_char_type = is_char_type;
                         info.is_array = is_array;
                         info.is_static = is_static;
                         state.insert(var_name, info);
@@ -476,8 +485,24 @@ fn process_declaration(
                         let is_array = child.kind() == "array_declarator";
                         let mut info = VarInfo::new(init_state);
                         info.is_unsigned_char = is_unsigned_char;
+                        info.is_char_type = is_char_type;
                         info.is_array = is_array;
                         info.is_static = is_static;
+                        // Track declared array size (e.g., int arr[10]) so that
+                        // array-to-pointer decay propagation can preserve the count
+                        // for partial-init detection (MallocUninitialized flow).
+                        if is_array {
+                            if let Some(size_node) = child.child_by_field_name("size") {
+                                let empty: HashMap<String, i64> = HashMap::new();
+                                if let Some(sz) =
+                                    const_eval::try_evaluate_expr(&size_node, source, &empty)
+                                {
+                                    if sz > 0 {
+                                        info.allocation_count = Some(sz as usize);
+                                    }
+                                }
+                            }
+                        }
                         state.insert(var_name, info);
                     }
                 }
@@ -720,9 +745,42 @@ fn process_expression(
                 };
 
                 if !var_name.is_empty() {
+                    // Pre-read: check if RHS is an uninitialized array identifier
+                    // (array-to-pointer decay: ptr = arr; where arr is uninit array).
+                    // Must read before the mutable borrow of var_name below.
+                    let array_decay = if left.kind() == "identifier" {
+                        if let Some(right) = node.child_by_field_name("right") {
+                            if right.kind() == "identifier" {
+                                let rhs_name = right.utf8_text(source.as_bytes()).unwrap_or("");
+                                state.get(rhs_name).and_then(|rhs| {
+                                    // Only apply to non-char arrays (int/double/struct).
+                                    // Char arrays (CWE-665: strcat pattern) are flagged
+                                    // at the assignment itself as the detection point.
+                                    if rhs.is_array && rhs.state.is_unsafe() && !rhs.is_char_type
+                                    {
+                                        Some(rhs.allocation_count)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     if let Some(info) = state.get_mut(&var_name) {
                         if left.kind() == "identifier" {
-                            if let Some(right) = node.child_by_field_name("right") {
+                            if let Some(array_alloc) = array_decay {
+                                // Array-to-pointer decay: ptr = uninit_array
+                                // The pointer now points to uninitialized content.
+                                info.state = InitState::MallocUninitialized;
+                                info.allocation_count = array_alloc;
+                            } else if let Some(right) = node.child_by_field_name("right") {
                                 info.state = classify_initializer(&right, source, config);
                                 if matches!(info.state, InitState::MallocUninitialized) {
                                     info.allocation_count =

@@ -423,6 +423,17 @@ fn check_identifier_read(
     // known read-only or known initializing functions (handled separately).
     if info.is_array {
         if let Some(parent) = node.parent() {
+            // Array-to-pointer decay: `ptr = arr` where arr is on the RHS.
+            // Taking the address of a non-char array is not a content read —
+            // suppress and detect later at subscript access (check_subscript_read).
+            // Char arrays are kept (strcat/wcscat pattern: reads the null terminator).
+            if parent.kind() == "assignment_expression" && !info.is_char_type {
+                if let Some(right) = parent.child_by_field_name("right") {
+                    if right.id() == node.id() {
+                        return;
+                    }
+                }
+            }
             if parent.kind() == "argument_list" {
                 if let Some(call_expr) = parent.parent() {
                     if call_expr.kind() == "call_expression" {
