@@ -6,10 +6,122 @@ use crate::parser::CParser;
 use crate::progress::ProgressReporter;
 
 use anyhow::Result;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tree_sitter::Node;
 use walkdir::WalkDir;
+
+/// All data collected from a single file during the parallel prescan phase.
+struct FilePrescanResult {
+    known_functions: HashSet<String>,
+    header_declared_functions: HashSet<String>,
+    function_summaries: HashMap<String, FunctionSummary>,
+    call_graph: HashMap<String, HashSet<String>>,
+    macro_constants: HashMap<String, i64>,
+    macro_aliases: HashMap<String, String>,
+    struct_field_types: HashMap<String, HashMap<String, String>>,
+    global_constants: HashMap<String, i64>,
+    global_var_null_states: HashMap<String, NullState>,
+    global_writers: HashMap<String, HashSet<String>>,
+    callsite_args: HashMap<String, Vec<Vec<NullState>>>,
+    callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
+    callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>>,
+    callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>>,
+    source_path: Option<PathBuf>,
+}
+
+impl FilePrescanResult {
+    fn empty() -> Self {
+        Self {
+            known_functions: HashSet::new(),
+            header_declared_functions: HashSet::new(),
+            function_summaries: HashMap::new(),
+            call_graph: HashMap::new(),
+            macro_constants: HashMap::new(),
+            macro_aliases: HashMap::new(),
+            struct_field_types: HashMap::new(),
+            global_constants: HashMap::new(),
+            global_var_null_states: HashMap::new(),
+            global_writers: HashMap::new(),
+            callsite_args: HashMap::new(),
+            callsite_field_args: HashMap::new(),
+            callsite_pointee_args: HashMap::new(),
+            callsite_int_args: HashMap::new(),
+            source_path: None,
+        }
+    }
+}
+
+fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePrescanResult {
+    let mut result = FilePrescanResult::empty();
+
+    let mut parser = match CParser::new() {
+        Ok(p) => p,
+        Err(_) => return result,
+    };
+
+    if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
+        let root = tree.root_node();
+
+        collect_function_names(&root, &source, &mut result.known_functions);
+
+        if is_header {
+            collect_header_declarations(&root, &source, &mut result.header_declared_functions);
+        }
+
+        let file_macros = const_eval::collect_macro_constants(&root, &source);
+        result.macro_constants.extend(file_macros.clone());
+
+        let file_aliases = const_eval::collect_macro_aliases(&root, &source);
+        let file_taint_aliases: Vec<String> = file_aliases
+            .iter()
+            .filter(|(_, target)| {
+                function_summary::ENV03_TAINT_SOURCE_FUNCTIONS.contains(&target.as_str())
+            })
+            .map(|(alias, _)| alias.clone())
+            .collect();
+
+        let file_string_macros = const_eval::collect_string_literal_macros(&root, &source);
+
+        result.function_summaries = function_summary::compute_summaries(
+            &root,
+            &source,
+            &file_macros,
+            needs_vra,
+            &file_taint_aliases,
+            &file_string_macros,
+        );
+
+        collect_call_graph(&root, &source, &mut result.call_graph);
+
+        result.macro_aliases.extend(file_aliases);
+
+        collect_struct_definitions(&root, &source, &mut result.struct_field_types);
+
+        collect_global_constants(&root, &source, &mut result.global_constants);
+
+        if !is_header {
+            collect_global_var_null_states(&root, &source, &mut result.global_var_null_states);
+
+            let mut file_statics: HashSet<String> = HashSet::new();
+            collect_static_pointer_globals(&root, &source, &mut file_statics);
+            collect_global_writers(&root, &source, &file_statics, &mut result.global_writers);
+
+            collect_callsite_args_from_tree(
+                &root,
+                &source,
+                &mut result.callsite_args,
+                &mut result.callsite_field_args,
+                &mut result.callsite_pointee_args,
+            );
+            collect_callsite_int_args_from_tree(&root, &source, &mut result.callsite_int_args);
+            result.source_path = Some(file_path.to_path_buf());
+        }
+    }
+
+    result
+}
 
 /// Pre-scan the given directories to collect function names and summaries from `.c`/`.h` files.
 ///
@@ -22,173 +134,121 @@ pub fn prescan_directories(
     progress: Option<&dyn ProgressReporter>,
     needs_vra: bool,
 ) -> Result<ProjectContext> {
-    let mut known_functions = HashSet::new();
-    let mut header_declared_functions = HashSet::new();
-    let mut function_summaries: HashMap<String, function_summary::FunctionSummary> = HashMap::new();
-    let mut call_graph = HashMap::new();
-    let mut macro_constants = HashMap::new();
-    let mut macro_aliases = HashMap::new();
-    let mut struct_field_types = HashMap::new();
-    let mut global_constants: HashMap<String, i64> = HashMap::new();
-    let mut global_var_null_states: HashMap<String, NullState> = HashMap::new();
-    let mut callsite_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
-    let mut callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>> =
-        HashMap::new();
-    let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
-    let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
-    let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut source_files: Vec<PathBuf> = Vec::new();
-    let mut parser = CParser::new()?;
-
-    if let Some(reporter) = progress {
-        reporter.report_prescan_start(dirs.len());
-    }
-
+    // Phase 1: collect all file paths (sequential — WalkDir is not parallel-safe)
+    let mut all_files: Vec<(PathBuf, bool)> = Vec::new();
     for dir in dirs {
         for entry in WalkDir::new(dir)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| {
-                let path = e.path();
                 matches!(
-                    path.extension().and_then(|ext| ext.to_str()),
+                    e.path().extension().and_then(|ext| ext.to_str()),
                     Some("c") | Some("h")
                 )
             })
         {
-            let file_path = entry.path().to_string_lossy().to_string();
-            let is_header = entry.path().extension().and_then(|ext| ext.to_str()) == Some("h");
-
-            if let Ok((tree, source)) = parser.parse_file(&file_path) {
-                let root = tree.root_node();
-                collect_function_names(&root, &source, &mut known_functions);
-
-                // Track function declarations from header files separately —
-                // these are public API with intentional external linkage.
-                if is_header {
-                    collect_header_declarations(&root, &source, &mut header_declared_functions);
-                }
-
-                // Collect macro constants from #define directives (before summaries —
-                // return-range computation needs macro values when VRA is active)
-                let file_macros = const_eval::collect_macro_constants(&root, &source);
-                macro_constants.extend(file_macros.clone());
-
-                // Collect macro aliases first so function summaries can treat
-                // macro-wrapped taint sources (e.g. `#define GETENV getenv`)
-                // as real taint for caller classification.
-                let file_aliases = const_eval::collect_macro_aliases(&root, &source);
-                let file_taint_aliases: Vec<String> = file_aliases
-                    .iter()
-                    .filter(|(_, target)| {
-                        function_summary::ENV03_TAINT_SOURCE_FUNCTIONS.contains(&target.as_str())
-                    })
-                    .map(|(alias, _)| alias.clone())
-                    .collect();
-
-                // Collect string-literal macros for CWE-426 relative-path detection.
-                let file_string_macros = const_eval::collect_string_literal_macros(&root, &source);
-
-                // Compute function summaries for this file
-                let file_summaries = function_summary::compute_summaries(
-                    &root,
-                    &source,
-                    &file_macros,
-                    needs_vra,
-                    &file_taint_aliases,
-                    &file_string_macros,
-                );
-                for (name, summary) in file_summaries {
-                    // When multiple files define `static` functions with
-                    // the same name, OR together the taint-source bits so
-                    // any tainted definition poisons the merged summary.
-                    // Conservative for ENV03-C caller analysis.
-                    match function_summaries.get_mut(&name) {
-                        Some(existing) => {
-                            existing.has_env03_taint_source |= summary.has_env03_taint_source;
-                            existing.returns_tainted |= summary.returns_tainted;
-                            existing.has_relative_command_write |=
-                                summary.has_relative_command_write;
-                            existing
-                                .returns_from_callees
-                                .extend(summary.returns_from_callees);
-                        }
-                        None => {
-                            function_summaries.insert(name, summary);
-                        }
-                    }
-                }
-
-                // Build call graph for this file
-                collect_call_graph(&root, &source, &mut call_graph);
-
-                // Merge per-file macro aliases into the project-wide map.
-                macro_aliases.extend(file_aliases);
-
-                // Collect struct field types from struct definitions
-                collect_struct_definitions(&root, &source, &mut struct_field_types);
-
-                // Collect global constants for dead-branch elimination
-                collect_global_constants(&root, &source, &mut global_constants);
-
-                // Collect global pointer variable null states (cross-file)
-                if !is_header {
-                    collect_global_var_null_states(&root, &source, &mut global_var_null_states);
-                }
-
-                // Collect file-scope static pointer globals and their writer
-                // functions. Scoped per-file: each file's static names are
-                // paired with writers from that same file only. Cross-file
-                // collisions (same static name in two TUs) fall back to
-                // conservative union — any writer across files poisons the
-                // merged set — which is acceptable for taint classification.
-                if !is_header {
-                    let mut file_statics: HashSet<String> = HashSet::new();
-                    collect_static_pointer_globals(&root, &source, &mut file_statics);
-                    collect_global_writers(&root, &source, &file_statics, &mut global_writers);
-                }
-
-                // Collect call-site argument null states in the same pass
-                // (avoids re-parsing all files in a second directory walk)
-                if !is_header {
-                    collect_callsite_args_from_tree(
-                        &root,
-                        &source,
-                        &mut callsite_args,
-                        &mut callsite_field_args,
-                        &mut callsite_pointee_args,
-                    );
-                    collect_callsite_int_args_from_tree(&root, &source, &mut callsite_int_args);
-                    source_files.push(entry.path().to_path_buf());
-                }
-            }
+            let is_header =
+                entry.path().extension().and_then(|ext| ext.to_str()) == Some("h");
+            all_files.push((entry.path().to_path_buf(), is_header));
         }
     }
 
-    // Aggregate callsite null states into function summaries
+    if let Some(reporter) = progress {
+        reporter.report_prescan_start(dirs.len());
+    }
+
+    // Phase 2: parse and collect per-file data in parallel
+    let file_results: Vec<FilePrescanResult> = all_files
+        .par_iter()
+        .map(|(path, is_header)| process_file(path, *is_header, needs_vra))
+        .collect();
+
+    // Phase 3: merge results sequentially
+    let mut known_functions: HashSet<String> = HashSet::new();
+    let mut header_declared_functions: HashSet<String> = HashSet::new();
+    let mut function_summaries: HashMap<String, FunctionSummary> = HashMap::new();
+    let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut macro_constants: HashMap<String, i64> = HashMap::new();
+    let mut macro_aliases: HashMap<String, String> = HashMap::new();
+    let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut global_constants: HashMap<String, i64> = HashMap::new();
+    let mut global_var_null_states: HashMap<String, NullState> = HashMap::new();
+    let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut callsite_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
+    let mut callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>> =
+        HashMap::new();
+    let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
+    let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
+    let mut source_files: Vec<PathBuf> = Vec::new();
+
+    for r in file_results {
+        known_functions.extend(r.known_functions);
+        header_declared_functions.extend(r.header_declared_functions);
+
+        // OR-merge taint/summary bits; first definition wins for all other fields
+        for (name, summary) in r.function_summaries {
+            match function_summaries.get_mut(&name) {
+                Some(existing) => {
+                    existing.has_env03_taint_source |= summary.has_env03_taint_source;
+                    existing.returns_tainted |= summary.returns_tainted;
+                    existing.has_relative_command_write |= summary.has_relative_command_write;
+                    existing.returns_from_callees.extend(summary.returns_from_callees);
+                }
+                None => {
+                    function_summaries.insert(name, summary);
+                }
+            }
+        }
+
+        for (caller, callees) in r.call_graph {
+            call_graph.entry(caller).or_default().extend(callees);
+        }
+
+        macro_constants.extend(r.macro_constants);
+        macro_aliases.extend(r.macro_aliases);
+        struct_field_types.extend(r.struct_field_types);
+        global_constants.extend(r.global_constants);
+        global_var_null_states.extend(r.global_var_null_states);
+
+        for (var, writers) in r.global_writers {
+            global_writers.entry(var).or_default().extend(writers);
+        }
+        for (callee, args) in r.callsite_args {
+            callsite_args.entry(callee).or_default().extend(args);
+        }
+        for (callee, args) in r.callsite_field_args {
+            callsite_field_args.entry(callee).or_default().extend(args);
+        }
+        for (callee, args) in r.callsite_pointee_args {
+            callsite_pointee_args.entry(callee).or_default().extend(args);
+        }
+        for (callee, args) in r.callsite_int_args {
+            callsite_int_args.entry(callee).or_default().extend(args);
+        }
+
+        if let Some(path) = r.source_path {
+            source_files.push(path);
+        }
+    }
+
+    // Phase 4: post-processing passes (require fully-merged data, stay sequential)
+
     aggregate_callsite_null_states(
         &callsite_args,
         &mut function_summaries,
         &header_declared_functions,
     );
 
-    // Aggregate struct field null states from call sites
     aggregate_callsite_field_null_states(&callsite_field_args, &mut function_summaries);
 
-    // Aggregate pointee null states from address-of arguments (variant 63)
     aggregate_callsite_pointee_null_states(&callsite_pointee_args, &mut function_summaries);
 
-    // Aggregate integer constant args: narrow param ranges for goodG2B-style FP suppression
     aggregate_callsite_int_args(
         &callsite_int_args,
         &mut function_summaries,
         &header_declared_functions,
     );
-
-    // Iterative propagation: resolve parameter null states through relay chains.
-    // Each pass resolves one additional hop. Runs up to MAX_PROPAGATION_PASSES
-    // times or until convergence (no state changes between passes).
-    //   void mid(int *p) { low(p); }  — p now resolved via mid's param state
+    let mut parser = CParser::new()?;
     propagate_param_null_states(
         &source_files,
         &mut parser,
@@ -197,12 +257,7 @@ pub fn prescan_directories(
         &header_declared_functions,
     );
 
-    // Propagate transitive frees through param pass-through chains.
-    // E.g., relay(data) { next(data); } where next() calls free(data).
     function_summary::propagate_transitive_frees(&mut function_summaries);
-
-    // Propagate return-value taint through wrapper chains.
-    // E.g., wrap() { return readIt(); } inherits readIt()'s taint bit.
     function_summary::propagate_return_taint(&mut function_summaries);
 
     if let Some(reporter) = progress {
