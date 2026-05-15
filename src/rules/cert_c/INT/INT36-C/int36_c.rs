@@ -181,10 +181,12 @@ impl Int36C {
 
                 // If the value is not uintptr_t/intptr_t based, flag it
                 if !self.is_safe_pointer_integer_type(&value_text) {
-                    // Check if it's a numeric literal or integer expression
+                    // Only flag numeric literals and integer arithmetic expressions.
+                    // Deliberately exclude is_integer_type(&value_text) — that check
+                    // matched expression TEXT (e.g. "ALLOCA(sizeof(char))") against type
+                    // keywords like "char", causing every void*→T* cast to be flagged.
                     if value_node.kind() == "number_literal"
                         || value_node.kind() == "binary_expression"
-                        || self.is_integer_type(&value_text)
                     {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
