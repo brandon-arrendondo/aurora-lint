@@ -1403,6 +1403,7 @@ fn check_stmt_for_var_assignment(
 /// couldn't evaluate. Covers:
 /// - Direct assignment with unevaluable RHS: `var = rand();`, `var = RAND32();`
 /// - Pointer modification via function call: `fscanf(stdin, "%d", &var);`
+/// - Modifications inside control flow wrappers: `if(1) { fscanf(..., &var); }`
 fn stmt_modifies_var(stmt: &Node, var_name: &str, source: &str) -> bool {
     match stmt.kind() {
         "expression_statement" => {
@@ -1442,7 +1443,84 @@ fn stmt_modifies_var(stmt: &Node, var_name: &str, source: &str) -> bool {
                 }
             }
         }
+        // Control-flow wrappers: recurse into bodies so that tainted assignments inside
+        // if(1)/while/for blocks are not invisible to the backward scan. This prevents
+        // `resolve_local_var_range` from returning a stale pre-taint range.
+        // We skip compound_statement bodies that declare var_name (inner scope shadow)
+        // so that `int data = dataCopy;` blocks don't invalidate the outer `data`.
+        "if_statement" | "while_statement" | "for_statement" | "do_statement"
+        | "switch_statement" => {
+            for i in 0..stmt.child_count() {
+                if let Some(child) = stmt.child(i) {
+                    match child.kind() {
+                        "compound_statement" => {
+                            // Skip if this block declares var_name (shadow)
+                            if !compound_declares_var(&child, var_name, source) {
+                                for j in 0..child.child_count() {
+                                    if let Some(inner) = child.child(j) {
+                                        if stmt_modifies_var(&inner, var_name, source) {
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Single-statement bodies (no braces): check directly
+                        "expression_statement" | "declaration" => {
+                            if stmt_modifies_var(&child, var_name, source) {
+                                return true;
+                            }
+                        }
+                        // Nested control flow (else-if chains, etc.)
+                        "if_statement" | "while_statement" | "for_statement"
+                        | "do_statement" | "switch_statement" => {
+                            if stmt_modifies_var(&child, var_name, source) {
+                                return true;
+                            }
+                        }
+                        // switch case labels and goto targets
+                        "case_statement" | "default_statement" | "labeled_statement" => {
+                            for j in 0..child.child_count() {
+                                if let Some(inner) = child.child(j) {
+                                    if stmt_modifies_var(&inner, var_name, source) {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         _ => {}
+    }
+    false
+}
+
+/// Returns true if the compound_statement has a direct-child declaration of `var_name`,
+/// meaning any assignments to `var_name` within it target an inner-scope shadow variable.
+fn compound_declares_var(compound: &Node, var_name: &str, source: &str) -> bool {
+    for i in 0..compound.child_count() {
+        if let Some(stmt) = compound.child(i) {
+            if stmt.kind() == "declaration" {
+                for j in 0..stmt.child_count() {
+                    if let Some(child) = stmt.child(j) {
+                        if child.kind() == "init_declarator" {
+                            if let Some(decl) = child.child_by_field_name("declarator") {
+                                if extract_leaf_identifier(&decl, source) == var_name {
+                                    return true;
+                                }
+                            }
+                        } else if child.kind() == "identifier" {
+                            if child.utf8_text(source.as_bytes()).unwrap_or("") == var_name {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     false
 }

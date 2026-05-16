@@ -513,6 +513,41 @@ fn process_expression_range(
                 }
             }
         }
+        "call_expression" => {
+            // Any variable passed as &var may be written to by the callee.
+            // Widen those variables to their full type range (conservative).
+            if let Some(args) = node.child_by_field_name("arguments") {
+                for i in 0..args.child_count() {
+                    if let Some(arg) = args.child(i) {
+                        if arg.kind() == "pointer_expression" || arg.kind() == "unary_expression" {
+                            // Find the identifier inside &identifier
+                            for j in 0..arg.child_count() {
+                                if let Some(inner) = arg.child(j) {
+                                    if inner.kind() == "identifier" {
+                                        let var_name = get_text(&inner, source);
+                                        if let Some(existing) = state.get(&var_name) {
+                                            let var_type = existing.var_type.clone();
+                                            let full_range = var_type
+                                                .as_ref()
+                                                .map(|t| t.full_range())
+                                                .unwrap_or(ValueRange::new(i64::MIN, i64::MAX));
+                                            state.insert(
+                                                var_name,
+                                                TypedRange {
+                                                    range: full_range,
+                                                    var_type,
+                                                },
+                                            );
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         _ => {}
     }
 }
