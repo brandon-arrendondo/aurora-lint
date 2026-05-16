@@ -1263,6 +1263,17 @@ pub fn resolve_local_var_range(
     macros: &MacroConstantMap,
     loop_ranges: &VarRangeMap,
 ) -> Option<ValueRange> {
+    resolve_local_var_range_depth(var_name, node, source, macros, loop_ranges, 0)
+}
+
+fn resolve_local_var_range_depth(
+    var_name: &str,
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    loop_ranges: &VarRangeMap,
+    depth: u32,
+) -> Option<ValueRange> {
     // Find the enclosing compound_statement (function body or block)
     let mut current = node.parent();
     while let Some(parent) = current {
@@ -1281,9 +1292,9 @@ pub fn resolve_local_var_range(
                         break;
                     }
                     // Check for evaluable assignment (data = CONST or data = expr)
-                    if let Some(range) =
-                        check_stmt_for_var_assignment(&stmt, var_name, source, macros, loop_ranges)
-                    {
+                    if let Some(range) = check_stmt_for_var_assignment(
+                        &stmt, var_name, source, macros, loop_ranges, depth,
+                    ) {
                         last_range = Some(range);
                         invalidated = false;
                     } else if stmt_modifies_var(&stmt, var_name, source) {
@@ -1310,12 +1321,16 @@ pub fn resolve_local_var_range(
 }
 
 /// Check a single statement for an assignment to `var_name` and return its range.
+/// When the RHS is a bare identifier and `depth < 3`, recursively resolves the
+/// identifier's value so that copy chains like `int dataCopy = data; int data = dataCopy`
+/// are traced back to their original literal source.
 fn check_stmt_for_var_assignment(
     stmt: &Node,
     var_name: &str,
     source: &str,
     macros: &MacroConstantMap,
     loop_ranges: &VarRangeMap,
+    depth: u32,
 ) -> Option<ValueRange> {
     match stmt.kind() {
         "expression_statement" => {
@@ -1329,7 +1344,20 @@ fn check_stmt_for_var_assignment(
                             if left.kind() == "identifier" {
                                 let name = left.utf8_text(source.as_bytes()).unwrap_or("");
                                 if name == var_name {
-                                    return try_evaluate_range(&right, source, macros, loop_ranges);
+                                    if let Some(r) =
+                                        try_evaluate_range(&right, source, macros, loop_ranges)
+                                    {
+                                        return Some(r);
+                                    }
+                                    if right.kind() == "identifier" && depth < 3 {
+                                        let rhs_name =
+                                            right.utf8_text(source.as_bytes()).unwrap_or("");
+                                        return resolve_local_var_range_depth(
+                                            rhs_name, stmt, source, macros, loop_ranges,
+                                            depth + 1,
+                                        );
+                                    }
+                                    return None;
                                 }
                             }
                         }
@@ -1347,7 +1375,19 @@ fn check_stmt_for_var_assignment(
                         ) {
                             let name = extract_leaf_identifier(&declarator, source);
                             if name == var_name {
-                                return try_evaluate_range(&value, source, macros, loop_ranges);
+                                if let Some(r) =
+                                    try_evaluate_range(&value, source, macros, loop_ranges)
+                                {
+                                    return Some(r);
+                                }
+                                if value.kind() == "identifier" && depth < 3 {
+                                    let rhs_name =
+                                        value.utf8_text(source.as_bytes()).unwrap_or("");
+                                    return resolve_local_var_range_depth(
+                                        rhs_name, stmt, source, macros, loop_ranges, depth + 1,
+                                    );
+                                }
+                                return None;
                             }
                         }
                     }
