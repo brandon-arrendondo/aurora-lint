@@ -1394,6 +1394,37 @@ fn check_stmt_for_var_assignment(
                 }
             }
         }
+        // Control-flow wrappers: scan the compound body for evaluable assignments.
+        // Returns the last evaluable assignment found, or None if the body contains
+        // any unevaluable modification (e.g., fscanf(&var)) — which triggers the
+        // caller's `stmt_modifies_var` fallback and marks the variable as invalidated.
+        // This handles goodG2B patterns like `for(h=0;h<1;h++) { data = 2; }` where
+        // stmt_modifies_var correctly recognizes the modification but the loop body
+        // contains only a simple literal assignment.
+        "for_statement" | "while_statement" | "do_statement" | "if_statement" => {
+            for i in 0..stmt.child_count() {
+                if let Some(child) = stmt.child(i) {
+                    if child.kind() == "compound_statement" {
+                        if compound_declares_var(&child, var_name, source) {
+                            return None; // inner-scope shadow — don't evaluate
+                        }
+                        let mut last_range: Option<ValueRange> = None;
+                        for j in 0..child.child_count() {
+                            if let Some(inner) = child.child(j) {
+                                if let Some(r) = check_stmt_for_var_assignment(
+                                    &inner, var_name, source, macros, loop_ranges, depth,
+                                ) {
+                                    last_range = Some(r);
+                                } else if stmt_modifies_var(&inner, var_name, source) {
+                                    return None; // unevaluable modification in body
+                                }
+                            }
+                        }
+                        return last_range;
+                    }
+                }
+            }
+        }
         _ => {}
     }
     None
