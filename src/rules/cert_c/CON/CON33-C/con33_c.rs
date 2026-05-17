@@ -52,7 +52,9 @@ impl Con33C {
         // Check if this is a call to a non-thread-safe function
         if node.kind() == "call_expression" {
             if let Some(function_node) = node.child_by_field_name("function") {
-                let function_name = get_node_text(&function_node, source).trim();
+                let raw_name = get_node_text(&function_node, source);
+                let function_name = raw_name.trim().to_lowercase();
+                let function_name = function_name.as_str();
 
                 // Check if it's a non-thread-safe library function
                 if let Some(remediation) = get_unsafe_function_remediation(function_name) {
@@ -64,7 +66,7 @@ impl Con33C {
                         severity: self.severity(),
                         message: format!(
                             "Call to non-thread-safe function '{}'. {}",
-                            function_name, remediation
+                            raw_name.trim(), remediation
                         ),
                         suggestion: Some(remediation.to_string()),
                         ..Default::default()
@@ -85,14 +87,9 @@ impl Con33C {
 /// Returns the remediation message for non-thread-safe functions
 fn get_unsafe_function_remediation(function_name: &str) -> Option<&'static str> {
     match function_name {
-        // Random number generation
-        "rand" | "srand" => {
-            Some("Use thread-safe alternatives or protect with mutex. Consider rand_r() (POSIX) or C11 thread-local alternatives")
-        }
-
-        // Environment variables
-        "getenv" => {
-            Some("Use ENV34-C compliant methods. Do not store pointers returned by getenv()")
+        // Insecure temporary file creation (TOCTOU race)
+        "mktemp" | "tmpnam" | "tempnam" => {
+            Some("Use mkstemp() or tmpfile() instead. mktemp/tmpnam/tempnam are insecure due to TOCTOU race conditions between name generation and file creation")
         }
 
         // String tokenization
@@ -118,11 +115,6 @@ fn get_unsafe_function_remediation(function_name: &str) -> Option<&'static str> 
         // Atomic initialization
         "ATOMIC_VAR_INIT" | "atomic_init" => {
             Some("Do not attempt to initialize an atomic variable from multiple threads")
-        }
-
-        // Temporary files
-        "tmpnam" => {
-            Some("Use tmpnam_r() (POSIX) or consider mkstemp() for secure temporary file creation")
         }
 
         // Character conversion functions with static state

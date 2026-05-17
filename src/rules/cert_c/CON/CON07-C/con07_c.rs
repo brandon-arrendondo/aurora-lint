@@ -247,25 +247,30 @@ impl Con07C {
         // Check for compound operations on static variables
         let static_var_accesses = self.find_static_var_accesses(&body, source, static_vars);
 
-        // If function accesses multiple static variables, it's a compound operation
+        // If function performs a compound write on multiple static variables, flag it.
+        // Pure reads of multiple statics are not a compound-operation violation.
         if static_var_accesses.len() > 1 {
-            // This is a compound operation (e.g., a + b, or setting a and b)
-            violations.push(RuleViolation {
-                rule_id: self.rule_id().to_string(),
-                severity: Severity::Medium,
-                message: format!(
-                    "Function '{}' performs compound operation on shared static variables ({}) without synchronization",
-                    func_name,
-                    static_var_accesses.join(", ")
-                ),
-                file_path: String::new(),
-                line: function_node.start_position().row + 1,
-                column: function_node.start_position().column + 1,
-                suggestion: Some(
-                    "Use mutex locks (mtx_lock/mtx_unlock) or atomic operations to ensure atomicity".to_string()
-                ),
-                ..Default::default()
+            let has_compound_write = static_var_accesses.iter().any(|v| {
+                self.has_compound_operation_on_var(&body, source, v)
             });
+            if has_compound_write {
+                violations.push(RuleViolation {
+                    rule_id: self.rule_id().to_string(),
+                    severity: Severity::Medium,
+                    message: format!(
+                        "Function '{}' performs compound operation on shared static variables ({}) without synchronization",
+                        func_name,
+                        static_var_accesses.join(", ")
+                    ),
+                    file_path: String::new(),
+                    line: function_node.start_position().row + 1,
+                    column: function_node.start_position().column + 1,
+                    suggestion: Some(
+                        "Use mutex locks (mtx_lock/mtx_unlock) or atomic operations to ensure atomicity".to_string()
+                    ),
+                    ..Default::default()
+                });
+            }
         } else if static_var_accesses.len() == 1 {
             // Check for compound assignment operations on a single static variable
             if self.has_compound_operation_on_var(&body, source, &static_var_accesses[0]) {
@@ -308,7 +313,12 @@ impl Con07C {
                 let func_name = get_node_text(&func, source);
                 if matches!(
                     func_name,
-                    "mtx_lock" | "mtx_unlock" | "pthread_mutex_lock" | "pthread_mutex_unlock"
+                    "mtx_lock"
+                        | "mtx_unlock"
+                        | "pthread_mutex_lock"
+                        | "pthread_mutex_unlock"
+                        | "stdThreadLockAcquire"
+                        | "stdThreadLockRelease"
                 ) {
                     return true;
                 }
@@ -390,17 +400,26 @@ impl Con07C {
     }
 
     fn has_compound_operation_on_var(&self, node: &Node, source: &str, var_name: &str) -> bool {
-        // Check for compound assignment operators: +=, -=, *=, /=, etc.
         if node.kind() == "assignment_expression" {
-            if let Some(operator) = node.child_by_field_name("operator") {
-                let op_text = get_node_text(&operator, source);
-                if matches!(
-                    op_text,
-                    "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "^=" | "|="
-                ) {
-                    // Check if left side is the var_name
-                    if let Some(left) = node.child_by_field_name("left") {
-                        if get_node_text(&left, source) == var_name {
+            let left = node.child_by_field_name("left");
+            let right = node.child_by_field_name("right");
+            if let Some(left_node) = left {
+                let left_text = get_node_text(&left_node, source);
+                if left_text == var_name {
+                    // Compound assignment: x += 1, x -= 1, etc.
+                    if let Some(operator) = node.child_by_field_name("operator") {
+                        let op_text = get_node_text(&operator, source);
+                        if matches!(
+                            op_text,
+                            "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "^=" | "|="
+                        ) {
+                            return true;
+                        }
+                    }
+                    // Read-modify-write: x = x OP expr (var appears in RHS)
+                    if let Some(right_node) = right {
+                        let right_text = get_node_text(&right_node, source);
+                        if right_text.contains(var_name) {
                             return true;
                         }
                     }
@@ -408,7 +427,7 @@ impl Con07C {
             }
         }
 
-        // Check for increment/decrement operators
+        // Increment/decrement: x++, ++x, x--, --x
         if matches!(node.kind(), "update_expression") {
             if let Some(argument) = node.child_by_field_name("argument") {
                 if get_node_text(&argument, source) == var_name {
