@@ -1500,19 +1500,27 @@ impl CertRule for Str31C {
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
+        // node is always the translation_unit root when called by the framework.
+        // Pass it down to avoid re-finding root on every recursive call.
         let mut violations = Vec::new();
+        self.check_node(node, source, node, &mut violations);
+        violations
+    }
+}
 
-        // Get the root node for buffer size analysis
-        let mut root = *node;
-        while let Some(parent) = root.parent() {
-            root = parent;
-        }
-
-        // NEW: Check for sequential strcat overflow at function level
-        if let Some(multi_strcat_violation) =
-            self.check_sequential_strcat_overflow(node, source, &root)
-        {
-            violations.push(multi_strcat_violation);
+impl Str31C {
+    fn check_node<'a>(
+        &self,
+        node: &Node<'a>,
+        source: &str,
+        root: &Node<'a>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        // Check for sequential strcat overflow only at function scope
+        if node.kind() == "function_definition" {
+            if let Some(v) = self.check_sequential_strcat_overflow(node, source, root) {
+                violations.push(v);
+            }
         }
 
         // Check for dangerous function calls
@@ -1872,10 +1880,8 @@ impl CertRule for Str31C {
         // Recursively check child nodes
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+                self.check_node(&child, source, root, violations);
             }
         }
-
-        violations
     }
 }

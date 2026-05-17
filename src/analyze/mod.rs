@@ -548,8 +548,11 @@ fn find_function_at_byte<'a>(
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            if let Some(found) = find_function_at_byte(&child, start_byte) {
-                return Some(found);
+            // Prune: only descend into children whose range contains start_byte.
+            if child.start_byte() <= start_byte && child.end_byte() >= start_byte {
+                if let Some(found) = find_function_at_byte(&child, start_byte) {
+                    return Some(found);
+                }
             }
         }
     }

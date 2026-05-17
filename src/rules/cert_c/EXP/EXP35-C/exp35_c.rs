@@ -27,39 +27,40 @@ impl CertRule for Exp35C {
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-
-        // Check if this is a C11+ guarded file (has #if __STDC_VERSION__ check)
+        // Compute once — avoids O(N × source_len) if done inside the recursion.
         let has_c11_guard = source.contains("__STDC_VERSION__") && source.contains("201112L");
+        let mut violations = Vec::new();
+        self.check_node(node, source, has_c11_guard, &mut violations);
+        violations
+    }
+}
 
-        // Detect patterns where temporary struct/union objects with arrays are modified or accessed unsafely
+impl Exp35C {
+    fn check_node(
+        &self,
+        node: &Node,
+        source: &str,
+        has_c11_guard: bool,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         match node.kind() {
-            // Pattern 1: Unary operators (++, --, &) on array members from temporaries
-            // These are ALWAYS violations (even in C11+)
             "unary_expression" => {
-                self.check_unary_expression(node, source, &mut violations);
+                self.check_unary_expression(node, source, violations);
             }
-            // Pattern 2: Assignment of pointers to temporary array members
-            // These are ALWAYS violations (even in C11+)
             "init_declarator" | "assignment_expression" => {
-                self.check_pointer_assignment(node, source, &mut violations);
+                self.check_pointer_assignment(node, source, violations);
             }
-            // Pattern 3: Read-only access to temporary array members
-            // This is a violation in C99, but allowed in C11+
             "call_expression" if !has_c11_guard => {
-                self.check_c99_temporary_access(node, source, &mut violations);
+                self.check_c99_temporary_access(node, source, violations);
             }
             _ => {}
         }
 
-        // Recursively check child nodes
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+                self.check_node(&child, source, has_c11_guard, violations);
             }
         }
-
-        violations
     }
 }
 

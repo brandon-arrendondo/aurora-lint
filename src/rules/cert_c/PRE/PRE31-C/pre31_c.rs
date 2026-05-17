@@ -1,7 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
-use std::collections::HashSet;
 use tree_sitter::Node;
 
 pub struct Pre31C;
@@ -104,60 +103,31 @@ impl Pre31C {
     }
 
     fn is_unsafe_macro(&self, function_name: &str) -> bool {
-        // Known unsafe macros that evaluate arguments multiple times or not at all
-        let unsafe_macros: HashSet<&str> = [
-            // Common mathematical macros
-            "ABS",
-            "abs",
-            "MAX",
-            "max",
-            "MIN",
-            "min",
-            // Standard library macros
-            "assert",
-            "getc",
-            "putc",
-            "getwc",
-            "putwc",
-            // Custom macros that commonly use multiple evaluation
-            "SWAP",
-            "swap",
-            "CLAMP",
-            "clamp",
-            // Macros that might not evaluate arguments
-            "NDEBUG",
-            "DEBUG",
-            // Common utility macros
-            "SAFE_FREE",
-            "SAFE_DELETE",
-            // Conditional macros
-            "IF_DEBUG",
-            "WHEN",
-            "UNLESS",
-        ]
-        .iter()
-        .cloned()
-        .collect();
-
-        // Known safe macros that evaluate arguments exactly once
-        let safe_macros: HashSet<&str> = [
-            // GNU statement expression style
-            "SAFE_ABS", "SAFE_MAX",
-            "SAFE_MIN",
-            // Any macro explicitly named "SAFE_" is likely safe
-        ]
-        .iter()
-        .cloned()
-        .collect();
-
-        // Check for known safe patterns
-        if safe_macros.contains(function_name) || function_name.starts_with("SAFE_") {
+        // Fast path: safe prefix short-circuits all checks
+        if function_name.starts_with("SAFE_") {
             return false;
         }
 
-        unsafe_macros.contains(function_name) ||
-        // Heuristic: macros with ALL_CAPS names are likely unsafe
-        (function_name.chars().all(|c| c.is_uppercase() || c == '_') && function_name.len() > 2)
+        // Check for known safe patterns (small set — use linear search)
+        const SAFE_MACROS: &[&str] = &["SAFE_ABS", "SAFE_MAX", "SAFE_MIN"];
+        if SAFE_MACROS.contains(&function_name) {
+            return false;
+        }
+
+        // Known unsafe macros (used with linear search; this is called only when
+        // is_unsafe_macro returns true in check_macro_call, which filters first)
+        const UNSAFE_MACROS: &[&str] = &[
+            "ABS", "abs", "MAX", "max", "MIN", "min",
+            "assert", "getc", "putc", "getwc", "putwc",
+            "SWAP", "swap", "CLAMP", "clamp",
+            "NDEBUG", "DEBUG",
+            "SAFE_FREE", "SAFE_DELETE",
+            "IF_DEBUG", "WHEN", "UNLESS",
+        ];
+
+        UNSAFE_MACROS.contains(&function_name)
+            || (function_name.chars().all(|c| c.is_uppercase() || c == '_')
+                && function_name.len() > 2)
     }
 
     /// Check if the source contains a safe definition of the macro

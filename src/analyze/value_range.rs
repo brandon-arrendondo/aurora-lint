@@ -976,6 +976,9 @@ fn merge_compound_conditions(
 // ---------------------------------------------------------------------------
 
 /// Run forward value-range analysis on a function CFG.
+/// Maximum CFG blocks before skipping VRA to avoid O(N²) worst-case on huge functions.
+const VRA_BLOCK_LIMIT: usize = 150;
+
 pub fn analyze_value_ranges(
     cfg: &FunctionCfg,
     func_node: &Node,
@@ -983,6 +986,15 @@ pub fn analyze_value_ranges(
     macros: &MacroConstantMap,
     summaries: &HashMap<String, FunctionSummary>,
 ) -> RangeAnalysisResult {
+    // Skip VRA for very large functions to bound worst-case runtime.
+    if cfg.blocks.len() > VRA_BLOCK_LIMIT {
+        return RangeAnalysisResult {
+            block_entry_ranges: HashMap::new(),
+            block_exit_ranges: HashMap::new(),
+            return_ranges: HashMap::new(),
+        };
+    }
+
     let body = match func_node.child_by_field_name("body") {
         Some(b) => b,
         None => {
@@ -1047,10 +1059,12 @@ pub fn analyze_value_ranges(
     );
     exit_ranges.insert(cfg.entry, entry_exit);
 
-    // Worklist
+    // Worklist — companion set for O(1) membership test instead of O(N) VecDeque::contains.
     let mut worklist: VecDeque<BlockId> = VecDeque::new();
+    let mut in_worklist: HashSet<BlockId> = HashSet::new();
     for (succ, _) in cfg.successors(cfg.entry) {
         worklist.push_back(succ);
+        in_worklist.insert(succ);
     }
 
     // Track iteration counts per block for widening
@@ -1067,6 +1081,7 @@ pub fn analyze_value_ranges(
     let max_iterations = 500 * cfg.blocks.len();
 
     while let Some(block_id) = worklist.pop_front() {
+        in_worklist.remove(&block_id);
         total_iterations += 1;
         if total_iterations > max_iterations {
             break;
@@ -1139,7 +1154,7 @@ pub fn analyze_value_ranges(
             exit_ranges.insert(block_id, new_exit);
 
             for (succ, _) in cfg.successors(block_id) {
-                if !worklist.contains(&succ) {
+                if in_worklist.insert(succ) {
                     worklist.push_back(succ);
                 }
             }

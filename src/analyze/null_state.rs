@@ -1054,16 +1054,19 @@ pub fn analyze_null_states_with_globals(
     );
     exit_states.insert(cfg.entry, entry_exit);
 
-    // Worklist
+    // Worklist — companion set for O(1) membership test instead of O(N) VecDeque::contains.
     let mut worklist: VecDeque<BlockId> = VecDeque::new();
+    let mut in_worklist: HashSet<BlockId> = HashSet::new();
     for (succ, _) in cfg.successors(cfg.entry) {
         worklist.push_back(succ);
+        in_worklist.insert(succ);
     }
 
     let mut iterations = 0;
     const MAX_ITERATIONS: usize = 500;
 
     while let Some(block_id) = worklist.pop_front() {
+        in_worklist.remove(&block_id);
         iterations += 1;
         if iterations > MAX_ITERATIONS * cfg.blocks.len() {
             break;
@@ -1113,7 +1116,7 @@ pub fn analyze_null_states_with_globals(
 
             // Add successors to worklist
             for (succ, _) in cfg.successors(block_id) {
-                if !worklist.contains(&succ) {
+                if in_worklist.insert(succ) {
                     worklist.push_back(succ);
                 }
             }
