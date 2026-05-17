@@ -39,7 +39,11 @@
 //! This is a complex architectural change that may be added in future versions.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::cfg::FunctionCfg;
+use crate::analyze::const_eval::VarRangeMap;
+use crate::analyze::value_range::RangeAnalysisResult;
 use crate::manifest::{RuleCategory, Severity};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -49,7 +53,10 @@ use crate::utility::cert_c::ast_utils::{
     find_identifier_in_declarator, is_function_parameter,
 };
 
-pub struct Arr30C;
+pub struct Arr30C {
+    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+}
 
 /// Information about a buffer (array or dynamically allocated memory)
 #[derive(Debug, Clone)]
@@ -131,6 +138,29 @@ impl CertRule for Arr30C {
         "ARR30-C"
     }
 
+    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
+        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    }
+
+    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
+        let mut stored = HashMap::new();
+        for (&key, result) in results {
+            stored.insert(
+                key,
+                RangeAnalysisResult {
+                    block_entry_ranges: result.block_entry_ranges.clone(),
+                    block_exit_ranges: result.block_exit_ranges.clone(),
+                    return_ranges: result.return_ranges.clone(),
+                },
+            );
+        }
+        *self.vra_results.borrow_mut() = stored;
+    }
+
+    fn needs_vra(&self) -> bool {
+        true
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         // Analyze all buffer allocations once at root level
         if node.parent().is_none() {
@@ -161,6 +191,49 @@ impl CertRule for Arr30C {
 }
 
 impl Arr30C {
+    pub fn new() -> Self {
+        Self {
+            function_cfgs: RefCell::new(HashMap::new()),
+            vra_results: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Get VRA-derived variable ranges at a specific expression node.
+    fn vra_var_ranges_at(&self, expr_node: &Node) -> Option<VarRangeMap> {
+        use crate::utility::cert_c::ast_utils::find_containing_function;
+        let vra_results = self.vra_results.borrow();
+        let cfgs = self.function_cfgs.borrow();
+        if vra_results.is_empty() || cfgs.is_empty() {
+            return None;
+        }
+        let func = find_containing_function(expr_node)?;
+        let start_byte = func.start_byte();
+        let cfg = cfgs.get(&start_byte)?;
+        let vra = vra_results.get(&start_byte)?;
+        let byte_offset = expr_node.start_byte();
+        let block = cfg
+            .blocks
+            .iter()
+            .find(|b| {
+                b.statements
+                    .iter()
+                    .any(|&(s, e)| byte_offset >= s && byte_offset < e)
+            })
+            .or_else(|| {
+                cfg.blocks.iter().find(|b| {
+                    b.byte_range.0 > 0
+                        && byte_offset >= b.byte_range.0
+                        && byte_offset < b.byte_range.1
+                })
+            })?;
+        let entry = vra.block_entry_ranges.get(&block.id)?;
+        let var_ranges: VarRangeMap = entry
+            .iter()
+            .map(|(name, typed)| (name.clone(), typed.range))
+            .collect();
+        if var_ranges.is_empty() { None } else { Some(var_ranges) }
+    }
+
     /// Analyze all buffer allocations in the source code using AST traversal
     fn analyze_buffer_allocations(&self, source: &str) -> HashMap<String, BufferInfo> {
         let mut buffers = HashMap::new();
@@ -2039,8 +2112,18 @@ impl Arr30C {
                                     self.check_expression_bounds(expr, effective_size)
                                 }
                                 IndexValue::Variable(var) => {
-                                    // First, check for recursive function with index modification
-                                    if self.has_recursive_index_modification(
+                                    // VRA suppression: if VRA proves index in [0, size-1], safe.
+                                    let vra_safe = self
+                                        .vra_var_ranges_at(node)
+                                        .and_then(|ranges| ranges.get(var).copied())
+                                        .map(|range| {
+                                            range.min >= 0
+                                                && (range.max as usize) < effective_size
+                                        })
+                                        .unwrap_or(false);
+                                    if vra_safe {
+                                        false
+                                    } else if self.has_recursive_index_modification(
                                         node,
                                         var,
                                         source,
@@ -2048,15 +2131,11 @@ impl Arr30C {
                                     ) {
                                         true
                                     } else if let Some(func_node) = find_containing_function(node) {
-                                        // Function parameters used as indices without bounds checking are high risk
-                                        // Check if the function has ANY bounds validation
                                         if is_function_parameter(&func_node, var, source) {
-                                            // Only flag if there's NO bounds checking for this parameter
                                             !self.has_function_parameter_bounds_check(
                                                 &func_node, var, source,
                                             )
                                         } else {
-                                            // Local variable (e.g., loop variable) - check for proper bounds checking
                                             !self.has_proper_bounds_check(
                                                 node,
                                                 source,
@@ -2065,7 +2144,6 @@ impl Arr30C {
                                             )
                                         }
                                     } else {
-                                        // Variable index - check for bounds checking
                                         !self.has_proper_bounds_check(
                                             node,
                                             source,
