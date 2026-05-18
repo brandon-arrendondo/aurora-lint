@@ -1293,7 +1293,12 @@ fn resolve_local_var_range_depth(
                     }
                     // Check for evaluable assignment (data = CONST or data = expr)
                     if let Some(range) = check_stmt_for_var_assignment(
-                        &stmt, var_name, source, macros, loop_ranges, depth,
+                        &stmt,
+                        var_name,
+                        source,
+                        macros,
+                        loop_ranges,
+                        depth,
                     ) {
                         last_range = Some(range);
                         invalidated = false;
@@ -1353,7 +1358,11 @@ fn check_stmt_for_var_assignment(
                                         let rhs_name =
                                             right.utf8_text(source.as_bytes()).unwrap_or("");
                                         return resolve_local_var_range_depth(
-                                            rhs_name, stmt, source, macros, loop_ranges,
+                                            rhs_name,
+                                            stmt,
+                                            source,
+                                            macros,
+                                            loop_ranges,
                                             depth + 1,
                                         );
                                     }
@@ -1381,10 +1390,14 @@ fn check_stmt_for_var_assignment(
                                     return Some(r);
                                 }
                                 if value.kind() == "identifier" && depth < 3 {
-                                    let rhs_name =
-                                        value.utf8_text(source.as_bytes()).unwrap_or("");
+                                    let rhs_name = value.utf8_text(source.as_bytes()).unwrap_or("");
                                     return resolve_local_var_range_depth(
-                                        rhs_name, stmt, source, macros, loop_ranges, depth + 1,
+                                        rhs_name,
+                                        stmt,
+                                        source,
+                                        macros,
+                                        loop_ranges,
+                                        depth + 1,
                                     );
                                 }
                                 return None;
@@ -1412,7 +1425,12 @@ fn check_stmt_for_var_assignment(
                         for j in 0..child.child_count() {
                             if let Some(inner) = child.child(j) {
                                 if let Some(r) = check_stmt_for_var_assignment(
-                                    &inner, var_name, source, macros, loop_ranges, depth,
+                                    &inner,
+                                    var_name,
+                                    source,
+                                    macros,
+                                    loop_ranges,
+                                    depth,
                                 ) {
                                     last_range = Some(r);
                                 } else if stmt_modifies_var(&inner, var_name, source) {
@@ -1484,30 +1502,31 @@ fn stmt_modifies_var(stmt: &Node, var_name: &str, source: &str) -> bool {
             for i in 0..stmt.child_count() {
                 if let Some(child) = stmt.child(i) {
                     match child.kind() {
-                        "compound_statement" => {
-                            // Skip if this block declares var_name (shadow)
-                            if !compound_declares_var(&child, var_name, source) {
-                                for j in 0..child.child_count() {
-                                    if let Some(inner) = child.child(j) {
-                                        if stmt_modifies_var(&inner, var_name, source) {
-                                            return true;
-                                        }
+                        // Skip if this block declares var_name (shadow)
+                        "compound_statement"
+                            if !compound_declares_var(&child, var_name, source) =>
+                        {
+                            for j in 0..child.child_count() {
+                                if let Some(inner) = child.child(j) {
+                                    if stmt_modifies_var(&inner, var_name, source) {
+                                        return true;
                                     }
                                 }
                             }
                         }
+                        "compound_statement" => {}
                         // Single-statement bodies (no braces): check directly
-                        "expression_statement" | "declaration" => {
-                            if stmt_modifies_var(&child, var_name, source) {
-                                return true;
-                            }
+                        "expression_statement" | "declaration"
+                            if stmt_modifies_var(&child, var_name, source) =>
+                        {
+                            return true;
                         }
                         // Nested control flow (else-if chains, etc.)
-                        "if_statement" | "while_statement" | "for_statement"
-                        | "do_statement" | "switch_statement" => {
-                            if stmt_modifies_var(&child, var_name, source) {
-                                return true;
-                            }
+                        "if_statement" | "while_statement" | "for_statement" | "do_statement"
+                        | "switch_statement"
+                            if stmt_modifies_var(&child, var_name, source) =>
+                        {
+                            return true;
                         }
                         // switch case labels and goto targets
                         "case_statement" | "default_statement" | "labeled_statement" => {

@@ -117,12 +117,28 @@ impl Pre31C {
         // Known unsafe macros (used with linear search; this is called only when
         // is_unsafe_macro returns true in check_macro_call, which filters first)
         const UNSAFE_MACROS: &[&str] = &[
-            "ABS", "abs", "MAX", "max", "MIN", "min",
-            "assert", "getc", "putc", "getwc", "putwc",
-            "SWAP", "swap", "CLAMP", "clamp",
-            "NDEBUG", "DEBUG",
-            "SAFE_FREE", "SAFE_DELETE",
-            "IF_DEBUG", "WHEN", "UNLESS",
+            "ABS",
+            "abs",
+            "MAX",
+            "max",
+            "MIN",
+            "min",
+            "assert",
+            "getc",
+            "putc",
+            "getwc",
+            "putwc",
+            "SWAP",
+            "swap",
+            "CLAMP",
+            "clamp",
+            "NDEBUG",
+            "DEBUG",
+            "SAFE_FREE",
+            "SAFE_DELETE",
+            "IF_DEBUG",
+            "WHEN",
+            "UNLESS",
         ];
 
         UNSAFE_MACROS.contains(&function_name)

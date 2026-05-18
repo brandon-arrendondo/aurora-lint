@@ -231,7 +231,11 @@ impl Arr30C {
             .iter()
             .map(|(name, typed)| (name.clone(), typed.range))
             .collect();
-        if var_ranges.is_empty() { None } else { Some(var_ranges) }
+        if var_ranges.is_empty() {
+            None
+        } else {
+            Some(var_ranges)
+        }
     }
 
     /// Analyze all buffer allocations in the source code using AST traversal
@@ -2117,8 +2121,7 @@ impl Arr30C {
                                         .vra_var_ranges_at(node)
                                         .and_then(|ranges| ranges.get(var).copied())
                                         .map(|range| {
-                                            range.min >= 0
-                                                && (range.max as usize) < effective_size
+                                            range.min >= 0 && (range.max as usize) < effective_size
                                         })
                                         .unwrap_or(false);
                                     if vra_safe {
