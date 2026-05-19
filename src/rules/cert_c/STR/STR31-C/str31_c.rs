@@ -226,8 +226,16 @@ impl Str31C {
         None
     }
 
-    /// Find buffer size by tracing variable definitions using simpler line-based approach
-    fn find_buffer_size(&self, var_name: &str, _root: &Node, source: &str) -> Option<usize> {
+    /// Find buffer size by tracing variable definitions using simpler line-based approach.
+    /// `fn_range` restricts malloc/ALLOCA searches to a function's line range when provided,
+    /// preventing cross-function pollution (e.g. bad-section malloc bleeding into good-section).
+    fn find_buffer_size(
+        &self,
+        var_name: &str,
+        _root: &Node,
+        source: &str,
+        fn_range: Option<(usize, usize)>,
+    ) -> Option<usize> {
         // First check for #define constants
         if let Some(define_size) = self.find_define_constant(var_name, _root, source) {
             return Some(define_size);
@@ -235,15 +243,34 @@ impl Str31C {
 
         let lines: Vec<&str> = source.lines().collect();
 
-        // Look for array declarations like: char var_name[SIZE] or char var_name[N*M]
+        // Look for array declarations like: char var_name[SIZE] or char var_name[N*M].
+        // Skip element-assignment lines like `data[0] = '\0'` — those are subscript writes,
+        // not declarations, and the captured index (0) is not the buffer size.
         for line in &lines {
             if line.contains(var_name) && line.contains("[") && line.contains("]") {
                 // Try simple numeric size first: var_name[N]
                 let pattern = format!(r"\b{}\s*\[\s*(\d+)\s*\]", regex::escape(var_name));
                 if let Ok(re) = regex::Regex::new(&pattern) {
                     if let Some(captures) = re.captures(line) {
-                        if let Ok(size) = captures[1].parse::<usize>() {
-                            return Some(size);
+                        // Guard: if ] is immediately followed by `= <scalar>` this is an
+                        // element assignment (data[0] = '\0'), not a declaration.
+                        // Scalar RHS = char literal, wide char literal, number, or NULL.
+                        // Allow macro/string/brace initializers (declaration syntax).
+                        let match_end = captures.get(0).unwrap().end();
+                        let after = line[match_end..].trim_start();
+                        let is_element_assign = after.starts_with('=') && {
+                            let rhs = after[1..].trim_start();
+                            rhs.starts_with('\'')    // char literal: '\0'
+                            || rhs.starts_with("L'") // wide char: L'\0'
+                            || rhs.starts_with("u'") || rhs.starts_with("U'")
+                            || rhs.chars().next().is_some_and(|c| c.is_ascii_digit())
+                            || rhs.starts_with("NULL")
+                            || rhs.starts_with("nullptr")
+                        };
+                        if !is_element_assign {
+                            if let Ok(size) = captures[1].parse::<usize>() {
+                                return Some(size);
+                            }
                         }
                     }
                 }
@@ -254,17 +281,31 @@ impl Str31C {
                 );
                 if let Ok(re) = regex::Regex::new(&arith_pattern) {
                     if let Some(captures) = re.captures(line) {
-                        if let (Ok(a), Ok(b)) =
-                            (captures[1].parse::<usize>(), captures[3].parse::<usize>())
-                        {
-                            let size = match &captures[2] {
-                                "*" => a.checked_mul(b),
-                                "+" => a.checked_add(b),
-                                "-" => a.checked_sub(b),
-                                _ => None,
-                            };
-                            if let Some(s) = size {
-                                return Some(s);
+                        let match_end = captures.get(0).unwrap().end();
+                        let after = line[match_end..].trim_start();
+                        let is_element_assign = after.starts_with('=') && {
+                            let rhs = after[1..].trim_start();
+                            rhs.starts_with('\'')
+                                || rhs.starts_with("L'")
+                                || rhs.starts_with("u'")
+                                || rhs.starts_with("U'")
+                                || rhs.chars().next().is_some_and(|c| c.is_ascii_digit())
+                                || rhs.starts_with("NULL")
+                                || rhs.starts_with("nullptr")
+                        };
+                        if !is_element_assign {
+                            if let (Ok(a), Ok(b)) =
+                                (captures[1].parse::<usize>(), captures[3].parse::<usize>())
+                            {
+                                let size = match &captures[2] {
+                                    "*" => a.checked_mul(b),
+                                    "+" => a.checked_add(b),
+                                    "-" => a.checked_sub(b),
+                                    _ => None,
+                                };
+                                if let Some(s) = size {
+                                    return Some(s);
+                                }
                             }
                         }
                     }
@@ -272,42 +313,66 @@ impl Str31C {
             }
         }
 
-        // Look for malloc assignments with strlen + 1
-        for line in &lines {
+        // Restrict dynamic-allocation scans to the enclosing function to prevent cross-function
+        // pollution (e.g. bad-section malloc(50) bleeding into good-section analysis).
+        let fn_start = fn_range.map_or(0, |(s, _)| s);
+        let fn_end = fn_range.map_or(lines.len().saturating_sub(1), |(_, e)| e);
+
+        // Look for malloc/calloc assignments with strlen + 1 → dynamically safe
+        for (idx, line) in lines.iter().enumerate() {
+            if idx < fn_start || idx > fn_end {
+                continue;
+            }
             if line.contains(var_name)
                 && line.contains("=")
                 && (line.contains("malloc") || line.contains("calloc"))
                 && line.contains("strlen")
                 && line.contains("+ 1")
             {
-                return Some(usize::MAX); // Safe dynamic allocation
+                return Some(usize::MAX);
             }
         }
 
-        // ENHANCED: Look for malloc assignments with specific sizes
-        for line in &lines {
-            if line.contains(var_name) && line.contains("=") && line.contains("malloc") {
-                // Pattern: buffer = malloc(10);
-                let pattern = format!(
-                    r"{}\s*=\s*malloc\s*\(\s*(\d+)\s*\)",
-                    regex::escape(var_name)
-                );
-                if let Ok(re) = regex::Regex::new(&pattern) {
-                    if let Some(captures) = re.captures(line) {
-                        if let Ok(size) = captures[1].parse::<usize>() {
-                            return Some(size);
+        // Look for malloc/calloc assignments with specific sizes.
+        // Handles casts: `data = (char *)malloc(N*sizeof(char))` and plain `malloc(N)`.
+        let malloc_sizeof_re =
+            regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[*,]\s*sizeof").ok();
+        let malloc_plain_re = regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[,)]").ok();
+        for (idx, line) in lines.iter().enumerate() {
+            if idx < fn_start || idx > fn_end {
+                continue;
+            }
+            if line.contains(var_name)
+                && line.contains("=")
+                && (line.contains("malloc") || line.contains("calloc"))
+            {
+                // malloc(N*sizeof(type)) or calloc(N, sizeof(type))
+                if let Some(re) = &malloc_sizeof_re {
+                    if let Some(caps) = re.captures(line) {
+                        if let Ok(n) = caps[1].parse::<usize>() {
+                            return Some(n);
+                        }
+                    }
+                }
+                // Plain malloc(N) or calloc(N, M) with numeric first arg
+                if let Some(re) = &malloc_plain_re {
+                    if let Some(caps) = re.captures(line) {
+                        if let Ok(n) = caps[1].parse::<usize>() {
+                            return Some(n);
                         }
                     }
                 }
             }
         }
 
-        // ENHANCED: Look for realloc patterns with size calculations
-        for line in &lines {
+        // Look for realloc patterns with size calculations
+        for (idx, line) in lines.iter().enumerate() {
+            if idx < fn_start || idx > fn_end {
+                continue;
+            }
             if line.contains(var_name) && line.contains("=") && line.contains("realloc") {
-                // Pattern: buffer = realloc(buffer, new_size);
                 if line.contains("strlen") && (line.contains("+") || line.contains("new_size")) {
-                    return Some(usize::MAX); // Safe calculated reallocation
+                    return Some(usize::MAX);
                 }
             }
         }
@@ -315,9 +380,13 @@ impl Str31C {
         // Look for ALLOCA/alloca assignments: var = (type *)ALLOCA(N*sizeof(type))
         if let Ok(assign_re) = regex::Regex::new(&format!(r"\b{}\s*=", regex::escape(var_name))) {
             let alloca_sizeof_re =
-                regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\*\s*sizeof\s*\(");
-            let alloca_simple_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\)");
-            for line in &lines {
+                regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\*\s*sizeof\s*\(").ok();
+            let alloca_simple_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\)").ok();
+            let alloca_ident_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*\(?(\w+)").ok();
+            for (idx, line) in lines.iter().enumerate() {
+                if idx < fn_start || idx > fn_end {
+                    continue;
+                }
                 // Use word-boundary regex to avoid "data" matching "dataBuffer"
                 if !assign_re.is_match(line)
                     || !(line.contains("ALLOCA") || line.contains("alloca"))
@@ -329,7 +398,7 @@ impl Str31C {
                     return Some(usize::MAX);
                 }
                 // Pattern: ALLOCA(N*sizeof(type)) — N is the element count
-                if let Ok(ref re) = alloca_sizeof_re {
+                if let Some(re) = &alloca_sizeof_re {
                     if let Some(caps) = re.captures(line) {
                         if let Ok(n) = caps[1].parse::<usize>() {
                             return Some(n);
@@ -337,10 +406,33 @@ impl Str31C {
                     }
                 }
                 // Simpler: ALLOCA(N) without sizeof
-                if let Ok(ref re) = alloca_simple_re {
+                if let Some(re) = &alloca_simple_re {
                     if let Some(caps) = re.captures(line) {
                         if let Ok(n) = caps[1].parse::<usize>() {
                             return Some(n);
+                        }
+                    }
+                }
+                // ALLOCA arg is a variable (e.g. ALLOCA((dataLen+1)*1)) — check if that
+                // variable was assigned from strlen() anywhere in the file, which means
+                // the allocation is exactly sized for the source string.
+                if let Some(re) = &alloca_ident_re {
+                    if let Some(caps) = re.captures(line) {
+                        let first_ident = &caps[1];
+                        let skip = matches!(
+                            first_ident,
+                            "sizeof" | "char" | "wchar_t" | "int" | "size_t" | "void" | "long"
+                        );
+                        if !skip {
+                            let strlen_pat = format!(
+                                r"\b{}\s*=\s*(?:w?)strlen\s*\(",
+                                regex::escape(first_ident)
+                            );
+                            if let Ok(strlen_re) = regex::Regex::new(&strlen_pat) {
+                                if lines.iter().any(|l| strlen_re.is_match(l)) {
+                                    return Some(usize::MAX);
+                                }
+                            }
                         }
                     }
                 }
@@ -432,15 +524,16 @@ impl Str31C {
         source: &str,
         call_node: &Node,
     ) -> Option<usize> {
+        let fn_range = Self::find_enclosing_function_lines(call_node);
         // Direct lookup first
-        if let Some(size) = self.find_buffer_size(var_name, root, source) {
+        if let Some(size) = self.find_buffer_size(var_name, root, source, fn_range) {
             return Some(size);
         }
         // Try alias resolution (one level)
         if let Some(alias_target) =
             Self::resolve_pointer_alias_in_function(call_node, var_name, source)
         {
-            return self.find_buffer_size(&alias_target, root, source);
+            return self.find_buffer_size(&alias_target, root, source, fn_range);
         }
         None
     }
@@ -501,8 +594,9 @@ impl Str31C {
 
         // If we have destination name, try to find its size
         if let Some(dest) = dest_name {
-            // NEW: Check if destination was previously freed
-            if self.was_buffer_freed(dest, source) {
+            // NEW: Check if destination was previously freed (scoped to enclosing function)
+            let fn_range_for_freed = Self::find_enclosing_function_lines(arguments);
+            if self.was_buffer_freed_in_range(dest, source, fn_range_for_freed) {
                 return false; // Always unsafe to use freed memory
             }
             // Check if this strcpy/strcat happens after a realloc with proper size calculation
@@ -697,8 +791,9 @@ impl Str31C {
 
         // If we have destination name, try to find its size
         if let Some(dest) = dest_name {
-            // Check if destination was previously freed
-            if self.was_buffer_freed(dest, source) {
+            // Check if destination was previously freed (scoped to enclosing function)
+            let fn_range_for_freed = Self::find_enclosing_function_lines(arguments);
+            if self.was_buffer_freed_in_range(dest, source, fn_range_for_freed) {
                 return false; // Always unsafe to use freed memory
             }
             // Check if this strcat happens after a realloc with proper size calculation
@@ -1085,33 +1180,48 @@ impl Str31C {
     }
 
     /// Check if a buffer was previously freed
+    #[allow(dead_code)]
     fn was_buffer_freed(&self, var_name: &str, source: &str) -> bool {
+        self.was_buffer_freed_in_range(var_name, source, None)
+    }
+
+    /// Check if var_name is freed before use in `fn_range` (0-indexed rows).
+    /// When fn_range is None, scans the entire file (legacy behavior).
+    fn was_buffer_freed_in_range(
+        &self,
+        var_name: &str,
+        source: &str,
+        fn_range: Option<(usize, usize)>,
+    ) -> bool {
         let lines: Vec<&str> = source.lines().collect();
+        let (scan_start, scan_end) = match fn_range {
+            Some((s, e)) => (s, e.min(lines.len().saturating_sub(1))),
+            None => (0, lines.len().saturating_sub(1)),
+        };
         let mut was_freed = false;
-        let mut freed_line_num = 0;
-        let mut _current_line_num = 0;
+        let mut freed_row = 0;
 
         for (idx, line) in lines.iter().enumerate() {
-            _current_line_num = idx + 1;
+            if idx < scan_start || idx > scan_end {
+                continue;
+            }
 
-            // Look for free(var_name)
             if line.contains("free") && line.contains(var_name) {
                 let pattern = format!(r"free\s*\(\s*{}\s*\)", regex::escape(var_name));
                 if let Ok(re) = regex::Regex::new(&pattern) {
                     if re.is_match(line) {
                         was_freed = true;
-                        freed_line_num = _current_line_num;
+                        freed_row = idx;
                     }
                 }
             }
 
-            // If we see strcpy/strcat after free, it's a violation
             if was_freed
-                && _current_line_num > freed_line_num
+                && idx > freed_row
                 && (line.contains("strcpy") || line.contains("strcat"))
                 && line.contains(var_name)
             {
-                return true; // Found use after free
+                return true;
             }
         }
 
@@ -1320,7 +1430,7 @@ impl Str31C {
         root: &Node,
     ) -> Option<RuleViolation> {
         // Get destination buffer size using the already-parsed root node
-        let buffer_size = self.find_buffer_size(dest_var, root, source)?;
+        let buffer_size = self.find_buffer_size(dest_var, root, source, None)?;
 
         // Start with initial buffer content
         let mut cumulative_length = self.get_initial_buffer_content_length(dest_var, source);
