@@ -334,6 +334,37 @@ fn process_statement_for_ranges(
     }
 }
 
+/// Wrap a VRA range to fit an unsigned type's actual representation.
+///
+/// C converts negative signed integer literals to unsigned by wrapping:
+/// `unsigned int x = -2` stores `UINT_MAX - 1 = 4294967294`, not -2.
+/// VRA evaluates the literal as -2 (signed), then stores it without
+/// conversion — so downstream checks see a negative range for an unsigned
+/// variable and produce false positives.
+///
+/// Handles the common all-negative-range case (e.g., `data = -2`).
+/// Mixed ranges (spanning 0) are widened to the full unsigned type range.
+fn apply_unsigned_wrapping(range: ValueRange, vt: &VarType) -> ValueRange {
+    if vt.is_signed || range.min >= 0 {
+        return range;
+    }
+    if vt.bit_width >= 64 {
+        // Can't represent wrapped value in i64 (UINT64_MAX overflows).
+        // Return full unsigned 64-bit range as representable in i64.
+        return ValueRange::new(0, i64::MAX);
+    }
+    let modulus = 1i64 << vt.bit_width;
+    if range.max < 0 {
+        // All values negative: wrapping is monotone, preserves order.
+        let wrapped_min = ((range.min % modulus) + modulus) % modulus;
+        let wrapped_max = ((range.max % modulus) + modulus) % modulus;
+        ValueRange::new(wrapped_min, wrapped_max)
+    } else {
+        // Mixed: negative..non-negative — use full unsigned type range.
+        vt.full_range()
+    }
+}
+
 /// Process a declaration, extracting type and initial value range.
 fn process_declaration_range(
     node: &Node,
@@ -360,9 +391,14 @@ fn process_declaration_range(
                     if let Some(value) = child.child_by_field_name("value") {
                         // Has initializer: try to evaluate it
                         let var_ranges = extract_var_ranges_from_state(state);
-                        if let Some(range) =
+                        if let Some(raw_range) =
                             const_eval::try_evaluate_range(&value, source, macros, &var_ranges)
                         {
+                            let range = if let Some(vt) = &var_type {
+                                apply_unsigned_wrapping(raw_range, vt)
+                            } else {
+                                raw_range
+                            };
                             state.insert(
                                 var_name,
                                 TypedRange {
@@ -409,9 +445,37 @@ fn process_declaration_range(
                         );
                     }
                 }
+            } else if is_plain_declarator(child.kind()) {
+                // Plain declarator without initializer: `unsigned int data;`
+                // tree-sitter C emits just an `identifier` (or `array_declarator`,
+                // `pointer_declarator`, etc.) as a direct child of the declaration.
+                let var_name = get_declarator_name(&child, source);
+                if var_name.is_empty() || is_pointer_or_array(&child) {
+                    continue;
+                }
+                let range = var_type
+                    .as_ref()
+                    .map(|t| t.full_range())
+                    .unwrap_or(ValueRange::new(i64::MIN, i64::MAX));
+                state.insert(
+                    var_name,
+                    TypedRange {
+                        range,
+                        var_type: var_type.clone(),
+                    },
+                );
             }
         }
     }
+}
+
+/// Returns true if this node kind represents a plain (non-initialized) declarator
+/// that is a direct child of a declaration node.
+fn is_plain_declarator(kind: &str) -> bool {
+    matches!(
+        kind,
+        "identifier" | "array_declarator" | "pointer_declarator" | "function_declarator"
+    )
 }
 
 /// Process an expression that may update ranges (assignments, increments).
@@ -436,11 +500,16 @@ fn process_expression_range(
 
                     match op.as_str() {
                         "=" => {
-                            if let Some(range) =
+                            if let Some(raw_range) =
                                 const_eval::try_evaluate_range(&right, source, macros, &var_ranges)
                             {
                                 let var_type =
                                     state.get(&var_name).and_then(|t| t.var_type.clone());
+                                let range = if let Some(vt) = &var_type {
+                                    apply_unsigned_wrapping(raw_range, vt)
+                                } else {
+                                    raw_range
+                                };
                                 state.insert(var_name, TypedRange { range, var_type });
                             } else if let Some(range) =
                                 resolve_call_return_range(&right, source, summaries)
@@ -1256,6 +1325,46 @@ pub fn eval_expr_range_at(
 
     let var_ranges = extract_var_ranges_from_state(&state);
     const_eval::try_evaluate_range(expr_node, source, macros, &var_ranges)
+}
+
+/// Get all variable ranges at `byte_offset` using intra-block forward simulation.
+///
+/// Unlike reading `block_entry_ranges` directly (which reflects only predecessors),
+/// this replays statements from the block entry up to—but not including—the offset.
+/// This handles single-block functions and intra-block assignments correctly.
+pub fn get_all_var_ranges_at(
+    result: &RangeAnalysisResult,
+    cfg: &FunctionCfg,
+    body: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    byte_offset: usize,
+) -> Option<VarRangeMap> {
+    let block = find_block_containing(cfg, byte_offset)?;
+    let entry = result.block_entry_ranges.get(&block.id)?;
+    let replay_summaries = build_replay_summaries(&result.return_ranges);
+    let mut state = entry.clone();
+    let empty_types = HashMap::new();
+    for &(start, end) in &block.statements {
+        if start >= byte_offset {
+            break;
+        }
+        if let Some(stmt_node) = find_node_at_range(body, start, end) {
+            process_statement_for_ranges(
+                &stmt_node,
+                source,
+                macros,
+                &replay_summaries,
+                &mut state,
+                &empty_types,
+            );
+        }
+    }
+    if state.is_empty() {
+        None
+    } else {
+        Some(extract_var_ranges_from_state(&state))
+    }
 }
 
 // ---------------------------------------------------------------------------

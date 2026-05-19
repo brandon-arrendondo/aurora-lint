@@ -3,7 +3,7 @@ use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
-use crate::analyze::value_range::RangeAnalysisResult;
+use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::std_functions;
@@ -33,7 +33,10 @@ impl Int30C {
     }
 
     /// Get VRA-derived variable ranges at a specific expression node.
-    fn vra_var_ranges_at(&self, expr_node: &Node) -> Option<VarRangeMap> {
+    ///
+    /// Uses intra-block forward simulation so that assignments within the same
+    /// basic block (e.g. single-block functions) are visible at the expression point.
+    fn vra_var_ranges_at(&self, expr_node: &Node, source: &str) -> Option<VarRangeMap> {
         let vra_results = self.vra_results.borrow();
         let cfgs = self.function_cfgs.borrow();
 
@@ -46,35 +49,10 @@ impl Int30C {
         let cfg = cfgs.get(&start_byte)?;
         let vra = vra_results.get(&start_byte)?;
         let byte_offset = expr_node.start_byte();
+        let macros = self.current_macros.borrow();
+        let body = func.child_by_field_name("body")?;
 
-        let block = cfg
-            .blocks
-            .iter()
-            .find(|b| {
-                b.statements
-                    .iter()
-                    .any(|&(s, e)| byte_offset >= s && byte_offset < e)
-            })
-            .or_else(|| {
-                cfg.blocks.iter().find(|b| {
-                    b.byte_range.0 > 0
-                        && byte_offset >= b.byte_range.0
-                        && byte_offset < b.byte_range.1
-                })
-            })?;
-
-        let entry = vra.block_entry_ranges.get(&block.id)?;
-
-        let var_ranges: VarRangeMap = entry
-            .iter()
-            .map(|(name, typed)| (name.clone(), typed.range))
-            .collect();
-
-        if var_ranges.is_empty() {
-            None
-        } else {
-            Some(var_ranges)
-        }
+        value_range::get_all_var_ranges_at(vra, cfg, &body, source, &macros, byte_offset)
     }
 }
 
@@ -325,7 +303,7 @@ impl Int30C {
                     source,
                     &self.current_macros.borrow(),
                     32,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -430,7 +408,7 @@ impl Int30C {
                     source,
                     &self.current_macros.borrow(),
                     32,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -520,7 +498,7 @@ impl Int30C {
                     source,
                     &self.current_macros.borrow(),
                     32,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -574,7 +552,7 @@ impl Int30C {
                     source,
                     &self.current_macros.borrow(),
                     32,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -864,7 +842,7 @@ impl Int30C {
                         source,
                         &self.current_macros.borrow(),
                         32,
-                        self.vra_var_ranges_at(node).as_ref(),
+                        self.vra_var_ranges_at(node, source).as_ref(),
                     ) {
                         return;
                     }
