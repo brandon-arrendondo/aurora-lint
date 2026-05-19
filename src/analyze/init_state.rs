@@ -424,8 +424,8 @@ fn process_declaration(
     let is_unsigned_char = type_text.contains("unsigned char")
         || type_text.contains("uint8_t")
         || type_text.contains("BYTE");
-    let is_char_type = (type_text.contains("char") || type_text.contains("wchar_t"))
-        && !is_unsigned_char;
+    let is_char_type =
+        (type_text.contains("char") || type_text.contains("wchar_t")) && !is_unsigned_char;
     let is_static = type_text.contains("static") || type_text.contains("_Thread_local");
 
     // Process each declarator
@@ -756,8 +756,7 @@ fn process_expression(
                                     // Only apply to non-char arrays (int/double/struct).
                                     // Char arrays (CWE-665: strcat pattern) are flagged
                                     // at the assignment itself as the detection point.
-                                    if rhs.is_array && rhs.state.is_unsafe() && !rhs.is_char_type
-                                    {
+                                    if rhs.is_array && rhs.state.is_unsafe() && !rhs.is_char_type {
                                         Some(rhs.allocation_count)
                                     } else {
                                         None
@@ -1810,8 +1809,7 @@ fn extract_constant_function(func_node: &Node, source: &str) -> Option<(String, 
                         if let Some(child) = stmt.child(j) {
                             if child.kind() != "return" && child.kind() != ";" {
                                 let empty: HashMap<String, i64> = HashMap::new();
-                                return_val =
-                                    const_eval::try_evaluate_expr(&child, source, &empty);
+                                return_val = const_eval::try_evaluate_expr(&child, source, &empty);
                             }
                         }
                     }

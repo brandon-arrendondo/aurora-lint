@@ -250,9 +250,9 @@ impl Con07C {
         // If function performs a compound write on multiple static variables, flag it.
         // Pure reads of multiple statics are not a compound-operation violation.
         if static_var_accesses.len() > 1 {
-            let has_compound_write = static_var_accesses.iter().any(|v| {
-                self.has_compound_operation_on_var(&body, source, v)
-            });
+            let has_compound_write = static_var_accesses
+                .iter()
+                .any(|v| self.has_compound_operation_on_var(&body, source, v));
             if has_compound_write {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),

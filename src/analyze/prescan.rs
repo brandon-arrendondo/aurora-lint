@@ -148,8 +148,7 @@ pub fn prescan_directories(
                 )
             })
         {
-            let is_header =
-                entry.path().extension().and_then(|ext| ext.to_str()) == Some("h");
+            let is_header = entry.path().extension().and_then(|ext| ext.to_str()) == Some("h");
             all_files.push((entry.path().to_path_buf(), is_header));
         }
     }
@@ -193,7 +192,9 @@ pub fn prescan_directories(
                     existing.has_env03_taint_source |= summary.has_env03_taint_source;
                     existing.returns_tainted |= summary.returns_tainted;
                     existing.has_relative_command_write |= summary.has_relative_command_write;
-                    existing.returns_from_callees.extend(summary.returns_from_callees);
+                    existing
+                        .returns_from_callees
+                        .extend(summary.returns_from_callees);
                 }
                 None => {
                     function_summaries.insert(name, summary);
@@ -221,7 +222,10 @@ pub fn prescan_directories(
             callsite_field_args.entry(callee).or_default().extend(args);
         }
         for (callee, args) in r.callsite_pointee_args {
-            callsite_pointee_args.entry(callee).or_default().extend(args);
+            callsite_pointee_args
+                .entry(callee)
+                .or_default()
+                .extend(args);
         }
         for (callee, args) in r.callsite_int_args {
             callsite_int_args.entry(callee).or_default().extend(args);
@@ -2464,8 +2468,7 @@ fn collect_one_constant_function(
                         if let Some(child) = stmt.child(j) {
                             if child.kind() != "return" && child.kind() != ";" {
                                 let empty: HashMap<String, i64> = HashMap::new();
-                                return_val =
-                                    const_eval::try_evaluate_expr(&child, source, &empty);
+                                return_val = const_eval::try_evaluate_expr(&child, source, &empty);
                             }
                         }
                     }

@@ -26,6 +26,7 @@ use progress::CLIProgressReporter;
 use ui::TerminalUI;
 
 use std::collections::HashSet;
+use std::path::Path;
 
 fn main() {
     let result = run();
@@ -137,7 +138,7 @@ fn run() -> Result<i32> {
             Arg::new("verbose")
                 .long("verbose")
                 .short('v')
-                .help("Increase output verbosity (-v: per-rule progress, -vv: per-violation detail)")
+                .help("Increase output verbosity (-v: per-rule scanning progress)")
                 .action(clap::ArgAction::Count),
         )
         .arg(
@@ -244,6 +245,27 @@ fn run() -> Result<i32> {
     }
     if let Some(ref rules) = rule_filter {
         violations.retain(|v| rules.contains(&v.rule_id));
+    }
+
+    // Print violations to stdout
+    let cwd = std::env::current_dir().unwrap_or_default();
+    for v in &violations {
+        let display_path = Path::new(&v.file_path)
+            .strip_prefix(&cwd)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| v.file_path.clone());
+        let sev = if v.needs_manual_review() {
+            format!("{}?", v.severity.to_string().to_lowercase())
+        } else {
+            v.severity.to_string().to_lowercase()
+        };
+        println!(
+            "{}:{}:{}: [{}] {}: {}",
+            display_path, v.line, v.column, sev, v.rule_id, v.message
+        );
+        if let Some(ref hint) = v.suggestion {
+            println!("  note: {}", hint);
+        }
     }
 
     // Export to file if requested (includes both active and suppressed violations)

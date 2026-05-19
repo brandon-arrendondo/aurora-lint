@@ -66,7 +66,8 @@ impl Con33C {
                         severity: self.severity(),
                         message: format!(
                             "Call to non-thread-safe function '{}'. {}",
-                            raw_name.trim(), remediation
+                            raw_name.trim(),
+                            remediation
                         ),
                         suggestion: Some(remediation.to_string()),
                         ..Default::default()
