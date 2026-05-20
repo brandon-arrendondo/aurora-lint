@@ -1719,10 +1719,17 @@ pub fn expression_fits_in_unsigned_vra(
     bits: u32,
     vra_var_ranges: Option<&VarRangeMap>,
 ) -> bool {
-    // Try VRA-provided ranges first
+    // Try VRA-provided ranges first.
+    // VRA is used only to PROVE SAFETY (suppress): if VRA says the result fits,
+    // return true immediately. If VRA says overflow is possible, fall through to
+    // syntactic analysis — VRA's loop widening can be over-conservative (e.g.
+    // widening data to UINT_MAX after `data=2` in a bounded loop), and the
+    // syntactic path has separate constant-propagation that handles those cases.
     if let Some(var_ranges) = vra_var_ranges {
         if let Some(range) = try_evaluate_range(node, source, macros, var_ranges) {
-            return range.fits_in_unsigned(bits);
+            if range.fits_in_unsigned(bits) {
+                return true;
+            }
         }
     }
     // Fallback to syntactic analysis
