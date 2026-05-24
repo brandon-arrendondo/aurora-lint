@@ -34,7 +34,7 @@ SCRIPT = PROJECT_DIR / "scripts" / "run_juliet_parallel.sh"
 ANALYZE_SCRIPT = PROJECT_DIR / "scripts" / "analyze_juliet_results.py"
 GENERATE_MAP_SCRIPT = PROJECT_DIR / "scripts" / "generate_rule_cwe_map.py"
 RULE_CWE_MAP = PROJECT_DIR / "data" / "rule_cwe_map.json"
-JULIET_BASE = Path.home() / "data" / "benchmarks" / "juliet-test-suite-c" / "testcases"
+JULIET_BASE = Path.home() / "toolchain" / "benchmarks" / "juliet-test-suite-c" / "testcases"
 RESULTS_BASE = Path("/tmp/juliet_results")
 STATE_FILE = Path("/tmp/juliet_bench.pid")  # stores JSON state (name kept for compat)
 

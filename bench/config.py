@@ -11,7 +11,7 @@ RULE_CWE_MAP = PROJECT_DIR / "data" / "rule_cwe_map.json"
 GENERATE_MAP_SCRIPT = PROJECT_DIR / "scripts" / "generate_rule_cwe_map.py"
 
 # ── Juliet test suite ─────────────────────────────────────────────────────────
-JULIET_BASE = Path.home() / "data" / "benchmarks" / "juliet-test-suite-c" / "testcases"
+JULIET_BASE = Path.home() / "toolchain" / "benchmarks" / "juliet-test-suite-c" / "testcases"
 
 # ── Database ──────────────────────────────────────────────────────────────────
 DB_PATH = PROJECT_DIR / "data" / "benchmarks.db"

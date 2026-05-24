@@ -76,7 +76,7 @@ def _load_remote_config() -> tuple[dict[str, str], str]:
 # ── Codebase Registry ─────────────────────────────────────────────────────────
 CODEBASES = {
     "libcrc": {
-        "path": Path.home() / "data" / "libcrc",
+        "path": Path.home() / "toolchain" / "libcrc",
         "sqc": {
             "scan_path": None,  # same as path (whole project)
             "includes": [],
@@ -93,7 +93,7 @@ CODEBASES = {
         },
     },
     "sqlite": {
-        "path": Path.home() / "data" / "sqlite",
+        "path": Path.home() / "toolchain" / "sqlite",
         "sqc": {
             "scan_path": None,
             "includes": [
@@ -113,7 +113,7 @@ CODEBASES = {
         },
     },
     "mosquitto": {
-        "path": Path.home() / "data" / "mosquitto",
+        "path": Path.home() / "toolchain" / "mosquitto",
         "sqc": {
             "scan_path": None,
             "includes": [
@@ -139,7 +139,7 @@ CODEBASES = {
         },
     },
     "curl": {
-        "path": Path.home() / "data" / "curl",
+        "path": Path.home() / "toolchain" / "curl",
         "sqc": {
             "scan_path": None,
             "includes": [
@@ -165,7 +165,7 @@ CODEBASES = {
         },
     },
     "hostap": {
-        "path": Path.home() / "data" / "hostap",
+        "path": Path.home() / "toolchain" / "hostap",
         "sqc": {
             "scan_path": None,
             "includes": [
