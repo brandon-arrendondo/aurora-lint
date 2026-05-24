@@ -940,12 +940,32 @@ fn make_comparison_info(
             })
         }
         "==" => {
-            // x == N: true => [N, N], false => unchanged (can't represent gap)
+            // x == N: true => [N, N]
+            // false (fall-through) => x != N — mirror the != true_range narrowing.
+            // When N sits at one endpoint of x's existing range (or N==0 for
+            // non-negative x) we can produce a tight single-interval bound;
+            // otherwise we conservatively return full (gap is non-contiguous).
             if bound.min == bound.max {
+                let n = bound.min;
+                let false_range = if n == 0 && full.min == 0 {
+                    // x in [0, max] and x != 0 => x in [1, max]
+                    Some(ValueRange::new(1, full.max))
+                } else if n == 0 && full.max == 0 {
+                    // x in [min, 0] and x != 0 => x in [min, -1]
+                    Some(ValueRange::new(full.min, -1))
+                } else if n == full.min {
+                    // N is the lower endpoint => x in [N+1, max]
+                    Some(ValueRange::new(n.saturating_add(1), full.max))
+                } else if n == full.max {
+                    // N is the upper endpoint => x in [min, N-1]
+                    Some(ValueRange::new(full.min, n.saturating_sub(1)))
+                } else {
+                    Some(full) // N in interior; non-contiguous gap
+                };
                 Some(RangeConditionInfo {
                     var_name,
                     true_range: Some(bound),
-                    false_range: Some(full),
+                    false_range,
                 })
             } else {
                 None
@@ -1881,6 +1901,65 @@ int safe_div(int a, int b) {
         // After the guard, on the false branch of `b == 0`, b should not be [0,0]
         let (_, _, result) = parse_and_analyze(code);
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_eq_zero_guard_narrows_unsigned_fallthrough() {
+        // if (b == 0U) return; — on the fall-through path b must be non-zero.
+        // For an unsigned int parameter (range [0, UINT32_MAX]), the false branch of
+        // `b == 0` should narrow b to [1, UINT32_MAX], not leave it as [0, UINT32_MAX].
+        //
+        // A dummy statement in the fall-through block before the return ensures that
+        // block.byte_range.0 is anchored before the queried line's whitespace.
+        // Line numbers: 1=empty, 2=sig, 3=if, 4=dummy, 5=return b, 6=}
+        let code = r#"
+unsigned int f(unsigned int b) {
+    if (b == 0U) return 0U;
+    unsigned int keep = b;
+    return keep;
+}
+"#;
+        // Line 5 is `    return keep;` — on fall-through b (and keep) should be >= 1
+        let range = get_range_at_line(code, "b", 5);
+        let r = range.expect("should have range for b at line 5");
+        assert!(
+            r.min >= 1,
+            "b should be >= 1 after == 0 guard, got min={}",
+            r.min
+        );
+    }
+
+    #[test]
+    fn test_or_condition_fallthrough_narrows_both_bounds() {
+        // if (b == 0U || b >= BITS) return; — rotright pattern.
+        // Fall-through: b != 0 AND b < BITS, so b in [1, 31].
+        //
+        // A dummy statement in the fall-through block before the return ensures
+        // block.byte_range.0 is anchored before the queried line's whitespace.
+        // Lines: 1=empty, 2=#define, 3=sig, 4=if {, 5=return a, 6=}, 7=dummy, 8=return b, 9=}
+        let code = r#"
+#define BITS 32U
+unsigned int rotright(unsigned int a, unsigned int b) {
+    if (b == 0U || b >= BITS) {
+        return a;
+    }
+    unsigned int keep = b;
+    return keep;
+}
+"#;
+        // Line 8 is `    return keep;` — after the || guard, b must be in [1, 31]
+        let range = get_range_at_line(code, "b", 8);
+        let r = range.expect("should have range for b at line 8");
+        assert!(
+            r.min >= 1,
+            "b should be >= 1 after == 0 || >= 32 guard, got min={}",
+            r.min
+        );
+        assert!(
+            r.max <= 31,
+            "b should be <= 31 after == 0 || >= 32 guard, got max={}",
+            r.max
+        );
     }
 
     #[test]
