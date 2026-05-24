@@ -979,8 +979,10 @@ fn crossfile_header_declared_suppresses_dcl15c() {
 }
 
 #[test]
-fn crossfile_header_not_suppressed_without_d_flag() {
-    // Without -d, prescan has no header info → DCL15-C should flag all non-static functions.
+fn crossfile_sibling_header_suppresses_public_api_without_d_flag() {
+    // sqc auto-scans sibling .h files even without -d, so public API functions
+    // declared in public_api.h should NOT be flagged by DCL15-C.
+    // Only internal_helper() — which has no header prototype — should be flagged.
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join("crossfile_header");
@@ -1000,10 +1002,20 @@ fn crossfile_header_not_suppressed_without_d_flag() {
         .filter(|v| v["rule_id"] == "DCL15-C")
         .collect();
 
-    // Without -d, all three functions should be flagged
+    // compute_value and print_result are in public_api.h — should not be flagged
+    let flagged_names: Vec<_> = dcl15.iter().filter_map(|v| v["message"].as_str()).collect();
     assert!(
-        dcl15.len() >= 3,
-        "Without -d, all non-static functions should be flagged (got {})",
-        dcl15.len()
+        flagged_names
+            .iter()
+            .all(|m| !m.contains("compute_value") && !m.contains("print_result")),
+        "Public API functions declared in sibling header should not be flagged: {:?}",
+        flagged_names
+    );
+
+    // internal_helper has no header prototype and must still be flagged
+    assert!(
+        flagged_names.iter().any(|m| m.contains("internal_helper")),
+        "internal_helper() has no header prototype — DCL15-C should still flag it (got: {:?})",
+        flagged_names
     );
 }

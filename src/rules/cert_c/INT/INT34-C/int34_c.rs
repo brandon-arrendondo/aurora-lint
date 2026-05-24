@@ -140,7 +140,11 @@ impl Int34C {
 
             // Try CFG-based VRA first (more precise)
             if let Some(range) = self.eval_shift_range_via_vra(node, &right_node, source) {
-                if range.min >= 0 && range.max < 32 {
+                // A compile-time constant shift (min == max, non-negative) is
+                // equivalent to a numeric literal — the compiler validates it and
+                // INT34-C adds nothing.  Variable shifts bounded to [0, 31] are
+                // also safe for 32-bit operands.
+                if range.min >= 0 && (range.min == range.max || range.max < 32) {
                     return;
                 }
             }
@@ -154,7 +158,8 @@ impl Int34C {
                 if let Some(range) =
                     const_eval::try_evaluate_range(&right_node, source, &macros, &var_ranges)
                 {
-                    if range.min >= 0 && range.max < 32 {
+                    // Same logic: single-value constants and 32-bit-bounded variables are safe.
+                    if range.min >= 0 && (range.min == range.max || range.max < 32) {
                         return;
                     }
                 }

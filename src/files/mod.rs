@@ -45,6 +45,18 @@ impl ProjectSource {
         }
     }
 
+    /// Returns the directory to pre-scan for cross-file context, if applicable.
+    ///
+    /// Returns Some(dir) when the target is a single `.c` file so that sibling
+    /// headers are included in the prescan. Returns None for directory/git targets
+    /// (the caller already knows the root to scan).
+    pub fn prescan_dir(&self) -> Option<String> {
+        match self {
+            ProjectSource::Git(_) => None,
+            ProjectSource::Directory(dir_source) => dir_source.prescan_dir(),
+        }
+    }
+
     pub fn source_type(&self) -> &str {
         match self {
             ProjectSource::Git(_) => "git repository",

@@ -283,6 +283,37 @@ pub fn prescan_directories(
     })
 }
 
+/// Scan only the `.h` files directly inside `parent_dir` to collect public API
+/// function declarations.
+///
+/// This is a lightweight alternative to [`prescan_directories`] used when sqc
+/// is given a single `.c` file with no explicit `-d` directories.  It populates
+/// only `header_declared_functions` — the data needed by DCL15-C and DCL19-C to
+/// distinguish intentionally-public API from internal helpers.  It intentionally
+/// does **not** populate `known_functions`, `function_summaries`, or any other
+/// cross-file field, so rules that require those (DCL31-C, EXP34-C, …) continue
+/// to require an explicit `-d` flag.
+pub fn prescan_sibling_headers(parent_dir: &str) -> Result<ProjectContext> {
+    let mut context = ProjectContext::new();
+    let mut parser = CParser::new()?;
+
+    for entry in WalkDir::new(parent_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("h"))
+    {
+        if let Ok((tree, source)) = parser.parse_file(&entry.path().to_string_lossy()) {
+            collect_header_declarations(
+                &tree.root_node(),
+                &source,
+                &mut context.header_declared_functions,
+            );
+        }
+    }
+
+    Ok(context)
+}
+
 /// Build a [`ProjectContext`] from a single already-parsed tree.
 ///
 /// This is the intra-file equivalent of [`prescan_directories`]: it computes
