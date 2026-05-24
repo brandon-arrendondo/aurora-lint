@@ -79,6 +79,21 @@ impl ValueRange {
         })
     }
 
+    /// Bitwise AND range: `self & other`.
+    ///
+    /// For non-negative operands the result is bounded by `min(self.max, other.max)` —
+    /// the classical mask-upper-bound approximation.  Returns `None` when either
+    /// operand may be negative (signed bitwise AND is implementation-defined in C).
+    pub fn bitand(&self, other: &ValueRange) -> Option<Self> {
+        if self.min < 0 || other.min < 0 {
+            return None;
+        }
+        Some(Self {
+            min: 0,
+            max: self.max.min(other.max),
+        })
+    }
+
     /// Returns true if every value in this range fits in a signed integer of the given bit width.
     pub fn fits_in_signed(&self, bits: u32) -> bool {
         if bits == 0 || bits > 64 {
@@ -987,7 +1002,7 @@ pub fn try_evaluate_range(
                 for i in 0..node.child_count() {
                     if let Some(c) = node.child(i) {
                         let k = c.kind();
-                        if matches!(k, "+" | "-" | "*" | "/" | "%" | "<<" | ">>") {
+                        if matches!(k, "+" | "-" | "*" | "/" | "%" | "<<" | ">>" | "&") {
                             return Some(c);
                         }
                     }
@@ -995,6 +1010,29 @@ pub fn try_evaluate_range(
                 None
             })?;
             let op_text = op.utf8_text(source.as_bytes()).ok()?;
+
+            // Bitwise AND: `expr & MASK` or `MASK & expr`.
+            // For a non-negative constant mask M, the result is always in [0, M]
+            // regardless of the other operand — even if that operand's range
+            // cannot be computed (e.g. overflows in arithmetic).  This lets VRA
+            // prove that `(SHA256_WORD_BITS - b) & SHA256_WORD_MASK` ∈ [0, 31]
+            // when SHA256_WORD_MASK = 31.
+            if op_text == "&" {
+                let lr = try_evaluate_range(&left, source, macros, var_ranges);
+                let rr = try_evaluate_range(&right, source, macros, var_ranges);
+                return match (lr, rr) {
+                    (Some(l), Some(r)) => l.bitand(&r),
+                    // One side unknown, other is a known non-negative constant mask.
+                    (None, Some(r)) if r.min == r.max && r.min >= 0 => {
+                        Some(ValueRange::new(0, r.min))
+                    }
+                    (Some(l), None) if l.min == l.max && l.min >= 0 => {
+                        Some(ValueRange::new(0, l.min))
+                    }
+                    _ => None,
+                };
+            }
+
             let lr = try_evaluate_range(&left, source, macros, var_ranges)?;
             let rr = try_evaluate_range(&right, source, macros, var_ranges)?;
             match op_text {
