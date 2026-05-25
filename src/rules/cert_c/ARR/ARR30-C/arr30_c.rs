@@ -1277,6 +1277,87 @@ impl Arr30C {
 
     // Removed: is_function_parameter - now using ast_utils::is_function_parameter with find_containing_function
 
+    /// Returns true if `function_node` is declared `static` or uses a STATIC macro prefix.
+    fn is_static_function(function_node: &Node, source: &str) -> bool {
+        for i in 0..function_node.child_count() {
+            if let Some(child) = function_node.child(i) {
+                if child.kind() == "storage_class_specifier" {
+                    if &source[child.start_byte()..child.end_byte()] == "static" {
+                        return true;
+                    }
+                }
+            }
+        }
+        let func_text = &source[function_node.start_byte()..function_node.end_byte()];
+        let before_paren = func_text.split('(').next().unwrap_or("");
+        before_paren
+            .split_whitespace()
+            .any(|tok| tok.contains("STATIC"))
+    }
+
+    /// Returns true if the named parameter of `func_node` is declared with a
+    /// non-primitive (user-defined) type such as an enum typedef.
+    /// Used to suppress ARR30-C for static functions whose index parameters are
+    /// enum values — those are controlled by definition (e.g., `led_id_t`).
+    fn param_has_user_defined_type(func_node: &Node, param_name: &str, source: &str) -> bool {
+        let primitive_types = [
+            "int",
+            "long",
+            "short",
+            "char",
+            "float",
+            "double",
+            "void",
+            "signed",
+            "unsigned",
+            "size_t",
+            "ssize_t",
+            "ptrdiff_t",
+            "intptr_t",
+            "uintptr_t",
+            "bool",
+            "_Bool",
+            "int8_t",
+            "int16_t",
+            "int32_t",
+            "int64_t",
+            "uint8_t",
+            "uint16_t",
+            "uint32_t",
+            "uint64_t",
+        ];
+        if let Some(declarator) = func_node.child_by_field_name("declarator") {
+            if let Some(param_list) = find_param_list_node(&declarator) {
+                for i in 0..param_list.child_count() {
+                    if let Some(param) = param_list.child(i) {
+                        if param.kind() != "parameter_declaration" {
+                            continue;
+                        }
+                        // Check if the declarator contains param_name
+                        let param_text = &source[param.start_byte()..param.end_byte()];
+                        if !param_text.contains(param_name) {
+                            continue;
+                        }
+                        // Get the type
+                        if let Some(type_node) = param.child_by_field_name("type") {
+                            let type_text = &source[type_node.start_byte()..type_node.end_byte()];
+                            let stripped = type_text
+                                .replace("const", "")
+                                .replace("volatile", "")
+                                .replace("restrict", "")
+                                .replace("struct", "")
+                                .replace("union", "")
+                                .replace("enum", "");
+                            let stripped = stripped.trim();
+                            return !primitive_types.contains(&stripped);
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Check if function has ANY bounds validation for a parameter
     fn has_function_parameter_bounds_check(
         &self,
@@ -2059,7 +2140,16 @@ impl Arr30C {
                 if let IndexValue::Variable(ref var) = index {
                     if let Some(func_node) = find_containing_function(node) {
                         if is_function_parameter(&func_node, var, source) {
-                            if !self.has_function_parameter_bounds_check(&func_node, var, source) {
+                            // Static functions whose index param is a user-defined type
+                            // (e.g. an enum typedef like led_id_t) have a controlled caller
+                            // set and enum-constrained values — suppress to avoid FPs.
+                            if Self::is_static_function(&func_node, source)
+                                && Self::param_has_user_defined_type(&func_node, var, source)
+                            {
+                                // skip
+                            } else if !self
+                                .has_function_parameter_bounds_check(&func_node, var, source)
+                            {
                                 // Create a violation for unvalidated function parameter
                                 let start_point = node.start_position();
                                 violations.push(RuleViolation {
@@ -2134,7 +2224,12 @@ impl Arr30C {
                                     ) {
                                         true
                                     } else if let Some(func_node) = find_containing_function(node) {
-                                        if is_function_parameter(&func_node, var, source) {
+                                        if is_function_parameter(&func_node, var, source)
+                                            && !(Self::is_static_function(&func_node, source)
+                                                && Self::param_has_user_defined_type(
+                                                    &func_node, var, source,
+                                                ))
+                                        {
                                             !self.has_function_parameter_bounds_check(
                                                 &func_node, var, source,
                                             )
@@ -4550,4 +4645,19 @@ impl Arr30C {
         }
         false
     }
+}
+
+/// Recursively search for a `parameter_list` node inside a declarator subtree.
+fn find_param_list_node<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+    if node.kind() == "parameter_list" {
+        return Some(*node);
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if let Some(found) = find_param_list_node(&child) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }

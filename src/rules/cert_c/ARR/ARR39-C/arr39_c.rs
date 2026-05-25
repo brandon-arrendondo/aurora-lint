@@ -502,7 +502,6 @@ impl Arr39C {
         if lower.contains("_size")
             || lower.contains("alloc_size")
             || lower.contains("byte_offset")
-            || lower.contains("byte_")
             || lower == "skip"  // offsetof result variable name from wiki example
             || lower == "offset"  // Common offset variable
             || lower.contains("_bytes")

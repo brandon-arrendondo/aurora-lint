@@ -394,6 +394,15 @@ fn analyze_function(
             summary.can_return_null = check_returns_null(&body, source);
         }
 
+        // For pointer-returning functions: if every return statement provably
+        // returns a non-null value (e.g. `return &s_switches`), clear the
+        // pessimistic can_return_null flag set above.
+        if is_pointer_return && summary.can_return_null {
+            if check_all_returns_nonnull(&body, source) {
+                summary.can_return_null = false;
+            }
+        }
+
         // Analyze parameter usage
         analyze_param_usage(&body, source, &params, &mut summary);
 
@@ -478,6 +487,60 @@ fn check_never_returns(body: &Node, source: &str) -> bool {
 }
 
 /// Check if a function body contains any `return NULL` / `return 0` statements.
+/// Returns true when every `return` statement in `body` provably returns a non-null
+/// value. Currently recognises `return &expr` (address-of — always non-null).
+/// Returns false conservatively if ANY return path is not recognised as non-null,
+/// or if there are no return statements.
+fn check_all_returns_nonnull(body: &Node, source: &str) -> bool {
+    let mut found_any = false;
+    let result = check_returns_all_nonnull_recursive(body, source, &mut found_any);
+    found_any && result
+}
+
+/// Recursive helper: returns (all_nonnull) and populates found_any.
+fn check_returns_all_nonnull_recursive(node: &Node, source: &str, found_any: &mut bool) -> bool {
+    if node.kind() == "return_statement" {
+        *found_any = true;
+        // Check if the returned value is provably non-null
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "return" || child.kind() == ";" {
+                    continue;
+                }
+                // `return &expr` — address-of is always non-null
+                if child.kind() == "pointer_expression" {
+                    if let Some(op) = child.child_by_field_name("operator") {
+                        if op.utf8_text(source.as_bytes()).unwrap_or("") == "&" {
+                            return true;
+                        }
+                    }
+                }
+                // Text-level: `return &identifier`
+                let text = child.utf8_text(source.as_bytes()).unwrap_or("").trim();
+                if text.starts_with('&') {
+                    return true;
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
+    // Don't cross nested function definitions
+    if node.kind() == "function_definition" {
+        return true; // Neutral for parent's all-nonnull check
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if !check_returns_all_nonnull_recursive(&child, source, found_any) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn check_returns_null(body: &Node, source: &str) -> bool {
     if body.kind() == "return_statement" {
         for i in 0..body.child_count() {

@@ -1302,22 +1302,46 @@ impl Str31C {
             }
         }
 
-        // Heuristic: if variables have string-like names, it's likely string copying
+        // Heuristic: if variables have string-like names, it's likely string copying.
+        // Exclude variables that are explicitly declared as non-char byte types (uint8_t,
+        // BYTE, etc.) — those are raw byte buffers, not null-terminated strings.
         if let (Some(dest), Some(src)) = (dest_name, src_name) {
             let dest_lower = dest.to_lowercase();
             let src_lower = src.to_lowercase();
 
-            if dest_lower.contains("str")
+            let name_match = dest_lower.contains("str")
                 || dest_lower.contains("buf")
                 || src_lower.contains("str")
                 || src_lower.contains("buf")
                 || dest_lower.contains("msg")
-                || src_lower.contains("msg")
+                || src_lower.contains("msg");
+
+            if name_match
+                && !Self::is_byte_typed_buffer(dest, source)
+                && !Self::is_byte_typed_buffer(src, source)
             {
                 return true;
             }
         }
 
+        false
+    }
+
+    /// Returns true if the named variable is declared with an explicit non-char byte type
+    /// (uint8_t, int8_t, BYTE, uint16_t, etc.), indicating it is a raw byte buffer
+    /// rather than a null-terminated string buffer.
+    fn is_byte_typed_buffer(var_name: &str, source: &str) -> bool {
+        let byte_types = ["uint8_t", "int8_t", "BYTE", "uint16_t", "uint32_t"];
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.contains(var_name) {
+                for bt in &byte_types {
+                    if trimmed.contains(bt) {
+                        return true;
+                    }
+                }
+            }
+        }
         false
     }
 

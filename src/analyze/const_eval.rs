@@ -1061,6 +1061,17 @@ pub fn try_evaluate_range(
             try_evaluate_range(&value, source, macros, var_ranges)
         }
         "sizeof_expression" => resolve_sizeof_node(node, source).map(ValueRange::exact),
+        // Struct member access: obj.field or obj->field.
+        // Try to bound by the declared type of the field by searching the source for
+        // `uint8_t fieldName` / `uint16_t fieldName` etc. in struct definitions.
+        "field_expression" => {
+            if let Some(field_node) = node.child_by_field_name("field") {
+                let field_name = field_node.utf8_text(source.as_bytes()).ok()?;
+                bound_from_field_type(field_name, source)
+            } else {
+                None
+            }
+        }
         "update_expression" => {
             // data++ / data-- / ++data / --data
             let arg = node.child_by_field_name("argument")?;
@@ -1087,6 +1098,43 @@ pub fn try_evaluate_range(
         }
         _ => None,
     }
+}
+
+/// Search the source for a struct field declaration matching `field_name` and
+/// return a conservative `ValueRange` based on the declared type.
+/// This allows VRA to bound struct field accesses by their declared type width
+/// (e.g., `uint8_t length` → [0, 255]) without full struct-type resolution.
+fn bound_from_field_type(field_name: &str, source: &str) -> Option<ValueRange> {
+    // Narrow integer types with known bounds
+    const TYPE_BOUNDS: &[(&str, i64)] = &[
+        ("uint8_t", 255),
+        ("int8_t", 127),
+        ("uint16_t", 65535),
+        ("int16_t", 32767),
+    ];
+    for line in source.lines() {
+        let trimmed = line.trim();
+        // Look for lines like `uint8_t fieldName;` or `uint8_t fieldName,`
+        // within struct definitions. Simple text match — false positives are
+        // suppressive (safe), false negatives leave the violation in place.
+        for (type_name, max_val) in TYPE_BOUNDS {
+            if trimmed.contains(type_name) && trimmed.contains(field_name) {
+                // Verify the field name appears after the type (rough word-boundary check)
+                if let Some(type_pos) = trimmed.find(type_name) {
+                    let after_type = &trimmed[type_pos + type_name.len()..];
+                    if after_type.contains(field_name) {
+                        let min_val = if type_name.starts_with('u') {
+                            0
+                        } else {
+                            -(*max_val) - 1
+                        };
+                        return Some(ValueRange::new(min_val, *max_val));
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
