@@ -4,7 +4,7 @@ version = "0.4.13"
 edition = "2021"
 description = "Software Code Quality - CERT C compliance checker"
 authors = ["Eric Buehler <eric.buehler@bissell.com>", "Brandon Arrendondo <brandon.arrendondo@bissell.com>"]
-license = "MIT"
+license = "Apache-2.0"
 
 [lib]
 name = "sqc"
