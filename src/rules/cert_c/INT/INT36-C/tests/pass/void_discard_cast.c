@@ -1,6 +1,6 @@
 /*
  * Rule: INT36-C
- * Source: d_lib_networking FP Pattern 3
+ * Source: real-world FP pattern
  * Status: PASS - (void) discard casts are NOT integer-to-pointer conversions
  */
 

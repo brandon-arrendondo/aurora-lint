@@ -561,10 +561,10 @@ sqc needs re-running.
 
 Node file (``~/.benchmark_nodes``)::
 
-    brandon@node1/8
-    brandon@node2/8
-    brandon@node3/8
-    brandon@node4/8
+    user@node1/8
+    user@node2/8
+    user@node3/8
+    user@node4/8
 
 Fast re-benchmark workflow:
 
