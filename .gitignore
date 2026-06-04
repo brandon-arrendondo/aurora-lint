@@ -49,6 +49,9 @@ docs/test-summary.md
 /docs/test-summary.md
 data/prescan_cache/
 
+# Sphinx build output
+docs/_build/
+
 # LaTeX generated artifacts
 paper/*.aux
 paper/*.log
