@@ -15,10 +15,10 @@ A terminal-based static analysis tool for C code compliance with [SEI CERT C Cod
 
 | Metric | Value |
 |--------|-------|
-| **Juliet TP Rate** | 61.8% (v0.3.86) |
+| **Juliet TP Rate** | 67.5% (v0.3.119) |
 | **Juliet CWEs Scanned** | 74 (fast mode, CWE-matched rules) |
-| **100% Precision CWEs** | 32 (zero false positives) |
-| **Per-File Detection** | 42.6% (21,319 / 50,038 files) |
+| **100% Precision CWEs** | 34 (zero false positives) |
+| **Per-File Detection** | 40.8% (20,420 / 50,038 files) |
 | **Real-World Projects** | libcrc, sqlite, mosquitto, curl, hostap |
 
 Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 5 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) and [REALWORLD_RESULTS.md](REALWORLD_RESULTS.md) for details.
@@ -26,8 +26,8 @@ Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SA
 ## Installation
 
 ```bash
-git clone <repository-url>
-cd sqc
+git clone https://github.com/brandon-arrendondo/tools_sqc
+cd tools_sqc
 cargo build --release
 ```
 
