@@ -1,0 +1,435 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CI/CD Integration &mdash; SqC  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Interactive Console UI" href="interactive-ui.html" />
+    <link rel="prev" title="Configuration" href="configuration.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            SqC
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">CI/CD Integration</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#general-strategy">General Strategy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#github-actions">GitHub Actions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#azure-devops">Azure DevOps</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#sarif-integration-tips">SARIF Integration Tips</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#ci-cd-readiness">CI/CD Readiness</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">SqC</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">CI/CD Integration</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/cicd-integration.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="ci-cd-integration">
+<h1>CI/CD Integration<a class="headerlink" href="#ci-cd-integration" title="Link to this heading"></a></h1>
+<p>SqC is designed for CI/CD pipelines with exit codes, severity thresholds,
+diff-only analysis, and SARIF output for code scanning integrations.</p>
+<section id="general-strategy">
+<h2>General Strategy<a class="headerlink" href="#general-strategy" title="Link to this heading"></a></h2>
+<p>A typical CI setup uses two modes:</p>
+<ol class="arabic simple">
+<li><p><strong>PR analysis</strong> (diff-only): fast feedback on changed files only</p></li>
+<li><p><strong>Push/merge analysis</strong> (full scan): comprehensive scan on the main branch</p></li>
+</ol>
+<p>Both modes export SARIF for integration with code scanning dashboards.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># PR mode: fast, only changed files, fail on High+</span>
+<span class="n">sqc</span> <span class="o">.</span> <span class="o">--</span><span class="n">diff</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
+
+<span class="c1"># Full scan: entire repo with cross-file context</span>
+<span class="n">sqc</span> <span class="o">.</span> <span class="o">-</span><span class="n">d</span> <span class="o">.</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
+</pre></div>
+</div>
+</section>
+<section id="github-actions">
+<h2>GitHub Actions<a class="headerlink" href="#github-actions" title="Link to this heading"></a></h2>
+<p>The repository includes a ready-to-use workflow at
+<code class="docutils literal notranslate"><span class="pre">.github/workflows/sqc-analysis.yml</span></code>:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SqC CERT C Analysis</span>
+
+<span class="nt">on</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">push</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">main</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">pull_request</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">main</span><span class="p p-Indicator">]</span>
+
+<span class="nt">jobs</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">build</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build SqC</span>
+<span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ubuntu-latest</span>
+<span class="w">    </span><span class="nt">steps</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/checkout@v4</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Cache Cargo</span>
+<span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/cache@v4</span>
+<span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">            </span><span class="no">~/.cargo/registry</span>
+<span class="w">            </span><span class="no">~/.cargo/git</span>
+<span class="w">            </span><span class="no">target</span>
+<span class="w">          </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${{ runner.os }}-cargo-${{ hashFiles(&#39;**/Cargo.lock&#39;) }}</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build SqC</span>
+<span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cargo build --release</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Upload binary</span>
+<span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/upload-artifact@v4</span>
+<span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
+<span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">target/release/sqc</span>
+
+<span class="w">  </span><span class="nt">analyze-pr</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Analyze PR (diff only)</span>
+<span class="w">    </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github.event_name == &#39;pull_request&#39;</span>
+<span class="w">    </span><span class="nt">needs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">build</span>
+<span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ubuntu-latest</span>
+<span class="w">    </span><span class="nt">permissions</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">security-events</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">write</span>
+<span class="w">    </span><span class="nt">steps</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/checkout@v4</span>
+<span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">fetch-depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">  </span><span class="c1"># Full history for --diff mode</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download SqC</span>
+<span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/download-artifact@v4</span>
+<span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">chmod +x sqc</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run SqC (diff mode)</span>
+<span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">          </span><span class="no">./sqc . --diff \</span>
+<span class="w">            </span><span class="no">--min-severity Medium \</span>
+<span class="w">            </span><span class="no">--fail-on-severity High \</span>
+<span class="w">            </span><span class="no">--export results.sarif</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Upload SARIF</span>
+<span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github/codeql-action/upload-sarif@v3</span>
+<span class="w">        </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always()</span>
+<span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">sarif_file</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">results.sarif</span>
+
+<span class="w">  </span><span class="nt">analyze-full</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Full Analysis</span>
+<span class="w">    </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github.event_name == &#39;push&#39;</span>
+<span class="w">    </span><span class="nt">needs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">build</span>
+<span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ubuntu-latest</span>
+<span class="w">    </span><span class="nt">permissions</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">security-events</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">write</span>
+<span class="w">    </span><span class="nt">steps</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/checkout@v4</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download SqC</span>
+<span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/download-artifact@v4</span>
+<span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">chmod +x sqc</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run SqC (full scan)</span>
+<span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">          </span><span class="no">./sqc . -d . \</span>
+<span class="w">            </span><span class="no">--min-severity Medium \</span>
+<span class="w">            </span><span class="no">--fail-on-severity High \</span>
+<span class="w">            </span><span class="no">--export results.sarif</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Upload SARIF</span>
+<span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github/codeql-action/upload-sarif@v3</span>
+<span class="w">        </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always()</span>
+<span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">sarif_file</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">results.sarif</span>
+</pre></div>
+</div>
+</section>
+<section id="azure-devops">
+<h2>Azure DevOps<a class="headerlink" href="#azure-devops" title="Link to this heading"></a></h2>
+<p>A ready-to-use Azure Pipelines configuration is provided at
+<code class="docutils literal notranslate"><span class="pre">docs/azure-pipelines.yml</span></code>:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># SqC Static Analysis - Azure DevOps Example Pipeline</span>
+<span class="c1">#</span>
+<span class="c1"># This pipeline runs SqC CERT C analysis on your C/C++ codebase.</span>
+<span class="c1"># - On PRs: analyzes only changed files (--diff mode)</span>
+<span class="c1"># - On push to main: full repository scan</span>
+<span class="c1"># - Publishes SARIF results as a build artifact</span>
+<span class="c1">#</span>
+<span class="c1"># Prerequisites:</span>
+<span class="c1">#   - Rust toolchain installed on the agent (or use a Rust container)</span>
+<span class="c1">#   - A sqc-rules.toml manifest (or use built-in defaults)</span>
+
+<span class="nt">trigger</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">branches</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">include</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
+
+<span class="nt">pr</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">branches</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">include</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">main</span>
+
+<span class="nt">pool</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">vmImage</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;ubuntu-latest&#39;</span>
+
+<span class="nt">variables</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">CARGO_TERM_COLOR</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always</span>
+
+<span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build</span>
+<span class="w">    </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build SqC</span>
+<span class="w">    </span><span class="nt">jobs</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">BuildSqC</span>
+<span class="w">        </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build SqC binary</span>
+<span class="w">        </span><span class="nt">steps</span><span class="p">:</span>
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Cache@2</span>
+<span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;cargo</span><span class="nv"> </span><span class="s">|</span><span class="nv"> </span><span class="s">&quot;$(Agent.OS)&quot;</span><span class="nv"> </span><span class="s">|</span><span class="nv"> </span><span class="s">Cargo.lock&#39;</span>
+<span class="w">              </span><span class="nt">restoreKeys</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">                </span><span class="no">cargo | &quot;$(Agent.OS)&quot;</span>
+<span class="w">              </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">$(Pipeline.Workspace)/.cargo</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Cache Cargo</span>
+
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">script</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">              </span><span class="no">cargo build --release</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build SqC</span>
+
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">PublishPipelineArtifact@1</span>
+<span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">targetPath</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">target/release/sqc</span>
+<span class="w">              </span><span class="nt">artifactName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Publish SqC binary</span>
+
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Analyze</span>
+<span class="w">    </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run Analysis</span>
+<span class="w">    </span><span class="nt">dependsOn</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build</span>
+<span class="w">    </span><span class="nt">jobs</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">AnalyzePR</span>
+<span class="w">        </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Analyze PR (diff only)</span>
+<span class="w">        </span><span class="nt">condition</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">eq(variables[&#39;Build.Reason&#39;], &#39;PullRequest&#39;)</span>
+<span class="w">        </span><span class="nt">steps</span><span class="p">:</span>
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">checkout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">self</span>
+<span class="w">            </span><span class="nt">fetchDepth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">  </span><span class="c1"># Full history for --diff mode</span>
+
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">DownloadPipelineArtifact@2</span>
+<span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">artifactName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
+<span class="w">              </span><span class="nt">targetPath</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">$(Build.SourcesDirectory)</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download SqC binary</span>
+
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">script</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">              </span><span class="no">chmod +x sqc</span>
+<span class="w">              </span><span class="no">./sqc . --diff \</span>
+<span class="w">                </span><span class="no">--min-severity Medium \</span>
+<span class="w">                </span><span class="no">--fail-on-severity High \</span>
+<span class="w">                </span><span class="no">--export results.sarif</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run SqC (diff mode)</span>
+
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">PublishBuildArtifacts@1</span>
+<span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">pathToPublish</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">results.sarif</span>
+<span class="w">              </span><span class="nt">artifactName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sarif-results</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Publish SARIF results</span>
+<span class="w">            </span><span class="nt">condition</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always()</span>
+
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">AnalyzeFull</span>
+<span class="w">        </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Full Analysis</span>
+<span class="w">        </span><span class="nt">condition</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ne(variables[&#39;Build.Reason&#39;], &#39;PullRequest&#39;)</span>
+<span class="w">        </span><span class="nt">steps</span><span class="p">:</span>
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">checkout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">self</span>
+
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">DownloadPipelineArtifact@2</span>
+<span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">artifactName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
+<span class="w">              </span><span class="nt">targetPath</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">$(Build.SourcesDirectory)</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download SqC binary</span>
+
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">script</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">              </span><span class="no">chmod +x sqc</span>
+<span class="w">              </span><span class="no">./sqc . -d . \</span>
+<span class="w">                </span><span class="no">--min-severity Medium \</span>
+<span class="w">                </span><span class="no">--fail-on-severity High \</span>
+<span class="w">                </span><span class="no">--export results.sarif</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run SqC (full scan)</span>
+
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">PublishBuildArtifacts@1</span>
+<span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">pathToPublish</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">results.sarif</span>
+<span class="w">              </span><span class="nt">artifactName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sarif-results</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Publish SARIF results</span>
+<span class="w">            </span><span class="nt">condition</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always()</span>
+</pre></div>
+</div>
+</section>
+<section id="sarif-integration-tips">
+<h2>SARIF Integration Tips<a class="headerlink" href="#sarif-integration-tips" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>GitHub Code Scanning</strong>: Use <code class="docutils literal notranslate"><span class="pre">github/codeql-action/upload-sarif&#64;v3</span></code> to
+surface SqC violations as code scanning alerts on PRs and the Security tab.</p></li>
+<li><p><strong>Azure DevOps</strong>: Publish SARIF as a build artifact. Third-party extensions
+(e.g., SARIF SAST Scans Tab) can render results inline.</p></li>
+<li><p><strong>VS Code</strong>: Open <code class="docutils literal notranslate"><span class="pre">.sarif</span></code> files with the
+<a class="reference external" href="https://marketplace.visualstudio.com/items?itemName=MS-SarifVSCode.sarif-viewer">SARIF Viewer</a>
+extension for inline annotations.</p></li>
+<li><p><strong>IDE Integration</strong>: Any tool that consumes SARIF 2.1.0 can display SqC results.</p></li>
+</ul>
+</section>
+<section id="ci-cd-readiness">
+<h2>CI/CD Readiness<a class="headerlink" href="#ci-cd-readiness" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 29.4%" />
+<col style="width: 58.8%" />
+<col style="width: 11.8%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Component</p></th>
+<th class="head"><p>Status</p></th>
+<th class="head"><p>Readiness</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Output Formats</p></td>
+<td><p>CSV, XLSX, JSON, SARIF 2.1.0</p></td>
+<td><p>100%</p></td>
+</tr>
+<tr class="row-odd"><td><p>Exit Codes</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--fail-on-violation</span></code>, <code class="docutils literal notranslate"><span class="pre">--fail-on-severity</span></code></p></td>
+<td><p>100%</p></td>
+</tr>
+<tr class="row-even"><td><p>Severity Filtering</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--min-severity</span></code>, <code class="docutils literal notranslate"><span class="pre">--fail-on-severity</span></code></p></td>
+<td><p>100%</p></td>
+</tr>
+<tr class="row-odd"><td><p>Rule Filtering</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--rules</span> <span class="pre">ARR30-C,MEM30-C</span></code></p></td>
+<td><p>100%</p></td>
+</tr>
+<tr class="row-even"><td><p>Incremental</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--diff</span></code> (git modified files)</p></td>
+<td><p>90%</p></td>
+</tr>
+<tr class="row-odd"><td><p>CI Workflows</p></td>
+<td><p>GitHub Actions + Azure DevOps templates</p></td>
+<td><p>100%</p></td>
+</tr>
+<tr class="row-even"><td><p>Suppressions</p></td>
+<td><p>SHA-256 code-location</p></td>
+<td><p>70%</p></td>
+</tr>
+<tr class="row-odd"><td><p>Docker</p></td>
+<td><p>No image published</p></td>
+<td><p>0%</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Remaining gaps</strong>:</p>
+<ol class="arabic simple">
+<li><p><strong>No baseline-aware suppression</strong> — can’t report “only new violations since
+last run”</p></li>
+<li><p><strong>No Docker image</strong> for containerized CI/CD</p></li>
+<li><p><strong>Unclassified real-world violation density</strong> — no ground truth to split TP
+vs FP on production code</p></li>
+</ol>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="configuration.html" class="btn btn-neutral float-left" title="Configuration" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="interactive-ui.html" class="btn btn-neutral float-right" title="Interactive Console UI" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

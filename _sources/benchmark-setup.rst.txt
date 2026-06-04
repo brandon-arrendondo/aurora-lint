@@ -1,0 +1,586 @@
+Benchmark Setup
+===============
+
+This section covers installing comparison tools, setting up the Juliet test suite,
+and configuring real-world codebases for benchmarking.
+
+Installing Comparison Tools
+---------------------------
+
+cppcheck
+~~~~~~~~
+
+.. code-block:: bash
+
+    sudo apt update
+    sudo apt install -y cppcheck
+
+    # Verify
+    cppcheck --version
+    # Expected: Cppcheck 2.x.x
+
+For the latest release, build from source:
+
+.. code-block:: bash
+
+    sudo apt install -y cmake libpcre3-dev
+    git clone https://github.com/danmar/cppcheck.git
+    cd cppcheck
+    cmake -DCMAKE_BUILD_TYPE=Release -DUSE_MATCHCOMPILER=ON .
+    make -j$(nproc)
+    sudo make install
+
+clang-tidy
+~~~~~~~~~~
+
+.. code-block:: bash
+
+    sudo apt update
+    sudo apt install -y clang clang-tidy
+
+    # Verify
+    clang --version
+    clang-tidy --version
+
+To pin a specific LLVM version (e.g., 18):
+
+.. code-block:: bash
+
+    sudo apt install -y clang-18 clang-tidy-18
+    sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+    sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
+
+bear (for compile_commands.json)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Required for clang-tidy on projects with build systems:
+
+.. code-block:: bash
+
+    sudo apt install -y bear
+
+Facebook Infer
+~~~~~~~~~~~~~~
+
+Infer v1.2.0 is installed from prebuilt Linux binaries.  The playbook at
+``playbooks/install-static-analyzers.yml`` automates this:
+
+.. code-block:: bash
+
+    ansible-playbook playbooks/install-static-analyzers.yml \
+      -i "localhost," -c local --ask-become-pass
+
+Manual install:
+
+.. code-block:: bash
+
+    # libtinfo5 required (Infer links against libtinfo.so.5)
+    sudo apt install -y libtinfo5 || \
+      sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 \
+                  /usr/lib/x86_64-linux-gnu/libtinfo.so.5
+
+    VERSION=1.2.0
+    curl -sSL "https://github.com/facebook/infer/releases/download/v$VERSION/infer-linux-x86_64-v$VERSION.tar.xz" \
+      | sudo tar -C /opt -xJ
+    sudo ln -s "/opt/infer-linux-x86_64-v$VERSION/bin/infer" /usr/local/bin/infer
+
+    # Verify
+    infer --version
+    # Expected: Infer version v1.2.0
+
+Frama-C
+~~~~~~~
+
+Frama-C is installed via opam (the Debian 12 apt package is version 25/Manganese,
+too old for benchmarking).  The playbook handles this automatically.
+
+Manual install:
+
+.. code-block:: bash
+
+    sudo apt install -y opam gcc g++ make m4 pkg-config autoconf \
+      libgmp-dev zlib1g-dev libgtk-3-dev libgtksourceview-3.0-dev graphviz
+
+    opam init --bare --no-setup --disable-sandboxing
+    opam switch create default 4.14.2
+    eval $(opam env)
+    opam install -y frama-c
+
+    # Verify (requires eval $(opam env) in each shell session)
+    frama-c -version
+    # Expected: 32.0 (Germanium)
+
+.. note::
+
+    Add ``eval $(opam env)`` to your shell profile (``~/.bashrc``) to make
+    ``frama-c`` available without manual activation.
+
+Juliet Test Suite Setup
+-----------------------
+
+Download the `NIST Juliet Test Suite v1.3
+<https://samate.nist.gov/SARD/test-suites/112>`_:
+
+.. code-block:: bash
+
+    mkdir -p ~/data/benchmarks
+    cd ~/data/benchmarks
+    # Download and extract juliet-test-suite-c
+    # Expected structure:
+    #   juliet-test-suite-c/testcases/CWE*/     (118 CWE directories)
+    #   juliet-test-suite-c/testcasesupport/    (shared helper functions)
+
+Third-Party Library Headers
+---------------------------
+
+SqC uses ``-I`` include paths to resolve ``#include`` directives from third-party
+libraries. Without these, functions declared in external headers produce
+DCL31-C/DCL07-C false positives.
+
+.. code-block:: bash
+
+    # Core dependencies (covers most projects)
+    sudo apt-get install -y \
+      libssl-dev libcjson-dev zlib1g-dev
+
+    # mosquitto
+    sudo apt-get install -y libcunit1-dev libsqlite3-dev
+
+    # curl TLS backends
+    sudo apt-get install -y libmbedtls-dev libgnutls28-dev
+
+    # sqlite test infrastructure
+    sudo apt-get install -y tcl-dev
+
+    # hostap
+    sudo apt-get install -y \
+      libnl-3-dev libnl-genl-3-dev libdbus-1-dev \
+      libgcrypt20-dev libpcap-dev libwolfssl-dev
+
+One-liner for all hosts:
+
+.. code-block:: bash
+
+    sudo apt-get install -y libssl-dev libcjson-dev zlib1g-dev libcunit1-dev \
+      libsqlite3-dev libmbedtls-dev libgnutls28-dev tcl-dev libnl-3-dev \
+      libnl-genl-3-dev libdbus-1-dev libgcrypt20-dev libpcap-dev libwolfssl-dev
+
+Per-Project Include Paths
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The benchmark MCP server passes these automatically via the ``includes`` field in
+each codebase's config:
+
+===========  ============================================  ============================
+Project      ``-I`` Paths                                  Resolves
+===========  ============================================  ============================
+libcrc       *(none)*                                      Pure C, no external deps
+sqlite       ``/usr/include``                              OpenSSL, zlib, Tcl
+mosquitto    ``/usr/include``, ``/usr/include/cjson``      OpenSSL, cJSON, CUnit, sqlite3
+curl         ``/usr/include``, ``{path}/lib``              OpenSSL, mbedTLS, GnuTLS
+hostap       ``/usr/include``, ``/usr/include/libnl3``,    OpenSSL, wolfSSL, libnl,
+             ``/usr/include/dbus-1.0``                     D-Bus, libgcrypt, libpcap
+===========  ============================================  ============================
+
+Real-World Project Setup
+------------------------
+
+Pinned Source Commits
+~~~~~~~~~~~~~~~~~~~~~
+
+All benchmark results are run against these exact commits. Pin your clones to
+match before comparing results.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 40 38 10
+
+   * - Project
+     - Repository
+     - Commit SHA
+     - Branch
+   * - libcrc
+     - https://github.com/lammertb/libcrc
+     - ``7719e2112a9a960b1bba130d02bebdf58e8701f1``
+     - master
+   * - sqlite
+     - https://github.com/sqlite/sqlite.git
+     - ``b1a73ba34d05b32007315e4065c6468cc638e3af``
+     - detached
+   * - mosquitto
+     - https://github.com/eclipse-mosquitto/mosquitto
+     - ``d3ee5c5ca62c0fa4983308c6fff558ee978e878c``
+     - master
+   * - curl
+     - https://github.com/curl/curl.git
+     - ``3e198f75861cc2e12daf299689e145949dddd19b``
+     - detached
+   * - hostap
+     - https://git.w1.fi/hostap.git
+     - ``dcee60436390dd34731560657c4257c3b4c839a6``
+     - main
+
+Clone and Pin
+~~~~~~~~~~~~~
+
+.. code-block:: bash
+
+    mkdir -p ~/data
+    cd ~/data
+
+    # libcrc
+    git clone https://github.com/lammertb/libcrc.git
+    cd libcrc && git checkout 7719e2112a9a960b1bba130d02bebdf58e8701f1 && cd ..
+
+    # sqlite
+    git clone https://github.com/sqlite/sqlite.git
+    cd sqlite && git checkout b1a73ba34d05b32007315e4065c6468cc638e3af && cd ..
+
+    # mosquitto
+    git clone https://github.com/eclipse-mosquitto/mosquitto.git
+    cd mosquitto && git checkout d3ee5c5ca62c0fa4983308c6fff558ee978e878c && cd ..
+
+    # curl
+    git clone https://github.com/curl/curl.git
+    cd curl && git checkout 3e198f75861cc2e12daf299689e145949dddd19b && cd ..
+
+    # hostap
+    git clone https://git.w1.fi/hostap.git
+    cd hostap && git checkout dcee60436390dd34731560657c4257c3b4c839a6 && cd ..
+
+Running Each Tool Manually
+--------------------------
+
+sqc
+~~~
+
+.. code-block:: bash
+
+    # Build
+    cd ~/data/tools_sqc
+    cargo build --release
+
+    # Basic run
+    ./target/release/sqc /path/to/source/ --export results.json
+
+    # With cross-file context
+    ./target/release/sqc /path/to/source/ -d /path/to/source/ --export results.json
+
+    # When running from outside the sqc repo, pass --manifest explicitly
+    ./target/release/sqc /path/to/source/ \
+      --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
+      --export results.json
+
+cppcheck
+~~~~~~~~
+
+.. code-block:: bash
+
+    cppcheck --enable=all --std=c11 --xml --xml-version=2 \
+      --suppress=missingIncludeSystem \
+      -I /path/to/include \
+      /path/to/source/ \
+      2> results.xml
+
+.. warning::
+
+    - cppcheck writes XML to **stderr**, not stdout
+    - Never pass ``-I /usr/include`` -- causes parse errors in system headers
+    - ``--addon=cert`` is not available on Ubuntu 24.04; ``--enable=all`` includes CERT checks
+
+clang-tidy
+~~~~~~~~~~
+
+.. code-block:: bash
+
+    # Option A: With compile_commands.json (recommended)
+    cd /path/to/project
+    make clean && bear -- make -j$(nproc)
+    run-clang-tidy -checks='-*,cert-*,clang-analyzer-*' -p .
+
+    # Option B: Direct file scan (no build required)
+    find /path/to/source/ -name '*.c' | \
+      xargs -P $(nproc) -I{} clang-tidy \
+        -checks='-*,cert-*,clang-analyzer-*' \
+        {} -- -std=c11 -I /path/to/include
+
+.. warning::
+
+    - ``bear`` requires ``make clean`` first -- it only captures invocations during an actual build
+    - Verify ``compile_commands.json`` is non-empty before running clang-tidy
+
+Per-Project Commands
+--------------------
+
+libcrc
+~~~~~~
+
+.. code-block:: bash
+
+    # sqc
+    ~/data/tools_sqc/target/release/sqc ~/data/comparisons/libcrc \
+      -d ~/data/comparisons/libcrc \
+      --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
+      --export ~/data/comparisons/results/sqc/libcrc/results.json
+
+    # cppcheck
+    cppcheck --enable=all --std=c11 --xml --xml-version=2 \
+      --suppress=missingIncludeSystem \
+      -I ~/data/comparisons/libcrc/include \
+      ~/data/comparisons/libcrc/src/ \
+      2> ~/data/comparisons/results/cppcheck/libcrc/results.xml
+
+    # clang-tidy
+    cd ~/data/comparisons/libcrc && make clean && bear -- make
+    run-clang-tidy -checks='-*,cert-*,clang-analyzer-*' -p . \
+      2>&1 | tee ~/data/comparisons/results/clang-tidy/libcrc/results.txt
+
+sqlite
+~~~~~~
+
+.. code-block:: bash
+
+    # sqc
+    ~/data/tools_sqc/target/release/sqc ~/data/comparisons/sqlite \
+      -d ~/data/comparisons/sqlite \
+      --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
+      --export ~/data/comparisons/results/sqc/sqlite/results.json
+
+    # cppcheck
+    cppcheck --enable=all --std=c11 --xml --xml-version=2 \
+      --suppress=missingIncludeSystem \
+      -I ~/data/comparisons/sqlite/src \
+      ~/data/comparisons/sqlite/src/ \
+      2> ~/data/comparisons/results/cppcheck/sqlite/results.xml
+
+    # clang-tidy
+    cd ~/data/comparisons/sqlite && ./configure && make clean && bear -- make -j$(nproc)
+    run-clang-tidy -checks='-*,cert-*,clang-analyzer-*' -p . \
+      2>&1 | tee ~/data/comparisons/results/clang-tidy/sqlite/results.txt
+
+mosquitto
+~~~~~~~~~
+
+.. code-block:: bash
+
+    # sqc
+    ~/data/tools_sqc/target/release/sqc ~/data/comparisons/mosquitto \
+      -d ~/data/comparisons/mosquitto \
+      --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
+      --export ~/data/comparisons/results/sqc/mosquitto/results.json
+
+    # cppcheck
+    cppcheck --enable=all --std=c11 --xml --xml-version=2 \
+      --suppress=missingIncludeSystem \
+      -I ~/data/comparisons/mosquitto/include \
+      -I ~/data/comparisons/mosquitto/common \
+      -i ~/data/comparisons/mosquitto/deps \
+      ~/data/comparisons/mosquitto/lib/ ~/data/comparisons/mosquitto/src/ \
+      2> ~/data/comparisons/results/cppcheck/mosquitto/results.xml
+
+    # clang-tidy
+    cmake -S ~/data/comparisons/mosquitto -B ~/data/comparisons/mosquitto/build \
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DWITH_TLS=OFF -DWITH_WEBSOCKETS=OFF -DWITH_TESTS=OFF
+    cmake --build ~/data/comparisons/mosquitto/build --clean-first -j$(nproc)
+    run-clang-tidy -checks='-*,cert-*,clang-analyzer-*' \
+      -p ~/data/comparisons/mosquitto/build \
+      2>&1 | tee ~/data/comparisons/results/clang-tidy/mosquitto/results.txt
+
+curl
+~~~~
+
+.. code-block:: bash
+
+    # sqc
+    ~/data/tools_sqc/target/release/sqc ~/data/comparisons/curl \
+      -d ~/data/comparisons/curl \
+      --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
+      --export ~/data/comparisons/results/sqc/curl/results.json
+
+    # cppcheck
+    cppcheck --enable=all --std=c11 --xml --xml-version=2 \
+      --suppress=missingIncludeSystem \
+      -I ~/data/comparisons/curl/include -I ~/data/comparisons/curl/lib \
+      ~/data/comparisons/curl/lib/ ~/data/comparisons/curl/src/ \
+      2> ~/data/comparisons/results/cppcheck/curl/results.xml
+
+    # clang-tidy
+    cmake -S ~/data/comparisons/curl -B ~/data/comparisons/curl/build \
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF \
+      -DCURL_USE_OPENSSL=OFF -DCURL_DISABLE_LDAP=ON \
+      -DUSE_LIBIDN2=OFF -DUSE_NGHTTP2=OFF -DCURL_ZSTD=OFF
+    cmake --build ~/data/comparisons/curl/build --clean-first -j$(nproc)
+    run-clang-tidy -checks='-*,cert-*,clang-analyzer-*' \
+      -p ~/data/comparisons/curl/build \
+      2>&1 | tee ~/data/comparisons/results/clang-tidy/curl/results.txt
+
+hostap
+~~~~~~
+
+.. code-block:: bash
+
+    # sqc
+    ~/data/tools_sqc/target/release/sqc ~/data/comparisons/hostap \
+      -d ~/data/comparisons/hostap/src \
+      -d ~/data/comparisons/hostap/wpa_supplicant \
+      --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
+      --export ~/data/comparisons/results/sqc/hostap/results.json
+
+    # cppcheck
+    cppcheck --enable=all --std=c11 --xml --xml-version=2 \
+      --suppress=missingIncludeSystem \
+      -I ~/data/comparisons/hostap/src \
+      -I ~/data/comparisons/hostap/src/utils \
+      -I ~/data/comparisons/hostap/src/common \
+      ~/data/comparisons/hostap/src/ ~/data/comparisons/hostap/wpa_supplicant/ \
+      2> ~/data/comparisons/results/cppcheck/hostap/results.xml
+
+    # clang-tidy (requires .config for wpa_supplicant)
+    cd ~/data/comparisons/hostap/wpa_supplicant
+    cat > .config <<'EOF'
+    CONFIG_DRIVER_NL80211=y
+    CONFIG_LIBNL32=y
+    CONFIG_IEEE8021X_EAPOL=y
+    CONFIG_EAP_MD5=y
+    EOF
+    make clean 2>/dev/null; bear -- make -j$(nproc) wpa_supplicant 2>/dev/null || true
+    cd ~/data/comparisons/hostap
+    python3 gen_compile_commands.py -o compile_commands.json wpa_supplicant/
+    run-clang-tidy -checks='-*,cert-*,clang-analyzer-*' -p . \
+      2>&1 | tee ~/data/comparisons/results/clang-tidy/hostap/results.txt
+
+Verifying Results
+-----------------
+
+.. code-block:: bash
+
+    PROJECT=libcrc
+    RESULTS=~/data/comparisons/results
+
+    echo "=== sqc ==="
+    python3 -c "
+    import json, collections
+    data = json.load(open('$RESULTS/sqc/$PROJECT/results.json'))
+    rules = collections.Counter(v['rule_id'] for v in data)
+    print(f'Total: {len(data)} findings, {len(rules)} rules')
+    for r, c in rules.most_common(10): print(f'  {r}: {c}')
+    "
+
+    echo "=== cppcheck ==="
+    python3 -c "
+    import xml.etree.ElementTree as ET, collections
+    errors = ET.parse('$RESULTS/cppcheck/$PROJECT/results.xml').getroot().findall('.//error')
+    ids = collections.Counter(e.get('id') for e in errors)
+    print(f'Total: {len(errors)} findings')
+    for i, c in ids.most_common(10): print(f'  {i}: {c}')
+    "
+
+    echo "=== clang-tidy ==="
+    grep -c "warning:\|error:" $RESULTS/clang-tidy/$PROJECT/results.txt
+
+Known Pitfalls
+~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 35 35
+
+   * - Pitfall
+     - Symptom
+     - Fix
+   * - sqc manifest not found
+     - ``Failed to read manifest file``
+     - Pass ``--manifest`` with absolute path
+   * - cppcheck ``--addon=cert`` missing
+     - ``Did not find addon cert.py``
+     - Remove it; ``--enable=all`` includes CERT
+   * - cppcheck ``-I /usr/include``
+     - ``syntaxError`` in stdlib.h
+     - Never pass system include paths to cppcheck
+   * - Empty compile_commands.json
+     - clang-tidy shows no diagnostics
+     - Run ``make clean`` before ``bear -- make``
+
+Output Format Reference
+-----------------------
+
+**cppcheck XML (v2)**:
+
+.. code-block:: xml
+
+    <error id="bufferAccessOutOfBounds" severity="error"
+           msg="Array 'arr[10]' accessed at index 10..." cwe="788">
+      <location file="example.c" line="5" column="5"/>
+    </error>
+
+**clang-tidy text**::
+
+    example.c:5:5: warning: ... [cert-arr30-c]
+
+**sqc JSON**:
+
+.. code-block:: json
+
+    [{"rule_id": "ARR30-C", "severity": "High", "file": "example.c", "line": 5, "message": "..."}]
+
+**sqc SARIF**: SARIF 2.1.0 compatible output with ``ruleId`` matching CERT C rule IDs.
+
+**Infer JSON** (``infer-out/report.json``):
+
+.. code-block:: json
+
+    [{"bug_type": "NULLPTR_DEREFERENCE", "procedure": "func_bad",
+      "file": "test.c", "line": 26, "severity": "ERROR"}]
+
+**Frama-C EVA** (stderr, no structured output):
+
+::
+
+    [eva:alarm] test.c:26: Warning:
+      out of bounds read. assert \valid_read(&ptr->field);
+    assertion 'Eva,mem_access' got final status invalid.
+
+Distributed Benchmarking with GNU Parallel
+-------------------------------------------
+
+For fast re-benchmarking across multiple machines after rule changes. Cppcheck and
+clang-tidy results are stable across sqc changes -- run them once and cache. Only
+sqc needs re-running.
+
+.. code-block:: bash
+
+    # Prerequisites
+    sudo apt install -y parallel
+    parallel --citation <<< "will cite" 2>/dev/null || true
+
+    # SSH key setup
+    ssh-keygen -t ed25519 -f ~/.ssh/id_benchmark -N ""
+    for node in node1 node2 node3 node4; do
+      ssh-copy-id -i ~/.ssh/id_benchmark.pub $node
+    done
+
+Node file (``~/.benchmark_nodes``)::
+
+    user@node1/8
+    user@node2/8
+    user@node3/8
+    user@node4/8
+
+Fast re-benchmark workflow:
+
+.. code-block:: bash
+
+    # 1. Rebuild sqc
+    cd ~/data/tools_sqc && cargo build --release
+
+    # 2. Push binary to nodes (if no shared FS)
+    parallel --sshloginfile $NODES_FILE --nonall \
+      "rsync -az $SQC_BIN {}/sqc_bin"
+
+    # 3. Generate CWE list
+    find $JULIET_DIR -maxdepth 1 -type d -name 'CWE*' | sort > /tmp/cwe_dirs.txt
+
+    # 4. Run in parallel across nodes
+    parallel --sshloginfile $NODES_FILE -a /tmp/cwe_dirs.txt \
+      "$SQC_BIN {} -d $JULIET_DIR -d $JULIET_SUPPORT \
+        --export $RESULTS_DIR/sqc/juliet/{/.}.csv"

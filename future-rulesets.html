@@ -1,0 +1,249 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Future Rulesets Beyond CERT C &mdash; SqC  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Contributing" href="contributing.html" />
+    <link rel="prev" title="Project Structure" href="project-structure.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            SqC
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Future Rulesets Beyond CERT C</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#the-power-of-10-rules-nasa-jpl-2006">The Power of 10 Rules (NASA JPL, 2006)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#jpl-institutional-coding-standard-2009">JPL Institutional Coding Standard (2009)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#multi-threading-concurrency">Multi-threading / Concurrency</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#other-key-rules">Other Key Rules</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#earlier-standards-referenced-by-jpl">Earlier Standards Referenced by JPL</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#barr-c-embedded-c-coding-standard">BARR-C Embedded C Coding Standard</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#candidate-rules-for-implementation">Candidate Rules for Implementation</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#core-safety-rules-pre-misra">Core Safety Rules (Pre-MISRA)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#embedded-specific-rules">Embedded-Specific Rules</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#multi-threading-safety-jpl-specific">Multi-threading Safety (JPL-specific)</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">SqC</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Future Rulesets Beyond CERT C</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/future-rulesets.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="future-rulesets-beyond-cert-c">
+<h1>Future Rulesets Beyond CERT C<a class="headerlink" href="#future-rulesets-beyond-cert-c" title="Link to this heading"></a></h1>
+<p>This page documents embedded coding standards and rule families that predate or
+complement MISRA and could be added to SqC in the future. All listed rules are
+freely implementable — they come from open/public-domain standards.</p>
+<section id="the-power-of-10-rules-nasa-jpl-2006">
+<h2>The Power of 10 Rules (NASA JPL, 2006)<a class="headerlink" href="#the-power-of-10-rules-nasa-jpl-2006" title="Link to this heading"></a></h2>
+<p>Created by Gerard J. Holzmann at NASA’s Jet Propulsion Laboratory, these 10
+rules eliminate C coding practices that make code difficult to review or
+statically analyse. They complement MISRA C guidelines.</p>
+<ol class="arabic simple">
+<li><p><strong>Restrict control flow</strong> — avoid complex flow constructs like <code class="docutils literal notranslate"><span class="pre">goto</span></code> and recursion.</p></li>
+<li><p><strong>Fixed loop bounds</strong> — all loops must have fixed upper bounds (prevents runaway code).</p></li>
+<li><p><strong>No dynamic memory after init</strong> — do not use dynamic memory allocation after initialisation.</p></li>
+<li><p><strong>Function size limits</strong> — no function longer than ~60 lines (one printed page).</p></li>
+<li><p><strong>Assertion density</strong> — average at least two assertions per function.</p></li>
+<li><p><strong>Limited scope</strong> — declare all data objects at the smallest possible scope.</p></li>
+<li><p><strong>Check return values</strong> — check the return value of all non-void functions.</p></li>
+<li><p><strong>Limited preprocessor use</strong> — limit to file inclusion and simple macros.</p></li>
+<li><p><strong>Limited pointer complexity</strong> — max 2 levels of dereferencing.</p></li>
+<li><p><strong>Compiler warnings + static analysis</strong> — compile with all warnings enabled; use static analysis tools.</p></li>
+</ol>
+</section>
+<section id="jpl-institutional-coding-standard-2009">
+<h2>JPL Institutional Coding Standard (2009)<a class="headerlink" href="#jpl-institutional-coding-standard-2009" title="Link to this heading"></a></h2>
+<p>Based on MISRA-C:2004 and the Power of Ten rules, the JPL standard also
+addresses multi-threaded software risks that neither of those covered.</p>
+<section id="multi-threading-concurrency">
+<h3>Multi-threading / Concurrency<a class="headerlink" href="#multi-threading-concurrency" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Use IPC messages for task communication; avoid callbacks.</p></li>
+<li><p>Task synchronisation shall not be performed through task delays.</p></li>
+<li><p>Data objects in shared memory should have a single owning task with explicit ownership transfer.</p></li>
+<li><p>Avoid semaphores/locks; if used, avoid nested use.</p></li>
+<li><p>Use memory protection, safety margins, and barrier patterns.</p></li>
+</ul>
+</section>
+<section id="other-key-rules">
+<h3>Other Key Rules<a class="headerlink" href="#other-key-rules" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>No selective value assignments to elements of an enum list (except first or all).</p></li>
+<li><p>Use typedefs that indicate size and signedness (<code class="docutils literal notranslate"><span class="pre">I32</span></code>, <code class="docutils literal notranslate"><span class="pre">U16</span></code>, etc.) instead of basic types.</p></li>
+<li><p>Make order of evaluation in compound expressions explicit with parentheses.</p></li>
+<li><p>Boolean expressions shall have no side effects.</p></li>
+<li><p>No more than two levels of indirection per declaration.</p></li>
+<li><p>Do not hide dereference operations in macros or typedefs.</p></li>
+<li><p>Non-constant function pointers should not be used.</p></li>
+</ul>
+</section>
+<section id="earlier-standards-referenced-by-jpl">
+<h3>Earlier Standards Referenced by JPL<a class="headerlink" href="#earlier-standards-referenced-by-jpl" title="Link to this heading"></a></h3>
+<p>The JPL standard consulted numerous earlier standards including:</p>
+<ul class="simple">
+<li><p>Spencer’s 10 Commandments (1991)</p></li>
+<li><p>Nuclear Regulatory Commission (1995) — 22 rules</p></li>
+<li><p>Original MISRA rules (1997)</p></li>
+<li><p>Software System Safety Handbook (1999) — 34 rules</p></li>
+<li><p>European Space Agency coding rules (2000) — 123 rules</p></li>
+<li><p>Goddard Flight Software Branch coding standard (2000) — 100 rules</p></li>
+</ul>
+</section>
+</section>
+<section id="barr-c-embedded-c-coding-standard">
+<h2>BARR-C Embedded C Coding Standard<a class="headerlink" href="#barr-c-embedded-c-coding-standard" title="Link to this heading"></a></h2>
+<p>Barr Group’s standard minimises bugs in firmware by focusing on practical rules.
+BARR-C:2018 has been fully harmonised with MISRA C:2012 in its stylistic rules.
+Key embedded-specific areas:</p>
+<ul class="simple">
+<li><p>Proper use of the <code class="docutils literal notranslate"><span class="pre">volatile</span></code> keyword for hardware registers and ISR-accessed variables.</p></li>
+<li><p>File naming and organisation conventions.</p></li>
+<li><p>Comment standards.</p></li>
+<li><p>Specific brace placement rules selected to reduce bugs.</p></li>
+</ul>
+</section>
+<section id="candidate-rules-for-implementation">
+<h2>Candidate Rules for Implementation<a class="headerlink" href="#candidate-rules-for-implementation" title="Link to this heading"></a></h2>
+<section id="core-safety-rules-pre-misra">
+<h3>Core Safety Rules (Pre-MISRA)<a class="headerlink" href="#core-safety-rules-pre-misra" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>No dynamic memory allocation after initialisation</p></li>
+<li><p>No recursion</p></li>
+<li><p>Fixed upper bounds on all loops</p></li>
+<li><p>No <code class="docutils literal notranslate"><span class="pre">goto</span></code>, <code class="docutils literal notranslate"><span class="pre">setjmp</span></code>, <code class="docutils literal notranslate"><span class="pre">longjmp</span></code></p></li>
+<li><p>Check all function return values</p></li>
+<li><p>Check function parameter validity</p></li>
+<li><p>Use assertions liberally (2+ per function)</p></li>
+<li><p>Limit function size (~60 lines max)</p></li>
+<li><p>Limit function parameters (~6 max)</p></li>
+<li><p>Limited pointer complexity (2 levels max)</p></li>
+</ul>
+</section>
+<section id="embedded-specific-rules">
+<h3>Embedded-Specific Rules<a class="headerlink" href="#embedded-specific-rules" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Use sized types (<code class="docutils literal notranslate"><span class="pre">uint32_t</span></code>, <code class="docutils literal notranslate"><span class="pre">int16_t</span></code>) not <code class="docutils literal notranslate"><span class="pre">int</span></code>/<code class="docutils literal notranslate"><span class="pre">short</span></code>/<code class="docutils literal notranslate"><span class="pre">long</span></code></p></li>
+<li><p>Proper use of <code class="docutils literal notranslate"><span class="pre">volatile</span></code> keyword</p></li>
+<li><p>No non-constant function pointers</p></li>
+<li><p>Memory barriers and safety margins</p></li>
+<li><p>Limited preprocessor use (no token pasting, no variadic macros)</p></li>
+<li><p>Explicit order of evaluation (use parentheses)</p></li>
+<li><p>No side effects in boolean expressions</p></li>
+<li><p>Smallest possible scope for all declarations</p></li>
+</ul>
+</section>
+<section id="multi-threading-safety-jpl-specific">
+<h3>Multi-threading Safety (JPL-specific)<a class="headerlink" href="#multi-threading-safety-jpl-specific" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>IPC-based task communication (not shared memory)</p></li>
+<li><p>No task delays for synchronisation</p></li>
+<li><p>Single-owner model for shared data</p></li>
+<li><p>Avoid or strictly control semaphore use</p></li>
+</ul>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="project-structure.html" class="btn btn-neutral float-left" title="Project Structure" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="contributing.html" class="btn btn-neutral float-right" title="Contributing" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

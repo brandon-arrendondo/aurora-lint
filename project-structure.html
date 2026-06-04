@@ -1,0 +1,186 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Project Structure &mdash; SqC  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Future Rulesets Beyond CERT C" href="future-rulesets.html" />
+    <link rel="prev" title="Running Benchmarks (MCP Server)" href="benchmark-running.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            SqC
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">SqC</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Project Structure</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/project-structure.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="project-structure">
+<h1>Project Structure<a class="headerlink" href="#project-structure" title="Link to this heading"></a></h1>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">src</span><span class="o">/</span>
+<span class="o">+--</span> <span class="n">main</span><span class="o">.</span><span class="n">rs</span>              <span class="c1"># CLI entry point and argument parsing</span>
+<span class="o">+--</span> <span class="n">prelude</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># Common imports and type definitions</span>
+<span class="o">+--</span> <span class="n">analyze</span><span class="o">/</span>             <span class="c1"># Core analysis engine</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">mod</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># Project analysis orchestration</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">cfg</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># Control-flow graph construction</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">context</span><span class="o">.</span><span class="n">rs</span>       <span class="c1"># Cross-file project context</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">dataflow</span><span class="o">.</span><span class="n">rs</span>      <span class="c1"># Reaching definitions analysis</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">function_summary</span><span class="o">.</span><span class="n">rs</span>  <span class="c1"># Inter-procedural function summaries</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">null_state</span><span class="o">.</span><span class="n">rs</span>    <span class="c1"># CFG-based null state dataflow</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">prescan</span><span class="o">.</span><span class="n">rs</span>       <span class="c1"># Directory pre-scanning for cross-file context</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">suppression</span><span class="o">.</span><span class="n">rs</span>   <span class="c1"># Violation suppression system</span>
+<span class="o">+--</span> <span class="n">export</span><span class="o">/</span>              <span class="c1"># Export functionality</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">mod</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># CSV, XLSX, JSON, and SARIF export</span>
+<span class="o">+--</span> <span class="n">files</span><span class="o">/</span>               <span class="c1"># File and repository handling</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">mod</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># Git integration and file discovery</span>
+<span class="o">+--</span> <span class="n">manifest</span><span class="o">/</span>            <span class="c1"># Rule configuration system</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">mod</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># TOML manifest parsing and validation</span>
+<span class="o">+--</span> <span class="n">parser</span><span class="o">/</span>              <span class="c1"># C code parsing</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">mod</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># Tree-sitter C parser integration</span>
+<span class="o">+--</span> <span class="n">progress</span><span class="o">.</span><span class="n">rs</span>          <span class="c1"># CLI progress reporting</span>
+<span class="o">+--</span> <span class="n">rules</span><span class="o">/</span>               <span class="c1"># CERT C rule implementations</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">mod</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># Rule trait and registry</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">cert_c</span><span class="o">/</span>          <span class="c1"># Individual CERT C rule modules (17 categories)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">API</span><span class="o">/</span>         <span class="c1"># API rules (9 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">ARR</span><span class="o">/</span>         <span class="c1"># Array rules (9 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">CON</span><span class="o">/</span>         <span class="c1"># Concurrency rules (23 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">DCL</span><span class="o">/</span>         <span class="c1"># Declaration rules (31 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">ENV</span><span class="o">/</span>         <span class="c1"># Environment rules (8 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">ERR</span><span class="o">/</span>         <span class="c1"># Error handling rules (11 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">EXP</span><span class="o">/</span>         <span class="c1"># Expression rules (31 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">FIO</span><span class="o">/</span>         <span class="c1"># I/O rules (35 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">FLP</span><span class="o">/</span>         <span class="c1"># Floating point rules (13 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">INT</span><span class="o">/</span>         <span class="c1"># Integer rules (23 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">MEM</span><span class="o">/</span>         <span class="c1"># Memory rules (17 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">MSC</span><span class="o">/</span>         <span class="c1"># Miscellaneous rules (10 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">POS</span><span class="o">/</span>         <span class="c1"># POSIX rules (20 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">PRE</span><span class="o">/</span>         <span class="c1"># Preprocessor rules (16 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">SIG</span><span class="o">/</span>         <span class="c1"># Signal rules (7 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">STR</span><span class="o">/</span>         <span class="c1"># String rules (16 rules)</span>
+<span class="o">|</span>       <span class="o">+--</span> <span class="n">WIN</span><span class="o">/</span>         <span class="c1"># Windows rules (6 rules)</span>
+<span class="o">+--</span> <span class="n">ui</span><span class="o">/</span>                  <span class="c1"># Terminal user interface</span>
+<span class="o">|</span>   <span class="o">+--</span> <span class="n">mod</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># Ratatui-based interactive UI</span>
+<span class="o">+--</span> <span class="n">utility</span><span class="o">/</span>             <span class="c1"># Helper functions</span>
+    <span class="o">+--</span> <span class="n">mod</span><span class="o">.</span><span class="n">rs</span>           <span class="c1"># Common utilities and helpers</span>
+
+<span class="n">bench</span><span class="o">/</span>                   <span class="c1"># Benchmark infrastructure</span>
+<span class="o">+--</span> <span class="n">runner</span><span class="o">.</span><span class="n">py</span>            <span class="c1"># Juliet benchmark runner</span>
+<span class="o">+--</span> <span class="n">analyzer</span><span class="o">.</span><span class="n">py</span>          <span class="c1"># Result analysis and scoring</span>
+<span class="o">+--</span> <span class="n">__main__</span><span class="o">.</span><span class="n">py</span>          <span class="c1"># Benchmark CLI (python -m bench)</span>
+
+<span class="n">rules_templates</span><span class="o">/</span>         <span class="c1"># Rule manifests</span>
+<span class="o">+--</span> <span class="n">rules</span><span class="o">-</span><span class="nb">all</span><span class="o">.</span><span class="n">toml</span>       <span class="c1"># All 285 rules enabled</span>
+<span class="o">+--</span> <span class="n">cwe</span><span class="o">/</span>                 <span class="c1"># Per-CWE manifests for Juliet benchmarking</span>
+
+<span class="n">docs</span><span class="o">/</span>                    <span class="c1"># Documentation and CI examples</span>
+<span class="o">+--</span> <span class="n">index</span><span class="o">.</span><span class="n">rst</span>            <span class="c1"># Master document (Sphinx toctree)</span>
+<span class="o">+--</span> <span class="n">conf</span><span class="o">.</span><span class="n">py</span>              <span class="c1"># Sphinx configuration</span>
+<span class="o">+--</span> <span class="n">azure</span><span class="o">-</span><span class="n">pipelines</span><span class="o">.</span><span class="n">yml</span>  <span class="c1"># Azure DevOps example pipeline</span>
+
+<span class="o">.</span><span class="n">github</span><span class="o">/</span><span class="n">workflows</span><span class="o">/</span>       <span class="c1"># GitHub Actions</span>
+<span class="o">+--</span> <span class="n">ci</span><span class="o">.</span><span class="n">yml</span>               <span class="c1"># CI: fmt, clippy, test, coverage, docs</span>
+<span class="o">+--</span> <span class="n">release</span><span class="o">.</span><span class="n">yml</span>          <span class="c1"># Release automation</span>
+</pre></div>
+</div>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="benchmark-running.html" class="btn btn-neutral float-left" title="Running Benchmarks (MCP Server)" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="future-rulesets.html" class="btn btn-neutral float-right" title="Future Rulesets Beyond CERT C" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -1,0 +1,187 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contributing &mdash; SqC  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Bibliography" href="bibliography.html" />
+    <link rel="prev" title="Future Rulesets Beyond CERT C" href="future-rulesets.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            SqC
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Contributing</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#adding-a-new-cert-c-rule">Adding a New CERT C Rule</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#build-requirements">Build Requirements</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">SqC</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Contributing</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/contributing.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="contributing">
+<h1>Contributing<a class="headerlink" href="#contributing" title="Link to this heading"></a></h1>
+<section id="adding-a-new-cert-c-rule">
+<h2>Adding a New CERT C Rule<a class="headerlink" href="#adding-a-new-cert-c-rule" title="Link to this heading"></a></h2>
+<ol class="arabic">
+<li><p>Create the rule directory and implementation file:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">src</span><span class="o">/</span><span class="n">rules</span><span class="o">/</span><span class="n">cert_c</span><span class="o">/</span><span class="n">CATEGORY</span><span class="o">/</span><span class="n">RULE</span><span class="o">-</span><span class="n">ID</span><span class="o">/</span><span class="n">rule_id_c</span><span class="o">.</span><span class="n">rs</span>
+</pre></div>
+</div>
+</li>
+<li><p>Implement the <code class="docutils literal notranslate"><span class="pre">CertRule</span></code> trait:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="k">crate</span>::<span class="n">prelude</span>::<span class="o">*</span><span class="p">;</span>
+
+<span class="k">pub</span><span class="w"> </span><span class="k">struct</span> <span class="nc">Mem30C</span><span class="p">;</span>
+
+<span class="k">impl</span><span class="w"> </span><span class="n">CertRule</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">Mem30C</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span> <span class="nf">rule_id</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span>-&gt; <span class="kp">&amp;</span><span class="o">&#39;</span><span class="nb">static</span> <span class="kt">str</span> <span class="p">{</span>
+<span class="w">        </span><span class="s">&quot;MEM30-C&quot;</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="k">fn</span> <span class="nf">description</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span>-&gt; <span class="kp">&amp;</span><span class="o">&#39;</span><span class="nb">static</span> <span class="kt">str</span> <span class="p">{</span>
+<span class="w">        </span><span class="s">&quot;Do not access freed memory&quot;</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="k">fn</span> <span class="nf">check</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<span class="w">        </span><span class="n">node</span>: <span class="kp">&amp;</span><span class="nc">Node</span><span class="p">,</span>
+<span class="w">        </span><span class="n">source</span>: <span class="kp">&amp;</span><span class="kt">str</span><span class="p">,</span>
+<span class="w">        </span><span class="n">_context</span>: <span class="kp">&amp;</span><span class="nc">ProjectContext</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span>-&gt; <span class="nb">Vec</span><span class="o">&lt;</span><span class="n">RuleViolation</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="c1">// Implementation here</span>
+<span class="w">        </span><span class="nb">Vec</span>::<span class="n">new</span><span class="p">()</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</li>
+<li><p>Register the rule in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/mod.rs</span></code>.</p></li>
+<li><p>Add test cases as <code class="docutils literal notranslate"><span class="pre">.c</span></code> files in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/CATEGORY/RULE-ID/tests/fail/</span></code>
+and <code class="docutils literal notranslate"><span class="pre">tests/pass/</span></code>.</p></li>
+<li><p>Add the rule entry to <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>.</p></li>
+<li><p>Build and test:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cargo</span> <span class="n">build</span>
+<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">sqc</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">RULE_ID</span><span class="p">::</span><span class="n">tests</span>
+<span class="n">cargo</span> <span class="n">fmt</span>
+</pre></div>
+</div>
+</li>
+</ol>
+</section>
+<section id="build-requirements">
+<h2>Build Requirements<a class="headerlink" href="#build-requirements" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>Rust</strong>: 2021 edition (stable toolchain)</p></li>
+<li><p><strong>Platform</strong>: Linux, macOS, Windows (cross-platform via crossterm)</p></li>
+<li><p><strong>Dependencies</strong>: See <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> for the full list</p></li>
+</ul>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cargo</span> <span class="n">build</span>             <span class="c1"># Debug build</span>
+<span class="n">cargo</span> <span class="n">build</span> <span class="o">--</span><span class="n">release</span>   <span class="c1"># Release build (optimized)</span>
+<span class="n">cargo</span> <span class="n">test</span>              <span class="c1"># Run all tests</span>
+<span class="n">cargo</span> <span class="n">fmt</span>               <span class="c1"># Format code</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="future-rulesets.html" class="btn btn-neutral float-left" title="Future Rulesets Beyond CERT C" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="bibliography.html" class="btn btn-neutral float-right" title="Bibliography" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

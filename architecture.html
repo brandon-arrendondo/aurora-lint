@@ -1,0 +1,399 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Analysis Architecture &mdash; SqC  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Benchmark Setup" href="benchmark-setup.html" />
+    <link rel="prev" title="Testing Methodology" href="testing-methodology.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            SqC
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Analysis Architecture</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#analysis-modules">Analysis Modules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#current-capabilities">Current Capabilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#known-limitations">Known Limitations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#architectural-ceiling">Architectural Ceiling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#competitor-landscape">Competitor Landscape</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">SqC</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Analysis Architecture</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/architecture.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="analysis-architecture">
+<h1>Analysis Architecture<a class="headerlink" href="#analysis-architecture" title="Link to this heading"></a></h1>
+<p>SqC uses a multi-pass analysis architecture:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Source</span> <span class="n">Files</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Tree</span><span class="o">-</span><span class="n">sitter</span> <span class="n">Parser</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">AST</span> <span class="p">(</span><span class="n">per</span><span class="o">-</span><span class="n">file</span><span class="p">)</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Pre</span><span class="o">-</span><span class="n">scan</span> <span class="n">Pass</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Cross</span><span class="o">-</span><span class="n">file</span> <span class="n">context</span> <span class="p">(</span><span class="n">function</span> <span class="n">defs</span><span class="p">,</span> <span class="n">summaries</span><span class="p">,</span> <span class="n">macros</span><span class="p">,</span>
+    <span class="o">|</span>                 <span class="n">struct</span> <span class="n">types</span><span class="p">,</span> <span class="k">global</span> <span class="n">states</span><span class="p">,</span> <span class="n">call</span> <span class="n">graph</span><span class="p">,</span> <span class="n">call</span><span class="o">-</span><span class="n">site</span> <span class="n">args</span><span class="p">)</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">CFG</span> <span class="n">Construction</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Per</span><span class="o">-</span><span class="n">function</span> <span class="n">control</span><span class="o">-</span><span class="n">flow</span> <span class="n">graphs</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Dataflow</span> <span class="n">Analysis</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Null</span> <span class="n">state</span><span class="p">,</span> <span class="n">value</span> <span class="nb">range</span><span class="p">,</span> <span class="n">reaching</span> <span class="n">defs</span><span class="p">,</span> <span class="n">init</span> <span class="n">state</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Rule</span> <span class="n">Evaluation</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="mi">285</span> <span class="n">CERT</span> <span class="n">C</span> <span class="n">rules</span> <span class="n">applied</span> <span class="n">to</span> <span class="n">AST</span> <span class="o">+</span> <span class="n">CFG</span> <span class="o">+</span> <span class="n">context</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Suppression</span> <span class="n">Filter</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">Hash</span><span class="o">-</span><span class="n">based</span> <span class="o">+</span> <span class="n">wildcard</span> <span class="p">(</span><span class="n">glob</span><span class="o">/</span><span class="n">prefix</span><span class="p">)</span> <span class="n">suppression</span>
+    <span class="o">|</span>
+    <span class="n">v</span>
+<span class="p">[</span><span class="n">Export</span><span class="p">]</span> <span class="o">--&gt;</span> <span class="n">CSV</span><span class="p">,</span> <span class="n">XLSX</span><span class="p">,</span> <span class="n">JSON</span><span class="p">,</span> <span class="n">SARIF</span>
+</pre></div>
+</div>
+<section id="analysis-modules">
+<h2>Analysis Modules<a class="headerlink" href="#analysis-modules" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt><strong>Tree-sitter parsing</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/mod.rs</span></code>).</dt><dd><p>Fast, incremental, error-tolerant C parsing.  Each <code class="docutils literal notranslate"><span class="pre">.c</span></code> file is parsed into
+an AST; the orchestrator coordinates prescan, CFG construction, dataflow, and
+per-rule evaluation with optional Rayon parallelism.</p>
+</dd>
+<dt><strong>Cross-file pre-scan</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/prescan.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">context.rs</span></code>).</dt><dd><p>Walks <code class="docutils literal notranslate"><span class="pre">-d</span></code> directories collecting function definitions, header prototypes,
+function summaries, call graphs, macro constants/aliases, struct field types,
+global constants, and global pointer null states.  Second pass aggregates
+call-site argument null states and propagates transitive frees through
+parameter pass-through chains (max 8 iterations).  Results stored in
+<code class="docutils literal notranslate"><span class="pre">ProjectContext</span></code>, optionally cached to binary (<code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code> /
+<code class="docutils literal notranslate"><span class="pre">--load-prescan</span></code>).  Consumed by 15+ rules.</p>
+</dd>
+<dt><strong>Function summaries</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/function_summary.rs</span></code>).</dt><dd><p>Lightweight inter-procedural summaries computed during prescan:
+<code class="docutils literal notranslate"><span class="pre">frees_params</span></code>, <code class="docutils literal notranslate"><span class="pre">can_return_null</span></code>, <code class="docutils literal notranslate"><span class="pre">returns_allocation</span></code>,
+<code class="docutils literal notranslate"><span class="pre">checks_null_params</span></code>, <code class="docutils literal notranslate"><span class="pre">modifies_params</span></code>, <code class="docutils literal notranslate"><span class="pre">dereferences_params</span></code>,
+<code class="docutils literal notranslate"><span class="pre">never_returns</span></code>, <code class="docutils literal notranslate"><span class="pre">callsite_param_null_states</span></code> (aggregated from all call
+sites), <code class="docutils literal notranslate"><span class="pre">callsite_param_field_null_states</span></code> (struct field propagation),
+<code class="docutils literal notranslate"><span class="pre">callsite_param_pointee_null_states</span></code> (pointer-to-pointer propagation),
+<code class="docutils literal notranslate"><span class="pre">return_range</span></code> (VRA inter-procedural), <code class="docutils literal notranslate"><span class="pre">param_passthroughs</span></code> (transitive
+free tracking).  Consumed by 7 rules.</p>
+</dd>
+<dt><strong>Control-flow graphs</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/cfg.rs</span></code>).</dt><dd><p>Per-function CFG with basic blocks, typed edges (Fallthrough, TrueBranch,
+FalseBranch, BackEdge, Return, Break, Continue, Goto), and
+<code class="docutils literal notranslate"><span class="pre">condition_range</span></code> metadata for path-sensitive edge refinement.  Optional
+macro-constant-aware construction for dead-branch elimination.  Consumed by
+8 rules (INT30/31/32/33/34-C, EXP33/34-C, MEM01-C).</p>
+</dd>
+<dt><strong>Null state dataflow</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/null_state.rs</span></code>).</dt><dd><p>Forward dataflow on CFG with NullState lattice (Unknown → DefinitelyNull /
+PossiblyNull / NotNull).  Edge refinement on branch conditions supports
+compound <code class="docutils literal notranslate"><span class="pre">||</span></code> / <code class="docutils literal notranslate"><span class="pre">&amp;&amp;</span></code> expressions.  Seeded from global pointer states,
+call-site parameter states, and function summaries.  Primary consumer:
+EXP34-C; also used by API00-C.</p>
+</dd>
+<dt><strong>Value range analysis</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/value_range.rs</span></code>).</dt><dd><p>CFG-based forward value-range dataflow for integer variables.  Tracks
+<code class="docutils literal notranslate"><span class="pre">TypedRange</span></code> (interval + signedness/bit-width) per variable.  Handles
+sequential assignments, conditional narrowing, loop bounds, and early-return
+guards.  Inter-procedural return ranges from function summaries.  Consumed
+by INT30/31/32/33/34-C.</p>
+</dd>
+<dt><strong>Constant evaluation</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/const_eval.rs</span></code>).</dt><dd><p>Syntactic constant folding of <code class="docutils literal notranslate"><span class="pre">#define</span></code> macro constants and arithmetic
+expressions.  Includes built-in C99 <code class="docutils literal notranslate"><span class="pre">&lt;limits.h&gt;</span></code>/<code class="docutils literal notranslate"><span class="pre">&lt;stdint.h&gt;</span></code> macros
+(LP64 model).  <code class="docutils literal notranslate"><span class="pre">try_evaluate_range()</span></code> computes value ranges from
+constants + variables + loop bounds via ancestor walks.  Consumed by 11
+rules (INT, ENV, ERR, FIO, FLP, STR families).</p>
+</dd>
+<dt><strong>Reaching definitions</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/dataflow.rs</span></code>).</dt><dd><p>Standard iterative worklist algorithm computing which definitions
+(Declaration, Assignment, Parameter, NullAssignment, FreeCall, NullableCall)
+reach each program point.  Supports use-after-free and null dereference
+queries.  Primary consumer: MEM01-C.</p>
+</dd>
+<dt><strong>Initialization state</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/init_state.rs</span></code>).</dt><dd><p>Forward dataflow tracking initialization status with malloc-aware semantics
+(Uninitialized, MaybeUninitialized, Initialized, MallocUninitialized,
+MallocInitialized).  Detects partial-init patterns in loops.  Primary
+consumer: EXP33-C.</p>
+</dd>
+<dt><strong>Standard function database</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/std_functions.rs</span></code>).</dt><dd><p>~370 C11, POSIX, and Windows API functions recognized to suppress false
+positives on standard library calls (DCL31-C, DCL07-C).</p>
+</dd>
+<dt><strong>Suppression system</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/suppression.rs</span></code>).</dt><dd><p>Inline <code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">SQC-SUPPRESS</span></code> comments and <code class="docutils literal notranslate"><span class="pre">.sqc-suppress.toml</span></code> files.
+SHA-256 hash-based point suppressions and glob/prefix wildcard suppressions.</p>
+</dd>
+</dl>
+</section>
+<section id="current-capabilities">
+<h2>Current Capabilities<a class="headerlink" href="#current-capabilities" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Capability</p></th>
+<th class="head"><p>Implementation</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Local variable/type inference</p></td>
+<td><p>Per-function <code class="docutils literal notranslate"><span class="pre">collect_variable_types</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Preprocessor block traversal</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">preproc_*</span></code> node recursion</p></td>
+</tr>
+<tr class="row-even"><td><p>Standard function database</p></td>
+<td><p>~370 C11/POSIX/Windows functions</p></td>
+</tr>
+<tr class="row-odd"><td><p>Cross-file function scanning</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-d</span></code> flag pre-scan with binary cache</p></td>
+</tr>
+<tr class="row-even"><td><p>CFG construction</p></td>
+<td><p>Per-function with <code class="docutils literal notranslate"><span class="pre">condition_range</span></code> metadata</p></td>
+</tr>
+<tr class="row-odd"><td><p>Reaching definitions</p></td>
+<td><p>Iterative worklist dataflow (MEM01-C)</p></td>
+</tr>
+<tr class="row-even"><td><p>Inter-procedural summaries</p></td>
+<td><p>Null returns, freed params, no-return, return
+ranges, dereferences, pass-throughs</p></td>
+</tr>
+<tr class="row-odd"><td><p>CFG-based null state dataflow</p></td>
+<td><p>Forward dataflow with NullState lattice, compound
+condition support, global/call-site seeding</p></td>
+</tr>
+<tr class="row-even"><td><p>Value range analysis</p></td>
+<td><p>CFG-based forward dataflow, inter-procedural
+return ranges, type-aware intervals</p></td>
+</tr>
+<tr class="row-odd"><td><p>Initialization state analysis</p></td>
+<td><p>Forward dataflow with malloc-aware semantics</p></td>
+</tr>
+<tr class="row-even"><td><p>Constant evaluation</p></td>
+<td><p>Macro resolution, built-in limits, sizeof types</p></td>
+</tr>
+<tr class="row-odd"><td><p>Call-site null propagation</p></td>
+<td><p>Aggregated argument states across all callers</p></td>
+</tr>
+<tr class="row-even"><td><p>Transitive free propagation</p></td>
+<td><p>Parameter pass-through chains (MEM31-C)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Global pointer null state</p></td>
+<td><p>Cross-file extern pointer tracking (EXP34-C)</p></td>
+</tr>
+<tr class="row-even"><td><p>Struct field type resolution</p></td>
+<td><p>Prescan-collected struct definitions</p></td>
+</tr>
+<tr class="row-odd"><td><p>Taint tracking</p></td>
+<td><p>Intra-function (FIO30-C, STR02-C)</p></td>
+</tr>
+<tr class="row-even"><td><p>Dead-branch elimination</p></td>
+<td><p>Macro-constant-aware CFG construction</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="known-limitations">
+<h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Gap</p></th>
+<th class="head"><p>Impact</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>No preprocessor expansion</p></td>
+<td><p>Macros appear as function calls; partially mitigated
+by <code class="docutils literal notranslate"><span class="pre">collect_macro_aliases</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>No alias analysis</p></td>
+<td><p>Pointer aliasing unresolved; field-scoped alias
+collection causes cross-function issues</p></td>
+</tr>
+<tr class="row-even"><td><p>No symbolic execution</p></td>
+<td><p>Complex path conditions not evaluated</p></td>
+</tr>
+<tr class="row-odd"><td><p>No SSA form</p></td>
+<td><p>No use-def chains beyond reaching definitions</p></td>
+</tr>
+<tr class="row-even"><td><p>VRA intra-procedural only</p></td>
+<td><p>Inter-procedural argument ranges and field-sensitive
+VRA not implemented; return ranges available</p></td>
+</tr>
+<tr class="row-odd"><td><p>Limited taint tracking</p></td>
+<td><p>Intra-function only (STR02-C, FIO30-C);
+cross-function taint for injection CWEs planned</p></td>
+</tr>
+<tr class="row-even"><td><p>Struct field tracking limited</p></td>
+<td><p>Prescan-visible structs only (INT32-C/INT30-C);
+no field-level free or null tracking</p></td>
+</tr>
+<tr class="row-odd"><td><p>No ownership model</p></td>
+<td><p>Cross-function memory ownership untracked;
+limits MEM31-C/MEM30-C precision</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="architectural-ceiling">
+<h2>Architectural Ceiling<a class="headerlink" href="#architectural-ceiling" title="Link to this heading"></a></h2>
+<p>Current TP rate: <strong>67.5%</strong> (Juliet, v0.3.119, 74 CWEs).  The remaining gaps
+are concentrated in CWEs requiring deeper analysis:</p>
+<ul class="simple">
+<li><p><strong>CWE-190/191</strong> (integer overflow/underflow): 60.9%/55.3% vs clang-tidy 94%.
+Requires more complete value-range propagation and bounds-check recognition.</p></li>
+<li><p><strong>CWE-369</strong> (divide by zero): 56.0% vs clang-tidy 94.7%.
+Requires stronger zero-value tracking through assignments.</p></li>
+<li><p><strong>CWE-476</strong> (null dereference): 61.9% vs clang-tidy 94.3%.
+Requires deeper inter-procedural null propagation and alias analysis.</p></li>
+<li><p><strong>CWE-121</strong> (stack buffer overflow): 57.5% vs clang-tidy 86.6%.
+Requires symbolic buffer size tracking across assignments.</p></li>
+</ul>
+<p>Alias analysis and field-sensitive value tracking are the two capabilities
+most likely to lift the ceiling.  Each would require significant
+architectural investment but could push TP rate toward 75%+.</p>
+</section>
+<section id="competitor-landscape">
+<h2>Competitor Landscape<a class="headerlink" href="#competitor-landscape" title="Link to this heading"></a></h2>
+<p>5-tool comparison on 15 overlapping Juliet CWEs (28,488 files):</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>Detection Rate</p></th>
+<th class="head"><p>FP Rate</p></th>
+<th class="head"><p>Analysis Depth</p></th>
+<th class="head"><p>Price</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>clang-tidy</p></td>
+<td><p>91.6%</p></td>
+<td><p>0.8%</p></td>
+<td><p>AST + path-sensitive</p></td>
+<td><p>Free</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>SqC</strong></p></td>
+<td><p>67.5%</p></td>
+<td><p>32.5%</p></td>
+<td><p>AST + CFG + inter-procedural</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-even"><td><p>Frama-C</p></td>
+<td><p>61.0%</p></td>
+<td><p>39.0%</p></td>
+<td><p>Abstract interpretation</p></td>
+<td><p>Free</p></td>
+</tr>
+<tr class="row-odd"><td><p>Infer</p></td>
+<td><p>43.6%</p></td>
+<td><p>56.4%</p></td>
+<td><p>Separation logic</p></td>
+<td><p>Free</p></td>
+</tr>
+<tr class="row-even"><td><p>cppcheck</p></td>
+<td><p>36.4%</p></td>
+<td><p>63.6%</p></td>
+<td><p>Data-flow</p></td>
+<td><p>Free</p></td>
+</tr>
+</tbody>
+</table>
+<p><em>SqC results from v0.3.119 Juliet benchmark (74 CWEs). Competitor figures from
+prior study on 15 overlapping CWEs.</em></p>
+<p>SqC achieves 100% precision (zero FP) on 34 CWEs including CWE-690, CWE-761,
+CWE-78, and CWE-416.  Broadest CWE coverage (74+ CWEs benchmarked vs
+clang-tidy’s 15).</p>
+<p><strong>Key context</strong>: Tools on average find ~20% of weaknesses in Juliet
+(ISSTA2022). Even commercial tools miss 27% (Goseva2015). Industry FP target
+for adoption is 10–20%. See <a class="reference internal" href="bibliography.html"><span class="doc">Bibliography</span></a> for full references.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="testing-methodology.html" class="btn btn-neutral float-left" title="Testing Methodology" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="benchmark-setup.html" class="btn btn-neutral float-right" title="Benchmark Setup" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

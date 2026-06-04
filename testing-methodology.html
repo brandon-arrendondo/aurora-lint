@@ -1,0 +1,684 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Testing Methodology &mdash; SqC  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Analysis Architecture" href="architecture.html" />
+    <link rel="prev" title="Interactive Console UI" href="interactive-ui.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            SqC
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Testing Methodology</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#benchmark-strategy">Benchmark Strategy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#unit-tests">Unit Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#nist-juliet-test-suite-benchmarking">NIST Juliet Test Suite Benchmarking</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#how-juliet-benchmarking-works">How Juliet Benchmarking Works</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#current-results-v0-3-119">Current Results (v0.3.119)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#fp-reduction-history">FP Reduction History</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#real-world-code-analysis">Real-World Code Analysis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#cross-tool-comparison-methodology">Cross-Tool Comparison Methodology</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#apples-to-apples-concerns">Apples-to-Apples Concerns</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#recommended-comparison-workflow">Recommended Comparison Workflow</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#published-cert-c-results">Published CERT-C Results</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#test-infrastructure-details">Test Infrastructure Details</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#build-time-test-generation">Build-Time Test Generation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#test-file-naming-conventions">Test File Naming Conventions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#test-distribution-by-rule-size">Test Distribution by Rule Size</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#what-tests-do-not-cover">What Tests Do NOT Cover</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#coverage-gate">Coverage Gate</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#embedded-rust-unit-tests">Embedded Rust Unit Tests</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#known-rule-implementation-gaps">Known Rule Implementation Gaps</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">SqC</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Testing Methodology</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/testing-methodology.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="testing-methodology">
+<h1>Testing Methodology<a class="headerlink" href="#testing-methodology" title="Link to this heading"></a></h1>
+<p>SqC employs a three-tier testing strategy: unit tests for individual rule logic,
+the NIST Juliet Test Suite for precision/recall measurement, and real-world
+open-source codebases for scalability and noise validation.</p>
+<section id="benchmark-strategy">
+<h2>Benchmark Strategy<a class="headerlink" href="#benchmark-strategy" title="Link to this heading"></a></h2>
+<p>SqC is benchmarked on two axes:</p>
+<ol class="arabic simple">
+<li><p><strong>Juliet Test Suite</strong> (NIST) — 54,484 files with ground truth (OMITBAD/OMITGOOD
+sections). Measures TP rate, FP rate, and per-CWE coverage.</p></li>
+<li><p><strong>Real-World Open-Source Projects</strong> — 5 codebases (libcrc, sqlite, mosquitto,
+curl, hostap) analyzed by sqc, cppcheck, and clang-tidy. No ground truth —
+measures violation counts, rule distribution, and cross-tool agreement.</p></li>
+</ol>
+<p><strong>Why both</strong>:</p>
+<ul class="simple">
+<li><p><strong>Juliet</strong> provides precision metrics (TP/FP) but is synthetic single-file code</p></li>
+<li><p><strong>Real-world</strong> tests scalability, noise levels, and cross-file analysis on production code</p></li>
+<li><p>Rule improvements are validated on Juliet for TP/FP impact, then verified on
+real-world for noise reduction</p></li>
+</ul>
+<p><strong>Benchmark cadence</strong>:</p>
+<ul class="simple">
+<li><p><strong>After every significant rule change</strong>: Juliet benchmark (MCP server, ~10 min)</p></li>
+<li><p><strong>After version milestones</strong>: Full real-world benchmark (MCP server, all 5
+codebases × 3 tools)</p></li>
+<li><p><strong>cppcheck/clang-tidy results are stable</strong> across sqc changes — run once and cache</p></li>
+</ul>
+</section>
+<section id="unit-tests">
+<h2>Unit Tests<a class="headerlink" href="#unit-tests" title="Link to this heading"></a></h2>
+<p>Each CERT C rule has dedicated test cases written as C source files organized
+under <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/&lt;CATEGORY&gt;/&lt;RULE-ID&gt;/tests/</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">src</span><span class="o">/</span><span class="n">rules</span><span class="o">/</span><span class="n">cert_c</span><span class="o">/</span><span class="n">SIG</span><span class="o">/</span><span class="n">SIG01</span><span class="o">-</span><span class="n">C</span><span class="o">/</span><span class="n">tests</span><span class="o">/</span>
+  <span class="n">fail</span><span class="o">/</span>                          <span class="c1"># C files that SHOULD trigger violations</span>
+    <span class="n">testcases_signal_restart_assumption</span><span class="o">.</span><span class="n">c</span>
+    <span class="n">testcases_concurrent_signals</span><span class="o">.</span><span class="n">c</span>
+    <span class="o">...</span>
+  <span class="k">pass</span><span class="o">/</span>                          <span class="c1"># C files that should NOT trigger violations</span>
+    <span class="n">testcases_proper_signal_handling</span><span class="o">.</span><span class="n">c</span>
+    <span class="o">...</span>
+</pre></div>
+</div>
+<p><strong>Current coverage</strong>: 3,322 tests across 290 rules (~3,070 C test files,
+~1,820 fail + ~1,250 pass). All tests pass; zero duplicates.</p>
+<p>Tests are auto-generated into Rust test functions from <code class="docutils literal notranslate"><span class="pre">.c</span></code> files — no embedded
+<code class="docutils literal notranslate"><span class="pre">#[cfg(test)]</span></code> modules in rule implementation files. Run tests with:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># All tests</span>
+<span class="n">cargo</span> <span class="n">test</span>
+
+<span class="c1"># Tests for a specific rule</span>
+<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">sqc</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">sig01_c</span><span class="p">::</span><span class="n">tests</span>
+
+<span class="c1"># Tests for a category</span>
+<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">sqc</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">mem</span>
+</pre></div>
+</div>
+<p>Test cases are derived from patterns documented in the
+<a class="reference external" href="https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard">SEI CERT C Coding Standard wiki</a>.
+Each rule’s wiki page provides:</p>
+<ul class="simple">
+<li><p><strong>Non-compliant code examples</strong>: patterns that violate the rule</p></li>
+<li><p><strong>Compliant solutions</strong>: corrected versions of the same patterns</p></li>
+<li><p><strong>Risk assessment</strong>: severity, likelihood, and remediation cost</p></li>
+</ul>
+<p>Test cases map these directly:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">fail/</span></code> cases encode non-compliant patterns (expected violations)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pass/</span></code> cases encode compliant solutions (expected clean)</p></li>
+</ul>
+</section>
+<section id="nist-juliet-test-suite-benchmarking">
+<h2>NIST Juliet Test Suite Benchmarking<a class="headerlink" href="#nist-juliet-test-suite-benchmarking" title="Link to this heading"></a></h2>
+<p>The <a class="reference external" href="https://samate.nist.gov/SARD/test-suites/112">NIST Juliet Test Suite v1.3</a> is a collection of 54,484 C/C++
+files covering 118 CWE categories, each containing known-bad (<code class="docutils literal notranslate"><span class="pre">OMITGOOD</span></code>) and
+known-good (<code class="docutils literal notranslate"><span class="pre">OMITBAD</span></code>) code sections. This provides ground truth for measuring
+true positive and false positive rates.</p>
+<section id="how-juliet-benchmarking-works">
+<h3>How Juliet Benchmarking Works<a class="headerlink" href="#how-juliet-benchmarking-works" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p><strong>CWE-matched manifests</strong>: For each CWE, a TOML manifest enables only the
+CERT C rules that map to that CWE (e.g., CWE-476 enables EXP34-C). This
+eliminates noise from unrelated rules.</p></li>
+<li><p><strong>Per-CWE analysis</strong>: SqC scans each CWE’s test cases with its matched manifest.
+Violations in <code class="docutils literal notranslate"><span class="pre">bad</span></code> functions are true positives; violations in <code class="docutils literal notranslate"><span class="pre">good</span></code>
+functions are false positives.</p></li>
+<li><p><strong>Parallel execution</strong>: CWEs are processed in parallel via Python’s
+<code class="docutils literal notranslate"><span class="pre">ProcessPoolExecutor</span></code> for fast turnaround (~8-10 min on 4-core, ~3-5 min
+on 24-core).</p></li>
+<li><p><strong>Results stored in SQLite</strong>: All results go to <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code> with
+per-CWE metrics, per-rule breakdowns, and cross-version comparison support.</p></li>
+</ol>
+<p>Running the benchmark:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Via CLI</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">juliet</span>          <span class="c1"># Fast mode (CWE-matched rules only)</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">juliet</span> <span class="o">--</span><span class="n">full</span>   <span class="c1"># Full suite (all rules on all CWEs)</span>
+
+<span class="c1"># Query results</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">runs</span>            <span class="c1"># List all benchmark runs</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">status</span> <span class="n">RUN_ID</span>   <span class="c1"># Check a running benchmark</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">compare</span> <span class="n">v1</span> <span class="n">v2</span>   <span class="c1"># Compare two runs</span>
+</pre></div>
+</div>
+</section>
+<section id="current-results-v0-3-119">
+<h3>Current Results (v0.3.119)<a class="headerlink" href="#current-results-v0-3-119" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>CWEs Scanned</strong></p></td>
+<td><p>74</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>True Positives</strong></p></td>
+<td><p>24,345</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>False Positives</strong></p></td>
+<td><p>11,702</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>TP Rate (Precision)</strong></p></td>
+<td><p>67.5%</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Per-file Detection Rate</strong></p></td>
+<td><p>40.8%</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>100% Precision CWEs</strong></p></td>
+<td><p>34</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>FP Reduction from Baseline</strong></p></td>
+<td><p>-98.6%</p></td>
+</tr>
+</tbody>
+</table>
+<p>SqC achieves 100% precision (zero false positives) on 34 CWEs including:</p>
+<ul class="simple">
+<li><p>CWE-78 (OS command injection)</p></li>
+<li><p>CWE-416 (Use after free)</p></li>
+<li><p>CWE-481 (Assigning instead of comparing)</p></li>
+<li><p>CWE-467 (sizeof on pointer type)</p></li>
+<li><p>CWE-252 (Unchecked return value)</p></li>
+<li><p>CWE-338 (Weak PRNG)</p></li>
+<li><p>CWE-590 (Free memory not on heap)</p></li>
+<li><p>CWE-761 (Free not at start of buffer)</p></li>
+<li><p>CWE-690 (NULL dereference from return)</p></li>
+<li><p>CWE-789 (Uncontrolled memory allocation)</p></li>
+</ul>
+<p>High-precision (&gt;80% TP rate) on an additional 7 CWEs including CWE-127 (82.4%),
+CWE-401 (77.6%), CWE-272 (79.9%), and CWE-675 (93.0%).</p>
+<p>See <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> for full per-CWE breakdowns.</p>
+</section>
+<section id="fp-reduction-history">
+<h3>FP Reduction History<a class="headerlink" href="#fp-reduction-history" title="Link to this heading"></a></h3>
+<p>Over 30+ rounds of targeted optimization, SqC has reduced false positives by
+98.6% from baseline while improving the TP rate from 41.1% to 67.5%:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Round</p></th>
+<th class="head"><p>Key Changes</p></th>
+<th class="head"><p>FP</p></th>
+<th class="head"><p>TP Rate</p></th>
+<th class="head"><p>FP Delta</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Baseline</p></td>
+<td><p>Initial implementation</p></td>
+<td><p>839,341</p></td>
+<td><p>41.1%</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round 3</p></td>
+<td><p>Standard function database</p></td>
+<td><p>537,589</p></td>
+<td><p>42.8%</p></td>
+<td><p>-198,974</p></td>
+</tr>
+<tr class="row-even"><td><p>Round 6</p></td>
+<td><p>Cross-file analysis (<code class="docutils literal notranslate"><span class="pre">-d</span></code>)</p></td>
+<td><p>327,191</p></td>
+<td><p>43.1%</p></td>
+<td><p>-148,622</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round 9</p></td>
+<td><p>Windows API whitelist</p></td>
+<td><p>243,849</p></td>
+<td><p>43.8%</p></td>
+<td><p>-52,566</p></td>
+</tr>
+<tr class="row-even"><td><p>Round 12</p></td>
+<td><p>CFG + inter-procedural analysis</p></td>
+<td><p>215,671</p></td>
+<td><p>44.5%</p></td>
+<td><p>-28,178</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.2.23</p></td>
+<td><p>Built-in C limit macros + const_eval</p></td>
+<td><p>163,585</p></td>
+<td><p>44.6%</p></td>
+<td><p>-12,088</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.3.37</p></td>
+<td><p>Fast mode, taint tracking</p></td>
+<td><p>9,067</p></td>
+<td><p>48.4%</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.3.119</p></td>
+<td><p>74 CWEs (6 new), precision improvements</p></td>
+<td><p>11,702</p></td>
+<td><p>67.5%</p></td>
+<td><p>+2,635</p></td>
+</tr>
+</tbody>
+</table>
+<p><em>Note: v0.3.37 and later use fast mode (CWE-matched rules only); earlier rounds
+used full-suite scoring, so absolute FP counts are not directly comparable across
+the two methodologies. TP rate is the consistent metric. The FP increase from
+v0.3.37 to v0.3.119 reflects expanded CWE scope (68 → 74 CWEs) and more test files,
+not regression — TP rate improved 19.1 percentage points over the same span.</em></p>
+</section>
+</section>
+<section id="real-world-code-analysis">
+<h2>Real-World Code Analysis<a class="headerlink" href="#real-world-code-analysis" title="Link to this heading"></a></h2>
+<p>SqC is benchmarked against 5 real-world open-source C codebases alongside
+cppcheck and clang-tidy:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Project</p></th>
+<th class="head"><p>C Files</p></th>
+<th class="head"><p>LOC</p></th>
+<th class="head"><p>sqc</p></th>
+<th class="head"><p>cppcheck</p></th>
+<th class="head"><p>clang-tidy</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>libcrc</p></td>
+<td><p>16</p></td>
+<td><p>2,130</p></td>
+<td><p>734</p></td>
+<td><p>43</p></td>
+<td><p>2</p></td>
+</tr>
+<tr class="row-odd"><td><p>mosquitto</p></td>
+<td><p>384</p></td>
+<td><p>88,717</p></td>
+<td><p>29,824</p></td>
+<td><p>747</p></td>
+<td><p>44</p></td>
+</tr>
+<tr class="row-even"><td><p>curl</p></td>
+<td><p>697</p></td>
+<td><p>240,412</p></td>
+<td><p>63,207</p></td>
+<td><p>519</p></td>
+<td><p>114</p></td>
+</tr>
+<tr class="row-odd"><td><p>sqlite</p></td>
+<td><p>310</p></td>
+<td><p>402,321</p></td>
+<td><p>129,035</p></td>
+<td><p>1,181</p></td>
+<td><p>135</p></td>
+</tr>
+<tr class="row-even"><td><p>hostap</p></td>
+<td><p>505</p></td>
+<td><p>541,441</p></td>
+<td><p>179,833</p></td>
+<td><p>2,118</p></td>
+<td><p>2,279</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Total</strong></p></td>
+<td><p><strong>1,912</strong></p></td>
+<td><p><strong>1,275,021</strong></p></td>
+<td><p><strong>402,633</strong></p></td>
+<td><p><strong>4,608</strong></p></td>
+<td><p><strong>2,574</strong></p></td>
+</tr>
+</tbody>
+</table>
+<p><em>Data from sqc v0.3.5, cppcheck 2.10, clang-tidy 21.1.6.</em></p>
+<p><strong>Why sqc reports more violations</strong>: SqC implements 285 CERT C rules (both
+advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
+The difference reflects rule coverage breadth, not false positive rate.</p>
+<p><strong>Trend</strong>: SqC violations on real-world code have decreased steadily from
+548,027 (v0.2.7) to 402,633 (v0.3.5) — a 26% reduction through targeted
+FP reduction, cross-file analysis, and improved type inference.</p>
+<p>See <code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code> for full version history and per-rule breakdowns.</p>
+</section>
+<section id="cross-tool-comparison-methodology">
+<h2>Cross-Tool Comparison Methodology<a class="headerlink" href="#cross-tool-comparison-methodology" title="Link to this heading"></a></h2>
+<section id="apples-to-apples-concerns">
+<h3>Apples-to-Apples Concerns<a class="headerlink" href="#apples-to-apples-concerns" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p><strong>Rule coverage</strong>: cppcheck/clang-tidy implement ~20 checks each vs. sqc’s
+283 rules. Raw violation counts are not directly comparable.</p></li>
+<li><p><strong>Translation unit scope</strong>: Use consistent scope (cross-file <code class="docutils literal notranslate"><span class="pre">-d</span></code> flag or
+single-file) when comparing.</p></li>
+<li><p><strong>Preprocessor handling</strong>: cppcheck evaluates all <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> configs;
+clang-tidy sees one; sqc analyzes all visible branches. For Juliet, compile
+with <code class="docutils literal notranslate"><span class="pre">-DOMITBAD</span></code>/<code class="docutils literal notranslate"><span class="pre">-DOMITGOOD</span></code> when needed.</p></li>
+<li><p><strong>Standard library awareness</strong>: cppcheck/clang-tidy have built-in stdlib
+knowledge. sqc uses <code class="docutils literal notranslate"><span class="pre">std_functions.rs</span></code> database.</p></li>
+<li><p><strong>Severity mapping</strong>: cppcheck <code class="docutils literal notranslate"><span class="pre">error/warning/style</span></code>, clang-tidy
+<code class="docutils literal notranslate"><span class="pre">error/warning</span></code>, sqc <code class="docutils literal notranslate"><span class="pre">Low/Medium/High/Critical</span></code>. Map conservatively.</p></li>
+</ol>
+</section>
+<section id="recommended-comparison-workflow">
+<h3>Recommended Comparison Workflow<a class="headerlink" href="#recommended-comparison-workflow" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>Pick a representative codebase or CWE subset</p></li>
+<li><p>Run all tools with consistent flags</p></li>
+<li><p>Normalize to <code class="docutils literal notranslate"><span class="pre">(file,</span> <span class="pre">line,</span> <span class="pre">rule/check-id)</span></code> tuples</p></li>
+<li><p>Classify as TP/FP using Juliet ground truth</p></li>
+<li><p>Compute precision, recall, F1 per tool</p></li>
+<li><p>Restrict to overlapping rules for fair comparison</p></li>
+</ol>
+</section>
+<section id="published-cert-c-results">
+<h3>Published CERT-C Results<a class="headerlink" href="#published-cert-c-results" title="Link to this heading"></a></h3>
+<p>No published CERT-C violation rates per KLOC on production open-source code
+exist (Goseva2015). Valid comparison strategies:</p>
+<ol class="arabic simple">
+<li><p>sqc vs. cppcheck vs. clang-tidy on same codebase (done for 5 projects)</p></li>
+<li><p>sqc on JasPer with reference to SEI SCALe 2015 report (only named CERT-C audit)</p></li>
+<li><p>sqc TP rate vs. TrustInSoft’s synthetic CERT-C benchmark as upper bound</p></li>
+</ol>
+<p>For academic context on tool effectiveness, FP rates, and the Juliet benchmark
+methodology, see <a class="reference internal" href="bibliography.html"><span class="doc">Bibliography</span></a>.</p>
+</section>
+</section>
+<section id="test-infrastructure-details">
+<h2>Test Infrastructure Details<a class="headerlink" href="#test-infrastructure-details" title="Link to this heading"></a></h2>
+<section id="build-time-test-generation">
+<h3>Build-Time Test Generation<a class="headerlink" href="#build-time-test-generation" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p><strong>Test files</strong>: <code class="docutils literal notranslate"><span class="pre">.c</span></code> files in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/CATEGORY/RULE-ID/tests/{fail,pass}/</span></code></p></li>
+<li><p><strong>Build-time generation</strong>: <code class="docutils literal notranslate"><span class="pre">build.rs</span></code> walks the test directories and generates
+Rust test functions in <code class="docutils literal notranslate"><span class="pre">$OUT_DIR/integration_tests.rs</span></code></p></li>
+<li><p><strong>Test harness</strong>: <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/integration.rs</span></code> includes the generated
+tests, records results, and produces <code class="docutils literal notranslate"><span class="pre">docs/test-summary.md</span></code></p></li>
+<li><p><strong>Test logic</strong>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">fail/</span></code> tests: parse the C file, run the rule, assert violations &gt; 0</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pass/</span></code> tests: parse the C file, run the rule, assert violations == 0</p></li>
+</ul>
+</li>
+<li><p><strong>Disabled rules</strong>: if <code class="docutils literal notranslate"><span class="pre">RULE-ID.toml</span></code> has <code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">false</span></code>, tests are
+generated with <code class="docutils literal notranslate"><span class="pre">#[ignore]</span></code></p></li>
+</ol>
+</section>
+<section id="test-file-naming-conventions">
+<h3>Test File Naming Conventions<a class="headerlink" href="#test-file-naming-conventions" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Prefix</p></th>
+<th class="head"><p>Origin</p></th>
+<th class="head"><p>Count</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">wiki_*</span></code></p></td>
+<td><p>CERT wiki examples</p></td>
+<td><p>~1,120</p></td>
+<td><p>Directly from CERT C Coding Standard</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">testcases_*</span></code></p></td>
+<td><p>AI-generated</p></td>
+<td><p>~1,860</p></td>
+<td><p>Broader pattern coverage</p></td>
+</tr>
+<tr class="row-even"><td><p>Other</p></td>
+<td><p>Mixed</p></td>
+<td><p>~80</p></td>
+<td><p>Various</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="test-distribution-by-rule-size">
+<h3>Test Distribution by Rule Size<a class="headerlink" href="#test-distribution-by-rule-size" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Test Count Range</p></th>
+<th class="head"><p>Rules</p></th>
+<th class="head"><p>Examples</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1–2 tests</p></td>
+<td><p>3</p></td>
+<td><p>Remaining sparse rules</p></td>
+</tr>
+<tr class="row-odd"><td><p>3–5 tests</p></td>
+<td><p>167</p></td>
+<td><p>Most wiki-sourced rules</p></td>
+</tr>
+<tr class="row-even"><td><p>6–10 tests</p></td>
+<td><p>70</p></td>
+<td><p>DCL06-C, ENV31-C, INT36-C, etc.</p></td>
+</tr>
+<tr class="row-odd"><td><p>11–20 tests</p></td>
+<td><p>12</p></td>
+<td><p>INT31-C, DCL37-C, EXP43-C, etc.</p></td>
+</tr>
+<tr class="row-even"><td><p>21–50 tests</p></td>
+<td><p>30</p></td>
+<td><p>Most “large suite” rules</p></td>
+</tr>
+<tr class="row-odd"><td><p>51–100 tests</p></td>
+<td><p>8</p></td>
+<td><p>ARR30-C, STR31-C, INT32-C, MEM31-C, etc.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="what-tests-do-not-cover">
+<h3>What Tests Do NOT Cover<a class="headerlink" href="#what-tests-do-not-cover" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Inter-procedural analysis</strong>: No tests exercise <code class="docutils literal notranslate"><span class="pre">-d</span></code> directory scanning,
+prescan, or cross-file function resolution</p></li>
+<li><p><strong>Project context</strong>: No tests exercise <code class="docutils literal notranslate"><span class="pre">set_project_context()</span></code> or
+<code class="docutils literal notranslate"><span class="pre">set_function_cfgs()</span></code></p></li>
+<li><p><strong>CFG/dataflow</strong>: The CFG builder, null state analysis, value-range analysis,
+and init state analysis have embedded Rust unit tests but no integration-level
+C test coverage</p></li>
+<li><p><strong>CLI flags</strong>: No tests for <code class="docutils literal notranslate"><span class="pre">--diff</span></code>, <code class="docutils literal notranslate"><span class="pre">--export</span></code>, <code class="docutils literal notranslate"><span class="pre">--format</span></code>, <code class="docutils literal notranslate"><span class="pre">--include-path</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code>, <code class="docutils literal notranslate"><span class="pre">--load-prescan</span></code>, <code class="docutils literal notranslate"><span class="pre">--jobs</span></code></p></li>
+<li><p><strong>Suppression</strong>: No tests for <code class="docutils literal notranslate"><span class="pre">.sqc-suppress.toml</span></code> hash-based suppression</p></li>
+</ul>
+</section>
+<section id="coverage-gate">
+<h3>Coverage Gate<a class="headerlink" href="#coverage-gate" title="Link to this heading"></a></h3>
+<p>Line coverage is enforced at <strong>75%</strong> via <code class="docutils literal notranslate"><span class="pre">scripts/coverage-gate.sh</span></code>, shared by
+the pre-commit hook and GitHub Actions CI pipeline. The script:</p>
+<ul class="simple">
+<li><p>Runs tests via <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">llvm-cov</span></code></p></li>
+<li><p>Produces <code class="docutils literal notranslate"><span class="pre">lcov.info</span></code> (publishable as CI artifact)</p></li>
+<li><p>Excludes from threshold: <code class="docutils literal notranslate"><span class="pre">ui/</span></code> (GUI), <code class="docutils literal notranslate"><span class="pre">main.rs</span></code> (CLI entry),
+<code class="docutils literal notranslate"><span class="pre">integration.rs</span></code> (test harness), <code class="docutils literal notranslate"><span class="pre">progress.rs</span></code> (terminal I/O),
+<code class="docutils literal notranslate"><span class="pre">export/</span></code> (SARIF/Excel output), <code class="docutils literal notranslate"><span class="pre">files/</span></code> (git/directory I/O),
+<code class="docutils literal notranslate"><span class="pre">manifest/</span></code> (TOML config loading)</p></li>
+<li><p>Fails with clear output showing current coverage and largest uncovered files</p></li>
+</ul>
+</section>
+<section id="embedded-rust-unit-tests">
+<h3>Embedded Rust Unit Tests<a class="headerlink" href="#embedded-rust-unit-tests" title="Link to this heading"></a></h3>
+<p>Files in <code class="docutils literal notranslate"><span class="pre">src/analyze/</span></code> with <code class="docutils literal notranslate"><span class="pre">#[cfg(test)]</span></code> modules:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>File</p></th>
+<th class="head"><p>Lines</p></th>
+<th class="head"><p>Tests</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>prescan.rs</p></td>
+<td><p>2,741</p></td>
+<td><p>31</p></td>
+</tr>
+<tr class="row-odd"><td><p>const_eval.rs</p></td>
+<td><p>2,071</p></td>
+<td><p>43</p></td>
+</tr>
+<tr class="row-even"><td><p>value_range.rs</p></td>
+<td><p>1,778</p></td>
+<td><p>13</p></td>
+</tr>
+<tr class="row-odd"><td><p>init_state.rs</p></td>
+<td><p>1,729</p></td>
+<td><p>6</p></td>
+</tr>
+<tr class="row-even"><td><p>null_state.rs</p></td>
+<td><p>1,720</p></td>
+<td><p>9</p></td>
+</tr>
+<tr class="row-odd"><td><p>function_summary.rs</p></td>
+<td><p>1,175</p></td>
+<td><p>14</p></td>
+</tr>
+<tr class="row-even"><td><p>suppression.rs</p></td>
+<td><p>1,070</p></td>
+<td><p>34</p></td>
+</tr>
+<tr class="row-odd"><td><p>dataflow.rs</p></td>
+<td><p>988</p></td>
+<td><p>19</p></td>
+</tr>
+<tr class="row-even"><td><p>cfg.rs</p></td>
+<td><p>761</p></td>
+<td><p>7</p></td>
+</tr>
+<tr class="row-odd"><td><p>mod.rs</p></td>
+<td><p>705</p></td>
+<td><p>10</p></td>
+</tr>
+<tr class="row-even"><td><p>context.rs</p></td>
+<td><p>93</p></td>
+<td><p>0</p></td>
+</tr>
+</tbody>
+</table>
+<p>Rule implementation files with embedded tests (against project convention):
+INT34-C, INT33-C, CON31-C, FIO01-C, EXP32-C, EXP30-C, EXP33-C, EXP08-C,
+EXP42-C, DCL08-C, STR10-C.</p>
+</section>
+<section id="known-rule-implementation-gaps">
+<h3>Known Rule Implementation Gaps<a class="headerlink" href="#known-rule-implementation-gaps" title="Link to this heading"></a></h3>
+<p>The following rule-level analysis limitations were discovered during test coverage
+work. These are cases where valid C patterns should pass/fail but the rule
+implementation cannot detect them correctly.</p>
+<ul class="simple">
+<li><p><strong>INT00-C</strong>: <code class="docutils literal notranslate"><span class="pre">find_type_in_source()</span></code> only matches <code class="docutils literal notranslate"><span class="pre">TYPE</span> <span class="pre">VAR;</span></code> or
+<code class="docutils literal notranslate"><span class="pre">TYPE</span> <span class="pre">VAR,</span></code>, not <code class="docutils literal notranslate"><span class="pre">TYPE</span> <span class="pre">VAR</span> <span class="pre">=</span> <span class="pre">expr;</span></code>. Variables with initializers get type
+“unknown”, so format specifier checks cannot validate <code class="docutils literal notranslate"><span class="pre">%ld</span></code> with
+<code class="docutils literal notranslate"><span class="pre">long</span> <span class="pre">x</span> <span class="pre">=</span> <span class="pre">42;</span></code>.</p></li>
+<li><p><strong>INT08-C</strong>: Rule does not recognize <code class="docutils literal notranslate"><span class="pre">SHRT_MAX</span></code> / <code class="docutils literal notranslate"><span class="pre">CHAR_MAX</span></code> guard checks
+before narrow-type arithmetic.</p></li>
+<li><p><strong>INT34-C</strong>: <code class="docutils literal notranslate"><span class="pre">is_likely_unsigned()</span></code> parameter declaration check doesn’t
+traverse tree-sitter’s function parameter hierarchy. Also,
+<code class="docutils literal notranslate"><span class="pre">checks_shift_bounds()</span></code> doesn’t handle reversed comparison form
+<code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">&lt;=</span> <span class="pre">var</span></code> (only <code class="docutils literal notranslate"><span class="pre">var</span> <span class="pre">&gt;=</span> <span class="pre">N</span></code>).</p></li>
+<li><p><strong>POS50-C</strong>: <code class="docutils literal notranslate"><span class="pre">is_declared_in_function()</span></code> doesn’t distinguish <code class="docutils literal notranslate"><span class="pre">static</span></code> from
+automatic storage. Static locals passed to <code class="docutils literal notranslate"><span class="pre">pthread_create()</span></code> produce FPs.</p></li>
+<li><p><strong>FLP00-C</strong>: Only detects float equality in <code class="docutils literal notranslate"><span class="pre">if</span></code>-conditions, not in return
+statements or assignments.</p></li>
+<li><p><strong>EXP40-C</strong>: <code class="docutils literal notranslate"><span class="pre">is_const_qualified()</span></code> returns false for identifiers — cannot
+determine if a variable was declared <code class="docutils literal notranslate"><span class="pre">const</span></code> without a symbol table.</p></li>
+<li><p><strong>STR03-C</strong>: <code class="docutils literal notranslate"><span class="pre">strncpy()</span></code> and <code class="docutils literal notranslate"><span class="pre">snprintf()</span></code> always trigger violations
+regardless of whether null-termination is manually added afterward.</p></li>
+</ul>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="interactive-ui.html" class="btn btn-neutral float-left" title="Interactive Console UI" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="architecture.html" class="btn btn-neutral float-right" title="Analysis Architecture" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

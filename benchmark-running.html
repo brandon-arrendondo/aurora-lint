@@ -1,0 +1,513 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Running Benchmarks (MCP Server) &mdash; SqC  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Project Structure" href="project-structure.html" />
+    <link rel="prev" title="Benchmark Setup" href="benchmark-setup.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            SqC
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Running Benchmarks (MCP Server)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#benchmark-infrastructure">Benchmark Infrastructure</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#sqlite-schema">SQLite Schema</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#benchmark-workflow-protocol">Benchmark Workflow Protocol</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#pre-benchmark-checklist">Pre-Benchmark Checklist</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#juliet-benchmark-tools">Juliet Benchmark Tools</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#cli-alternative">CLI Alternative</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#real-world-benchmark-tools">Real-World Benchmark Tools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#comparing-across-runs">Comparing Across Runs</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#juliet">Juliet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#real-world">Real-World</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#competitor-benchmarks-infer-frama-c">Competitor Benchmarks (Infer / Frama-C)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#infrastructure">Infrastructure</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#running">Running</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#timing-estimates">Timing Estimates</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#classification-logic">Classification Logic</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#troubleshooting">Troubleshooting</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#resolved-issues">Resolved Issues</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">SqC</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Running Benchmarks (MCP Server)</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/benchmark-running.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="running-benchmarks-mcp-server">
+<h1>Running Benchmarks (MCP Server)<a class="headerlink" href="#running-benchmarks-mcp-server" title="Link to this heading"></a></h1>
+<p>The MCP benchmark servers provide a programmatic interface for running Juliet and
+real-world benchmarks. All results are stored in <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code> (SQLite,
+WAL mode).</p>
+<section id="benchmark-infrastructure">
+<h2>Benchmark Infrastructure<a class="headerlink" href="#benchmark-infrastructure" title="Link to this heading"></a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">bench</span><span class="o">/</span>
+  <span class="fm">__init__</span><span class="o">.</span><span class="n">py</span>      <span class="n">Package</span> <span class="n">marker</span>
+  <span class="n">__main__</span><span class="o">.</span><span class="n">py</span>      <span class="n">CLI</span><span class="p">:</span> <span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">juliet</span> <span class="p">[</span><span class="o">--</span><span class="n">full</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">jobs</span> <span class="n">N</span><span class="p">]</span>
+  <span class="n">config</span><span class="o">.</span><span class="n">py</span>        <span class="n">Paths</span><span class="p">,</span> <span class="n">constants</span><span class="p">,</span> <span class="n">defaults</span>
+  <span class="n">db</span><span class="o">.</span><span class="n">py</span>            <span class="n">SQLite</span> <span class="n">schema</span><span class="p">,</span> <span class="n">WAL</span> <span class="n">mode</span><span class="p">,</span> <span class="n">CRUD</span> <span class="o">+</span> <span class="n">query</span> <span class="n">API</span>
+  <span class="n">analyzer</span><span class="o">.</span><span class="n">py</span>      <span class="n">TP</span><span class="o">/</span><span class="n">FP</span> <span class="n">classifier</span> <span class="p">(</span><span class="n">Juliet</span> <span class="n">ground</span> <span class="n">truth</span><span class="p">)</span>
+  <span class="n">runner</span><span class="o">.</span><span class="n">py</span>        <span class="n">Parallel</span> <span class="n">CWE</span> <span class="n">runner</span>
+  <span class="n">machine</span><span class="o">.</span><span class="n">py</span>       <span class="n">Machine</span> <span class="n">metadata</span> <span class="p">(</span><span class="n">CPU</span><span class="p">,</span> <span class="n">RAM</span><span class="p">,</span> <span class="n">hostname</span><span class="p">)</span>
+</pre></div>
+</div>
+<section id="sqlite-schema">
+<h3>SQLite Schema<a class="headerlink" href="#sqlite-schema" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Table</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">runs</span></code></p></td>
+<td><p>One row per benchmark (version, SHA, mode, status, machine)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cwe_scans</span></code></p></td>
+<td><p>One row per CWE per run (file count, violations, duration)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">violations</span></code></p></td>
+<td><p>Every individual sqc finding with TP/FP classification</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cwe_metrics</span></code></p></td>
+<td><p>Pre-computed aggregates per CWE (TP/FP rates)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rule_cwe_breakdown</span></code></p></td>
+<td><p>Per-rule per-CWE counts</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">realworld_runs</span></code></p></td>
+<td><p>Real-world benchmark runs (sqc version, machine)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">realworld_results</span></code></p></td>
+<td><p>Per-project per-tool violation counts</p></td>
+</tr>
+</tbody>
+</table>
+<p>Historical data from <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> and <code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code> has been
+backfilled into the database.</p>
+</section>
+</section>
+<section id="benchmark-workflow-protocol">
+<h2>Benchmark Workflow Protocol<a class="headerlink" href="#benchmark-workflow-protocol" title="Link to this heading"></a></h2>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<ol class="arabic simple">
+<li><p><strong>Version bump + commit BEFORE benchmark</strong>: Always bump the version in
+<code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code>, rebuild (<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">build</span> <span class="pre">--release</span></code>), and commit before
+starting. The run_id is <code class="docutils literal notranslate"><span class="pre">sqc-{version}-{sha}</span></code>.</p></li>
+<li><p><strong>NEVER modify code while a benchmark is running</strong>: The benchmark uses
+<code class="docutils literal notranslate"><span class="pre">target/release/sqc</span></code>. Rebuilding while running corrupts results.</p></li>
+<li><p><strong>Wait for completion</strong>: Fast-mode ~8-10 min (4-core), ~3-5 min (24-core).
+Full-suite ~40-50 min. Check status no more than once every 5 minutes.</p></li>
+<li><p><strong>Compare runs after completion</strong>.</p></li>
+<li><p><strong>Sequence</strong>: <code class="docutils literal notranslate"><span class="pre">implement</span> <span class="pre">-&gt;</span> <span class="pre">bump</span> <span class="pre">version</span> <span class="pre">-&gt;</span> <span class="pre">commit</span> <span class="pre">-&gt;</span> <span class="pre">build</span> <span class="pre">release</span> <span class="pre">-&gt;</span>
+<span class="pre">run</span> <span class="pre">benchmark</span> <span class="pre">-&gt;</span> <span class="pre">wait</span> <span class="pre">-&gt;</span> <span class="pre">analyze</span></code></p></li>
+</ol>
+</div>
+<section id="pre-benchmark-checklist">
+<h3>Pre-Benchmark Checklist<a class="headerlink" href="#pre-benchmark-checklist" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>All code changes committed</p></li>
+<li><p>Version bumped in <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> (for Juliet)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">build</span> <span class="pre">--release</span></code> successful</p></li>
+<li><p>No other benchmark currently running (<code class="docutils literal notranslate"><span class="pre">get_status()</span></code>)</p></li>
+<li><p>Previous results compared if needed (<code class="docutils literal notranslate"><span class="pre">compare_runs()</span></code>)</p></li>
+</ul>
+</section>
+</section>
+<section id="juliet-benchmark-tools">
+<h2>Juliet Benchmark Tools<a class="headerlink" href="#juliet-benchmark-tools" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run_benchmark(mode)</span></code></p></td>
+<td><p>Start benchmark (<code class="docutils literal notranslate"><span class="pre">&quot;fast&quot;</span></code> default or <code class="docutils literal notranslate"><span class="pre">&quot;full&quot;</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">get_status</span></code></p></td>
+<td><p>Check progress (%, ETA, recent CWEs)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">get_results(sort_by,</span> <span class="pre">run)</span></code></p></td>
+<td><p>Aggregated TP/FP across completed CWEs</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">get_cwe_detail(cwe_id,</span> <span class="pre">run)</span></code></p></td>
+<td><p>TP/FP breakdown for a specific CWE</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">list_runs</span></code></p></td>
+<td><p>List all benchmark runs</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">compare_runs(base,</span> <span class="pre">target)</span></code></p></td>
+<td><p>Compare two runs (TP/FP deltas)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">compare_cwe(cwe_id,</span> <span class="pre">base,</span> <span class="pre">target)</span></code></p></td>
+<td><p>Compare a CWE between two runs</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cancel_benchmark</span></code></p></td>
+<td><p>Kill a running benchmark</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">clear_results</span></code></p></td>
+<td><p>Remove old result directories</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">reanalyze_run(run)</span></code></p></td>
+<td><p>Re-run analysis on existing CSVs</p></td>
+</tr>
+</tbody>
+</table>
+<p>Typical Juliet workflow:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mf">1.</span> <span class="n">run_benchmark</span><span class="p">()</span>                          <span class="c1"># Start (fast mode)</span>
+<span class="mf">2.</span> <span class="n">get_status</span><span class="p">()</span>                             <span class="c1"># Check progress (every 5 min)</span>
+<span class="mf">3.</span> <span class="n">get_results</span><span class="p">()</span>                            <span class="c1"># After completion: summary</span>
+<span class="mf">4.</span> <span class="n">get_results</span><span class="p">(</span><span class="n">sort_by</span><span class="o">=</span><span class="s2">&quot;fp_count&quot;</span><span class="p">)</span>          <span class="c1"># Top FP rules</span>
+<span class="mf">5.</span> <span class="n">get_cwe_detail</span><span class="p">(</span><span class="n">cwe_id</span><span class="o">=</span><span class="s2">&quot;476&quot;</span><span class="p">)</span>             <span class="c1"># Deep dive</span>
+<span class="mf">6.</span> <span class="n">compare_runs</span><span class="p">(</span><span class="n">base</span><span class="o">=</span><span class="s2">&quot;sqc-0.3.17-historical&quot;</span><span class="p">,</span> <span class="n">target</span><span class="o">=</span><span class="s2">&quot;latest&quot;</span><span class="p">)</span>
+<span class="mf">7.</span> <span class="n">list_runs</span><span class="p">()</span>                              <span class="c1"># All available runs</span>
+</pre></div>
+</div>
+<p>Run identifiers accepted by query tools:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">&quot;latest&quot;</span></code> – most recent run (default)</p></li>
+<li><p>Full run name: <code class="docutils literal notranslate"><span class="pre">&quot;sqc-0.3.20-abc1234&quot;</span></code></p></li>
+<li><p>Commit SHA: <code class="docutils literal notranslate"><span class="pre">&quot;abc1234&quot;</span></code></p></li>
+<li><p>Historical runs: <code class="docutils literal notranslate"><span class="pre">&quot;sqc-0.3.17-historical&quot;</span></code></p></li>
+</ul>
+<p><strong>Notes</strong>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">run_benchmark()</span></code> returns immediately – use <code class="docutils literal notranslate"><span class="pre">get_status()</span></code> to monitor</p></li>
+<li><p>If a benchmark is already running, <code class="docutils literal notranslate"><span class="pre">run_benchmark()</span></code> returns the existing PID</p></li>
+<li><p><strong>Fast mode</strong> (default): per-CWE manifests, CWE-matched rules only. ~10x faster</p></li>
+<li><p><strong>Full mode</strong>: all 283 rules against every CWE. Higher noise ratio</p></li>
+<li><p>Results from <code class="docutils literal notranslate"><span class="pre">get_results()</span></code> only include completed CWEs</p></li>
+<li><p>Resume: interrupted runs skip already-completed CWEs on re-run</p></li>
+</ul>
+<section id="cli-alternative">
+<h3>CLI Alternative<a class="headerlink" href="#cli-alternative" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>juliet<span class="w"> </span><span class="o">[</span>--full<span class="o">]</span><span class="w"> </span><span class="o">[</span>--jobs<span class="w"> </span>N<span class="o">]</span><span class="w"> </span><span class="o">[</span>--keep-csv<span class="o">]</span>
+python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>status<span class="w"> </span><span class="o">[</span>RUN_ID<span class="o">]</span>
+python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>compare<span class="w"> </span>BASE<span class="w"> </span>TARGET
+python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>runs
+</pre></div>
+</div>
+</section>
+</section>
+<section id="real-world-benchmark-tools">
+<h2>Real-World Benchmark Tools<a class="headerlink" href="#real-world-benchmark-tools" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run_analysis</span></code></p></td>
+<td><p>Run one tool against one codebase</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run_all</span></code></p></td>
+<td><p>Run all tool x codebase combinations (or filter)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">get_status</span></code></p></td>
+<td><p>Show status of all tracked runs</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">get_results</span></code></p></td>
+<td><p>Parse and display results</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">compare_runs</span></code></p></td>
+<td><p>Compare results between two versions</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">list_runs</span></code></p></td>
+<td><p>List all version directories</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cancel_run</span></code></p></td>
+<td><p>Cancel a specific or all active runs</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">purge_run</span></code></p></td>
+<td><p>Remove stale/zombie runs</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">clear_results</span></code></p></td>
+<td><p>Remove old result directories</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">deploy_sqc</span></code></p></td>
+<td><p>Deploy sqc binary + manifest to remote hosts</p></td>
+</tr>
+</tbody>
+</table>
+<p>Supported tools: <code class="docutils literal notranslate"><span class="pre">sqc</span></code>, <code class="docutils literal notranslate"><span class="pre">cppcheck</span></code>, <code class="docutils literal notranslate"><span class="pre">clang-tidy</span></code></p>
+<p>Supported codebases: <code class="docutils literal notranslate"><span class="pre">libcrc</span></code>, <code class="docutils literal notranslate"><span class="pre">sqlite</span></code>, <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code>, <code class="docutils literal notranslate"><span class="pre">curl</span></code>, <code class="docutils literal notranslate"><span class="pre">hostap</span></code></p>
+<p>Typical real-world workflow:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mf">1.</span> <span class="n">run_all</span><span class="p">(</span><span class="n">tool</span><span class="o">=</span><span class="s2">&quot;sqc&quot;</span><span class="p">)</span>           <span class="c1"># Run sqc against all 5 codebases</span>
+<span class="mf">2.</span> <span class="n">get_status</span><span class="p">()</span>                  <span class="c1"># Monitor progress</span>
+<span class="mf">3.</span> <span class="n">get_results</span><span class="p">()</span>                 <span class="c1"># View all results</span>
+<span class="mf">4.</span> <span class="n">compare_runs</span><span class="p">(</span><span class="n">base</span><span class="o">=</span><span class="s2">&quot;0.2.6&quot;</span><span class="p">,</span> <span class="n">target</span><span class="o">=</span><span class="s2">&quot;0.2.7&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="comparing-across-runs">
+<h2>Comparing Across Runs<a class="headerlink" href="#comparing-across-runs" title="Link to this heading"></a></h2>
+<section id="juliet">
+<h3>Juliet<a class="headerlink" href="#juliet" title="Link to this heading"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">compare_runs</span><span class="p">(</span><span class="n">base</span><span class="o">=</span><span class="s2">&quot;sqc-0.3.17-historical&quot;</span><span class="p">,</span> <span class="n">target</span><span class="o">=</span><span class="s2">&quot;latest&quot;</span><span class="p">)</span>
+<span class="n">compare_cwe</span><span class="p">(</span><span class="n">cwe_id</span><span class="o">=</span><span class="s2">&quot;476&quot;</span><span class="p">,</span> <span class="n">base</span><span class="o">=</span><span class="s2">&quot;sqc-0.3.14-historical&quot;</span><span class="p">,</span> <span class="n">target</span><span class="o">=</span><span class="s2">&quot;latest&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Positive FP delta = regression. Negative = improvement.</p>
+</section>
+<section id="real-world">
+<h3>Real-World<a class="headerlink" href="#real-world" title="Link to this heading"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">compare_runs</span><span class="p">(</span><span class="n">base_version</span><span class="o">=</span><span class="s2">&quot;0.2.6&quot;</span><span class="p">,</span> <span class="n">target_version</span><span class="o">=</span><span class="s2">&quot;0.2.7&quot;</span><span class="p">)</span>
+<span class="n">compare_runs</span><span class="p">(</span><span class="n">base_version</span><span class="o">=</span><span class="s2">&quot;0.2.6&quot;</span><span class="p">,</span> <span class="n">target_version</span><span class="o">=</span><span class="s2">&quot;0.2.7&quot;</span><span class="p">,</span> <span class="n">tool</span><span class="o">=</span><span class="s2">&quot;sqc&quot;</span><span class="p">,</span> <span class="n">codebase</span><span class="o">=</span><span class="s2">&quot;sqlite&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="competitor-benchmarks-infer-frama-c">
+<h2>Competitor Benchmarks (Infer / Frama-C)<a class="headerlink" href="#competitor-benchmarks-infer-frama-c" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">bench/competitors.py</span></code> module runs Facebook Infer and Frama-C EVA on
+Juliet test cases and classifies findings as TP/FP using the same ground truth
+as the sqc benchmark (<code class="docutils literal notranslate"><span class="pre">OMITBAD</span></code>/<code class="docutils literal notranslate"><span class="pre">OMITGOOD</span></code> guards and procedure names).</p>
+<p>Results are written to <code class="docutils literal notranslate"><span class="pre">data/competitor_results/&lt;tool&gt;_&lt;timestamp&gt;.json</span></code>.</p>
+<section id="infrastructure">
+<h3>Infrastructure<a class="headerlink" href="#infrastructure" title="Link to this heading"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">bench</span><span class="o">/</span>
+  <span class="n">competitors</span><span class="o">.</span><span class="n">py</span>   <span class="n">Infer</span> <span class="o">+</span> <span class="n">Frama</span><span class="o">-</span><span class="n">C</span> <span class="n">runners</span><span class="p">,</span> <span class="n">TP</span><span class="o">/</span><span class="n">FP</span> <span class="n">classification</span><span class="p">,</span> <span class="n">comparison</span>
+</pre></div>
+</div>
+<p>Default CWE sets:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>CWEs</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Infer</p></td>
+<td><p>476, 690, 416, 401, 415, 761, 762, 121, 122, 124, 127</p></td>
+</tr>
+<tr class="row-odd"><td><p>Frama-C</p></td>
+<td><p>190, 191, 476, 369, 197, 680</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="running">
+<h3>Running<a class="headerlink" href="#running" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run Infer on default CWEs (~80 min on 24-core)</span>
+python3<span class="w"> </span>-m<span class="w"> </span>bench.competitors<span class="w"> </span>infer<span class="w"> </span>--jobs<span class="w"> </span><span class="m">8</span>
+
+<span class="c1"># Run Frama-C on default CWEs (~7-9 hours)</span>
+<span class="nb">eval</span><span class="w"> </span><span class="k">$(</span>opam<span class="w"> </span>env<span class="k">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>python3<span class="w"> </span>-m<span class="w"> </span>bench.competitors<span class="w"> </span>framac<span class="w"> </span>--jobs<span class="w"> </span><span class="m">8</span>
+
+<span class="c1"># Run a specific subset</span>
+python3<span class="w"> </span>-m<span class="w"> </span>bench.competitors<span class="w"> </span>infer<span class="w"> </span>--cwes<span class="w"> </span>CWE476,CWE690
+
+<span class="c1"># Compare results</span>
+python3<span class="w"> </span>-m<span class="w"> </span>bench.competitors<span class="w"> </span>compare<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>data/competitor_results/infer_*.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>data/competitor_results/framac_*.json
+</pre></div>
+</div>
+</section>
+<section id="timing-estimates">
+<h3>Timing Estimates<a class="headerlink" href="#timing-estimates" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>CWEs</p></th>
+<th class="head"><p>Files</p></th>
+<th class="head"><p>Estimated Time</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Infer</p></td>
+<td><p>11</p></td>
+<td><p>17,232</p></td>
+<td><p>~80 min</p></td>
+</tr>
+<tr class="row-odd"><td><p>Frama-C</p></td>
+<td><p>6</p></td>
+<td><p>11,628</p></td>
+<td><p>~7–9 hours</p></td>
+</tr>
+</tbody>
+</table>
+<p>Infer uses incremental capture (<code class="docutils literal notranslate"><span class="pre">infer</span> <span class="pre">capture</span> <span class="pre">--continue</span></code>) per file then a
+single <code class="docutils literal notranslate"><span class="pre">infer</span> <span class="pre">analyze</span></code> pass per CWE.  Frama-C runs EVA per-function per-file
+(<code class="docutils literal notranslate"><span class="pre">-main</span> <span class="pre">&lt;func&gt;</span></code>), which is the main bottleneck.</p>
+</section>
+<section id="classification-logic">
+<h3>Classification Logic<a class="headerlink" href="#classification-logic" title="Link to this heading"></a></h3>
+<p><strong>Infer</strong>: Findings include a <code class="docutils literal notranslate"><span class="pre">procedure</span></code> field (e.g.
+<code class="docutils literal notranslate"><span class="pre">CWE476_..._01_bad</span></code>).  If the procedure contains <code class="docutils literal notranslate"><span class="pre">_bad</span></code> or <code class="docutils literal notranslate"><span class="pre">Bad</span></code> it is
+classified as TP; if it contains <code class="docutils literal notranslate"><span class="pre">good</span></code> it is FP.  Unresolved findings fall
+back to line-level classification using <code class="docutils literal notranslate"><span class="pre">parse_c_file_sections()</span></code>.</p>
+<p><strong>Frama-C</strong>: Each file is analyzed once per entry point (<code class="docutils literal notranslate"><span class="pre">_bad</span></code> function and
+<code class="docutils literal notranslate"><span class="pre">_good</span></code>/<code class="docutils literal notranslate"><span class="pre">goodN</span></code> functions).  Alarms found when the entry point is a bad
+function are TP; alarms under a good entry point are FP.</p>
+<p>Key Frama-C flags:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">-machdep</span> <span class="pre">gcc_x86_64</span></code> — enables GCC extensions (required for Juliet headers)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">-lib-entry</span></code> — incomplete application analysis (no <code class="docutils literal notranslate"><span class="pre">main</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">-warn-signed-overflow</span> <span class="pre">-warn-signed-downcast</span></code> — needed for CWE-190/191</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">-eva-precision</span> <span class="pre">1</span></code> — reasonable precision/speed tradeoff</p></li>
+</ul>
+</section>
+</section>
+<section id="troubleshooting">
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Issue</p></th>
+<th class="head"><p>Solution</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>“Benchmark already running”</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">get_status()</span></code>, then <code class="docutils literal notranslate"><span class="pre">cancel_benchmark()</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Old results consuming disk</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">clear_results()</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Results show wrong version</p></td>
+<td><p>Ensure version bump + commit before build</p></td>
+</tr>
+<tr class="row-odd"><td><p>SQLite locked</p></td>
+<td><p>WAL handles concurrent reads; check for zombies</p></td>
+</tr>
+<tr class="row-even"><td><p>Historical run not found</p></td>
+<td><p>Data predates SQLite migration; not available</p></td>
+</tr>
+</tbody>
+</table>
+<section id="resolved-issues">
+<h3>Resolved Issues<a class="headerlink" href="#resolved-issues" title="Link to this heading"></a></h3>
+<ul>
+<li><p><strong>DCL02-C Stack Overflow</strong> (Fixed 2026-01-07): Unbounded recursive AST traversal
+in DCL02-C caused stack overflow on large files (SQLite). Converted to iterative
+with depth limit.</p></li>
+<li><p><strong>STR31-C ``detect_manual_string_loop`` Runaway</strong> (Fixed 2026-02-25): Caused
+36–49% of all violations on 3 of 5 real-world projects. File-wide fallback
+removed; pattern matching restricted to loop condition and body.</p></li>
+<li><p><strong>Output Buffer Saturation</strong>: SqC emits one status line per rule per file
+(~100 rules × N files). Always suppress or redirect output during scans:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">./</span><span class="n">target</span><span class="o">/</span><span class="n">release</span><span class="o">/</span><span class="n">sqc</span> <span class="n">directory</span><span class="o">/</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">csv</span> <span class="mi">2</span><span class="o">&gt;/</span><span class="n">dev</span><span class="o">/</span><span class="n">null</span>
+</pre></div>
+</div>
+</li>
+</ul>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="benchmark-setup.html" class="btn btn-neutral float-left" title="Benchmark Setup" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="project-structure.html" class="btn btn-neutral float-right" title="Project Structure" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
