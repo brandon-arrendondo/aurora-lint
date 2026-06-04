@@ -1,10 +1,10 @@
 # SqC - Software Code Quality
 
-A terminal-based static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard). SqC checks 283 rules across 17 categories, providing both an interactive terminal UI and CI/CD-ready command-line interface.
+A terminal-based static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard). SqC checks 285 rules across 17 categories, providing both an interactive terminal UI and CI/CD-ready command-line interface.
 
 ## Key Features
 
-- **283 CERT C rules** across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
+- **285 CERT C rules** across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
 - **Interactive terminal UI** for browsing and managing violations
 - **Multiple export formats**: CSV, XLSX, JSON, SARIF 2.1.0
 - **CI/CD ready**: exit codes, severity thresholds, diff-only mode, SARIF output
@@ -81,7 +81,7 @@ sqc /path/to/repo --diff
 sqc /path/to/project --manifest my-rules.toml
 ```
 
-The default manifest (`rules_templates/rules-all.toml`) enables all 283 rules. See the [Developer Guide](docs/index.rst) for the manifest format.
+The default manifest (`rules_templates/rules-all.toml`) enables all 285 rules. See the [Developer Guide](docs/index.rst) for the manifest format.
 
 ## Quick CI Example
 
@@ -92,7 +92,7 @@ sqc . --diff --min-severity Medium --fail-on-severity High --export results.sari
 
 Exit codes: `0` = success, `1` = violations found (with `--fail-on-*`), `2` = error.
 
-Ready-to-use workflows for [GitHub Actions](.github/workflows/sqc-analysis.yml) and [Azure DevOps](docs/azure-pipelines.yml) are included.
+Ready-to-use workflow examples for [GitHub Actions and Azure DevOps](docs/cicd-integration.rst) are in the Developer Guide.
 
 ## Documentation
 

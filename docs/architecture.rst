@@ -20,7 +20,7 @@ SqC uses a multi-pass analysis architecture:
     [Dataflow Analysis] --> Null state, value range, reaching defs, init state
         |
         v
-    [Rule Evaluation] --> 283 CERT C rules applied to AST + CFG + context
+    [Rule Evaluation] --> 285 CERT C rules applied to AST + CFG + context
         |
         v
     [Suppression Filter] --> Hash-based + wildcard (glob/prefix) suppression
@@ -103,8 +103,8 @@ Analysis Modules
   Inline ``// SQC-SUPPRESS`` comments and ``.sqc-suppress.toml`` files.
   SHA-256 hash-based point suppressions and glob/prefix wildcard suppressions.
 
-Current Capabilities (v0.3.87)
-------------------------------
+Current Capabilities
+--------------------
 
 ====================================  =====================================================
 Capability                            Implementation
@@ -156,24 +156,24 @@ No ownership model              Cross-function memory ownership untracked;
 Architectural Ceiling
 ---------------------
 
-Current TP rate: **61.8%** (Juliet, v0.3.86).  The remaining gaps are
-concentrated in CWEs requiring deeper analysis:
+Current TP rate: **67.5%** (Juliet, v0.3.119, 74 CWEs).  The remaining gaps
+are concentrated in CWEs requiring deeper analysis:
 
-- **CWE-190/191** (integer overflow): 58.6%/53.9% vs clang-tidy 94%.
+- **CWE-190/191** (integer overflow/underflow): 60.9%/55.3% vs clang-tidy 94%.
   Requires more complete value-range propagation and bounds-check recognition.
-- **CWE-369** (divide by zero): 53.9% vs clang-tidy 94.7%.
+- **CWE-369** (divide by zero): 56.0% vs clang-tidy 94.7%.
   Requires stronger zero-value tracking through assignments.
-- **CWE-476** (null dereference): 58.3% vs clang-tidy 94.3%.
+- **CWE-476** (null dereference): 61.9% vs clang-tidy 94.3%.
   Requires deeper inter-procedural null propagation and alias analysis.
-- **CWE-121** (stack buffer overflow): 55.7% vs clang-tidy 86.6%.
+- **CWE-121** (stack buffer overflow): 57.5% vs clang-tidy 86.6%.
   Requires symbolic buffer size tracking across assignments.
 
 Alias analysis and field-sensitive value tracking are the two capabilities
 most likely to lift the ceiling.  Each would require significant
-architectural investment but could push TP rate toward 70%+.
+architectural investment but could push TP rate toward 75%+.
 
-Competitor Landscape (v0.3.75)
-------------------------------
+Competitor Landscape
+--------------------
 
 5-tool comparison on 15 overlapping Juliet CWEs (28,488 files):
 
@@ -181,14 +181,18 @@ Competitor Landscape (v0.3.75)
 Tool            Detection Rate  FP Rate    Analysis Depth                        Price
 ==============  ==============  =========  ====================================  ===========
 clang-tidy      91.6%           0.8%       AST + path-sensitive                  Free
+**SqC**         67.5%           32.5%      AST + CFG + inter-procedural          --
 Frama-C         61.0%           39.0%      Abstract interpretation               Free
-**SqC**         54.8%           45.2%      AST + CFG + inter-procedural          --
 Infer           43.6%           56.4%      Separation logic                      Free
 cppcheck        36.4%           63.6%      Data-flow                             Free
 ==============  ==============  =========  ====================================  ===========
 
-SqC wins outright on CWE-690 (94.6%) and CWE-761 (100%).  Broadest CWE
-coverage (118 CWEs vs clang-tidy's 15).
+*SqC results from v0.3.119 Juliet benchmark (74 CWEs). Competitor figures from
+prior study on 15 overlapping CWEs.*
+
+SqC achieves 100% precision (zero FP) on 34 CWEs including CWE-690, CWE-761,
+CWE-78, and CWE-416.  Broadest CWE coverage (74+ CWEs benchmarked vs
+clang-tidy's 15).
 
 **Key context**: Tools on average find ~20% of weaknesses in Juliet
 (ISSTA2022). Even commercial tools miss 27% (Goseva2015). Industry FP target

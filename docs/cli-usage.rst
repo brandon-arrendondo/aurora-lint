@@ -32,7 +32,16 @@ Full Command Reference
                                        (auto-detected in project root if not specified;
                                        supports [[suppression]] hash entries and
                                        [[wildcard]] glob/prefix entries)
-      -I, --include <DIR>              Additional include directories (for header resolution)
+      -I, --include-path <DIR>         Include search paths for resolving #include directives
+                                       (repeatable; like compiler -I flag)
+      -v, --verbose                    Increase output verbosity (repeat for more detail;
+                                       -v shows per-rule scanning progress)
+          --save-prescan <FILE>        Save prescan context to a binary cache file
+                                       (speeds up repeated scans of the same project)
+          --load-prescan <FILE>        Load prescan context from cache instead of
+                                       re-scanning -d directories
+      -j, --jobs <N>                   Number of parallel analysis threads
+                                       (0 = auto-detect, 1 = sequential; default: 0)
       -h, --help                       Print help
       -V, --version                    Print version
 

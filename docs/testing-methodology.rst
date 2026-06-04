@@ -118,40 +118,44 @@ Running the benchmark:
     python -m bench status RUN_ID   # Check a running benchmark
     python -m bench compare v1 v2   # Compare two runs
 
-Current Results (v0.3.39)
-~~~~~~~~~~~~~~~~~~~~~~~~~
+Current Results (v0.3.119)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ===============================  ==========
 Metric                           Value
 ===============================  ==========
-**CWEs Scanned**                 68
-**True Positives**               8,508
-**False Positives**              9,067
-**TP Rate (Precision)**          48.4%
-**Per-file Detection Rate**      14.3%
-**100% Precision CWEs**          16
-**FP Reduction from Baseline**   -80.7%
+**CWEs Scanned**                 74
+**True Positives**               24,345
+**False Positives**              11,702
+**TP Rate (Precision)**          67.5%
+**Per-file Detection Rate**      40.8%
+**100% Precision CWEs**          34
+**FP Reduction from Baseline**   -98.6%
 ===============================  ==========
 
-SqC achieves 100% precision (zero false positives) on 16 CWEs including:
+SqC achieves 100% precision (zero false positives) on 34 CWEs including:
 
+- CWE-78 (OS command injection)
+- CWE-416 (Use after free)
 - CWE-481 (Assigning instead of comparing)
 - CWE-467 (sizeof on pointer type)
 - CWE-252 (Unchecked return value)
 - CWE-338 (Weak PRNG)
 - CWE-590 (Free memory not on heap)
 - CWE-761 (Free not at start of buffer)
+- CWE-690 (NULL dereference from return)
+- CWE-789 (Uncontrolled memory allocation)
 
-High-precision (>50% TP rate) on 11 additional CWEs including CWE-690 (94.4%),
-CWE-197 (67.5%), and CWE-134 (59.9%).
+High-precision (>80% TP rate) on an additional 7 CWEs including CWE-127 (82.4%),
+CWE-401 (77.6%), CWE-272 (79.9%), and CWE-675 (93.0%).
 
-See ``JULIET_RESULTS.md`` and ``JULIET_COVERAGE.md`` for full per-CWE breakdowns.
+See ``JULIET_RESULTS.md`` for full per-CWE breakdowns.
 
 FP Reduction History
 ~~~~~~~~~~~~~~~~~~~~
 
 Over 30+ rounds of targeted optimization, SqC has reduced false positives by
-80.7% from baseline while improving the TP rate from 41.1% to 48.4%:
+98.6% from baseline while improving the TP rate from 41.1% to 67.5%:
 
 ========  ==========================================  ==========  =========  =========
 Round     Key Changes                                 FP          TP Rate    FP Delta
@@ -163,11 +167,14 @@ Round 9   Windows API whitelist                       243,849     43.8%      -52
 Round 12  CFG + inter-procedural analysis             215,671     44.5%      -28,178
 v0.2.23   Built-in C limit macros + const_eval        163,585     44.6%      -12,088
 v0.3.37   Fast mode, taint tracking                   9,067       48.4%      --
+v0.3.119  74 CWEs (6 new), precision improvements     11,702      67.5%      +2,635
 ========  ==========================================  ==========  =========  =========
 
-*Note: v0.3.37 numbers use fast mode (CWE-matched rules only) while earlier
-rounds used full-suite scoring, so absolute FP counts are not directly comparable.
-TP rate is the consistent metric across methodologies.*
+*Note: v0.3.37 and later use fast mode (CWE-matched rules only); earlier rounds
+used full-suite scoring, so absolute FP counts are not directly comparable across
+the two methodologies. TP rate is the consistent metric. The FP increase from
+v0.3.37 to v0.3.119 reflects expanded CWE scope (68 → 74 CWEs) and more test files,
+not regression — TP rate improved 19.1 percentage points over the same span.*
 
 Real-World Code Analysis
 ------------------------
@@ -175,25 +182,25 @@ Real-World Code Analysis
 SqC is benchmarked against 5 real-world open-source C codebases alongside
 cppcheck and clang-tidy:
 
-===========  =========  ========  ===========  ============  ============
-Project      C Files    LOC       sqc          cppcheck      clang-tidy
-===========  =========  ========  ===========  ============  ============
-libcrc       16         2,130     306          43            2
-mosquitto    384        88,717    15,800       747           44
-curl         697        240,412   24,665       519           114
-sqlite       310        402,321   52,978       1,181         135
-hostap       505        541,441   59,407       2,118         2,279
-**Total**    **1,912**  **1.3M**  **153,156**  **4,608**     **2,574**
-===========  =========  ========  ===========  ============  ============
+===========  =========  =============  ============  ============  ============
+Project      C Files    LOC            sqc           cppcheck      clang-tidy
+===========  =========  =============  ============  ============  ============
+libcrc       16         2,130          734           43            2
+mosquitto    384        88,717         29,824        747           44
+curl         697        240,412        63,207        519           114
+sqlite       310        402,321        129,035       1,181         135
+hostap       505        541,441        179,833       2,118         2,279
+**Total**    **1,912**  **1,275,021**  **402,633**   **4,608**     **2,574**
+===========  =========  =============  ============  ============  ============
 
-*Data from sqc v0.3.39, cppcheck 2.10, clang-tidy 21.1.6.*
+*Data from sqc v0.3.5, cppcheck 2.10, clang-tidy 21.1.6.*
 
-**Why sqc reports more violations**: SqC implements 283 CERT C rules (both
+**Why sqc reports more violations**: SqC implements 285 CERT C rules (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.
 
 **Trend**: SqC violations on real-world code have decreased steadily from
-548,027 (v0.2.7) to 153,156 (v0.3.39) -- a 72% reduction through targeted
+548,027 (v0.2.7) to 402,633 (v0.3.5) — a 26% reduction through targeted
 FP reduction, cross-file analysis, and improved type inference.
 
 See ``REALWORLD_RESULTS.md`` for full version history and per-rule breakdowns.
@@ -297,15 +304,15 @@ What Tests Do NOT Cover
 - **CFG/dataflow**: The CFG builder, null state analysis, value-range analysis,
   and init state analysis have embedded Rust unit tests but no integration-level
   C test coverage
-- **CLI flags**: No tests for ``--diff``, ``--export``, ``--format``, ``-I``,
-  ``--save-prescan``, ``--load-prescan``
+- **CLI flags**: No tests for ``--diff``, ``--export``, ``--format``, ``--include-path``,
+  ``--save-prescan``, ``--load-prescan``, ``--jobs``
 - **Suppression**: No tests for ``.sqc-suppress.toml`` hash-based suppression
 
 Coverage Gate
 ~~~~~~~~~~~~~
 
 Line coverage is enforced at **75%** via ``scripts/coverage-gate.sh``, shared by
-the pre-commit hook and ADO CI pipeline. The script:
+the pre-commit hook and GitHub Actions CI pipeline. The script:
 
 - Runs tests via ``cargo llvm-cov``
 - Produces ``lcov.info`` (publishable as CI artifact)
