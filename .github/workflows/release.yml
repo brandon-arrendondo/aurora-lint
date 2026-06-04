@@ -204,7 +204,7 @@ jobs:
           Version:        VERSION_PLACEHOLDER
           Release:        1%{?dist}
           Summary:        CERT C compliance checker
-          License:        MIT
+          License:        Apache-2.0
           URL:            https://github.com/brandon-arrendondo/tools_sqc
           Source0:        %{name}-%{version}.tar.gz
 
