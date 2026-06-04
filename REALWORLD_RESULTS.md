@@ -2,7 +2,7 @@
 
 **Last Updated**: 2026-03-06
 
-Automated benchmark results across 5 real-world C codebases using sqc, cppcheck, and clang-tidy. Also includes d_lib_common (internal module) FP reduction case study.
+Automated benchmark results across 5 real-world C codebases using sqc, cppcheck, and clang-tidy.
 
 ---
 
@@ -186,55 +186,6 @@ Earlier results for comparison (before STR31-C rewrite and major FP reductions).
 | **sqc** | 473,862 | STR31-C (170,586) = 36% |
 | **cppcheck** | 1,066 | 89 `uninitvar` at error severity |
 | **clang-tidy** | 1,083 | cert-err34-c (377) dominates |
-
----
-
-## d_lib_common Case Study (Internal Module)
-
-**Module**: 9 C files, 1,097 LOC + 12 headers. Detailed FP reduction through 9 phases.
-
-### Results Summary
-
-| Tool | Total Findings | Notes |
-|------|---------------:|-------|
-| **SQC** | 534 → **398** | 58 distinct CERT-C rules; 9 phases of FP reduction |
-| **cppcheck** | 16 actionable | +32 unusedFunction (library code, expected) |
-| **clang-tidy** | 0 | cert-* checks found nothing in user code |
-
-### FP Reduction Phases
-
-| Phase | Action | Impact | Rules |
-|-------|--------|--------|-------|
-| 1 | Cascading EXP34-C dedup, short-circuit, realloc pattern | -75 FP | EXP34-C, MEM30-C, API02-C |
-| 2 | Heap-allocated pointer returns, non-pointer ARR36-C | -17 FP | DCL30-C, ARR36-C |
-| 3 | Struct/void*/const-char* skip in API02-C | -32 FP | API02-C |
-| 4 | For-loop update clause skip | -6 FP | INT30-C |
-| 5 | DCL30-C identifier match bug, INT31-C narrowing | -1 FP, +2 TP | DCL30-C, INT31-C |
-| 6 | INT31-C shift-narrowing, INT32-C type inference | FP fix | INT31-C, INT32-C |
-| 7 | INT36-C field access, PRE31-C, EXP30-C, INT30-C | -13 FP | Multiple |
-| 8 | EXP07-C byte-boundary shifts | -4 FP | EXP07-C |
-| 9 | INT36-C TP restore + INT31-C FP fix | +955 TP, -138 FP | INT36-C, INT31-C |
-
-**Final: 534 → 398 findings (25.5% reduction, 12 commits)**
-
-### Key Rule Reductions
-
-| Rule | Original | Current | Reduction |
-|------|----------|---------|-----------|
-| EXP34-C | 49 | 9 | -82% |
-| API02-C | 57 | 2 | -96% |
-| MEM30-C | 13 | 1 | -92% |
-| ARR36-C | 13 | 2 | -85% |
-| DCL30-C | 7 | 0 | -100% |
-| INT36-C | 8 | 0 | -100% |
-| EXP07-C | 4 | 0 | -100% |
-
-### Genuine Issues Found (True Positives)
-
-1. **ringbuffer.c:173 — EXP34-C**: Null deref before check in `readTlv()`
-2. **ringbuffer.c:149 — Dead condition**: `crc8_expected != crc8_saved` always false
-3. **intset.c:120 — Realloc error handling**: Failed realloc silently continues
-4. **utility.c:85 — Redundant condition**: Always-true `10 <= v` after `9 >= v`
 
 ---
 

@@ -84,8 +84,8 @@ Runtime varies significantly by machine and parallelism. Always record these whe
 | **v0.2.7** | v0.2.7 | **INT36-C TP restore + INT31-C FP fix** | **172,780** | **215,671** | **44.5%** | **-1** |
 | v0.2.11 | v0.2.11 | INT32-C bounds-check detection, INT30-C macro fixes | 172,780 | 215,669 | 44.5% | -2 |
 | **v0.2.12** | v0.2.12 | **DCL13-C pointer modification + INT01-C sizeof skip** | **169,161** | **210,138** | **44.6%** | **-5,531** |
-| **v0.2.13** | v0.2.13 | **INT31-C implicit narrowing + d_lib_common FP fixes** | **158,403** | **196,177** | **44.7%** | **-13,961** |
-| **v0.2.15** | v0.2.15 | **d_lib_common FP.md cleanup (17 patterns)** | **146,714** | **185,499** | **44.2%** | **-10,678** |
+| **v0.2.13** | v0.2.13 | **INT31-C implicit narrowing + real-world FP fixes** | **158,403** | **196,177** | **44.7%** | **-13,961** |
+| **v0.2.15** | v0.2.15 | **Real-world FP cleanup (17 patterns)** | **146,714** | **185,499** | **44.2%** | **-10,678** |
 | v0.2.16 | v0.2.16 | EXP34-C: call-site null propagation (Phase 2) | 146,733 | 185,510 | 44.2% | +11 |
 | **v0.2.17** | **v0.2.17** | **Phase 3: MEM10-C, API00-C, API02-C, prescan enhancement** | **146,913** | **185,591** | **44.2%** | **+81** |
 | **v0.2.18** | **v0.2.18** | **INT31-C pointer cast, ARR36-C type filter, API00-C void-cast, INT30-C guard expansion** | **145,639** | **184,645** | **44.1%** | **-946** |
@@ -445,9 +445,9 @@ Targeted CWE-476 false positive reduction via rule narrowing and enhanced inter-
 
 **Files changed**: `mem10_c.rs`, `api00_c.rs`, `api02_c.rs`, `prescan.rs`, `mod.rs`
 
-### v0.2.15 — d_lib_common FP.md Cleanup (17 Patterns)
+### v0.2.15 — Real-World FP Cleanup (17 Patterns)
 
-Addressed all 17 FP patterns (~51 violations) documented in `~/data/d_lib_common/FP.md` across two commits. Targeted real-world precision over Juliet benchmark score.
+Addressed 17 FP patterns (~51 violations) identified from real-world codebases across two commits. Targeted real-world precision over Juliet benchmark score.
 
 **Commit 1 (`d31a6c3`)** — Batch 1 (10 rule fixes, ~36 FPs):
 - FIO46-C: Source-order stream tracking (store `start_byte()`, only flag after fclose)
@@ -473,7 +473,7 @@ Addressed all 17 FP patterns (~51 violations) documented in `~/data/d_lib_common
 - Top rule deltas: EXP12-C -5,477 FP/-7,530 TP (parent check reduces over-flagging), INT01-C -2,714 FP/-740 TP, INT32-C -181 FP/-1,122 TP
 - FIO46-C and EXP02-C eliminated entirely (0 detections — correct, these rules had very low signal)
 
-### v0.2.13 — INT31-C Implicit Narrowing + d_lib_common FP Fixes
+### v0.2.13 — INT31-C Implicit Narrowing + Real-World FP Fixes
 
 - **INT31-C**: Implemented `check_assignment_conversion()` for implicit narrowing detection (`uint8_t tag = (uint16_t)(expr)`). Conservative: only flags when both LHS and RHS have known integer types. FP suppressions: literal-fits, safe-mask (`& 0xFF`), bounds-checked blocks, double-flag prevention. Juliet CWE197 impact: -9 TP / -9 FP (unchanged — Juliet uses explicit casts). Real-world: +229 new findings across curl/hostap/sqlite/mosquitto.
 - **INT32-C**: Skip unsigned operands in binary overflow checks (FP-004). **-8,390 FP**, -7,068 TP.
@@ -757,8 +757,8 @@ The analysis script now outputs all rules, and all 16 existing benchmark runs ha
 | v0.2.6 | 44.5% | 215,672 | 172,708 | — | 24-core workstation | CFG null state + bounds-check detection |
 | v0.2.7 | 44.5% | 215,671 | 172,780 | — | 24-core workstation | INT36-C TP restore + INT31-C FP fix |
 | **v0.2.12** | **44.6%** | **210,138** | **169,161** | — | 24-core workstation | DCL13-C pointer modification + INT01-C sizeof skip |
-| v0.2.13 | 44.7% | 196,177 | 158,403 | — | 24-core workstation | INT31-C implicit narrowing + d_lib_common REFACTOR.md fixes |
-| v0.2.15 | 44.2% | 185,499 | 146,714 | — | 24-core workstation | d_lib_common FP.md cleanup (17 patterns, real-world precision) |
+| v0.2.13 | 44.7% | 196,177 | 158,403 | — | 24-core workstation | INT31-C implicit narrowing + real-world FP fixes |
+| v0.2.15 | 44.2% | 185,499 | 146,714 | — | 24-core workstation | Real-world FP cleanup (17 patterns, real-world precision) |
 | v0.2.16 | 44.2% | 185,510 | 146,733 | — | 24-core workstation | EXP34-C call-site null propagation (Phase 2) |
 | v0.2.17 | 44.2% | 185,591 | 146,913 | — | 24-core workstation | Phase 3: MEM10-C, API00-C, API02-C, prescan (CWE-476 38.5%) |
 | v0.2.18 | 44.1% | 184,645 | 145,639 | — | 24-core workstation | INT31-C pointer cast, ARR36-C, API00-C void-cast, INT30-C guards |
