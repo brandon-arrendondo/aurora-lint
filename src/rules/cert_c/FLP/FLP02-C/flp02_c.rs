@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024 BISSELL Homecare, Inc.
 
 //! FLP02-C: Avoid using floating-point numbers when precise computation is needed

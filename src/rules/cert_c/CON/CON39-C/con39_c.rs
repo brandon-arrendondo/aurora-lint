@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Ryan Bissell
 
 //! CON39-C: Do not join or detach a thread that was previously joined or detached

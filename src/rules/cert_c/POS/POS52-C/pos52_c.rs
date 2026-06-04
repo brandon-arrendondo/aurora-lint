@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024 Ryan Urchick
 
 //! POS52-C: Do not perform operations that can block while holding a POSIX lock

@@ -19,9 +19,9 @@ int main() {
     char data[] = "This string is much too long for the buffer";
     int i = 0;
 
-// SQC-SUPPRESS: ARR30-C HASH:57e52963cf44ee2b JUSTIFICATION: "Suppressed by eric.buehler@bissell.com on 2025-10-01 19:45:59 UTC"
+// SQC-SUPPRESS: ARR30-C HASH:57e52963cf44ee2b JUSTIFICATION: "Test fixture: suppress co-firing rule"
     while (data[i] != '\0') {
-// SQC-SUPPRESS: ARR30-C HASH:8c037058a81106ed JUSTIFICATION: "Suppressed by eric.buehler@bissell.com on 2025-10-01 19:45:59 UTC"
+// SQC-SUPPRESS: ARR30-C HASH:8c037058a81106ed JUSTIFICATION: "Test fixture: suppress co-firing rule"
         *ptr++ = data[i++];  // Writes beyond allocated 10 bytes
     }
     *ptr = '\0';

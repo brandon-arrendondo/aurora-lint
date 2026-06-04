@@ -18,13 +18,13 @@ int main() {
     int i;
 
     // Manually copy without bounds check
-// SQC-SUPPRESS: ARR30-C HASH:8a7ecb53f2222723 JUSTIFICATION: "Suppressed by eric.buehler@bissell.com on 2025-10-01 19:45:59 UTC"
+// SQC-SUPPRESS: ARR30-C HASH:8a7ecb53f2222723 JUSTIFICATION: "Test fixture: suppress co-firing rule"
     for (i = 0; source[i] != '\0'; i++) {
-// SQC-SUPPRESS: ARR30-C HASH:55f0f2b415055c28 JUSTIFICATION: "Suppressed by eric.buehler@bissell.com on 2025-10-01 19:45:59 UTC"
-// SQC-SUPPRESS: ARR30-C HASH:55f0f2b415055c28 JUSTIFICATION: "Suppressed by eric.buehler@bissell.com on 2025-10-01 19:45:59 UTC"
+// SQC-SUPPRESS: ARR30-C HASH:55f0f2b415055c28 JUSTIFICATION: "Test fixture: suppress co-firing rule"
+// SQC-SUPPRESS: ARR30-C HASH:55f0f2b415055c28 JUSTIFICATION: "Test fixture: suppress co-firing rule"
         buffer[i] = source[i];  // Writes beyond buffer when i >= 5
     }
-// SQC-SUPPRESS: ARR30-C HASH:51c655b3b36b2e6e JUSTIFICATION: "Suppressed by eric.buehler@bissell.com on 2025-10-01 19:45:59 UTC"
+// SQC-SUPPRESS: ARR30-C HASH:51c655b3b36b2e6e JUSTIFICATION: "Test fixture: suppress co-firing rule"
     buffer[i] = '\0';  // Also writes beyond buffer
 
     printf("Copied: %s\n", buffer);

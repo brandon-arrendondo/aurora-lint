@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024 Ryan Urchick
 
 //! MEM06-C: Ensure that sensitive data is not written out to disk

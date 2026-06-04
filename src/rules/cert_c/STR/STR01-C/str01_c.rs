@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024 Ryan Urchick
 
 //! STR01-C: Adopt and implement a consistent plan for managing strings

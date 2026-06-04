@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Ryan Bissell
 
 //! DCL05-C: Use typedefs of non-pointer types only

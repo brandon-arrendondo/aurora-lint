@@ -2,7 +2,7 @@
 
 project = 'SqC'
 author = 'BISSELL Homecare, Inc.'
-copyright = '2026, BISSELL Homecare, Inc.'
+copyright = '2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0'
 
 extensions = []
 
@@ -25,5 +25,5 @@ latex_elements = {
 
 latex_documents = [
     ('index', 'sqc-developer-guide.tex', 'SqC Developer Guide',
-     'BISSELL Homecare, Inc.', 'manual'),
+     'BISSELL Homecare, Inc.', 'manual'),  # CC BY 4.0
 ]

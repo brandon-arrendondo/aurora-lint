@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024 Ryan Urchick
 
 //! WIN00-C: Be specific when dynamically loading libraries

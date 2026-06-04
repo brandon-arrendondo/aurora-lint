@@ -15,7 +15,7 @@
 #include <string.h>
 
 int main() {
-// SQC-SUPPRESS: DCL00-C HASH:4b06527357a82ef1 JUSTIFICATION: "Suppressed by eric.buehler@bissell.com on 2025-10-01 19:36:28 UTC"
+// SQC-SUPPRESS: DCL00-C HASH:4b06527357a82ef1 JUSTIFICATION: "Test fixture: suppress co-firing rule"
     char source[] = "This string is too long for allocation";
     char *dest = malloc(10);  // Only 10 bytes allocated
 
