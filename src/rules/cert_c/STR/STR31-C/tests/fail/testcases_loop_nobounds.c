@@ -18,7 +18,7 @@ int main() {
     int i = 0;
 
     // Copy without bounds checking
-// SQC-SUPPRESS: ARR30-C HASH:830d8085a5fa29c4 JUSTIFICATION: "Suppressed by eric.buehler@bissell.com on 2025-10-01 20:11:59 UTC"
+// SQC-SUPPRESS: ARR30-C HASH:830d8085a5fa29c4 JUSTIFICATION: "Test fixture: suppress co-firing rule"
     while (source[i] != '\0') {
         dest[i] = source[i];  // Buffer overflow when i >= 10
         i++;

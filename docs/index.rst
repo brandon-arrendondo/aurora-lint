@@ -5,7 +5,7 @@ SqC Developer Guide
 SqC (Software Code Quality) is a terminal-based static analysis tool that validates
 C code compliance with `SEI CERT C Coding Standards
 <https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard>`_.
-It implements 283 rules across 17 CERT C categories, using tree-sitter for fast
+It implements 285 rules across 17 CERT C categories, using tree-sitter for fast
 AST-based analysis with cross-file context, control-flow graphs, and
 inter-procedural reasoning.
 

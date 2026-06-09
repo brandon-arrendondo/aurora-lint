@@ -1,6 +1,6 @@
 /*
  * Rule: DCL19-C
- * Source: d_lib_common FP-001
+ * Source: real-world FP pattern
  * Status: PASS - STATIC macro is a conditional alias for static
  *
  * The STATIC macro expands to `static` in production and to nothing in

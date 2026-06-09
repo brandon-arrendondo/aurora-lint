@@ -1,10 +1,10 @@
 # SqC - Software Code Quality
 
-A terminal-based static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard). SqC checks 283 rules across 17 categories, providing both an interactive terminal UI and CI/CD-ready command-line interface.
+A terminal-based static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard). SqC checks 285 rules across 17 categories, providing both an interactive terminal UI and CI/CD-ready command-line interface.
 
 ## Key Features
 
-- **283 CERT C rules** across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
+- **285 CERT C rules** across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
 - **Interactive terminal UI** for browsing and managing violations
 - **Multiple export formats**: CSV, XLSX, JSON, SARIF 2.1.0
 - **CI/CD ready**: exit codes, severity thresholds, diff-only mode, SARIF output
@@ -15,10 +15,10 @@ A terminal-based static analysis tool for C code compliance with [SEI CERT C Cod
 
 | Metric | Value |
 |--------|-------|
-| **Juliet TP Rate** | 61.8% (v0.3.86) |
+| **Juliet TP Rate** | 67.5% (v0.3.119) |
 | **Juliet CWEs Scanned** | 74 (fast mode, CWE-matched rules) |
-| **100% Precision CWEs** | 32 (zero false positives) |
-| **Per-File Detection** | 42.6% (21,319 / 50,038 files) |
+| **100% Precision CWEs** | 34 (zero false positives) |
+| **Per-File Detection** | 40.8% (20,420 / 50,038 files) |
 | **Real-World Projects** | libcrc, sqlite, mosquitto, curl, hostap |
 
 Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 5 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) and [REALWORLD_RESULTS.md](REALWORLD_RESULTS.md) for details.
@@ -26,8 +26,8 @@ Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SA
 ## Installation
 
 ```bash
-git clone <repository-url>
-cd sqc
+git clone https://github.com/brandon-arrendondo/tools_sqc
+cd tools_sqc
 cargo build --release
 ```
 
@@ -81,7 +81,7 @@ sqc /path/to/repo --diff
 sqc /path/to/project --manifest my-rules.toml
 ```
 
-The default manifest (`rules_templates/rules-all.toml`) enables all 283 rules. See the [Developer Guide](docs/index.rst) for the manifest format.
+The default manifest (`rules_templates/rules-all.toml`) enables all 285 rules. See the [Developer Guide](docs/index.rst) for the manifest format.
 
 ## Quick CI Example
 
@@ -92,7 +92,7 @@ sqc . --diff --min-severity Medium --fail-on-severity High --export results.sari
 
 Exit codes: `0` = success, `1` = violations found (with `--fail-on-*`), `2` = error.
 
-Ready-to-use workflows for [GitHub Actions](.github/workflows/sqc-analysis.yml) and [Azure DevOps](docs/azure-pipelines.yml) are included.
+Ready-to-use workflow examples for [GitHub Actions and Azure DevOps](docs/cicd-integration.rst) are in the Developer Guide.
 
 ## Documentation
 

@@ -84,14 +84,14 @@ Runtime varies significantly by machine and parallelism. Always record these whe
 | **v0.2.7** | v0.2.7 | **INT36-C TP restore + INT31-C FP fix** | **172,780** | **215,671** | **44.5%** | **-1** |
 | v0.2.11 | v0.2.11 | INT32-C bounds-check detection, INT30-C macro fixes | 172,780 | 215,669 | 44.5% | -2 |
 | **v0.2.12** | v0.2.12 | **DCL13-C pointer modification + INT01-C sizeof skip** | **169,161** | **210,138** | **44.6%** | **-5,531** |
-| **v0.2.13** | v0.2.13 | **INT31-C implicit narrowing + d_lib_common FP fixes** | **158,403** | **196,177** | **44.7%** | **-13,961** |
-| **v0.2.15** | v0.2.15 | **d_lib_common FP.md cleanup (17 patterns)** | **146,714** | **185,499** | **44.2%** | **-10,678** |
+| **v0.2.13** | v0.2.13 | **INT31-C implicit narrowing + real-world FP fixes** | **158,403** | **196,177** | **44.7%** | **-13,961** |
+| **v0.2.15** | v0.2.15 | **Real-world FP cleanup (17 patterns)** | **146,714** | **185,499** | **44.2%** | **-10,678** |
 | v0.2.16 | v0.2.16 | EXP34-C: call-site null propagation (Phase 2) | 146,733 | 185,510 | 44.2% | +11 |
 | **v0.2.17** | **v0.2.17** | **Phase 3: MEM10-C, API00-C, API02-C, prescan enhancement** | **146,913** | **185,591** | **44.2%** | **+81** |
 | **v0.2.18** | **v0.2.18** | **INT31-C pointer cast, ARR36-C type filter, API00-C void-cast, INT30-C guard expansion** | **145,639** | **184,645** | **44.1%** | **-946** |
 | v0.2.19 | v0.2.19 | INT30-C loop guards, prescan null guards, ARR00-C crash fix | 145,639 | 184,644 | 44.1% | -1 |
-| **v0.2.20** | **v0.2.20** | **d_lib_networking FP fixes: API00-C static skip, INT01-C dedup, EXP37-C init_declarator, EXP34-C array NotNull** | **144,278** | **181,924** | **44.2%** | **-2,720** |
-| **v0.2.21** | **v0.2.21** | **const_eval value-range analysis + d_lib_networking Round 6 FP fixes** | **137,921** | **175,667** | **44.0%** | **-6,257** |
+| **v0.2.20** | **v0.2.20** | **Real-world FP fixes: API00-C static skip, INT01-C dedup, EXP37-C init_declarator, EXP34-C array NotNull** | **144,278** | **181,924** | **44.2%** | **-2,720** |
+| **v0.2.21** | **v0.2.21** | **const_eval value-range analysis + real-world Round 6 FP fixes** | **137,921** | **175,667** | **44.0%** | **-6,257** |
 | v0.2.22 | v0.2.22 | INT30-C: extend upper-bound guard to if_statement | 137,921 | 175,673 | 44.0% | +6 |
 | **v0.2.23** | **v0.2.23** | **INT32-C const_eval for alloc/memory/abs + INT30-C uint64_t skip + built-in macros** | **131,661** | **163,585** | **44.6%** | **-12,088** |
 | v0.2.25 | v0.2.25 | ARR32-C tightening, INT18-C/EXP05-C removal, INT30-C pointer type, INT32-C field_expr, INT34-C const_eval | 130,199 | 161,965 | 44.6% | -1,620 |
@@ -249,24 +249,24 @@ First full-suite benchmark since v0.3.5 (v0.3.8 and v0.3.9 used 12-CWE subset on
 
 ---
 
-### v0.3.5 — Struct Field Type Resolution, d_lib_networking FP Fixes
+### v0.3.5 — Struct Field Type Resolution, Real-World FP Fixes
 
 Struct field type resolution for INT32-C/INT30-C, plus DCL13-C/DCL30-C/EXP33-C targeted FP fixes.
 
 **Struct field type resolution**: Prescan now collects struct definitions into `struct_field_types: HashMap<String, HashMap<String, String>>`. INT32-C and INT30-C `infer_type()` resolves `field_expression` nodes (e.g., `s->count`) via two-level lookup: variable type → struct name → field type. Previously returned `not_applicable`/`unknown` for all struct field accesses.
 
-**d_lib_networking fixes**: DCL13-C (removed FILE-modifying functions from READ_ONLY_FUNCTIONS), DCL30-C (added `conditional_expression` handling to `is_alloc_expression()`), EXP33-C (array output parameter recognition for unknown functions). Cleared 3 inline suppressions.
+**Real-world FP fixes**: DCL13-C (removed FILE-modifying functions from READ_ONLY_FUNCTIONS), DCL30-C (added `conditional_expression` handling to `is_alloc_expression()`), EXP33-C (array output parameter recognition for unknown functions). Cleared 3 inline suppressions.
 
 **Juliet impact** (0.2.25 → 0.3.5):
 - **Overall**: TP 130,199→130,004 (−195), FP 161,965→161,510 (**−455**), TP rate **44.6% → 44.6%** (unchanged)
 - Minimal Juliet impact expected — Juliet uses explicit local variables, not struct member access patterns
-- Real-world impact expected on struct-heavy codebases (d_lib_networking, curl, mosquitto, etc.)
+- Real-world impact expected on struct-heavy codebases (curl, mosquitto, etc.)
 
 **Files changed**: `prescan.rs`, `context.rs`, `ast_utils.rs`, `int32_c.rs`, `int30_c.rs`, `dcl13_c.rs`, `dcl30_c.rs`, `exp33_c.rs`
 
 ### v0.2.25 — ARR32-C Tightening, Rule Removals, Value-Range FP Fixes
 
-Mixed release: ARR32-C refinement (pre-existing), INT18-C/EXP05-C rule removal, and d_lib_networking value-range FP fixes.
+Mixed release: ARR32-C refinement (pre-existing), INT18-C/EXP05-C rule removal, and real-world value-range FP fixes.
 
 **ARR32-C tightening** (dominant effect): Refined array size validation to reduce false positives. −1,201 TP/−926 FP — trades some TPs for cleaner results. Largest CWE impacts: CWE190 −584 FP, CWE191 −391 FP, CWE194 −148 TP (no FP change), CWE195 −132 TP (no FP change).
 
@@ -288,7 +288,7 @@ Mixed release: ARR32-C refinement (pre-existing), INT18-C/EXP05-C rule removal, 
 - Only regression: FIO05-C +1 FP (noise). CWE773 +2 FP (noise).
 - CWE194 −148 TP/0 FP and CWE195 −132 TP/0 FP from ARR32-C changes (TP loss, no FP benefit)
 
-**d_lib_networking impact**: 7 target FPs eliminated (64 → 61 violations). All from value-range fixes (INT30-C pointer type, INT32-C field_expr/small_increment, INT30-C small_increment, INT34-C const_eval).
+**Real-world impact**: 7 target FPs eliminated (64 → 61 violations). All from value-range fixes (INT30-C pointer type, INT32-C field_expr/small_increment, INT30-C small_increment, INT34-C const_eval).
 
 **Files changed**: `int30_c.rs`, `int32_c.rs`, `int34_c.rs`, `mod.rs`, `arr32_c.rs`, `exp05_c.rs`, `int18_c.rs`, `str04_c.rs`
 
@@ -335,11 +335,11 @@ Two complementary mechanisms for cross-file null pointer analysis:
 
 **Files changed**: `exp34_c.rs`, `function_summary.rs`, `prescan.rs`, `null_state.rs`
 
-### v0.2.21 — Const-Eval Value-Range Analysis + d_lib_networking Round 6
+### v0.2.21 — Const-Eval Value-Range Analysis + Real-World Round 6 FP Fixes
 
 New `src/analyze/const_eval.rs` module (~550 lines) implements lightweight constant evaluation: macro constant collection from `#define` nodes, `ValueRange` interval arithmetic, recursive AST constant folder, loop-bound extraction from enclosing `for`/`while`/`do` statements, and local variable range resolution. Integrated into INT32-C and INT30-C as early-return suppression when `expression_fits_in_signed()`/`expression_fits_in_unsigned()` proves safety.
 
-**d_lib_networking Round 6 fixes** (also included):
+**Additional real-world FP fixes** (also included):
 - ARR02-C: Skip string-literal-initialized arrays (`const char name[] = "..."`)
 - POS02-C: Removed `socket`/`setsockopt` from privileged operation list
 - PRE31-C: Strip string literals before side-effect analysis
@@ -352,13 +352,13 @@ New `src/analyze/const_eval.rs` module (~550 lines) implements lightweight const
 - **POS02-C concern**: 0.69:1 FP:TP ratio — loses more TPs than FPs. Juliet patterns use `socket()`/`setsockopt()` in good/bad function pairs; removing the check suppresses violations in surrounding code. Real-world impact is much smaller (−167 across curl+hostap)
 - CWE190 (Integer Overflow): −1,269 FP (biggest CWE improvement). CWE191: −848 FP
 
-**d_lib_networking results**: INT32-C 10→8 (−2 macro×literal FPs suppressed). INT30-C unchanged.
+**Real-world results**: INT32-C 10→8 (−2 macro×literal FPs suppressed). INT30-C unchanged.
 
 **Files changed**: `const_eval.rs` (NEW), `context.rs`, `prescan.rs`, `mod.rs`, `int32_c.rs`, `int30_c.rs`, `arr02_c.rs`, `pos02_c.rs`, `pre31_c.rs`, `mem05_c.rs`
 
-### v0.2.20 — d_lib_networking FP Fixes (API00-C, INT01-C, EXP37-C, EXP34-C)
+### v0.2.20 — Real-World FP Fixes (API00-C, INT01-C, EXP37-C, EXP34-C)
 
-Fixes driven by real-world false positive analysis on d_lib_networking codebase. Four rounds of targeted fixes (transitive includes, snprintf arg count, K&R declaration, static function skip, DCL13-C alias tracking, INT01-C dedup, stack array NotNull).
+Fixes driven by real-world false positive analysis. Four rounds of targeted fixes (transitive includes, snprintf arg count, K&R declaration, static function skip, DCL13-C alias tracking, INT01-C dedup, stack array NotNull).
 
 **API00-C static function skip**: `check_function_parameter_validation()` returns early for `static` functions and `STATIC` macro prefixes. API00-C is about public API contracts — static functions are internal.
 
@@ -445,9 +445,9 @@ Targeted CWE-476 false positive reduction via rule narrowing and enhanced inter-
 
 **Files changed**: `mem10_c.rs`, `api00_c.rs`, `api02_c.rs`, `prescan.rs`, `mod.rs`
 
-### v0.2.15 — d_lib_common FP.md Cleanup (17 Patterns)
+### v0.2.15 — Real-World FP Cleanup (17 Patterns)
 
-Addressed all 17 FP patterns (~51 violations) documented in `~/data/d_lib_common/FP.md` across two commits. Targeted real-world precision over Juliet benchmark score.
+Addressed 17 FP patterns (~51 violations) identified from real-world codebases across two commits. Targeted real-world precision over Juliet benchmark score.
 
 **Commit 1 (`d31a6c3`)** — Batch 1 (10 rule fixes, ~36 FPs):
 - FIO46-C: Source-order stream tracking (store `start_byte()`, only flag after fclose)
@@ -473,7 +473,7 @@ Addressed all 17 FP patterns (~51 violations) documented in `~/data/d_lib_common
 - Top rule deltas: EXP12-C -5,477 FP/-7,530 TP (parent check reduces over-flagging), INT01-C -2,714 FP/-740 TP, INT32-C -181 FP/-1,122 TP
 - FIO46-C and EXP02-C eliminated entirely (0 detections — correct, these rules had very low signal)
 
-### v0.2.13 — INT31-C Implicit Narrowing + d_lib_common FP Fixes
+### v0.2.13 — INT31-C Implicit Narrowing + Real-World FP Fixes
 
 - **INT31-C**: Implemented `check_assignment_conversion()` for implicit narrowing detection (`uint8_t tag = (uint16_t)(expr)`). Conservative: only flags when both LHS and RHS have known integer types. FP suppressions: literal-fits, safe-mask (`& 0xFF`), bounds-checked blocks, double-flag prevention. Juliet CWE197 impact: -9 TP / -9 FP (unchanged — Juliet uses explicit casts). Real-world: +229 new findings across curl/hostap/sqlite/mosquitto.
 - **INT32-C**: Skip unsigned operands in binary overflow checks (FP-004). **-8,390 FP**, -7,068 TP.
@@ -757,14 +757,14 @@ The analysis script now outputs all rules, and all 16 existing benchmark runs ha
 | v0.2.6 | 44.5% | 215,672 | 172,708 | — | 24-core workstation | CFG null state + bounds-check detection |
 | v0.2.7 | 44.5% | 215,671 | 172,780 | — | 24-core workstation | INT36-C TP restore + INT31-C FP fix |
 | **v0.2.12** | **44.6%** | **210,138** | **169,161** | — | 24-core workstation | DCL13-C pointer modification + INT01-C sizeof skip |
-| v0.2.13 | 44.7% | 196,177 | 158,403 | — | 24-core workstation | INT31-C implicit narrowing + d_lib_common REFACTOR.md fixes |
-| v0.2.15 | 44.2% | 185,499 | 146,714 | — | 24-core workstation | d_lib_common FP.md cleanup (17 patterns, real-world precision) |
+| v0.2.13 | 44.7% | 196,177 | 158,403 | — | 24-core workstation | INT31-C implicit narrowing + real-world FP fixes |
+| v0.2.15 | 44.2% | 185,499 | 146,714 | — | 24-core workstation | Real-world FP cleanup (17 patterns, real-world precision) |
 | v0.2.16 | 44.2% | 185,510 | 146,733 | — | 24-core workstation | EXP34-C call-site null propagation (Phase 2) |
 | v0.2.17 | 44.2% | 185,591 | 146,913 | — | 24-core workstation | Phase 3: MEM10-C, API00-C, API02-C, prescan (CWE-476 38.5%) |
 | v0.2.18 | 44.1% | 184,645 | 145,639 | — | 24-core workstation | INT31-C pointer cast, ARR36-C, API00-C void-cast, INT30-C guards |
 | v0.2.19 | 44.1% | 184,644 | 145,639 | — | 24-core workstation | INT30-C loop guards, prescan null guards, ARR00-C fix |
-| v0.2.20 | 44.2% | 181,924 | 144,278 | — | 24-core workstation | d_lib_networking FP fixes: API00-C, INT01-C, EXP37-C, EXP34-C |
-| **v0.2.21** | **44.0%** | **175,667** | **137,921** | — | 24-core workstation | **const_eval value-range analysis + d_lib_networking Round 6** |
+| v0.2.20 | 44.2% | 181,924 | 144,278 | — | 24-core workstation | Real-world FP fixes: API00-C, INT01-C, EXP37-C, EXP34-C |
+| **v0.2.21** | **44.0%** | **175,667** | **137,921** | — | 24-core workstation | **const_eval value-range analysis + real-world Round 6 FP fixes** |
 | v0.2.22 | 44.0% | 175,673 | 137,921 | — | 24-core workstation | INT30-C: extend upper-bound guard to if_statement |
 | **v0.2.23** | **44.6%** | **163,585** | **131,661** | — | 24-core workstation | **INT32-C const_eval alloc/memory/abs + INT30-C uint64_t + built-in macros** |
 | v0.2.25 | 44.6% | 161,965 | 130,199 | — | 24-core workstation | ARR32-C tightening, INT18-C/EXP05-C removal, value-range FP fixes |

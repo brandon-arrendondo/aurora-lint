@@ -49,7 +49,7 @@ void* worker_thread(void* arg) {
         /* Simulate thread accessing shared data */
         pthread_mutex_lock(&global_mutex);
 
-// SQC-SUPPRESS: ARR30-C HASH:2932a358915bfa68 JUSTIFICATION: "Suppressed by eric.buehler@bissell.com on 2025-10-01 19:45:59 UTC"
+// SQC-SUPPRESS: ARR30-C HASH:2932a358915bfa68 JUSTIFICATION: "Test fixture: suppress co-firing rule"
         global_thread_data.active_threads[thread_id] = 1;
         sprintf(global_thread_data.thread_names[thread_id], "worker_%d", thread_id);
         global_thread_data.thread_cpu_usage[thread_id] = i * 0.5;

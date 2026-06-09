@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 CERT Coordination Center
 
 //! CON33-C: Avoid race conditions when using library functions

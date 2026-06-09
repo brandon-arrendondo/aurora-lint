@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024 BISSELL Homecare, Inc.
 
 //! DCL41-C: Do not declare variables inside a switch statement before the first case label

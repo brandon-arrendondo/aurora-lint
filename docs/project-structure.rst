@@ -38,7 +38,7 @@ Project Structure
     |       +-- FLP/         # Floating point rules (13 rules)
     |       +-- INT/         # Integer rules (23 rules)
     |       +-- MEM/         # Memory rules (17 rules)
-    |       +-- MSC/         # Miscellaneous rules (8 rules)
+    |       +-- MSC/         # Miscellaneous rules (10 rules)
     |       +-- POS/         # POSIX rules (20 rules)
     |       +-- PRE/         # Preprocessor rules (16 rules)
     |       +-- SIG/         # Signal rules (7 rules)
@@ -52,10 +52,10 @@ Project Structure
     bench/                   # Benchmark infrastructure
     +-- runner.py            # Juliet benchmark runner
     +-- analyzer.py          # Result analysis and scoring
-    +-- cli.py               # Benchmark CLI (python -m bench)
+    +-- __main__.py          # Benchmark CLI (python -m bench)
 
     rules_templates/         # Rule manifests
-    +-- rules-all.toml       # All 283 rules enabled
+    +-- rules-all.toml       # All 285 rules enabled
     +-- cwe/                 # Per-CWE manifests for Juliet benchmarking
 
     docs/                    # Documentation and CI examples
@@ -64,4 +64,5 @@ Project Structure
     +-- azure-pipelines.yml  # Azure DevOps example pipeline
 
     .github/workflows/       # GitHub Actions
-    +-- sqc-analysis.yml     # GitHub Actions example
+    +-- ci.yml               # CI: fmt, clippy, test, coverage, docs
+    +-- release.yml          # Release automation

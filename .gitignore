@@ -63,3 +63,6 @@ paper/*.toc
 
 # Claude Code runtime state
 .claude/scheduled_tasks.lock
+
+# Local MCP server configuration (contains org-specific paths and credentials)
+.mcp.json

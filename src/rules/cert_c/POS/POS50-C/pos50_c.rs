@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024 Ryan Urchick
 
 //! POS50-C: Declare objects shared between POSIX threads with appropriate storage durations

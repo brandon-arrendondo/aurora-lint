@@ -1,6 +1,6 @@
 /*
  * Rule: INT32-C
- * Source: d_lib_common FP-004
+ * Source: real-world FP pattern
  * Status: PASS - Unsigned arithmetic should not trigger INT32-C
  *
  * INT32-C applies to signed integer overflow only.  Unsigned wrap-around

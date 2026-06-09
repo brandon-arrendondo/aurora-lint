@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024 BISSELL Homecare, Inc.
 
 //! ENV01-C: Do not make assumptions about the size of an environment variable

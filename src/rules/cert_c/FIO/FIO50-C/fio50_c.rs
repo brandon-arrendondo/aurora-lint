@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024 BISSELL Homecare, Inc.
 
 //! FIO50-C: Do not alternately input and output from a file stream without an intervening positioning call

@@ -1,6 +1,6 @@
 /*
  * Rule: INT31-C
- * Source: d_lib_common FN-002
+ * Source: real-world FN pattern
  * Status: FAIL - Should trigger INT31-C violation
  * Description: Compound assignment with widening cast narrows back to uint8_t
  */
