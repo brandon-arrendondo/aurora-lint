@@ -402,6 +402,11 @@ impl Str31C {
         // Handles casts: `data = (char *)malloc(N*sizeof(char))` and plain `malloc(N)`.
         let malloc_sizeof_re =
             regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[*,]\s*sizeof").ok();
+        // malloc((N+M)*sizeof(type)) — parenthesized arithmetic, e.g. malloc((10+1)*sizeof(char))
+        let malloc_paren_sizeof_re = regex::Regex::new(
+            r"(?:malloc|calloc)\s*\(\s*\(\s*(\d+)\s*(?:([+*\-])\s*(\d+))?\s*\)\s*\*\s*sizeof",
+        )
+        .ok();
         let malloc_plain_re = regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[,)]").ok();
         for (idx, line) in lines.iter().enumerate() {
             if idx < fn_start || idx > fn_end {
@@ -415,6 +420,24 @@ impl Str31C {
                 if let Some(re) = &malloc_sizeof_re {
                     if let Some(caps) = re.captures(line) {
                         if let Ok(n) = caps[1].parse::<usize>() {
+                            return Some(n);
+                        }
+                    }
+                }
+                // malloc((N+M)*sizeof(type)) or malloc((N)*sizeof(type))
+                if let Some(re) = &malloc_paren_sizeof_re {
+                    if let Some(caps) = re.captures(line) {
+                        let a = caps[1].parse::<usize>().ok();
+                        let op = caps.get(2).map(|m| m.as_str());
+                        let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
+                        let size = match (a, op, b) {
+                            (Some(a), Some("+"), Some(b)) => a.checked_add(b),
+                            (Some(a), Some("-"), Some(b)) => a.checked_sub(b),
+                            (Some(a), Some("*"), Some(b)) => a.checked_mul(b),
+                            (Some(a), None, None) => Some(a),
+                            _ => None,
+                        };
+                        if let Some(n) = size {
                             return Some(n);
                         }
                     }
