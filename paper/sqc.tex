@@ -385,15 +385,37 @@ hostap & 504 & 539,617 & \texttt{dcee604} \\
 \label{tab:realworld-codebases}
 \end{table}
 
-Real-world analysis revealed a robustness requirement absent from the
-Juliet benchmark: industrial embedded codebases frequently contain
-comments written in non-Latin scripts.  Running SqC against a battery
+Real-world analysis revealed robustness requirements absent from the
+Juliet benchmark.  Industrial embedded codebases frequently contain
+comments written in non-Latin scripts: running SqC against a battery
 management system codebase with Chinese-language function comments
 uncovered a latent crash in three rule checkers caused by unsafe
-UTF-8 string slicing (\cref{sec:architecture}).  The Juliet test suite
-contains only ASCII source, so this class of defect is invisible to
-benchmark-only validation; it surfaced exclusively through real-world
-deployment.
+UTF-8 string slicing (\cref{sec:architecture}).  The benchmark suite
+itself later exposed two more analyzer-crashing defect classes that
+Juliet never exercises.  hostapd's configuration parser contains an
+\texttt{else if} chain several thousand branches deep, which overflowed
+the stack in every rule checker that walked the AST by self-recursion
+(three checkers crashed before the recursive walks were converted to
+explicit-stack iteration); and a curl unit test containing a string
+literal with a \texttt{]} character preceding the \texttt{[} of an
+array subscript triggered an out-of-bounds slice in a bounds-checking
+rule.  Juliet's test cases are structurally simple ASCII programs, so
+none of these defect classes---encoding, nesting depth, or adversarial
+token ordering---are visible to benchmark-only validation; all of them
+surfaced exclusively through real-world analysis.
+
+These experiences motivated a methodological decision: the real-world
+suite is run under the same protocol rigor as Juliet.  Every run is
+tied to a version bump and commit SHA, results are stored in the same
+benchmark database, and per-rule per-project deltas are reviewed
+between versions.  This discipline pays for itself: version-to-version
+real-world comparisons have repeatedly surfaced both crashes and
+per-rule regressions that the Juliet suite---where the same rule
+changes showed neutral or positive movement---did not detect.  In our
+experience Juliet should be treated as a rough approximation of
+real-world behavior, useful for regression-testing detection logic but
+neither sufficient to validate analyzer robustness nor predictive of
+real-world precision (\cref{sec:limitations}).
 
 An important caveat for interpreting the cross-tool results: SqC
 implements 290 rules while cppcheck and clang-tidy implement
@@ -1002,7 +1024,7 @@ and EXP33-C inter-procedural FP suppression.}
 
 \subsection{Principles That Emerged}
 
-Four principles emerged from this iterative process:
+Five principles emerged from this iterative process:
 
 \begin{enumerate}
     \item \textbf{Don't flag when uncertain.}  If the type, origin,
@@ -1016,6 +1038,17 @@ Four principles emerged from this iterative process:
     \item \textbf{Verify on both benchmarks.}  Fixes targeting
         \texttt{uint32\_t} resolution show impact on real-world code
         but not on Juliet, which uses explicit C types.
+    \item \textbf{Juliet is a rough approximation, not a proxy.}
+        Treat the real-world suite as a first-class benchmark, run
+        with the same rigor (versioned, committed, per-rule deltas
+        reviewed) as Juliet.  Real-world code crashed the analyzer in
+        ways Juliet structurally cannot (non-ASCII content,
+        thousands-deep nesting, adversarial token ordering), exhibited
+        per-rule regressions that Juliet scored as neutral or
+        improved, and a sampled manual audit of the noisiest rules
+        measured real-world precision far below what Juliet results
+        implied.  Improvements validated only on Juliet have not, in
+        our experience, earned the claim of working on real code.
 \end{enumerate}
 
 %% ============================================================
@@ -1103,6 +1136,21 @@ blocked by tree-sitter's inability to expand preprocessor macros in
 Juliet's Windows headers; CWE-328 (Reversible One-Way Hash) requires
 a new cryptographic algorithm detection rule; the remainder (CWE-23,
 CWE-667, CWE-672, CWE-676, CWE-762) await dedicated rule implementations.
+
+Finally, Juliet precision does not transfer to real-world precision.
+To quantify the gap, we manually adjudicated a seeded random sample of
+50 findings from each of the four noisiest rules in the v0.4.22
+real-world run (MEM30-C, DCL13-C, INT32-C, EXP34-C; together 41K of
+133K total findings).  Measured precision was 0\%, 34\%, 6\%, and 2\%
+respectively---10.5\% combined---on rules whose Juliet results had
+motivated no further work.  The FP modes are real-world idioms Juliet
+rarely contains: free-then-reassign sequences, callback signatures
+fixed by function-pointer contracts, loop counters structurally
+bounded by data-structure sizes, and allocation checks placed on the
+line after the allocation.  This is the strongest evidence for
+treating Juliet as a rough approximation: a rule can be simultaneously
+well-tuned on Juliet and produce thousands of false positives per
+project in deployment.
 
 %% ============================================================
 \section{Related Work}
