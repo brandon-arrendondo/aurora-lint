@@ -1455,7 +1455,10 @@ pub fn get_all_var_ranges_at(
     let mut state = entry.clone();
     let empty_types = HashMap::new();
     for &(start, end) in &block.statements {
-        if start >= byte_offset {
+        // Stop before the statement containing the offset: its own effects
+        // (e.g. `data = data + 1`, or an opaque switch whose case holds the
+        // checked expression) must not be applied before evaluation.
+        if end > byte_offset {
             break;
         }
         if let Some(stmt_node) = find_node_at_range(body, start, end) {

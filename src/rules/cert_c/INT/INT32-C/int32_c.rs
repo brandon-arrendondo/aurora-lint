@@ -48,27 +48,13 @@ impl Int32C {
         let vra = vra_results.get(&start_byte)?;
         let body = func.child_by_field_name("body")?;
 
-        // Replay up to the enclosing statement's start so the statement's own
-        // effects are not applied before the expression is evaluated.
-        let mut byte_offset = expr_node.start_byte();
-        let mut cursor = *expr_node;
-        while let Some(parent) = cursor.parent() {
-            if matches!(parent.kind(), "compound_statement" | "function_definition") {
-                break;
-            }
-            if matches!(parent.kind(), "expression_statement" | "declaration") {
-                byte_offset = parent.start_byte();
-            }
-            cursor = parent;
-        }
-
         value_range::get_all_var_ranges_at(
             vra,
             cfg,
             &body,
             source,
             &self.current_macros.borrow(),
-            byte_offset,
+            expr_node.start_byte(),
         )
     }
 }
@@ -1571,9 +1557,18 @@ impl Int32C {
                 if self.is_unsigned_type(declared_type) {
                     return "unsigned".to_string();
                 }
+                // Narrow signed types are tracked distinctly so VRA checks use
+                // their actual bit width. Exact-width typedefs are checked
+                // before the generic contains("int") test. For plain short we
+                // use the standard-guaranteed minimum width (16 bits).
+                if declared_type == "int8_t" {
+                    return "char".to_string();
+                }
+                if declared_type == "int16_t" || declared_type.contains("short") {
+                    return "short".to_string();
+                }
                 // Only return signed if the type is clearly an integer type
                 if declared_type.contains("int")
-                    || declared_type.contains("short")
                     || declared_type.contains("long")
                     || declared_type == "signed"
                 {
@@ -1615,8 +1610,13 @@ impl Int32C {
                 if self.is_unsigned_type(&field_type) {
                     return "unsigned".to_string();
                 }
+                if field_type == "int8_t" {
+                    return "char".to_string();
+                }
+                if field_type == "int16_t" || field_type.contains("short") {
+                    return "short".to_string();
+                }
                 if field_type.contains("int")
-                    || field_type.contains("short")
                     || field_type.contains("long")
                     || field_type == "signed"
                 {
@@ -1649,8 +1649,11 @@ impl Int32C {
                 if lt == "signed" || rt == "signed" {
                     return "signed".to_string();
                 }
-                // Both operands are char — result is still int via promotion, but we
-                // keep the "char" annotation so callers can use 8-bit VRA checking
+                // Narrow operands promote to int, but we keep the narrow-type
+                // annotation so callers can use 16-bit/8-bit VRA checking
+                if lt == "short" || rt == "short" {
+                    return "short".to_string();
+                }
                 if lt == "char" || rt == "char" {
                     return "char".to_string();
                 }
@@ -1660,11 +1663,11 @@ impl Int32C {
 
         // Look for explicit signed type indicators (only for non-identifier nodes
         // like type specifiers in casts/declarations — identifiers checked above)
+        if node.kind() != "identifier" && text.contains("short") {
+            return "short".to_string();
+        }
         if node.kind() != "identifier"
-            && (text.contains("signed")
-                || text.contains("int")
-                || text.contains("short")
-                || text.contains("long"))
+            && (text.contains("signed") || text.contains("int") || text.contains("long"))
         {
             return "signed".to_string();
         }
@@ -1766,11 +1769,15 @@ impl Int32C {
     }
 
     fn is_signed_type(&self, type_str: &str) -> bool {
-        type_str == "signed" || type_str == "int" || type_str == "char"
+        type_str == "signed" || type_str == "int" || type_str == "char" || type_str == "short"
     }
 
     fn signed_type_bits(left_type: &str, right_type: &str) -> u32 {
-        let bits_for = |t: &str| if t == "char" { 8u32 } else { 32u32 };
+        let bits_for = |t: &str| match t {
+            "char" => 8u32,
+            "short" => 16u32,
+            _ => 32u32,
+        };
         bits_for(left_type).min(bits_for(right_type))
     }
 
