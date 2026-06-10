@@ -348,12 +348,13 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &right_type);
                 if const_eval::expression_fits_in_signed_vra(
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
+                    vra_bits,
                     self.vra_var_ranges_at(node).as_ref(),
                 ) {
                     return;
@@ -440,12 +441,13 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &right_type);
                 if const_eval::expression_fits_in_signed_vra(
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
+                    vra_bits,
                     self.vra_var_ranges_at(node).as_ref(),
                 ) {
                     return;
@@ -521,12 +523,13 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &right_type);
                 if const_eval::expression_fits_in_signed_vra(
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
+                    vra_bits,
                     self.vra_var_ranges_at(node).as_ref(),
                 ) {
                     return;
@@ -754,12 +757,13 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
                 if const_eval::expression_fits_in_signed_vra(
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
+                    vra_bits,
                     self.vra_var_ranges_at(node).as_ref(),
                 ) {
                     return;
@@ -809,8 +813,9 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
-                if self.compound_expr_fits_signed(node, source, "+", 32) {
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                if self.compound_expr_fits_signed(node, source, "+", vra_bits) {
                     return;
                 }
 
@@ -860,8 +865,9 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
-                if self.compound_expr_fits_signed(node, source, "-", 32) {
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                if self.compound_expr_fits_signed(node, source, "-", vra_bits) {
                     return;
                 }
 
@@ -909,8 +915,9 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
-                if self.compound_expr_fits_signed(node, source, "*", 32) {
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                if self.compound_expr_fits_signed(node, source, "*", vra_bits) {
                     return;
                 }
 
@@ -1026,8 +1033,9 @@ impl Int32C {
             }
 
             if self.is_signed_type(&left_type) {
-                // Skip if constant evaluation proves the result fits in 32-bit signed
-                if self.compound_expr_fits_signed(node, source, "<<", 32) {
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                if self.compound_expr_fits_signed(node, source, "<<", vra_bits) {
                     return;
                 }
 
@@ -1080,12 +1088,13 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if VRA proves the result fits in 32-bit signed
+                // Skip if VRA proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&arg_type, &arg_type);
                 if const_eval::expression_fits_in_signed_vra(
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
+                    vra_bits,
                     self.vra_var_ranges_at(node).as_ref(),
                 ) {
                     return;
@@ -1577,7 +1586,12 @@ impl Int32C {
                 {
                     return "signed".to_string();
                 }
-                // Non-integer types (float, double, char, pointers, structs) — not applicable to INT32-C
+                // char is a signed integer type (on most platforms); track it distinctly
+                // so we can apply 8-bit VRA checking rather than 32-bit
+                if declared_type == "char" || declared_type == "signed char" {
+                    return "char".to_string();
+                }
+                // Non-integer types (float, double, pointers, structs) — not applicable to INT32-C
                 return "not_applicable".to_string();
             }
         }
@@ -1615,6 +1629,9 @@ impl Int32C {
                 {
                     return "signed".to_string();
                 }
+                if field_type == "char" || field_type == "signed char" {
+                    return "char".to_string();
+                }
                 return "not_applicable".to_string();
             }
             return "not_applicable".to_string();
@@ -1638,6 +1655,11 @@ impl Int32C {
                 }
                 if lt == "signed" || rt == "signed" {
                     return "signed".to_string();
+                }
+                // Both operands are char — result is still int via promotion, but we
+                // keep the "char" annotation so callers can use 8-bit VRA checking
+                if lt == "char" || rt == "char" {
+                    return "char".to_string();
                 }
                 return "unknown".to_string();
             }
@@ -1751,7 +1773,12 @@ impl Int32C {
     }
 
     fn is_signed_type(&self, type_str: &str) -> bool {
-        type_str == "signed" || type_str == "int"
+        type_str == "signed" || type_str == "int" || type_str == "char"
+    }
+
+    fn signed_type_bits(left_type: &str, right_type: &str) -> u32 {
+        let bits_for = |t: &str| if t == "char" { 8u32 } else { 32u32 };
+        bits_for(left_type).min(bits_for(right_type))
     }
 
     fn is_unsigned_type(&self, type_str: &str) -> bool {
