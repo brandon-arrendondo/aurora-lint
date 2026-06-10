@@ -3,7 +3,7 @@ use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
-use crate::analyze::value_range::RangeAnalysisResult;
+use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::std_functions;
@@ -34,7 +34,7 @@ impl Int32C {
 
     /// Get VRA-derived variable ranges at a specific expression node.
     /// Uses the block entry ranges as a conservative approximation.
-    fn vra_var_ranges_at(&self, expr_node: &Node) -> Option<VarRangeMap> {
+    fn vra_var_ranges_at(&self, expr_node: &Node, source: &str) -> Option<VarRangeMap> {
         let vra_results = self.vra_results.borrow();
         let cfgs = self.function_cfgs.borrow();
 
@@ -46,37 +46,30 @@ impl Int32C {
         let start_byte = func.start_byte();
         let cfg = cfgs.get(&start_byte)?;
         let vra = vra_results.get(&start_byte)?;
-        let byte_offset = expr_node.start_byte();
+        let body = func.child_by_field_name("body")?;
 
-        // Find containing block
-        let block = cfg
-            .blocks
-            .iter()
-            .find(|b| {
-                b.statements
-                    .iter()
-                    .any(|&(s, e)| byte_offset >= s && byte_offset < e)
-            })
-            .or_else(|| {
-                cfg.blocks.iter().find(|b| {
-                    b.byte_range.0 > 0
-                        && byte_offset >= b.byte_range.0
-                        && byte_offset < b.byte_range.1
-                })
-            })?;
-
-        let entry = vra.block_entry_ranges.get(&block.id)?;
-
-        let var_ranges: VarRangeMap = entry
-            .iter()
-            .map(|(name, typed)| (name.clone(), typed.range))
-            .collect();
-
-        if var_ranges.is_empty() {
-            None
-        } else {
-            Some(var_ranges)
+        // Replay up to the enclosing statement's start so the statement's own
+        // effects are not applied before the expression is evaluated.
+        let mut byte_offset = expr_node.start_byte();
+        let mut cursor = *expr_node;
+        while let Some(parent) = cursor.parent() {
+            if matches!(parent.kind(), "compound_statement" | "function_definition") {
+                break;
+            }
+            if matches!(parent.kind(), "expression_statement" | "declaration") {
+                byte_offset = parent.start_byte();
+            }
+            cursor = parent;
         }
+
+        value_range::get_all_var_ranges_at(
+            vra,
+            cfg,
+            &body,
+            source,
+            &self.current_macros.borrow(),
+            byte_offset,
+        )
     }
 }
 
@@ -355,7 +348,7 @@ impl Int32C {
                     source,
                     &self.current_macros.borrow(),
                     vra_bits,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -448,7 +441,7 @@ impl Int32C {
                     source,
                     &self.current_macros.borrow(),
                     vra_bits,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -530,7 +523,7 @@ impl Int32C {
                     source,
                     &self.current_macros.borrow(),
                     vra_bits,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -764,7 +757,7 @@ impl Int32C {
                     source,
                     &self.current_macros.borrow(),
                     vra_bits,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -1095,7 +1088,7 @@ impl Int32C {
                     source,
                     &self.current_macros.borrow(),
                     vra_bits,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -1175,7 +1168,7 @@ impl Int32C {
                     if self.contains_arithmetic(arg_text) {
                         // Use const_eval to check if the arithmetic provably fits
                         let macros = self.current_macros.borrow();
-                        let vra_ranges = self.vra_var_ranges_at(&arg_node);
+                        let vra_ranges = self.vra_var_ranges_at(&arg_node, source);
                         if const_eval::expression_fits_in_signed_vra(
                             &arg_node,
                             source,
@@ -1251,7 +1244,7 @@ impl Int32C {
                         if self.contains_arithmetic(arg_text) {
                             // Use const_eval to check if the arithmetic provably fits
                             let macros = self.current_macros.borrow();
-                            let vra_ranges = self.vra_var_ranges_at(&arg_node);
+                            let vra_ranges = self.vra_var_ranges_at(&arg_node, source);
                             if const_eval::expression_fits_in_signed_vra(
                                 &arg_node,
                                 source,

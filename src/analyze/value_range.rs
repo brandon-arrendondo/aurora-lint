@@ -312,6 +312,12 @@ fn process_statement_for_ranges(
                 process_expression_range(&expr, source, macros, summaries, state, local_types);
             }
         }
+        "switch_statement" => {
+            // The CFG lowers a switch to a single opaque statement, so its
+            // internal control flow is unmodeled: any contained modification
+            // may or may not execute on a given path.
+            process_opaque_region(node, source, macros, summaries, state, local_types);
+        }
         _ => {
             // Recurse for nested assignments
             for i in 0..node.child_count() {
@@ -330,6 +336,89 @@ fn process_statement_for_ranges(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Conservatively account for variable modifications inside a region whose
+/// internal control flow is not modeled by the CFG (e.g. a switch body).
+/// Assignments join their RHS with the current range (the path may or may
+/// not execute); increments, compound assignments, and `&var` call arguments
+/// widen the variable to its full type range.
+fn process_opaque_region(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    summaries: &HashMap<String, FunctionSummary>,
+    state: &mut RangeMap,
+    local_types: &HashMap<String, VarType>,
+) {
+    let widen = |state: &mut RangeMap, var_name: String| {
+        let var_type = state
+            .get(&var_name)
+            .and_then(|c| c.var_type.clone())
+            .or_else(|| local_types.get(&var_name).cloned());
+        let range = var_type
+            .as_ref()
+            .map(|t| t.full_range())
+            .unwrap_or(ValueRange::new(i64::MIN, i64::MAX));
+        state.insert(var_name, TypedRange { range, var_type });
+    };
+
+    match node.kind() {
+        "assignment_expression" => {
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                if left.kind() == "identifier" {
+                    let var_name = get_text(&left, source);
+                    let op = get_assignment_operator(node, source);
+                    let rhs_range = if op == "=" {
+                        let var_ranges = extract_var_ranges_from_state(state);
+                        const_eval::try_evaluate_range(&right, source, macros, &var_ranges)
+                            .or_else(|| resolve_call_return_range(&right, source, summaries))
+                    } else {
+                        None // compound assignment: treat as unknown
+                    };
+                    match rhs_range {
+                        Some(r) => {
+                            let cur = state.get(&var_name);
+                            let var_type = cur
+                                .and_then(|c| c.var_type.clone())
+                                .or_else(|| local_types.get(&var_name).cloned());
+                            let joined = match cur {
+                                Some(c) => join_range(&c.range, &r),
+                                None => r,
+                            };
+                            let range = if let Some(vt) = &var_type {
+                                apply_unsigned_wrapping(joined, vt)
+                            } else {
+                                joined
+                            };
+                            state.insert(var_name, TypedRange { range, var_type });
+                        }
+                        None => widen(state, var_name),
+                    }
+                }
+            }
+        }
+        "update_expression" => {
+            if let Some(arg) = node.child_by_field_name("argument") {
+                if arg.kind() == "identifier" {
+                    widen(state, get_text(&arg, source));
+                }
+            }
+        }
+        "call_expression" => {
+            // Reuse the `&var` argument widening from the exact transfer.
+            process_expression_range(node, source, macros, summaries, state, local_types);
+        }
+        _ => {}
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            process_opaque_region(&child, source, macros, summaries, state, local_types);
         }
     }
 }
