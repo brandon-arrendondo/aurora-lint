@@ -222,7 +222,7 @@ fn is_likely_readonly_param(name: &str) -> bool {
         || lowercase.starts_with("input")
         || lowercase.starts_with("in_")
         || lowercase.contains("read")
-        || name.ends_with("2") // Common convention for second string parameter (e.g., s2 in strcat)
+        || lowercase == "s2" // Conventional second string parameter name (e.g., s2 in strcat/strcmp)
 }
 
 /// Check if a node is a function declarator (recursively checking pointer/array decorators)

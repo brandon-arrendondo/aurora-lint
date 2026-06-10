@@ -216,6 +216,24 @@ class BenchDB:
     def create_cwe_scan(self, run_id: str, cwe_id: str,
                         cwe_dir_name: str, file_count: int = 0) -> int:
         with self._cursor() as cur:
+            # Resume support: an interrupted run leaves non-completed rows
+            # behind. Reuse the row, reset it, and purge partial child data.
+            cur.execute("""
+                SELECT id FROM cwe_scans
+                WHERE run_id = ? AND cwe_dir_name = ?
+            """, (run_id, cwe_dir_name))
+            row = cur.fetchone()
+            if row:
+                scan_id = row["id"]
+                cur.execute("DELETE FROM violations WHERE cwe_scan_id = ?", (scan_id,))
+                cur.execute("DELETE FROM cwe_metrics WHERE cwe_scan_id = ?", (scan_id,))
+                cur.execute("DELETE FROM rule_cwe_breakdown WHERE cwe_scan_id = ?", (scan_id,))
+                cur.execute("""
+                    UPDATE cwe_scans
+                    SET status = 'pending', file_count = ?, cwe_id = ?
+                    WHERE id = ?
+                """, (file_count, cwe_id, scan_id))
+                return scan_id
             cur.execute("""
                 INSERT INTO cwe_scans (run_id, cwe_id, cwe_dir_name, file_count, status)
                 VALUES (?, ?, ?, ?, 'pending')

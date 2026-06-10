@@ -278,6 +278,13 @@ impl Int30C {
                     return;
                 }
 
+                // Skip if the addition result is immediately taken modulo (% N).
+                // Pattern: (x + 1) % N — ring buffer next-index idiom.
+                // The modulo constrains the result to [0, N-1] so overflow doesn't matter.
+                if self.is_addition_bounded_by_modulo(node, source) {
+                    return;
+                }
+
                 // Check for var + 1 or 1 + var bounded by enclosing loop condition
                 if self.is_add_one_bounded_by_loop(node, source) {
                     return;
@@ -399,6 +406,15 @@ impl Int30C {
                     right_text.trim(),
                     source,
                 ) {
+                    return;
+                }
+
+                // Skip the elapsed-time tick counter idiom:
+                //   get_SystemTick_ms() - last_tick
+                // The left operand is a getter function whose name signals a monotonic
+                // tick/time counter. Unsigned wrap here is intentional and correct
+                // (C99 §6.2.5p9: unsigned arithmetic is modular).
+                if self.is_elapsed_time_subtraction(&left, source) {
                     return;
                 }
 
@@ -1526,6 +1542,60 @@ impl Int30C {
     /// Check if a binary addition is immediately masked by bitwise AND.
     /// Pattern: `(expr + N) & MASK` — result is bounded by the mask regardless
     /// of whether the addition wraps. Common in ring buffer index arithmetic.
+    /// Returns true when the addition result is the left operand of a `% N` expression.
+    /// Pattern: `(x + 1) % N` — ring-buffer next-index idiom. The modulo makes the
+    /// intermediate sum's exact value irrelevant; overflow doesn't change correctness.
+    fn is_addition_bounded_by_modulo(&self, node: &Node, source: &str) -> bool {
+        if let Some(parent) = node.parent() {
+            let effective_parent = if parent.kind() == "parenthesized_expression" {
+                parent.parent()
+            } else {
+                Some(parent)
+            };
+            if let Some(p) = effective_parent {
+                if p.kind() == "binary_expression" {
+                    if let Some(op) = p.child_by_field_name("operator") {
+                        if get_node_text(&op, source) == "%" {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Returns true when the left operand of a subtraction is a call to a tick/time
+    /// getter function (name contains "Tick", "Time", "Clock", "Counter", "Stamp").
+    /// In that idiom unsigned wrap is intentional — see C99 §6.2.5p9.
+    fn is_elapsed_time_subtraction(&self, left: &Node, source: &str) -> bool {
+        let tick_keywords = ["Tick", "tick", "Time", "Clock", "clock", "Counter", "Stamp"];
+        // Unwrap any parenthesized or cast expression to reach the call
+        let mut cur = *left;
+        loop {
+            match cur.kind() {
+                "parenthesized_expression" | "cast_expression" => {
+                    if let Some(inner) = cur.child(1) {
+                        cur = inner;
+                    } else {
+                        break;
+                    }
+                }
+                "call_expression" => {
+                    if let Some(func) = cur.child_by_field_name("function") {
+                        let name = get_node_text(&func, source);
+                        if tick_keywords.iter().any(|kw| name.contains(kw)) {
+                            return true;
+                        }
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        false
+    }
+
     fn is_addition_masked_by_bitand(&self, node: &Node, source: &str) -> bool {
         // The addition node's parent should be a binary_expression with operator &
         if let Some(parent) = node.parent() {

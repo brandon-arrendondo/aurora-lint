@@ -312,6 +312,12 @@ fn process_statement_for_ranges(
                 process_expression_range(&expr, source, macros, summaries, state, local_types);
             }
         }
+        "switch_statement" => {
+            // The CFG lowers a switch to a single opaque statement, so its
+            // internal control flow is unmodeled: any contained modification
+            // may or may not execute on a given path.
+            process_opaque_region(node, source, macros, summaries, state, local_types);
+        }
         _ => {
             // Recurse for nested assignments
             for i in 0..node.child_count() {
@@ -330,6 +336,89 @@ fn process_statement_for_ranges(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Conservatively account for variable modifications inside a region whose
+/// internal control flow is not modeled by the CFG (e.g. a switch body).
+/// Assignments join their RHS with the current range (the path may or may
+/// not execute); increments, compound assignments, and `&var` call arguments
+/// widen the variable to its full type range.
+fn process_opaque_region(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    summaries: &HashMap<String, FunctionSummary>,
+    state: &mut RangeMap,
+    local_types: &HashMap<String, VarType>,
+) {
+    let widen = |state: &mut RangeMap, var_name: String| {
+        let var_type = state
+            .get(&var_name)
+            .and_then(|c| c.var_type.clone())
+            .or_else(|| local_types.get(&var_name).cloned());
+        let range = var_type
+            .as_ref()
+            .map(|t| t.full_range())
+            .unwrap_or(ValueRange::new(i64::MIN, i64::MAX));
+        state.insert(var_name, TypedRange { range, var_type });
+    };
+
+    match node.kind() {
+        "assignment_expression" => {
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                if left.kind() == "identifier" {
+                    let var_name = get_text(&left, source);
+                    let op = get_assignment_operator(node, source);
+                    let rhs_range = if op == "=" {
+                        let var_ranges = extract_var_ranges_from_state(state);
+                        const_eval::try_evaluate_range(&right, source, macros, &var_ranges)
+                            .or_else(|| resolve_call_return_range(&right, source, summaries))
+                    } else {
+                        None // compound assignment: treat as unknown
+                    };
+                    match rhs_range {
+                        Some(r) => {
+                            let cur = state.get(&var_name);
+                            let var_type = cur
+                                .and_then(|c| c.var_type.clone())
+                                .or_else(|| local_types.get(&var_name).cloned());
+                            let joined = match cur {
+                                Some(c) => join_range(&c.range, &r),
+                                None => r,
+                            };
+                            let range = if let Some(vt) = &var_type {
+                                apply_unsigned_wrapping(joined, vt)
+                            } else {
+                                joined
+                            };
+                            state.insert(var_name, TypedRange { range, var_type });
+                        }
+                        None => widen(state, var_name),
+                    }
+                }
+            }
+        }
+        "update_expression" => {
+            if let Some(arg) = node.child_by_field_name("argument") {
+                if arg.kind() == "identifier" {
+                    widen(state, get_text(&arg, source));
+                }
+            }
+        }
+        "call_expression" => {
+            // Reuse the `&var` argument widening from the exact transfer.
+            process_expression_range(node, source, macros, summaries, state, local_types);
+        }
+        _ => {}
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            process_opaque_region(&child, source, macros, summaries, state, local_types);
         }
     }
 }
@@ -940,12 +1029,32 @@ fn make_comparison_info(
             })
         }
         "==" => {
-            // x == N: true => [N, N], false => unchanged (can't represent gap)
+            // x == N: true => [N, N]
+            // false (fall-through) => x != N — mirror the != true_range narrowing.
+            // When N sits at one endpoint of x's existing range (or N==0 for
+            // non-negative x) we can produce a tight single-interval bound;
+            // otherwise we conservatively return full (gap is non-contiguous).
             if bound.min == bound.max {
+                let n = bound.min;
+                let false_range = if n == 0 && full.min == 0 {
+                    // x in [0, max] and x != 0 => x in [1, max]
+                    Some(ValueRange::new(1, full.max))
+                } else if n == 0 && full.max == 0 {
+                    // x in [min, 0] and x != 0 => x in [min, -1]
+                    Some(ValueRange::new(full.min, -1))
+                } else if n == full.min {
+                    // N is the lower endpoint => x in [N+1, max]
+                    Some(ValueRange::new(n.saturating_add(1), full.max))
+                } else if n == full.max {
+                    // N is the upper endpoint => x in [min, N-1]
+                    Some(ValueRange::new(full.min, n.saturating_sub(1)))
+                } else {
+                    Some(full) // N in interior; non-contiguous gap
+                };
                 Some(RangeConditionInfo {
                     var_name,
                     true_range: Some(bound),
-                    false_range: Some(full),
+                    false_range,
                 })
             } else {
                 None
@@ -1346,7 +1455,10 @@ pub fn get_all_var_ranges_at(
     let mut state = entry.clone();
     let empty_types = HashMap::new();
     for &(start, end) in &block.statements {
-        if start >= byte_offset {
+        // Stop before the statement containing the offset: its own effects
+        // (e.g. `data = data + 1`, or an opaque switch whose case holds the
+        // checked expression) must not be applied before evaluation.
+        if end > byte_offset {
             break;
         }
         if let Some(stmt_node) = find_node_at_range(body, start, end) {
@@ -1881,6 +1993,65 @@ int safe_div(int a, int b) {
         // After the guard, on the false branch of `b == 0`, b should not be [0,0]
         let (_, _, result) = parse_and_analyze(code);
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_eq_zero_guard_narrows_unsigned_fallthrough() {
+        // if (b == 0U) return; — on the fall-through path b must be non-zero.
+        // For an unsigned int parameter (range [0, UINT32_MAX]), the false branch of
+        // `b == 0` should narrow b to [1, UINT32_MAX], not leave it as [0, UINT32_MAX].
+        //
+        // A dummy statement in the fall-through block before the return ensures that
+        // block.byte_range.0 is anchored before the queried line's whitespace.
+        // Line numbers: 1=empty, 2=sig, 3=if, 4=dummy, 5=return b, 6=}
+        let code = r#"
+unsigned int f(unsigned int b) {
+    if (b == 0U) return 0U;
+    unsigned int keep = b;
+    return keep;
+}
+"#;
+        // Line 5 is `    return keep;` — on fall-through b (and keep) should be >= 1
+        let range = get_range_at_line(code, "b", 5);
+        let r = range.expect("should have range for b at line 5");
+        assert!(
+            r.min >= 1,
+            "b should be >= 1 after == 0 guard, got min={}",
+            r.min
+        );
+    }
+
+    #[test]
+    fn test_or_condition_fallthrough_narrows_both_bounds() {
+        // if (b == 0U || b >= BITS) return; — rotright pattern.
+        // Fall-through: b != 0 AND b < BITS, so b in [1, 31].
+        //
+        // A dummy statement in the fall-through block before the return ensures
+        // block.byte_range.0 is anchored before the queried line's whitespace.
+        // Lines: 1=empty, 2=#define, 3=sig, 4=if {, 5=return a, 6=}, 7=dummy, 8=return b, 9=}
+        let code = r#"
+#define BITS 32U
+unsigned int rotright(unsigned int a, unsigned int b) {
+    if (b == 0U || b >= BITS) {
+        return a;
+    }
+    unsigned int keep = b;
+    return keep;
+}
+"#;
+        // Line 8 is `    return keep;` — after the || guard, b must be in [1, 31]
+        let range = get_range_at_line(code, "b", 8);
+        let r = range.expect("should have range for b at line 8");
+        assert!(
+            r.min >= 1,
+            "b should be >= 1 after == 0 || >= 32 guard, got min={}",
+            r.min
+        );
+        assert!(
+            r.max <= 31,
+            "b should be <= 31 after == 0 || >= 32 guard, got max={}",
+            r.max
+        );
     }
 
     #[test]

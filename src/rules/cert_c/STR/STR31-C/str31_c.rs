@@ -318,6 +318,20 @@ impl Str31C {
         let fn_start = fn_range.map_or(0, |(s, _)| s);
         let fn_end = fn_range.map_or(lines.len().saturating_sub(1), |(_, e)| e);
 
+        // Regexes for indirect strlen/wcslen safe-allocation detection (hoisted outside loop).
+        // calloc(len+1, 1) or calloc(len+1, sizeof(char)) — byte-string safe allocation.
+        let calloc_narrow_re = regex::Regex::new(
+            r"calloc\s*\(\s*(\w+)\s*\+\s*1\s*,\s*(?:1|sizeof\s*\(\s*char\s*\))\s*\)",
+        )
+        .ok();
+        // calloc(len+1, sizeof(wchar_t)) — wide-string safe allocation (requires wcslen).
+        let calloc_wide_re = regex::Regex::new(
+            r"calloc\s*\(\s*(\w+)\s*\+\s*1\s*,\s*sizeof\s*\(\s*wchar_t\s*\)\s*\)",
+        )
+        .ok();
+        // malloc(len+1) — implied byte-sized element safe allocation.
+        let malloc_indirect_re = regex::Regex::new(r"malloc\s*\(\s*(\w+)\s*\+\s*1\s*\)").ok();
+
         // Look for malloc/calloc assignments with strlen + 1 → dynamically safe
         for (idx, line) in lines.iter().enumerate() {
             if idx < fn_start || idx > fn_end {
@@ -331,12 +345,68 @@ impl Str31C {
             {
                 return Some(usize::MAX);
             }
+            // calloc(strlen_var+1, 1) or calloc(strlen_var+1, sizeof(char)) where
+            // strlen_var was assigned from strlen() — safe byte-string allocation.
+            // Only matches when element size is 1 byte to distinguish from
+            // calloc(strlen_var+1, sizeof(wchar_t)) which is a real bug.
+            if line.contains(var_name) && line.contains("=") && line.contains("calloc") {
+                if let Some(re) = &calloc_narrow_re {
+                    if let Some(caps) = re.captures(line) {
+                        let size_var = &caps[1];
+                        let strlen_pat =
+                            format!(r"\b{}\s*=\s*(?:w?)strlen\s*\(", regex::escape(size_var));
+                        if let Ok(strlen_re) = regex::Regex::new(&strlen_pat) {
+                            let end = fn_end.min(lines.len().saturating_sub(1));
+                            if lines[fn_start..=end].iter().any(|l| strlen_re.is_match(l)) {
+                                return Some(usize::MAX);
+                            }
+                        }
+                    }
+                }
+                // calloc(wcslen_var+1, sizeof(wchar_t)) where wcslen_var = wcslen(...)
+                // — safe wide-string allocation.  Requires wcslen specifically (not strlen)
+                // so calloc(strlen_var+1, sizeof(wchar_t)) remains flagged as a real bug.
+                if let Some(re) = &calloc_wide_re {
+                    if let Some(caps) = re.captures(line) {
+                        let size_var = &caps[1];
+                        let wcslen_pat =
+                            format!(r"\b{}\s*=\s*wcslen\s*\(", regex::escape(size_var));
+                        if let Ok(wcslen_re) = regex::Regex::new(&wcslen_pat) {
+                            let end = fn_end.min(lines.len().saturating_sub(1));
+                            if lines[fn_start..=end].iter().any(|l| wcslen_re.is_match(l)) {
+                                return Some(usize::MAX);
+                            }
+                        }
+                    }
+                }
+            }
+            // malloc(strlen_var+1) — implied byte-sized element
+            if line.contains(var_name) && line.contains("=") && line.contains("malloc") {
+                if let Some(re) = &malloc_indirect_re {
+                    if let Some(caps) = re.captures(line) {
+                        let size_var = &caps[1];
+                        let strlen_pat =
+                            format!(r"\b{}\s*=\s*(?:w?)strlen\s*\(", regex::escape(size_var));
+                        if let Ok(strlen_re) = regex::Regex::new(&strlen_pat) {
+                            let end = fn_end.min(lines.len().saturating_sub(1));
+                            if lines[fn_start..=end].iter().any(|l| strlen_re.is_match(l)) {
+                                return Some(usize::MAX);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Look for malloc/calloc assignments with specific sizes.
         // Handles casts: `data = (char *)malloc(N*sizeof(char))` and plain `malloc(N)`.
         let malloc_sizeof_re =
             regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[*,]\s*sizeof").ok();
+        // malloc((N+M)*sizeof(type)) — parenthesized arithmetic, e.g. malloc((10+1)*sizeof(char))
+        let malloc_paren_sizeof_re = regex::Regex::new(
+            r"(?:malloc|calloc)\s*\(\s*\(\s*(\d+)\s*(?:([+*\-])\s*(\d+))?\s*\)\s*\*\s*sizeof",
+        )
+        .ok();
         let malloc_plain_re = regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[,)]").ok();
         for (idx, line) in lines.iter().enumerate() {
             if idx < fn_start || idx > fn_end {
@@ -350,6 +420,24 @@ impl Str31C {
                 if let Some(re) = &malloc_sizeof_re {
                     if let Some(caps) = re.captures(line) {
                         if let Ok(n) = caps[1].parse::<usize>() {
+                            return Some(n);
+                        }
+                    }
+                }
+                // malloc((N+M)*sizeof(type)) or malloc((N)*sizeof(type))
+                if let Some(re) = &malloc_paren_sizeof_re {
+                    if let Some(caps) = re.captures(line) {
+                        let a = caps[1].parse::<usize>().ok();
+                        let op = caps.get(2).map(|m| m.as_str());
+                        let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
+                        let size = match (a, op, b) {
+                            (Some(a), Some("+"), Some(b)) => a.checked_add(b),
+                            (Some(a), Some("-"), Some(b)) => a.checked_sub(b),
+                            (Some(a), Some("*"), Some(b)) => a.checked_mul(b),
+                            (Some(a), None, None) => Some(a),
+                            _ => None,
+                        };
+                        if let Some(n) = size {
                             return Some(n);
                         }
                     }
@@ -381,6 +469,11 @@ impl Str31C {
         if let Ok(assign_re) = regex::Regex::new(&format!(r"\b{}\s*=", regex::escape(var_name))) {
             let alloca_sizeof_re =
                 regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\*\s*sizeof\s*\(").ok();
+            // ALLOCA((N)*sizeof(type)) or ALLOCA((N+M)*sizeof(type)) — parenthesized arithmetic.
+            let alloca_paren_sizeof_re = regex::Regex::new(
+                r"(?:ALLOCA|alloca)\s*\(\s*\(\s*(\d+)\s*(?:([+*\-])\s*(\d+))?\s*\)\s*\*\s*sizeof\s*\(",
+            )
+            .ok();
             let alloca_simple_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\)").ok();
             let alloca_ident_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*\(?(\w+)").ok();
             for (idx, line) in lines.iter().enumerate() {
@@ -402,6 +495,24 @@ impl Str31C {
                     if let Some(caps) = re.captures(line) {
                         if let Ok(n) = caps[1].parse::<usize>() {
                             return Some(n);
+                        }
+                    }
+                }
+                // Pattern: ALLOCA((N)*sizeof(type)) or ALLOCA((N+M)*sizeof(type))
+                if let Some(re) = &alloca_paren_sizeof_re {
+                    if let Some(caps) = re.captures(line) {
+                        let a = caps[1].parse::<usize>().ok();
+                        let op = caps.get(2).map(|m| m.as_str());
+                        let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
+                        let size = match (a, op, b) {
+                            (Some(a), Some("+"), Some(b)) => a.checked_add(b),
+                            (Some(a), Some("-"), Some(b)) => a.checked_sub(b),
+                            (Some(a), Some("*"), Some(b)) => a.checked_mul(b),
+                            (Some(a), None, None) => Some(a),
+                            _ => None,
+                        };
+                        if let Some(s) = size {
+                            return Some(s);
                         }
                     }
                 }
@@ -1302,22 +1413,46 @@ impl Str31C {
             }
         }
 
-        // Heuristic: if variables have string-like names, it's likely string copying
+        // Heuristic: if variables have string-like names, it's likely string copying.
+        // Exclude variables that are explicitly declared as non-char byte types (uint8_t,
+        // BYTE, etc.) — those are raw byte buffers, not null-terminated strings.
         if let (Some(dest), Some(src)) = (dest_name, src_name) {
             let dest_lower = dest.to_lowercase();
             let src_lower = src.to_lowercase();
 
-            if dest_lower.contains("str")
+            let name_match = dest_lower.contains("str")
                 || dest_lower.contains("buf")
                 || src_lower.contains("str")
                 || src_lower.contains("buf")
                 || dest_lower.contains("msg")
-                || src_lower.contains("msg")
+                || src_lower.contains("msg");
+
+            if name_match
+                && !Self::is_byte_typed_buffer(dest, source)
+                && !Self::is_byte_typed_buffer(src, source)
             {
                 return true;
             }
         }
 
+        false
+    }
+
+    /// Returns true if the named variable is declared with an explicit non-char byte type
+    /// (uint8_t, int8_t, BYTE, uint16_t, etc.), indicating it is a raw byte buffer
+    /// rather than a null-terminated string buffer.
+    fn is_byte_typed_buffer(var_name: &str, source: &str) -> bool {
+        let byte_types = ["uint8_t", "int8_t", "BYTE", "uint16_t", "uint32_t"];
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.contains(var_name) {
+                for bt in &byte_types {
+                    if trimmed.contains(bt) {
+                        return true;
+                    }
+                }
+            }
+        }
         false
     }
 

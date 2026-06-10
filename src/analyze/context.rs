@@ -78,11 +78,16 @@ impl ProjectContext {
     }
 
     /// Returns `true` if any cross-file data was collected.
+    ///
+    /// `header_declared_functions` is included so that a lightweight
+    /// header-only prescan (no `-d` flag) still triggers `set_project_context`
+    /// on rules like DCL15-C that only need the public-API declaration set.
     pub fn has_cross_file_data(&self) -> bool {
         !self.known_functions.is_empty()
             || !self.function_summaries.is_empty()
             || !self.macro_constants.is_empty()
             || !self.struct_field_types.is_empty()
+            || !self.header_declared_functions.is_empty()
     }
 
     /// Save prescan context to a binary cache file.

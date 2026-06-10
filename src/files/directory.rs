@@ -90,4 +90,22 @@ impl DirectorySource {
     pub fn is_file(&self) -> bool {
         self.is_file
     }
+
+    /// Returns the directory to pre-scan for cross-file context.
+    ///
+    /// For a single-file target, this is the file's parent directory so that
+    /// sibling headers are included in the prescan (enabling rules like DCL15-C
+    /// to recognise public API declared in those headers).
+    /// For a directory target, returns None (the caller already has the dir).
+    pub fn prescan_dir(&self) -> Option<String> {
+        if self.is_file {
+            let parent = std::path::Path::new(&self.path)
+                .parent()
+                .and_then(|p| p.to_str())
+                .map(|s| if s.is_empty() { "." } else { s });
+            parent.map(|s| s.to_string())
+        } else {
+            None
+        }
+    }
 }

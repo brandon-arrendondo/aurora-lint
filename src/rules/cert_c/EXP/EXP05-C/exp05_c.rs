@@ -56,7 +56,13 @@ impl CertRule for Exp05C {
                 // Check known functions that take non-const pointers
                 if is_modifying_function(function_name) {
                     if let Some(arguments) = node.child_by_field_name("arguments") {
-                        check_function_arguments(&arguments, node, source, &mut violations);
+                        check_function_arguments(
+                            &arguments,
+                            node,
+                            source,
+                            function_name,
+                            &mut violations,
+                        );
                     }
                 }
             }
@@ -253,13 +259,27 @@ fn is_modifying_function(name: &str) -> bool {
     )
 }
 
+/// Returns true if the formal parameter at `arg_index` (0-based) is already
+/// const-qualified in the standard library prototype, meaning passing a const
+/// pointer there is not a cast-away-const.
+fn is_const_param_position(func_name: &str, arg_index: usize) -> bool {
+    match func_name {
+        // memcpy(void *dst, const void *src, size_t n) — src is arg 1
+        // memmove(void *dst, const void *src, size_t n) — src is arg 1
+        "memcpy" | "memmove" => arg_index == 1,
+        _ => false,
+    }
+}
+
 /// Check function arguments for const-qualified values
 fn check_function_arguments(
     arguments: &Node,
     context: &Node,
     source: &str,
+    func_name: &str,
     violations: &mut Vec<RuleViolation>,
 ) {
+    let mut arg_index = 0usize;
     for i in 0..arguments.child_count() {
         if let Some(arg) = arguments.child(i) {
             // Skip punctuation like commas and parentheses
@@ -267,11 +287,15 @@ fn check_function_arguments(
                 continue;
             }
 
-            // Check if this argument is a const-qualified identifier
-            if is_const_qualified_argument(&arg, context, source) {
-                report_violation(&arg, source, violations);
-                return; // Only report once per function call
+            // Skip positions where the formal parameter is already const-qualified
+            if !is_const_param_position(func_name, arg_index) {
+                // Check if this argument is a const-qualified identifier
+                if is_const_qualified_argument(&arg, context, source) {
+                    report_violation(&arg, source, violations);
+                    return; // Only report once per function call
+                }
             }
+            arg_index += 1;
         }
     }
 }

@@ -360,6 +360,33 @@ impl Api00C {
             .iter()
             .any(|p| body_text.contains(p));
 
+        // Detect the elapsed-time tick counter idiom: `current_tick() - param` where
+        // unsigned wrap is intentional (C99 guarantees modular arithmetic for unsigned).
+        // Recognise calls to getter functions whose names contain common tick/time patterns.
+        let elapsed_time_pattern = [
+            "Tick",
+            "tick",
+            "Time",
+            "Clock",
+            "clock",
+            "Timestamp",
+            "timestamp",
+        ];
+        let is_elapsed_time_subtraction = elapsed_time_pattern.iter().any(|kw| {
+            // Look for `<tick_func>() - param_name` or `<tick_func>()- param_name`
+            let sub_pat1 = format!("() - {}", param_name);
+            let sub_pat2 = format!("()- {}", param_name);
+            let sub_pat3 = format!("()-{}", param_name);
+            (body_text.contains(&sub_pat1)
+                || body_text.contains(&sub_pat2)
+                || body_text.contains(&sub_pat3))
+                && body_text.contains(kw)
+        });
+
+        if is_elapsed_time_subtraction {
+            return false;
+        }
+
         // Return true if there's arithmetic but no overflow check AND no basic validation
         !has_overflow_check && !has_basic_validation
     }

@@ -3,7 +3,7 @@ use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
-use crate::analyze::value_range::RangeAnalysisResult;
+use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::std_functions;
@@ -34,7 +34,7 @@ impl Int32C {
 
     /// Get VRA-derived variable ranges at a specific expression node.
     /// Uses the block entry ranges as a conservative approximation.
-    fn vra_var_ranges_at(&self, expr_node: &Node) -> Option<VarRangeMap> {
+    fn vra_var_ranges_at(&self, expr_node: &Node, source: &str) -> Option<VarRangeMap> {
         let vra_results = self.vra_results.borrow();
         let cfgs = self.function_cfgs.borrow();
 
@@ -46,37 +46,16 @@ impl Int32C {
         let start_byte = func.start_byte();
         let cfg = cfgs.get(&start_byte)?;
         let vra = vra_results.get(&start_byte)?;
-        let byte_offset = expr_node.start_byte();
+        let body = func.child_by_field_name("body")?;
 
-        // Find containing block
-        let block = cfg
-            .blocks
-            .iter()
-            .find(|b| {
-                b.statements
-                    .iter()
-                    .any(|&(s, e)| byte_offset >= s && byte_offset < e)
-            })
-            .or_else(|| {
-                cfg.blocks.iter().find(|b| {
-                    b.byte_range.0 > 0
-                        && byte_offset >= b.byte_range.0
-                        && byte_offset < b.byte_range.1
-                })
-            })?;
-
-        let entry = vra.block_entry_ranges.get(&block.id)?;
-
-        let var_ranges: VarRangeMap = entry
-            .iter()
-            .map(|(name, typed)| (name.clone(), typed.range))
-            .collect();
-
-        if var_ranges.is_empty() {
-            None
-        } else {
-            Some(var_ranges)
-        }
+        value_range::get_all_var_ranges_at(
+            vra,
+            cfg,
+            &body,
+            source,
+            &self.current_macros.borrow(),
+            expr_node.start_byte(),
+        )
     }
 }
 
@@ -348,13 +327,14 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &right_type);
                 if const_eval::expression_fits_in_signed_vra(
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    vra_bits,
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -440,13 +420,14 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &right_type);
                 if const_eval::expression_fits_in_signed_vra(
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    vra_bits,
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -521,13 +502,14 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &right_type);
                 if const_eval::expression_fits_in_signed_vra(
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    vra_bits,
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -754,13 +736,14 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
                 if const_eval::expression_fits_in_signed_vra(
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    vra_bits,
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -809,8 +792,9 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
-                if self.compound_expr_fits_signed(node, source, "+", 32) {
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                if self.compound_expr_fits_signed(node, source, "+", vra_bits) {
                     return;
                 }
 
@@ -860,8 +844,9 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
-                if self.compound_expr_fits_signed(node, source, "-", 32) {
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                if self.compound_expr_fits_signed(node, source, "-", vra_bits) {
                     return;
                 }
 
@@ -909,8 +894,9 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in 32-bit signed
-                if self.compound_expr_fits_signed(node, source, "*", 32) {
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                if self.compound_expr_fits_signed(node, source, "*", vra_bits) {
                     return;
                 }
 
@@ -1026,8 +1012,9 @@ impl Int32C {
             }
 
             if self.is_signed_type(&left_type) {
-                // Skip if constant evaluation proves the result fits in 32-bit signed
-                if self.compound_expr_fits_signed(node, source, "<<", 32) {
+                // Skip if constant evaluation proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                if self.compound_expr_fits_signed(node, source, "<<", vra_bits) {
                     return;
                 }
 
@@ -1080,13 +1067,14 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if VRA proves the result fits in 32-bit signed
+                // Skip if VRA proves the result fits in the operand type's range
+                let vra_bits = Self::signed_type_bits(&arg_type, &arg_type);
                 if const_eval::expression_fits_in_signed_vra(
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
-                    self.vra_var_ranges_at(node).as_ref(),
+                    vra_bits,
+                    self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
@@ -1166,7 +1154,7 @@ impl Int32C {
                     if self.contains_arithmetic(arg_text) {
                         // Use const_eval to check if the arithmetic provably fits
                         let macros = self.current_macros.borrow();
-                        let vra_ranges = self.vra_var_ranges_at(&arg_node);
+                        let vra_ranges = self.vra_var_ranges_at(&arg_node, source);
                         if const_eval::expression_fits_in_signed_vra(
                             &arg_node,
                             source,
@@ -1242,7 +1230,7 @@ impl Int32C {
                         if self.contains_arithmetic(arg_text) {
                             // Use const_eval to check if the arithmetic provably fits
                             let macros = self.current_macros.borrow();
-                            let vra_ranges = self.vra_var_ranges_at(&arg_node);
+                            let vra_ranges = self.vra_var_ranges_at(&arg_node, source);
                             if const_eval::expression_fits_in_signed_vra(
                                 &arg_node,
                                 source,
@@ -1569,15 +1557,29 @@ impl Int32C {
                 if self.is_unsigned_type(declared_type) {
                     return "unsigned".to_string();
                 }
+                // Narrow signed types are tracked distinctly so VRA checks use
+                // their actual bit width. Exact-width typedefs are checked
+                // before the generic contains("int") test. For plain short we
+                // use the standard-guaranteed minimum width (16 bits).
+                if declared_type == "int8_t" {
+                    return "char".to_string();
+                }
+                if declared_type == "int16_t" || declared_type.contains("short") {
+                    return "short".to_string();
+                }
                 // Only return signed if the type is clearly an integer type
                 if declared_type.contains("int")
-                    || declared_type.contains("short")
                     || declared_type.contains("long")
                     || declared_type == "signed"
                 {
                     return "signed".to_string();
                 }
-                // Non-integer types (float, double, char, pointers, structs) — not applicable to INT32-C
+                // char is a signed integer type (on most platforms); track it distinctly
+                // so we can apply 8-bit VRA checking rather than 32-bit
+                if declared_type == "char" || declared_type == "signed char" {
+                    return "char".to_string();
+                }
+                // Non-integer types (float, double, pointers, structs) — not applicable to INT32-C
                 return "not_applicable".to_string();
             }
         }
@@ -1608,12 +1610,20 @@ impl Int32C {
                 if self.is_unsigned_type(&field_type) {
                     return "unsigned".to_string();
                 }
+                if field_type == "int8_t" {
+                    return "char".to_string();
+                }
+                if field_type == "int16_t" || field_type.contains("short") {
+                    return "short".to_string();
+                }
                 if field_type.contains("int")
-                    || field_type.contains("short")
                     || field_type.contains("long")
                     || field_type == "signed"
                 {
                     return "signed".to_string();
+                }
+                if field_type == "char" || field_type == "signed char" {
+                    return "char".to_string();
                 }
                 return "not_applicable".to_string();
             }
@@ -1639,17 +1649,25 @@ impl Int32C {
                 if lt == "signed" || rt == "signed" {
                     return "signed".to_string();
                 }
+                // Narrow operands promote to int, but we keep the narrow-type
+                // annotation so callers can use 16-bit/8-bit VRA checking
+                if lt == "short" || rt == "short" {
+                    return "short".to_string();
+                }
+                if lt == "char" || rt == "char" {
+                    return "char".to_string();
+                }
                 return "unknown".to_string();
             }
         }
 
         // Look for explicit signed type indicators (only for non-identifier nodes
         // like type specifiers in casts/declarations — identifiers checked above)
+        if node.kind() != "identifier" && text.contains("short") {
+            return "short".to_string();
+        }
         if node.kind() != "identifier"
-            && (text.contains("signed")
-                || text.contains("int")
-                || text.contains("short")
-                || text.contains("long"))
+            && (text.contains("signed") || text.contains("int") || text.contains("long"))
         {
             return "signed".to_string();
         }
@@ -1751,7 +1769,16 @@ impl Int32C {
     }
 
     fn is_signed_type(&self, type_str: &str) -> bool {
-        type_str == "signed" || type_str == "int"
+        type_str == "signed" || type_str == "int" || type_str == "char" || type_str == "short"
+    }
+
+    fn signed_type_bits(left_type: &str, right_type: &str) -> u32 {
+        let bits_for = |t: &str| match t {
+            "char" => 8u32,
+            "short" => 16u32,
+            _ => 32u32,
+        };
+        bits_for(left_type).min(bits_for(right_type))
     }
 
     fn is_unsigned_type(&self, type_str: &str) -> bool {

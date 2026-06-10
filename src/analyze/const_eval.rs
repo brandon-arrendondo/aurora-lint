@@ -79,6 +79,21 @@ impl ValueRange {
         })
     }
 
+    /// Bitwise AND range: `self & other`.
+    ///
+    /// For non-negative operands the result is bounded by `min(self.max, other.max)` —
+    /// the classical mask-upper-bound approximation.  Returns `None` when either
+    /// operand may be negative (signed bitwise AND is implementation-defined in C).
+    pub fn bitand(&self, other: &ValueRange) -> Option<Self> {
+        if self.min < 0 || other.min < 0 {
+            return None;
+        }
+        Some(Self {
+            min: 0,
+            max: self.max.min(other.max),
+        })
+    }
+
     /// Returns true if every value in this range fits in a signed integer of the given bit width.
     pub fn fits_in_signed(&self, bits: u32) -> bool {
         if bits == 0 || bits > 64 {
@@ -801,6 +816,10 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
                 cleaned.parse::<f64>().ok().map(|f| f as i64)
             })
         }
+        "char_literal" => {
+            let text = node.utf8_text(source.as_bytes()).ok()?;
+            parse_char_literal(text.trim()).map(|c| c as i64)
+        }
         "identifier" => {
             let name = node.utf8_text(source.as_bytes()).ok()?;
             macros.get(name).copied()
@@ -987,7 +1006,7 @@ pub fn try_evaluate_range(
                 for i in 0..node.child_count() {
                     if let Some(c) = node.child(i) {
                         let k = c.kind();
-                        if matches!(k, "+" | "-" | "*" | "/" | "%" | "<<" | ">>") {
+                        if matches!(k, "+" | "-" | "*" | "/" | "%" | "<<" | ">>" | "&") {
                             return Some(c);
                         }
                     }
@@ -995,6 +1014,29 @@ pub fn try_evaluate_range(
                 None
             })?;
             let op_text = op.utf8_text(source.as_bytes()).ok()?;
+
+            // Bitwise AND: `expr & MASK` or `MASK & expr`.
+            // For a non-negative constant mask M, the result is always in [0, M]
+            // regardless of the other operand — even if that operand's range
+            // cannot be computed (e.g. overflows in arithmetic).  This lets VRA
+            // prove that `(SHA256_WORD_BITS - b) & SHA256_WORD_MASK` ∈ [0, 31]
+            // when SHA256_WORD_MASK = 31.
+            if op_text == "&" {
+                let lr = try_evaluate_range(&left, source, macros, var_ranges);
+                let rr = try_evaluate_range(&right, source, macros, var_ranges);
+                return match (lr, rr) {
+                    (Some(l), Some(r)) => l.bitand(&r),
+                    // One side unknown, other is a known non-negative constant mask.
+                    (None, Some(r)) if r.min == r.max && r.min >= 0 => {
+                        Some(ValueRange::new(0, r.min))
+                    }
+                    (Some(l), None) if l.min == l.max && l.min >= 0 => {
+                        Some(ValueRange::new(0, l.min))
+                    }
+                    _ => None,
+                };
+            }
+
             let lr = try_evaluate_range(&left, source, macros, var_ranges)?;
             let rr = try_evaluate_range(&right, source, macros, var_ranges)?;
             match op_text {
@@ -1023,6 +1065,17 @@ pub fn try_evaluate_range(
             try_evaluate_range(&value, source, macros, var_ranges)
         }
         "sizeof_expression" => resolve_sizeof_node(node, source).map(ValueRange::exact),
+        // Struct member access: obj.field or obj->field.
+        // Try to bound by the declared type of the field by searching the source for
+        // `uint8_t fieldName` / `uint16_t fieldName` etc. in struct definitions.
+        "field_expression" => {
+            if let Some(field_node) = node.child_by_field_name("field") {
+                let field_name = field_node.utf8_text(source.as_bytes()).ok()?;
+                bound_from_field_type(field_name, source)
+            } else {
+                None
+            }
+        }
         "update_expression" => {
             // data++ / data-- / ++data / --data
             let arg = node.child_by_field_name("argument")?;
@@ -1049,6 +1102,43 @@ pub fn try_evaluate_range(
         }
         _ => None,
     }
+}
+
+/// Search the source for a struct field declaration matching `field_name` and
+/// return a conservative `ValueRange` based on the declared type.
+/// This allows VRA to bound struct field accesses by their declared type width
+/// (e.g., `uint8_t length` → [0, 255]) without full struct-type resolution.
+fn bound_from_field_type(field_name: &str, source: &str) -> Option<ValueRange> {
+    // Narrow integer types with known bounds
+    const TYPE_BOUNDS: &[(&str, i64)] = &[
+        ("uint8_t", 255),
+        ("int8_t", 127),
+        ("uint16_t", 65535),
+        ("int16_t", 32767),
+    ];
+    for line in source.lines() {
+        let trimmed = line.trim();
+        // Look for lines like `uint8_t fieldName;` or `uint8_t fieldName,`
+        // within struct definitions. Simple text match — false positives are
+        // suppressive (safe), false negatives leave the violation in place.
+        for (type_name, max_val) in TYPE_BOUNDS {
+            if trimmed.contains(type_name) && trimmed.contains(field_name) {
+                // Verify the field name appears after the type (rough word-boundary check)
+                if let Some(type_pos) = trimmed.find(type_name) {
+                    let after_type = &trimmed[type_pos + type_name.len()..];
+                    if after_type.contains(field_name) {
+                        let min_val = if type_name.starts_with('u') {
+                            0
+                        } else {
+                            -(*max_val) - 1
+                        };
+                        return Some(ValueRange::new(min_val, *max_val));
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1805,6 +1895,43 @@ fn get_operator_text(node: &Node, source: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Parse a C char literal like `' '`, `'a'`, `'\n'`, `'\0'`, `'\x41'` into its integer value.
+fn parse_char_literal(text: &str) -> Option<u8> {
+    // Expect surrounding single quotes, possibly with L/u/U prefix
+    let inner = text.strip_prefix('\'').or_else(|| {
+        text.strip_prefix("L'")
+            .or_else(|| text.strip_prefix("u'"))
+            .or_else(|| text.strip_prefix("U'"))
+    })?;
+    let inner = inner.strip_suffix('\'')?;
+
+    if let Some(escaped) = inner.strip_prefix('\\') {
+        match escaped.as_bytes().first()? {
+            b'n' => Some(b'\n'),
+            b't' => Some(b'\t'),
+            b'r' => Some(b'\r'),
+            b'0' if escaped.len() == 1 => Some(0),
+            b'\\' => Some(b'\\'),
+            b'\'' => Some(b'\''),
+            b'"' => Some(b'"'),
+            b'a' => Some(7),
+            b'b' => Some(8),
+            b'f' => Some(12),
+            b'v' => Some(11),
+            b'x' => u8::from_str_radix(&escaped[1..], 16).ok(),
+            d if d.is_ascii_digit() => u8::from_str_radix(escaped, 8).ok(),
+            _ => None,
+        }
+    } else {
+        let ch = inner.chars().next()?;
+        if ch.is_ascii() {
+            Some(ch as u8)
+        } else {
+            None
+        }
+    }
 }
 
 fn parse_integer_literal(text: &str) -> Option<i64> {

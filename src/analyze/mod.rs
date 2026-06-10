@@ -71,7 +71,15 @@ pub fn analyze_project(
             anyhow::bail!("Prescan cache file not found: {}", cache_path);
         }
     } else if directories.is_empty() {
-        context::ProjectContext::new()
+        // No explicit directories supplied. For a single-file target, scan only
+        // the sibling header files so that rules like DCL15-C can recognise
+        // public API declared in those headers. Full cross-file analysis
+        // (known_functions, function_summaries, etc.) still requires -d.
+        if let Some(dir) = project_source.prescan_dir() {
+            prescan::prescan_sibling_headers(&dir)?
+        } else {
+            context::ProjectContext::new()
+        }
     } else {
         prescan::prescan_directories(directories, progress, needs_vra)?
     };

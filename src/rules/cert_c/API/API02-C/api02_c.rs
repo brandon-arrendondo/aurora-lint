@@ -225,6 +225,16 @@ impl Api02C {
             }
         }
 
+        // Skip bool * and _Bool * parameters — these are single-element output parameters
+        // (the caller passes &flag for the function to write a result), never arrays.
+        if type_text == "bool" || type_text == "_Bool" {
+            if let Some(declarator) = param.child_by_field_name("declarator") {
+                if is_pointer_declarator(&declarator) {
+                    return false;
+                }
+            }
+        }
+
         // Check for pointer type
         if type_text.contains('*') {
             // Exclude function pointers (they're not arrays)
