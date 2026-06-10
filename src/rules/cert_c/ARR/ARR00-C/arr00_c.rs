@@ -53,110 +53,117 @@ impl CertRule for Arr00C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        match node.kind() {
-            "assignment_expression" => {
-                // Check for direct array assignment (arr1 = arr2)
-                if let Some(violation) = check_array_assignment(node, source) {
-                    violations.push(violation);
+        // Iterative pre-order traversal: deeply nested ASTs (e.g. files with
+        // thousands of chained `else if` branches) overflow the stack if each
+        // node level adds a call frame.
+        let mut stack = vec![*node];
+        while let Some(current) = stack.pop() {
+            let node = &current;
+            match node.kind() {
+                "assignment_expression" => {
+                    // Check for direct array assignment (arr1 = arr2)
+                    if let Some(violation) = check_array_assignment(node, source) {
+                        violations.push(violation);
+                    }
                 }
+                "sizeof_expression" => {
+                    // Check for sizeof misuse with array parameters
+                    if let Some(violation) = check_sizeof_misuse(node, source) {
+                        violations.push(violation);
+                    }
+                }
+                "binary_expression" => {
+                    // Check for array comparison with == or !=
+                    if let Some(violation) = check_array_comparison(node, source) {
+                        violations.push(violation);
+                    }
+                    // Also check for pointer arithmetic that exceeds bounds
+                    if let Some(violation) = check_pointer_arithmetic(node, source) {
+                        violations.push(violation);
+                    }
+                    // Check for pointer subtraction between different arrays
+                    if let Some(violation) = check_pointer_subtraction(node, source) {
+                        violations.push(violation);
+                    }
+                }
+                "declaration" => {
+                    // Check for VLA with zero or invalid size
+                    if let Some(violation) = check_vla_declaration(node, source) {
+                        violations.push(violation);
+                    }
+                }
+                "call_expression" => {
+                    // Check for dangerous functions like gets(), strcpy(), etc.
+                    if let Some(violation) = check_dangerous_functions(node, source) {
+                        violations.push(violation);
+                    }
+                    // Check for obviously wrong string operations (strcat/strcpy with literal too large)
+                    if let Some(violation) = check_obvious_string_overflow(node, source) {
+                        violations.push(violation);
+                    }
+                    // Check for memcpy/memmove with wrong size
+                    if let Some(violation) = check_memcpy_size_mismatch(node, source) {
+                        violations.push(violation);
+                    }
+                    // Check for memory operations with size exceeding buffer
+                    if let Some(violation) = check_memory_operation_overflow(node, source) {
+                        violations.push(violation);
+                    }
+                }
+                "for_statement" => {
+                    // Check for loops exceeding malloc/realloc allocation size
+                    if let Some(violation) = check_loop_exceeds_allocation(node, source) {
+                        violations.push(violation);
+                    }
+                    // Check for loops with bounds that exceed array size
+                    if let Some(violation) = check_loop_bound_exceeds_array(node, source) {
+                        violations.push(violation);
+                    }
+                    // Check for loops with unvalidated bounds accessing arrays
+                    if let Some(violation) = check_loop_array_access(node, source) {
+                        violations.push(violation);
+                    }
+                }
+                "return_statement" => {
+                    // Check for returning pointer to local array
+                    if let Some(violation) = check_return_local_array(node, source) {
+                        violations.push(violation);
+                    }
+                }
+                "subscript_expression" => {
+                    // Check for comma operator in subscript (incorrect 2D access)
+                    if let Some(violation) = check_comma_in_subscript(node, source) {
+                        violations.push(violation);
+                    }
+                    // Check for reading from uninitialized array
+                    if let Some(violation) = check_uninitialized_array_read(node, source) {
+                        violations.push(violation);
+                    }
+                    // Check for array access after free
+                    if let Some(violation) = check_use_after_free(node, source) {
+                        violations.push(violation);
+                    }
+                    // Check for array access with constant out-of-bounds index
+                    if let Some(violation) = check_constant_out_of_bounds(node, source) {
+                        violations.push(violation);
+                    }
+                    // Check for array access with unvalidated index
+                    if let Some(violation) = check_subscript_bounds(node, source) {
+                        violations.push(violation);
+                    }
+                    // Check for array access with boundary value index
+                    if let Some(violation) = check_boundary_value_index(node, source) {
+                        violations.push(violation);
+                    }
+                }
+                _ => {}
             }
-            "sizeof_expression" => {
-                // Check for sizeof misuse with array parameters
-                if let Some(violation) = check_sizeof_misuse(node, source) {
-                    violations.push(violation);
-                }
-            }
-            "binary_expression" => {
-                // Check for array comparison with == or !=
-                if let Some(violation) = check_array_comparison(node, source) {
-                    violations.push(violation);
-                }
-                // Also check for pointer arithmetic that exceeds bounds
-                if let Some(violation) = check_pointer_arithmetic(node, source) {
-                    violations.push(violation);
-                }
-                // Check for pointer subtraction between different arrays
-                if let Some(violation) = check_pointer_subtraction(node, source) {
-                    violations.push(violation);
-                }
-            }
-            "declaration" => {
-                // Check for VLA with zero or invalid size
-                if let Some(violation) = check_vla_declaration(node, source) {
-                    violations.push(violation);
-                }
-            }
-            "call_expression" => {
-                // Check for dangerous functions like gets(), strcpy(), etc.
-                if let Some(violation) = check_dangerous_functions(node, source) {
-                    violations.push(violation);
-                }
-                // Check for obviously wrong string operations (strcat/strcpy with literal too large)
-                if let Some(violation) = check_obvious_string_overflow(node, source) {
-                    violations.push(violation);
-                }
-                // Check for memcpy/memmove with wrong size
-                if let Some(violation) = check_memcpy_size_mismatch(node, source) {
-                    violations.push(violation);
-                }
-                // Check for memory operations with size exceeding buffer
-                if let Some(violation) = check_memory_operation_overflow(node, source) {
-                    violations.push(violation);
-                }
-            }
-            "for_statement" => {
-                // Check for loops exceeding malloc/realloc allocation size
-                if let Some(violation) = check_loop_exceeds_allocation(node, source) {
-                    violations.push(violation);
-                }
-                // Check for loops with bounds that exceed array size
-                if let Some(violation) = check_loop_bound_exceeds_array(node, source) {
-                    violations.push(violation);
-                }
-                // Check for loops with unvalidated bounds accessing arrays
-                if let Some(violation) = check_loop_array_access(node, source) {
-                    violations.push(violation);
-                }
-            }
-            "return_statement" => {
-                // Check for returning pointer to local array
-                if let Some(violation) = check_return_local_array(node, source) {
-                    violations.push(violation);
-                }
-            }
-            "subscript_expression" => {
-                // Check for comma operator in subscript (incorrect 2D access)
-                if let Some(violation) = check_comma_in_subscript(node, source) {
-                    violations.push(violation);
-                }
-                // Check for reading from uninitialized array
-                if let Some(violation) = check_uninitialized_array_read(node, source) {
-                    violations.push(violation);
-                }
-                // Check for array access after free
-                if let Some(violation) = check_use_after_free(node, source) {
-                    violations.push(violation);
-                }
-                // Check for array access with constant out-of-bounds index
-                if let Some(violation) = check_constant_out_of_bounds(node, source) {
-                    violations.push(violation);
-                }
-                // Check for array access with unvalidated index
-                if let Some(violation) = check_subscript_bounds(node, source) {
-                    violations.push(violation);
-                }
-                // Check for array access with boundary value index
-                if let Some(violation) = check_boundary_value_index(node, source) {
-                    violations.push(violation);
-                }
-            }
-            _ => {}
-        }
 
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+            // Push children in reverse so they are visited in source order
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
+                }
             }
         }
 

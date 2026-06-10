@@ -2430,8 +2430,8 @@ impl Arr38C {
     /// Extract array size from declaration like "char arr[40]"
     fn extract_array_size(&self, decl: &str) -> Option<usize> {
         if let Some(start) = decl.find('[') {
-            if let Some(end) = decl.find(']') {
-                let size_str = decl[start + 1..end].trim();
+            if let Some(end) = decl[start + 1..].find(']') {
+                let size_str = decl[start + 1..start + 1 + end].trim();
                 if let Ok(size) = size_str.parse::<usize>() {
                     return Some(size);
                 }

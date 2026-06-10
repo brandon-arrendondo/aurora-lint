@@ -140,29 +140,35 @@ impl FlexibleArrayAnalyzer {
     }
 
     fn collect_flexible_array_structs(&mut self, node: &Node, source: &str) {
-        // Look for struct declarations with flexible array members
-        if node.kind() == "struct_specifier" {
-            if let Some(info) = self.analyze_struct_for_flexible_array(node, source) {
-                self.flexible_structs.insert(info.struct_name.clone(), info);
+        // Iterative pre-order walk: deeply nested code (e.g. multi-thousand-deep
+        // else-if chains) overflows the stack with self-recursion.
+        let mut stack = vec![*node];
+        while let Some(current) = stack.pop() {
+            // Look for struct declarations with flexible array members
+            if current.kind() == "struct_specifier" {
+                if let Some(info) = self.analyze_struct_for_flexible_array(&current, source) {
+                    self.flexible_structs.insert(info.struct_name.clone(), info);
+                }
             }
-        }
 
-        // Look for typedef declarations of flexible array structures
-        if node.kind() == "type_definition" {
-            self.collect_typedef_flexible_array(node, source);
-        }
-
-        // Look for array declarations of flexible array structures
-        if node.kind() == "declaration" {
-            if let Some(array_name) = self.detect_flexible_struct_array_declaration(node, source) {
-                self.flexible_struct_arrays.insert(array_name);
+            // Look for typedef declarations of flexible array structures
+            if current.kind() == "type_definition" {
+                self.collect_typedef_flexible_array(&current, source);
             }
-        }
 
-        // Recursively analyze child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_flexible_array_structs(&child, source);
+            // Look for array declarations of flexible array structures
+            if current.kind() == "declaration" {
+                if let Some(array_name) =
+                    self.detect_flexible_struct_array_declaration(&current, source)
+                {
+                    self.flexible_struct_arrays.insert(array_name);
+                }
+            }
+
+            for i in (0..current.child_count()).rev() {
+                if let Some(child) = current.child(i) {
+                    stack.push(child);
+                }
             }
         }
     }
@@ -475,6 +481,23 @@ impl FlexibleArrayAnalyzer {
     fn check_violations(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
+        // Iterative pre-order walk: deeply nested code (e.g. multi-thousand-deep
+        // else-if chains) overflows the stack with self-recursion.
+        let mut stack = vec![*node];
+        while let Some(current) = stack.pop() {
+            self.check_node(&current, source, &mut violations);
+
+            for i in (0..current.child_count()).rev() {
+                if let Some(child) = current.child(i) {
+                    stack.push(child);
+                }
+            }
+        }
+
+        violations
+    }
+
+    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for various violation patterns
         match node.kind() {
             "declaration" => {
@@ -612,15 +635,6 @@ impl FlexibleArrayAnalyzer {
             }
             _ => {}
         }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check_violations(&child, source));
-            }
-        }
-
-        violations
     }
 
     fn check_prohibited_storage(&self, node: &Node, source: &str) -> Option<RuleViolation> {
