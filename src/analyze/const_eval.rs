@@ -816,6 +816,10 @@ pub fn try_evaluate_expr(node: &Node, source: &str, macros: &MacroConstantMap) -
                 cleaned.parse::<f64>().ok().map(|f| f as i64)
             })
         }
+        "char_literal" => {
+            let text = node.utf8_text(source.as_bytes()).ok()?;
+            parse_char_literal(text.trim()).map(|c| c as i64)
+        }
         "identifier" => {
             let name = node.utf8_text(source.as_bytes()).ok()?;
             macros.get(name).copied()
@@ -1891,6 +1895,43 @@ fn get_operator_text(node: &Node, source: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Parse a C char literal like `' '`, `'a'`, `'\n'`, `'\0'`, `'\x41'` into its integer value.
+fn parse_char_literal(text: &str) -> Option<u8> {
+    // Expect surrounding single quotes, possibly with L/u/U prefix
+    let inner = text.strip_prefix('\'').or_else(|| {
+        text.strip_prefix("L'")
+            .or_else(|| text.strip_prefix("u'"))
+            .or_else(|| text.strip_prefix("U'"))
+    })?;
+    let inner = inner.strip_suffix('\'')?;
+
+    if let Some(escaped) = inner.strip_prefix('\\') {
+        match escaped.as_bytes().first()? {
+            b'n' => Some(b'\n'),
+            b't' => Some(b'\t'),
+            b'r' => Some(b'\r'),
+            b'0' if escaped.len() == 1 => Some(0),
+            b'\\' => Some(b'\\'),
+            b'\'' => Some(b'\''),
+            b'"' => Some(b'"'),
+            b'a' => Some(7),
+            b'b' => Some(8),
+            b'f' => Some(12),
+            b'v' => Some(11),
+            b'x' => u8::from_str_radix(&escaped[1..], 16).ok(),
+            d if d.is_ascii_digit() => u8::from_str_radix(escaped, 8).ok(),
+            _ => None,
+        }
+    } else {
+        let ch = inner.chars().next()?;
+        if ch.is_ascii() {
+            Some(ch as u8)
+        } else {
+            None
+        }
+    }
 }
 
 fn parse_integer_literal(text: &str) -> Option<i64> {
