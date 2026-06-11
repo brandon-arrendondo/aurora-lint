@@ -69,22 +69,7 @@ impl CertRule for Int33C {
     }
 
     fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        // RangeAnalysisResult is not Clone, so rebuild from reference
-        // We store a shared reference via a separate RefCell
-        // Actually, we need to store the results. Let's use a different approach:
-        // store the raw data we need.
-        let mut stored = HashMap::new();
-        for (&key, result) in results {
-            stored.insert(
-                key,
-                RangeAnalysisResult {
-                    block_entry_ranges: result.block_entry_ranges.clone(),
-                    block_exit_ranges: result.block_exit_ranges.clone(),
-                    return_ranges: result.return_ranges.clone(),
-                },
-            );
-        }
-        *self.vra_results.borrow_mut() = stored;
+        *self.vra_results.borrow_mut() = results.clone();
     }
 
     fn needs_vra(&self) -> bool {

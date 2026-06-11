@@ -3,7 +3,8 @@ use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
-use crate::analyze::value_range::{self, RangeAnalysisResult};
+use crate::analyze::value_range::RangeAnalysisResult;
+use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::std_functions;
@@ -37,22 +38,13 @@ impl Int30C {
     /// Uses intra-block forward simulation so that assignments within the same
     /// basic block (e.g. single-block functions) are visible at the expression point.
     fn vra_var_ranges_at(&self, expr_node: &Node, source: &str) -> Option<VarRangeMap> {
-        let vra_results = self.vra_results.borrow();
-        let cfgs = self.function_cfgs.borrow();
-
-        if vra_results.is_empty() || cfgs.is_empty() {
-            return None;
-        }
-
-        let func = ast_utils::find_containing_function(expr_node)?;
-        let start_byte = func.start_byte();
-        let cfg = cfgs.get(&start_byte)?;
-        let vra = vra_results.get(&start_byte)?;
-        let byte_offset = expr_node.start_byte();
-        let macros = self.current_macros.borrow();
-        let body = func.child_by_field_name("body")?;
-
-        value_range::get_all_var_ranges_at(vra, cfg, &body, source, &macros, byte_offset)
+        vra_access::var_ranges_replay_at(
+            &self.function_cfgs.borrow(),
+            &self.vra_results.borrow(),
+            expr_node,
+            source,
+            &self.current_macros.borrow(),
+        )
     }
 }
 
@@ -88,18 +80,7 @@ impl CertRule for Int30C {
     }
 
     fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        let mut stored = HashMap::new();
-        for (&key, result) in results {
-            stored.insert(
-                key,
-                RangeAnalysisResult {
-                    block_entry_ranges: result.block_entry_ranges.clone(),
-                    block_exit_ranges: result.block_exit_ranges.clone(),
-                    return_ranges: result.return_ranges.clone(),
-                },
-            );
-        }
-        *self.vra_results.borrow_mut() = stored;
+        *self.vra_results.borrow_mut() = results.clone();
     }
 
     fn needs_vra(&self) -> bool {

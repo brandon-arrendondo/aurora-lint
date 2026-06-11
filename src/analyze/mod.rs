@@ -8,6 +8,7 @@ pub mod null_state;
 pub mod prescan;
 pub mod suppression;
 pub mod value_range;
+pub mod vra_access;
 
 use super::files::ProjectSource;
 use super::manifest::RuleManifest;

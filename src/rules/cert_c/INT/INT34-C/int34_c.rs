@@ -59,18 +59,7 @@ impl CertRule for Int34C {
     }
 
     fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        let mut stored = HashMap::new();
-        for (&key, result) in results {
-            stored.insert(
-                key,
-                RangeAnalysisResult {
-                    block_entry_ranges: result.block_entry_ranges.clone(),
-                    block_exit_ranges: result.block_exit_ranges.clone(),
-                    return_ranges: result.return_ranges.clone(),
-                },
-            );
-        }
-        *self.vra_results.borrow_mut() = stored;
+        *self.vra_results.borrow_mut() = results.clone();
     }
 
     fn needs_vra(&self) -> bool {

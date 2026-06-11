@@ -61,6 +61,7 @@ pub struct TypedRange {
 pub type RangeMap = HashMap<String, TypedRange>;
 
 /// Result of value-range analysis for one function.
+#[derive(Clone)]
 pub struct RangeAnalysisResult {
     /// Entry ranges for each block (after joining predecessors + edge refinement).
     pub block_entry_ranges: HashMap<BlockId, RangeMap>,

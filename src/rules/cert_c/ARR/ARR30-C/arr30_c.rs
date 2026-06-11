@@ -42,6 +42,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::VarRangeMap;
 use crate::analyze::value_range::RangeAnalysisResult;
+use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -143,18 +144,7 @@ impl CertRule for Arr30C {
     }
 
     fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
-        let mut stored = HashMap::new();
-        for (&key, result) in results {
-            stored.insert(
-                key,
-                RangeAnalysisResult {
-                    block_entry_ranges: result.block_entry_ranges.clone(),
-                    block_exit_ranges: result.block_exit_ranges.clone(),
-                    return_ranges: result.return_ranges.clone(),
-                },
-            );
-        }
-        *self.vra_results.borrow_mut() = stored;
+        *self.vra_results.borrow_mut() = results.clone();
     }
 
     fn needs_vra(&self) -> bool {
@@ -200,42 +190,11 @@ impl Arr30C {
 
     /// Get VRA-derived variable ranges at a specific expression node.
     fn vra_var_ranges_at(&self, expr_node: &Node) -> Option<VarRangeMap> {
-        use crate::utility::cert_c::ast_utils::find_containing_function;
-        let vra_results = self.vra_results.borrow();
-        let cfgs = self.function_cfgs.borrow();
-        if vra_results.is_empty() || cfgs.is_empty() {
-            return None;
-        }
-        let func = find_containing_function(expr_node)?;
-        let start_byte = func.start_byte();
-        let cfg = cfgs.get(&start_byte)?;
-        let vra = vra_results.get(&start_byte)?;
-        let byte_offset = expr_node.start_byte();
-        let block = cfg
-            .blocks
-            .iter()
-            .find(|b| {
-                b.statements
-                    .iter()
-                    .any(|&(s, e)| byte_offset >= s && byte_offset < e)
-            })
-            .or_else(|| {
-                cfg.blocks.iter().find(|b| {
-                    b.byte_range.0 > 0
-                        && byte_offset >= b.byte_range.0
-                        && byte_offset < b.byte_range.1
-                })
-            })?;
-        let entry = vra.block_entry_ranges.get(&block.id)?;
-        let var_ranges: VarRangeMap = entry
-            .iter()
-            .map(|(name, typed)| (name.clone(), typed.range))
-            .collect();
-        if var_ranges.is_empty() {
-            None
-        } else {
-            Some(var_ranges)
-        }
+        vra_access::var_ranges_entry_at(
+            &self.function_cfgs.borrow(),
+            &self.vra_results.borrow(),
+            expr_node,
+        )
     }
 
     /// Analyze all buffer allocations in the source code using AST traversal
