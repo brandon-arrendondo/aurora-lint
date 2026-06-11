@@ -1,0 +1,860 @@
+[metadata]
+name = "curl CERT C Rules Configuration"
+version = "1.0.0"
+description = "Project rules manifest for curl/libcurl (pinned commit 3e198f7586) — cross-platform HTTP/transfer client library + CLI. Based on the shared benchmark base (rules-benchmark.toml). Cross-platform (incl. Windows) network client that parses untrusted server input; NOT a privileged daemon. WIN*, FIO*, MEM* (incl. sensitive-data), POSIX socket/thread, SIG* and CON* rules are all IN scope. Categorical disables below are the advisory/style recommendations this project does not adopt (same 14-rule baseline as conf/realworld/sqlite-rules.toml) plus POS05-C. Per-finding analyzer misfires among ENABLED rules (DCL13, MEM30, INT30/32, API00, EXP33/34, ...) are NOT suppressed here — they are recorded in the ground_truth oracle so they stay measured. See data/precision_audit/."
+cert_version = "2016"
+
+[rules.cert_c.API00-C]
+enabled = true
+
+[rules.cert_c.API01-C]
+enabled = true
+
+[rules.cert_c.API02-C]
+enabled = true
+
+[rules.cert_c.API03-C]
+enabled = true
+
+[rules.cert_c.API04-C]
+enabled = true
+
+[rules.cert_c.API05-C]
+enabled = true
+
+[rules.cert_c.API07-C]
+enabled = true
+
+[rules.cert_c.API09-C]
+enabled = true
+
+[rules.cert_c.API10-C]
+enabled = true
+
+[rules.cert_c.ARR00-C]
+enabled = true
+
+[rules.cert_c.ARR01-C]
+enabled = true
+
+[rules.cert_c.ARR02-C]
+enabled = true
+
+[rules.cert_c.ARR30-C]
+enabled = true
+
+[rules.cert_c.ARR32-C]
+enabled = true
+
+[rules.cert_c.ARR36-C]
+enabled = true
+
+[rules.cert_c.ARR37-C]
+enabled = true
+
+[rules.cert_c.ARR38-C]
+enabled = true
+
+[rules.cert_c.ARR39-C]
+enabled = true
+
+[rules.cert_c.CON01-C]
+enabled = true
+
+[rules.cert_c.CON02-C]
+enabled = true
+
+[rules.cert_c.CON03-C]
+enabled = true
+
+[rules.cert_c.CON04-C]
+enabled = true
+
+[rules.cert_c.CON05-C]
+enabled = true
+
+[rules.cert_c.CON06-C]
+enabled = true
+
+[rules.cert_c.CON07-C]
+enabled = true
+
+[rules.cert_c.CON08-C]
+enabled = true
+
+[rules.cert_c.CON09-C]
+enabled = true
+
+[rules.cert_c.CON30-C]
+enabled = true
+
+[rules.cert_c.CON31-C]
+enabled = true
+
+[rules.cert_c.CON32-C]
+enabled = true
+
+[rules.cert_c.CON33-C]
+enabled = true
+
+[rules.cert_c.CON34-C]
+enabled = true
+
+[rules.cert_c.CON35-C]
+enabled = true
+
+[rules.cert_c.CON36-C]
+enabled = true
+
+[rules.cert_c.CON37-C]
+enabled = true
+
+[rules.cert_c.CON38-C]
+enabled = true
+
+[rules.cert_c.CON39-C]
+enabled = true
+
+[rules.cert_c.CON40-C]
+enabled = true
+
+[rules.cert_c.CON41-C]
+enabled = true
+
+[rules.cert_c.CON43-C]
+enabled = true
+
+[rules.cert_c.CON50-C]
+enabled = true
+
+[rules.cert_c.DCL00-C]
+enabled = true
+
+[rules.cert_c.DCL01-C]
+enabled = true
+
+[rules.cert_c.DCL02-C]
+enabled = true
+
+[rules.cert_c.DCL03-C]
+enabled = true
+
+[rules.cert_c.DCL04-C]
+enabled = false  # Do not declare more than one variable per declaration; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.DCL05-C]
+enabled = false  # Use typedefs of non-pointer types only; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.DCL06-C]
+enabled = false  # Use meaningful symbolic constants to represent literal values; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.DCL07-C]
+enabled = true
+
+[rules.cert_c.DCL08-C]
+enabled = false  # Properly encode relationships in constant definitions; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.DCL09-C]
+enabled = true
+
+[rules.cert_c.DCL10-C]
+enabled = true
+
+[rules.cert_c.DCL11-C]
+enabled = true
+
+[rules.cert_c.DCL12-C]
+enabled = true
+
+[rules.cert_c.DCL13-C]
+enabled = true
+
+[rules.cert_c.DCL15-C]
+enabled = true
+
+[rules.cert_c.DCL16-C]
+enabled = true
+
+[rules.cert_c.DCL17-C]
+enabled = true
+
+[rules.cert_c.DCL18-C]
+enabled = true
+
+[rules.cert_c.DCL19-C]
+enabled = true
+
+[rules.cert_c.DCL20-C]
+enabled = true
+
+[rules.cert_c.DCL21-C]
+enabled = true
+
+[rules.cert_c.DCL22-C]
+enabled = true
+
+[rules.cert_c.DCL23-C]
+enabled = true
+
+[rules.cert_c.DCL30-C]
+enabled = true
+
+[rules.cert_c.DCL31-C]
+enabled = true
+
+[rules.cert_c.DCL36-C]
+enabled = true
+
+[rules.cert_c.DCL37-C]
+enabled = true
+
+[rules.cert_c.DCL38-C]
+enabled = true
+
+[rules.cert_c.DCL39-C]
+enabled = true
+
+[rules.cert_c.DCL40-C]
+enabled = true
+
+[rules.cert_c.DCL41-C]
+enabled = true
+
+[rules.cert_c.ENV01-C]
+enabled = true
+
+[rules.cert_c.ENV02-C]
+enabled = true
+
+[rules.cert_c.ENV03-C]
+enabled = true
+
+[rules.cert_c.ENV30-C]
+enabled = true
+
+[rules.cert_c.ENV31-C]
+enabled = true
+
+[rules.cert_c.ENV32-C]
+enabled = true
+
+[rules.cert_c.ENV33-C]
+enabled = true
+
+[rules.cert_c.ENV34-C]
+enabled = true
+
+[rules.cert_c.ERR00-C]
+enabled = true
+
+[rules.cert_c.ERR01-C]
+enabled = true
+
+[rules.cert_c.ERR02-C]
+enabled = true
+
+[rules.cert_c.ERR04-C]
+enabled = true
+
+[rules.cert_c.ERR05-C]
+enabled = true
+
+[rules.cert_c.ERR06-C]
+enabled = true
+
+[rules.cert_c.ERR07-C]
+enabled = true
+
+[rules.cert_c.ERR30-C]
+enabled = true
+
+[rules.cert_c.ERR32-C]
+enabled = true
+
+[rules.cert_c.ERR33-C]
+enabled = true
+
+[rules.cert_c.ERR34-C]
+enabled = true
+
+[rules.cert_c.EXP00-C]
+enabled = true
+
+[rules.cert_c.EXP02-C]
+enabled = false  # Be aware of the short-circuit behavior of the logical AND and OR operators; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.EXP03-C]
+enabled = true
+
+[rules.cert_c.EXP05-C]
+enabled = true
+
+[rules.cert_c.EXP07-C]
+enabled = true
+
+[rules.cert_c.EXP08-C]
+enabled = true
+
+[rules.cert_c.EXP09-C]
+enabled = true
+
+[rules.cert_c.EXP10-C]
+enabled = false  # Do not depend on the order of evaluation of subexpressions; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.EXP11-C]
+enabled = true
+
+[rules.cert_c.EXP12-C]
+enabled = false  # Do not ignore values returned by functions; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.EXP13-C]
+enabled = true
+
+[rules.cert_c.EXP14-C]
+enabled = false  # Beware of integer promotion in bitwise operations on sub-int types; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.EXP15-C]
+enabled = true
+
+[rules.cert_c.EXP16-C]
+enabled = true
+
+[rules.cert_c.EXP19-C]
+enabled = false  # Use braces for the body of an if, for, or while statement; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.EXP20-C]
+enabled = true
+
+[rules.cert_c.EXP30-C]
+enabled = true
+
+[rules.cert_c.EXP32-C]
+enabled = true
+
+[rules.cert_c.EXP33-C]
+enabled = true
+
+[rules.cert_c.EXP34-C]
+enabled = true
+
+[rules.cert_c.EXP35-C]
+enabled = true
+
+[rules.cert_c.EXP36-C]
+enabled = true
+
+[rules.cert_c.EXP37-C]
+enabled = true
+
+[rules.cert_c.EXP39-C]
+enabled = true
+
+[rules.cert_c.EXP40-C]
+enabled = true
+
+[rules.cert_c.EXP42-C]
+enabled = true
+
+[rules.cert_c.EXP43-C]
+enabled = true
+
+[rules.cert_c.EXP44-C]
+enabled = true
+
+[rules.cert_c.EXP45-C]
+enabled = true
+
+[rules.cert_c.EXP46-C]
+enabled = true
+
+[rules.cert_c.EXP47-C]
+enabled = true
+
+[rules.cert_c.FIO01-C]
+enabled = true
+
+[rules.cert_c.FIO02-C]
+enabled = true
+
+[rules.cert_c.FIO03-C]
+enabled = true
+
+[rules.cert_c.FIO05-C]
+enabled = true
+
+[rules.cert_c.FIO06-C]
+enabled = true
+
+[rules.cert_c.FIO08-C]
+enabled = true
+
+[rules.cert_c.FIO09-C]
+enabled = true
+
+[rules.cert_c.FIO10-C]
+enabled = true
+
+[rules.cert_c.FIO11-C]
+enabled = true
+
+[rules.cert_c.FIO13-C]
+enabled = true
+
+[rules.cert_c.FIO14-C]
+enabled = true
+
+[rules.cert_c.FIO15-C]
+enabled = true
+
+[rules.cert_c.FIO17-C]
+enabled = true
+
+[rules.cert_c.FIO18-C]
+enabled = true
+
+[rules.cert_c.FIO19-C]
+enabled = true
+
+[rules.cert_c.FIO20-C]
+enabled = true
+
+[rules.cert_c.FIO21-C]
+enabled = true
+
+[rules.cert_c.FIO22-C]
+enabled = true
+
+[rules.cert_c.FIO23-C]
+enabled = true
+
+[rules.cert_c.FIO24-C]
+enabled = true
+
+[rules.cert_c.FIO30-C]
+enabled = true
+
+[rules.cert_c.FIO32-C]
+enabled = true
+
+[rules.cert_c.FIO34-C]
+enabled = true
+
+[rules.cert_c.FIO37-C]
+enabled = true
+
+[rules.cert_c.FIO38-C]
+enabled = true
+
+[rules.cert_c.FIO39-C]
+enabled = true
+
+[rules.cert_c.FIO40-C]
+enabled = true
+
+[rules.cert_c.FIO41-C]
+enabled = true
+
+[rules.cert_c.FIO42-C]
+enabled = true
+
+[rules.cert_c.FIO44-C]
+enabled = true
+
+[rules.cert_c.FIO45-C]
+enabled = true
+
+[rules.cert_c.FIO46-C]
+enabled = true
+
+[rules.cert_c.FIO47-C]
+enabled = true
+
+[rules.cert_c.FIO50-C]
+enabled = true
+
+[rules.cert_c.FIO51-C]
+enabled = true
+
+[rules.cert_c.FLP00-C]
+enabled = true
+
+[rules.cert_c.FLP01-C]
+enabled = true
+
+[rules.cert_c.FLP02-C]
+enabled = true
+
+[rules.cert_c.FLP03-C]
+enabled = true
+
+[rules.cert_c.FLP04-C]
+enabled = true
+
+[rules.cert_c.FLP05-C]
+enabled = true
+
+[rules.cert_c.FLP06-C]
+enabled = true
+
+[rules.cert_c.FLP07-C]
+enabled = true
+
+[rules.cert_c.FLP30-C]
+enabled = true
+
+[rules.cert_c.FLP32-C]
+enabled = true
+
+[rules.cert_c.FLP34-C]
+enabled = true
+
+[rules.cert_c.FLP36-C]
+enabled = true
+
+[rules.cert_c.FLP37-C]
+enabled = true
+
+[rules.cert_c.INT00-C]
+enabled = true
+
+[rules.cert_c.INT01-C]
+enabled = false  # Use size_t or rsize_t for object sizes; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.INT02-C]
+enabled = false  # Understand integer conversion rules; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.INT04-C]
+enabled = true
+
+[rules.cert_c.INT05-C]
+enabled = true
+
+[rules.cert_c.INT07-C]
+enabled = true
+
+[rules.cert_c.INT08-C]
+enabled = true
+
+[rules.cert_c.INT09-C]
+enabled = true
+
+[rules.cert_c.INT10-C]
+enabled = true
+
+[rules.cert_c.INT12-C]
+enabled = true
+
+[rules.cert_c.INT13-C]
+enabled = true
+
+[rules.cert_c.INT14-C]
+enabled = true
+
+[rules.cert_c.INT15-C]
+enabled = true
+
+[rules.cert_c.INT16-C]
+enabled = false  # Do not make assumptions about representation of signed integers; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.INT17-C]
+enabled = false  # Define integer constants in an implementation-independent manner; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.INT18-C]
+enabled = true
+
+[rules.cert_c.INT30-C]
+enabled = true
+
+[rules.cert_c.INT31-C]
+enabled = true
+
+[rules.cert_c.INT32-C]
+enabled = true
+
+[rules.cert_c.INT33-C]
+enabled = true
+
+[rules.cert_c.INT34-C]
+enabled = true
+
+[rules.cert_c.INT35-C]
+enabled = true
+
+[rules.cert_c.INT36-C]
+enabled = true
+
+[rules.cert_c.MEM00-C]
+enabled = true
+
+[rules.cert_c.MEM01-C]
+enabled = true
+
+[rules.cert_c.MEM02-C]
+enabled = true
+
+[rules.cert_c.MEM03-C]
+enabled = true
+
+[rules.cert_c.MEM04-C]
+enabled = true
+
+[rules.cert_c.MEM05-C]
+enabled = true
+
+[rules.cert_c.MEM06-C]
+enabled = true
+
+[rules.cert_c.MEM07-C]
+enabled = true
+
+[rules.cert_c.MEM10-C]
+enabled = true
+
+[rules.cert_c.MEM11-C]
+enabled = true
+
+[rules.cert_c.MEM12-C]
+enabled = true
+
+[rules.cert_c.MEM30-C]
+enabled = true
+
+[rules.cert_c.MEM31-C]
+enabled = true
+
+[rules.cert_c.MEM33-C]
+enabled = true
+
+[rules.cert_c.MEM34-C]
+enabled = true
+
+[rules.cert_c.MEM35-C]
+enabled = true
+
+[rules.cert_c.MEM36-C]
+enabled = true
+
+[rules.cert_c.MSC04-C]
+enabled = true
+
+[rules.cert_c.MSC07-C]
+enabled = true
+
+[rules.cert_c.MSC30-C]
+enabled = true
+
+[rules.cert_c.MSC32-C]
+enabled = true
+
+[rules.cert_c.MSC33-C]
+enabled = true
+
+[rules.cert_c.MSC37-C]
+enabled = true
+
+[rules.cert_c.MSC38-C]
+enabled = true
+
+[rules.cert_c.MSC39-C]
+enabled = true
+
+[rules.cert_c.MSC40-C]
+enabled = true
+
+[rules.cert_c.MSC41-C]
+enabled = true
+
+[rules.cert_c.POS01-C]
+enabled = true
+
+[rules.cert_c.POS02-C]
+enabled = true
+
+[rules.cert_c.POS04-C]
+enabled = true
+
+[rules.cert_c.POS05-C]
+enabled = false  # chroot jail hardening; curl is a client library + CLI, not a privileged daemon that serves untrusted clients
+
+[rules.cert_c.POS30-C]
+enabled = true
+
+[rules.cert_c.POS34-C]
+enabled = true
+
+[rules.cert_c.POS35-C]
+enabled = true
+
+[rules.cert_c.POS36-C]
+enabled = true
+
+[rules.cert_c.POS37-C]
+enabled = true
+
+[rules.cert_c.POS38-C]
+enabled = true
+
+[rules.cert_c.POS39-C]
+enabled = true
+
+[rules.cert_c.POS44-C]
+enabled = true
+
+[rules.cert_c.POS47-C]
+enabled = true
+
+[rules.cert_c.POS48-C]
+enabled = true
+
+[rules.cert_c.POS49-C]
+enabled = true
+
+[rules.cert_c.POS50-C]
+enabled = true
+
+[rules.cert_c.POS51-C]
+enabled = true
+
+[rules.cert_c.POS52-C]
+enabled = true
+
+[rules.cert_c.POS53-C]
+enabled = true
+
+[rules.cert_c.POS54-C]
+enabled = true
+
+[rules.cert_c.PRE00-C]
+enabled = true
+
+[rules.cert_c.PRE01-C]
+enabled = true
+
+[rules.cert_c.PRE02-C]
+enabled = true
+
+[rules.cert_c.PRE04-C]
+enabled = true
+
+[rules.cert_c.PRE05-C]
+enabled = true
+
+[rules.cert_c.PRE06-C]
+enabled = true
+
+[rules.cert_c.PRE07-C]
+enabled = true
+
+[rules.cert_c.PRE08-C]
+enabled = true
+
+[rules.cert_c.PRE09-C]
+enabled = true
+
+[rules.cert_c.PRE10-C]
+enabled = true
+
+[rules.cert_c.PRE11-C]
+enabled = true
+
+[rules.cert_c.PRE12-C]
+enabled = true
+
+[rules.cert_c.PRE13-C]
+enabled = true
+
+[rules.cert_c.PRE30-C]
+enabled = true
+
+[rules.cert_c.PRE31-C]
+enabled = false  # Avoid side effects in arguments to unsafe macros; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
+
+[rules.cert_c.PRE32-C]
+enabled = true
+
+[rules.cert_c.SIG00-C]
+enabled = true
+
+[rules.cert_c.SIG01-C]
+enabled = true
+
+[rules.cert_c.SIG02-C]
+enabled = true
+
+[rules.cert_c.SIG30-C]
+enabled = true
+
+[rules.cert_c.SIG31-C]
+enabled = true
+
+[rules.cert_c.SIG34-C]
+enabled = true
+
+[rules.cert_c.SIG35-C]
+enabled = true
+
+[rules.cert_c.STR00-C]
+enabled = true
+
+[rules.cert_c.STR01-C]
+enabled = true
+
+[rules.cert_c.STR02-C]
+enabled = true
+
+[rules.cert_c.STR03-C]
+enabled = true
+
+[rules.cert_c.STR04-C]
+enabled = true
+
+[rules.cert_c.STR05-C]
+enabled = true
+
+[rules.cert_c.STR06-C]
+enabled = true
+
+[rules.cert_c.STR09-C]
+enabled = true
+
+[rules.cert_c.STR10-C]
+enabled = true
+
+[rules.cert_c.STR11-C]
+enabled = true
+
+[rules.cert_c.STR30-C]
+enabled = true
+
+[rules.cert_c.STR31-C]
+enabled = true
+
+[rules.cert_c.STR32-C]
+enabled = true
+
+[rules.cert_c.STR34-C]
+enabled = true
+
+[rules.cert_c.STR37-C]
+enabled = true
+
+[rules.cert_c.STR38-C]
+enabled = true
+
+[rules.cert_c.WIN00-C]
+enabled = true
+
+[rules.cert_c.WIN01-C]
+enabled = true
+
+[rules.cert_c.WIN02-C]
+enabled = true
+
+[rules.cert_c.WIN03-C]
+enabled = true
+
+[rules.cert_c.WIN04-C]
+enabled = true
+
+[rules.cert_c.WIN30-C]
+enabled = true

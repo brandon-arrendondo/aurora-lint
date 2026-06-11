@@ -121,6 +121,7 @@ CODEBASES = {
         "path": Path.home() / "toolchain" / "mosquitto",
         "sqc": {
             "scan_path": None,
+            "manifest": "conf/realworld/mosquitto-rules.toml",
             "includes": [
                 "-I", "/usr/include",           # openssl, CUnit, sqlite3
                 "-I", "/usr/include/cjson",     # cJSON
@@ -147,6 +148,7 @@ CODEBASES = {
         "path": Path.home() / "toolchain" / "curl",
         "sqc": {
             "scan_path": None,
+            "manifest": "conf/realworld/curl-rules.toml",
             "includes": [
                 "-I", "/usr/include",           # openssl, mbedtls, gnutls, zlib
                 "-I", "{path}/lib",             # internal curlx headers
@@ -173,6 +175,7 @@ CODEBASES = {
         "path": Path.home() / "toolchain" / "hostap",
         "sqc": {
             "scan_path": None,
+            "manifest": "conf/realworld/hostap-rules.toml",
             "includes": [
                 "-I", "/usr/include",              # openssl, gcrypt, pcap
                 "-I", "/usr/include/libnl3",       # netlink (nla_, nlmsg_, nl_)
