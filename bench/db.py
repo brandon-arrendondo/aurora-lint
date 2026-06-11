@@ -889,6 +889,10 @@ class BenchDB:
 
         results_dir = Path(results_path)
         for json_file in sorted(results_dir.glob("*.json")):
+            # Skip sidecars that also end in .json (the scan-time commit sidecar
+            # and the auto-score output) — they are not finding lists.
+            if json_file.name.endswith((".meta.json", ".score.json")):
+                continue
             # Parse filename: sqc-{project}-{version}-{sha}.json
             stem = json_file.stem
             # Extract project: between first tool name and version
