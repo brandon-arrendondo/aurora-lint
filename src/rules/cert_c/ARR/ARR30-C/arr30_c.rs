@@ -40,7 +40,8 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::FunctionCfg;
-use crate::analyze::const_eval::VarRangeMap;
+use crate::analyze::const_eval::{self, VarRangeMap};
+use crate::analyze::context::ProjectContext;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
@@ -57,6 +58,10 @@ use crate::utility::cert_c::ast_utils::{
 pub struct Arr30C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    /// Macro/enum/const constants gathered cross-file by the prescan
+    /// (`context.macro_constants`). Merged with per-file constants so that
+    /// buffer sizes defined in headers or other translation units resolve.
+    macro_constants: RefCell<HashMap<String, i64>>,
 }
 
 /// Information about a buffer (array or dynamically allocated memory)
@@ -147,6 +152,10 @@ impl CertRule for Arr30C {
         *self.vra_results.borrow_mut() = results.clone();
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.macro_constants.borrow_mut() = context.macro_constants.clone();
+    }
+
     fn needs_vra(&self) -> bool {
         true
     }
@@ -159,10 +168,8 @@ impl CertRule for Arr30C {
             let function_macros = self.extract_function_macros(node, source);
             let flexible_array_structs = self.find_flexible_array_structs(node, source);
 
-            // Extract macro constants for loop bound resolution
-            let mut macro_constants = self.extract_macro_constants(node, source);
-            let enum_constants = self.extract_enum_constants(node, source);
-            macro_constants.extend(enum_constants);
+            // Collect macro/enum/const constants for loop bound resolution
+            let macro_constants = self.collect_constants(node, source);
 
             self.check_with_buffer_info(
                 node,
@@ -185,7 +192,23 @@ impl Arr30C {
         Self {
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
+            macro_constants: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Collect compile-time integer constants for the current file: macro
+    /// `#define`s, enums, and file-scope `[static] const` declarations, plus
+    /// `<limits.h>`/`<stdint.h>` builtins. Uses the shared
+    /// [`const_eval::collect_macro_constants`] (the same extractor that feeds
+    /// the prescan context) rather than ARR30's former private parser, then
+    /// merges in cross-file constants from the prescan (`set_project_context`)
+    /// for names not defined in this file. Per-file definitions win.
+    fn collect_constants(&self, root: &Node, source: &str) -> HashMap<String, i64> {
+        let mut constants = const_eval::collect_macro_constants(root, source);
+        for (name, value) in self.macro_constants.borrow().iter() {
+            constants.entry(name.clone()).or_insert(*value);
+        }
+        constants
     }
 
     /// Get VRA-derived variable ranges at a specific expression node.
@@ -214,12 +237,9 @@ impl Arr30C {
 
         let root_node = tree.root_node();
 
-        // First pass: collect macro constants (#define NAME VALUE)
-        let mut macros = self.extract_macro_constants(&root_node, source);
-
-        // Also collect enum constants (enum { NAME = VALUE })
-        let enums = self.extract_enum_constants(&root_node, source);
-        macros.extend(enums); // Merge enums into macros for unified constant resolution
+        // Collect macro/enum/const constants (shared const_eval extractor +
+        // cross-file prescan constants) for resolving symbolic buffer sizes.
+        let macros = self.collect_constants(&root_node, source);
 
         // Second pass: collect typedef information (still needed for typedef arrays)
         let typedefs = self.analyze_typedefs(source);
@@ -231,76 +251,6 @@ impl Arr30C {
         self.extract_buffers_from_ast(&root_node, source, &mut buffers, &typedefs, &macros);
 
         buffers
-    }
-
-    /// Extract macro constants from preprocessor directives
-    /// Returns a HashMap of macro name to its integer value
-    fn extract_macro_constants(&self, root: &Node, source: &str) -> HashMap<String, i64> {
-        let mut macros = HashMap::new();
-
-        let mut cursor = root.walk();
-
-        for child in root.children(&mut cursor) {
-            if child.kind() == "preproc_def" {
-                // #define NAME VALUE
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    if let Some(value_node) = child.child_by_field_name("value") {
-                        let name = &source[name_node.start_byte()..name_node.end_byte()];
-                        let value_str = &source[value_node.start_byte()..value_node.end_byte()];
-
-                        // Try to parse as integer
-                        if let Ok(value) = value_str.trim().parse::<i64>() {
-                            macros.insert(name.to_string(), value);
-                        }
-                    }
-                }
-            }
-        }
-
-        macros
-    }
-
-    /// Extract enum constants from enum declarations
-    /// Returns a HashMap of enum constant name to its integer value
-    fn extract_enum_constants(&self, root: &Node, source: &str) -> HashMap<String, i64> {
-        let mut enums = HashMap::new();
-
-        let mut cursor = root.walk();
-
-        for child in root.children(&mut cursor) {
-            // Look for enum_specifier nodes
-            if child.kind() == "enum_specifier" {
-                // Extract enumerators from the enum body
-                if let Some(body) = child.child_by_field_name("body") {
-                    let mut enum_cursor = body.walk();
-                    let mut current_value: i64 = 0;
-
-                    for enumerator in body.children(&mut enum_cursor) {
-                        if enumerator.kind() == "enumerator" {
-                            // Get the enumerator name
-                            if let Some(name_node) = enumerator.child_by_field_name("name") {
-                                let name = &source[name_node.start_byte()..name_node.end_byte()];
-
-                                // Check if it has an explicit value
-                                if let Some(value_node) = enumerator.child_by_field_name("value") {
-                                    let value_str =
-                                        &source[value_node.start_byte()..value_node.end_byte()];
-                                    if let Ok(value) = value_str.trim().parse::<i64>() {
-                                        current_value = value;
-                                    }
-                                }
-
-                                // Store the enum constant
-                                enums.insert(name.to_string(), current_value);
-                                current_value += 1; // Auto-increment for next enumerator
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        enums
     }
 
     /// Extract function-like macros from preprocessor directives
