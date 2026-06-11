@@ -100,6 +100,7 @@ CODEBASES = {
         "path": Path.home() / "toolchain" / "sqlite",
         "sqc": {
             "scan_path": None,
+            "manifest": "conf/realworld/sqlite-rules.toml",
             "includes": [
                 "-I", "/usr/include",           # openssl, zlib, sqlite3
                 "-I", "/usr/include/tcl8.6",    # Tcl (test infrastructure)

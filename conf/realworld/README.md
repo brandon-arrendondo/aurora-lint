@@ -30,7 +30,7 @@ A codebase with no entry here falls back to the shared benchmark base,
 | Codebase  | Config                | Adjudicated? |
 |-----------|-----------------------|--------------|
 | libcrc    | `libcrc-rules.toml`   | **Full** — every enabled-rule finding labelled (422; 13 TP / 409 FP). See `data/precision_audit/libcrc/`. |
-| sqlite    | *(base manifest)*     | Partial — v0.4.22 4-rule sample only |
+| sqlite    | `sqlite-rules.toml`   | Incremental — scoped to shipped `src/`+`ext/`; DCL05 disabled; INT32-C increment 1 done (47 labels). See `data/precision_audit/sqlite/`. |
 | mosquitto | *(base manifest)*     | Partial — v0.4.22 4-rule sample only |
 | curl      | *(base manifest)*     | Partial — v0.4.22 4-rule sample only |
 | hostap    | *(base manifest)*     | Partial — v0.4.22 4-rule sample only |
