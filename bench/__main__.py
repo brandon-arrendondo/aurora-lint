@@ -7,6 +7,10 @@ Commands:
   runs                                     List all runs
   realworld [RUN] [--compare BASE]         Real-world FP dashboard
   realworld-runs                           List real-world benchmark runs
+  realworld-score [RUN]                    Measured precision/recall vs oracle
+  realworld-import-labels CSV --run R      Append TP/FP labels to the oracle
+  realworld-unlabeled [RUN]                Findings lacking a ground-truth label
+  ground-truth                             Ground-truth label inventory
 """
 
 import argparse
@@ -216,6 +220,153 @@ def cmd_realworld_runs(args):
         print(f"{r['id']:>4}  {r['sqc_version']:<10} {sha:<10} {scanned:<20} {host}")
 
 
+def cmd_realworld_score(args):
+    db = BenchDB()
+    target_id = db.resolve_realworld_run(args.run or "latest")
+    if not target_id:
+        print("No real-world runs found.")
+        return
+
+    result = db.score_realworld_run(target_id)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    run = result["run"]
+    o = result["overall"]
+    print(f"Real-world measured precision/recall — v{run['sqc_version']}"
+          f" ({(run.get('commit_sha') or '?')[:8]})  run #{target_id}")
+    print("(scored against ground-truth labels for each project's pinned commit)")
+    print()
+
+    def pct(v):
+        return f"{v:.1f}%" if v is not None else "—"
+
+    if o["labeled_total"] == 0:
+        print("No findings in this run matched any ground-truth label.")
+    else:
+        print(f"Overall: precision {pct(o['precision_pct'])} "
+              f"(TP {o['labeled_tp']} / labeled {o['labeled_tp'] + o['labeled_fp']}), "
+              f"recall {pct(o['recall_pct'])} "
+              f"(known TPs flagged {o['tp_detected']}/{o['tp_labels']})")
+        if o["labeled_uncertain"]:
+            print(f"  ({o['labeled_uncertain']} matched labels are 'uncertain', "
+                  "excluded from precision)")
+        print(f"  Label coverage: {o['labeled_total']} of "
+              f"{o['run_findings']} findings labeled")
+        print()
+
+        print(f"{'Rule':<12} {'Prec':>7} {'TP':>4} {'FP':>4} {'Unc':>4} "
+              f"{'Recall':>7} {'Detect':>8} {'Run#':>8}")
+        print("-" * 62)
+        for r in result["per_rule"]:
+            detect = f"{r['tp_detected']}/{r['tp_labels']}"
+            print(f"{r['rule_id']:<12} {pct(r['precision_pct']):>7} "
+                  f"{r['labeled_tp']:>4} {r['labeled_fp']:>4} "
+                  f"{r['labeled_uncertain']:>4} {pct(r['recall_pct']):>7} "
+                  f"{detect:>8} {r['run_findings']:>8,}")
+        print()
+
+    if result["warnings"]:
+        print("Warnings:")
+        for w in result["warnings"]:
+            print(f"  ! {w}")
+
+
+def cmd_realworld_import_labels(args):
+    import csv
+    from datetime import datetime
+    db = BenchDB()
+
+    # Map project -> codebase_commit from the run the audit was sampled against.
+    src_run_id = db.resolve_realworld_run(args.run)
+    if not src_run_id:
+        print(f"Cannot resolve --run '{args.run}' (need the run the audit "
+              "was sampled from, to pin labels to its codebase commits).")
+        return
+    commits = {r["project"]: r.get("codebase_commit")
+               for r in db.get_realworld_results(src_run_id)
+               if r["tool"] == "sqc"}
+
+    rows = list(csv.DictReader(open(args.csv)))
+    labels, skipped_no_commit = [], 0
+    adjudicated_at = args.date or datetime.now().isoformat()
+    for row in rows:
+        project = row["project"]
+        commit = commits.get(project)
+        if not commit:
+            skipped_no_commit += 1
+            continue
+        labels.append({
+            "project": project,
+            "codebase_commit": commit,
+            "file_path": row["file"],
+            "line": int(row["line"]),
+            "rule_id": row["rule"],
+            "verdict": row["verdict"],
+            "adjudicator": args.adjudicator,
+            "reason": row.get("reason"),
+            "source": args.source,
+            "adjudicated_at": adjudicated_at,
+        })
+
+    res = db.insert_ground_truth_labels(
+        labels, on_conflict="update" if args.update else "ignore")
+    print(f"Imported from {args.csv} (commits pinned to run #{src_run_id}):")
+    print(f"  inserted {res['inserted']}, updated {res['updated']}, "
+          f"skipped {res['skipped']} (already labeled)")
+    if skipped_no_commit:
+        print(f"  ! {skipped_no_commit} rows skipped: project not in run "
+              f"#{src_run_id} or no codebase_commit recorded")
+
+
+def cmd_realworld_unlabeled(args):
+    db = BenchDB()
+    target_id = db.resolve_realworld_run(args.run or "latest")
+    if not target_id:
+        print("No real-world runs found.")
+        return
+    findings = db.get_unlabeled_findings(
+        target_id, rule_id=args.rule, project=args.project,
+        limit=args.limit, seed=args.seed)
+    if args.json:
+        print(json.dumps(findings, indent=2, default=str))
+        return
+    print(f"{len(findings)} unlabeled finding(s) in run #{target_id}"
+          + (f" for {args.rule}" if args.rule else "")
+          + (f" in {args.project}" if args.project else ""))
+    for f in findings:
+        print(f"  {f['rule_id']:<10} {f['project']}/{f['file_path']}:"
+              f"{f['line']}  {f['message'] or ''}")
+
+
+def cmd_ground_truth(args):
+    db = BenchDB()
+    cov = db.ground_truth_coverage()
+    if args.json:
+        print(json.dumps(cov, indent=2, default=str))
+        return
+    if not cov:
+        print("No ground-truth labels yet. Seed with "
+              "'realworld-import-labels'.")
+        return
+    print(f"{'Project':<10} {'Commit':<12} {'Rule':<12} "
+          f"{'TP':>4} {'FP':>4} {'Unc':>4} {'Total':>6}")
+    print("-" * 56)
+    tot = 0
+    for r in cov:
+        print(f"{r['project']:<10} {(r['codebase_commit'] or '?'):<12} "
+              f"{r['rule_id']:<12} {r['tp']:>4} {r['fp']:>4} "
+              f"{r['uncertain']:>4} {r['total']:>6}")
+        tot += r["total"]
+    print("-" * 56)
+    print(f"{'TOTAL':<10} {'':<12} {'':<12} {'':>4} {'':>4} {'':>4} {tot:>6}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="bench",
@@ -264,6 +415,54 @@ def main():
     # realworld-runs
     p_rw_runs = sub.add_parser("realworld-runs", help="List real-world runs")
     p_rw_runs.set_defaults(func=cmd_realworld_runs)
+
+    # realworld-score
+    p_score = sub.add_parser(
+        "realworld-score",
+        help="Measured precision/recall vs the ground-truth oracle")
+    p_score.add_argument("run", nargs="?", default=None,
+                         help="Run identifier (version, ID, or 'latest')")
+    p_score.add_argument("--json", action="store_true", help="Emit JSON")
+    p_score.set_defaults(func=cmd_realworld_score)
+
+    # realworld-import-labels
+    p_imp = sub.add_parser(
+        "realworld-import-labels",
+        help="Append adjudicated TP/FP labels to the ground-truth oracle")
+    p_imp.add_argument("csv", help="CSV: rule,idx,project,file,line,verdict,reason")
+    p_imp.add_argument("--run", required=True,
+                       help="Run the audit was sampled from (pins labels to "
+                            "its per-project codebase commits)")
+    p_imp.add_argument("--source", default=None,
+                       help="Provenance tag, e.g. 'precision_audit_0.4.22'")
+    p_imp.add_argument("--adjudicator", default="manual",
+                       help="Who/what adjudicated (default: manual)")
+    p_imp.add_argument("--date", default=None,
+                       help="Adjudication date (ISO; default: now)")
+    p_imp.add_argument("--update", action="store_true",
+                       help="Overwrite existing labels (re-adjudication) "
+                            "instead of skipping them")
+    p_imp.set_defaults(func=cmd_realworld_import_labels)
+
+    # realworld-unlabeled
+    p_unl = sub.add_parser(
+        "realworld-unlabeled",
+        help="List a run's findings that have no ground-truth label yet")
+    p_unl.add_argument("run", nargs="?", default=None,
+                       help="Run identifier (default: latest)")
+    p_unl.add_argument("--rule", default=None, help="Filter to one rule")
+    p_unl.add_argument("--project", default=None, help="Filter to one project")
+    p_unl.add_argument("--limit", type=int, default=None, help="Max findings")
+    p_unl.add_argument("--seed", type=int, default=None,
+                       help="Sample reproducibly with this seed")
+    p_unl.add_argument("--json", action="store_true", help="Emit JSON")
+    p_unl.set_defaults(func=cmd_realworld_unlabeled)
+
+    # ground-truth
+    p_gt = sub.add_parser("ground-truth",
+                          help="Inventory of ground-truth labels")
+    p_gt.add_argument("--json", action="store_true", help="Emit JSON")
+    p_gt.set_defaults(func=cmd_ground_truth)
 
     args = parser.parse_args()
     if not args.command:

@@ -13,7 +13,9 @@ backfilled. New runs write directly to this database.
 
 **Key tables**: `runs` (one row per benchmark), `cwe_scans` (one per CWE per run),
 `violations` (every individual finding), `cwe_metrics` (pre-computed TP/FP/rates),
-`rule_cwe_breakdown` (per-rule per-CWE counts), `realworld_runs` + `realworld_results`.
+`rule_cwe_breakdown` (per-rule per-CWE counts), `realworld_runs` + `realworld_results`,
+`ground_truth` (adjudicated real-world TP/FP oracle keyed on project+commit+file+line+rule;
+`python -m bench realworld-score RUN` for measured precision/recall).
 
 ### Running Benchmarks
 

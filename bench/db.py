@@ -126,6 +126,25 @@ CREATE TABLE IF NOT EXISTS realworld_violations (
     suggestion      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS ground_truth (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project         TEXT NOT NULL,
+    codebase_commit TEXT NOT NULL,
+    file_path       TEXT NOT NULL,
+    line            INTEGER NOT NULL,
+    rule_id         TEXT NOT NULL,
+    verdict         TEXT NOT NULL,           -- 'TP' | 'FP' | 'uncertain'
+    adjudicator     TEXT,                    -- 'manual', 'claude-opus-4.8', ...
+    reason          TEXT,
+    source          TEXT,                    -- provenance, e.g. 'precision_audit_0.4.22'
+    adjudicated_at  TEXT NOT NULL,
+    UNIQUE(project, codebase_commit, file_path, line, rule_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_gt_lookup
+    ON ground_truth(project, codebase_commit, rule_id);
+CREATE INDEX IF NOT EXISTS idx_gt_verdict ON ground_truth(verdict);
+
 CREATE INDEX IF NOT EXISTS idx_violations_cwe_scan ON violations(cwe_scan_id);
 CREATE INDEX IF NOT EXISTS idx_violations_rule ON violations(rule_id);
 CREATE INDEX IF NOT EXISTS idx_violations_class ON violations(classification);
@@ -1176,6 +1195,306 @@ class BenchDB:
             dashboard["total_delta"] = total_violations - base_total
 
         return dashboard
+
+    # ── Ground Truth (real-world TP/FP oracle) ───────────────────────────
+
+    @staticmethod
+    def project_relpath(project: str, file_path: str) -> str:
+        """Normalize an absolute scan path to a project-relative path.
+
+        realworld_violations store machine-specific absolute paths like
+        ``/home/brandon/toolchain/curl/lib/doh.c``; ground-truth labels are
+        keyed on the portable ``lib/doh.c`` form so they survive a move of
+        the checkout root. Strips everything up to and including the first
+        ``/<project>/`` segment; returns the input unchanged if absent.
+        """
+        marker = f"/{project}/"
+        idx = file_path.rfind(marker)
+        if idx != -1:
+            return file_path[idx + len(marker):]
+        return file_path
+
+    def insert_ground_truth_labels(self, labels: list[dict],
+                                   on_conflict: str = "ignore") -> dict:
+        """Insert/append ground-truth labels.
+
+        Each label dict needs: project, codebase_commit, file_path (relative),
+        line, rule_id, verdict. Optional: adjudicator, reason, source,
+        adjudicated_at (defaults to now).
+
+        on_conflict:
+          'ignore' — keep the existing label for a key (append-only seeding).
+          'update' — overwrite verdict/reason/adjudicator/source/date
+                     (re-adjudication of a previously labeled finding).
+
+        Returns {'inserted': n, 'updated': n, 'skipped': n}.
+        """
+        from datetime import datetime
+        if not labels:
+            return {"inserted": 0, "updated": 0, "skipped": 0}
+        now = datetime.now().isoformat()
+        inserted = updated = skipped = 0
+        with self._cursor() as cur:
+            for lbl in labels:
+                key = (lbl["project"], lbl["codebase_commit"],
+                       lbl["file_path"], int(lbl["line"]), lbl["rule_id"])
+                cur.execute("""
+                    SELECT id, verdict FROM ground_truth
+                    WHERE project=? AND codebase_commit=? AND file_path=?
+                      AND line=? AND rule_id=?
+                """, key)
+                existing = cur.fetchone()
+                vals = (lbl["verdict"], lbl.get("adjudicator"),
+                        lbl.get("reason"), lbl.get("source"),
+                        lbl.get("adjudicated_at") or now)
+                if existing is None:
+                    cur.execute("""
+                        INSERT INTO ground_truth
+                            (project, codebase_commit, file_path, line, rule_id,
+                             verdict, adjudicator, reason, source, adjudicated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, key + vals)
+                    inserted += 1
+                elif on_conflict == "update":
+                    cur.execute("""
+                        UPDATE ground_truth
+                        SET verdict=?, adjudicator=?, reason=?, source=?,
+                            adjudicated_at=?
+                        WHERE id=?
+                    """, vals + (existing["id"],))
+                    updated += 1
+                else:
+                    skipped += 1
+        return {"inserted": inserted, "updated": updated, "skipped": skipped}
+
+    def get_ground_truth_labels(self, project: str = None,
+                                codebase_commit: str = None) -> list[dict]:
+        """Return ground-truth labels, optionally filtered by project/commit."""
+        clauses, params = [], []
+        if project:
+            clauses.append("project = ?")
+            params.append(project)
+        if codebase_commit:
+            clauses.append("codebase_commit = ?")
+            params.append(codebase_commit)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._cursor() as cur:
+            cur.execute(f"SELECT * FROM ground_truth {where} "
+                        "ORDER BY project, rule_id, file_path, line", params)
+            return [dict(r) for r in cur.fetchall()]
+
+    def ground_truth_coverage(self) -> list[dict]:
+        """Per-(project, commit, rule) label counts for a quick inventory."""
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT project, codebase_commit, rule_id,
+                       SUM(verdict='TP') AS tp,
+                       SUM(verdict='FP') AS fp,
+                       SUM(verdict='uncertain') AS uncertain,
+                       COUNT(*) AS total
+                FROM ground_truth
+                GROUP BY project, codebase_commit, rule_id
+                ORDER BY project, rule_id
+            """)
+            return [dict(r) for r in cur.fetchall()]
+
+    def _run_violation_keys(self, run_id: int) -> dict:
+        """Distinct (project, relpath, line, rule_id) keys a run produced.
+
+        Returns {project: {(relpath, line, rule_id), ...}} for tool='sqc'.
+        """
+        keys: dict[str, set] = {}
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT rr.project, rv.rule_id, rv.file_path, rv.line
+                FROM realworld_violations rv
+                JOIN realworld_results rr ON rr.id = rv.result_id
+                WHERE rr.run_id = ? AND rr.tool = 'sqc'
+            """, (run_id,))
+            for r in cur.fetchall():
+                rel = self.project_relpath(r["project"], r["file_path"])
+                keys.setdefault(r["project"], set()).add(
+                    (rel, r["line"], r["rule_id"]))
+        return keys
+
+    def score_realworld_run(self, run_id: int) -> dict:
+        """Measure precision/recall of a run against the ground-truth oracle.
+
+        Joins the run's findings to ground_truth labels for the *same*
+        codebase_commit per project. Precision is over the labeled subset of
+        the run's findings; recall is over all known-TP labels for the matching
+        commit (a known true bug that stops being flagged drops recall).
+        """
+        run = self.get_realworld_run(run_id)
+        if not run:
+            return {"error": f"Run {run_id} not found"}
+
+        results = [r for r in self.get_realworld_results(run_id)
+                   if r["tool"] == "sqc"]
+        run_keys = self._run_violation_keys(run_id)
+
+        warnings = []
+        # rule_id -> aggregated counters
+        rules: dict[str, dict] = {}
+        projects = []
+
+        def bump(rid):
+            return rules.setdefault(rid, {
+                "tp": 0, "fp": 0, "uncertain": 0,
+                "tp_labels": 0, "tp_detected": 0, "run_findings": 0})
+
+        for res in results:
+            project = res["project"]
+            commit = res.get("codebase_commit")
+            present = run_keys.get(project, set())
+            run_finding_count = len(present)
+            if not commit:
+                warnings.append(
+                    f"{project}: run has no codebase_commit recorded; "
+                    "cannot match labels")
+                continue
+            labels = self.get_ground_truth_labels(project, commit)
+            if not labels:
+                warnings.append(
+                    f"{project}@{commit}: no ground-truth labels for this "
+                    f"commit ({run_finding_count} findings unscored)")
+                projects.append({"project": project, "codebase_commit": commit,
+                                 "labels": 0, "run_findings": run_finding_count,
+                                 "tp": 0, "fp": 0, "uncertain": 0})
+                continue
+
+            p_tp = p_fp = p_unc = p_tp_labels = p_tp_detected = 0
+            for lbl in labels:
+                rid = lbl["rule_id"]
+                r = bump(rid)
+                key = (lbl["file_path"], lbl["line"], rid)
+                in_run = key in present
+                if lbl["verdict"] == "TP":
+                    r["tp_labels"] += 1
+                    p_tp_labels += 1
+                    if in_run:
+                        r["tp_detected"] += 1
+                        p_tp_detected += 1
+                if not in_run:
+                    continue
+                # finding present in this run AND labeled -> counts for precision
+                if lbl["verdict"] == "TP":
+                    r["tp"] += 1; p_tp += 1
+                elif lbl["verdict"] == "FP":
+                    r["fp"] += 1; p_fp += 1
+                else:
+                    r["uncertain"] += 1; p_unc += 1
+
+            projects.append({
+                "project": project, "codebase_commit": commit,
+                "labels": len(labels), "run_findings": run_finding_count,
+                "tp": p_tp, "fp": p_fp, "uncertain": p_unc,
+                "tp_labels": p_tp_labels, "tp_detected": p_tp_detected,
+            })
+
+        # Per-rule precision/recall, attach run finding totals
+        rule_run_counts: dict[str, int] = {}
+        for project, keyset in run_keys.items():
+            for (_rel, _line, rid) in keyset:
+                rule_run_counts[rid] = rule_run_counts.get(rid, 0) + 1
+
+        per_rule = []
+        tot_tp = tot_fp = tot_unc = tot_tp_labels = tot_tp_detected = 0
+        for rid, r in sorted(rules.items()):
+            denom = r["tp"] + r["fp"]
+            prec = round(r["tp"] / denom * 100, 1) if denom else None
+            rec = (round(r["tp_detected"] / r["tp_labels"] * 100, 1)
+                   if r["tp_labels"] else None)
+            per_rule.append({
+                "rule_id": rid,
+                "labeled_tp": r["tp"], "labeled_fp": r["fp"],
+                "labeled_uncertain": r["uncertain"],
+                "labeled_total": r["tp"] + r["fp"] + r["uncertain"],
+                "precision_pct": prec,
+                "tp_labels": r["tp_labels"], "tp_detected": r["tp_detected"],
+                "recall_pct": rec,
+                "run_findings": rule_run_counts.get(rid, 0),
+            })
+            tot_tp += r["tp"]; tot_fp += r["fp"]; tot_unc += r["uncertain"]
+            tot_tp_labels += r["tp_labels"]; tot_tp_detected += r["tp_detected"]
+
+        denom = tot_tp + tot_fp
+        overall = {
+            "labeled_tp": tot_tp, "labeled_fp": tot_fp,
+            "labeled_uncertain": tot_unc,
+            "labeled_total": tot_tp + tot_fp + tot_unc,
+            "precision_pct": round(tot_tp / denom * 100, 1) if denom else None,
+            "tp_labels": tot_tp_labels, "tp_detected": tot_tp_detected,
+            "recall_pct": (round(tot_tp_detected / tot_tp_labels * 100, 1)
+                           if tot_tp_labels else None),
+            "run_findings": sum(len(s) for s in run_keys.values()),
+        }
+        per_rule.sort(key=lambda x: x["labeled_total"], reverse=True)
+        return {
+            "run": run, "run_id": run_id,
+            "overall": overall, "per_rule": per_rule,
+            "per_project": projects, "warnings": warnings,
+        }
+
+    def get_unlabeled_findings(self, run_id: int, rule_id: str = None,
+                               project: str = None, limit: int = None,
+                               seed: int = None) -> list[dict]:
+        """Distinct findings from a run with no ground-truth label yet.
+
+        Feeds the incremental adjudication loop: scan -> pull unlabeled ->
+        adjudicate (Claude/manual) -> insert_ground_truth_labels. Matching is
+        per the run's own codebase_commit, so re-adjudication is only needed
+        when the pinned commit changes.
+        """
+        results = {r["project"]: r for r in self.get_realworld_results(run_id)
+                   if r["tool"] == "sqc"}
+        out = []
+        with self._cursor() as cur:
+            for proj, res in results.items():
+                if project and proj != project:
+                    continue
+                commit = res.get("codebase_commit")
+                labeled = set()
+                if commit:
+                    cur.execute("""
+                        SELECT file_path, line, rule_id FROM ground_truth
+                        WHERE project=? AND codebase_commit=?
+                    """, (proj, commit))
+                    labeled = {(r["file_path"], r["line"], r["rule_id"])
+                               for r in cur.fetchall()}
+                q = """
+                    SELECT DISTINCT rv.rule_id, rv.file_path, rv.line,
+                           rv.column_num, rv.message
+                    FROM realworld_violations rv
+                    WHERE rv.result_id = ?
+                """
+                params = [res["id"]]
+                if rule_id:
+                    q += " AND rv.rule_id = ?"
+                    params.append(rule_id)
+                cur.execute(q, params)
+                for r in cur.fetchall():
+                    rel = self.project_relpath(proj, r["file_path"])
+                    if (rel, r["line"], r["rule_id"]) in labeled:
+                        continue
+                    out.append({
+                        "project": proj, "codebase_commit": commit,
+                        "rule_id": r["rule_id"], "file_path": rel,
+                        "abs_path": r["file_path"], "line": r["line"],
+                        "column": r["column_num"], "message": r["message"],
+                    })
+        if seed is not None:
+            import random
+            out.sort(key=lambda x: (x["project"], x["rule_id"],
+                                    x["file_path"], x["line"], x["column"]))
+            rng = random.Random(seed)
+            if limit and limit < len(out):
+                out = rng.sample(out, limit)
+            else:
+                rng.shuffle(out)
+        elif limit:
+            out = out[:limit]
+        return out
 
     # ── Run Resolution ────────────────────────────────────────────────────
 

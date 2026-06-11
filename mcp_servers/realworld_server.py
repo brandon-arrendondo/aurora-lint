@@ -79,8 +79,12 @@ CODEBASES = {
         "path": Path.home() / "toolchain" / "libcrc",
         "sqc": {
             "scan_path": None,  # same as path (whole project)
-            "includes": [],
-            "extra_args": [],
+            # Per-codebase rules manifest (conf/realworld/<cb>-rules.toml).
+            # Reused for every libcrc run so inapplicable rules are ignored
+            # consistently — the real-world analog of a project's own sqc config.
+            "manifest": "conf/realworld/libcrc-rules.toml",
+            "includes": ["-I", "{path}/include"],
+            "extra_args": ["-d", "{path}/src", "-d", "{path}/include"],
         },
         "cppcheck": {
             "includes": ["-I", "{path}/include"],
@@ -530,9 +534,14 @@ def _build_sqc_cmd(codebase: str, cfg: dict, results_dir: Path, run_id: str,
     extra = _expand(cfg["sqc"].get("extra_args", []), path)
     includes = _expand(cfg["sqc"].get("includes", []), path)
 
+    # Per-codebase manifest (relative to PROJECT_DIR) if configured; else the
+    # shared benchmark base. Lets each codebase ignore rules that don't apply.
+    rel_manifest = cfg["sqc"].get("manifest")
+    manifest = (PROJECT_DIR / rel_manifest) if rel_manifest else MANIFEST
+
     cmd = [
         str(SQC_BIN), scan_path,
-        "--manifest", str(MANIFEST),
+        "--manifest", str(manifest),
         "--export", str(output_file),
         "--jobs", str(min(os.cpu_count() or 4, 8)),
     ]
@@ -1181,18 +1190,24 @@ def get_status() -> str:
 
             statuses.append(entry)
 
-    # Auto-ingest completed runs into SQLite
+    # Auto-ingest completed runs into SQLite, then auto-score against the oracle
+    score_summary = None
     if active_count == 0 and completed_count > 0:
         version_dir = _get_version_dir()
         if version_dir:
-            _auto_ingest_to_sqlite(version_dir)
+            score_summary = _auto_ingest_to_sqlite(version_dir)
 
-    return json.dumps({
+    result = {
         "active": active_count,
         "completed": completed_count,
         "failed": failed_count,
         "total": len(statuses),
         "runs": statuses,
+    }
+    if score_summary:
+        result["measured"] = score_summary
+    return json.dumps({
+        **result,
         "message": (
             f"{active_count} running, {completed_count} completed, {failed_count} failed "
             f"out of {len(statuses)} tracked runs."
@@ -1308,8 +1323,10 @@ def get_results(run: str = "latest", project: str | None = None) -> str:
     })
 
 
-def _auto_ingest_to_sqlite(version_dir: Path) -> None:
-    """Ingest a realworld result dir into SQLite if not already present."""
+def _auto_ingest_to_sqlite(version_dir: Path) -> str | None:
+    """Ingest a realworld result dir into SQLite if not already present, then
+    auto-score it against the ground-truth oracle. Returns a one-line measured
+    precision/recall summary (or None if nothing was ingested/scored)."""
     try:
         db = _get_db()
         dir_name = version_dir.name
@@ -1318,21 +1335,50 @@ def _auto_ingest_to_sqlite(version_dir: Path) -> None:
         existing = [r for r in db.list_realworld_runs()
                     if r.get("notes") and dir_name in r["notes"]]
         if existing:
-            return  # Already ingested
+            return None  # Already ingested (scored on the run that ingested it)
 
         # Only ingest sqc results (skip cppcheck/clang-tidy)
         json_files = list(version_dir.glob("sqc-*.json"))
         if not json_files:
-            return
+            return None
 
         # Extract per-codebase durations from state file
         durations = _extract_run_durations()
 
         machine = {"hostname": os.uname().nodename}
-        db.ingest_realworld_run(dir_name, str(version_dir), machine=machine,
-                                durations=durations)
+        run_id = db.ingest_realworld_run(dir_name, str(version_dir),
+                                         machine=machine, durations=durations)
+        return _auto_score_run(db, run_id, version_dir)
     except Exception:
-        pass  # Don't fail the MCP tool if ingestion fails
+        return None  # Don't fail the MCP tool if ingestion/scoring fails
+
+
+def _auto_score_run(db, run_id: int, version_dir: Path) -> str | None:
+    """Score a freshly-ingested run against the ground-truth oracle, drop a
+    <dir>.score.json sidecar, and return a one-line summary. Measures precision
+    over the oracle-labeled subset of the run's findings; never adjudicates new
+    findings (that requires judgment — use realworld-unlabeled + import-labels).
+    """
+    try:
+        score = db.score_realworld_run(run_id)
+        if score.get("error"):
+            return None
+        (version_dir / f"{version_dir.name}.score.json").write_text(
+            json.dumps(score, indent=2, default=str))
+        ov = score["overall"]
+        labeled = ov["labeled_total"]
+        if not labeled:
+            n = len(score.get("warnings", []))
+            return ("measured precision: no oracle labels cover this run's "
+                    f"commits yet ({n} project(s) unscored)")
+        prec = ov["precision_pct"]
+        rec = ov["recall_pct"]
+        rec_s = f", recall {rec}% ({ov['tp_detected']}/{ov['tp_labels']})" if rec is not None else ""
+        return (f"measured precision {prec}% "
+                f"(TP {ov['labeled_tp']}/{labeled} labeled of "
+                f"{ov['run_findings']} findings){rec_s}")
+    except Exception:
+        return None
 
 
 def _extract_run_durations() -> dict[str, float]:
