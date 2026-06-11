@@ -768,13 +768,18 @@ def reanalyze_run(run: str = "all") -> str:
 
 
 @mcp.tool()
-def get_status() -> str:
+def get_status(verbose: bool = False) -> str:
     """
     Get the current status of the Juliet benchmark run.
 
-    Returns progress percentage, estimated time remaining, number of CWEs
-    completed vs total, and the 5 most recently completed CWEs with their
-    timing and violation counts.
+    Returns progress percentage, estimated time remaining, and number of CWEs
+    completed vs total. This is meant to be polled during a ~15-min run, so by
+    default it omits the per-CWE `recently_completed` detail (which repeats and
+    compounds across polls).
+
+    Args:
+        verbose: Include `recently_completed` (last 5 CWEs with timing/counts)
+                 and the `errors` list. Default False (compact poll shape).
     """
     state = _read_state()
     if state is None:
@@ -820,16 +825,6 @@ def get_status() -> str:
             else:
                 state_str = db_status
 
-            # Convert recent completions to legacy format
-            recently = []
-            for c in progress.get("recently_completed", []):
-                recently.append({
-                    "cwe": c["cwe_dir_name"],
-                    "duration_s": int(c["duration_s"] or 0),
-                    "violations": c["violation_count"],
-                    "files": c["file_count"],
-                })
-
             result: dict = {
                 "state": state_str,
                 "progress_pct": progress_pct,
@@ -843,10 +838,21 @@ def get_status() -> str:
                 "run_name": run_name,
                 "version": state.get("version"),
                 "commit_sha": state.get("commit_sha"),
-                "recently_completed": recently,
-                "errors": [],
                 "backend": "sqlite",
             }
+
+            if verbose:
+                # Convert recent completions to legacy format
+                recently = []
+                for c in progress.get("recently_completed", []):
+                    recently.append({
+                        "cwe": c["cwe_dir_name"],
+                        "duration_s": int(c["duration_s"] or 0),
+                        "violations": c["violation_count"],
+                        "files": c["file_count"],
+                    })
+                result["recently_completed"] = recently
+                result["errors"] = []
 
             if state_str == "completed":
                 finished = run.get("finished_at")
@@ -948,9 +954,10 @@ def get_status() -> str:
         "run_name": state.get("run_name"),
         "version": state.get("version"),
         "commit_sha": state.get("commit_sha"),
-        "recently_completed": done[-5:],
-        "errors": log_data["errors"],
     }
+    if verbose:
+        result["recently_completed"] = done[-5:]
+        result["errors"] = log_data["errors"]
 
     files_str = f" ({files_processed:,} / {files_total:,} files)" if files_total else ""
 
@@ -1457,19 +1464,28 @@ def _load_run_data(results_dir: Path) -> dict:
 # ── Comparison tools ─────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_runs() -> str:
+def list_runs(limit: int = 10, compact: bool = True, verbose: bool = False) -> str:
     """
-    List all available benchmark runs (from SQLite DB and legacy directories).
+    List benchmark runs, newest first (from SQLite DB and legacy directories).
 
-    Shows each run's version, commit SHA, number of CWEs completed, size,
-    and whether the run finished. Use the run_name values as identifiers
-    in compare_runs() and compare_cwe().
+    By default returns only the most recent `limit` runs in a compact shape —
+    the full history is 120+ runs and dumping it whole wastes context. Use the
+    run_name values as identifiers in compare_runs() and compare_cwe().
+
+    Args:
+        limit: Max runs to return, newest first. Use 0 for all. Default 10.
+        compact: Trim each run to the fields callers actually use
+                 (run_name, version, cwes_completed, is_complete). Default True.
+        verbose: Alias for compact=False — return every field per run.
     """
+    if verbose:
+        compact = False
+
     # Merge SQLite runs with legacy directory runs
     all_runs = []
     seen_names = set()
 
-    # SQLite runs
+    # SQLite runs (db.list_runs already orders newest-first by started_at)
     try:
         db = _get_db()
         for r in db.list_runs():
@@ -1502,30 +1518,57 @@ def list_runs() -> str:
             ),
         })
 
+    # Sort newest-first across both backends. SQLite rows carry an ISO
+    # `started_at`; legacy rows carry a `modified` "YYYY-MM-DD HH:MM:SS"
+    # string — both sort lexically in the same direction.
+    all_runs.sort(
+        key=lambda r: r.get("started_at") or r.get("modified") or "",
+        reverse=True,
+    )
+
+    total = len(all_runs)
     # Mark which one is the "current" run from state
     state = _read_state()
     current_name = state.get("run_name") if state else None
     for r in all_runs:
         r["is_current"] = r["run_name"] == current_name
 
+    shown = all_runs if limit <= 0 else all_runs[:limit]
+
+    if compact:
+        keep = ("run_name", "version", "cwes_completed", "is_complete")
+        shown = [
+            {k: r[k] for k in keep if k in r}
+            | ({"is_current": True} if r.get("is_current") else {})
+            for r in shown
+        ]
+
+    msg = (
+        f"{total} benchmark run(s) total; showing {len(shown)} (newest first). "
+        "Use run names as identifiers in compare_runs() and compare_cwe()."
+    )
+    if 0 < limit < total:
+        msg += f" Pass limit=0 to see all {total}."
+
     return json.dumps({
-        "runs": all_runs,
-        "count": len(all_runs),
-        "message": (
-            f"{len(all_runs)} benchmark run(s) found. "
-            "Use run names as identifiers in compare_runs() and compare_cwe()."
-        ),
+        "runs": shown,
+        "count": len(shown),
+        "total": total,
+        "message": msg,
     })
 
 
 @mcp.tool()
-def compare_runs(base: str, target: str) -> str:
+def compare_runs(base: str, target: str, compact: bool = True) -> str:
     """
     Compare two benchmark runs showing TP/FP deltas.
 
     Args:
         base: Base (older) run — run name, commit SHA, or "latest"
         target: Target (newer) run — run name, commit SHA, or "latest"
+        compact: Omit the full `all_cwe_deltas` table (~118 rows) and keep only
+                 the overall summary plus top-15 CWE / top-10 rule movers.
+                 Default True. Pass False for the exhaustive per-CWE table.
 
     Returns overall TP/FP delta, top CWEs improved/regressed, and per-rule
     changes. Positive FP delta = regression (more FPs), negative = improvement.
@@ -1543,6 +1586,8 @@ def compare_runs(base: str, target: str) -> str:
                 })
             result = db.compare_runs(base_id, target_id)
             if "error" not in result:
+                if compact:
+                    result.pop("all_cwe_deltas", None)
                 return json.dumps(result)
     except Exception:
         pass
@@ -1680,8 +1725,9 @@ def compare_runs(base: str, target: str) -> str:
         "rule_regressions": rule_regressions,
         "cwes_only_in_base": only_in_base,
         "cwes_only_in_target": only_in_target,
-        "all_cwe_deltas": cwe_deltas,
     }
+    if not compact:
+        result["all_cwe_deltas"] = cwe_deltas
 
     # ── CWE-aware comparison (when both runs have data) ──────────────────
     if base_data["cwe_aware_count"] > 0 and target_data["cwe_aware_count"] > 0:

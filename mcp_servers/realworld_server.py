@@ -1500,13 +1500,23 @@ def compare_runs(base: str, target: str,
 
 
 @mcp.tool()
-def list_runs() -> str:
+def list_runs(limit: int = 10, compact: bool = True, verbose: bool = False) -> str:
     """
-    List all available realworld benchmark runs (from SQLite DB and filesystem).
+    List realworld benchmark runs, newest first (from SQLite DB and filesystem).
 
-    Shows sqc version, commit SHA, project count, violation count, and source.
-    Use version strings or dir names as identifiers in compare_runs() and get_results().
+    By default returns only the most recent `limit` runs in a compact shape.
+    Use sqc_version or dir names as identifiers in compare_runs()/get_results().
+
+    Args:
+        limit: Max runs to return, newest first. Use 0 for all. Default 10.
+        compact: Trim each run to the fields callers actually use
+                 (sqc_version, project_count, total_violations). Default True.
+        verbose: Alias for compact=False — return every field, incl. the
+                 per-run `projects` list, commit_sha, and notes.
     """
+    if verbose:
+        compact = False
+
     all_runs = []
     seen_versions = set()
 
@@ -1548,13 +1558,33 @@ def list_runs() -> str:
             "message": "No benchmark runs found. Use run_all() to start one.",
         })
 
+    # Newest first. SQLite rows carry `scanned_at`; filesystem rows carry
+    # `modified` — both sort lexically in the same direction.
+    all_runs.sort(
+        key=lambda r: r.get("scanned_at") or r.get("modified") or "",
+        reverse=True,
+    )
+
+    total = len(all_runs)
+    shown = all_runs if limit <= 0 else all_runs[:limit]
+
+    if compact:
+        keep = ("run_id", "sqc_version", "project_count", "total_violations",
+                "scanned_at", "dir_name")
+        shown = [{k: r[k] for k in keep if k in r} for r in shown]
+
+    msg = (
+        f"{total} benchmark run(s) total; showing {len(shown)} (newest first). "
+        "Use sqc_version or dir names in compare_runs() and get_results()."
+    )
+    if 0 < limit < total:
+        msg += f" Pass limit=0 to see all {total}."
+
     return json.dumps({
-        "runs": all_runs,
-        "count": len(all_runs),
-        "message": (
-            f"{len(all_runs)} benchmark run(s) found. "
-            "Use sqc_version or dir names in compare_runs() and get_results()."
-        ),
+        "runs": shown,
+        "count": len(shown),
+        "total": total,
+        "message": msg,
     })
 
 
