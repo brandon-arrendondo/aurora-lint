@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS realworld_results (
     loc             INTEGER DEFAULT 0,
     violation_count INTEGER DEFAULT 0,
     duration_s      REAL,
+    codebase_commit TEXT,
     UNIQUE(run_id, project, tool)
 );
 
@@ -168,6 +169,13 @@ class BenchDB:
         conn = self._connect()
         try:
             conn.executescript(_SCHEMA)
+            # Migrations for columns added after a table already exists
+            # (CREATE TABLE IF NOT EXISTS does not update existing tables).
+            cols = {r[1] for r in
+                    conn.execute("PRAGMA table_info(realworld_results)")}
+            if "codebase_commit" not in cols:
+                conn.execute(
+                    "ALTER TABLE realworld_results ADD COLUMN codebase_commit TEXT")
             conn.commit()
         finally:
             conn.close()
@@ -728,13 +736,35 @@ class BenchDB:
     def insert_realworld_result(self, run_id: int, project: str, tool: str,
                                 c_files: int = 0, loc: int = 0,
                                 violation_count: int = 0,
-                                duration_s: float = None) -> None:
+                                duration_s: float = None,
+                                codebase_commit: str = None) -> None:
         with self._cursor() as cur:
             cur.execute("""
                 INSERT OR REPLACE INTO realworld_results
-                    (run_id, project, tool, c_files, loc, violation_count, duration_s)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (run_id, project, tool, c_files, loc, violation_count, duration_s))
+                    (run_id, project, tool, c_files, loc, violation_count,
+                     duration_s, codebase_commit)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (run_id, project, tool, c_files, loc, violation_count,
+                  duration_s, codebase_commit))
+
+    @staticmethod
+    def live_codebase_commit(project: str) -> str | None:
+        """Short HEAD SHA of a benchmark codebase checkout under ~/toolchain.
+
+        Fallback for runs that predate scan-time capture; only valid on the
+        machine that hosts the checkouts.
+        """
+        import subprocess
+        path = Path.home() / "toolchain" / project
+        if not path.exists():
+            return None
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=10)
+            return out.stdout.strip() or None
+        except Exception:
+            return None
 
     def insert_realworld_violations(self, result_id: int,
                                       violations: list[dict]) -> None:
@@ -809,13 +839,29 @@ class BenchDB:
 
             duration = durations.get(project)
 
+            # Codebase commit: prefer the scan-time sidecar written by the
+            # MCP server; fall back to the live checkout (valid because the
+            # checkouts exist solely for this benchmark).
+            codebase_commit = None
+            meta_file = json_file.with_name(json_file.stem + ".meta.json")
+            if meta_file.exists():
+                try:
+                    codebase_commit = json.load(
+                        open(meta_file)).get("codebase_commit")
+                except (OSError, json.JSONDecodeError):
+                    pass
+            if not codebase_commit:
+                codebase_commit = self.live_codebase_commit(project)
+
             result_id = None
             with self._cursor() as cur:
                 cur.execute("""
                     INSERT OR REPLACE INTO realworld_results
-                        (run_id, project, tool, c_files, loc, violation_count, duration_s)
-                    VALUES (?, ?, 'sqc', 0, 0, ?, ?)
-                """, (run_id, project, violation_count, duration))
+                        (run_id, project, tool, c_files, loc, violation_count,
+                         duration_s, codebase_commit)
+                    VALUES (?, ?, 'sqc', 0, 0, ?, ?, ?)
+                """, (run_id, project, violation_count, duration,
+                      codebase_commit))
                 result_id = cur.lastrowid
 
             # Insert per-violation detail
@@ -867,12 +913,36 @@ class BenchDB:
         base_total = sum(base_rules.values())
         target_total = sum(target_rules.values())
 
-        return {
+        result = {
             "base_total": base_total,
             "target_total": target_total,
             "delta_total": target_total - base_total,
             "rule_deltas": deltas,
         }
+
+        # Deltas are only meaningful if both runs scanned the same codebase
+        # commits.  Warn when they verifiably differ.
+        mismatches = []
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT b.project, b.codebase_commit AS base_commit,
+                       t.codebase_commit AS target_commit
+                FROM realworld_results b
+                JOIN realworld_results t
+                  ON t.project = b.project AND t.tool = b.tool
+                WHERE b.run_id = ? AND t.run_id = ?
+                  AND b.codebase_commit IS NOT NULL
+                  AND t.codebase_commit IS NOT NULL
+                  AND b.codebase_commit != t.codebase_commit
+            """, (base_run_id, target_run_id))
+            mismatches = [dict(r) for r in cur.fetchall()]
+        if mismatches:
+            result["warnings"] = [
+                f"{m['project']}: codebase commit changed between runs "
+                f"({m['base_commit']} -> {m['target_commit']}); "
+                "deltas are not comparable" for m in mismatches]
+
+        return result
 
     def list_realworld_runs(self) -> list[dict]:
         with self._cursor() as cur:

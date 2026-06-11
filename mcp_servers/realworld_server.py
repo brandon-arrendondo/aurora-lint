@@ -248,6 +248,22 @@ def _get_git_sha() -> str:
         return "unknown"
 
 
+def _get_codebase_sha(path: Path) -> str | None:
+    """Short HEAD SHA of a target codebase checkout (the thing being scanned).
+
+    Distinct from _get_git_sha(), which is the sqc repo. Captured at scan time
+    so results record exactly which revision of the target was analyzed.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        return None
+
+
 def _get_tool_version(tool: str) -> str:
     """Get the version string for any supported tool."""
     if tool == "sqc":
@@ -871,9 +887,18 @@ def run_analysis(tool: str, codebase: str, host: str | None = None,
                 })
 
     # Clean up stale local result files from prior runs with same run_id
-    for ext in (".json", ".xml", ".txt", ".log", ".ssh.log", ".done"):
+    for ext in (".json", ".xml", ".txt", ".log", ".ssh.log", ".done", ".meta.json"):
         stale = version_dir / f"{run_id}{ext}"
         stale.unlink(missing_ok=True)
+
+    # Capture the target codebase's commit at scan time (local only; for remote
+    # the checkout lives on the host and is captured there). Written as a
+    # sidecar next to the result file; ingest_realworld_run reads it.
+    if not remote:
+        codebase_sha = _get_codebase_sha(cfg["path"])
+        if codebase_sha:
+            (version_dir / f"{run_id}.meta.json").write_text(
+                json.dumps({"codebase_commit": codebase_sha}))
 
     # Build command
     if tool == "sqc":
