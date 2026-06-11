@@ -312,6 +312,8 @@ def cmd_realworld_import_labels(args):
             "reason": row.get("reason"),
             "source": args.source,
             "adjudicated_at": adjudicated_at,
+            "provenance": row.get("provenance"),
+            "confidence": row.get("confidence"),
         })
 
     res = db.insert_ground_truth_labels(
@@ -332,7 +334,7 @@ def cmd_realworld_unlabeled(args):
         return
     findings = db.get_unlabeled_findings(
         target_id, rule_id=args.rule, project=args.project,
-        limit=args.limit, seed=args.seed)
+        limit=args.limit, seed=args.seed, file=args.file)
     if args.json:
         print(json.dumps(findings, indent=2, default=str))
         return
@@ -365,6 +367,149 @@ def cmd_ground_truth(args):
         tot += r["total"]
     print("-" * 56)
     print(f"{'TOTAL':<10} {'':<12} {'':<12} {'':>4} {'':>4} {'':>4} {tot:>6}")
+
+
+def cmd_audit_complete(args):
+    db = BenchDB()
+    run_id = db.resolve_realworld_run(args.run or "latest")
+    if not run_id:
+        print("No real-world runs found.")
+        return
+    res = db.mark_file_audited(run_id, args.project, args.file,
+                               adjudicator=args.adjudicator, notes=args.notes,
+                               force=args.force)
+    if args.json:
+        print(json.dumps(res, indent=2, default=str))
+        return
+    if "error" in res:
+        print(f"Not marked: {res['error']}")
+        if res.get("unlabeled"):
+            print(f"  {len(res['unlabeled'])} unlabeled finding(s) in "
+                  f"{args.project}/{args.file}:")
+            for u in res["unlabeled"]:
+                print(f"    {u['rule_id']:<10} :{u['line']}")
+        return
+    print(f"Audited {res['project']}/{res['file_path']} @ {res['commit'][:12]}: "
+          f"{res['n_findings']} findings "
+          f"(TP {res['n_tp']} / FP {res['n_fp']} / Unc {res['n_uncertain']}), "
+          f"FN {res['n_fn']}"
+          + (f"  [forced past {res['forced_unlabeled']} unlabeled]"
+             if res.get("forced_unlabeled") else ""))
+
+
+def cmd_audit_score(args):
+    db = BenchDB()
+    run_id = db.resolve_realworld_run(args.run or "latest")
+    if not run_id:
+        print("No real-world runs found.")
+        return
+    result = db.score_audited_corpus(run_id)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+    run = result["run"]
+    o = result["overall"]
+
+    def pct(v):
+        return f"{v:.1f}%" if v is not None else "—"
+
+    print(f"Audited-file corpus — precision/recall  (sqc v{run['sqc_version']}, "
+          f"run #{run_id})")
+    print("(restricted to files swept end-to-end: every finding labeled + read "
+          "for missed bugs)")
+    print()
+    if o["labeled_total"] == 0:
+        print("No audited files yet. Mark files with 'audit-complete'.")
+    else:
+        print(f"Overall: precision {pct(o['precision_pct'])} "
+              f"(TP {o['labeled_tp']} / labeled {o['labeled_tp'] + o['labeled_fp']}), "
+              f"recall {pct(o['recall_pct'])} "
+              f"(real bugs flagged {o['tp_detected']}/{o['tp_labels']}; "
+              f"recall denom incl. standing FNs)")
+        print()
+        print(f"{'Rule':<12} {'Prec':>7} {'TP':>4} {'FP':>4} {'Unc':>4} "
+              f"{'Recall':>7} {'Detect':>8}")
+        print("-" * 54)
+        for r in result["per_rule"]:
+            detect = f"{r['tp_detected']}/{r['tp_labels']}"
+            print(f"{r['rule_id']:<12} {pct(r['precision_pct']):>7} "
+                  f"{r['labeled_tp']:>4} {r['labeled_fp']:>4} "
+                  f"{r['labeled_uncertain']:>4} {pct(r['recall_pct']):>7} "
+                  f"{detect:>8}")
+    print()
+    _print_coverage(result["coverage"])
+
+
+def _print_coverage(cov):
+    print(f"{'Project':<10} {'Audited':>8} {'Total':>7} {'Cov%':>6} "
+          f"{'Flagged':>8} {'TP':>4} {'FP':>4} {'FN':>4}")
+    print("-" * 56)
+    for r in cov["per_project"]:
+        total = r["total_inscope_files"]
+        covpct = f"{r['coverage_pct']:.1f}" if r["coverage_pct"] is not None else "—"
+        print(f"{r['project']:<10} {r['audited_files']:>8} "
+              f"{(total if total is not None else '—'):>7} {covpct:>6} "
+              f"{r['files_with_findings']:>8} {r['tp']:>4} {r['fp']:>4} "
+              f"{r['fn']:>4}")
+
+
+def cmd_audit_coverage(args):
+    db = BenchDB()
+    run_id = db.resolve_realworld_run(args.run or "latest")
+    if not run_id:
+        print("No real-world runs found.")
+        return
+    if args.set_total is not None:
+        if not args.project:
+            print("--set-total requires --project.")
+            return
+        commit = next((r.get("codebase_commit")
+                       for r in db.get_realworld_results(run_id)
+                       if r["tool"] == "sqc" and r["project"] == args.project),
+                      None)
+        if not commit:
+            print(f"No sqc commit for {args.project} in run #{run_id}.")
+            return
+        db.set_corpus_scope(args.project, commit, args.set_total, args.note)
+        print(f"Recorded {args.project}@{commit[:12]} in-scope total = "
+              f"{args.set_total}"
+              + (f" ({args.note})" if args.note else ""))
+        return
+    cov = db.audit_coverage(run_id)
+    if args.json:
+        print(json.dumps(cov, indent=2, default=str))
+        return
+    _print_coverage(cov)
+
+
+def cmd_oracle_freeze(args):
+    db = BenchDB()
+    run_id = db.resolve_realworld_run(args.run or "latest")
+    if not run_id:
+        print("No real-world runs found.")
+        return
+    res = db.freeze_oracle_version(args.version, run_id, notes=args.notes)
+    print(f"Froze oracle '{res['version']}' at {res['frozen_at']} "
+          f"(run #{run_id}).")
+
+
+def cmd_oracle_versions(args):
+    db = BenchDB()
+    vers = db.list_oracle_versions()
+    if args.json:
+        print(json.dumps(vers, indent=2, default=str))
+        return
+    if not vers:
+        print("No frozen oracle versions yet. Freeze with 'oracle-freeze'.")
+        return
+    print(f"{'Version':<16} {'Frozen':<28} Notes")
+    print("-" * 70)
+    for v in vers:
+        print(f"{v['version']:<16} {(v['frozen_at'] or ''):<28} "
+              f"{v['notes'] or ''}")
 
 
 def main():
@@ -455,6 +600,9 @@ def main():
     p_unl.add_argument("--limit", type=int, default=None, help="Max findings")
     p_unl.add_argument("--seed", type=int, default=None,
                        help="Sample reproducibly with this seed")
+    p_unl.add_argument("--file", default=None,
+                       help="Filter to one project-relative file (file-at-a-"
+                            "time workflow: pull all findings in this file)")
     p_unl.add_argument("--json", action="store_true", help="Emit JSON")
     p_unl.set_defaults(func=cmd_realworld_unlabeled)
 
@@ -463,6 +611,61 @@ def main():
                           help="Inventory of ground-truth labels")
     p_gt.add_argument("--json", action="store_true", help="Emit JSON")
     p_gt.set_defaults(func=cmd_ground_truth)
+
+    # audit-complete (mark a file as exhaustively audited = the 'done' unit)
+    p_ac = sub.add_parser(
+        "audit-complete",
+        help="Mark a file exhaustively audited (every finding labeled + read "
+             "for missed bugs)")
+    p_ac.add_argument("--run", default=None,
+                      help="Run providing the findings/commit (default: latest)")
+    p_ac.add_argument("--project", required=True)
+    p_ac.add_argument("--file", required=True,
+                      help="Project-relative file path")
+    p_ac.add_argument("--adjudicator", default="claude")
+    p_ac.add_argument("--notes", default=None)
+    p_ac.add_argument("--force", action="store_true",
+                      help="Mark done even if some findings are unlabeled")
+    p_ac.add_argument("--json", action="store_true", help="Emit JSON")
+    p_ac.set_defaults(func=cmd_audit_complete)
+
+    # audit-score (precision + recall over the audited-file corpus)
+    p_as = sub.add_parser(
+        "audit-score",
+        help="Precision/recall restricted to the audited-file corpus")
+    p_as.add_argument("run", nargs="?", default=None,
+                      help="Run identifier (default: latest)")
+    p_as.add_argument("--json", action="store_true", help="Emit JSON")
+    p_as.set_defaults(func=cmd_audit_score)
+
+    # audit-coverage (progress toward 'done'; also records scope denominator)
+    p_av = sub.add_parser(
+        "audit-coverage",
+        help="File-coverage of the audit; --set-total records the in-scope "
+             "denominator")
+    p_av.add_argument("run", nargs="?", default=None,
+                      help="Run identifier (default: latest)")
+    p_av.add_argument("--project", default=None)
+    p_av.add_argument("--set-total", type=int, default=None,
+                      help="Record total in-scope files for --project (the "
+                           "coverage denominator)")
+    p_av.add_argument("--note", default=None, help="Scope note for --set-total")
+    p_av.add_argument("--json", action="store_true", help="Emit JSON")
+    p_av.set_defaults(func=cmd_audit_coverage)
+
+    # oracle-freeze / oracle-versions (citable, versioned snapshots)
+    p_of = sub.add_parser(
+        "oracle-freeze",
+        help="Freeze the audited corpus under a version tag for citation")
+    p_of.add_argument("version", help="Version tag, e.g. 'v1.0'")
+    p_of.add_argument("--run", default=None, help="Run to score (default: latest)")
+    p_of.add_argument("--notes", default=None)
+    p_of.set_defaults(func=cmd_oracle_freeze)
+
+    p_ov = sub.add_parser("oracle-versions",
+                          help="List frozen oracle versions")
+    p_ov.add_argument("--json", action="store_true", help="Emit JSON")
+    p_ov.set_defaults(func=cmd_oracle_versions)
 
     args = parser.parse_args()
     if not args.command:

@@ -1,5 +1,6 @@
 """Centralized paths, constants, and defaults for the benchmark infrastructure."""
 
+import os
 from pathlib import Path
 
 # ── Project layout ────────────────────────────────────────────────────────────
@@ -14,7 +15,9 @@ GENERATE_MAP_SCRIPT = PROJECT_DIR / "scripts" / "generate_rule_cwe_map.py"
 JULIET_BASE = Path.home() / "toolchain" / "benchmarks" / "juliet-test-suite-c" / "testcases"
 
 # ── Database ──────────────────────────────────────────────────────────────────
-DB_PATH = PROJECT_DIR / "data" / "benchmarks.db"
+# BENCH_DB overrides the default path (handy for tests/alternate corpora).
+DB_PATH = Path(os.environ["BENCH_DB"]) if os.environ.get("BENCH_DB") \
+    else PROJECT_DIR / "data" / "benchmarks.db"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_JOBS = 12

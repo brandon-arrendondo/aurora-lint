@@ -145,6 +145,49 @@ CREATE INDEX IF NOT EXISTS idx_gt_lookup
     ON ground_truth(project, codebase_commit, rule_id);
 CREATE INDEX IF NOT EXISTS idx_gt_verdict ON ground_truth(verdict);
 
+-- File-at-a-time audit: a row here means the file was exhaustively swept
+-- (every sqc finding in it labeled, AND read independently for missed bugs).
+-- This is the atomic "done" unit; the audited-file set grows monotonically
+-- and is the denominator for honest precision AND recall.
+CREATE TABLE IF NOT EXISTS audited_files (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project         TEXT NOT NULL,
+    codebase_commit TEXT NOT NULL,
+    file_path       TEXT NOT NULL,           -- project-relative
+    adjudicator     TEXT,
+    audited_at      TEXT NOT NULL,
+    n_findings      INTEGER DEFAULT 0,       -- sqc findings in this file (precision denom)
+    n_tp            INTEGER DEFAULT 0,
+    n_fp            INTEGER DEFAULT 0,
+    n_uncertain     INTEGER DEFAULT 0,
+    n_fn            INTEGER DEFAULT 0,        -- real bugs sqc missed (recall)
+    notes           TEXT,
+    UNIQUE(project, codebase_commit, file_path)
+);
+CREATE INDEX IF NOT EXISTS idx_audited_lookup
+    ON audited_files(project, codebase_commit);
+
+-- The coverage denominator: how many in-scope files exist at a pinned commit.
+-- Recorded once per (project, commit) so "done = audited/total" is well-defined
+-- and survives into the frozen, versioned oracle.
+CREATE TABLE IF NOT EXISTS audit_corpus_meta (
+    project             TEXT NOT NULL,
+    codebase_commit     TEXT NOT NULL,
+    total_inscope_files INTEGER,
+    scope_note          TEXT,
+    updated_at          TEXT,
+    PRIMARY KEY (project, codebase_commit)
+);
+
+-- Frozen, citable snapshots of the oracle for the paper. Any post-freeze
+-- correction (incl. an FN that re-adjudication overturns) bumps the version.
+CREATE TABLE IF NOT EXISTS oracle_versions (
+    version         TEXT PRIMARY KEY,
+    frozen_at       TEXT NOT NULL,
+    notes           TEXT,
+    snapshot_json   TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_violations_cwe_scan ON violations(cwe_scan_id);
 CREATE INDEX IF NOT EXISTS idx_violations_rule ON violations(rule_id);
 CREATE INDEX IF NOT EXISTS idx_violations_class ON violations(classification);
@@ -195,6 +238,15 @@ class BenchDB:
             if "codebase_commit" not in cols:
                 conn.execute(
                     "ALTER TABLE realworld_results ADD COLUMN codebase_commit TEXT")
+            # ground_truth gained provenance/confidence for FN corroboration.
+            gt_cols = {r[1] for r in
+                       conn.execute("PRAGMA table_info(ground_truth)")}
+            if "provenance" not in gt_cols:
+                conn.execute(
+                    "ALTER TABLE ground_truth ADD COLUMN provenance TEXT")
+            if "confidence" not in gt_cols:
+                conn.execute(
+                    "ALTER TABLE ground_truth ADD COLUMN confidence TEXT")
             conn.commit()
         finally:
             conn.close()
@@ -1220,7 +1272,15 @@ class BenchDB:
 
         Each label dict needs: project, codebase_commit, file_path (relative),
         line, rule_id, verdict. Optional: adjudicator, reason, source,
-        adjudicated_at (defaults to now).
+        adjudicated_at (defaults to now), provenance, confidence.
+
+        verdict is 'TP' | 'FP' | 'uncertain' | 'FN'. An 'FN' (false negative)
+        is a real bug sqc did NOT flag, found by reading the file; it has no
+        matching sqc finding, so it never affects precision but counts as a
+        known real bug for recall (the run detects it only once sqc improves
+        enough to emit a finding at that line+rule). For FN rows, `provenance`
+        records corroboration (e.g. 'juliet:CWE-476', 'cross:curl', 'cve:...',
+        'uncorroborated') and `confidence` is 'high'|'medium'|'low'.
 
         on_conflict:
           'ignore' — keep the existing label for a key (append-only seeding).
@@ -1246,20 +1306,22 @@ class BenchDB:
                 existing = cur.fetchone()
                 vals = (lbl["verdict"], lbl.get("adjudicator"),
                         lbl.get("reason"), lbl.get("source"),
-                        lbl.get("adjudicated_at") or now)
+                        lbl.get("adjudicated_at") or now,
+                        lbl.get("provenance"), lbl.get("confidence"))
                 if existing is None:
                     cur.execute("""
                         INSERT INTO ground_truth
                             (project, codebase_commit, file_path, line, rule_id,
-                             verdict, adjudicator, reason, source, adjudicated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             verdict, adjudicator, reason, source, adjudicated_at,
+                             provenance, confidence)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, key + vals)
                     inserted += 1
                 elif on_conflict == "update":
                     cur.execute("""
                         UPDATE ground_truth
                         SET verdict=?, adjudicator=?, reason=?, source=?,
-                            adjudicated_at=?
+                            adjudicated_at=?, provenance=?, confidence=?
                         WHERE id=?
                     """, vals + (existing["id"],))
                     updated += 1
@@ -1317,13 +1379,24 @@ class BenchDB:
                     (rel, r["line"], r["rule_id"]))
         return keys
 
-    def score_realworld_run(self, run_id: int) -> dict:
+    def score_realworld_run(self, run_id: int,
+                            restrict_files: dict | None = None) -> dict:
         """Measure precision/recall of a run against the ground-truth oracle.
 
         Joins the run's findings to ground_truth labels for the *same*
         codebase_commit per project. Precision is over the labeled subset of
-        the run's findings; recall is over all known-TP labels for the matching
-        commit (a known true bug that stops being flagged drops recall).
+        the run's findings; recall is over all known real-bug labels (verdict
+        TP or FN) for the matching commit — a known true bug that is not
+        flagged (a standing FN, or a TP that regressed) drops recall.
+
+        verdict='FN' rows are real bugs sqc missed: they have no matching
+        finding, so they never inflate precision, but they sit in the recall
+        denominator and only count as detected once a (better) sqc run emits a
+        finding at that line+rule.
+
+        restrict_files: optional {project: set(relpath)} to score only labels
+        and findings within those files (used by the audited-file corpus). When
+        None, scores the whole labeled corpus (legacy behavior).
         """
         run = self.get_realworld_run(run_id)
         if not run:
@@ -1332,6 +1405,11 @@ class BenchDB:
         results = [r for r in self.get_realworld_results(run_id)
                    if r["tool"] == "sqc"]
         run_keys = self._run_violation_keys(run_id)
+        if restrict_files is not None:
+            run_keys = {
+                proj: {k for k in keys
+                       if k[0] in restrict_files.get(proj, set())}
+                for proj, keys in run_keys.items()}
 
         warnings = []
         # rule_id -> aggregated counters
@@ -1354,6 +1432,9 @@ class BenchDB:
                     "cannot match labels")
                 continue
             labels = self.get_ground_truth_labels(project, commit)
+            if restrict_files is not None:
+                allowed = restrict_files.get(project, set())
+                labels = [l for l in labels if l["file_path"] in allowed]
             if not labels:
                 warnings.append(
                     f"{project}@{commit}: no ground-truth labels for this "
@@ -1369,7 +1450,11 @@ class BenchDB:
                 r = bump(rid)
                 key = (lbl["file_path"], lbl["line"], rid)
                 in_run = key in present
-                if lbl["verdict"] == "TP":
+                # TP and FN are both real bugs: they form the recall denominator
+                # (known real bugs) and are "detected" only when this run emits
+                # a finding at that key.
+                is_real = lbl["verdict"] in ("TP", "FN")
+                if is_real:
                     r["tp_labels"] += 1
                     p_tp_labels += 1
                     if in_run:
@@ -1378,7 +1463,7 @@ class BenchDB:
                 if not in_run:
                     continue
                 # finding present in this run AND labeled -> counts for precision
-                if lbl["verdict"] == "TP":
+                if is_real:
                     r["tp"] += 1; p_tp += 1
                 elif lbl["verdict"] == "FP":
                     r["fp"] += 1; p_fp += 1
@@ -1438,7 +1523,7 @@ class BenchDB:
 
     def get_unlabeled_findings(self, run_id: int, rule_id: str = None,
                                project: str = None, limit: int = None,
-                               seed: int = None) -> list[dict]:
+                               seed: int = None, file: str = None) -> list[dict]:
         """Distinct findings from a run with no ground-truth label yet.
 
         Feeds the incremental adjudication loop: scan -> pull unlabeled ->
@@ -1475,6 +1560,8 @@ class BenchDB:
                 cur.execute(q, params)
                 for r in cur.fetchall():
                     rel = self.project_relpath(proj, r["file_path"])
+                    if file and rel != file:
+                        continue
                     if (rel, r["line"], r["rule_id"]) in labeled:
                         continue
                     out.append({
@@ -1495,6 +1582,233 @@ class BenchDB:
         elif limit:
             out = out[:limit]
         return out
+
+    # ── Audited-file corpus (file-at-a-time done-unit) ───────────────────
+
+    def _run_findings_in_file(self, run_id: int, project: str,
+                              relpath: str) -> set:
+        """Distinct (line, rule_id) sqc emitted in one project-relative file."""
+        out = set()
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT rv.rule_id, rv.file_path, rv.line
+                FROM realworld_violations rv
+                JOIN realworld_results rr ON rr.id = rv.result_id
+                WHERE rr.run_id = ? AND rr.project = ? AND rr.tool = 'sqc'
+            """, (run_id, project))
+            for r in cur.fetchall():
+                if self.project_relpath(project, r["file_path"]) == relpath:
+                    out.add((r["line"], r["rule_id"]))
+        return out
+
+    def files_with_findings(self, run_id: int) -> dict:
+        """{project: {relpath: distinct-finding-count}} for tool='sqc'."""
+        per: dict[str, dict] = {}
+        for proj, keys in self._run_violation_keys(run_id).items():
+            d: dict[str, int] = {}
+            for (rel, _line, _rid) in keys:
+                d[rel] = d.get(rel, 0) + 1
+            per[proj] = d
+        return per
+
+    def mark_file_audited(self, run_id: int, project: str, file_path: str,
+                          adjudicator: str = None, notes: str = None,
+                          force: bool = False) -> dict:
+        """Mark one project-relative file as exhaustively audited.
+
+        Recomputes the file's TP/FP/uncertain/FN tallies from ground_truth and
+        its sqc finding count from the run. Refuses (unless force) if any sqc
+        finding in the file lacks a label — "done" requires every finding
+        adjudicated. Returns a summary including any unlabeled findings.
+        """
+        from datetime import datetime
+        run = self.get_realworld_run(run_id)
+        if not run:
+            return {"error": f"Run {run_id} not found"}
+        commit = None
+        for r in self.get_realworld_results(run_id):
+            if r["tool"] == "sqc" and r["project"] == project:
+                commit = r.get("codebase_commit")
+                break
+        if not commit:
+            return {"error": f"No sqc result/commit for {project} in run {run_id}"}
+
+        findings = self._run_findings_in_file(run_id, project, file_path)
+        labels = [l for l in self.get_ground_truth_labels(project, commit)
+                  if l["file_path"] == file_path]
+        labeled_keys = {(l["line"], l["rule_id"]) for l in labels
+                        if l["verdict"] != "FN"}
+        unlabeled = sorted(findings - labeled_keys)
+        if unlabeled and not force:
+            return {
+                "error": "file has unlabeled sqc findings; label them or pass "
+                         "force=True",
+                "project": project, "file_path": file_path,
+                "commit": commit, "n_findings": len(findings),
+                "unlabeled": [{"line": ln, "rule_id": rid}
+                              for (ln, rid) in unlabeled],
+            }
+
+        n_tp = sum(l["verdict"] == "TP" for l in labels)
+        n_fp = sum(l["verdict"] == "FP" for l in labels)
+        n_unc = sum(l["verdict"] == "uncertain" for l in labels)
+        n_fn = sum(l["verdict"] == "FN" for l in labels)
+        now = datetime.now().isoformat()
+        with self._cursor() as cur:
+            cur.execute("""
+                INSERT INTO audited_files
+                    (project, codebase_commit, file_path, adjudicator,
+                     audited_at, n_findings, n_tp, n_fp, n_uncertain, n_fn, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project, codebase_commit, file_path) DO UPDATE SET
+                    adjudicator=excluded.adjudicator,
+                    audited_at=excluded.audited_at,
+                    n_findings=excluded.n_findings, n_tp=excluded.n_tp,
+                    n_fp=excluded.n_fp, n_uncertain=excluded.n_uncertain,
+                    n_fn=excluded.n_fn, notes=excluded.notes
+            """, (project, commit, file_path, adjudicator, now,
+                  len(findings), n_tp, n_fp, n_unc, n_fn, notes))
+        return {
+            "project": project, "file_path": file_path, "commit": commit,
+            "n_findings": len(findings), "n_tp": n_tp, "n_fp": n_fp,
+            "n_uncertain": n_unc, "n_fn": n_fn,
+            "forced_unlabeled": len(unlabeled) if force else 0,
+        }
+
+    def get_audited_files(self, project: str = None,
+                          commit: str = None) -> list[dict]:
+        clauses, params = [], []
+        if project:
+            clauses.append("project = ?"); params.append(project)
+        if commit:
+            clauses.append("codebase_commit = ?"); params.append(commit)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._cursor() as cur:
+            cur.execute(f"SELECT * FROM audited_files {where} "
+                        "ORDER BY project, file_path", params)
+            return [dict(r) for r in cur.fetchall()]
+
+    def audited_files_map(self, commit_by_project: dict | None = None) -> dict:
+        """{project: set(relpath)} of audited files, optionally pinned to the
+        commit each project was scored at."""
+        out: dict[str, set] = {}
+        for af in self.get_audited_files():
+            if (commit_by_project is not None
+                    and commit_by_project.get(af["project"])
+                    != af["codebase_commit"]):
+                continue
+            out.setdefault(af["project"], set()).add(af["file_path"])
+        return out
+
+    def set_corpus_scope(self, project: str, commit: str,
+                         total_inscope_files: int, scope_note: str = None):
+        from datetime import datetime
+        with self._cursor() as cur:
+            cur.execute("""
+                INSERT INTO audit_corpus_meta
+                    (project, codebase_commit, total_inscope_files,
+                     scope_note, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(project, codebase_commit) DO UPDATE SET
+                    total_inscope_files=excluded.total_inscope_files,
+                    scope_note=excluded.scope_note,
+                    updated_at=excluded.updated_at
+            """, (project, commit, total_inscope_files, scope_note,
+                  datetime.now().isoformat()))
+
+    def get_corpus_meta(self) -> dict:
+        """{(project, commit): {total_inscope_files, scope_note}}."""
+        out = {}
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM audit_corpus_meta")
+            for r in cur.fetchall():
+                out[(r["project"], r["codebase_commit"])] = dict(r)
+        return out
+
+    def audit_coverage(self, run_id: int) -> dict:
+        """Per-project file-coverage of the audit toward 'done'.
+
+        Reports audited-file count against (a) total in-scope files if recorded
+        in audit_corpus_meta, and (b) files sqc actually flagged (always known).
+        """
+        commits = {r["project"]: r.get("codebase_commit")
+                   for r in self.get_realworld_results(run_id)
+                   if r["tool"] == "sqc"}
+        fwf = self.files_with_findings(run_id)
+        meta = self.get_corpus_meta()
+        audited = self.get_audited_files()
+        by_proj: dict[str, dict] = {}
+        for af in audited:
+            p = af["project"]
+            if commits.get(p) != af["codebase_commit"]:
+                continue
+            d = by_proj.setdefault(p, {"files": 0, "findings": 0, "tp": 0,
+                                       "fp": 0, "uncertain": 0, "fn": 0})
+            d["files"] += 1
+            d["findings"] += af["n_findings"]
+            d["tp"] += af["n_tp"]; d["fp"] += af["n_fp"]
+            d["uncertain"] += af["n_uncertain"]; d["fn"] += af["n_fn"]
+        rows = []
+        for project, commit in commits.items():
+            d = by_proj.get(project, {"files": 0, "findings": 0, "tp": 0,
+                                      "fp": 0, "uncertain": 0, "fn": 0})
+            files_flagged = len(fwf.get(project, {}))
+            total = meta.get((project, commit), {}).get("total_inscope_files")
+            rows.append({
+                "project": project, "codebase_commit": commit,
+                "audited_files": d["files"],
+                "total_inscope_files": total,
+                "files_with_findings": files_flagged,
+                "coverage_pct": (round(d["files"] / total * 100, 1)
+                                 if total else None),
+                "findings_in_audited": d["findings"],
+                "tp": d["tp"], "fp": d["fp"], "uncertain": d["uncertain"],
+                "fn": d["fn"],
+            })
+        rows.sort(key=lambda r: r["project"])
+        return {"run_id": run_id, "per_project": rows}
+
+    def score_audited_corpus(self, run_id: int) -> dict:
+        """Precision AND recall restricted to the audited-file set, plus
+        coverage. This is the honest, completion-tracked metric: every finding
+        in an audited file is labeled, and each file was read for missed bugs,
+        so both precision and recall are meaningful over this corpus."""
+        commits = {r["project"]: r.get("codebase_commit")
+                   for r in self.get_realworld_results(run_id)
+                   if r["tool"] == "sqc"}
+        restrict = self.audited_files_map(commits)
+        score = self.score_realworld_run(run_id, restrict_files=restrict)
+        score["coverage"] = self.audit_coverage(run_id)
+        score["audited_corpus"] = True
+        return score
+
+    def freeze_oracle_version(self, version: str, run_id: int,
+                              notes: str = None) -> dict:
+        """Snapshot the audited corpus (coverage + P/R) under a version tag for
+        citation. Re-freezing the same version overwrites it."""
+        import json as _json
+        from datetime import datetime
+        snap = {
+            "frozen_at": datetime.now().isoformat(),
+            "run_id": run_id,
+            "score": self.score_audited_corpus(run_id),
+        }
+        with self._cursor() as cur:
+            cur.execute("""
+                INSERT INTO oracle_versions (version, frozen_at, notes, snapshot_json)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(version) DO UPDATE SET
+                    frozen_at=excluded.frozen_at, notes=excluded.notes,
+                    snapshot_json=excluded.snapshot_json
+            """, (version, snap["frozen_at"], notes,
+                  _json.dumps(snap, default=str)))
+        return {"version": version, "frozen_at": snap["frozen_at"]}
+
+    def list_oracle_versions(self) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute("SELECT version, frozen_at, notes FROM oracle_versions "
+                        "ORDER BY frozen_at DESC")
+            return [dict(r) for r in cur.fetchall()]
 
     # ── Run Resolution ────────────────────────────────────────────────────
 
