@@ -39,6 +39,7 @@
 //! This is a complex architectural change that may be added in future versions.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::buffer_size::{self, BufferInfo, BufferSize};
 use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, VarRangeMap};
 use crate::analyze::context::ProjectContext;
@@ -62,28 +63,6 @@ pub struct Arr30C {
     /// (`context.macro_constants`). Merged with per-file constants so that
     /// buffer sizes defined in headers or other translation units resolve.
     macro_constants: RefCell<HashMap<String, i64>>,
-}
-
-/// Information about a buffer (array or dynamically allocated memory)
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct BufferInfo {
-    name: String,
-    size: BufferSize,
-    element_type: String,
-    allocation_line: usize,
-    alloc_bytes: Option<usize>, // Raw allocation byte count (for byte-level comparisons)
-}
-
-/// Represents the size of a buffer
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-enum BufferSize {
-    Static(usize),            // char arr[10]
-    DynamicCalculated(usize), // malloc(10 * sizeof(int))
-    Dynamic(String),          // malloc(size) - variable expression
-    Symbolic(String),         // VLA: int arr[n] - symbolic size
-    Unknown,
 }
 
 /// Represents an index value that can be constant or variable
@@ -706,102 +685,6 @@ impl Arr30C {
         }
     }
 
-    /// Extract numeric value from string, including simple arithmetic like "10+1"
-    fn extract_numeric_value(&self, s: &str) -> Option<usize> {
-        let trimmed = s.trim();
-        // Strip outer parentheses: "(10+1)" → "10+1"
-        let inner = if trimmed.starts_with('(') && trimmed.ends_with(')') {
-            &trimmed[1..trimmed.len() - 1]
-        } else {
-            trimmed
-        };
-        // Try direct parse first
-        if let Ok(v) = inner.parse() {
-            return Some(v);
-        }
-        // Try evaluating simple arithmetic (e.g., "10+1")
-        let result = self.evaluate_simple_arithmetic(inner)?;
-        if result >= 0 {
-            Some(result as usize)
-        } else {
-            None
-        }
-    }
-
-    /// Calculate size from malloc arguments
-    fn calculate_malloc_size(&self, malloc_args: &str) -> Option<BufferSize> {
-        let trimmed = malloc_args.trim();
-
-        // Pattern 1: Simple number - malloc(100)
-        if let Some(size) = self.extract_numeric_value(trimmed) {
-            return Some(BufferSize::DynamicCalculated(size));
-        }
-
-        // Pattern 2: COUNT * sizeof(TYPE) - malloc(5 * sizeof(int))
-        // Store the COUNT (number of elements), not the byte size
-        if trimmed.contains('*') && trimmed.contains("sizeof") {
-            // Split only on the first '*' to handle cases like "3 * sizeof(int*)"
-            if let Some(mult_pos) = trimmed.find('*') {
-                let count_str = &trimmed[..mult_pos].trim();
-                let sizeof_str = &trimmed[mult_pos + 1..].trim();
-
-                let count = self.extract_numeric_value(count_str);
-                let _sizeof_val = self.extract_sizeof_value(sizeof_str);
-
-                if let Some(c) = count {
-                    // Store element count, not byte count
-                    return Some(BufferSize::DynamicCalculated(c));
-                }
-                // Count is a variable (e.g., data*sizeof(char)) — size is unknown
-                // Do NOT fall through to pattern 3 which would misinterpret
-                // "data*sizeof(char)" as sizeof(char)=1
-                return Some(BufferSize::Dynamic(trimmed.to_string()));
-            }
-        }
-
-        // Pattern 3: Just sizeof(TYPE) - malloc(sizeof(struct foo))
-        if let Some(sizeof_val) = self.extract_sizeof_value(trimmed) {
-            return Some(BufferSize::DynamicCalculated(sizeof_val));
-        }
-
-        // Pattern 4: Variable expression
-        Some(BufferSize::Dynamic(trimmed.to_string()))
-    }
-
-    /// Calculate raw byte count of a malloc/realloc allocation expression.
-    /// Returns the total allocation in bytes, unlike calculate_malloc_size which
-    /// returns element count for N*sizeof(T) patterns.
-    fn calculate_alloc_bytes(&self, malloc_args: &str) -> Option<usize> {
-        let trimmed = malloc_args.trim();
-
-        // Pattern 1: Simple number - malloc(100) → 100 bytes
-        if let Some(size) = self.extract_numeric_value(trimmed) {
-            return Some(size);
-        }
-
-        // Pattern 2: COUNT * sizeof(TYPE) - malloc(5 * sizeof(int)) → 5 * 4 = 20 bytes
-        if trimmed.contains('*') && trimmed.contains("sizeof") {
-            if let Some(mult_pos) = trimmed.find('*') {
-                let count_str = trimmed[..mult_pos].trim();
-                let sizeof_str = trimmed[mult_pos + 1..].trim();
-
-                let count = self.extract_numeric_value(count_str);
-                let sizeof_val = self.extract_sizeof_value(sizeof_str);
-
-                if let (Some(c), Some(s)) = (count, sizeof_val) {
-                    return Some(c * s);
-                }
-            }
-        }
-
-        // Pattern 3: Just sizeof(TYPE) - malloc(sizeof(struct foo))
-        if let Some(sizeof_val) = self.extract_sizeof_value(trimmed) {
-            return Some(sizeof_val);
-        }
-
-        None
-    }
-
     /// Evaluate a memcpy/memmove count expression as a byte count.
     /// Handles:
     ///   - N*sizeof(T) → N * type_size_bytes
@@ -831,8 +714,8 @@ impl Arr30C {
                 let count_str = trimmed[..mult_pos].trim();
                 let sizeof_str = trimmed[mult_pos + 1..].trim();
 
-                let count = self.extract_numeric_value(count_str);
-                let sizeof_val = self.extract_sizeof_value(sizeof_str);
+                let count = buffer_size::extract_numeric_value(count_str);
+                let sizeof_val = buffer_size::extract_sizeof_value(sizeof_str);
 
                 if let (Some(c), Some(s)) = (count, sizeof_val) {
                     return Some(c * s);
@@ -890,7 +773,7 @@ impl Arr30C {
 
         // Apply sizeof multiplier from the expression
         let sizeof_val = if expr.contains("sizeof") {
-            self.extract_sizeof_value(expr).unwrap_or(elem_size)
+            buffer_size::extract_sizeof_value(expr).unwrap_or(elem_size)
         } else {
             elem_size
         };
@@ -934,37 +817,6 @@ impl Arr30C {
         } else {
             Some(var_elements.saturating_sub(1))
         }
-    }
-
-    /// Extract size from sizeof expression - using common type sizes
-    fn extract_sizeof_value(&self, s: &str) -> Option<usize> {
-        if !s.contains("sizeof") {
-            return None;
-        }
-
-        // Common type sizes (assuming typical 64-bit Linux system)
-        let type_sizes = [
-            ("wchar_t", 4),
-            ("int", 4),
-            ("char", 1),
-            ("short", 2),
-            ("long", 8),
-            ("float", 4),
-            ("double", 8),
-            ("void*", 8),
-            ("int*", 8),
-            ("char*", 8),
-            ("wchar_t*", 8),
-        ];
-
-        for (type_name, size) in &type_sizes {
-            if s.contains(type_name) {
-                return Some(*size);
-            }
-        }
-
-        // Default to pointer size if we can't determine
-        Some(8)
     }
 
     /// Get array name from subscript expression node
@@ -1046,7 +898,7 @@ impl Arr30C {
         }
 
         // Pattern 2: Simple arithmetic with constants (e.g., "10 - 1")
-        if let Some(result) = self.evaluate_simple_arithmetic(expr) {
+        if let Some(result) = buffer_size::evaluate_simple_arithmetic(expr) {
             return Some(result);
         }
 
@@ -1085,33 +937,6 @@ impl Arr30C {
 
         if let Some(caps) = re.captures(source) {
             return caps.get(1)?.as_str().parse().ok();
-        }
-
-        None
-    }
-
-    /// Evaluate simple arithmetic expressions with only constants
-    fn evaluate_simple_arithmetic(&self, expr: &str) -> Option<isize> {
-        let expr = expr.trim();
-
-        // Handle "A - B"
-        if expr.contains('-') && !expr.starts_with('-') {
-            let parts: Vec<&str> = expr.split('-').collect();
-            if parts.len() == 2 {
-                let a: isize = parts[0].trim().parse().ok()?;
-                let b: isize = parts[1].trim().parse().ok()?;
-                return Some(a - b);
-            }
-        }
-
-        // Handle "A + B"
-        if expr.contains('+') {
-            let parts: Vec<&str> = expr.split('+').collect();
-            if parts.len() == 2 {
-                let a: isize = parts[0].trim().parse().ok()?;
-                let b: isize = parts[1].trim().parse().ok()?;
-                return Some(a + b);
-            }
         }
 
         None
@@ -1854,8 +1679,8 @@ impl Arr30C {
                             if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
                                 if current_arg == arg_index {
                                     let arg_text = &source[arg.start_byte()..arg.end_byte()];
-                                    let size = self.calculate_malloc_size(arg_text)?;
-                                    let alloc_bytes = self.calculate_alloc_bytes(arg_text);
+                                    let size = buffer_size::calculate_malloc_size(arg_text)?;
+                                    let alloc_bytes = buffer_size::calculate_alloc_bytes(arg_text);
                                     return Some((size, alloc_bytes));
                                 }
                                 current_arg += 1;
@@ -3549,7 +3374,7 @@ impl Arr30C {
                     // Handle binary expressions like 10+1 in array size declarations
                     "binary_expression" => {
                         let expr_text = &source[child.start_byte()..child.end_byte()];
-                        if let Some(val) = self.evaluate_simple_arithmetic(expr_text) {
+                        if let Some(val) = buffer_size::evaluate_simple_arithmetic(expr_text) {
                             if val >= 0 {
                                 size = Some(val as usize);
                             }
@@ -3561,7 +3386,7 @@ impl Arr30C {
                     "parenthesized_expression" => {
                         let expr_text = &source[child.start_byte()..child.end_byte()];
                         let inner = expr_text.trim_start_matches('(').trim_end_matches(')');
-                        if let Some(val) = self.evaluate_simple_arithmetic(inner) {
+                        if let Some(val) = buffer_size::evaluate_simple_arithmetic(inner) {
                             if val >= 0 {
                                 size = Some(val as usize);
                             }
@@ -3785,8 +3610,8 @@ impl Arr30C {
                     if let Some(child) = arg_list.child(i) {
                         if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
                             let arg_text = &source[child.start_byte()..child.end_byte()];
-                            let alloc_bytes = self.calculate_alloc_bytes(arg_text);
-                            let size = self.calculate_malloc_size(arg_text)?;
+                            let alloc_bytes = buffer_size::calculate_alloc_bytes(arg_text);
+                            let size = buffer_size::calculate_malloc_size(arg_text)?;
                             return Some(BufferInfo {
                                 name: var_name.to_string(),
                                 size,
@@ -3809,8 +3634,8 @@ impl Arr30C {
                     }
                 }
                 if args.len() >= 2 {
-                    let alloc_bytes = self.calculate_alloc_bytes(args[1]);
-                    let size = self.calculate_malloc_size(args[1])?;
+                    let alloc_bytes = buffer_size::calculate_alloc_bytes(args[1]);
+                    let size = buffer_size::calculate_malloc_size(args[1])?;
                     return Some(BufferInfo {
                         name: var_name.to_string(),
                         size,
@@ -3831,8 +3656,8 @@ impl Arr30C {
                     }
                 }
                 if args.len() >= 2 {
-                    if let Some(count) = self.extract_numeric_value(args[0]) {
-                        if let Some(sizeof_val) = self.extract_sizeof_value(args[1]) {
+                    if let Some(count) = buffer_size::extract_numeric_value(args[0]) {
+                        if let Some(sizeof_val) = buffer_size::extract_sizeof_value(args[1]) {
                             return Some(BufferInfo {
                                 name: var_name.to_string(),
                                 size: BufferSize::DynamicCalculated(count),
@@ -4291,7 +4116,7 @@ impl Arr30C {
                         Some(c)
                     } else if count_expr.contains("sizeof") && count_expr.contains('*') {
                         // N*sizeof(T) pattern — evaluate as element count
-                        if let Some(size) = self.calculate_malloc_size(count_expr) {
+                        if let Some(size) = buffer_size::calculate_malloc_size(count_expr) {
                             match size {
                                 BufferSize::Static(s) | BufferSize::DynamicCalculated(s) => Some(s),
                                 _ => None,

@@ -1,4 +1,5 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::buffer_size;
 use crate::manifest::{RuleCategory, Severity};
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -294,18 +295,13 @@ impl Str31C {
                                 || rhs.starts_with("nullptr")
                         };
                         if !is_element_assign {
-                            if let (Ok(a), Ok(b)) =
-                                (captures[1].parse::<usize>(), captures[3].parse::<usize>())
-                            {
-                                let size = match &captures[2] {
-                                    "*" => a.checked_mul(b),
-                                    "+" => a.checked_add(b),
-                                    "-" => a.checked_sub(b),
-                                    _ => None,
-                                };
-                                if let Some(s) = size {
-                                    return Some(s);
-                                }
+                            let size = buffer_size::eval_arith(
+                                captures[1].parse().ok(),
+                                Some(&captures[2]),
+                                captures[3].parse().ok(),
+                            );
+                            if let Some(s) = size {
+                                return Some(s);
                             }
                         }
                     }
@@ -430,14 +426,7 @@ impl Str31C {
                         let a = caps[1].parse::<usize>().ok();
                         let op = caps.get(2).map(|m| m.as_str());
                         let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
-                        let size = match (a, op, b) {
-                            (Some(a), Some("+"), Some(b)) => a.checked_add(b),
-                            (Some(a), Some("-"), Some(b)) => a.checked_sub(b),
-                            (Some(a), Some("*"), Some(b)) => a.checked_mul(b),
-                            (Some(a), None, None) => Some(a),
-                            _ => None,
-                        };
-                        if let Some(n) = size {
+                        if let Some(n) = buffer_size::eval_arith(a, op, b) {
                             return Some(n);
                         }
                     }
@@ -504,14 +493,7 @@ impl Str31C {
                         let a = caps[1].parse::<usize>().ok();
                         let op = caps.get(2).map(|m| m.as_str());
                         let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
-                        let size = match (a, op, b) {
-                            (Some(a), Some("+"), Some(b)) => a.checked_add(b),
-                            (Some(a), Some("-"), Some(b)) => a.checked_sub(b),
-                            (Some(a), Some("*"), Some(b)) => a.checked_mul(b),
-                            (Some(a), None, None) => Some(a),
-                            _ => None,
-                        };
-                        if let Some(s) = size {
+                        if let Some(s) = buffer_size::eval_arith(a, op, b) {
                             return Some(s);
                         }
                     }
