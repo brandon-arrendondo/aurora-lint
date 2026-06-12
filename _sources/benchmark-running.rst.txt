@@ -31,7 +31,9 @@ Table                    Purpose
 ``cwe_metrics``          Pre-computed aggregates per CWE (TP/FP rates)
 ``rule_cwe_breakdown``   Per-rule per-CWE counts
 ``realworld_runs``       Real-world benchmark runs (sqc version, machine)
-``realworld_results``    Per-project per-tool violation counts
+``realworld_results``    Per-project per-tool violation counts (+ codebase_commit)
+``realworld_violations`` Every individual real-world sqc finding (file, line, rule)
+``ground_truth``         Adjudicated TP/FP oracle keyed on (project, commit, file, line, rule)
 =======================  =============================================================
 
 Historical data from ``JULIET_RESULTS.md`` and ``REALWORLD_RESULTS.md`` has been
@@ -142,12 +144,78 @@ Supported tools: ``sqc``, ``cppcheck``, ``clang-tidy``
 
 Supported codebases: ``libcrc``, ``sqlite``, ``mosquitto``, ``curl``, ``hostap``
 
+Per-Codebase Rule Configs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each codebase may carry its own sqc rules manifest in ``conf/realworld/`` (the
+real-world analog of a project shipping its own ``sqc-rules.toml``). The MCP
+server reuses it for **every** run of that codebase via the
+``CODEBASES[<name>]["sqc"]["manifest"]`` registry entry, so rules that do not
+apply are ignored consistently. A codebase with no entry falls back to the
+shared base ``rules_templates/rules-benchmark.toml``. The config is the
+*categorical* filter (disable a whole rule only when it is inapplicable);
+per-finding false positives among enabled rules are recorded in the
+``ground_truth`` oracle instead, so analyzer misfires stay measured rather than
+hidden. See ``conf/realworld/README.md`` for the per-codebase audit workflow.
+``libcrc`` is fully audited (every enabled-rule finding labelled); the four
+large codebases grow their labels incrementally.
+
+Auto-Scoring
+~~~~~~~~~~~~~
+
+When a real-world run completes, ``get_status()`` ingests it and **auto-scores**
+it against the oracle: it writes a ``<run-dir>.score.json`` sidecar and returns
+a one-line measured precision/recall in the status payload (``"measured"``).
+Scoring only joins findings to *existing* labels — it never adjudicates new
+findings. Re-run any time with ``python -m bench realworld-score <RUN>``.
+
 Typical real-world workflow::
 
     1. run_all(tool="sqc")           # Run sqc against all 5 codebases
     2. get_status()                  # Monitor progress
     3. get_results()                 # View all results
     4. compare_runs(base="0.2.6", target="0.2.7")
+
+Real-World Ground-Truth Oracle (measured precision/recall)
+----------------------------------------------------------
+
+Volume deltas and CWE-aware Juliet rates do not predict real-world precision
+(the v0.4.22 audit measured ~2--34% precision for the noisiest rules). The
+``ground_truth`` table is a growing, manually/AI-adjudicated TP/FP oracle for
+the real-world codebases --- the real-world analog of Juliet's
+OMITGOOD/OMITBAD. Because each benchmark checkout is pinned to a fixed git
+SHA, a label keyed on ``(project, codebase_commit, file_path, line, rule_id)``
+stays valid across sqc versions: only the tool changes, never the code. Labels
+are appended over time, never tied to a single run.
+
+CLI::
+
+    python -m bench ground-truth                       # label inventory
+    python -m bench realworld-score [RUN]              # measured precision/recall
+    python -m bench realworld-unlabeled [RUN] --rule R --project P --limit N --seed S
+    python -m bench realworld-import-labels CSV --run RUN [--source TAG] [--update]
+
+``realworld-score`` joins a run's findings to labels for **each project's own
+``codebase_commit``** and reports, per rule and overall:
+
+- **precision** = labeled-TP / (labeled-TP + labeled-FP), over the labeled
+  subset of the run's findings (a sampled estimate; "Label coverage" shows how
+  much of the run is labeled);
+- **recall** = known-TPs flagged / known-TPs --- a known true bug that stops
+  being flagged drops recall, seeding regression detection.
+
+A run whose ``codebase_commit`` has no labels is warned about, not scored.
+
+Incremental adjudication loop (need not be one-shot):
+
+1. ``realworld-unlabeled RUN --rule X --seed S --limit N`` --- pull findings
+   with no label yet (reproducible sample);
+2. adjudicate them (Claude or manual) into a CSV
+   (``rule,idx,project,file,line,verdict,reason``);
+3. ``realworld-import-labels CSV --run RUN`` --- append (existing labels are
+   skipped unless ``--update`` re-adjudicates them).
+
+The first 200 labels were seeded from ``data/precision_audit/adjudication_0.4.22.csv``.
 
 Comparing Across Runs
 ---------------------

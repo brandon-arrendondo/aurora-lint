@@ -65,7 +65,12 @@
 <li class="toctree-l3"><a class="reference internal" href="#cli-alternative">CLI Alternative</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="#real-world-benchmark-tools">Real-World Benchmark Tools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#real-world-benchmark-tools">Real-World Benchmark Tools</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#per-codebase-rule-configs">Per-Codebase Rule Configs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#auto-scoring">Auto-Scoring</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#real-world-ground-truth-oracle-measured-precision-recall">Real-World Ground-Truth Oracle (measured precision/recall)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#comparing-across-runs">Comparing Across Runs</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#juliet">Juliet</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#real-world">Real-World</a></li>
@@ -133,36 +138,6 @@ WAL mode).</p>
 </div>
 <section id="sqlite-schema">
 <h3>SQLite Schema<a class="headerlink" href="#sqlite-schema" title="Link to this heading"></a></h3>
-<table class="docutils align-default">
-<thead>
-<tr class="row-odd"><th class="head"><p>Table</p></th>
-<th class="head"><p>Purpose</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">runs</span></code></p></td>
-<td><p>One row per benchmark (version, SHA, mode, status, machine)</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cwe_scans</span></code></p></td>
-<td><p>One row per CWE per run (file count, violations, duration)</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">violations</span></code></p></td>
-<td><p>Every individual sqc finding with TP/FP classification</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cwe_metrics</span></code></p></td>
-<td><p>Pre-computed aggregates per CWE (TP/FP rates)</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rule_cwe_breakdown</span></code></p></td>
-<td><p>Per-rule per-CWE counts</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">realworld_runs</span></code></p></td>
-<td><p>Real-world benchmark runs (sqc version, machine)</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">realworld_results</span></code></p></td>
-<td><p>Per-project per-tool violation counts</p></td>
-</tr>
-</tbody>
-</table>
 <p>Historical data from <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> and <code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code> has been
 backfilled into the database.</p>
 </section>
@@ -315,6 +290,28 @@ python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </
 </table>
 <p>Supported tools: <code class="docutils literal notranslate"><span class="pre">sqc</span></code>, <code class="docutils literal notranslate"><span class="pre">cppcheck</span></code>, <code class="docutils literal notranslate"><span class="pre">clang-tidy</span></code></p>
 <p>Supported codebases: <code class="docutils literal notranslate"><span class="pre">libcrc</span></code>, <code class="docutils literal notranslate"><span class="pre">sqlite</span></code>, <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code>, <code class="docutils literal notranslate"><span class="pre">curl</span></code>, <code class="docutils literal notranslate"><span class="pre">hostap</span></code></p>
+<section id="per-codebase-rule-configs">
+<h3>Per-Codebase Rule Configs<a class="headerlink" href="#per-codebase-rule-configs" title="Link to this heading"></a></h3>
+<p>Each codebase may carry its own sqc rules manifest in <code class="docutils literal notranslate"><span class="pre">conf/realworld/</span></code> (the
+real-world analog of a project shipping its own <code class="docutils literal notranslate"><span class="pre">sqc-rules.toml</span></code>). The MCP
+server reuses it for <strong>every</strong> run of that codebase via the
+<code class="docutils literal notranslate"><span class="pre">CODEBASES[&lt;name&gt;][&quot;sqc&quot;][&quot;manifest&quot;]</span></code> registry entry, so rules that do not
+apply are ignored consistently. A codebase with no entry falls back to the
+shared base <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-benchmark.toml</span></code>. The config is the
+<em>categorical</em> filter (disable a whole rule only when it is inapplicable);
+per-finding false positives among enabled rules are recorded in the
+<code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> oracle instead, so analyzer misfires stay measured rather than
+hidden. See <code class="docutils literal notranslate"><span class="pre">conf/realworld/README.md</span></code> for the per-codebase audit workflow.
+<code class="docutils literal notranslate"><span class="pre">libcrc</span></code> is fully audited (every enabled-rule finding labelled); the four
+large codebases grow their labels incrementally.</p>
+</section>
+<section id="auto-scoring">
+<h3>Auto-Scoring<a class="headerlink" href="#auto-scoring" title="Link to this heading"></a></h3>
+<p>When a real-world run completes, <code class="docutils literal notranslate"><span class="pre">get_status()</span></code> ingests it and <strong>auto-scores</strong>
+it against the oracle: it writes a <code class="docutils literal notranslate"><span class="pre">&lt;run-dir&gt;.score.json</span></code> sidecar and returns
+a one-line measured precision/recall in the status payload (<code class="docutils literal notranslate"><span class="pre">&quot;measured&quot;</span></code>).
+Scoring only joins findings to <em>existing</em> labels — it never adjudicates new
+findings. Re-run any time with <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-score</span> <span class="pre">&lt;RUN&gt;</span></code>.</p>
 <p>Typical real-world workflow:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mf">1.</span> <span class="n">run_all</span><span class="p">(</span><span class="n">tool</span><span class="o">=</span><span class="s2">&quot;sqc&quot;</span><span class="p">)</span>           <span class="c1"># Run sqc against all 5 codebases</span>
 <span class="mf">2.</span> <span class="n">get_status</span><span class="p">()</span>                  <span class="c1"># Monitor progress</span>
@@ -322,6 +319,45 @@ python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </
 <span class="mf">4.</span> <span class="n">compare_runs</span><span class="p">(</span><span class="n">base</span><span class="o">=</span><span class="s2">&quot;0.2.6&quot;</span><span class="p">,</span> <span class="n">target</span><span class="o">=</span><span class="s2">&quot;0.2.7&quot;</span><span class="p">)</span>
 </pre></div>
 </div>
+</section>
+</section>
+<section id="real-world-ground-truth-oracle-measured-precision-recall">
+<h2>Real-World Ground-Truth Oracle (measured precision/recall)<a class="headerlink" href="#real-world-ground-truth-oracle-measured-precision-recall" title="Link to this heading"></a></h2>
+<p>Volume deltas and CWE-aware Juliet rates do not predict real-world precision
+(the v0.4.22 audit measured ~2–34% precision for the noisiest rules). The
+<code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> table is a growing, manually/AI-adjudicated TP/FP oracle for
+the real-world codebases — the real-world analog of Juliet’s
+OMITGOOD/OMITBAD. Because each benchmark checkout is pinned to a fixed git
+SHA, a label keyed on <code class="docutils literal notranslate"><span class="pre">(project,</span> <span class="pre">codebase_commit,</span> <span class="pre">file_path,</span> <span class="pre">line,</span> <span class="pre">rule_id)</span></code>
+stays valid across sqc versions: only the tool changes, never the code. Labels
+are appended over time, never tied to a single run.</p>
+<p>CLI:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">ground</span><span class="o">-</span><span class="n">truth</span>                       <span class="c1"># label inventory</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">realworld</span><span class="o">-</span><span class="n">score</span> <span class="p">[</span><span class="n">RUN</span><span class="p">]</span>              <span class="c1"># measured precision/recall</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">realworld</span><span class="o">-</span><span class="n">unlabeled</span> <span class="p">[</span><span class="n">RUN</span><span class="p">]</span> <span class="o">--</span><span class="n">rule</span> <span class="n">R</span> <span class="o">--</span><span class="n">project</span> <span class="n">P</span> <span class="o">--</span><span class="n">limit</span> <span class="n">N</span> <span class="o">--</span><span class="n">seed</span> <span class="n">S</span>
+<span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">realworld</span><span class="o">-</span><span class="n">import</span><span class="o">-</span><span class="n">labels</span> <span class="n">CSV</span> <span class="o">--</span><span class="n">run</span> <span class="n">RUN</span> <span class="p">[</span><span class="o">--</span><span class="n">source</span> <span class="n">TAG</span><span class="p">]</span> <span class="p">[</span><span class="o">--</span><span class="n">update</span><span class="p">]</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">realworld-score</span></code> joins a run’s findings to labels for <strong>each project’s own
+``codebase_commit``</strong> and reports, per rule and overall:</p>
+<ul class="simple">
+<li><p><strong>precision</strong> = labeled-TP / (labeled-TP + labeled-FP), over the labeled
+subset of the run’s findings (a sampled estimate; “Label coverage” shows how
+much of the run is labeled);</p></li>
+<li><p><strong>recall</strong> = known-TPs flagged / known-TPs — a known true bug that stops
+being flagged drops recall, seeding regression detection.</p></li>
+</ul>
+<p>A run whose <code class="docutils literal notranslate"><span class="pre">codebase_commit</span></code> has no labels is warned about, not scored.</p>
+<p>Incremental adjudication loop (need not be one-shot):</p>
+<ol class="arabic simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">realworld-unlabeled</span> <span class="pre">RUN</span> <span class="pre">--rule</span> <span class="pre">X</span> <span class="pre">--seed</span> <span class="pre">S</span> <span class="pre">--limit</span> <span class="pre">N</span></code> — pull findings
+with no label yet (reproducible sample);</p></li>
+<li><p>adjudicate them (Claude or manual) into a CSV
+(<code class="docutils literal notranslate"><span class="pre">rule,idx,project,file,line,verdict,reason</span></code>);</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">realworld-import-labels</span> <span class="pre">CSV</span> <span class="pre">--run</span> <span class="pre">RUN</span></code> — append (existing labels are
+skipped unless <code class="docutils literal notranslate"><span class="pre">--update</span></code> re-adjudicates them).</p></li>
+</ol>
+<p>The first 200 labels were seeded from <code class="docutils literal notranslate"><span class="pre">data/precision_audit/adjudication_0.4.22.csv</span></code>.</p>
 </section>
 <section id="comparing-across-runs">
 <h2>Comparing Across Runs<a class="headerlink" href="#comparing-across-runs" title="Link to this heading"></a></h2>
