@@ -1058,6 +1058,96 @@ Five principles emerged from this iterative process:
         our experience, earned the claim of working on real code.
 \end{enumerate}
 
+\subsection{The Residual Frontier: Provenance over Proof}
+\label{sec:provenance-frontier}
+
+The five principles above are all \emph{opt-out} refinements: each
+suppresses a warning that sqc cannot prove dangerous.  A complete
+file-at-a-time audit of SQLite---220 files at commit
+\texttt{b1a73ba34d}, with every finding manually adjudicated---shows
+where this philosophy reaches its limit.  INT32-C (signed integer
+overflow) emitted 4{,}420 false positives against 15 true positives
+(0.3\% precision), alone accounting for roughly one fifth of all of
+sqc's false positives on the project.  Tracing the flagged source
+lines is clarifying.  Every false positive is plain arithmetic on a
+\emph{bounded} local integer---a register index (\texttt{regData-1}),
+a statement counter (\texttt{db->nStatement-{}-}), a small loop count
+(\texttt{nIdx+1}), a page-size sum (\texttt{szPage+szExtra}).  All 15
+true positives involve an operand derived from \emph{untrusted,
+unbounded} input: a varint decoded from a database blob, an
+attacker-controlled cell count, a length read from a file, a value
+parsed from the command line.  The discriminator is not the operation
+but the \emph{provenance} of its operands.
+
+This is not a value-range tuning problem.  sqc's VRA already proves
+safety wherever a bound is visible; the residual false positives are
+exactly the cases where the bound is a program invariant the analyzer
+cannot see---a \texttt{SQLITE\_LIMIT} constant, an \texttt{assert}, a
+data-structure size.  The bounded \texttt{nIdx+1} and the genuinely
+dangerous \texttt{data+1} (where \texttt{data} came from
+\texttt{atoi}) are \emph{syntactically identical}; only the origin of
+the variable distinguishes them, so no amount of local proof closes
+the gap.
+
+The static-analysis literature splits cleanly on how to resolve this
+(\cref{tab:optout-optin}).  Sound abstract-interpretation tools---%
+Frama-C's Eva plugin~\cite{frama-c}, Infer's Inferbo buffer-overrun
+domain~\cite{inferbo}, and CodeQL's range-analysis
+library~\cite{codeql-range}---are \emph{opt-out}: they compute an
+over-approximated (often \emph{symbolic}) interval for every variable
+and emit an alarm unless they can prove the operation safe.  This
+guarantees no false negatives but produces precisely the
+bounded-counter alarms above; Inferbo's authors describe the outcome
+as a deliberate ``balancing act'' and ship both a heuristic
+post-filter and graded-confidence issue tiers
+(\texttt{INTEGER\_OVERFLOW\_L1}\,$\ldots$\,\texttt{L5}, where the tier
+encodes interval certainty and only the high-confidence tiers are on
+by default).  Precision-oriented tools take the opposite stance.
+ELAID~\cite{elaid}, the Clang Static Analyzer's taint
+checker~\cite{clang-taint}, and INDIO~\cite{indio} are \emph{opt-in}:
+an arithmetic operation becomes a candidate only when one of its
+operands is tainted by untrusted input.  On ELAID's evaluation this
+gate alone funnels away roughly 98\% of integer operations before any
+overflow reasoning runs.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Model} & \textbf{Fires when} & \textbf{Representative tools} \\
+\midrule
+Opt-out & cannot prove safe & Eva, Inferbo, CodeQL \\
+Opt-in  & operand is tainted & ELAID, Clang-taint, INDIO \\
+\bottomrule
+\end{tabular}
+\caption{Two design philosophies for integer-overflow reporting.
+sqc's INT rules are currently opt-out; the residual SQLite false
+positives motivate a shift toward opt-in provenance gating.}
+\label{tab:optout-optin}
+\end{table}
+
+sqc's INT rules are currently opt-out, which puts them in direct
+tension with our own first principle---\emph{don't flag when
+uncertain}---for the bounded-counter case, where uncertainty about a
+variable's bound is silently treated as risk.  The indicated direction
+is the hybrid that the precision-oriented literature converges on:
+gate reporting on operand provenance, reusing sqc's existing
+cross-function taint summaries (\cref{sec:prescan}), and then use the
+VRA interval bounds as a prove-safe-to-suppress filter over the
+survivors---one reproduced study reports such an SMT-backed filter
+removing about 68\% of the remaining false alarms~\cite{kim-filter},
+though with high per-program variance.  Unlike the IO2BO checkers
+above, a general INT30/31/32-C rule has no single allocation
+\emph{sink} to gate on; for sqc the arithmetic operation is itself the
+sink, so the gate reduces to ``is any operand tainted or
+provably-large.''  The cost is recall: opt-in gating can miss an
+overflow whose tainted operand the analysis fails to mark, especially
+across function boundaries.  That tradeoff is directly measurable on
+Juliet, and we treat a held INT detection rate there as the
+precondition for deploying the change---consistent with our practice
+of validating every change on both benchmarks.
+
 %% ============================================================
 \section{Worked Example: Null Dereference Detection}
 \label{sec:worked-example}
@@ -1157,7 +1247,12 @@ bounded by data-structure sizes, and allocation checks placed on the
 line after the allocation.  This is the strongest evidence for
 treating Juliet as a rough approximation: a rule can be simultaneously
 well-tuned on Juliet and produce thousands of false positives per
-project in deployment.
+project in deployment.  A subsequent \emph{complete} audit of one
+project---every INT32-C finding across all 220 SQLite files
+adjudicated, rather than a 50-finding sample---sharpens the figure for
+the worst rule to 0.3\% precision and isolates a single root cause,
+operand provenance; we treat that case in detail in
+\cref{sec:provenance-frontier}.
 
 %% ============================================================
 \section{Related Work}
@@ -1192,6 +1287,18 @@ abstract interpretation (EVA plugin).  On overlapping CWEs
 precision, including 100\% on numeric truncation.  However, it
 requires per-function entry points, takes $\sim$6$\times$ longer per
 file, and covers 6 CWEs here vs.\ SqC's 118.
+
+\textbf{Integer-overflow detection} specifically divides along the
+opt-out/opt-in axis of \cref{sec:provenance-frontier}.  The sound
+abstract-interpretation tools above (Eva, Inferbo~\cite{inferbo}) and
+CodeQL's range analysis~\cite{codeql-range} report unless they can
+prove safety; ELAID~\cite{elaid}, INDIO~\cite{indio}, and the Clang
+taint checker~\cite{clang-taint} report only when an operand is
+tainted, and ELAID adds an SMT prove-safe filter in the spirit of
+Kim~et~al.~\cite{kim-filter}.  sqc's INT rules are presently opt-out;
+\cref{sec:provenance-frontier} argues for migrating them toward the
+provenance-gated hybrid, reusing the cross-function taint summaries
+sqc already maintains.
 
 The coverage gap is notable: Kaner~\cite{kaner} argues that 100\%
 coverage of any single metric is misleading---what matters is
@@ -1306,6 +1413,37 @@ B.~Marick.
 R.~L. Graham.
 \newblock Bounds on multiprocessing timing anomalies.
 \newblock \emph{SIAM Journal on Applied Mathematics}, 17(2):416--429, 1969.
+
+\bibitem{inferbo}
+{Facebook Research}.
+\newblock {Inferbo: Infer-based buffer overrun analyzer}.
+\newblock \url{https://research.facebook.com/blog/2017/2/inferbo-infer-based-buffer-overrun-analyzer/}, 2017.
+
+\bibitem{codeql-range}
+{GitHub}.
+\newblock {Using range analysis (C/C++) --- CodeQL documentation}.
+\newblock \url{https://codeql.github.com/docs/codeql-language-guides/using-range-analsis-in-cpp/}, 2024.
+
+\bibitem{elaid}
+{ELAID: Detecting integer-overflow-to-buffer-overflow vulnerabilities by
+  light-weight and accurate static analysis}.
+\newblock \emph{Cybersecurity}, 3, Article~11, 2020.
+\newblock \url{https://doi.org/10.1186/s42400-020-00058-2}.
+
+\bibitem{clang-taint}
+{LLVM Project}.
+\newblock {Taint Analysis Configuration --- Clang Static Analyzer documentation}.
+\newblock \url{https://clang.llvm.org/docs/analyzer/user-docs/TaintAnalysisConfiguration.html}, 2023.
+
+\bibitem{indio}
+{Improving accuracy of static integer overflow detection in binary}.
+\newblock In \emph{Research in Attacks, Intrusions, and Defenses (RAID)},
+  pages 247--269. Springer, 2015.
+
+\bibitem{kim-filter}
+{Filtering false alarms of buffer overflow analysis using SMT solvers}.
+\newblock \emph{Information and Software Technology}, 52(2):210--219, 2010.
+\newblock \url{https://doi.org/10.1016/j.infsof.2009.10.004}.
 
 \end{thebibliography}
 
