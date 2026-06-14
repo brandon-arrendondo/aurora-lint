@@ -9,7 +9,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::std_functions;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Int32C {
@@ -19,6 +19,10 @@ pub struct Int32C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    /// Globals known to be written by a tainted function (file → function name
+    /// set). Used by the provenance gate to treat a global operand fed from an
+    /// untrusted source as risky.
+    global_writers: RefCell<HashMap<String, HashSet<String>>>,
 }
 
 impl Int32C {
@@ -30,6 +34,7 @@ impl Int32C {
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
             function_summaries: RefCell::new(HashMap::new()),
+            global_writers: RefCell::new(HashMap::new()),
         }
     }
 
@@ -71,6 +76,7 @@ impl CertRule for Int32C {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.global_writers.borrow_mut() = context.global_writers.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -290,6 +296,13 @@ impl Int32C {
                     return;
                 }
 
+                // Opt-in provenance gate: only flag when an operand derives
+                // from untrusted/unbounded input. Bounded local state (counters,
+                // indices, struct-field counts) cannot reach the type limit here.
+                if !self.has_risky_operand_provenance(node, source) {
+                    return;
+                }
+
                 // Skip if using wider type (cast to long long before addition)
                 let left_text = get_node_text(&left, source);
                 let right_text = get_node_text(&right, source);
@@ -385,6 +398,11 @@ impl Int32C {
                     return; // Safe - constant expression
                 }
 
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
+                    return;
+                }
+
                 // Skip if using wider type (cast to long long before subtraction)
                 if self.has_wider_cast(left_text, right_text) {
                     return;
@@ -457,6 +475,11 @@ impl Int32C {
             if self.is_signed_type(&left_type) || self.is_signed_type(&right_type) {
                 // Skip if this operation is part of an overflow check comparison
                 if self.is_part_of_comparison(node, source) {
+                    return;
+                }
+
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
                     return;
                 }
 
@@ -554,10 +577,14 @@ impl Int32C {
                     || self.could_be_int_min(&left, source);
 
                 // Also flag generic signed division of variables (could be INT_MIN / -1 at runtime)
-                // but skip if the right operand (divisor) is unsigned — can't be -1
+                // but skip if the right operand (divisor) is unsigned — can't be -1.
+                // Opt-in provenance gate: a bounded local divisor cannot be -1
+                // and a bounded dividend cannot be INT_MIN, so require risky
+                // provenance for the generic (non-literal) case.
                 let is_variable_division = left.kind() == "identifier"
                     && right.kind() == "identifier"
-                    && !self.is_unsigned_type(&right_type);
+                    && !self.is_unsigned_type(&right_type)
+                    && self.has_risky_operand_provenance(node, source);
 
                 if (has_explicit_risk || is_variable_division)
                     && !self.has_division_overflow_check(node, source)
@@ -618,10 +645,12 @@ impl Int32C {
                     && (right_text == "-1" || right_text.contains("-1"));
 
                 // Also flag generic signed modulo of variables (could be INT_MIN % -1 at runtime)
-                // but skip if the right operand (divisor) is unsigned — can't be -1
+                // but skip if the right operand (divisor) is unsigned — can't be -1.
+                // Opt-in provenance gate (see check_division).
                 let is_variable_modulo = left.kind() == "identifier"
                     && right.kind() == "identifier"
-                    && !self.is_unsigned_type(&right_type);
+                    && !self.is_unsigned_type(&right_type)
+                    && self.has_risky_operand_provenance(node, source);
 
                 if (has_explicit_risk || is_variable_modulo)
                     && !self.has_modulo_overflow_check(node, source)
@@ -663,8 +692,13 @@ impl Int32C {
                 return;
             }
 
-            // Check for negation of signed integers, especially -INT_MIN which causes overflow
-            if self.is_signed_type(&arg_type) && !self.has_negation_overflow_check(node, source) {
+            // Check for negation of signed integers, especially -INT_MIN which causes overflow.
+            // Opt-in provenance gate: only INT_MIN negates to overflow, which a
+            // bounded local operand cannot reach.
+            if self.is_signed_type(&arg_type)
+                && self.has_risky_operand_provenance(node, source)
+                && !self.has_negation_overflow_check(node, source)
+            {
                 let start_point = node.start_position();
                 let expr_text = get_node_text(node, source);
 
@@ -724,6 +758,11 @@ impl Int32C {
                     return;
                 }
 
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
+                    return;
+                }
+
                 if !self.has_shift_overflow_check(node, source) {
                     let start_point = node.start_position();
                     let expr_text = get_node_text(node, source);
@@ -771,6 +810,11 @@ impl Int32C {
                 // Skip if constant evaluation proves the result fits in the operand type's range
                 let vra_bits = Self::signed_type_bits(&left_type, &left_type);
                 if self.compound_expr_fits_signed(node, source, "+", vra_bits) {
+                    return;
+                }
+
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
                     return;
                 }
 
@@ -826,6 +870,11 @@ impl Int32C {
                     return;
                 }
 
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
+                    return;
+                }
+
                 if !self.has_overflow_check_compound(node, source) {
                     let start_point = node.start_position();
                     let expr_text = get_node_text(node, source);
@@ -873,6 +922,11 @@ impl Int32C {
                 // Skip if constant evaluation proves the result fits in the operand type's range
                 let vra_bits = Self::signed_type_bits(&left_type, &left_type);
                 if self.compound_expr_fits_signed(node, source, "*", vra_bits) {
+                    return;
+                }
+
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
                     return;
                 }
 
@@ -994,6 +1048,11 @@ impl Int32C {
                     return;
                 }
 
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
+                    return;
+                }
+
                 if !self.has_overflow_check_compound(node, source) {
                     let start_point = node.start_position();
                     let expr_text = get_node_text(node, source);
@@ -1032,6 +1091,12 @@ impl Int32C {
             }
 
             if self.is_signed_type(&arg_type) {
+                // Opt-in provenance gate: a bounded counter cannot reach INT_MAX
+                // (++) or INT_MIN (--); only an untrusted/unbounded operand can.
+                if !self.has_risky_operand_provenance(node, source) {
+                    return;
+                }
+
                 // Skip if this is part of a safe for loop (bounded, starting from small values)
                 if self.is_in_safe_for_loop(node, source) {
                     return;
@@ -1815,6 +1880,113 @@ impl Int32C {
         }
     }
 
+    /// Opt-in provenance gate (task 140).
+    ///
+    /// Returns true when at least one operand of this arithmetic node derives
+    /// from untrusted or unbounded input — a full-range parser (`atoi`,
+    /// `strtol`, `rand`, `RAND32`, ...), an environment/IO taint source
+    /// (`scanf`, `recv`, `fgets`, ...), a tainted-summary callee return, or a
+    /// global written by a tainted function. When this returns false, every
+    /// operand is bounded local state (loop counters, register/cursor indices,
+    /// struct-field counts, page-size offsets) and the operation is treated as
+    /// practically non-overflowing.
+    ///
+    /// This flips INT32-C from "fire unless proven safe" (opt-out abstract
+    /// interpretation) to "fire only when provenance is risky" (opt-in taint),
+    /// matching precision-oriented tools (ELAID, the Clang taint checker) and
+    /// eliminating the bounded-counter false positives that dominate hardened
+    /// codebases such as SQLite.
+    ///
+    /// When no cross-file context is present (`function_summaries` empty — e.g.
+    /// unit tests or a single-file run) the gate is a no-op and returns true,
+    /// preserving the rule's legacy behavior and existing test expectations.
+    fn has_risky_operand_provenance(&self, node: &Node, source: &str) -> bool {
+        let summaries = self.function_summaries.borrow();
+        if summaries.is_empty() {
+            return true;
+        }
+        let func = match ast_utils::find_containing_function(node) {
+            Some(f) => f,
+            None => return true,
+        };
+        let body = match func.child_by_field_name("body") {
+            Some(b) => b,
+            None => return true,
+        };
+
+        let mut operands = Vec::new();
+        if let Some(l) = node.child_by_field_name("left") {
+            operands.push(l);
+        }
+        if let Some(r) = node.child_by_field_name("right") {
+            operands.push(r);
+        }
+        if let Some(a) = node.child_by_field_name("argument") {
+            operands.push(a);
+        }
+
+        operands
+            .iter()
+            .any(|op| self.operand_is_risky(op, &body, &summaries, source))
+    }
+
+    /// Classify a single operand subtree's provenance. See
+    /// [`Self::has_risky_operand_provenance`] for the policy.
+    fn operand_is_risky(
+        &self,
+        op: &Node,
+        body: &Node,
+        summaries: &HashMap<String, FunctionSummary>,
+        source: &str,
+    ) -> bool {
+        match op.kind() {
+            "call_expression" => match op.child_by_field_name("function") {
+                Some(f) => callee_is_risky_source(&get_node_text(&f, source), summaries),
+                None => false,
+            },
+            "identifier" => {
+                let name = get_node_text(op, source);
+                body_feeds_var_from_risky_source(body, name, summaries, source)
+                    || self.global_is_tainted(name, summaries)
+            }
+            "parenthesized_expression" => match op.named_child(0) {
+                Some(inner) => self.operand_is_risky(&inner, body, summaries, source),
+                None => false,
+            },
+            "cast_expression" => match op.child_by_field_name("value") {
+                Some(value) => self.operand_is_risky(&value, body, summaries, source),
+                None => false,
+            },
+            "binary_expression" => {
+                op.child_by_field_name("left")
+                    .is_some_and(|l| self.operand_is_risky(&l, body, summaries, source))
+                    || op
+                        .child_by_field_name("right")
+                        .is_some_and(|r| self.operand_is_risky(&r, body, summaries, source))
+            }
+            "unary_expression" | "update_expression" => match op.child_by_field_name("argument") {
+                Some(arg) => self.operand_is_risky(&arg, body, summaries, source),
+                None => false,
+            },
+            // number_literal, field_expression, subscript_expression, etc. are
+            // bounded local state — the dominant false-positive class.
+            _ => false,
+        }
+    }
+
+    /// True when `name` is a file-scope global written by at least one tainted
+    /// function (covers Juliet `_68`-style global-channel data flow and real
+    /// configuration globals fed from the environment).
+    fn global_is_tainted(&self, name: &str, summaries: &HashMap<String, FunctionSummary>) -> bool {
+        let writers = self.global_writers.borrow();
+        match writers.get(name) {
+            Some(ws) => ws.iter().any(|w| {
+                matches!(summaries.get(w), Some(s) if s.has_env03_taint_source || s.returns_tainted)
+            }),
+            None => false,
+        }
+    }
+
     /// Returns true if this binary_expression is `opaque + small_literal` or
     /// `small_literal + opaque`, where "opaque" is a call_expression or an
     /// identifier whose value comes from a call_expression, AND the callee is
@@ -1887,8 +2059,14 @@ impl Int32C {
             return false;
         }
 
-        // Local function with proven wide return range: don't suppress
+        // Local function carrying taint (directly or transitively) returns
+        // untrusted values; or one with a proven wide return range: don't
+        // suppress. Keeps the small-increment heuristic consistent with the
+        // provenance gate for cross-function tainted-return data flow.
         if let Some(summary) = summaries.get(&callee) {
+            if summary.has_env03_taint_source || summary.returns_tainted {
+                return false;
+            }
             if let Some(ref return_range) = summary.return_range {
                 let signed_danger = i32::MAX as i64 - 10;
                 if return_range.max >= signed_danger {
@@ -2605,6 +2783,176 @@ fn is_simple_c_identifier(s: &str) -> bool {
             .next()
             .is_some_and(|c| c.is_alphabetic() || c == '_')
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// True when `callee` (any function-reference text) names a source of
+/// untrusted or full-range values: a full-range integer parser
+/// (`atoi`/`strtol`/`rand`/`RAND32`/`ntohl`), a standard environment/IO taint
+/// source (`scanf`/`recv`/`fgets`/`getenv`/...), or a project-local function
+/// whose prescan summary carries taint (`has_env03_taint_source` directly or
+/// `returns_tainted` transitively). Used by the INT32-C provenance gate.
+fn callee_is_risky_source(callee: &str, summaries: &HashMap<String, FunctionSummary>) -> bool {
+    let ident = callee
+        .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()
+        .unwrap_or(callee)
+        .trim();
+    if std_functions::is_full_range_return_function(ident) {
+        return true;
+    }
+    if crate::analyze::function_summary::ENV03_TAINT_SOURCE_FUNCTIONS.contains(&ident) {
+        return true;
+    }
+    matches!(summaries.get(ident), Some(s) if s.has_env03_taint_source || s.returns_tainted)
+}
+
+/// Walk `body` for any evidence that `var_name` is fed from a risky source:
+///   - `var = riskyCall(...)` or `T var = riskyCall(...)` (return-value flow), or
+///   - `riskySource(..., &var, ...)` / `riskySource(..., var, ...)` (fill by
+///     reference, e.g. `fscanf(stdin, "%d", &data)`, `recv(fd, buf, ...)`).
+fn body_feeds_var_from_risky_source(
+    body: &Node,
+    var_name: &str,
+    summaries: &HashMap<String, FunctionSummary>,
+    source: &str,
+) -> bool {
+    let mut found = false;
+    walk_for_risky_feed(body, var_name, summaries, source, &mut found);
+    found
+}
+
+fn walk_for_risky_feed(
+    node: &Node,
+    var_name: &str,
+    summaries: &HashMap<String, FunctionSummary>,
+    source: &str,
+    found: &mut bool,
+) {
+    if *found {
+        return;
+    }
+    match node.kind() {
+        // var = riskyCall(...)
+        "assignment_expression" => {
+            if let (Some(lhs), Some(rhs)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                if get_node_text(&lhs, source).trim() == var_name
+                    && rhs_is_risky_call(&rhs, summaries, source)
+                {
+                    *found = true;
+                    return;
+                }
+            }
+        }
+        // T var = riskyCall(...)
+        "init_declarator" => {
+            if let (Some(decl), Some(value)) = (
+                node.child_by_field_name("declarator"),
+                node.child_by_field_name("value"),
+            ) {
+                if init_declarator_name(&decl, source).as_deref() == Some(var_name)
+                    && rhs_is_risky_call(&value, summaries, source)
+                {
+                    *found = true;
+                    return;
+                }
+            }
+        }
+        // riskySource(..., &var, ...) — fill by reference
+        "call_expression" => {
+            if let Some(f) = node.child_by_field_name("function") {
+                if callee_is_risky_source(&get_node_text(&f, source), summaries) {
+                    if let Some(args) = node.child_by_field_name("arguments") {
+                        if args_reference_var(&args, var_name, source) {
+                            *found = true;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            walk_for_risky_feed(&child, var_name, summaries, source, found);
+            if *found {
+                return;
+            }
+        }
+    }
+}
+
+/// Resolve the bare identifier inside a (possibly pointer/array-wrapped)
+/// declarator.
+fn init_declarator_name(decl: &Node, source: &str) -> Option<String> {
+    let mut current = *decl;
+    loop {
+        if current.kind() == "identifier" || current.kind() == "field_identifier" {
+            return Some(get_node_text(&current, source).trim().to_string());
+        }
+        match current.child_by_field_name("declarator") {
+            Some(inner) => current = inner,
+            None => return None,
+        }
+    }
+}
+
+/// True when `rhs`, after stripping casts/parens, is a call to a risky source.
+fn rhs_is_risky_call(
+    rhs: &Node,
+    summaries: &HashMap<String, FunctionSummary>,
+    source: &str,
+) -> bool {
+    let mut node = *rhs;
+    loop {
+        match node.kind() {
+            "parenthesized_expression" => match node.named_child(0) {
+                Some(inner) => node = inner,
+                None => return false,
+            },
+            "cast_expression" => match node.child_by_field_name("value") {
+                Some(value) => node = value,
+                None => return false,
+            },
+            "call_expression" => {
+                return match node.child_by_field_name("function") {
+                    Some(f) => callee_is_risky_source(&get_node_text(&f, source), summaries),
+                    None => false,
+                };
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// True when the argument list contains a reference to `var_name` (as a bare
+/// identifier, `&var`, or nested within an argument expression).
+fn args_reference_var(args: &Node, var_name: &str, source: &str) -> bool {
+    let mut found = false;
+    find_identifier(args, var_name, source, &mut found);
+    found
+}
+
+fn find_identifier(node: &Node, var_name: &str, source: &str, found: &mut bool) {
+    if *found {
+        return;
+    }
+    if node.kind() == "identifier" && get_node_text(node, source).trim() == var_name {
+        *found = true;
+        return;
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            find_identifier(&child, var_name, source, found);
+            if *found {
+                return;
+            }
+        }
+    }
 }
 
 /// Recognizes common short unsigned typedef names: u8, u16, u32, u64, u128.
