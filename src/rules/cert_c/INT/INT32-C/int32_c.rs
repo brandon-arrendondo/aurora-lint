@@ -2865,7 +2865,9 @@ fn callee_is_risky_source(callee: &str, summaries: &HashMap<String, FunctionSumm
         .next()
         .unwrap_or(callee)
         .trim();
-    if std_functions::is_full_range_return_function(ident) {
+    if std_functions::is_full_range_return_function(ident)
+        || std_functions::is_untrusted_decode_function(ident)
+    {
         return true;
     }
     if crate::analyze::function_summary::ENV03_TAINT_SOURCE_FUNCTIONS.contains(&ident) {

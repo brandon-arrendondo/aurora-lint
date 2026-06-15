@@ -339,3 +339,37 @@ pub fn is_full_range_return_function(name: &str) -> bool {
         | "ntohl" | "ntohs"
     )
 }
+
+/// Returns true if the function decodes an integer from an untrusted/stored
+/// byte stream — a serialized length, count, or offset whose value an attacker
+/// can influence. Distinct from [`is_full_range_return_function`] (which covers
+/// generic libc parsers/RNG): this is the deserialization category that the
+/// SQLite real-world audit flagged as the dominant true-positive *and*
+/// false-negative source ("untrusted length/count from varint / column-bytes /
+/// page bytes drives a read or arithmetic without a bound check"). Recognizing
+/// these as risky sources lets the INT32-C provenance gate keep firing on the
+/// genuine decode-path overflows while still suppressing bounded local
+/// counters.
+///
+/// The names span varint decoders, fixed-width byte-buffer integer readers, and
+/// stored-value accessors — patterns common to serialization-heavy C
+/// (SQLite, protobuf-style codecs, on-disk/wire formats).
+pub fn is_untrusted_decode_function(name: &str) -> bool {
+    matches!(
+        name,
+        // Varint decoders (return/yield attacker-controlled integers)
+        "getVarint" | "getVarint32"
+        | "sqlite3GetVarint" | "sqlite3GetVarint32"
+        | "sqlite3Fts3GetVarint" | "sqlite3Fts3GetVarint32" | "sqlite3Fts3GetVarintU"
+        | "fts3GetVarint" | "fts3GetVarint32"
+        | "sqlite3Fts5GetVarint" | "fts5GetVarint"
+        | "sessionVarintGet"
+        // Fixed-width integer reads from an untrusted byte buffer
+        | "get2byte" | "get4byte" | "sqlite3Get4byte" | "sqlite3Get2byte"
+        // Stored-value accessors: lengths/ints from DB rows the caller does not control
+        | "sqlite3_value_int" | "sqlite3_value_int64"
+        | "sqlite3_value_bytes" | "sqlite3_value_bytes16"
+        | "sqlite3_column_int" | "sqlite3_column_int64"
+        | "sqlite3_column_bytes" | "sqlite3_column_bytes16"
+    )
+}
