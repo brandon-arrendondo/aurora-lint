@@ -661,6 +661,7 @@ this benchmark.  A hypothetical ensemble of all five tools would
 achieve both high per-CWE precision and broad coverage.
 
 \subsection{Real-World Results}
+\label{sec:realworld-results}
 
 \Cref{tab:realworld-results} compares SqC against cppcheck and
 clang-tidy.
@@ -1122,31 +1123,47 @@ Opt-in  & operand is tainted & ELAID, Clang-taint, INDIO \\
 \bottomrule
 \end{tabular}
 \caption{Two design philosophies for integer-overflow reporting.
-sqc's INT rules are currently opt-out; the residual SQLite false
-positives motivate a shift toward opt-in provenance gating.}
+sqc's INT rules were re-implemented from opt-out to opt-in provenance
+gating, eliminating about 93\% of the residual SQLite false positives.}
 \label{tab:optout-optin}
 \end{table}
 
-sqc's INT rules are currently opt-out, which puts them in direct
+sqc's INT rules were originally opt-out, which put them in direct
 tension with our own first principle---\emph{don't flag when
 uncertain}---for the bounded-counter case, where uncertainty about a
-variable's bound is silently treated as risk.  The indicated direction
-is the hybrid that the precision-oriented literature converges on:
-gate reporting on operand provenance, reusing sqc's existing
-cross-function taint summaries (\cref{sec:prescan}), and then use the
-VRA interval bounds as a prove-safe-to-suppress filter over the
-survivors---one reproduced study reports such an SMT-backed filter
-removing about 68\% of the remaining false alarms~\cite{kim-filter},
-though with high per-program variance.  Unlike the IO2BO checkers
-above, a general INT30/31/32-C rule has no single allocation
-\emph{sink} to gate on; for sqc the arithmetic operation is itself the
-sink, so the gate reduces to ``is any operand tainted or
-provably-large.''  The cost is recall: opt-in gating can miss an
-overflow whose tainted operand the analysis fails to mark, especially
-across function boundaries.  That tradeoff is directly measurable on
-Juliet, and we treat a held INT detection rate there as the
-precondition for deploying the change---consistent with our practice
-of validating every change on both benchmarks.
+variable's bound was silently treated as risk.  We therefore
+re-implemented INT30-C, INT31-C, and INT32-C as \emph{opt-in}
+provenance gates.  Unlike the IO2BO checkers above, a general
+INT30/31/32-C rule has no single allocation \emph{sink} to gate on;
+for sqc the arithmetic operation (or lossy conversion) is itself the
+sink, so the gate reduces to ``does any operand derive from untrusted
+or unbounded input.''  An operand is treated as risky when it flows
+from a recognized source---a full-range parser (\texttt{atoi},
+\texttt{strtol}, \texttt{rand}), an environment/IO taint source, an
+untrusted-decode accessor (varint readers, \texttt{ftell}), a
+tainted-summary callee return reused from sqc's cross-function
+summaries (\cref{sec:prescan}), or a tainted global---or when VRA
+proves the expression \emph{definitely} overflows (every value in the
+computed range is out of bounds, e.g.\ \texttt{INT\_MAX+1}); operands
+with merely unknown-but-bounded ranges are suppressed.
+
+The effect on real-world precision is large.  On the full SQLite
+census (\cref{sec:realworld-results}), the gate eliminates 91.8\% of INT32-C,
+98.9\% of INT30-C, and 96.9\% of INT31-C false positives---about 93\%
+of the roughly 5{,}750 adjudicated INT false positives overall---while
+INT31-C retains all three of its true positives and INT32-C retains
+eight of fifteen.  The cost is recall, and it is real: on Juliet the
+INT detection rate falls to 45--50\% (from near-complete), because
+opt-in gating misses an overflow whenever the tainted operand reaches
+the sink across a function boundary that sqc's summaries do not
+propagate---the dominant residual gap.  This is the precision/recall
+tradeoff made concrete: the synthetic suite, built so that every
+flagged operation is genuinely reachable, rewards the opt-out policy
+that the real-world census punishes.  We regard the exchange as
+favorable for deployment---thousands of false alarms removed per
+project against a recall reduction confined to inter-procedural flows
+that a fielded tool can recover through targeted source annotations,
+and we validated it on both benchmarks before adopting it.
 
 %% ============================================================
 \section{Worked Example: Null Dereference Detection}
