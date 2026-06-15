@@ -1143,6 +1143,19 @@ pub fn infer_arg_null_state(arg: &Node, source: &str) -> NullState {
             }
             NullState::Unknown
         }
+        "pointer_expression" => {
+            // tree-sitter-c parses both `&var` and `*ptr` as pointer_expression.
+            // The address of anything is always non-null; the pointee of `*ptr`
+            // is unknown. Address-of is the common form for call arguments
+            // (`&buf[i]`, `&obj.field`, `&var`), so without this arm caller-context
+            // never accumulates non-null evidence from address-of call sites.
+            if let Some(op) = arg.child_by_field_name("operator") {
+                if op.utf8_text(source.as_bytes()).unwrap_or("") == "&" {
+                    return NullState::NotNull;
+                }
+            }
+            NullState::Unknown
+        }
         "cast_expression" => {
             // (type*)NULL or (type*)0
             if let Some(value) = arg.child_by_field_name("value") {
