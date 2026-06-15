@@ -6,10 +6,11 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
+use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::std_functions;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Int30C {
@@ -19,6 +20,11 @@ pub struct Int30C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    /// Globals written by a tainted function — see the INT32-C provenance gate.
+    global_writers: RefCell<HashMap<String, HashSet<String>>>,
+    /// Per-function memo of risky variable names, keyed by function node id;
+    /// cleared per file.
+    risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
 }
 
 impl Int30C {
@@ -30,7 +36,72 @@ impl Int30C {
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
             function_summaries: RefCell::new(HashMap::new()),
+            global_writers: RefCell::new(HashMap::new()),
+            risky_vars_cache: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Opt-in provenance gate for unsigned wrap — the unsigned analogue of
+    /// INT32-C's gate. Returns true when an operand derives from untrusted or
+    /// unbounded input, or when the expression *definitely* wraps a 32-bit
+    /// unsigned type (value-based VRA channel). When false, every operand is
+    /// bounded local state and the wrap is treated as intended/non-overflowing.
+    /// No-op (returns true) without cross-file context, preserving legacy
+    /// behavior and existing tests.
+    fn has_risky_operand_provenance(&self, node: &Node, source: &str) -> bool {
+        // VRA definite-wrap channel (UINT_MAX + 1 / 0u - 1). Unsigned wrap in
+        // SQLite uses 32-bit width uniformly, matching the fits-checks.
+        if const_eval::expression_overflows_unsigned_vra(
+            node,
+            source,
+            &self.current_macros.borrow(),
+            32,
+            self.vra_var_ranges_at(node, source).as_ref(),
+        ) {
+            return true;
+        }
+
+        let summaries = self.function_summaries.borrow();
+        if summaries.is_empty() {
+            return true;
+        }
+        let func = match ast_utils::find_containing_function(node) {
+            Some(f) => f,
+            None => return true,
+        };
+        let body = match func.child_by_field_name("body") {
+            Some(b) => b,
+            None => return true,
+        };
+
+        let func_id = func.id();
+        {
+            let mut cache = self.risky_vars_cache.borrow_mut();
+            cache
+                .entry(func_id)
+                .or_insert_with(|| int_provenance::collect_risky_vars(&body, &summaries, source));
+        }
+        let cache = self.risky_vars_cache.borrow();
+        let risky_vars = match cache.get(&func_id) {
+            Some(s) => s,
+            None => return true,
+        };
+        let global_writers = self.global_writers.borrow();
+
+        let mut operands = Vec::new();
+        if let Some(l) = node.child_by_field_name("left") {
+            operands.push(l);
+        }
+        if let Some(r) = node.child_by_field_name("right") {
+            operands.push(r);
+        }
+        if let Some(a) = node.child_by_field_name("argument") {
+            operands.push(a);
+        }
+
+        operands.iter().any(|op| {
+            int_provenance::operand_is_risky(op, risky_vars, &summaries, &global_writers, source)
+        })
     }
 
     /// Get VRA-derived variable ranges at a specific expression node.
@@ -73,6 +144,7 @@ impl CertRule for Int30C {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.global_writers.borrow_mut() = context.global_writers.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -95,6 +167,10 @@ impl CertRule for Int30C {
         let mut macros = self.project_macros.borrow().clone();
         macros.extend(const_eval::collect_macro_constants(node, source));
         *self.current_macros.borrow_mut() = macros;
+
+        // Risky-var memo is keyed on tree-sitter node ids, unique only within
+        // one parse tree — reset per file.
+        self.risky_vars_cache.borrow_mut().clear();
 
         self.check_node(node, source, &mut violations, &type_map);
 
@@ -306,6 +382,14 @@ impl Int30C {
                     return;
                 }
 
+                // Opt-in provenance gate (mirrors INT32-C): only flag when an
+                // operand derives from untrusted/unbounded input or the
+                // expression definitely wraps. Bounded unsigned counters wrap
+                // by intent, not by bug.
+                if !self.has_risky_operand_provenance(node, source) {
+                    return;
+                }
+
                 let start_point = node.start_position();
                 let expr_text = get_node_text(node, source);
 
@@ -410,6 +494,11 @@ impl Int30C {
                     return;
                 }
 
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
+                    return;
+                }
+
                 let start_point = node.start_position();
                 let expr_text = get_node_text(node, source);
 
@@ -500,6 +589,11 @@ impl Int30C {
                     return;
                 }
 
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
+                    return;
+                }
+
                 let start_point = node.start_position();
                 let expr_text = get_node_text(node, source);
 
@@ -551,6 +645,11 @@ impl Int30C {
                     32,
                     self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
+                    return;
+                }
+
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
                     return;
                 }
 
@@ -609,6 +708,11 @@ impl Int30C {
 
                 // Skip if constant evaluation proves the result fits in 32-bit unsigned
                 if self.compound_expr_fits_unsigned(node, source, "+", 32) {
+                    return;
+                }
+
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
                     return;
                 }
 
@@ -679,6 +783,11 @@ impl Int30C {
                     return;
                 }
 
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
+                    return;
+                }
+
                 let start_point = node.start_position();
                 let expr_text = get_node_text(node, source);
 
@@ -720,6 +829,11 @@ impl Int30C {
                     return;
                 }
 
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
+                    return;
+                }
+
                 let start_point = node.start_position();
                 let expr_text = get_node_text(node, source);
 
@@ -754,6 +868,11 @@ impl Int30C {
             {
                 // Skip if constant evaluation proves the result fits in 32-bit unsigned
                 if self.compound_expr_fits_unsigned(node, source, "<<", 32) {
+                    return;
+                }
+
+                // Opt-in provenance gate (see check_addition).
+                if !self.has_risky_operand_provenance(node, source) {
                     return;
                 }
 
@@ -843,6 +962,12 @@ impl Int30C {
                     ) {
                         return;
                     }
+                    // Opt-in provenance gate (see check_addition): a bounded
+                    // unsigned counter cannot reach the wrap boundary.
+                    if !self.has_risky_operand_provenance(node, source) {
+                        return;
+                    }
+
                     if !self.has_overflow_check_update(node, source) {
                         let start_point = node.start_position();
                         let expr_text = get_node_text(node, source);
@@ -1329,13 +1454,20 @@ impl Int30C {
             None => return false,
         };
 
-        // Known full-range functions: never suppress
-        if std_functions::is_full_range_return_function(&callee) {
+        // Known full-range or untrusted-decode functions: never suppress
+        if std_functions::is_full_range_return_function(&callee)
+            || std_functions::is_untrusted_decode_function(&callee)
+        {
             return false;
         }
 
-        // Local function with proven wide return range: don't suppress
+        // Local function carrying taint (directly or transitively), or with a
+        // proven wide return range: don't suppress. Keeps the heuristic
+        // consistent with the provenance gate for cross-function flow.
         if let Some(summary) = summaries.get(&callee) {
+            if summary.has_env03_taint_source || summary.returns_tainted {
+                return false;
+            }
             if let Some(ref return_range) = summary.return_range {
                 let unsigned_danger = u32::MAX as i64 - 10;
                 if return_range.max >= unsigned_danger {

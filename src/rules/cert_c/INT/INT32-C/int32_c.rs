@@ -6,6 +6,7 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
+use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::std_functions;
 use std::cell::RefCell;
@@ -1975,13 +1976,14 @@ impl Int32C {
             let mut cache = self.risky_vars_cache.borrow_mut();
             cache
                 .entry(func_id)
-                .or_insert_with(|| collect_risky_vars(&body, &summaries, source));
+                .or_insert_with(|| int_provenance::collect_risky_vars(&body, &summaries, source));
         }
         let cache = self.risky_vars_cache.borrow();
         let risky_vars = match cache.get(&func_id) {
             Some(s) => s,
             None => return true,
         };
+        let global_writers = self.global_writers.borrow();
 
         let mut operands = Vec::new();
         if let Some(l) = node.child_by_field_name("left") {
@@ -1994,65 +1996,9 @@ impl Int32C {
             operands.push(a);
         }
 
-        operands
-            .iter()
-            .any(|op| self.operand_is_risky(op, risky_vars, &summaries, source))
-    }
-
-    /// Classify a single operand subtree's provenance against the precomputed
-    /// risky-variable set. See [`Self::has_risky_operand_provenance`].
-    fn operand_is_risky(
-        &self,
-        op: &Node,
-        risky_vars: &HashSet<String>,
-        summaries: &HashMap<String, FunctionSummary>,
-        source: &str,
-    ) -> bool {
-        match op.kind() {
-            "call_expression" => match op.child_by_field_name("function") {
-                Some(f) => callee_is_risky_source(&get_node_text(&f, source), summaries),
-                None => false,
-            },
-            "identifier" => {
-                let name = get_node_text(op, source);
-                risky_vars.contains(name) || self.global_is_tainted(name, summaries)
-            }
-            "parenthesized_expression" => match op.named_child(0) {
-                Some(inner) => self.operand_is_risky(&inner, risky_vars, summaries, source),
-                None => false,
-            },
-            "cast_expression" => match op.child_by_field_name("value") {
-                Some(value) => self.operand_is_risky(&value, risky_vars, summaries, source),
-                None => false,
-            },
-            "binary_expression" => {
-                op.child_by_field_name("left")
-                    .is_some_and(|l| self.operand_is_risky(&l, risky_vars, summaries, source))
-                    || op
-                        .child_by_field_name("right")
-                        .is_some_and(|r| self.operand_is_risky(&r, risky_vars, summaries, source))
-            }
-            "unary_expression" | "update_expression" => match op.child_by_field_name("argument") {
-                Some(arg) => self.operand_is_risky(&arg, risky_vars, summaries, source),
-                None => false,
-            },
-            // number_literal, field_expression, subscript_expression, etc. are
-            // bounded local state — the dominant false-positive class.
-            _ => false,
-        }
-    }
-
-    /// True when `name` is a file-scope global written by at least one tainted
-    /// function (covers Juliet `_68`-style global-channel data flow and real
-    /// configuration globals fed from the environment).
-    fn global_is_tainted(&self, name: &str, summaries: &HashMap<String, FunctionSummary>) -> bool {
-        let writers = self.global_writers.borrow();
-        match writers.get(name) {
-            Some(ws) => ws.iter().any(|w| {
-                matches!(summaries.get(w), Some(s) if s.has_env03_taint_source || s.returns_tainted)
-            }),
-            None => false,
-        }
+        operands.iter().any(|op| {
+            int_provenance::operand_is_risky(op, risky_vars, &summaries, &global_writers, source)
+        })
     }
 
     /// Returns true if this binary_expression is `opaque + small_literal` or
@@ -2859,149 +2805,6 @@ fn is_simple_c_identifier(s: &str) -> bool {
 /// source (`scanf`/`recv`/`fgets`/`getenv`/...), or a project-local function
 /// whose prescan summary carries taint (`has_env03_taint_source` directly or
 /// `returns_tainted` transitively). Used by the INT32-C provenance gate.
-fn callee_is_risky_source(callee: &str, summaries: &HashMap<String, FunctionSummary>) -> bool {
-    let ident = callee
-        .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
-        .next()
-        .unwrap_or(callee)
-        .trim();
-    if std_functions::is_full_range_return_function(ident)
-        || std_functions::is_untrusted_decode_function(ident)
-    {
-        return true;
-    }
-    if crate::analyze::function_summary::ENV03_TAINT_SOURCE_FUNCTIONS.contains(&ident) {
-        return true;
-    }
-    matches!(summaries.get(ident), Some(s) if s.has_env03_taint_source || s.returns_tainted)
-}
-
-/// Walk `body` ONCE and collect every variable name fed from a risky source:
-///   - `var = riskyCall(...)` or `T var = riskyCall(...)` (return-value flow), or
-///   - `riskySource(..., &var, ...)` / `riskySource(..., var, ...)` (fill by
-///     reference, e.g. `fscanf(stdin, "%d", &data)`, `recv(fd, buf, ...)`).
-///
-/// Memoized per function by the caller, so this O(body) walk runs once per
-/// function rather than once per arithmetic operand.
-fn collect_risky_vars(
-    body: &Node,
-    summaries: &HashMap<String, FunctionSummary>,
-    source: &str,
-) -> HashSet<String> {
-    let mut set = HashSet::new();
-    collect_risky_vars_walk(body, summaries, source, &mut set);
-    set
-}
-
-fn collect_risky_vars_walk(
-    node: &Node,
-    summaries: &HashMap<String, FunctionSummary>,
-    source: &str,
-    set: &mut HashSet<String>,
-) {
-    match node.kind() {
-        // var = riskyCall(...)
-        "assignment_expression" => {
-            if let (Some(lhs), Some(rhs)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                if lhs.kind() == "identifier" && rhs_is_risky_call(&rhs, summaries, source) {
-                    set.insert(get_node_text(&lhs, source).trim().to_string());
-                }
-            }
-        }
-        // T var = riskyCall(...)
-        "init_declarator" => {
-            if let (Some(decl), Some(value)) = (
-                node.child_by_field_name("declarator"),
-                node.child_by_field_name("value"),
-            ) {
-                if rhs_is_risky_call(&value, summaries, source) {
-                    if let Some(name) = init_declarator_name(&decl, source) {
-                        set.insert(name);
-                    }
-                }
-            }
-        }
-        // riskySource(..., &var, ...) — fill by reference: any identifier
-        // appearing in the argument list of a risky call is conservatively
-        // treated as fed (covers scanf-into-&var and recv-into-buf).
-        "call_expression" => {
-            if let Some(f) = node.child_by_field_name("function") {
-                if callee_is_risky_source(&get_node_text(&f, source), summaries) {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        collect_arg_identifiers(&args, source, set);
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_risky_vars_walk(&child, summaries, source, set);
-        }
-    }
-}
-
-/// Insert every identifier appearing in `args` into `set`.
-fn collect_arg_identifiers(args: &Node, source: &str, set: &mut HashSet<String>) {
-    if args.kind() == "identifier" {
-        set.insert(get_node_text(args, source).trim().to_string());
-        return;
-    }
-    for i in 0..args.child_count() {
-        if let Some(child) = args.child(i) {
-            collect_arg_identifiers(&child, source, set);
-        }
-    }
-}
-
-/// Resolve the bare identifier inside a (possibly pointer/array-wrapped)
-/// declarator.
-fn init_declarator_name(decl: &Node, source: &str) -> Option<String> {
-    let mut current = *decl;
-    loop {
-        if current.kind() == "identifier" || current.kind() == "field_identifier" {
-            return Some(get_node_text(&current, source).trim().to_string());
-        }
-        match current.child_by_field_name("declarator") {
-            Some(inner) => current = inner,
-            None => return None,
-        }
-    }
-}
-
-/// True when `rhs`, after stripping casts/parens, is a call to a risky source.
-fn rhs_is_risky_call(
-    rhs: &Node,
-    summaries: &HashMap<String, FunctionSummary>,
-    source: &str,
-) -> bool {
-    let mut node = *rhs;
-    loop {
-        match node.kind() {
-            "parenthesized_expression" => match node.named_child(0) {
-                Some(inner) => node = inner,
-                None => return false,
-            },
-            "cast_expression" => match node.child_by_field_name("value") {
-                Some(value) => node = value,
-                None => return false,
-            },
-            "call_expression" => {
-                return match node.child_by_field_name("function") {
-                    Some(f) => callee_is_risky_source(&get_node_text(&f, source), summaries),
-                    None => false,
-                };
-            }
-            _ => return false,
-        }
-    }
-}
-
 /// Recognizes common short unsigned typedef names: u8, u16, u32, u64, u128.
 /// These are MCU/embedded typedefs not caught by the "uint" substring check.
 fn is_short_unsigned_typedef(s: &str) -> bool {

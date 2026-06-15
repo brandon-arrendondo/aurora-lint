@@ -1833,6 +1833,33 @@ pub fn expression_overflows_signed_vra(
     false
 }
 
+/// Unsigned analogue of [`expression_overflows_signed_vra`]: returns true only
+/// when the expression *definitely* wraps an unsigned `bits`-wide type — its
+/// entire computed range lies above the unsigned max (e.g. `UINT_MAX + 1`) or
+/// entirely below zero (a definite underflow/wrap such as `0u - 1`). A range
+/// that merely straddles a bound (an unknown-but-bounded operand) is a
+/// *possible*, not definite, wrap and returns false, so bounded unsigned
+/// counters stay suppressed. Returns false whenever the range cannot be
+/// computed.
+pub fn expression_overflows_unsigned_vra(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    bits: u32,
+    vra_var_ranges: Option<&VarRangeMap>,
+) -> bool {
+    if bits == 0 || bits > 63 {
+        return false;
+    }
+    if let Some(var_ranges) = vra_var_ranges {
+        if let Some(range) = try_evaluate_range(node, source, macros, var_ranges) {
+            let unsigned_max = (1i64 << bits) - 1;
+            return range.min > unsigned_max || range.max < 0;
+        }
+    }
+    false
+}
+
 /// VRA-backed version of `expression_fits_in_unsigned`.
 /// Tries CFG-based value-range analysis first, falls back to syntactic analysis.
 pub fn expression_fits_in_unsigned_vra(

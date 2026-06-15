@@ -559,6 +559,9 @@ pub mod int17_c;
 #[path = "INT/INT18-C/int18_c.rs"]
 pub mod int18_c;
 
+#[path = "INT/int_provenance.rs"]
+pub mod int_provenance;
+
 #[path = "INT/INT30-C/int30_c.rs"]
 pub mod int30_c;
 
