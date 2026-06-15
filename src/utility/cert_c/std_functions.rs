@@ -372,5 +372,12 @@ pub fn is_untrusted_decode_function(name: &str) -> bool {
             | "sqlite3Fts5GetVarint"
             | "fts5GetVarint"
             | "sessionVarintGet"
+            // Serialized record-length decoders (changeset/session formats)
+            | "sessionSerialLen"
+            // File offsets: return a signed length that is -1 on error and is
+            // bounded only by an attacker-influenced file size — the classic
+            // INT31-C sign-conversion-to-size_t source.
+            | "ftell"
+            | "ftello"
     )
 }

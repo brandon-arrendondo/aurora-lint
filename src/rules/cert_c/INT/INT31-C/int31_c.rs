@@ -15,6 +15,7 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
+use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, is_function_parameter};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -26,6 +27,11 @@ pub struct Int31C {
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
     /// Reverse call graph: callee_name → set of caller names.
     callers: RefCell<HashMap<String, HashSet<String>>>,
+    /// Globals written by a tainted function — see the INT32-C provenance gate.
+    global_writers: RefCell<HashMap<String, HashSet<String>>>,
+    /// Per-function memo of risky variable names, keyed by function node id;
+    /// cleared per file.
+    risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
 }
 
 impl Int31C {
@@ -35,7 +41,46 @@ impl Int31C {
             vra_results: RefCell::new(HashMap::new()),
             function_summaries: RefCell::new(HashMap::new()),
             callers: RefCell::new(HashMap::new()),
+            global_writers: RefCell::new(HashMap::new()),
+            risky_vars_cache: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Opt-in provenance gate for lossy conversions: returns true when the
+    /// converted value `operand` derives from untrusted or unbounded input (a
+    /// taint source, a full-range parser, an untrusted-decode accessor, a
+    /// tainted-summary callee return, or a tainted global). When false, the
+    /// value is bounded local state and the conversion is treated as safe —
+    /// the same opt-in philosophy as INT30-C/INT32-C, applied to the converted
+    /// operand. No-op (returns true) without cross-file context, preserving
+    /// legacy behavior and existing tests.
+    fn converted_value_is_risky(&self, operand: &Node, source: &str) -> bool {
+        let summaries = self.function_summaries.borrow();
+        if summaries.is_empty() {
+            return true;
+        }
+        let func = match ast_utils::find_containing_function(operand) {
+            Some(f) => f,
+            None => return true,
+        };
+        let body = match func.child_by_field_name("body") {
+            Some(b) => b,
+            None => return true,
+        };
+        let func_id = func.id();
+        {
+            let mut cache = self.risky_vars_cache.borrow_mut();
+            cache
+                .entry(func_id)
+                .or_insert_with(|| int_provenance::collect_risky_vars(&body, &summaries, source));
+        }
+        let cache = self.risky_vars_cache.borrow();
+        let risky_vars = match cache.get(&func_id) {
+            Some(s) => s,
+            None => return true,
+        };
+        let global_writers = self.global_writers.borrow();
+        int_provenance::operand_is_risky(operand, risky_vars, &summaries, &global_writers, source)
     }
 
     fn vra_var_ranges_at(&self, expr_node: &Node) -> Option<VarRangeMap> {
@@ -612,6 +657,7 @@ impl CertRule for Int31C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.global_writers.borrow_mut() = context.global_writers.clone();
 
         let mut callers: HashMap<String, HashSet<String>> = HashMap::new();
         for (caller, callees) in &context.call_graph {
@@ -631,6 +677,9 @@ impl CertRule for Int31C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        // Risky-var memo is keyed on tree-sitter node ids, unique only within
+        // one parse tree — reset per file.
+        self.risky_vars_cache.borrow_mut().clear();
         self.check_function(node, source, &mut violations);
         violations
     }
@@ -1105,6 +1154,13 @@ impl Int31C {
                 continue;
             }
 
+            // Opt-in provenance gate (mirrors INT30-C/INT32-C): only flag when
+            // the converted value derives from untrusted/unbounded input. A
+            // bounded-local signed value is safe to pass to size_t in practice.
+            if !self.converted_value_is_risky(arg_node, source) {
+                continue;
+            }
+
             let pos = node.start_position();
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
@@ -1270,6 +1326,16 @@ impl Int31C {
         let target_width = get_type_width(&target_clean);
         let target_signed = self.is_signed_type(&target_clean);
         let operand_node = self.get_cast_operand_node(node);
+
+        // Opt-in provenance gate (mirrors INT30-C/INT32-C): a cast only loses
+        // or misinterprets data dangerously when the converted value is
+        // untrusted/unbounded; a bounded-local value is safe. Applies to all
+        // three conversion paths below.
+        if let Some(ref op_node) = operand_node {
+            if !self.converted_value_is_risky(op_node, source) {
+                return;
+            }
+        }
 
         // Signed to unsigned without validation
         if self.is_signed_type(&source_type) && self.is_unsigned_type(&target_clean) {
@@ -1654,6 +1720,13 @@ impl Int31C {
 
         // Suppression: RHS has safe mask (& 0xFF etc.)
         if Self::rhs_has_safe_mask(&rhs_text, lhs_width) {
+            return;
+        }
+
+        // Opt-in provenance gate (mirrors INT30-C/INT32-C): only flag a
+        // narrowing assignment when the RHS derives from untrusted/unbounded
+        // input. A bounded-local wider value rarely actually loses data.
+        if !self.converted_value_is_risky(&rhs_node, source) {
             return;
         }
 
