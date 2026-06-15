@@ -1578,110 +1578,122 @@ impl MemoryAnalyzer {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if let Some(arguments) = node.child_by_field_name("arguments") {
-            for i in 0..arguments.child_count() {
-                if let Some(arg) = arguments.child(i) {
-                    if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
-                        continue;
-                    }
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
 
-                    // For pointer dereference expressions like free(*ptr),
-                    // the memory pointed to by *ptr is freed, not ptr itself.
-                    // Skip tracking for these complex patterns to avoid false positives.
-                    if arg.kind() == "pointer_expression" {
-                        // We're freeing *ptr, not ptr. Skip tracking.
-                        continue;
-                    }
-
-                    // For subscript expressions like free(arr[i]),
-                    // the memory at arr[i] is freed, not arr itself.
-                    // Skip tracking to avoid false positives.
-                    if arg.kind() == "subscript_expression" {
-                        // We're freeing arr[i], not arr. Skip tracking.
-                        continue;
-                    }
-
-                    // For cast expressions like free((type)ptr), extract the inner value
-                    let actual_arg = if arg.kind() == "cast_expression" {
-                        if let Some(value) = arg.child_by_field_name("value") {
-                            value
-                        } else {
-                            arg
-                        }
-                    } else {
-                        arg
-                    };
-
-                    // For field expressions like free(data->name), track the full path
-                    // not just the base variable
-                    let (var_name, base_var) = if actual_arg.kind() == "field_expression" {
-                        let full_path = get_node_text(&actual_arg, source).to_string();
-                        // For union support: also track the base variable
-                        // When free(u.member1) is called, u.member2 also becomes invalid
-                        let base = self.extract_base_variable(&actual_arg, source);
-                        (full_path, Some(base))
-                    } else if actual_arg.kind() == "identifier" {
-                        (get_node_text(&actual_arg, source).to_string(), None)
-                    } else {
-                        // For other complex expressions, skip to avoid false positives
-                        continue;
-                    };
-
-                    if var_name.is_empty() {
-                        continue;
-                    }
-
-                    // Resolve to canonical name (in case of alias)
-                    let canonical = self.resolve_canonical(&var_name);
-
-                    // Check for double-free (only check freed_vars, not realloc_invalidated)
-                    // It's OK to free a realloc-invalidated pointer (that's expected when realloc fails)
-                    if self.is_actually_freed(&canonical)
-                        && !self.nullified_vars.contains(&canonical)
-                    {
-                        violations.push(RuleViolation {
-                            rule_id: "MEM30-C".to_string(),
-                            severity: Severity::Critical,
-                            message: format!("Double-free: '{}' freed multiple times", var_name),
-                            file_path: String::new(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            suggestion: Some(
-                                "Set pointer to NULL after freeing to prevent double-free."
-                                    .to_string(),
-                            ),
-                            ..Default::default()
-                        });
-                    }
-
-                    // Mark as freed
-                    self.freed_vars.insert(canonical.clone());
-                    self.freed_vars.insert(var_name.clone());
-
-                    // For union support: track union member relationships
-                    // When free(u.member) is called, all u.* accesses become invalid
-                    if let Some(base) = base_var {
-                        if !base.is_empty() {
-                            // Add to union tracking - all field accesses on this base are suspect
-                            self.union_members
-                                .entry(base.clone())
-                                .or_default()
-                                .insert(var_name.clone());
-                        }
-                    }
-
-                    // Also mark any aliases as freed
-                    let aliases_to_free: Vec<String> = self
-                        .aliases
-                        .iter()
-                        .filter(|(_, v)| **v == canonical || **v == var_name)
-                        .map(|(k, _)| k.clone())
-                        .collect();
-                    for alias in aliases_to_free {
-                        self.freed_vars.insert(alias);
-                    }
+        // Collect the real (non-punctuation) argument nodes.
+        let mut arg_nodes = Vec::new();
+        for i in 0..arguments.child_count() {
+            if let Some(arg) = arguments.child(i) {
+                if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
+                    arg_nodes.push(arg);
                 }
             }
+        }
+
+        // A free-like call frees exactly ONE object. For the standard single-argument
+        // `free(p)` that is trivially the only argument. For allocator/context APIs with
+        // a `(handle, target)` signature — e.g. sqlite3DbFree(db, x), sqlite3*Delete(db, x),
+        // g_slice_free(type, x) — the freed object is the LAST operand; the leading
+        // handle/type operand is a live object that must NOT be marked freed. Treating
+        // every argument as freed was the dominant MEM30-C false-positive source on
+        // real-world C (the live db handle was flagged as use-after-free / double-free).
+        let Some(arg) = arg_nodes.last().copied() else {
+            return;
+        };
+
+        // For pointer dereference expressions like free(*ptr),
+        // the memory pointed to by *ptr is freed, not ptr itself.
+        // Skip tracking for these complex patterns to avoid false positives.
+        if arg.kind() == "pointer_expression" {
+            // We're freeing *ptr, not ptr. Skip tracking.
+            return;
+        }
+
+        // For subscript expressions like free(arr[i]),
+        // the memory at arr[i] is freed, not arr itself.
+        // Skip tracking to avoid false positives.
+        if arg.kind() == "subscript_expression" {
+            // We're freeing arr[i], not arr. Skip tracking.
+            return;
+        }
+
+        // For cast expressions like free((type)ptr), extract the inner value
+        let actual_arg = if arg.kind() == "cast_expression" {
+            if let Some(value) = arg.child_by_field_name("value") {
+                value
+            } else {
+                arg
+            }
+        } else {
+            arg
+        };
+
+        // For field expressions like free(data->name), track the full path
+        // not just the base variable
+        let (var_name, base_var) = if actual_arg.kind() == "field_expression" {
+            let full_path = get_node_text(&actual_arg, source).to_string();
+            // For union support: also track the base variable
+            // When free(u.member1) is called, u.member2 also becomes invalid
+            let base = self.extract_base_variable(&actual_arg, source);
+            (full_path, Some(base))
+        } else if actual_arg.kind() == "identifier" {
+            (get_node_text(&actual_arg, source).to_string(), None)
+        } else {
+            // For other complex expressions, skip to avoid false positives
+            return;
+        };
+
+        if var_name.is_empty() {
+            return;
+        }
+
+        // Resolve to canonical name (in case of alias)
+        let canonical = self.resolve_canonical(&var_name);
+
+        // Check for double-free (only check freed_vars, not realloc_invalidated)
+        // It's OK to free a realloc-invalidated pointer (that's expected when realloc fails)
+        if self.is_actually_freed(&canonical) && !self.nullified_vars.contains(&canonical) {
+            violations.push(RuleViolation {
+                rule_id: "MEM30-C".to_string(),
+                severity: Severity::Critical,
+                message: format!("Double-free: '{}' freed multiple times", var_name),
+                file_path: String::new(),
+                line: node.start_position().row + 1,
+                column: node.start_position().column + 1,
+                suggestion: Some(
+                    "Set pointer to NULL after freeing to prevent double-free.".to_string(),
+                ),
+                ..Default::default()
+            });
+        }
+
+        // Mark as freed
+        self.freed_vars.insert(canonical.clone());
+        self.freed_vars.insert(var_name.clone());
+
+        // For union support: track union member relationships
+        // When free(u.member) is called, all u.* accesses become invalid
+        if let Some(base) = base_var {
+            if !base.is_empty() {
+                // Add to union tracking - all field accesses on this base are suspect
+                self.union_members
+                    .entry(base.clone())
+                    .or_default()
+                    .insert(var_name.clone());
+            }
+        }
+
+        // Also mark any aliases as freed
+        let aliases_to_free: Vec<String> = self
+            .aliases
+            .iter()
+            .filter(|(_, v)| **v == canonical || **v == var_name)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for alias in aliases_to_free {
+            self.freed_vars.insert(alias);
         }
     }
 
