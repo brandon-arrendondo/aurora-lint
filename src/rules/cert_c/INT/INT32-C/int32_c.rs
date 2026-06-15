@@ -23,6 +23,12 @@ pub struct Int32C {
     /// set). Used by the provenance gate to treat a global operand fed from an
     /// untrusted source as risky.
     global_writers: RefCell<HashMap<String, HashSet<String>>>,
+    /// Per-function memo of variable names fed from a risky source, keyed by the
+    /// containing function's tree-sitter node id. Computed once per function by a
+    /// single body walk (avoids re-walking the body for every arithmetic
+    /// operand). Cleared at the start of each `check()` (node ids are unique only
+    /// within one parse tree).
+    risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
 }
 
 impl Int32C {
@@ -35,6 +41,7 @@ impl Int32C {
             vra_results: RefCell::new(HashMap::new()),
             function_summaries: RefCell::new(HashMap::new()),
             global_writers: RefCell::new(HashMap::new()),
+            risky_vars_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -99,6 +106,10 @@ impl CertRule for Int32C {
         let mut macros = self.project_macros.borrow().clone();
         macros.extend(const_eval::collect_macro_constants(node, source));
         *self.current_macros.borrow_mut() = macros;
+
+        // Risky-var memo is keyed on tree-sitter node ids, which are only unique
+        // within a single parse tree — reset it for each file.
+        self.risky_vars_cache.borrow_mut().clear();
 
         self.check_node(node, source, &mut violations, &type_map);
         violations
@@ -299,7 +310,7 @@ impl Int32C {
                 // Opt-in provenance gate: only flag when an operand derives
                 // from untrusted/unbounded input. Bounded local state (counters,
                 // indices, struct-field counts) cannot reach the type limit here.
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(node, source, type_map) {
                     return;
                 }
 
@@ -399,7 +410,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(node, source, type_map) {
                     return;
                 }
 
@@ -479,7 +490,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(node, source, type_map) {
                     return;
                 }
 
@@ -584,7 +595,7 @@ impl Int32C {
                 let is_variable_division = left.kind() == "identifier"
                     && right.kind() == "identifier"
                     && !self.is_unsigned_type(&right_type)
-                    && self.has_risky_operand_provenance(node, source);
+                    && self.has_risky_operand_provenance(node, source, type_map);
 
                 if (has_explicit_risk || is_variable_division)
                     && !self.has_division_overflow_check(node, source)
@@ -650,7 +661,7 @@ impl Int32C {
                 let is_variable_modulo = left.kind() == "identifier"
                     && right.kind() == "identifier"
                     && !self.is_unsigned_type(&right_type)
-                    && self.has_risky_operand_provenance(node, source);
+                    && self.has_risky_operand_provenance(node, source, type_map);
 
                 if (has_explicit_risk || is_variable_modulo)
                     && !self.has_modulo_overflow_check(node, source)
@@ -696,7 +707,7 @@ impl Int32C {
             // Opt-in provenance gate: only INT_MIN negates to overflow, which a
             // bounded local operand cannot reach.
             if self.is_signed_type(&arg_type)
-                && self.has_risky_operand_provenance(node, source)
+                && self.has_risky_operand_provenance(node, source, type_map)
                 && !self.has_negation_overflow_check(node, source)
             {
                 let start_point = node.start_position();
@@ -759,7 +770,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(node, source, type_map) {
                     return;
                 }
 
@@ -814,7 +825,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(node, source, type_map) {
                     return;
                 }
 
@@ -871,7 +882,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(node, source, type_map) {
                     return;
                 }
 
@@ -926,7 +937,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(node, source, type_map) {
                     return;
                 }
 
@@ -1049,7 +1060,7 @@ impl Int32C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(node, source, type_map) {
                     return;
                 }
 
@@ -1093,7 +1104,7 @@ impl Int32C {
             if self.is_signed_type(&arg_type) {
                 // Opt-in provenance gate: a bounded counter cannot reach INT_MAX
                 // (++) or INT_MIN (--); only an untrusted/unbounded operand can.
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(node, source, type_map) {
                     return;
                 }
 
@@ -1897,10 +1908,53 @@ impl Int32C {
     /// eliminating the bounded-counter false positives that dominate hardened
     /// codebases such as SQLite.
     ///
+    /// Signed width this operation is checked against, matching what each
+    /// `check_*` site computes for its VRA check: `min` of the two operand
+    /// widths for binary ops, the single operand width for unary/compound ops.
+    fn operand_vra_bits(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> u32 {
+        let ty = |field: &str| {
+            node.child_by_field_name(field)
+                .map(|n| self.infer_type(&n, source, type_map))
+        };
+        match (ty("left"), ty("right"), ty("argument")) {
+            (Some(l), Some(r), _) => Self::signed_type_bits(&l, &r),
+            (Some(l), None, _) => Self::signed_type_bits(&l, &l),
+            (_, _, Some(a)) => Self::signed_type_bits(&a, &a),
+            _ => 32,
+        }
+    }
+
     /// When no cross-file context is present (`function_summaries` empty — e.g.
-    /// unit tests or a single-file run) the gate is a no-op and returns true,
-    /// preserving the rule's legacy behavior and existing test expectations.
-    fn has_risky_operand_provenance(&self, node: &Node, source: &str) -> bool {
+    /// unit tests or a single-file run) the taint channels are a no-op; the
+    /// value-based VRA-overflow channel still applies, and otherwise the gate
+    /// returns true, preserving the rule's legacy behavior and existing test
+    /// expectations.
+    fn has_risky_operand_provenance(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> bool {
+        // VRA-concrete-overflow channel: a provably-overflowing expression
+        // (e.g. INT_MAX + 1, width-sensitive for short/char) is risky regardless
+        // of operand provenance. Value-based, so it works without cross-file
+        // context too.
+        let vra_bits = self.operand_vra_bits(node, source, type_map);
+        if const_eval::expression_overflows_signed_vra(
+            node,
+            source,
+            &self.current_macros.borrow(),
+            vra_bits,
+            self.vra_var_ranges_at(node, source).as_ref(),
+        ) {
+            return true;
+        }
+
         let summaries = self.function_summaries.borrow();
         if summaries.is_empty() {
             return true;
@@ -1911,6 +1965,21 @@ impl Int32C {
         };
         let body = match func.child_by_field_name("body") {
             Some(b) => b,
+            None => return true,
+        };
+
+        // Compute (once per function) the set of variable names fed from a risky
+        // source, memoized by the function node id.
+        let func_id = func.id();
+        {
+            let mut cache = self.risky_vars_cache.borrow_mut();
+            cache
+                .entry(func_id)
+                .or_insert_with(|| collect_risky_vars(&body, &summaries, source));
+        }
+        let cache = self.risky_vars_cache.borrow();
+        let risky_vars = match cache.get(&func_id) {
+            Some(s) => s,
             None => return true,
         };
 
@@ -1927,15 +1996,15 @@ impl Int32C {
 
         operands
             .iter()
-            .any(|op| self.operand_is_risky(op, &body, &summaries, source))
+            .any(|op| self.operand_is_risky(op, risky_vars, &summaries, source))
     }
 
-    /// Classify a single operand subtree's provenance. See
-    /// [`Self::has_risky_operand_provenance`] for the policy.
+    /// Classify a single operand subtree's provenance against the precomputed
+    /// risky-variable set. See [`Self::has_risky_operand_provenance`].
     fn operand_is_risky(
         &self,
         op: &Node,
-        body: &Node,
+        risky_vars: &HashSet<String>,
         summaries: &HashMap<String, FunctionSummary>,
         source: &str,
     ) -> bool {
@@ -1946,26 +2015,25 @@ impl Int32C {
             },
             "identifier" => {
                 let name = get_node_text(op, source);
-                body_feeds_var_from_risky_source(body, name, summaries, source)
-                    || self.global_is_tainted(name, summaries)
+                risky_vars.contains(name) || self.global_is_tainted(name, summaries)
             }
             "parenthesized_expression" => match op.named_child(0) {
-                Some(inner) => self.operand_is_risky(&inner, body, summaries, source),
+                Some(inner) => self.operand_is_risky(&inner, risky_vars, summaries, source),
                 None => false,
             },
             "cast_expression" => match op.child_by_field_name("value") {
-                Some(value) => self.operand_is_risky(&value, body, summaries, source),
+                Some(value) => self.operand_is_risky(&value, risky_vars, summaries, source),
                 None => false,
             },
             "binary_expression" => {
                 op.child_by_field_name("left")
-                    .is_some_and(|l| self.operand_is_risky(&l, body, summaries, source))
+                    .is_some_and(|l| self.operand_is_risky(&l, risky_vars, summaries, source))
                     || op
                         .child_by_field_name("right")
-                        .is_some_and(|r| self.operand_is_risky(&r, body, summaries, source))
+                        .is_some_and(|r| self.operand_is_risky(&r, risky_vars, summaries, source))
             }
             "unary_expression" | "update_expression" => match op.child_by_field_name("argument") {
-                Some(arg) => self.operand_is_risky(&arg, body, summaries, source),
+                Some(arg) => self.operand_is_risky(&arg, risky_vars, summaries, source),
                 None => false,
             },
             // number_literal, field_expression, subscript_expression, etc. are
@@ -2806,31 +2874,29 @@ fn callee_is_risky_source(callee: &str, summaries: &HashMap<String, FunctionSumm
     matches!(summaries.get(ident), Some(s) if s.has_env03_taint_source || s.returns_tainted)
 }
 
-/// Walk `body` for any evidence that `var_name` is fed from a risky source:
+/// Walk `body` ONCE and collect every variable name fed from a risky source:
 ///   - `var = riskyCall(...)` or `T var = riskyCall(...)` (return-value flow), or
 ///   - `riskySource(..., &var, ...)` / `riskySource(..., var, ...)` (fill by
 ///     reference, e.g. `fscanf(stdin, "%d", &data)`, `recv(fd, buf, ...)`).
-fn body_feeds_var_from_risky_source(
+///
+/// Memoized per function by the caller, so this O(body) walk runs once per
+/// function rather than once per arithmetic operand.
+fn collect_risky_vars(
     body: &Node,
-    var_name: &str,
     summaries: &HashMap<String, FunctionSummary>,
     source: &str,
-) -> bool {
-    let mut found = false;
-    walk_for_risky_feed(body, var_name, summaries, source, &mut found);
-    found
+) -> HashSet<String> {
+    let mut set = HashSet::new();
+    collect_risky_vars_walk(body, summaries, source, &mut set);
+    set
 }
 
-fn walk_for_risky_feed(
+fn collect_risky_vars_walk(
     node: &Node,
-    var_name: &str,
     summaries: &HashMap<String, FunctionSummary>,
     source: &str,
-    found: &mut bool,
+    set: &mut HashSet<String>,
 ) {
-    if *found {
-        return;
-    }
     match node.kind() {
         // var = riskyCall(...)
         "assignment_expression" => {
@@ -2838,11 +2904,8 @@ fn walk_for_risky_feed(
                 node.child_by_field_name("left"),
                 node.child_by_field_name("right"),
             ) {
-                if get_node_text(&lhs, source).trim() == var_name
-                    && rhs_is_risky_call(&rhs, summaries, source)
-                {
-                    *found = true;
-                    return;
+                if lhs.kind() == "identifier" && rhs_is_risky_call(&rhs, summaries, source) {
+                    set.insert(get_node_text(&lhs, source).trim().to_string());
                 }
             }
         }
@@ -2852,23 +2915,21 @@ fn walk_for_risky_feed(
                 node.child_by_field_name("declarator"),
                 node.child_by_field_name("value"),
             ) {
-                if init_declarator_name(&decl, source).as_deref() == Some(var_name)
-                    && rhs_is_risky_call(&value, summaries, source)
-                {
-                    *found = true;
-                    return;
+                if rhs_is_risky_call(&value, summaries, source) {
+                    if let Some(name) = init_declarator_name(&decl, source) {
+                        set.insert(name);
+                    }
                 }
             }
         }
-        // riskySource(..., &var, ...) — fill by reference
+        // riskySource(..., &var, ...) — fill by reference: any identifier
+        // appearing in the argument list of a risky call is conservatively
+        // treated as fed (covers scanf-into-&var and recv-into-buf).
         "call_expression" => {
             if let Some(f) = node.child_by_field_name("function") {
                 if callee_is_risky_source(&get_node_text(&f, source), summaries) {
                     if let Some(args) = node.child_by_field_name("arguments") {
-                        if args_reference_var(&args, var_name, source) {
-                            *found = true;
-                            return;
-                        }
+                        collect_arg_identifiers(&args, source, set);
                     }
                 }
             }
@@ -2878,10 +2939,20 @@ fn walk_for_risky_feed(
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            walk_for_risky_feed(&child, var_name, summaries, source, found);
-            if *found {
-                return;
-            }
+            collect_risky_vars_walk(&child, summaries, source, set);
+        }
+    }
+}
+
+/// Insert every identifier appearing in `args` into `set`.
+fn collect_arg_identifiers(args: &Node, source: &str, set: &mut HashSet<String>) {
+    if args.kind() == "identifier" {
+        set.insert(get_node_text(args, source).trim().to_string());
+        return;
+    }
+    for i in 0..args.child_count() {
+        if let Some(child) = args.child(i) {
+            collect_arg_identifiers(&child, source, set);
         }
     }
 }
@@ -2925,32 +2996,6 @@ fn rhs_is_risky_call(
                 };
             }
             _ => return false,
-        }
-    }
-}
-
-/// True when the argument list contains a reference to `var_name` (as a bare
-/// identifier, `&var`, or nested within an argument expression).
-fn args_reference_var(args: &Node, var_name: &str, source: &str) -> bool {
-    let mut found = false;
-    find_identifier(args, var_name, source, &mut found);
-    found
-}
-
-fn find_identifier(node: &Node, var_name: &str, source: &str, found: &mut bool) {
-    if *found {
-        return;
-    }
-    if node.kind() == "identifier" && get_node_text(node, source).trim() == var_name {
-        *found = true;
-        return;
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            find_identifier(&child, var_name, source, found);
-            if *found {
-                return;
-            }
         }
     }
 }

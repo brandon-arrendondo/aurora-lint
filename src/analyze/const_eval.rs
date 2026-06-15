@@ -1800,6 +1800,39 @@ pub fn expression_fits_in_signed_vra(
     expression_fits_in_signed(node, source, macros, bits)
 }
 
+/// Returns true only when the expression *definitely* overflows the signed
+/// bound — i.e. its entire computed value range lies outside the representable
+/// band (every value overflows), such as `INT_MAX + 1` → `[INT_MAX+1,
+/// INT_MAX+1]` or `SHRT_MAX + 1` (width-sensitive).
+///
+/// This is deliberately stronger than `!expression_fits_in_signed_vra`: a range
+/// that merely *straddles* the bound (e.g. a parameter VRA-defaulted to the full
+/// type range `[INT_MIN, INT_MAX]`, whose `+1` is `[INT_MIN+1, INT_MAX+1]`) is a
+/// *possible*, not definite, overflow and returns false. The INT32-C provenance
+/// gate uses this so constant-MAX overflows still fire while operands with
+/// unknown-but-practically-bounded ranges stay suppressed. Returns false
+/// whenever the range cannot be computed.
+pub fn expression_overflows_signed_vra(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    bits: u32,
+    vra_var_ranges: Option<&VarRangeMap>,
+) -> bool {
+    if bits == 0 || bits > 63 {
+        return false;
+    }
+    if let Some(var_ranges) = vra_var_ranges {
+        if let Some(range) = try_evaluate_range(node, source, macros, var_ranges) {
+            let signed_max = (1i64 << (bits - 1)) - 1;
+            let signed_min = -(1i64 << (bits - 1));
+            // Definite overflow: the whole range is above max or below min.
+            return range.min > signed_max || range.max < signed_min;
+        }
+    }
+    false
+}
+
 /// VRA-backed version of `expression_fits_in_unsigned`.
 /// Tries CFG-based value-range analysis first, falls back to syntactic analysis.
 pub fn expression_fits_in_unsigned_vra(
