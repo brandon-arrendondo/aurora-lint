@@ -1165,6 +1165,25 @@ project against a recall reduction confined to inter-procedural flows
 that a fielded tool can recover through targeted source annotations,
 and we validated it on both benchmarks before adopting it.
 
+A coda illustrates the audit's value independent of sqc's rule set.
+While adjudicating the 220-file SQLite census, manual review of
+\texttt{os\_kv.c} found a heap buffer overflow in
+\texttt{kvvfsDecode()}: its hex-pair decoding branch writes to
+\texttt{aOut[j]} with no bounds check, while the adjacent zero-run
+branch in the same function already guards with \texttt{if(j+n>nOut)
+return -1;}---a journal record with a short length header followed by
+a long run of hex pairs overflows the destination buffer.  sqc does
+not flag this site; the unguarded write is not an arithmetic operation
+any INT or ARR rule's provenance gate fires on, so it is a false
+negative for the tool, not a suppressed true positive.  We reported it
+upstream\footnote{\url{https://sqlite.org/bugs/forumpost/afbc56be7b}},
+and the SQLite team confirmed and fixed it the same day (check-in
+\texttt{732c8f81b5a91483}).  The finding did not come from sqc's
+output, but from the close reading sqc's findings prompted---evidence
+that the audit methodology, not just the rule set, is part of what the
+tool delivers, and a concrete direction for a new rule: an unguarded
+write alongside a bounds-checked sibling branch in the same function.
+
 %% ============================================================
 \section{Worked Example: Null Dereference Detection}
 \label{sec:worked-example}
