@@ -503,6 +503,13 @@ fn is_unsafe_at(
 ) -> bool {
     let deref_byte = deref_node.start_byte();
 
+    // A dereference inside `sizeof(...)` is never evaluated (unevaluated operand),
+    // and one inside an `assert(...)` argument is a debug-only precondition check —
+    // neither is a runtime null dereference. Suppress before consulting dataflow.
+    if is_in_unevaluated_or_assert_context(deref_node, source) {
+        return false;
+    }
+
     // Primary check: CFG-based null state dataflow
     if !null_state::is_null_deref_at(analysis, cfg, body, source, var_name, deref_byte, summaries) {
         return false; // CFG says safe
@@ -598,6 +605,31 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
         return true;
     }
 
+    false
+}
+
+/// True when the node is in an unevaluated `sizeof(...)` operand or syntactically
+/// inside an `assert(...)` argument. `sizeof` never evaluates its operand, and an
+/// `assert(p->x)` is itself the precondition check (and is compiled out under
+/// NDEBUG) — flagging a dereference in either context is a false positive.
+fn is_in_unevaluated_or_assert_context(node: &Node, source: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "sizeof_expression" => return true,
+            "call_expression"
+                if parent
+                    .child_by_field_name("function")
+                    .map(|f| ast_utils::get_node_text_owned(&f, source) == "assert")
+                    .unwrap_or(false) =>
+            {
+                return true;
+            }
+            "function_definition" => break,
+            _ => {}
+        }
+        current = parent.parent();
+    }
     false
 }
 

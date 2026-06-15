@@ -531,7 +531,15 @@ fn process_expression_null(
     }
 }
 
-/// Recognize assert(var) or assert(var != NULL) and set var to NotNull.
+/// Recognize an `assert(...)` precondition and mark every pointer the asserted
+/// condition proves non-null. Because `assert` evaluates its condition (and the
+/// program continues only if it holds), this covers `assert(p)` (truthiness),
+/// `assert(p != NULL)`, `assert(p && p->x)` (both `&&` operands hold), and
+/// `assert(p->n <= p->m)` (operands are dereferenced, so the base is non-null).
+///
+/// Conservative: `||`, `!`, and `== NULL` do not establish non-null and are not
+/// propagated (SQLite uses these idioms pervasively, so this is the dominant
+/// EXP34-C false-positive source on real-world C).
 fn process_assert_for_null_state(node: &Node, source: &str, state: &mut StateMap) {
     // Look for expression_statement -> call_expression -> assert
     let call_node = if node.kind() == "expression_statement" {
@@ -542,47 +550,129 @@ fn process_assert_for_null_state(node: &Node, source: &str, state: &mut StateMap
         None
     };
 
-    if let Some(call) = call_node {
-        if call.kind() != "call_expression" {
+    let Some(call) = call_node else { return };
+    if call.kind() != "call_expression" {
+        return;
+    }
+    let Some(function) = call.child_by_field_name("function") else {
+        return;
+    };
+    if get_text(&function, source) != "assert" {
+        return;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return;
+    };
+
+    // assert() takes a single condition argument.
+    for i in 0..args.child_count() {
+        if let Some(arg) = args.child(i) {
+            if arg.kind() == "(" || arg.kind() == ")" || arg.kind() == "," {
+                continue;
+            }
+            collect_assert_nonnull(&arg, source, true, state);
             return;
         }
-        if let Some(function) = call.child_by_field_name("function") {
-            let func_name = get_text(&function, source);
-            if func_name != "assert" {
-                return;
+    }
+}
+
+/// Collect pointers proven non-null by an asserted condition.
+///
+/// `bool_pos` is true when `node` sits in a boolean/truthiness position
+/// (the whole condition, or an operand of `&&`); a bare identifier there is a
+/// non-null test. In value position (operands of a comparison such as `<=`) a
+/// bare identifier proves nothing, but a dereference of it still does.
+fn collect_assert_nonnull(node: &Node, source: &str, bool_pos: bool, state: &mut StateMap) {
+    match node.kind() {
+        "parenthesized_expression" => {
+            if let Some(inner) = node.child(1) {
+                collect_assert_nonnull(&inner, source, bool_pos, state);
             }
-            if let Some(args) = call.child_by_field_name("arguments") {
-                for i in 0..args.child_count() {
-                    if let Some(arg) = args.child(i) {
-                        if arg.kind() == "(" || arg.kind() == ")" || arg.kind() == "," {
-                            continue;
+        }
+        "identifier" if bool_pos => {
+            state.insert(get_text(node, source), NullState::NotNull);
+        }
+        // Any dereference proves its base pointer is non-null.
+        "field_expression" => {
+            if let Some(arg) = node.child_by_field_name("argument") {
+                mark_deref_base_nonnull(&arg, source, state);
+            }
+        }
+        "subscript_expression" => {
+            if let Some(arg) = node.child(0) {
+                mark_deref_base_nonnull(&arg, source, state);
+            }
+        }
+        "pointer_expression" => {
+            let is_deref = node
+                .child_by_field_name("operator")
+                .map(|o| get_text(&o, source) == "*")
+                .unwrap_or(false);
+            if is_deref {
+                if let Some(arg) = node.child_by_field_name("argument") {
+                    mark_deref_base_nonnull(&arg, source, state);
+                }
+            }
+        }
+        "binary_expression" => {
+            let op = node
+                .child_by_field_name("operator")
+                .map(|o| get_text(&o, source))
+                .unwrap_or_default();
+            let left = node.child_by_field_name("left");
+            let right = node.child_by_field_name("right");
+            match op.as_str() {
+                "&&" => {
+                    if let Some(l) = left {
+                        collect_assert_nonnull(&l, source, true, state);
+                    }
+                    if let Some(r) = right {
+                        collect_assert_nonnull(&r, source, true, state);
+                    }
+                }
+                "!=" => {
+                    if let (Some(l), Some(r)) = (left, right) {
+                        let lt = get_text(&l, source);
+                        let rt = get_text(&r, source);
+                        if is_null_value(rt.trim()) && l.kind() == "identifier" {
+                            state.insert(lt, NullState::NotNull);
+                        } else if is_null_value(lt.trim()) && r.kind() == "identifier" {
+                            state.insert(rt, NullState::NotNull);
+                        } else {
+                            collect_assert_nonnull(&l, source, false, state);
+                            collect_assert_nonnull(&r, source, false, state);
                         }
-                        // assert(var) — var is non-null after this
-                        if arg.kind() == "identifier" {
-                            let name = get_text(&arg, source);
-                            state.insert(name, NullState::NotNull);
-                            return;
-                        }
-                        // assert(var != NULL) or assert(NULL != var)
-                        if arg.kind() == "binary_expression" {
-                            if let (Some(left), Some(right)) = (
-                                arg.child_by_field_name("left"),
-                                arg.child_by_field_name("right"),
-                            ) {
-                                let lt = get_text(&left, source);
-                                let rt = get_text(&right, source);
-                                if is_null_value(rt.trim()) && left.kind() == "identifier" {
-                                    state.insert(lt, NullState::NotNull);
-                                } else if is_null_value(lt.trim()) && right.kind() == "identifier" {
-                                    state.insert(rt, NullState::NotNull);
-                                }
-                            }
-                            return;
-                        }
+                    }
+                }
+                // `||` only guarantees the left operand evaluates; `!` negates.
+                "||" => {
+                    if let Some(l) = left {
+                        collect_assert_nonnull(&l, source, false, state);
+                    }
+                }
+                // Comparisons/arithmetic (`<=`, `==`, `+`, ...): both operands are
+                // evaluated in value position, so derefs within them prove non-null.
+                _ => {
+                    if let Some(l) = left {
+                        collect_assert_nonnull(&l, source, false, state);
+                    }
+                    if let Some(r) = right {
+                        collect_assert_nonnull(&r, source, false, state);
                     }
                 }
             }
         }
+        _ => {}
+    }
+}
+
+/// Mark the base identifier of a dereferenced expression as NotNull.
+fn mark_deref_base_nonnull(node: &Node, source: &str, state: &mut StateMap) {
+    if node.kind() == "identifier" {
+        state.insert(get_text(node, source), NullState::NotNull);
+    } else {
+        // Nested deref (e.g. p->a->b): recurse so the outermost base is marked too.
+        collect_assert_nonnull(node, source, false, state);
     }
 }
 
