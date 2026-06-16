@@ -5,6 +5,7 @@ pub mod context;
 pub mod dataflow;
 pub mod function_summary;
 pub mod init_state;
+pub mod macro_expand;
 pub mod macro_semantics;
 pub mod null_state;
 pub mod prescan;
