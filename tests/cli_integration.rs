@@ -343,6 +343,39 @@ fn prescan_save_load_round_trip() {
     );
 }
 
+/// Regression (task 185, Phase 2c-i): a function-like macro invocation
+/// (`xfree(p)`, defined in a header reached via -d) must not be flagged by
+/// DCL31-C as an undeclared function. This is the curl `curlx_free`/`curlx_calloc`
+/// false-positive class — the prescan pre-pass collects the macro definitions
+/// into ProjectContext.function_macros, which DCL31-C now consumes.
+#[test]
+fn function_like_macro_not_flagged_as_undeclared() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+
+    let main_c = fixtures().join("macro_wrappers/main.c");
+    let include_dir = fixtures().join("macro_wrappers/include");
+
+    let (code, _, _) = run_sqc(&[
+        main_c.to_str().unwrap(),
+        "-m",
+        manifest_dcl31().to_str().unwrap(),
+        "-d",
+        include_dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert!(
+        violations.is_empty(),
+        "function-like macros xfree/xcalloc must not be flagged as undeclared \
+         functions; got: {violations:?}"
+    );
+}
+
 // ─── Suppression ─────────────────────────────────────────────────────────────
 
 #[test]

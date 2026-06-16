@@ -306,6 +306,15 @@ impl CertRule for Dcl31C {
         for alias_name in context.macro_aliases.keys() {
             funcs.insert(alias_name.clone());
         }
+        // Function-like macro invocations are not undeclared-function calls: the
+        // macro expands to calls of real, declared functions. The prescan
+        // pre-pass collects these definitions cross-file (e.g. curl's
+        // `curlx_free`/`curlx_calloc`, defined in `curl_setup.h`), which the
+        // per-file `declared_functions` set cannot see. The in-file equivalent
+        // is already handled by `track_function_declaration`.
+        for macro_name in context.function_macros.keys() {
+            funcs.insert(macro_name.clone());
+        }
         *self.cross_file_functions.borrow_mut() = funcs;
     }
 

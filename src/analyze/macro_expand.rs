@@ -48,9 +48,170 @@ fn is_ident_char(c: char) -> bool {
 
 /// Collect function-like macro definitions from a parsed translation unit.
 /// Skips macros that use `#`/`##` or are variadic (left unexpanded downstream).
+///
+/// Two passes: (1) a precise AST pass over `preproc_function_def` nodes; (2) a
+/// textual error-correcting pass over the raw source that recovers definitions
+/// tree-sitter buried in `ERROR` recovery regions (e.g. curl's `curl_setup.h`,
+/// 1480 lines of nested `#if`, where `#define curlx_free(ptr) …` is misparsed
+/// as `ERROR(#define) + call_expression` and never emitted as a
+/// `preproc_function_def`). The AST pass is authoritative; the textual pass only
+/// fills names the AST missed (`or_insert`), so clean files are unaffected.
 pub fn collect_function_macros(root: &Node, source: &str) -> HashMap<String, FunctionMacro> {
     let mut out = HashMap::new();
     collect_rec(root, source, &mut out);
+    for (name, m) in collect_function_macros_textual(source) {
+        out.entry(name).or_insert(m);
+    }
+    out
+}
+
+/// Secondary, error-correcting collector: scans raw source line-by-line for
+/// function-like `#define NAME(params) body` directives. Because the C
+/// preprocessor is line-oriented, this is immune to however tree-sitter mangles
+/// the surrounding C in error-recovery regions. Applies the same exclusions as
+/// the AST pass (`#`/`##`, variadic) so the expander sees a consistent set.
+pub fn collect_function_macros_textual(source: &str) -> HashMap<String, FunctionMacro> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out = HashMap::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let (logical, next) = join_continuation(&lines, i);
+        i = next;
+        if let Some((name, m)) = parse_define_line(&logical) {
+            // First definition wins (mirrors the AST pass): redefinitions across
+            // platform `#ifdef` branches are ambiguous, so keep the first.
+            out.entry(name).or_insert(m);
+        }
+    }
+    out
+}
+
+/// Join a backslash-continued logical line starting at `start`. Returns the
+/// spliced text (continuation backslashes removed, joined with a space) and the
+/// index of the next unconsumed physical line.
+fn join_continuation(lines: &[&str], start: usize) -> (String, usize) {
+    let mut buf = String::new();
+    let mut i = start;
+    while i < lines.len() {
+        let line = lines[i];
+        let te = line.trim_end();
+        if let Some(stripped) = te.strip_suffix('\\') {
+            buf.push_str(stripped);
+            buf.push(' ');
+            i += 1;
+        } else {
+            buf.push_str(line);
+            i += 1;
+            break;
+        }
+    }
+    (buf, i)
+}
+
+/// Parse one logical line as a function-like `#define`. Returns `None` for
+/// non-directives, object-like macros, variadic macros, and macros using
+/// `#`/`##`.
+fn parse_define_line(line: &str) -> Option<(String, FunctionMacro)> {
+    let s = line.trim_start();
+    let s = s.strip_prefix('#')?;
+    let s = s.trim_start().strip_prefix("define")?;
+    // `define` must be a whole token (followed by whitespace), not a prefix
+    // like `defined` or `definex`.
+    if !s.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    let s = s.trim_start();
+
+    // Macro name.
+    let chars: Vec<char> = s.chars().collect();
+    if chars.is_empty() || !is_ident_start(chars[0]) {
+        return None;
+    }
+    let mut k = 0;
+    while k < chars.len() && is_ident_char(chars[k]) {
+        k += 1;
+    }
+    let name: String = chars[..k].iter().collect();
+
+    // Function-like requires '(' *immediately* after the name (no whitespace);
+    // `#define NAME (x)` is object-like with body `(x)`.
+    if k >= chars.len() || chars[k] != '(' {
+        return None;
+    }
+
+    // Parse parameter list up to the matching ')'.
+    let (params, body_start) = parse_param_list(&chars, k)?;
+    let body_raw: String = chars[body_start..].iter().collect();
+    let body = strip_comments(&body_raw).trim().to_string();
+
+    if body_uses_paste_or_stringize(&body) {
+        return None;
+    }
+    Some((name, FunctionMacro { params, body }))
+}
+
+/// Parse `(p1, p2, …)` starting at `open` (an index of `'('`). Returns the
+/// parameter names and the index just past the closing `')'`. Bails on variadic
+/// (`...`) macros (`None`).
+fn parse_param_list(chars: &[char], open: usize) -> Option<(Vec<String>, usize)> {
+    debug_assert_eq!(chars[open], '(');
+    let mut params = Vec::new();
+    let mut cur = String::new();
+    let mut i = open + 1;
+    let mut depth = 1i32;
+    while i < chars.len() {
+        match chars[i] {
+            '(' => {
+                depth += 1;
+                cur.push('(');
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let t = cur.trim();
+                    if !t.is_empty() {
+                        params.push(t.to_string());
+                    }
+                    // Variadic param → unsupported.
+                    if params.iter().any(|p| p.contains("...")) {
+                        return None;
+                    }
+                    return Some((params, i + 1));
+                }
+                cur.push(')');
+            }
+            ',' if depth == 1 => {
+                params.push(cur.trim().to_string());
+                cur.clear();
+            }
+            c => cur.push(c),
+        }
+        i += 1;
+    }
+    None // unbalanced
+}
+
+/// Remove `/* … */` and `// …` comments from a macro replacement list, so the
+/// textual body matches what the AST pass's `preproc_arg` yields.
+fn strip_comments(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            i += 2;
+            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            i += 2;
+            out.push(' ');
+        } else if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+            break;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
     out
 }
 
@@ -428,5 +589,90 @@ mod tests {
         // ID(ADD(1,2)) — the comma is inside a nested call, one arg to ID.
         let out = expand_invocation(&t, "ID", &["ADD(1,2)".into()]).unwrap();
         assert_eq!(out, "(((1)+(2)))");
+    }
+
+    // ── Textual error-correcting collector ──────────────────────────────────
+
+    #[test]
+    fn textual_collects_function_like() {
+        let t = collect_function_macros_textual(
+            "#define curlx_free(ptr) curl_dbg_free(ptr, __LINE__, __FILE__)\n",
+        );
+        let m = t.get("curlx_free").expect("curlx_free collected");
+        assert_eq!(m.params, vec!["ptr"]);
+        assert_eq!(m.body, "curl_dbg_free(ptr, __LINE__, __FILE__)");
+    }
+
+    #[test]
+    fn textual_skips_object_like() {
+        // Space before '(' → object-like alias, not a function-like macro.
+        let t = collect_function_macros_textual("#define curlx_free Curl_cfree\n");
+        assert!(!t.contains_key("curlx_free"));
+        let t2 = collect_function_macros_textual("#define PAREN (1 + 2)\n");
+        assert!(!t2.contains_key("PAREN"));
+    }
+
+    #[test]
+    fn textual_skips_variadic_and_paste() {
+        let t = collect_function_macros_textual(
+            "#define LOG(fmt, ...) printf(fmt, __VA_ARGS__)\n#define CAT(a,b) a##b\n",
+        );
+        assert!(!t.contains_key("LOG"));
+        assert!(!t.contains_key("CAT"));
+    }
+
+    #[test]
+    fn textual_joins_continuation() {
+        let t = collect_function_macros_textual(
+            "#define curlx_calloc(nbelem, size) \\\n  curl_dbg_calloc(nbelem, size, __LINE__, __FILE__)\n",
+        );
+        let m = t
+            .get("curlx_calloc")
+            .expect("collected across continuation");
+        assert_eq!(m.params, vec!["nbelem", "size"]);
+        assert!(m.body.contains("curl_dbg_calloc(nbelem, size"));
+    }
+
+    #[test]
+    fn textual_strips_comments() {
+        let t = collect_function_macros_textual("#define WRAP(x) real(x) /* trailing */\n");
+        assert_eq!(t.get("WRAP").unwrap().body, "real(x)");
+    }
+
+    #[test]
+    fn textual_indented_define_with_space_after_hash() {
+        let t = collect_function_macros_textual("  #  define INDENT(x) ((x)+1)\n");
+        assert!(t.contains_key("INDENT"));
+    }
+
+    #[test]
+    fn does_not_match_defined_operator() {
+        let t = collect_function_macros_textual("#if defined(FOO)\n#endif\n");
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn merge_recovers_macro_in_error_region() {
+        // A torture-header shape: a malformed construct forces tree-sitter into
+        // ERROR recovery, so the following `#define` is NOT emitted as a
+        // preproc_function_def — only the textual pass recovers it.
+        let src = "#define BROKEN(a) a +++ ++ +\n\
+                   int f(void) { return 1 } }\n\
+                   #define recovered_free(ptr) free(ptr)\n";
+        let mut p = CParser::new().unwrap();
+        let tree = p.parse_source(src).unwrap();
+        let ast_only = {
+            let mut out = HashMap::new();
+            collect_rec(&tree.root_node(), src, &mut out);
+            out
+        };
+        let merged = collect_function_macros(&tree.root_node(), src);
+        // Whatever the AST pass managed, the merged set must contain the wrapper.
+        assert!(
+            merged.contains_key("recovered_free"),
+            "textual pass should recover recovered_free; ast_only={:?}",
+            ast_only.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(merged["recovered_free"].body, "free(ptr)");
     }
 }
