@@ -56,10 +56,8 @@ pub fn macro_arg_roles(name: &str) -> Option<&'static [ArgRole]> {
         // ---- uthash ----
         // HASH_ITER(hh, head, el, tmp)
         "HASH_ITER" => &[Other, Other, Iterator, Temp],
-        // HASH_FIND(hh, head, keyptr, keylen, out)
-        "HASH_FIND" => &[Other, Other, Other, Other, Out],
-        // HASH_FIND_STR / _INT / _PTR(head, key, out)
-        "HASH_FIND_STR" | "HASH_FIND_INT" | "HASH_FIND_PTR" => &[Other, Other, Out],
+        // NB: the HASH_FIND* / HASH_REPLACE* family (output = last arg) is handled
+        // by prefix in `is_hash_find_family`, not enumerated here.
 
         // ---- BSD <sys/queue.h>: (var, head, field [, tvar]) -> var at arg 0 ----
         "TAILQ_FOREACH" | "LIST_FOREACH" | "SLIST_FOREACH" | "STAILQ_FOREACH"
@@ -80,6 +78,33 @@ pub fn macro_arg_roles(name: &str) -> Option<&'static [ArgRole]> {
 
         _ => return None,
     })
+}
+
+/// True for the uthash `HASH_FIND*` / `HASH_REPLACE*` family, whose output
+/// (the found / replaced item) is always the LAST argument. Matched by prefix
+/// so new variants (e.g. `HASH_FIND_BYHASHVALUE`, `HASH_REPLACE_INORDER`) are
+/// covered without enumeration.
+pub fn is_hash_find_family(name: &str) -> bool {
+    name.starts_with("HASH_FIND") || name.starts_with("HASH_REPLACE")
+}
+
+/// True if `name` is any registered macro (explicit iterator table or the
+/// find/replace family).
+pub fn is_registered(name: &str) -> bool {
+    macro_arg_roles(name).is_some() || is_hash_find_family(name)
+}
+
+/// Role of the argument at positional index `pos` for macro `name`, given a
+/// call with `nargs` positional arguments. Combines the explicit positional
+/// table with the find-family "last arg is Out" rule.
+fn arg_role_at(name: &str, pos: usize, nargs: usize) -> ArgRole {
+    if let Some(roles) = macro_arg_roles(name) {
+        return roles.get(pos).copied().unwrap_or(ArgRole::Other);
+    }
+    if is_hash_find_family(name) && nargs > 0 && pos == nargs - 1 {
+        return ArgRole::Out;
+    }
+    ArgRole::Other
 }
 
 /// Collect the comma-separated argument nodes of a `call_expression`'s
@@ -108,13 +133,14 @@ pub fn output_var_args(call: &Node, source: &str) -> Vec<(String, ArgRole)> {
         Some(f) => f.utf8_text(source.as_bytes()).unwrap_or("").to_string(),
         None => return Vec::new(),
     };
-    let roles = match macro_arg_roles(&func_name) {
-        Some(r) => r,
-        None => return Vec::new(),
-    };
+    if !is_registered(&func_name) {
+        return Vec::new();
+    }
+    let args = positional_args(call);
+    let nargs = args.len();
     let mut out = Vec::new();
-    for (pos, arg) in positional_args(call).into_iter().enumerate() {
-        let role = roles.get(pos).copied().unwrap_or(ArgRole::Other);
+    for (pos, arg) in args.into_iter().enumerate() {
+        let role = arg_role_at(&func_name, pos, nargs);
         if matches!(role, ArgRole::Iterator | ArgRole::Temp | ArgRole::Out)
             && arg.kind() == "identifier"
         {
@@ -149,14 +175,15 @@ pub fn is_macro_output_arg(ident: &Node, source: &str) -> bool {
         Some(f) => f.utf8_text(source.as_bytes()).unwrap_or(""),
         None => return false,
     };
-    let roles = match macro_arg_roles(func_name) {
-        Some(r) => r,
-        None => return false,
-    };
+    if !is_registered(func_name) {
+        return false;
+    }
+    let args = positional_args(&call);
+    let nargs = args.len();
     let target = ident.id();
-    for (pos, arg) in positional_args(&call).into_iter().enumerate() {
+    for (pos, arg) in args.into_iter().enumerate() {
         if arg.id() == target {
-            let role = roles.get(pos).copied().unwrap_or(ArgRole::Other);
+            let role = arg_role_at(func_name, pos, nargs);
             return matches!(role, ArgRole::Iterator | ArgRole::Temp | ArgRole::Out);
         }
     }

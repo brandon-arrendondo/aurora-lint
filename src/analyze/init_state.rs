@@ -1036,7 +1036,7 @@ fn process_call_expression(
     // `macro_semantics` (Phase 1 of docs/design/macro-expansion.md) — this
     // replaces the old first-arg-only FOR_EACH_MACROS heuristic, which was wrong
     // for utlist/uthash where the head is the input at arg 0.
-    if crate::analyze::macro_semantics::macro_arg_roles(&func_name).is_some() {
+    if crate::analyze::macro_semantics::is_registered(&func_name) {
         for (var_name, _role) in crate::analyze::macro_semantics::output_var_args(node, source) {
             if let Some(info) = state.get_mut(&var_name) {
                 info.state = InitState::Initialized;

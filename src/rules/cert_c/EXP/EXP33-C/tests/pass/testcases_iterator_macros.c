@@ -45,3 +45,13 @@ void compliant_hash_find(struct item *items, int id) {
         use_str(out->name);
     }
 }
+
+/* uthash HASH_FIND_BYHASHVALUE / HASH_REPLACE family: output is the LAST arg
+ * (matched by prefix, not enumeration) */
+void compliant_hash_find_byhashvalue(struct item *items, unsigned hv) {
+    struct item *out;
+    HASH_FIND_BYHASHVALUE(hh, items, "k", 1, hv, out);
+    if (out) {
+        use_str(out->name);
+    }
+}
