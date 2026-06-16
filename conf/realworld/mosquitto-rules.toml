@@ -10,9 +10,8 @@ enabled = true
 [rules.cert_c.API01-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.API02-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.API03-C]
 enabled = true
@@ -35,9 +34,8 @@ enabled = true
 [rules.cert_c.ARR00-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.ARR01-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.ARR02-C]
 enabled = true
@@ -48,9 +46,8 @@ enabled = true
 [rules.cert_c.ARR32-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.ARR36-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.ARR37-C]
 enabled = true
@@ -58,9 +55,8 @@ enabled = true
 [rules.cert_c.ARR38-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.ARR39-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.CON01-C]
 enabled = true
@@ -203,9 +199,8 @@ enabled = true
 [rules.cert_c.DCL30-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.DCL31-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.DCL36-C]
 enabled = true
@@ -294,9 +289,8 @@ enabled = true
 [rules.cert_c.EXP05-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.EXP07-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.EXP08-C]
 enabled = true
@@ -331,16 +325,14 @@ enabled = false  # Use braces for the body of an if, for, or while statement; ad
 [rules.cert_c.EXP20-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.EXP30-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.EXP32-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.EXP33-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.EXP34-C]
 enabled = true
@@ -363,9 +355,8 @@ enabled = true
 [rules.cert_c.EXP42-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.EXP43-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.EXP44-C]
 enabled = true
@@ -463,9 +454,8 @@ enabled = true
 [rules.cert_c.FIO41-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.FIO42-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.FIO44-C]
 enabled = true
@@ -476,13 +466,11 @@ enabled = true
 [rules.cert_c.FIO46-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.FIO47-C]
-enabled = false
+enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.FIO50-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.FIO51-C]
 enabled = true
@@ -496,9 +484,8 @@ enabled = true
 [rules.cert_c.FLP02-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.FLP03-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.FLP04-C]
 enabled = true
@@ -518,9 +505,8 @@ enabled = true
 [rules.cert_c.FLP32-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.FLP34-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.FLP36-C]
 enabled = true
@@ -663,9 +649,8 @@ enabled = true
 [rules.cert_c.MSC33-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.MSC37-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.MSC38-C]
 enabled = true
@@ -784,9 +769,8 @@ enabled = true
 [rules.cert_c.PRE31-C]
 enabled = false  # Avoid side effects in arguments to unsafe macros; advisory/style, not adopted (cf. sqlite-rules.toml baseline)
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.PRE32-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.SIG00-C]
 enabled = true
@@ -839,9 +823,8 @@ enabled = true
 [rules.cert_c.STR11-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.STR30-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.STR31-C]
 enabled = true
@@ -849,9 +832,8 @@ enabled = true
 [rules.cert_c.STR32-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.STR34-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.STR37-C]
 enabled = true
@@ -871,9 +853,8 @@ enabled = true
 [rules.cert_c.WIN03-C]
 enabled = true
 
-# task 170: zero-TP on sqlite+mosquitto, adversarially confirmed FP (2026-06-15) — disabled in real-world mode
 [rules.cert_c.WIN04-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.WIN30-C]
 enabled = true
