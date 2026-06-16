@@ -58,6 +58,19 @@ All macro awareness is **definition-side and narrow**, collected in prescan
   indirection.
 - `string_literal_macros` — object-like macros whose body is a string literal.
 
+**This collection happens in a cross-file caching pre-pass**, which is the key
+lever for macro expansion. `prescan_directories` walks **every file including
+headers** and builds a `ProjectContext` (`src/analyze/context.rs:12`) that is
+`bincode`-serialized to `data/prescan_cache/<project>.cache`
+(`ProjectContext::save_to_file`/`load_from_file`, `context.rs:94-103`) and reused
+across runs. It already carries cross-TU data: `function_summaries`, `call_graph`,
+`macro_constants`, `macro_aliases`, `struct_field_types`, `global_*`. Because the
+pre-pass crosses file boundaries, **a function-like macro defined in a vendored
+header (e.g. `mosquitto/deps/utlist.h`) is collectible at pre-pass time even when
+analyzing a `.c` that merely includes it** — and cached, so analysis-time
+expansion never re-walks headers. This is where the macro-definition database
+belongs.
+
 Invocation-side modeling is per-rule and hand-maintained, e.g.:
 - `init_state.rs:308` `FOR_EACH_MACROS` — a hardcoded list of BSD `<sys/queue.h>`
   iterator macros; marks **only the first identifier arg** initialized
@@ -201,7 +214,18 @@ recall-gated independently:
   effects are init/guard, never suppression of a real defect).
 - **Phase 2 — In-tree function-like expansion engine.** The general substitution
   engine for definitions present in scanned files; feeds the CFG/dataflow.
-  Generalizes beyond the registry to project-local macros.
+  Generalizes beyond the registry to project-local macros. **Source the
+  definitions from the prescan caching pre-pass (§2):** add a
+  `function_macros: HashMap<String, MacroDef>` field to `ProjectContext`
+  (name → params + `preproc_arg` body text + source loc), populated during
+  `prescan_directories` and carried in the bincode cache. Because the pre-pass
+  already crosses headers, this captures vendored single-header libs
+  (utlist/uthash) and project macros once, cached — analysis-time expansion is a
+  lookup, not a re-walk. NB: adding a `ProjectContext` field changes the bincode
+  layout → bump a cache-format version and invalidate stale caches (the
+  `rebuild_prescan` path already exists). The registry (Phase 1) remains the
+  fallback for macros with **no** collected definition (system headers like
+  `<sys/queue.h>`).
 - **Phase 3 — Migrate existing rules onto the shared model.** Replace the ~51
   files of ad-hoc macro logic with the Phase-1/2 infrastructure; delete dead
   tables. Pay down the debt.
@@ -236,6 +260,51 @@ Phases 1→3 each ship behind a Juliet-recall gate and a real-world FP-delta che
    `tests/pass` (must-not-flag) and `tests/fail` (must-still-flag).
 
 ---
+
+## 8a. Phase 0 spike results (2026-06-16, task 184) — GO
+
+Verified against sqc's **exact grammar** (tree-sitter-c 0.21) via
+`examples/dump_ast.rs` (a kept dev tool: `echo CODE | cargo run --example dump_ast`).
+
+**Parse shapes (authoritative):**
+- **Block-bearing macros** (`DL_FOREACH_SAFE(head,el,tmp){…}`, `HASH_ITER(…){…}`):
+  parse as `expression_statement → call_expression(function=<MACRO>,
+  argument_list=[head,el,tmp])`, followed by a **`MISSING ";"`**, then a
+  **detached sibling `compound_statement`** (the body) at the same level.
+  `has_error = true`, but the structure is fully navigable by AST position:
+  macro name + positional identifier args are clean, and the body is the
+  immediately-following sibling block.
+- **Non-block output macros** (`HASH_FIND_INT(users,&id,out); if(out){…}`):
+  parse **cleanly** (`has_error = false`); `out` is a positional arg identifier
+  and the `if(out)` guard is a normal `if_statement`.
+- **Definitions** (`#define M(a,b,c) …`): `preproc_function_def` → `identifier`
+  name + `preproc_params` + body as a single `preproc_arg` **text blob** —
+  name/params/body all recoverable (Phase 2 substitutes into this text).
+
+**Premise reproduced** on current sqc for the FOREACH snippet:
+`EXP33 'el'/'tmp' used uninitialized` (at the arg positions) + `EXP34 'el'
+potential null deref` (inside the body) — i.e. exactly the oracle FPs. The
+detached body **is** visited by the CFG (the EXP34 hit lands inside it), so
+state set at the call statement propagates into the body. Fixture saved at the
+snippet in this section; promote to `tests/pass` in Phase 1.
+
+**Vendoring (answers §9):** mosquitto vendors `deps/utlist.h` + `deps/uthash.h`
+in-tree, so Phase 2 expansion can reach those definitions *if* prescan scans
+`deps/`. But `<sys/queue.h>` is a system header (not in-tree) — confirming the
+hybrid (§5 D): registry for definition-less system macros, expansion for the
+in-tree long tail.
+
+**Splice decision for Phase 2:** prefer modeling block-macros as a *synthetic
+loop* (treat the following sibling `compound_statement` as the body, the
+positional args per the registry) rather than literal text re-expansion — the
+detached-block + MISSING-";" shape makes positional AST modeling simpler and
+more robust than re-lexing `preproc_arg` and re-parsing. Reserve full text
+expansion for non-control-flow function-like macros.
+
+**Verdict: GO.** Phase 1 (task 180) is unblocked; the registry is positional
+(per-macro arg roles: iterator / temp / out / head-input) consumed by init-state
+(mark outputs Initialized) and null-state (mark iterator/out NotNull within the
+following block).
 
 ## 9. Open questions
 
