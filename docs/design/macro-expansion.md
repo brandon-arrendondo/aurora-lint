@@ -306,6 +306,40 @@ expansion for non-control-flow function-like macros.
 (mark outputs Initialized) and null-state (mark iterator/out NotNull within the
 following block).
 
+## 8b. Phase 1 results (2026-06-16, task 180) — DONE
+
+Shipped `src/analyze/macro_semantics.rs`: a positional registry (iterator table:
+utlist/uthash `*_FOREACH[_SAFE]`, `HASH_ITER`, BSD `<sys/queue.h>`) plus a
+prefix-matched `HASH_FIND*`/`HASH_REPLACE*` family (output = last arg, so new
+variants are covered without enumeration). Consumed by init-state (EXP33: mark
+iterator/temp/out args initialized), the EXP33 read-check (skip output-arg
+positions), and EXP34 (`is_unsafe_at`: iterator var is non-null inside the body
+block). Released as 0.4.34 → 0.4.35 (family fix). Replaced the old first-arg-only
+`FOR_EACH_MACROS`.
+
+**Same-version A/B (mosquitto, pinned commit `d3ee5c5c`, identical harness command,
+0.4.33 baseline vs 0.4.35):**
+
+| | 0.4.33 | 0.4.35 | Δ |
+|---|---:|---:|---:|
+| Total findings | 12,534 | 12,105 | **−429** |
+| EXP33-C | 488 | 176 | **−312** |
+| EXP34-C | 503 | 386 | **−117** |
+| **Net-new findings** | — | — | **0** |
+
+**Recall gate (Juliet fast, 0.4.33 vs 0.4.34):** CWE-457/EXP33 TP 506 / FP 31 and
+CWE-476/EXP34 TP 370 / FP 175 — *identical*. The change is additive suppression
+on macros absent from Juliet, so recall is provably unchanged. sqlite real-world
+was essentially unchanged (it does not vendor utlist/uthash) — confirming this
+was a mosquitto-class problem, and (per the project principle) sqlite's own
+macro FPs would be addressed by hardening, not by disabling.
+
+**Method note:** the A/B was the gold standard precisely because comparing to the
+0.4.30 audit numbers is contaminated by 4 versions of intervening change + scope
+differences. The A/B also *caught a completeness gap* (HASH_FIND_BYHASHVALUE),
+which motivated the prefix-family rule — a reminder that per-name enumeration
+is fragile and prefix/structural rules generalize better (the Phase 2 lesson).
+
 ## 9. Open questions
 
 - How are utlist/uthash actually vendored in target projects — as scanned
