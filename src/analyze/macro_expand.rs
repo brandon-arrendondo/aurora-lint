@@ -15,9 +15,12 @@
 //!   * variadic macros (`...` / `__VA_ARGS__`);
 //!   * object-like macros — handled separately by `const_eval`.
 //
-// Increment 2a delivers the collector + engine (fully unit-tested below);
-// increment 2b wires them into prescan (`ProjectContext`) and the dataflow
-// consumers, at which point this allow is removed.
+// Increment 2a delivered the collector + engine (unit-tested below). Increment
+// 2b wires `collect_function_macros` into the prescan pre-pass / `ProjectContext`
+// (so definitions are cached and available cross-file). The expander
+// (`expand_invocation`) is consumed by the dataflow rules in a follow-up
+// increment — driven by which macros the curl/hostap audits show cause FPs — at
+// which point this allow is removed.
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};

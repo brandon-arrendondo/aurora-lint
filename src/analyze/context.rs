@@ -1,4 +1,5 @@
 use super::function_summary::FunctionSummary;
+use super::macro_expand::FunctionMacro;
 use super::null_state::NullState;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -45,6 +46,13 @@ pub struct ProjectContext {
     /// pattern).
     #[serde(default)]
     pub global_writers: HashMap<String, HashSet<String>>,
+    /// Function-like macro definitions (`#define NAME(a,b) body`) collected
+    /// across all scanned files (incl. headers) during the prescan pre-pass.
+    /// Consumed by `macro_expand` to expand opaque macro invocations on demand
+    /// (Phase 2 of docs/design/macro-expansion.md). Macros using `#`/`##` or
+    /// variadics are intentionally excluded (see `macro_expand`).
+    #[serde(default)]
+    pub function_macros: HashMap<String, FunctionMacro>,
 }
 
 impl ProjectContext {

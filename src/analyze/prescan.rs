@@ -20,6 +20,7 @@ struct FilePrescanResult {
     call_graph: HashMap<String, HashSet<String>>,
     macro_constants: HashMap<String, i64>,
     macro_aliases: HashMap<String, String>,
+    function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     struct_field_types: HashMap<String, HashMap<String, String>>,
     global_constants: HashMap<String, i64>,
     global_var_null_states: HashMap<String, NullState>,
@@ -40,6 +41,7 @@ impl FilePrescanResult {
             call_graph: HashMap::new(),
             macro_constants: HashMap::new(),
             macro_aliases: HashMap::new(),
+            function_macros: HashMap::new(),
             struct_field_types: HashMap::new(),
             global_constants: HashMap::new(),
             global_var_null_states: HashMap::new(),
@@ -96,6 +98,9 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         collect_call_graph(&root, &source, &mut result.call_graph);
 
         result.macro_aliases.extend(file_aliases);
+
+        result.function_macros =
+            crate::analyze::macro_expand::collect_function_macros(&root, &source);
 
         collect_struct_definitions(&root, &source, &mut result.struct_field_types);
 
@@ -170,6 +175,8 @@ pub fn prescan_directories(
     let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
     let mut macro_constants: HashMap<String, i64> = HashMap::new();
     let mut macro_aliases: HashMap<String, String> = HashMap::new();
+    let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
+        HashMap::new();
     let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut global_constants: HashMap<String, i64> = HashMap::new();
     let mut global_var_null_states: HashMap<String, NullState> = HashMap::new();
@@ -208,6 +215,9 @@ pub fn prescan_directories(
 
         macro_constants.extend(r.macro_constants);
         macro_aliases.extend(r.macro_aliases);
+        for (name, m) in r.function_macros {
+            function_macros.entry(name).or_insert(m);
+        }
         struct_field_types.extend(r.struct_field_types);
         global_constants.extend(r.global_constants);
         global_var_null_states.extend(r.global_var_null_states);
@@ -276,6 +286,7 @@ pub fn prescan_directories(
         call_graph,
         macro_constants,
         macro_aliases,
+        function_macros,
         struct_field_types,
         global_constants,
         global_var_null_states,
@@ -377,6 +388,7 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         known_functions,
         function_summaries,
         macro_constants: macros,
+        function_macros: crate::analyze::macro_expand::collect_function_macros(root, source),
         struct_field_types,
         global_writers,
         ..ProjectContext::default()
