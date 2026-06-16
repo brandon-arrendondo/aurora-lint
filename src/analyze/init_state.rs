@@ -303,25 +303,9 @@ pub fn is_non_initializing_function(func_name: &str) -> bool {
             | "sendto"
     )
 }
-
-/// For-each macros that initialize the first (iterator) argument.
-pub const FOR_EACH_MACROS: &[&str] = &[
-    "dl_list_for_each",
-    "dl_list_for_each_safe",
-    "dl_list_for_each_reverse",
-    "for_each_link",
-    "TAILQ_FOREACH",
-    "TAILQ_FOREACH_SAFE",
-    "LIST_FOREACH",
-    "LIST_FOREACH_SAFE",
-    "SLIST_FOREACH",
-    "SLIST_FOREACH_SAFE",
-    "STAILQ_FOREACH",
-    "STAILQ_FOREACH_SAFE",
-    "RB_FOREACH",
-    "SIMPLEQ_FOREACH",
-    "CIRCLEQ_FOREACH",
-];
+// Iterator/find/output macro semantics now live in
+// `crate::analyze::macro_semantics` (positional roles), replacing the former
+// first-arg-only FOR_EACH_MACROS list.
 
 // ---------------------------------------------------------------------------
 // Analysis configuration
@@ -1047,19 +1031,15 @@ fn process_call_expression(
         return;
     }
 
-    // For-each macros: first identifier arg is initialized
-    if FOR_EACH_MACROS.contains(&func_name.as_str()) {
-        if let Some(args) = node.child_by_field_name("arguments") {
-            for i in 0..args.child_count() {
-                if let Some(arg) = args.child(i) {
-                    if arg.kind() == "identifier" {
-                        let var_name = arg.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                        if let Some(info) = state.get_mut(&var_name) {
-                            info.state = InitState::Initialized;
-                        }
-                        break;
-                    }
-                }
+    // Iterator/find/output macros (utlist/uthash/BSD-queue): the macro writes
+    // its iterator/temp/out positional args. Mark each as initialized. See
+    // `macro_semantics` (Phase 1 of docs/design/macro-expansion.md) — this
+    // replaces the old first-arg-only FOR_EACH_MACROS heuristic, which was wrong
+    // for utlist/uthash where the head is the input at arg 0.
+    if crate::analyze::macro_semantics::macro_arg_roles(&func_name).is_some() {
+        for (var_name, _role) in crate::analyze::macro_semantics::output_var_args(node, source) {
+            if let Some(info) = state.get_mut(&var_name) {
+                info.state = InitState::Initialized;
             }
         }
         return;

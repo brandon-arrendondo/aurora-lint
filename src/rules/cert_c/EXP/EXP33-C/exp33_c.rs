@@ -391,6 +391,15 @@ fn check_identifier_read(
         return;
     }
 
+    // Skip identifiers that are the iterator/temp/out argument of a known
+    // iterator/find macro (utlist/uthash/BSD-queue). The macro *writes* these
+    // args, so their appearance in the invocation is not a use of an
+    // uninitialized value. See crate::analyze::macro_semantics (Phase 1 of
+    // docs/design/macro-expansion.md).
+    if crate::analyze::macro_semantics::is_macro_output_arg(node, source) {
+        return;
+    }
+
     // Query init state at this point
 
     let info = match init_state::get_var_info_at_with_config(

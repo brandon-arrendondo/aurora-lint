@@ -527,6 +527,15 @@ fn is_unsafe_at(
         return false;
     }
 
+    // A dereference of an iterator macro's loop variable inside the macro body
+    // (e.g. `el->field` within `DL_FOREACH(head, el) { ... }`) is guarded
+    // non-null by the macro's expanded loop condition, which the parser cannot
+    // see. See crate::analyze::macro_semantics (Phase 1 of
+    // docs/design/macro-expansion.md).
+    if crate::analyze::macro_semantics::is_in_iterator_macro_body(deref_node, source, var_name) {
+        return false;
+    }
+
     true
 }
 
