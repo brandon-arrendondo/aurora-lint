@@ -492,21 +492,26 @@ impl GlobalTracker {
             "assignment_expression" => {
                 // Check for VLA/stack pointer escape to global
                 if let Some(left) = node.child_by_field_name("left") {
-                    let left_var = self.extract_base_variable(&left, source);
-                    // Only pointer/array globals can actually hold a stack address;
-                    // scalar integer globals (u8/u16/u32 counters, state vars, etc.) cannot.
-                    if self.global_pointer_vars.contains(&left_var) {
-                        // Check if right side is a local array/VLA
-                        if let Some(right) = node.child_by_field_name("right") {
-                            if self.is_local_array_or_vla(&right, source, params, func_name) {
-                                self.stack_escape_violations.push((
-                                    node.start_position().row + 1,
-                                    node.start_position().column + 1,
-                                    format!(
-                                        "Stack pointer escape: local array/VLA assigned to global '{}'",
-                                        left_var
-                                    ),
-                                ));
+                    // Writing to an array element (arr[i] = x) is never a stack pointer
+                    // escape; only a direct assignment to the pointer/array variable itself
+                    // (global_ptr = local_arr) can escape a stack address.
+                    if left.kind() != "subscript_expression" {
+                        let left_var = self.extract_base_variable(&left, source);
+                        // Only pointer/array globals can actually hold a stack address;
+                        // scalar integer globals (u8/u16/u32 counters, state vars, etc.) cannot.
+                        if self.global_pointer_vars.contains(&left_var) {
+                            // Check if right side is a local array/VLA
+                            if let Some(right) = node.child_by_field_name("right") {
+                                if self.is_local_array_or_vla(&right, source, params, func_name) {
+                                    self.stack_escape_violations.push((
+                                        node.start_position().row + 1,
+                                        node.start_position().column + 1,
+                                        format!(
+                                            "Stack pointer escape: local array/VLA assigned to global '{}'",
+                                            left_var
+                                        ),
+                                    ));
+                                }
                             }
                         }
                     }
