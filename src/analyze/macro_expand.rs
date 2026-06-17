@@ -17,10 +17,12 @@
 //
 // Increment 2a delivered the collector + engine. Increment 2b wired
 // `collect_function_macros` into the prescan pre-pass / `ProjectContext` (so
-// definitions are cached and available cross-file). Increment 2c-ii consumes the
-// expander: `macro_output_param_indices` (via `expand_invocation`) feeds
-// EXP33-C's read-checker and the init-state transfer to recognize macro output
-// arguments (e.g. curl's `CF_DATA_SAVE`).
+// definitions are cached and available cross-file). The expander
+// (`expand_invocation`) is consumed by the dataflow rules:
+//   * 2c-ii — `macro_output_param_indices` feeds EXP33-C's read-checker and the
+//     init-state transfer to recognize macro output arguments (`CF_DATA_SAVE`);
+//   * 2c-iii — `macro_nulls_param_indices` feeds MEM30-C to recognize "safe
+//     free" macros that free AND null their argument (`Curl_safefree`).
 
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -548,11 +550,89 @@ pub fn macro_output_param_indices(
     out
 }
 
+/// Parameter indices that a function-like macro frees-and-nulls: the body
+/// assigns the (whole) parameter the null pointer constant (`(param) = NULL`),
+/// directly or after expanding nested macros from `table`. This is the
+/// "safe free" idiom — curl `Curl_safefree(ptr)` expands to
+/// `do { curlx_free(ptr); (ptr) = NULL; } while(0)`, so index 0 is reported.
+///
+/// MEM30-C already treats such macros as a free (the name contains `FREE`), but
+/// cannot see the `= NULL`; consuming this list lets it clear the argument's
+/// freed state — exactly as if the caller had written `free(p); p = NULL;` —
+/// removing use-after-free / double-free false positives on safe-free wrappers.
+/// (mosquitto `mosquitto_FREE`, `SAFE_FREE` share the idiom — engine, not
+/// allowlist.)
+pub fn macro_nulls_param_indices(table: &HashMap<String, FunctionMacro>, name: &str) -> Vec<usize> {
+    let m = match table.get(name) {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+    if m.params.is_empty() {
+        return Vec::new();
+    }
+    let sentinels: Vec<String> = (0..m.params.len())
+        .map(|i| format!("__SQC_MNULL_{i}__"))
+        .collect();
+    let expanded = match expand_invocation(table, name, &sentinels) {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (i, sent) in sentinels.iter().enumerate() {
+        if is_null_assignment_target(&expanded, sent) {
+            out.push(i);
+        }
+    }
+    out
+}
+
+/// True if the token starting at `start` (after skipping whitespace and an
+/// optional opening paren of a cast we don't model) is the null pointer
+/// constant `NULL` or `0`, terminated by a non-identifier/non-digit char.
+fn rhs_is_null_constant(chars: &[char], start: usize) -> bool {
+    let n = chars.len();
+    let mut j = start;
+    while j < n && chars[j].is_whitespace() {
+        j += 1;
+    }
+    // `NULL`
+    let null_kw = ['N', 'U', 'L', 'L'];
+    if j + 4 <= n && chars[j..j + 4] == null_kw && (j + 4 >= n || !is_ident_char(chars[j + 4])) {
+        return true;
+    }
+    // `0` (or `0L`, `0u`… ) — a bare zero literal, not `0x..`/`0.5`/`01`.
+    if j < n && chars[j] == '0' {
+        let after = if j + 1 < n { chars[j + 1] } else { ' ' };
+        if !after.is_ascii_digit() && after != '.' && after != 'x' && after != 'X' {
+            return true;
+        }
+    }
+    false
+}
+
 /// True if identifier `ident` appears in `text` as the target of a whole-object
 /// assignment: `ident =` or `(ident) =` (any number of wrapping parens),
 /// excluding compound assignment (`+=`/`==`/…), field/element/deref writes, and
 /// member/arrow access. See [`macro_output_param_indices`].
 fn is_whole_assignment_target(text: &str, ident: &str) -> bool {
+    find_assignment_targets(text, ident, |_| true)
+}
+
+/// True if `ident` appears in `text` as a whole-object assignment whose
+/// right-hand side is the null pointer constant (`NULL` or `0`) — i.e.
+/// `ident = NULL` / `(ident) = 0`. See [`macro_nulls_param_indices`].
+fn is_null_assignment_target(text: &str, ident: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    find_assignment_targets(text, ident, |rhs_start| {
+        rhs_is_null_constant(&chars, rhs_start)
+    })
+}
+
+/// Scan `text` for whole-object assignment targets named `ident` (handling
+/// wrapping parens and excluding deref/field/compound/comparison forms — see
+/// [`is_whole_assignment_target`]). For each candidate, call `rhs_ok` with the
+/// char index just past the `=`; return true on the first that passes.
+fn find_assignment_targets(text: &str, ident: &str, rhs_ok: impl Fn(usize) -> bool) -> bool {
     let chars: Vec<char> = text.chars().collect();
     let id: Vec<char> = ident.chars().collect();
     let (n, m) = (chars.len(), id.len());
@@ -581,7 +661,8 @@ fn is_whole_assignment_target(text: &str, ident: &str) -> bool {
                     j += 1;
                 }
                 // A single `=` (not `==`) immediately follows → assignment target.
-                if j < n && chars[j] == '=' && (j + 1 >= n || chars[j + 1] != '=') {
+                if j < n && chars[j] == '=' && (j + 1 >= n || chars[j + 1] != '=') && rhs_ok(j + 1)
+                {
                     return true;
                 }
             }
@@ -791,6 +872,50 @@ mod tests {
     fn output_param_unknown_macro_is_empty() {
         let t = table("#define X(a) (a)\n");
         assert!(macro_output_param_indices(&t, "NOPE").is_empty());
+    }
+
+    // ── Free-and-null (safe-free) macro detection ───────────────────────────
+
+    #[test]
+    fn nulls_param_curl_safefree_shape() {
+        // curl Curl_safefree expands free(ptr) then (ptr)=NULL through the
+        // nested curlx_free wrapper.
+        let t = table(
+            "#define curlx_free(p) free(p)\n\
+             #define Curl_safefree(ptr) do { curlx_free(ptr); (ptr) = NULL; } while(0)\n",
+        );
+        assert_eq!(macro_nulls_param_indices(&t, "Curl_safefree"), vec![0]);
+    }
+
+    #[test]
+    fn nulls_param_zero_literal() {
+        let t = table("#define SAFE_FREE(x) do { free(x); (x) = 0; } while(0)\n");
+        assert_eq!(macro_nulls_param_indices(&t, "SAFE_FREE"), vec![0]);
+    }
+
+    #[test]
+    fn nulls_param_excludes_plain_free_no_null() {
+        // A free wrapper that does NOT null its arg must not be reported.
+        let t = table("#define just_free(p) free(p)\n");
+        assert!(macro_nulls_param_indices(&t, "just_free").is_empty());
+    }
+
+    #[test]
+    fn nulls_param_excludes_nonzero_and_field_assign() {
+        // RHS is not the null constant; and a field write is not whole-object.
+        let t = table(
+            "#define SETONE(x) do { (x) = 1; } while(0)\n\
+             #define CLEARF(p) do { (p)->next = NULL; } while(0)\n",
+        );
+        assert!(macro_nulls_param_indices(&t, "SETONE").is_empty());
+        assert!(macro_nulls_param_indices(&t, "CLEARF").is_empty());
+    }
+
+    #[test]
+    fn nulls_param_only_nulled_arg() {
+        // Frees a, nulls b — only b is the nulled param.
+        let t = table("#define FN(a, b) do { free(a); (b) = NULL; } while(0)\n");
+        assert_eq!(macro_nulls_param_indices(&t, "FN"), vec![1]);
     }
 
     #[test]

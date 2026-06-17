@@ -1,10 +1,25 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::FunctionMacro;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Mem30C;
+#[derive(Default)]
+pub struct Mem30C {
+    /// Cross-file function-like macro definitions (from the prescan / macro
+    /// engine). Used to recognize "safe free" macros that free AND null their
+    /// argument (e.g. curl `Curl_safefree`).
+    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+}
+
+impl Mem30C {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 impl CertRule for Mem30C {
     fn rule_id(&self) -> &'static str {
@@ -27,6 +42,10 @@ impl CertRule for Mem30C {
         "MEM30-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.function_macros.borrow_mut() = context.function_macros.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
@@ -38,11 +57,62 @@ impl CertRule for Mem30C {
         // Check for cross-function violations
         global_tracker.check_cross_function_violations(node, source, &mut violations);
 
+        // Precompute "safe free" macros invoked in this file: function-like
+        // macros that free AND null their argument (e.g. curl Curl_safefree).
+        // MEM30 already treats them as a free (name contains FREE) but cannot
+        // see the `= NULL`; this lets the analyzer clear the freed state.
+        // (Guarded by a non-empty table → zero cost without a macro prescan,
+        // e.g. on Juliet.) Phase 2c-iii of docs/design/macro-expansion.md.
+        let macro_null_params = {
+            let macros = self.function_macros.borrow();
+            if macros.is_empty() {
+                HashMap::new()
+            } else {
+                let mut invoked = HashSet::new();
+                collect_invoked_macro_names(node, source, &macros, &mut invoked);
+                let mut out: HashMap<String, Vec<usize>> = HashMap::new();
+                for name in invoked {
+                    let idx =
+                        crate::analyze::macro_expand::macro_nulls_param_indices(&macros, &name);
+                    if !idx.is_empty() {
+                        out.insert(name, idx);
+                    }
+                }
+                out
+            }
+        };
+
         // Second pass: per-function analysis
-        let mut analyzer = MemoryAnalyzer::new();
+        let mut analyzer = MemoryAnalyzer::new(macro_null_params);
         analyzer.analyze_node(node, source, &mut violations);
 
         violations
+    }
+}
+
+/// Collect names of function-like macros (present in `macros`) invoked as
+/// `call_expression`s under `node` — limits the safe-free computation to macros
+/// actually used in the file.
+fn collect_invoked_macro_names(
+    node: &Node,
+    source: &str,
+    macros: &HashMap<String, FunctionMacro>,
+    out: &mut HashSet<String>,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(func) = node.child_by_field_name("function") {
+            if func.kind() == "identifier" {
+                let name = get_node_text(&func, source);
+                if macros.contains_key(name) {
+                    out.insert(name.to_string());
+                }
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_invoked_macro_names(&child, source, macros, out);
+        }
     }
 }
 
@@ -1108,10 +1178,14 @@ struct MemoryAnalyzer {
     realloc_source: HashMap<String, Vec<String>>,
     // Track union members - when one member is freed, all are freed
     union_members: HashMap<String, HashSet<String>>,
+    // Function-like "safe free" macros (free AND null their arg): macro name ->
+    // nulled parameter indices. A call to one of these clears the freed state of
+    // its argument, matching the macro's own `= NULL` (Phase 2c-iii).
+    macro_null_params: HashMap<String, Vec<usize>>,
 }
 
 impl MemoryAnalyzer {
-    fn new() -> Self {
+    fn new(macro_null_params: HashMap<String, Vec<usize>>) -> Self {
         Self {
             freed_vars: HashSet::new(),
             aliases: HashMap::new(),
@@ -1120,6 +1194,7 @@ impl MemoryAnalyzer {
             realloc_invalidated: HashSet::new(),
             realloc_source: HashMap::new(),
             union_members: HashMap::new(),
+            macro_null_params,
         }
     }
 
@@ -1127,7 +1202,7 @@ impl MemoryAnalyzer {
     fn analyze_node(&mut self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if node.kind() == "function_definition" {
             // Analyze each function with fresh state to avoid cross-function pollution
-            let mut func_analyzer = MemoryAnalyzer::new();
+            let mut func_analyzer = MemoryAnalyzer::new(self.macro_null_params.clone());
             func_analyzer.analyze_function(node, source, violations);
             return; // Don't recurse further - function handled completely
         }
@@ -1558,6 +1633,15 @@ impl MemoryAnalyzer {
                     {
                         // Treat as free() call
                         self.process_free_call(node, source, violations);
+                        // "Safe free" macros (curl Curl_safefree, mosquitto
+                        // mosquitto_FREE, …) also set the argument to NULL inside
+                        // the macro body — invisible to us without expansion. If
+                        // the macro engine flagged this macro as nulling a
+                        // parameter, clear that argument's freed state, exactly
+                        // as an explicit `p = NULL;` would. Phase 2c-iii.
+                        if let Some(indices) = self.macro_null_params.get(function_name).cloned() {
+                            self.clear_freed_for_nulled_args(node, source, &indices);
+                        }
                     } else if upper_name.contains("REALLOC") {
                         // Treat as realloc() call - track old pointer as invalidated
                         // Don't check args for freed - realloc expects a possibly-allocated pointer
@@ -1694,6 +1778,28 @@ impl MemoryAnalyzer {
             .collect();
         for alias in aliases_to_free {
             self.freed_vars.insert(alias);
+        }
+    }
+
+    /// For a "safe free" macro call (frees AND nulls its argument), clear the
+    /// freed state of each nulled positional argument — mirroring the macro's
+    /// own `arg = NULL` (which `process_free_call` cannot see). Replicates the
+    /// NULL-assignment clearing in [`process_assignment`]. Phase 2c-iii.
+    fn clear_freed_for_nulled_args(&mut self, call: &Node, source: &str, indices: &[usize]) {
+        let args = crate::analyze::macro_semantics::positional_args(call);
+        for &idx in indices {
+            let Some(arg) = args.get(idx) else { continue };
+            let full_path = get_node_text(arg, source).to_string();
+            if !full_path.is_empty() {
+                self.nullified_vars.insert(full_path.clone());
+                self.freed_vars.remove(&full_path);
+                self.realloc_invalidated.remove(&full_path);
+            }
+            let base = self.extract_base_variable(arg, source);
+            if !base.is_empty() {
+                self.nullified_vars.insert(base.clone());
+                self.freed_vars.remove(&base);
+            }
         }
     }
 

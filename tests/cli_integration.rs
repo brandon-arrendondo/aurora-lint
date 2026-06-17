@@ -907,6 +907,47 @@ fn crossfile_nullable_return_safe_not_flagged() {
     );
 }
 
+// ─── Safe-free macro (MEM30-C, Phase 2c-iii) ────────────────────────────────
+
+fn manifest_mem30() -> PathBuf {
+    fixtures().join("manifest_mem30.toml")
+}
+
+/// A pointer freed-and-nulled by a "safe free" function-like macro (the body
+/// does `free(p); (p) = NULL;`, e.g. curl's `Curl_safefree`) must not be flagged
+/// by MEM30-C as a double-free (a second safe-free is `free(NULL)`) or
+/// use-after-free (the pointer is NULL, not dangling). MEM30-C already treats
+/// the macro as a free via its name; the prescan-collected function_macros +
+/// `macro_nulls_param_indices` reveal the hidden `= NULL` so the freed state is
+/// cleared. Task 185, Phase 2c-iii.
+#[test]
+fn safe_free_macro_not_flagged_double_free() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+
+    let main_c = fixtures().join("safe_free_macro/main.c");
+    let include_dir = fixtures().join("safe_free_macro/include");
+
+    let (code, _, _) = run_sqc(&[
+        main_c.to_str().unwrap(),
+        "-m",
+        manifest_mem30().to_str().unwrap(),
+        "-d",
+        include_dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert!(
+        violations.is_empty(),
+        "safe-free macro (frees + nulls) must not yield MEM30-C double-free / \
+         use-after-free; got: {violations:?}"
+    );
+}
+
 // ─── Cross-file frees_params (MEM31-C) ──────────────────────────────────────
 
 fn manifest_mem31() -> PathBuf {
