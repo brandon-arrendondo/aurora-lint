@@ -43,6 +43,7 @@ use crate::analyze::buffer_size::{self, BufferInfo, BufferSize};
 use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, VarRangeMap};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
@@ -92,16 +93,6 @@ struct PointerAlias {
     element_size_bytes: Option<usize>, // Element size for cast pointers (e.g., 4 for int, 1 for char)
 }
 
-/// Represents a function-like macro that might involve array access
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct FunctionMacro {
-    name: String,
-    params: Vec<String>,
-    body: String,
-    line: usize,
-}
-
 impl CertRule for Arr30C {
     fn rule_id(&self) -> &'static str {
         "ARR30-C"
@@ -144,7 +135,11 @@ impl CertRule for Arr30C {
         if node.parent().is_none() {
             let buffer_info = self.analyze_buffer_allocations(source);
             let pointer_aliases = self.analyze_pointer_aliases(source, &buffer_info);
-            let function_macros = self.extract_function_macros(node, source);
+            // Shared file-local function-like macro collection
+            // (`crate::analyze::macro_expand`) — replaces ARR30's former private
+            // extractor. Same per-file scope; deletes a duplicate of the engine
+            // used by MEM30/EXP33/DCL31.
+            let function_macros = collect_function_macros(node, source);
             let flexible_array_structs = self.find_flexible_array_structs(node, source);
 
             // Collect macro/enum/const constants for loop bound resolution
@@ -233,56 +228,6 @@ impl Arr30C {
     }
 
     /// Extract function-like macros from preprocessor directives
-    /// Returns a HashMap of macro name to FunctionMacro info
-    fn extract_function_macros(&self, root: &Node, source: &str) -> HashMap<String, FunctionMacro> {
-        let mut macros = HashMap::new();
-
-        let mut cursor = root.walk();
-
-        for child in root.children(&mut cursor) {
-            if child.kind() == "preproc_function_def" {
-                // #define NAME(params) body
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    let name = &source[name_node.start_byte()..name_node.end_byte()];
-
-                    // Extract parameters
-                    let mut params = Vec::new();
-                    if let Some(params_node) = child.child_by_field_name("parameters") {
-                        let mut param_cursor = params_node.walk();
-                        for param_child in params_node.children(&mut param_cursor) {
-                            if param_child.kind() == "identifier" {
-                                let param_name =
-                                    &source[param_child.start_byte()..param_child.end_byte()];
-                                params.push(param_name.to_string());
-                            }
-                        }
-                    }
-
-                    // Extract body
-                    let body = if let Some(value_node) = child.child_by_field_name("value") {
-                        source[value_node.start_byte()..value_node.end_byte()].to_string()
-                    } else {
-                        String::new()
-                    };
-
-                    let line = child.start_position().row + 1;
-
-                    macros.insert(
-                        name.to_string(),
-                        FunctionMacro {
-                            name: name.to_string(),
-                            params,
-                            body,
-                            line,
-                        },
-                    );
-                }
-            }
-        }
-
-        macros
-    }
-
     /// Recursively extract buffer allocations from AST
     fn extract_buffers_from_ast(
         &self,
@@ -3892,9 +3837,18 @@ impl Arr30C {
                             }
                         }
 
-                        // If the macro involves array syntax and operates on a tracked buffer,
-                        // flag it for manual review
-                        if involves_buffer || !args.is_empty() {
+                        // Flag for manual review ONLY when the array-indexing
+                        // macro is invoked on a buffer ARR30 actually tracks.
+                        // The former `|| !args.is_empty()` fired on every
+                        // array-indexing macro call regardless of whether any
+                        // tracked buffer was involved — pure manual-review noise
+                        // (e.g. md5/sha round macros over fixed local state).
+                        // Migrating to the shared cross-region macro collector
+                        // exposed many more such macros, so this guard is what
+                        // keeps the migration a precision win; the genuine
+                        // out-of-bounds-on-a-tracked-buffer case (Juliet
+                        // testcases_macro_over.c) still flags.
+                        if involves_buffer {
                             let start_point = node.start_position();
                             violations.push(RuleViolation {
                                 rule_id: "ARR30-C".to_string(),
@@ -3907,10 +3861,10 @@ impl Arr30C {
                                 file_path: String::new(),
                                 line: start_point.row + 1,
                                 column: start_point.column + 1,
-                                suggestion: Some(format!(
-                                    "Manually verify that macro expansion does not create out-of-bounds access. Macro defined at line {}",
-                                    macro_info.line
-                                )),
+                                suggestion: Some(
+                                    "Manually verify that macro expansion does not create out-of-bounds access"
+                                        .to_string(),
+                                ),
                                 requires_manual_review: Some(true),
                             });
                         }

@@ -349,3 +349,47 @@ is fragile and prefix/structural rules generalize better (the Phase 2 lesson).
   only shows when the macro is opaque)? Must verify none before Phase 2.
 - Interaction with conditional compilation (§3.7): which `#if` branch is "live"
   when a macro has multiple definitions? Out of scope for Phases 1–3.
+
+---
+
+## 10. Phase 3 stock-take (task 186, 2026-06-17)
+
+The §1 / §5A figure of **"51 of 290 rule files (~18%) carry bespoke macro
+logic"** is a *pre-Phase-1* count. Phases 1 (task 180) and 2c (task 185) already
+did the substantive consolidation, and the original count conflated four
+distinct categories that a Phase-3 migration must treat differently. A full
+re-audit of every macro-touching rule `.rs` file (grep `preproc_|macro_|FOR_EACH|
+FOREACH|function_macro|*_macro`, then per-file inspection) gives the real
+disposition below. **Net: the only rule still carrying a genuine duplicate of
+the shared expansion engine is ARR30-C.** Everything else is either already on
+shared infra, legitimately definition-side, or incidental AST traversal.
+
+### Disposition table
+
+| Category | Rules | Disposition | Why |
+|---|---|---|---|
+| **Already on the engine** (`macro_expand` / `macro_semantics`) | EXP33, EXP34, MEM30, DCL31 | done | Migrated in Phase 1 / 2c. |
+| **Engine duplicate — MIGRATE** | **ARR30** | **migrate** | Local `extract_function_macros` + dead-code `FunctionMacro` struct = a single-file reimplementation of `context.function_macros` (`macro_expand::FunctionMacro`). Its `check_macro_invocation` is *live* (~60 manual-review flags across the curl audit), so this is also a precision lever — cross-file context exposes header macros → must gate the flag count. |
+| **`const_eval` consumers — DRY candidate** | INT30, INT32, INT33, INT34, FIO30, FLP03, STR02, ERR33, ENV03, ENV33, DCL07 | optional DRY | Already consume the shared `const_eval::collect_macro_constants` / `collect_macro_aliases` + `context.macro_constants` / `macro_aliases`. *Not opaque-macro debt.* They repeat a "collect-per-file + merge cross-file context, per-file wins" idiom (~10×) that could fold into one `const_eval` helper for consistency — mechanical, low-risk, modest payoff. |
+| **Definition-side hygiene / naming / declaration rules — KEEP** | PRE00–13, PRE30–32, MSC38, MSC41, API10, API03, DCL37, EXP44, DCL19, DCL15 | keep | Audit macro *definitions* as written (reserved-name `#undef`/`#define`, `_Generic`, `static`-in-macro-prefix, multiple-eval hygiene). Per §3.8 these need the raw view; expansion would defeat their purpose. |
+| **Incidental `preproc_` AST traversal — KEEP** | MSC13, MSC37, MSC07, DCL40, DCL30, SIG31, ARR01, ARR36, API00 | keep | Only skip/recurse `preproc_*` nodes during a normal AST walk (e.g. `kind().starts_with("preproc_")`). No macro semantics. |
+| **Local `is_likely_macro_constant` name heuristic — KEEP** | MEM05, ARR32 | keep | Uppercase-name guess ("is this an ALL_CAPS macro constant?"), not value extraction; does not duplicate `const_eval` (which resolves values). Text-heuristic family — see task 197, not the expansion engine. |
+
+### Phase 3 execution plan (revised)
+
+1. **ARR30 migration (the substantive piece).** Replace ARR30's private
+   `extract_function_macros` + local `FunctionMacro` struct with
+   `context.function_macros` (`set_project_context`, as MEM30/EXP33 already do).
+   Note the shared `macro_expand::FunctionMacro` carries `{params, body}` only —
+   no `name`/`line`; ARR30's "Macro defined at line N" suggestion must either
+   drop the line or recover it from the invocation/definition site. Gate on
+   Juliet recall (ARR30 ↔ CWE-121/122/787) **and** the curl/mosquitto ARR30
+   manual-review flag delta (cross-file exposure can raise it).
+2. **Optional const_eval DRY** (the 11 consumers above) — only if the ARR30
+   gate is clean and the consistency payoff is judged worth the regression
+   surface across INT/FIO/STR/ERR/ENV. Deferrable to its own task.
+3. **Do NOT touch** the keep categories.
+
+This re-scopes task 186 from "migrate ~51 files" to "migrate ARR30 + optional
+const_eval DRY"; the bulk of the original estimate was already retired by
+Phases 1/2c. Recall-gate per §8.
