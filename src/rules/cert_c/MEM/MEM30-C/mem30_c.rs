@@ -1435,7 +1435,7 @@ impl MemoryAnalyzer {
         let mut then_returns = false;
         if let Some(consequence) = node.child_by_field_name("consequence") {
             self.analyze_function_body(&consequence, source, violations);
-            then_returns = self.unconditionally_returns(&consequence);
+            then_returns = self.unconditionally_diverges(&consequence);
         }
 
         // Save state after then-branch
@@ -1462,7 +1462,7 @@ impl MemoryAnalyzer {
         let mut else_returns = false;
         if let Some(alternative) = node.child_by_field_name("alternative") {
             self.analyze_function_body(&alternative, source, violations);
-            else_returns = self.unconditionally_returns(&alternative);
+            else_returns = self.unconditionally_diverges(&alternative);
         }
 
         let else_freed = self.freed_vars.clone();
@@ -1522,23 +1522,37 @@ impl MemoryAnalyzer {
         }
     }
 
-    /// Check if a branch unconditionally returns (all paths return)
-    fn unconditionally_returns(&self, node: &Node) -> bool {
+    /// Check if a branch unconditionally diverges — i.e. control does NOT fall
+    /// through to the statement after the enclosing `if`. That is true not only
+    /// for `return`, but for any branch terminator that transfers control
+    /// elsewhere: `goto`, `break`, `continue`. A free inside such a branch must
+    /// not propagate to the post-`if` merged state, or the next statement (or a
+    /// sibling `if(...){ free(p); goto/break; }`) is wrongly flagged as
+    /// use-after-free / double-free. This was the dominant remaining MEM30 FP on
+    /// real-world C (curl ldap.c / fopen.c, mosquitto ctrl_shell_*.c), where
+    /// error branches free-then-`goto cleanup` / free-then-`break` (task 181
+    /// pattern 2). The merge only recognized `return` before.
+    fn unconditionally_diverges(&self, node: &Node) -> bool {
         match node.kind() {
-            "return_statement" => true,
+            "return_statement" | "goto_statement" | "break_statement" | "continue_statement" => {
+                true
+            }
             "compound_statement" => {
-                // A compound statement unconditionally returns if its last statement returns
-                // or if it contains an unconditional return
+                // A compound statement unconditionally diverges if its last real
+                // statement diverges. Braces and trailing comments are not
+                // statements: a `comment` node after `goto cleanup;` would
+                // otherwise become the "last child" and defeat the check (a
+                // common shape in real error branches).
                 let mut last_child = None;
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
-                        if child.kind() != "{" && child.kind() != "}" {
+                        if child.kind() != "{" && child.kind() != "}" && child.kind() != "comment" {
                             last_child = Some(child);
                         }
                     }
                 }
                 if let Some(last) = last_child {
-                    self.unconditionally_returns(&last)
+                    self.unconditionally_diverges(&last)
                 } else {
                     false
                 }
@@ -1547,11 +1561,11 @@ impl MemoryAnalyzer {
                 // An if-statement unconditionally returns only if BOTH branches unconditionally return
                 let then_returns = node
                     .child_by_field_name("consequence")
-                    .map(|c| self.unconditionally_returns(&c))
+                    .map(|c| self.unconditionally_diverges(&c))
                     .unwrap_or(false);
                 let else_returns = node
                     .child_by_field_name("alternative")
-                    .map(|c| self.unconditionally_returns(&c))
+                    .map(|c| self.unconditionally_diverges(&c))
                     .unwrap_or(false);
                 then_returns && else_returns
             }
