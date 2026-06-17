@@ -327,6 +327,13 @@ pub struct InitAnalysisConfig {
     /// File-scope constants (static const and static variables with known init values).
     /// Used for dead-branch elimination when conditions evaluate to known constants.
     pub file_scope_constants: HashMap<String, i64>,
+    /// Output-parameter indices for invoked function-like macros (from the
+    /// macro-expansion engine, `macro_expand::macro_output_param_indices`). When
+    /// a macro at one of these positions takes a bare identifier, the macro
+    /// *writes* that variable (e.g. curl's `CF_DATA_SAVE(save, …)` assigns
+    /// `save`), so it becomes Initialized — clearing "used uninitialized" FPs on
+    /// macro output arguments. Keyed by macro name; only invoked macros present.
+    pub macro_output_params: HashMap<String, Vec<usize>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,6 +1047,28 @@ fn process_call_expression(
         for (var_name, _role) in crate::analyze::macro_semantics::output_var_args(node, source) {
             if let Some(info) = state.get_mut(&var_name) {
                 info.state = InitState::Initialized;
+            }
+        }
+        return;
+    }
+
+    // Function-like macros whose body assigns one of their parameters (e.g.
+    // curl's `CF_DATA_SAVE(save, cf, data)` → `(save) = …`). The expander
+    // (`macro_expand::macro_output_param_indices`) precomputes which positional
+    // args are *written*; mark each bare-identifier output arg as initialized so
+    // downstream reads of it are not "used uninitialized" FPs. Phase 2c-ii of
+    // docs/design/macro-expansion.md.
+    if let Some(out_indices) = config.macro_output_params.get(&func_name) {
+        let args = crate::analyze::macro_semantics::positional_args(node);
+        for &idx in out_indices {
+            if let Some(arg) = args.get(idx) {
+                if arg.kind() == "identifier" {
+                    let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+                    if let Some(info) = state.get_mut(name) {
+                        info.state = InitState::Initialized;
+                        info.allocation_count = None;
+                    }
+                }
             }
         }
         return;

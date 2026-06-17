@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - EXP33-C only"
+version = "1.0.0"
+description = "Minimal manifest for EXP33-C macro-output-arg tests"
+cert_version = "2016"
+
+[rules.cert_c.EXP33-C]
+enabled = true

@@ -376,6 +376,45 @@ fn function_like_macro_not_flagged_as_undeclared() {
     );
 }
 
+fn manifest_exp33() -> PathBuf {
+    fixtures().join("manifest_exp33.toml")
+}
+
+/// A variable written by a function-like *output* macro (the macro body assigns
+/// it, e.g. curl's `CF_DATA_SAVE(save, …)`) must not be flagged by EXP33-C as
+/// "used uninitialized" — neither at the macro's output-argument position nor at
+/// a later read. The prescan collects the macro definition into
+/// ProjectContext.function_macros; `macro_output_param_indices` identifies the
+/// assigned parameter; EXP33-C's read-checker and the init-state transfer both
+/// consume it. This is the curl CF_DATA_SAVE FP class (task 185, Phase 2c-ii).
+#[test]
+fn macro_output_arg_not_flagged_uninitialized() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+
+    let main_c = fixtures().join("macro_out_param/main.c");
+    let include_dir = fixtures().join("macro_out_param/include");
+
+    let (code, _, _) = run_sqc(&[
+        main_c.to_str().unwrap(),
+        "-m",
+        manifest_exp33().to_str().unwrap(),
+        "-d",
+        include_dir.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let violations: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert!(
+        violations.is_empty(),
+        "macro-output variable `save` (written by DATA_SAVE) must not be flagged \
+         as used-uninitialized; got: {violations:?}"
+    );
+}
+
 // ─── Suppression ─────────────────────────────────────────────────────────────
 
 #[test]

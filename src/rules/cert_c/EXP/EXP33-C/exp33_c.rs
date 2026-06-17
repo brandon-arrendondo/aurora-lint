@@ -28,6 +28,13 @@ pub struct Exp33C {
     cross_file_summaries: RefCell<HashMap<String, FunctionSummary>>,
     /// File-scope constants for dead-branch elimination in init-state analysis.
     file_scope_constants: RefCell<HashMap<String, i64>>,
+    /// Cross-file function-like macro definitions (from the prescan / macro
+    /// engine). Used to recognize macro output arguments (e.g. `CF_DATA_SAVE`).
+    function_macros: RefCell<HashMap<String, crate::analyze::macro_expand::FunctionMacro>>,
+    /// Output-parameter indices for macros actually invoked in the current file
+    /// (computed once per file from `function_macros`). Feeds the init-state
+    /// transfer and the read-checker so macro-written args are not flagged.
+    macro_output_params: RefCell<HashMap<String, Vec<usize>>>,
 }
 
 impl Exp33C {
@@ -39,6 +46,8 @@ impl Exp33C {
             conditionally_init_fns: RefCell::new(HashMap::new()),
             cross_file_summaries: RefCell::new(HashMap::new()),
             file_scope_constants: RefCell::new(HashMap::new()),
+            function_macros: RefCell::new(HashMap::new()),
+            macro_output_params: RefCell::new(HashMap::new()),
         }
     }
 
@@ -94,6 +103,9 @@ impl CertRule for Exp33C {
         for (k, v) in &context.macro_constants {
             constants.entry(k.clone()).or_insert(*v);
         }
+        drop(constants);
+        // Function-like macro definitions (for macro output-arg recognition).
+        *self.function_macros.borrow_mut() = context.function_macros.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -130,6 +142,25 @@ impl CertRule for Exp33C {
             let mut cond_init = HashMap::new();
             scan_conditionally_init_functions(node, source, &mut cond_init);
             *self.conditionally_init_fns.borrow_mut() = cond_init;
+
+            // Precompute output-parameter indices for the function-like macros
+            // actually invoked in this file (cheap: only invoked names, once per
+            // file). Macros whose body assigns a parameter (e.g. CF_DATA_SAVE)
+            // write that argument — feeds the init-state transfer + read-checker.
+            let macros = self.function_macros.borrow();
+            if !macros.is_empty() {
+                let mut invoked = HashSet::new();
+                collect_invoked_macro_names(node, source, &macros, &mut invoked);
+                let mut out_params = HashMap::new();
+                for name in invoked {
+                    let idx =
+                        crate::analyze::macro_expand::macro_output_param_indices(&macros, &name);
+                    if !idx.is_empty() {
+                        out_params.insert(name, idx);
+                    }
+                }
+                *self.macro_output_params.borrow_mut() = out_params;
+            }
         }
 
         if node.kind() == "function_definition" {
@@ -151,11 +182,13 @@ impl CertRule for Exp33C {
                 let realloc_fns = self.realloc_wrapper_fns.borrow();
                 let read_only_fns = self.build_read_only_deref_fns();
                 let file_constants = self.file_scope_constants.borrow();
+                let macro_out = self.macro_output_params.borrow();
                 let config = init_state::InitAnalysisConfig {
                     conditionally_init_fns: cond_fns.clone(),
                     realloc_wrapper_fns: realloc_fns.clone(),
                     read_only_deref_fns: read_only_fns.clone(),
                     file_scope_constants: file_constants.clone(),
+                    macro_output_params: macro_out.clone(),
                 };
                 let analysis = init_state::analyze_init_states_with_statics(
                     cfg, node, source, &statics, &config,
@@ -248,6 +281,73 @@ fn check_reads(
             );
         }
     }
+}
+
+/// Collect the names of function-like macros (present in `macros`) that are
+/// invoked as `call_expression`s anywhere under `node`. Used to limit the
+/// (slightly costly) output-param computation to macros actually used in the
+/// file, rather than the whole cross-file macro table.
+fn collect_invoked_macro_names(
+    node: &Node,
+    source: &str,
+    macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    out: &mut HashSet<String>,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(func) = node.child_by_field_name("function") {
+            if func.kind() == "identifier" {
+                let name = get_node_text(&func, source);
+                if macros.contains_key(name) {
+                    out.insert(name.to_string());
+                }
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_invoked_macro_names(&child, source, macros, out);
+        }
+    }
+}
+
+/// True if `node` is a bare-identifier argument occupying an *output* position
+/// (per `macro_output_params`) of a function-like macro invocation — i.e. the
+/// macro writes this argument, so reading it there is not a use of an
+/// uninitialized value. Mirrors `macro_semantics::is_macro_output_arg` for
+/// expansion-derived (rather than registry) macros.
+fn is_function_macro_output_arg(
+    node: &Node,
+    source: &str,
+    macro_output_params: &HashMap<String, Vec<usize>>,
+) -> bool {
+    if node.kind() != "identifier" {
+        return false;
+    }
+    // identifier -> argument_list -> call_expression
+    let arg_list = match node.parent() {
+        Some(p) if p.kind() == "argument_list" => p,
+        _ => return false,
+    };
+    let call = match arg_list.parent() {
+        Some(c) if c.kind() == "call_expression" => c,
+        _ => return false,
+    };
+    let func_name = match call.child_by_field_name("function") {
+        Some(f) => get_node_text(&f, source),
+        None => return false,
+    };
+    let out_indices = match macro_output_params.get(func_name) {
+        Some(v) => v,
+        None => return false,
+    };
+    let args = crate::analyze::macro_semantics::positional_args(&call);
+    let target = node.id();
+    for (pos, arg) in args.into_iter().enumerate() {
+        if arg.id() == target {
+            return out_indices.contains(&pos);
+        }
+    }
+    false
 }
 
 /// Check for calls that pass `&uninit_var` to cross-file functions that read
@@ -397,6 +497,14 @@ fn check_identifier_read(
     // uninitialized value. See crate::analyze::macro_semantics (Phase 1 of
     // docs/design/macro-expansion.md).
     if crate::analyze::macro_semantics::is_macro_output_arg(node, source) {
+        return;
+    }
+
+    // Skip identifiers that are the *output* argument of a function-like macro
+    // whose body assigns them (e.g. curl's `CF_DATA_SAVE(save, …)`). The macro
+    // writes this arg, so its appearance in the invocation is not a read of an
+    // uninitialized value. Phase 2c-ii of docs/design/macro-expansion.md.
+    if is_function_macro_output_arg(node, source, &config.macro_output_params) {
         return;
     }
 

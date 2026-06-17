@@ -15,13 +15,12 @@
 //!   * variadic macros (`...` / `__VA_ARGS__`);
 //!   * object-like macros — handled separately by `const_eval`.
 //
-// Increment 2a delivered the collector + engine (unit-tested below). Increment
-// 2b wires `collect_function_macros` into the prescan pre-pass / `ProjectContext`
-// (so definitions are cached and available cross-file). The expander
-// (`expand_invocation`) is consumed by the dataflow rules in a follow-up
-// increment — driven by which macros the curl/hostap audits show cause FPs — at
-// which point this allow is removed.
-#![allow(dead_code)]
+// Increment 2a delivered the collector + engine. Increment 2b wired
+// `collect_function_macros` into the prescan pre-pass / `ProjectContext` (so
+// definitions are cached and available cross-file). Increment 2c-ii consumes the
+// expander: `macro_output_param_indices` (via `expand_invocation`) feeds
+// EXP33-C's read-checker and the init-state transfer to recognize macro output
+// arguments (e.g. curl's `CF_DATA_SAVE`).
 
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -506,6 +505,92 @@ fn parse_call_args(chars: &[char], open: usize) -> Option<(Vec<String>, usize)> 
     None // unbalanced
 }
 
+/// Parameter indices that a function-like macro *writes* — i.e. the macro body
+/// assigns to the (whole) parameter, directly or after expanding nested macros
+/// drawn from `table`. Such positions are macro **output arguments**: a
+/// bare-identifier argument there is being written by the macro, not read, so it
+/// is not a use of uninitialized memory and is initialized afterwards.
+///
+/// Example: curl's `CF_DATA_SAVE(save, cf, data)` expands to
+/// `do { (save) = …; … } while(0)`, so index 0 (`save`) is an output. The other
+/// args (`cf`, `data`) only appear as reads, so they are not outputs.
+///
+/// Detection is deliberately conservative — only *whole-object* assignment
+/// (`(param) = …`) counts. Field/element/deref writes (`param->f = …`,
+/// `param[i] = …`, `*param = …`) read `param` first and so are NOT outputs.
+pub fn macro_output_param_indices(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+) -> Vec<usize> {
+    let m = match table.get(name) {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+    if m.params.is_empty() {
+        return Vec::new();
+    }
+    // Substitute each parameter with a unique sentinel, then fully expand (so
+    // nested macros from the same body — `CF_CTX_CALL_DATA`, `CURL_UNCONST` —
+    // resolve and we see the real lvalue context of each parameter).
+    let sentinels: Vec<String> = (0..m.params.len())
+        .map(|i| format!("__SQC_MOUT_{i}__"))
+        .collect();
+    let expanded = match expand_invocation(table, name, &sentinels) {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (i, sent) in sentinels.iter().enumerate() {
+        if is_whole_assignment_target(&expanded, sent) {
+            out.push(i);
+        }
+    }
+    out
+}
+
+/// True if identifier `ident` appears in `text` as the target of a whole-object
+/// assignment: `ident =` or `(ident) =` (any number of wrapping parens),
+/// excluding compound assignment (`+=`/`==`/…), field/element/deref writes, and
+/// member/arrow access. See [`macro_output_param_indices`].
+fn is_whole_assignment_target(text: &str, ident: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let id: Vec<char> = ident.chars().collect();
+    let (n, m) = (chars.len(), id.len());
+    if m == 0 {
+        return false;
+    }
+    let mut i = 0;
+    while i + m <= n {
+        if chars[i..i + m] == id[..] {
+            // Whole-token match: boundaries must not be identifier chars.
+            let prev_ok = i == 0 || !is_ident_char(chars[i - 1]);
+            let next_ok = i + m >= n || !is_ident_char(chars[i + m]);
+            // Look back past wrapping `(` and whitespace for the first
+            // significant char. `*`/`.`/`->` there means a deref/field write
+            // (`*(p) =`, `(*p) =`, `obj.ident`) which READS the identifier.
+            let mut b = i;
+            while b > 0 && (chars[b - 1].is_whitespace() || chars[b - 1] == '(') {
+                b -= 1;
+            }
+            let prev_c = if b > 0 { chars[b - 1] } else { ' ' };
+            let arrow = b >= 2 && chars[b - 1] == '>' && chars[b - 2] == '-';
+            if prev_ok && next_ok && prev_c != '.' && prev_c != '*' && !arrow {
+                // Skip whitespace and closing parens after the identifier.
+                let mut j = i + m;
+                while j < n && (chars[j].is_whitespace() || chars[j] == ')') {
+                    j += 1;
+                }
+                // A single `=` (not `==`) immediately follows → assignment target.
+                if j < n && chars[j] == '=' && (j + 1 >= n || chars[j + 1] != '=') {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,6 +734,63 @@ mod tests {
     fn does_not_match_defined_operator() {
         let t = collect_function_macros_textual("#if defined(FOO)\n#endif\n");
         assert!(t.is_empty());
+    }
+
+    // ── Macro output-parameter detection ────────────────────────────────────
+
+    #[test]
+    fn output_param_simple_assignment() {
+        // The first parameter is assigned; the others are only read.
+        let t = table("#define SAVE(out, a, b) do { (out) = (a) + (b); } while(0)\n");
+        assert_eq!(macro_output_param_indices(&t, "SAVE"), vec![0]);
+    }
+
+    #[test]
+    fn output_param_cf_data_save_shape() {
+        // curl's CF_DATA_SAVE pattern (with the nested CF_CTX_CALL_DATA macro
+        // resolving through the table). save (arg 0) is assigned; cf/data are read.
+        let t = table(
+            "#define CF_CTX_CALL_DATA(cf) ((cf)->ctx->call_data)\n\
+             #define CF_DATA_SAVE(save, cf, data) do { (save) = CF_CTX_CALL_DATA(cf); CF_CTX_CALL_DATA(cf).data = (data); } while(0)\n",
+        );
+        assert_eq!(macro_output_param_indices(&t, "CF_DATA_SAVE"), vec![0]);
+    }
+
+    #[test]
+    fn output_param_excludes_field_and_deref_writes() {
+        // Field write (p->f =), element write (p[i] =), and deref write (*p =)
+        // all READ the pointer first — they are not whole-object outputs.
+        let t = table(
+            "#define FW(p) do { (p)->f = 1; } while(0)\n\
+             #define EW(p) do { (p)[0] = 1; } while(0)\n\
+             #define DW(p) do { *(p) = 1; } while(0)\n",
+        );
+        assert!(macro_output_param_indices(&t, "FW").is_empty());
+        assert!(macro_output_param_indices(&t, "EW").is_empty());
+        assert!(macro_output_param_indices(&t, "DW").is_empty());
+    }
+
+    #[test]
+    fn output_param_excludes_compound_and_comparison() {
+        // `+=` reads first; `==` is a comparison, not an assignment.
+        let t = table(
+            "#define ADDEQ(x, y) do { (x) += (y); } while(0)\n\
+             #define CMP(x, y) ((x) == (y))\n",
+        );
+        assert!(macro_output_param_indices(&t, "ADDEQ").is_empty());
+        assert!(macro_output_param_indices(&t, "CMP").is_empty());
+    }
+
+    #[test]
+    fn output_param_multiple_outputs() {
+        let t = table("#define BOTH(a, b, c) do { a = 1; b = 2; (void)c; } while(0)\n");
+        assert_eq!(macro_output_param_indices(&t, "BOTH"), vec![0, 1]);
+    }
+
+    #[test]
+    fn output_param_unknown_macro_is_empty() {
+        let t = table("#define X(a) (a)\n");
+        assert!(macro_output_param_indices(&t, "NOPE").is_empty());
     }
 
     #[test]
