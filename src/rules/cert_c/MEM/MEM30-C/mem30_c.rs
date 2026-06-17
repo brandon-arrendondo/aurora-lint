@@ -164,6 +164,20 @@ fn collect_invoked_macro_names(
     }
 }
 
+/// True if a function name denotes a fresh heap allocation — the libc
+/// `malloc`/`calloc` or a project wrapper such as `mosquitto_malloc`,
+/// `curlx_calloc`, `Curl_strdup`, `xstrndup`. Used to clear a pointer's freed
+/// state on reassignment (task 181 pattern 1). `realloc` is matched and handled
+/// separately by the caller (it also invalidates the old pointer), so it is
+/// excluded here.
+fn is_fresh_allocation_name(name: &str) -> bool {
+    let u = name.to_uppercase();
+    if u.contains("REALLOC") {
+        return false;
+    }
+    u.contains("ALLOC") || u.contains("STRDUP") || u.contains("STRNDUP") || u.contains("MEMDUP")
+}
+
 /// Tracks global variables and cross-function memory patterns
 struct GlobalTracker {
     /// Global variable declarations
@@ -2013,28 +2027,50 @@ impl MemoryAnalyzer {
                 self.check_binary_expression(&right, source, violations);
             }
 
-            // Clear freed status if assigning new allocation
-            if right.kind() == "call_expression" {
-                if let Some(func) = right.child_by_field_name("function") {
+            // Clear freed status if reassigning the pointer to a fresh
+            // allocation. Reassignment overwrites the dangling pointer, so the
+            // variable is no longer freed; `FREE(p); p = wrapper_alloc(...);
+            // if(!p){}` was a dominant free-then-reassign FP (task 181 pattern
+            // 1). Two generalizations over the old literal `malloc`/`calloc`
+            // check: (a) the RHS may be cast-wrapped, e.g. `p = (char *)x_malloc(n)`;
+            // (b) the allocator is often a project *wrapper* — mosquitto_malloc,
+            // curlx_calloc, Curl_strdup — not the bare libc name. The freed
+            // full path is cleared too (e.g. `s->buf = pkg_malloc(...)`).
+            let alloc_rhs = if right.kind() == "cast_expression" {
+                right.child_by_field_name("value").unwrap_or(right)
+            } else {
+                right
+            };
+            if alloc_rhs.kind() == "call_expression" {
+                if let Some(func) = alloc_rhs.child_by_field_name("function") {
                     let func_name = get_node_text(&func, source);
                     let upper_func_name = func_name.to_uppercase();
-                    if func_name == "malloc" || func_name == "calloc" {
-                        self.freed_vars.remove(&left_var);
-                        self.nullified_vars.remove(&left_var);
-                        self.realloc_invalidated.remove(&left_var);
-                    } else if func_name == "realloc" || upper_func_name.contains("REALLOC") {
+                    if upper_func_name.contains("REALLOC") {
                         // Track the old pointer passed to realloc as invalidated
-                        let old_ptrs = self.track_realloc_old_pointer(&right, source);
+                        let old_ptrs = self.track_realloc_old_pointer(&alloc_rhs, source);
                         // For realloc, track that left_var is the result of realloc
                         self.realloc_updated.insert(left_var.clone());
                         if !old_ptrs.is_empty() {
                             self.realloc_source.insert(left_var.clone(), old_ptrs);
                         }
-                        self.freed_vars.remove(&left_var);
-                        self.nullified_vars.remove(&left_var);
-                        self.realloc_invalidated.remove(&left_var);
+                        self.clear_freed_state(&left_var, &left_full_path);
+                    } else if is_fresh_allocation_name(&func_name) {
+                        self.clear_freed_state(&left_var, &left_full_path);
                     }
                 }
+            }
+        }
+    }
+
+    /// Clear all freed/nullified/realloc-invalidation tracking for a variable
+    /// (both its base name and full field path), e.g. after reassigning it to a
+    /// fresh allocation.
+    fn clear_freed_state(&mut self, base: &str, full_path: &str) {
+        for key in [base, full_path] {
+            if !key.is_empty() {
+                self.freed_vars.remove(key);
+                self.nullified_vars.remove(key);
+                self.realloc_invalidated.remove(key);
             }
         }
     }
