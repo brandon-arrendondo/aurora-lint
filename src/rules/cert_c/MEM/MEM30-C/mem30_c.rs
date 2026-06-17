@@ -82,11 +82,59 @@ impl CertRule for Mem30C {
             }
         };
 
+        // Names of union typedefs in this file, so the analyzer can restrict
+        // member-aliasing-on-free to genuine union variables (task 181).
+        let mut union_typedef_names = HashSet::new();
+        collect_union_typedef_names(node, source, &mut union_typedef_names);
+
         // Second pass: per-function analysis
-        let mut analyzer = MemoryAnalyzer::new(macro_null_params);
+        let mut analyzer = MemoryAnalyzer::new(macro_null_params, union_typedef_names);
         analyzer.analyze_node(node, source, &mut violations);
 
         violations
+    }
+}
+
+/// Collect the names introduced by `typedef union {...} NAME;` (or
+/// `typedef union Tag NAME;`) under `node`. These let MEM30-C recognize
+/// union-typed variable declarations without full type resolution.
+fn collect_union_typedef_names(node: &Node, source: &str, out: &mut HashSet<String>) {
+    if node.kind() == "type_definition" {
+        if let Some(ty) = node.child_by_field_name("type") {
+            if ty.kind() == "union_specifier" {
+                let mut cursor = node.walk();
+                for decl in node.children_by_field_name("declarator", &mut cursor) {
+                    let name = type_identifier_name(&decl, source);
+                    if !name.is_empty() {
+                        out.insert(name);
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_union_typedef_names(&child, source, out);
+        }
+    }
+}
+
+/// Extract the `type_identifier` name from a typedef declarator (the new type
+/// name), unwrapping pointer declarators if present.
+fn type_identifier_name(node: &Node, source: &str) -> String {
+    match node.kind() {
+        "type_identifier" => get_node_text(node, source).to_string(),
+        _ => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    let name = type_identifier_name(&child, source);
+                    if !name.is_empty() {
+                        return name;
+                    }
+                }
+            }
+            String::new()
+        }
     }
 }
 
@@ -1187,10 +1235,25 @@ struct MemoryAnalyzer {
     // nulled parameter indices. A call to one of these clears the freed state of
     // its argument, matching the macro's own `= NULL` (Phase 2c-iii).
     macro_null_params: HashMap<String, Vec<usize>>,
+    // Names of union *typedefs* in this translation unit (e.g.
+    // `typedef union {...} ptr_union_t;` -> "ptr_union_t"). Used to recognize
+    // union-typed variable declarations. File-global; cloned per function.
+    union_typedef_names: HashSet<String>,
+    // Names of variables in the CURRENT function declared with a union type
+    // (directly `union {...}`/`union Tag`, or a union typedef). ONLY for these
+    // does freeing one member invalidate the sibling members (genuine storage
+    // aliasing). Struct/struct-pointer bases are excluded, which prevents the
+    // struct-field-free cascade FP — e.g. `free(data->state.range)` must not
+    // poison `data->state` / other `data->*` fields (task 181). Repopulated per
+    // function in `analyze_function`.
+    union_typed_vars: HashSet<String>,
 }
 
 impl MemoryAnalyzer {
-    fn new(macro_null_params: HashMap<String, Vec<usize>>) -> Self {
+    fn new(
+        macro_null_params: HashMap<String, Vec<usize>>,
+        union_typedef_names: HashSet<String>,
+    ) -> Self {
         Self {
             freed_vars: HashSet::new(),
             aliases: HashMap::new(),
@@ -1200,6 +1263,8 @@ impl MemoryAnalyzer {
             realloc_source: HashMap::new(),
             union_members: HashMap::new(),
             macro_null_params,
+            union_typedef_names,
+            union_typed_vars: HashSet::new(),
         }
     }
 
@@ -1207,7 +1272,10 @@ impl MemoryAnalyzer {
     fn analyze_node(&mut self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if node.kind() == "function_definition" {
             // Analyze each function with fresh state to avoid cross-function pollution
-            let mut func_analyzer = MemoryAnalyzer::new(self.macro_null_params.clone());
+            let mut func_analyzer = MemoryAnalyzer::new(
+                self.macro_null_params.clone(),
+                self.union_typedef_names.clone(),
+            );
             func_analyzer.analyze_function(node, source, violations);
             return; // Don't recurse further - function handled completely
         }
@@ -1222,7 +1290,39 @@ impl MemoryAnalyzer {
 
     /// Analyze a single function with isolated state
     fn analyze_function(&mut self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        // Identify union-typed locals/params first so member-aliasing on free is
+        // restricted to genuine unions (not struct fields). See task 181.
+        self.collect_union_typed_vars(node, source);
         self.analyze_function_body(node, source, violations);
+    }
+
+    /// Walk a function for declarations whose type is a union (directly
+    /// `union {...}`/`union Tag`, or a union typedef from `union_typedef_names`)
+    /// and record the declared variable names in `union_typed_vars`.
+    fn collect_union_typed_vars(&mut self, node: &Node, source: &str) {
+        if node.kind() == "declaration" || node.kind() == "parameter_declaration" {
+            if let Some(ty) = node.child_by_field_name("type") {
+                let is_union = ty.kind() == "union_specifier"
+                    || (ty.kind() == "type_identifier"
+                        && self
+                            .union_typedef_names
+                            .contains(get_node_text(&ty, source)));
+                if is_union {
+                    let mut cursor = node.walk();
+                    for decl in node.children_by_field_name("declarator", &mut cursor) {
+                        let name = self.extract_declarator_name(&decl, source);
+                        if !name.is_empty() {
+                            self.union_typed_vars.insert(name);
+                        }
+                    }
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                self.collect_union_typed_vars(&child, source);
+            }
+        }
     }
 
     /// Analyze nodes within a function
@@ -1763,9 +1863,14 @@ impl MemoryAnalyzer {
         self.freed_vars.insert(var_name.clone());
 
         // For union support: track union member relationships
-        // When free(u.member) is called, all u.* accesses become invalid
+        // When free(u.member) is called, all u.* accesses become invalid.
+        // GATED on the base being a genuine union-typed variable: freeing a
+        // struct field (e.g. `free(data->state.range)`) must NOT poison sibling
+        // fields, which was the dominant MEM30 cascade FP on real-world C
+        // (task 181). Members of a true union overlap in storage, so freeing one
+        // does invalidate the others; struct fields are independent allocations.
         if let Some(base) = base_var {
-            if !base.is_empty() {
+            if !base.is_empty() && self.union_typed_vars.contains(&base) {
                 // Add to union tracking - all field accesses on this base are suspect
                 self.union_members
                     .entry(base.clone())
