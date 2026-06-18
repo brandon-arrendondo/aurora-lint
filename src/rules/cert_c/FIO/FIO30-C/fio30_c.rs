@@ -26,6 +26,11 @@ use crate::utility::cert_c::ast_utils;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
+/// Upper bound on pre-scan taint-propagation passes. Taint facts grow
+/// monotonically so the loop converges well before this in practice; the bound
+/// only guards against pathological inputs.
+const MAX_TAINT_ITERATIONS: usize = 16;
+
 pub struct Fio30C;
 
 impl CertRule for Fio30C {
@@ -131,6 +136,10 @@ struct FormatStringAnalyzer {
     tainted_globals: HashSet<String>,
     // File-scope constants for dead-branch elimination (staticTrue/staticFalse patterns)
     file_scope_constants: HashMap<String, i64>,
+    // Names of functions that are called (by name) anywhere in the translation
+    // unit. Used to distinguish locally-called wrappers (where caller taint is
+    // observable) from cross-TU sinks (where it is not).
+    called_function_names: HashSet<String>,
 }
 
 impl FormatStringAnalyzer {
@@ -146,6 +155,7 @@ impl FormatStringAnalyzer {
             taint_source_functions: HashSet::new(),
             tainted_globals: HashSet::new(),
             file_scope_constants: HashMap::new(),
+            called_function_names: HashSet::new(),
         }
     }
 
@@ -159,19 +169,40 @@ impl FormatStringAnalyzer {
 
     /// Pre-scan to find which wrapper functions receive tainted data as first argument
     fn find_tainted_wrapper_calls(&mut self, node: &Node, source: &str) {
-        // First collect user input vars
-        self.collect_user_input_sources(node, source);
-
-        // Identify functions that internally contain user input sources
-        // and global variables assigned from tainted data
+        // Identify functions whose body contains user input sources (fgets, recv,
+        // getenv, ...). This is name-based and function-independent, so it is safe
+        // to compute globally.
         self.identify_taint_source_functions(node, source);
 
-        // Then find calls to user-defined functions with tainted first arg
-        self.scan_for_tainted_wrapper_calls(node, source);
+        // Record every function name that is called (by name) in the TU, so the
+        // violation check can tell locally-called wrappers (caller taint is
+        // observable) apart from cross-TU sinks (caller lives in another file).
+        self.collect_called_function_names(node, source);
+
+        // Per-function taint flow → `tainted_globals` and `tainted_params`.
+        //
+        // Taint MUST be tracked per-function. Juliet reuses the same variable
+        // name (`data`) across `bad()` (tainted via fgets) and `goodG2B()`
+        // (assigned a literal). A global, name-based taint set would let the
+        // taint from `bad()` leak into `goodG2B()`, marking the good wrapper's
+        // parameter as inter-procedurally tainted and producing a false positive.
+        //
+        // Iterate to a fixpoint so taint propagates through wrapper chains:
+        // `bad()` → `badSink(data)` → `badVaSink(data, ...)`. Each pass seeds a
+        // function's parameters that earlier passes proved tainted, then lets
+        // that taint flow into the function's onward calls. `tainted_params` and
+        // `tainted_globals` only ever grow, so the loop converges; the bound is
+        // a safety net against pathological inputs.
+        for _ in 0..MAX_TAINT_ITERATIONS {
+            let before = self.tainted_params.len() + self.tainted_globals.len();
+            self.scan_functions_for_taint(node, source);
+            if self.tainted_params.len() + self.tainted_globals.len() == before {
+                break;
+            }
+        }
     }
 
     /// Identify functions whose body contains user input calls (fgets, recv, getenv, etc.)
-    /// and global/static variables assigned from tainted data
     fn identify_taint_source_functions(&mut self, node: &Node, source: &str) {
         if node.kind() == "function_definition" {
             if let Some(declarator) = node.child_by_field_name("declarator") {
@@ -180,14 +211,166 @@ impl FormatStringAnalyzer {
                     if self.body_contains_user_input_call(&body, source) {
                         self.taint_source_functions.insert(func_name.clone());
                     }
-                    // Check for assignments to global/static variables from tainted data
-                    self.scan_global_taint_assignments(&body, source);
                 }
             }
         }
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 self.identify_taint_source_functions(&child, source);
+            }
+        }
+    }
+
+    /// Record the names of all functions invoked by name in the translation unit.
+    fn collect_called_function_names(&mut self, node: &Node, source: &str) {
+        if node.kind() == "call_expression" {
+            if let Some(function) = node.child_by_field_name("function") {
+                if function.kind() == "identifier" {
+                    self.called_function_names
+                        .insert(ast_utils::get_node_text_owned(&function, source));
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                self.collect_called_function_names(&child, source);
+            }
+        }
+    }
+
+    /// Walk each function with a function-local taint set, recording which
+    /// global variables and which wrapper-call parameter positions receive
+    /// genuinely-tainted data.
+    fn scan_functions_for_taint(&mut self, node: &Node, source: &str) {
+        if node.kind() == "function_definition" {
+            // Reset per-function taint state.
+            self.user_input_vars.clear();
+            self.safe_vars.clear();
+            self.function_parameters.clear();
+            self.param_positions.clear();
+
+            if let Some(declarator) = node.child_by_field_name("declarator") {
+                let func_name = self.get_function_name(&declarator, source);
+                if func_name == "main" {
+                    self.mark_main_parameters(&declarator, source);
+                }
+                // Seed parameters that an earlier fixpoint pass proved tainted
+                // (a caller passed tainted data here). We deliberately seed only
+                // these — NOT every parameter — so that the function's onward
+                // calls forward taint without the blanket "all parameters are
+                // tainted" assumption reintroducing false positives.
+                for (idx, param_name) in
+                    self.get_param_names(&declarator, source).iter().enumerate()
+                {
+                    if self
+                        .tainted_params
+                        .contains(&format!("{}:param{}", func_name, idx))
+                    {
+                        self.user_input_vars.insert(param_name.clone());
+                    }
+                }
+            }
+            if let Some(body) = node.child_by_field_name("body") {
+                self.taint_flow_pass(&body, source);
+            }
+            return;
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                self.scan_functions_for_taint(&child, source);
+            }
+        }
+    }
+
+    /// Single-function taint-flow walk used by the pre-scan. Mirrors
+    /// `analyze_node` (declarations, assignments, string-manipulation taint
+    /// propagation, dead-branch elimination) but records inter-procedural taint
+    /// facts instead of emitting violations.
+    fn taint_flow_pass(&mut self, node: &Node, source: &str) {
+        match node.kind() {
+            "declaration" => self.process_declaration(node, source),
+            "assignment_expression" => {
+                self.process_assignment(node, source);
+                self.record_global_taint(node, source);
+            }
+            "call_expression" => {
+                self.process_string_manipulation_call(node, source);
+                self.record_wrapper_call_taint(node, source);
+            }
+            "if_statement" => {
+                if let Some(cond) = node.child_by_field_name("condition") {
+                    let cond_val =
+                        const_eval::try_evaluate_expr(&cond, source, &self.file_scope_constants);
+                    match cond_val {
+                        Some(v) if v != 0 => {
+                            if let Some(consequence) = node.child_by_field_name("consequence") {
+                                self.taint_flow_pass(&consequence, source);
+                            }
+                            return;
+                        }
+                        Some(0) => {
+                            if let Some(alternative) = node.child_by_field_name("alternative") {
+                                self.taint_flow_pass(&alternative, source);
+                            }
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        self.taint_flow_pass(&child, source);
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                self.taint_flow_pass(&child, source);
+            }
+        }
+    }
+
+    /// If an assignment stores a locally-tainted value into a (global/static)
+    /// variable, record that variable as tainted for later cross-function lookup.
+    fn record_global_taint(&mut self, node: &Node, source: &str) {
+        if let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            let right_tainted = right.kind() == "identifier" && {
+                let var_name = ast_utils::get_node_text_owned(&right, source);
+                self.user_input_vars.contains(&var_name)
+            };
+            if right_tainted {
+                if let Some(var_name) = self.get_base_variable(&left, source) {
+                    self.tainted_globals.insert(var_name);
+                }
+            }
+        }
+    }
+
+    /// Record which parameter positions of a user-defined function receive
+    /// locally-tainted arguments at this call site.
+    fn record_wrapper_call_taint(&mut self, node: &Node, source: &str) {
+        if let Some(function) = node.child_by_field_name("function") {
+            let func_name = ast_utils::get_node_text_owned(&function, source);
+            if self.is_format_string_function(&func_name) {
+                return;
+            }
+            if let Some(arguments) = node.child_by_field_name("arguments") {
+                let args: Vec<_> = (0..arguments.child_count())
+                    .filter_map(|i| arguments.child(i))
+                    .filter(|n| !matches!(n.kind(), "," | "(" | ")"))
+                    .collect();
+                for (idx, arg) in args.iter().enumerate() {
+                    if self.is_tainted_argument(arg, source) {
+                        self.tainted_params
+                            .insert(format!("{}:param{}", func_name, idx));
+                    }
+                }
             }
         }
     }
@@ -228,119 +411,6 @@ impl FormatStringAnalyzer {
             }
         }
         false
-    }
-
-    /// Scan for assignments to global/static variables from user input sources
-    fn scan_global_taint_assignments(&mut self, node: &Node, source: &str) {
-        if node.kind() == "assignment_expression" {
-            if let (Some(left), Some(right)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                // Check if right side is tainted (from pre-scan user_input_vars)
-                let right_tainted = if right.kind() == "identifier" {
-                    let var_name = ast_utils::get_node_text_owned(&right, source);
-                    self.user_input_vars.contains(&var_name)
-                } else {
-                    false
-                };
-
-                if right_tainted {
-                    if let Some(var_name) = self.get_base_variable(&left, source) {
-                        self.tainted_globals.insert(var_name);
-                    }
-                }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.scan_global_taint_assignments(&child, source);
-            }
-        }
-    }
-
-    fn collect_user_input_sources(&mut self, node: &Node, source: &str) {
-        // Track fgets, scanf, etc. that mark variables as tainted
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let raw_name = ast_utils::get_node_text_owned(&function, source);
-                let func_name = self.resolve_func_name(&raw_name).to_string();
-
-                if matches!(
-                    func_name.as_str(),
-                    "fgets" | "fgetws" | "gets" | "getline" | "fread" | "read"
-                ) {
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
-                        let args: Vec<_> = (0..arguments.child_count())
-                            .filter_map(|i| arguments.child(i))
-                            .filter(|n| !matches!(n.kind(), "," | "(" | ")"))
-                            .collect();
-                        if !args.is_empty() {
-                            if let Some(dest_name) = self.get_base_variable(&args[0], source) {
-                                self.user_input_vars.insert(dest_name);
-                            }
-                        }
-                    }
-                }
-
-                if matches!(
-                    func_name.as_str(),
-                    "scanf" | "fscanf" | "wscanf" | "fwscanf" | "swscanf"
-                ) {
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
-                        let args: Vec<_> = (0..arguments.child_count())
-                            .filter_map(|i| arguments.child(i))
-                            .filter(|n| !matches!(n.kind(), "," | "(" | ")"))
-                            .collect();
-                        let start = if func_name == "fscanf" { 2 } else { 1 };
-                        for arg in args.iter().skip(start) {
-                            if let Some(dest_name) = self.get_base_variable(arg, source) {
-                                self.user_input_vars.insert(dest_name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_user_input_sources(&child, source);
-            }
-        }
-    }
-
-    fn scan_for_tainted_wrapper_calls(&mut self, node: &Node, source: &str) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = ast_utils::get_node_text_owned(&function, source);
-
-                // Skip standard library functions
-                if !self.is_format_string_function(&func_name) {
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
-                        let args: Vec<_> = (0..arguments.child_count())
-                            .filter_map(|i| arguments.child(i))
-                            .filter(|n| !matches!(n.kind(), "," | "(" | ")"))
-                            .collect();
-
-                        // Check ALL arguments for taint and track which positions
-                        for (idx, arg) in args.iter().enumerate() {
-                            if self.is_tainted_argument(arg, source) {
-                                // Mark this function+param position as receiving tainted data
-                                self.tainted_params
-                                    .insert(format!("{}:param{}", func_name, idx));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.scan_for_tainted_wrapper_calls(&child, source);
-            }
-        }
     }
 
     fn analyze_function(
@@ -390,6 +460,29 @@ impl FormatStringAnalyzer {
                 }
             }
         }
+    }
+
+    /// Return the parameter names of a function, in declaration order, without
+    /// mutating analyzer state. Used by the pre-scan to seed proven-tainted
+    /// parameters without populating `function_parameters` (which would make
+    /// `is_tainted_argument` treat *every* parameter as tainted).
+    fn get_param_names(&self, declarator: &Node, source: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        if let Some(params) = declarator.child_by_field_name("parameters") {
+            for i in 0..params.child_count() {
+                if let Some(param) = params.child(i) {
+                    if param.kind() == "parameter_declaration" {
+                        if let Some(param_declarator) = param.child_by_field_name("declarator") {
+                            names.push(self.get_variable_name(&param_declarator, source));
+                        } else {
+                            // Keep positional alignment for unnamed parameters.
+                            names.push(String::new());
+                        }
+                    }
+                }
+            }
+        }
+        names
     }
 
     fn mark_main_parameters(&mut self, declarator: &Node, source: &str) {
@@ -641,6 +734,17 @@ impl FormatStringAnalyzer {
                     }
                 }
             }
+        }
+    }
+
+    /// Whether the named parameter of the current function receives tainted data
+    /// from any caller (recorded during the pre-scan in `tainted_params`).
+    fn param_is_interproc_tainted(&self, arg_name: &str) -> bool {
+        if let Some(&param_idx) = self.param_positions.get(arg_name) {
+            let key = format!("{}:param{}", self.current_function, param_idx);
+            self.tainted_params.contains(&key)
+        } else {
+            false
         }
     }
 
@@ -899,20 +1003,10 @@ impl FormatStringAnalyzer {
                         );
                         if is_vprintf_family && format_arg.kind() == "identifier" {
                             let arg_name = ast_utils::get_node_text_owned(&format_arg, source);
-                            // Check if this function receives tainted data at this parameter's position
-                            let is_interprocedurally_tainted =
-                                if let Some(&param_idx) = self.param_positions.get(&arg_name) {
-                                    let func_taint_key =
-                                        format!("{}:param{}", self.current_function, param_idx);
-                                    self.tainted_params.contains(&func_taint_key)
-                                } else {
-                                    false
-                                };
-
                             // Only skip if parameter AND NOT tainted locally or inter-procedurally
                             if self.function_parameters.contains(&arg_name)
                                 && !self.user_input_vars.contains(&arg_name)
-                                && !is_interprocedurally_tainted
+                                && !self.param_is_interproc_tainted(&arg_name)
                             {
                                 return; // Safe: vprintf wrapper with untainted parameter format string
                             }
@@ -1090,9 +1184,18 @@ impl FormatStringAnalyzer {
                 if self.safe_vars.contains(&var_name) {
                     return false;
                 }
-                // Function parameters should be treated as potentially tainted for format strings
-                // This is conservative but prevents vulnerabilities
+                // A bare parameter used as a format string is conservatively
+                // unsafe. But when this function is called by name within the TU
+                // and no caller passes tainted data to this parameter, the format
+                // string is a literal forwarded by the caller (Juliet goodG2B
+                // pattern) — treat it as safe. Cross-TU sinks, whose callers live
+                // in another file and are therefore unobservable, stay conservative.
                 if self.function_parameters.contains(&var_name) {
+                    let has_local_caller =
+                        self.called_function_names.contains(&self.current_function);
+                    if has_local_caller && !self.param_is_interproc_tainted(&var_name) {
+                        return false;
+                    }
                     return true;
                 }
                 // For other variables, use heuristic
