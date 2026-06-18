@@ -6,6 +6,18 @@
 // 2. Run: cargo build (regenerates tests)
 // 3. Run: cargo test (executes all tests including the new one)
 //
+// Debugging a failing generated test:
+//   The assertion message already prints everything needed to triage a failure:
+//     - `source:` / `at:` — a clickable `<path>:<line>` jump to the fixture (for a
+//       pass-test false positive, the line is the exact offending finding).
+//     - `reproduce:` — a copy-paste command to re-run the rule against just that one
+//       file: `cargo run -- --rules <RULE-ID> <path>`.
+//     - `about:` — the fixture's wiki-derived Description/Source, linking it back to
+//       the CERT C example it was scraped from.
+//   Do NOT add `println!`/`dbg!` debugging into the generated test bodies under
+//   OUT_DIR — they are overwritten on every `cargo build`. Instead use the
+//   `reproduce:` command above and add instrumentation in the rule implementation.
+//
 
 use std::collections::BTreeMap;
 use std::fs;

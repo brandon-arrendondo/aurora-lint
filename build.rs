@@ -661,6 +661,15 @@ fn generate_test_function(
         .context("Invalid test filename")?;
     let relative_path = format!("{}/tests/{}/{}", rule_base_path, test_type, test_filename);
 
+    // Single-file reproduce command + wiki-derived description, embedded into the
+    // assertion message so a failing test points straight at its source and how
+    // to re-run the rule against just that file (see generate_test_function below).
+    let repro_path = escape_for_format_literal(&relative_path);
+    let about_clause = match extract_test_description(test_path) {
+        Some(desc) => format!("\\n  about:     {}", escape_for_format_literal(&desc)),
+        None => String::new(),
+    };
+
     // Check if the test file requests intra-file prescan context
     let needs_prescan = check_test_needs_prescan(test_path);
 
@@ -750,12 +759,17 @@ fn generate_test_function(
         writeln!(f, "    ")?;
         writeln!(f, "    assert!(")?;
         writeln!(f, "        detected_violation,")?;
+        // Clickable `source: <abs path>:1` plus a copy-paste reproduce command so a
+        // missing-detection failure links straight back to the fixture and the rule.
         writeln!(
             f,
-            "        \"[{}] Expected violation in {{:?}} but found none\",",
-            rule_id
+            "        \"\\n[{rule_id}] expected a violation in this FAIL test, but none was detected.\\n  \
+             source:    {{}}:1\\n  reproduce: cargo run -- --rules {rule_id} {repro}{about}\\n\",",
+            rule_id = rule_id,
+            repro = repro_path,
+            about = about_clause
         )?;
-        writeln!(f, "        test_path.file_name().unwrap()")?;
+        writeln!(f, "        test_path.display()")?;
         writeln!(f, "    );")?;
     } else {
         writeln!(f, "    let no_violation = violations.is_empty();")?;
@@ -768,17 +782,27 @@ fn generate_test_function(
             test_fn_name
         )?;
         writeln!(f, "    ")?;
+        // Surface the exact false-positive location (`<abs path>:<line>`) and message
+        // so the failing assertion is a clickable jump to the offending source line.
+        writeln!(f, "    let fp = violations.first();")?;
+        writeln!(f, "    let fp_line = fp.map(|v| v.line).unwrap_or(0);")?;
+        writeln!(
+            f,
+            "    let fp_msg = fp.map(|v| v.message.as_str()).unwrap_or(\"unknown\");"
+        )?;
         writeln!(f, "    assert!(")?;
         writeln!(f, "        no_violation,")?;
         writeln!(
             f,
-            "        \"[{}] Unexpected violation in {{:?}}: {{}}\",",
-            rule_id
+            "        \"\\n[{rule_id}] FALSE POSITIVE in this PASS test ({{}} finding(s)).\\n  \
+             at:        {{}}:{{}}\\n  message:   {{}}\\n  reproduce: cargo run -- --rules {rule_id} {repro}{about}\\n\",",
+            rule_id = rule_id,
+            repro = repro_path,
+            about = about_clause
         )?;
-        writeln!(f, "        test_path.file_name().unwrap(),")?;
         writeln!(
             f,
-            "        violations.first().map(|v| &v.message).unwrap_or(&String::from(\"unknown\"))"
+            "        violations.len(), test_path.display(), fp_line, fp_msg"
         )?;
         writeln!(f, "    );")?;
     }
@@ -837,4 +861,49 @@ fn check_test_needs_prescan(test_path: &std::path::Path) -> bool {
     fs::read_to_string(test_path)
         .map(|content| content.contains("// sqc-test: prescan"))
         .unwrap_or(false)
+}
+
+/// Extract a human-readable description from a test `.c` file's header block.
+///
+/// CERT C test fixtures (mostly scraped from the CERT wiki) start with a banner
+/// comment containing `Description:` and/or `Source:` lines. Surfacing that text
+/// in the assertion failure message links a failing test straight back to the
+/// wiki example it was derived from, without the developer having to open the file.
+fn extract_test_description(test_path: &std::path::Path) -> Option<String> {
+    let content = fs::read_to_string(test_path).ok()?;
+    let mut source: Option<String> = None;
+    // Only the leading banner comment matters; bail out once real code starts.
+    for line in content.lines().take(20) {
+        let l = line.trim().trim_start_matches(['*', '/', ' ']).trim();
+        if let Some(rest) = l.strip_prefix("Description:") {
+            let d = rest.trim();
+            if !d.is_empty() {
+                return Some(d.to_string());
+            }
+        } else if let Some(rest) = l.strip_prefix("Source:") {
+            let s = rest.trim();
+            if !s.is_empty() {
+                source = Some(s.to_string());
+            }
+        }
+    }
+    source.map(|s| format!("{} example", s))
+}
+
+/// Escape a string so it can be embedded verbatim *inside* a Rust `format!`
+/// string literal: escape backslashes/quotes, flatten whitespace, and double
+/// braces so any `{`/`}` in the text is not parsed as a format placeholder.
+fn escape_for_format_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' | '\t' | '\r' => out.push(' '),
+            '{' => out.push_str("{{"),
+            '}' => out.push_str("}}"),
+            c => out.push(c),
+        }
+    }
+    out
 }
