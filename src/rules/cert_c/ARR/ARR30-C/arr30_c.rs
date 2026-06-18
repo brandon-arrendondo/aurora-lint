@@ -3893,6 +3893,25 @@ impl Arr30C {
 
                 // Check if destination is a tracked buffer
                 if let Some(dest_info) = buffers.get(dest_name) {
+                    // Provably safe by source content length: when the source
+                    // buffer was filled by a memset whose content (+ null
+                    // terminator) fits the destination, the copy cannot
+                    // overflow. This is the actual string length written, which
+                    // is more precise than the source buffer's capacity — the
+                    // distinction that keeps the bad-section overflow (fill >
+                    // dest) flagged while suppressing the good-section copy.
+                    if let BufferSize::Static(dest_s) | BufferSize::DynamicCalculated(dest_s) =
+                        dest_info.size
+                    {
+                        if let Some(content_len) =
+                            buffer_size::memset_content_length(src_text, source, node)
+                        {
+                            if dest_s > content_len {
+                                return violations;
+                            }
+                        }
+                    }
+
                     // Check if source is a string literal or tracked buffer
                     let src_size = if src_text.starts_with('"') {
                         // String literal - count characters (rough estimate)
@@ -3963,8 +3982,25 @@ impl Arr30C {
         if let Some(args) = self.get_function_arguments(node, source) {
             if args.len() >= 2 {
                 let dest_name = args[0].trim();
+                let src_text = args[1].trim();
 
                 if let Some(dest_info) = buffers.get(dest_name) {
+                    // Provably safe by source content length: a strcat into a
+                    // freshly-emptied destination whose source was memset to a
+                    // length that fits cannot overflow. Mirrors the strcpy gate
+                    // and matches Juliet's good-section `*_cat` shape (dest = "").
+                    if let BufferSize::Static(dest_s) | BufferSize::DynamicCalculated(dest_s) =
+                        dest_info.size
+                    {
+                        if let Some(content_len) =
+                            buffer_size::memset_content_length(src_text, source, node)
+                        {
+                            if dest_s > content_len {
+                                return violations;
+                            }
+                        }
+                    }
+
                     // strcat is dangerous without knowing current string length
                     // Only flag for known-size buffers; Dynamic-sized buffers can't be proven unsafe
                     if matches!(
@@ -4002,6 +4038,27 @@ impl Arr30C {
                 let count_expr = args[2].trim();
 
                 if let Some(dest_info) = buffers.get(dest_name) {
+                    // Provably safe by source content length: when the count is
+                    // `strlen(src)`/`wcslen(src)`, the bytes copied equal the
+                    // source's actual string length, not its buffer capacity.
+                    // If that memset-established length fits the destination the
+                    // copy is safe — keeps the bad-section overflow flagged
+                    // (fill 100 > dest) while suppressing the good-section copy
+                    // (fill 49 fits dest[50]).
+                    if let BufferSize::Static(dest_s) | BufferSize::DynamicCalculated(dest_s) =
+                        dest_info.size
+                    {
+                        if let Some(src_var) = strlen_argument(count_expr) {
+                            if let Some(content_len) =
+                                buffer_size::memset_content_length(src_var, source, node)
+                            {
+                                if dest_s > content_len {
+                                    return violations;
+                                }
+                            }
+                        }
+                    }
+
                     // Try plain numeric count
                     let count = if let Ok(c) = count_expr.parse::<usize>() {
                         Some(c)
@@ -4336,6 +4393,21 @@ impl Arr30C {
 }
 
 /// Recursively search for a `parameter_list` node inside a declarator subtree.
+/// Extract the single argument of a `strlen(VAR)` / `wcslen(VAR)` expression.
+/// Returns `None` when `expr` is not a bare strlen/wcslen call (e.g. it has a
+/// `+ 1` addend or wraps a more complex argument).
+fn strlen_argument(expr: &str) -> Option<&str> {
+    let expr = expr.trim();
+    let inner = expr
+        .strip_prefix("strlen(")
+        .or_else(|| expr.strip_prefix("wcslen("))?;
+    let arg = inner.strip_suffix(')')?.trim();
+    if arg.is_empty() || arg.contains([',', '(', ')']) {
+        return None;
+    }
+    Some(arg)
+}
+
 fn find_param_list_node<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     if node.kind() == "parameter_list" {
         return Some(*node);

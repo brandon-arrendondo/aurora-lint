@@ -226,6 +226,127 @@ pub fn calculate_alloc_bytes(malloc_args: &str) -> Option<usize> {
     None
 }
 
+/// Parse a simple size expression: a bare `"49"` or an `N-M` subtraction such
+/// as `"50-1"` / `"100-1"`. Returns `None` for anything more complex.
+/// Subtraction uses `checked_sub`, so an underflow (`"1-5"`) yields `None`.
+pub fn parse_simple_size_expr(expr: &str) -> Option<usize> {
+    let expr = expr.trim();
+    if let Ok(n) = expr.parse::<usize>() {
+        return Some(n);
+    }
+    // N-M pattern (use rfind to handle potential negative results)
+    if let Some(pos) = expr.rfind('-') {
+        if pos > 0 {
+            let left = expr[..pos].trim();
+            let right = expr[pos + 1..].trim();
+            if let (Ok(l), Ok(r)) = (left.parse::<usize>(), right.parse::<usize>()) {
+                return l.checked_sub(r);
+            }
+        }
+    }
+    None
+}
+
+/// Line range `(start_row, end_row)` of the `function_definition` enclosing
+/// `node`, or `None` if `node` is not inside one. Used to scope textual
+/// scans to a single function and avoid cross-function pollution (e.g. a
+/// bad-section `memset` bleeding into good-section analysis).
+pub fn enclosing_function_lines(node: &tree_sitter::Node) -> Option<(usize, usize)> {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "function_definition" {
+            return Some((n.start_position().row, n.end_position().row));
+        }
+        current = n.parent();
+    }
+    None
+}
+
+/// Content length of a string buffer initialized by a `memset`/`wmemset`
+/// fill immediately followed by an explicit null terminator, scoped to the
+/// function enclosing `call_node` and to the lines before the call.
+///
+/// This is the *actual* string length written into `var_name`, which is more
+/// precise than the buffer's declared capacity — the distinction that lets a
+/// copy rule keep the bad-section overflow (fill length > destination) while
+/// suppressing the good-section copy (fill length fits the destination).
+///
+/// Matches patterns like:
+///   memset(var, 'A', 49);   var[49] = '\0';     → 49
+///   wmemset(var, L'A', 49);  var[49] = L'\0';    → 49
+///   memset(var, 'A', 50-1);  var[50-1] = '\0';   → 49
+///
+/// When several matching fills precede the call (control-flow variants), the
+/// largest is returned (worst case).
+pub fn memset_content_length(
+    var_name: &str,
+    source: &str,
+    call_node: &tree_sitter::Node,
+) -> Option<usize> {
+    let (fn_start, fn_end) = enclosing_function_lines(call_node)?;
+    let call_line = call_node.start_position().row;
+    let lines: Vec<&str> = source.lines().collect();
+
+    let mut best_size: Option<usize> = None;
+
+    for i in fn_start..std::cmp::min(call_line, fn_end + 1) {
+        if i >= lines.len() {
+            break;
+        }
+        let trimmed = lines[i].trim();
+
+        // Find wmemset( or memset( call
+        let call_start = if let Some(pos) = trimmed.find("wmemset(") {
+            pos + "wmemset(".len()
+        } else if let Some(pos) = trimmed.find("memset(") {
+            pos + "memset(".len()
+        } else {
+            continue;
+        };
+
+        // Extract arguments between parens
+        let after_call = &trimmed[call_start..];
+        let close_paren = match after_call.rfind(')') {
+            Some(p) => p,
+            None => continue,
+        };
+        let args_str = &after_call[..close_paren];
+        let parts: Vec<&str> = args_str.splitn(3, ',').collect();
+        if parts.len() != 3 {
+            continue;
+        }
+
+        // First arg must be exactly our variable name
+        if parts[0].trim() != var_name {
+            continue;
+        }
+
+        // Third arg is the fill count
+        let size = match parse_simple_size_expr(parts[2].trim()) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Verify null termination follows within next 3 lines
+        let null_term_prefix = format!("{}[", var_name);
+        let search_end = std::cmp::min(i + 4, lines.len());
+        for next_line in lines[(i + 1)..search_end].iter().map(|l| l.trim()) {
+            if next_line.contains(&null_term_prefix)
+                && (next_line.contains("'\\0'") || next_line.contains("L'\\0'"))
+            {
+                // Keep the largest content size seen (conservative: if multiple
+                // branches set different sizes, use the worst case)
+                best_size = Some(match best_size {
+                    Some(prev) => std::cmp::max(prev, size),
+                    None => size,
+                });
+                break;
+            }
+        }
+    }
+    best_size
+}
+
 /// Evaluate a parenthesised allocation-size arithmetic capture of the form
 /// `(N op M)` (or a bare `N`), as produced by the malloc/alloca size regexes.
 /// `op` is `Some("+"|"-"|"*")` with both operands present, or `None` for a
