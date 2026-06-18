@@ -93,6 +93,24 @@ impl GroupItem {
     }
 }
 
+/// Extract the CERT category prefix from a rule ID for folder/category nesting.
+///
+/// The category is the leading run of alphabetic characters, which matches the
+/// `src/rules/cert_c/<CATEGORY>/` folder layout (e.g. `ARR30-C` -> `ARR`,
+/// `API00-C` -> `API`). Falls back to the full rule ID if it has no alphabetic
+/// prefix.
+fn rule_category(rule_id: &str) -> String {
+    let prefix: String = rule_id
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    if prefix.is_empty() {
+        rule_id.to_string()
+    } else {
+        prefix
+    }
+}
+
 #[derive(Clone)]
 struct SuppressionSummary {
     file_path: String,
@@ -217,7 +235,7 @@ impl TerminalUI {
 
         // Group rules by category (prefix)
         for (rule_id, config) in &manifest.rules.cert_c {
-            let category = rule_id.split('-').next().unwrap_or(rule_id).to_string();
+            let category = rule_category(rule_id);
             grouped
                 .entry(category)
                 .or_default()
@@ -266,7 +284,7 @@ impl TerminalUI {
 
         // Initialize all groups as collapsed
         for rule_id in manifest.rules.cert_c.keys() {
-            let category = rule_id.split('-').next().unwrap_or(rule_id).to_string();
+            let category = rule_category(rule_id);
             groups.entry(category).or_insert(false);
         }
 
@@ -1695,12 +1713,7 @@ impl TerminalUI {
 
         for (original_index, violation) in &self.sorted_violations {
             // Extract category (e.g., "ARR" from "ARR30-C")
-            let category = violation
-                .rule_id
-                .split('-')
-                .next()
-                .unwrap_or(&violation.rule_id)
-                .to_string();
+            let category = rule_category(&violation.rule_id);
             groups
                 .entry(category)
                 .or_default()
