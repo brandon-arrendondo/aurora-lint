@@ -224,6 +224,9 @@ impl GlobalTracker {
 
     /// First scan: identify global variables at file scope
     fn scan_for_globals(&mut self, node: &Node, source: &str) {
+        if is_preproc_if_zero(node, source) {
+            return;
+        }
         if node.kind() == "declaration" {
             // Check if this is at file scope (parent is translation_unit)
             if let Some(parent) = node.parent() {
@@ -276,6 +279,9 @@ impl GlobalTracker {
 
     /// Second scan: analyze functions for free/access patterns
     fn scan_functions(&mut self, node: &Node, source: &str) {
+        if is_preproc_if_zero(node, source) {
+            return;
+        }
         if node.kind() == "function_definition" {
             self.analyze_function_patterns(node, source);
             // Also check for recursive UAF pattern via text analysis
@@ -654,6 +660,9 @@ impl GlobalTracker {
 
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
+                if is_preproc_if_zero(&child, source) {
+                    continue;
+                }
                 self.scan_function_body(
                     &child,
                     source,
@@ -1284,6 +1293,9 @@ impl MemoryAnalyzer {
 
     /// Main analysis entry point - recursively analyze the AST
     fn analyze_node(&mut self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        if is_preproc_if_zero(node, source) {
+            return;
+        }
         if node.kind() == "function_definition" {
             // Analyze each function with fresh state to avoid cross-function pollution
             let mut func_analyzer = MemoryAnalyzer::new(
@@ -1394,6 +1406,9 @@ impl MemoryAnalyzer {
         // Recursively process child nodes
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
+                if is_preproc_if_zero(&child, source) {
+                    continue;
+                }
                 self.analyze_function_body(&child, source, violations);
             }
         }
@@ -2657,6 +2672,20 @@ impl MemoryAnalyzer {
             }
         }
     }
+}
+
+/// Returns true if `node` is a `#if 0 … #endif` preprocessor block.
+/// Tree-sitter C represents this as a `preproc_if` with a `condition` field
+/// whose text is the literal `0`. Code inside such a block is never compiled
+/// and must not be analysed by any rule.
+fn is_preproc_if_zero(node: &tree_sitter::Node, source: &str) -> bool {
+    if node.kind() != "preproc_if" {
+        return false;
+    }
+    if let Some(cond) = node.child_by_field_name("condition") {
+        return get_node_text(&cond, source).trim() == "0";
+    }
+    false
 }
 
 /// Returns true if the declarator node (e.g., an init_declarator) contains a
