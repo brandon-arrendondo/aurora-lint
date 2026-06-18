@@ -95,6 +95,25 @@ def cmd_compare(args):
     print(f"\nOverall Delta: TP {d['tp']:+d}  FP {d['fp']:+d}  "
           f"TP Rate {d['tp_rate_pp']:+.2f}pp")
 
+    t = s.get("timing")
+    if t and t["delta"].get("analysis_s") is not None:
+        td = t["delta"]
+        line = f"\nTiming Delta: analysis {td['analysis_s']:+.0f}s"
+        if td.get("analysis_pct") is not None:
+            line += f" ({td['analysis_pct']:+.1f}%)"
+        if td.get("wall_s") is not None:
+            line += f"  wall {td['wall_s']:+.0f}s"
+        print(line)
+        print(f"  analysis_s {t['base']['analysis_s']:.0f} → {t['target']['analysis_s']:.0f}"
+              f"  (summed per-CWE sqc time; jobs={t['target'].get('jobs')})")
+
+    if result.get("timing_movers"):
+        print(f"\nTop Timing Movers (per-CWE scan time):")
+        for m in result["timing_movers"][:5]:
+            print(f"  {m['cwe_id']}: {m['delta_duration_s']:+.1f}s  "
+                  f"({m['base_duration_s']:.0f}→{m['target_duration_s']:.0f}s)  "
+                  f"FP {m['delta_fp']:+d}")
+
     if result.get("cwe_improvements"):
         print(f"\nTop CWE Improvements (FP reduced):")
         for c in result["cwe_improvements"][:5]:

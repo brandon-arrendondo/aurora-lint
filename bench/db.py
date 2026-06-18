@@ -7,10 +7,23 @@ read (MCP server) + write (runner).
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from bench.config import DB_PATH
+
+
+def _wall_seconds(started_at: str, finished_at: str) -> float | None:
+    """Elapsed wall-clock seconds between two ISO-8601 timestamps, or None if
+    either fails to parse (e.g. a still-running or legacy run)."""
+    try:
+        start = datetime.fromisoformat(started_at)
+        end = datetime.fromisoformat(finished_at)
+    except (ValueError, TypeError):
+        return None
+    return round((end - start).total_seconds(), 1)
+
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -555,9 +568,21 @@ class BenchDB:
             "commit_sha": run.get("commit_sha"),
         }
 
+        # Timing metrics. `wall_s` is the run's real elapsed time; `analysis_s`
+        # is the summed per-CWE sqc-subprocess time (each `sqc` invocation does
+        # its own prescan+scan). Because CWEs run in parallel, analysis_s
+        # normally exceeds wall_s — it is the parallelism-independent measure of
+        # total compute, which is the more stable axis for comparing the cost of
+        # analysis-depth changes across versions. See task 202.
+        summary["jobs"] = run.get("jobs")
+        analysis_s = sum(c["duration_s"] for c in per_cwe if c.get("duration_s"))
+        summary["analysis_s"] = round(analysis_s, 1)
         if run.get("started_at") and run.get("finished_at"):
             summary["started_at"] = run["started_at"]
             summary["finished_at"] = run["finished_at"]
+            wall_s = _wall_seconds(run["started_at"], run["finished_at"])
+            if wall_s is not None:
+                summary["wall_s"] = wall_s
 
         # CWE-aware summary
         cwe_matched_tp = totals["total_cwe_matched_tp"] or 0
@@ -710,6 +735,23 @@ class BenchDB:
             },
         }
 
+        # Timing block — so a scan-time regression is visible in the standard
+        # comparison, not just precision/recall. `analysis_s` (summed per-CWE
+        # subprocess time) is parallelism-independent and the better axis for the
+        # cost of analysis-depth changes; `wall_s` is real elapsed time and may
+        # be absent for older/running runs. See task 202.
+        b_an, t_an = bs.get("analysis_s"), ts.get("analysis_s")
+        b_wall, t_wall = bs.get("wall_s"), ts.get("wall_s")
+        summary["timing"] = {
+            "base": {"analysis_s": b_an, "wall_s": b_wall, "jobs": bs.get("jobs")},
+            "target": {"analysis_s": t_an, "wall_s": t_wall, "jobs": ts.get("jobs")},
+            "delta": {
+                "analysis_s": round(t_an - b_an, 1) if b_an is not None and t_an is not None else None,
+                "analysis_pct": round((t_an - b_an) / b_an * 100, 1) if b_an else None,
+                "wall_s": round(t_wall - b_wall, 1) if b_wall is not None and t_wall is not None else None,
+            },
+        }
+
         # Per-CWE deltas
         base_cwes = {c["cwe_id"]: c for c in base["per_cwe"]}
         target_cwes = {c["cwe_id"]: c for c in target["per_cwe"]}
@@ -725,6 +767,12 @@ class BenchDB:
             t_fp = t.get("fp_count", 0) or 0
             b_rate = b.get("tp_rate_pct", 0) or 0
             t_rate = t.get("tp_rate_pct", 0) or 0
+            # Per-CWE wall time is parallelism-immune (each CWE is one sqc
+            # subprocess), so its delta is the precise timing signal.
+            b_dur = b.get("duration_s")
+            t_dur = t.get("duration_s")
+            delta_dur = (round(t_dur - b_dur, 1)
+                         if b_dur is not None and t_dur is not None else None)
             cwe_deltas.append({
                 "cwe_id": cid,
                 "base_tp": b_tp, "base_fp": b_fp,
@@ -732,12 +780,22 @@ class BenchDB:
                 "delta_tp": t_tp - b_tp, "delta_fp": t_fp - b_fp,
                 "base_tp_pct": b_rate, "target_tp_pct": t_rate,
                 "delta_tp_rate_pp": round(t_rate - b_rate, 2),
+                "base_duration_s": b_dur, "target_duration_s": t_dur,
+                "delta_duration_s": delta_dur,
             })
         cwe_deltas.sort(key=lambda x: x["delta_fp"])
 
         improvements = [d for d in cwe_deltas if d["delta_fp"] < 0][:15]
         regressions = sorted([d for d in cwe_deltas if d["delta_fp"] > 0],
                              key=lambda x: -x["delta_fp"])[:15]
+
+        # CWEs whose scan time moved the most (either direction), so an
+        # analysis-depth change shows up as a timing mover next to its FP win.
+        timing_movers = sorted(
+            (d for d in cwe_deltas if d["delta_duration_s"] is not None
+             and abs(d["delta_duration_s"]) >= 1.0),
+            key=lambda x: -abs(x["delta_duration_s"]),
+        )[:10]
 
         # Per-rule deltas
         base_rules = {r["rule_id"]: r for r in base["top_rules"]}
@@ -767,6 +825,7 @@ class BenchDB:
             "cwe_regressions": regressions,
             "rule_improvements": rule_improvements,
             "rule_regressions": rule_regressions,
+            "timing_movers": timing_movers,
             "all_cwe_deltas": cwe_deltas,
         }
 
