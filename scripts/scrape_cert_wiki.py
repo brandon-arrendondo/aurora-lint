@@ -538,6 +538,43 @@ def compare_dates(date1: Optional[str], date2: Optional[str]) -> int:
         return 0 if date1 == date2 else 1
 
 
+def toml_inline_string(value: str) -> str:
+    """TOML-encode a single-line string value.
+
+    Prefer a literal string (single quotes, no escape processing) when the text
+    has no single quote or control char; otherwise fall back to a properly
+    escaped basic string. This prevents scraped titles that contain embedded
+    double quotes (e.g. DCL16-C: 'Use "L," not "l,"...') from emitting invalid
+    TOML. See task 200 / task 130 (build-time manifest validation).
+    """
+    if "'" not in value and "\n" not in value and "\r" not in value:
+        return f"'{value}'"
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
+
+
+def toml_multiline_string(value: str) -> str:
+    """TOML-encode multi-line text (e.g. a scraped description).
+
+    Prefer a multi-line literal string (''' ... ''') so prose containing
+    backslashes (\\x10, \\U, \\u, \\0, Windows paths like \\\\.\\) is taken
+    verbatim — these are the exact sequences that broke 8 rule TOMLs before
+    task 130 added validation. Fall back to an escaped multi-line basic string
+    only if the text contains a triple single-quote, which a literal string
+    cannot represent.
+    """
+    if "'''" not in value:
+        return "'''\n" + value + "\n'''"
+    escaped = value.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+    return '"""\n' + escaped + '\n"""'
+
+
 def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = False):
     """
     Generate TOML metadata file for a rule or recommendation.
@@ -577,13 +614,12 @@ def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = 
     toml_lines.append(f'type = "{item.item_type}"')
     toml_lines.append(f'category = "{item.category}"')
     toml_lines.append(f'number = {item.number}')
-    toml_lines.append(f'title = "{item.title}"')
+    toml_lines.append(f'title = {toml_inline_string(item.title)}')
 
-    # Description with multi-line string
+    # Description with multi-line string (literal-string-encoded so scraped
+    # backslashes/quotes can't produce invalid TOML — see task 200).
     if wrapped_desc:
-        toml_lines.append('description = """')
-        toml_lines.append(wrapped_desc)
-        toml_lines.append('"""')
+        toml_lines.append('description = ' + toml_multiline_string(wrapped_desc))
     else:
         toml_lines.append('description = ""')
 
