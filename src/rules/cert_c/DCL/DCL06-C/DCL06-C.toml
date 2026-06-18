@@ -4,7 +4,7 @@ type = "recommendation"
 category = "DCL"
 number = 6
 title = "Use meaningful symbolic constants to represent literal values"
-description = """
+description = '''
 The C language provides several different kinds of constants:integerconstants,
 such as10and0x1C;floatingconstants, such as1.0and6.022e+23;
 andcharacterconstants, such as'a'and'\x10'. C also provides string literals,
@@ -23,7 +23,7 @@ efficient and less error prone than replacing every instance of the value [Saks
 symbolic constants:const-qualified objects, enumeration constants, andobject-
 like macrodefinitions. Each of these mechanisms has associated advantages and
 disadvantages.
-"""
+'''
 severity = "Low"
 likelihood = "Unlikely"
 priority = "P2"

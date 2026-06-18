@@ -4,7 +4,7 @@ type = "recommendation"
 category = "STR"
 number = 6
 title = "Do not assume that strtok() leaves the parse string unchanged"
-description = """
+description = '''
 The C functionstrtok()is a string tokenization function that takes two
 arguments: an initial string to be parsed and aconst-qualified character
 delimiter. It returns a pointer to the first character of a token or to a null
@@ -18,7 +18,7 @@ initial string to be parsed, the string is subsequently unsafe and cannot be
 used in its original form. If you need to preserve the original string, copy it
 into a buffer and pass the address of the buffer tostrtok()instead of the
 original string.
-"""
+'''
 severity = "Medium"
 likelihood = "Likely"
 priority = "P6"

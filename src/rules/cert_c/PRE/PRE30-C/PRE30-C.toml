@@ -4,7 +4,7 @@ type = "rule"
 category = "PRE"
 number = 30
 title = "Do not create a universal character name through concatenation"
-description = """
+description = '''
 The C Standard supports universal character names that may be used in
 identifiers, character constants, and string literals to designate characters
 that are not in the basic character set. The universal character
@@ -13,7 +13,7 @@ specified by ISO/IEC 10646) isnnnnnnnn. Similarly, the universal character
 name\unnnndesignates the character whose 4-digit short identifier isnnnn(and
 whose 8-digit short identifier is0000nnnn). The C Standard, 5.1.1.2, paragraph 4
 [ISO/IEC 9899:2024], says See alsoundefined behavior 3.
-"""
+'''
 severity = "Low"
 likelihood = "Unlikely"
 priority = "P2"

@@ -4,7 +4,7 @@ type = "recommendation"
 category = "FIO"
 number = 32
 title = "Do not perform operations on devices that are only appropriate for files"
-description = """
+description = '''
 File names on many operating systems, including Windows and UNIX, may be used to
 accessspecial files, which are actually devices. Reserved Microsoft Windows
 device names includeAUX,CON,PRN,COM1, andLPT1or paths using the\\.\device
@@ -20,7 +20,7 @@ the/dev/kmemdevice, they may be able to alter the priority, UID, or other
 attributes of their process or simply crash the system. Similarly, access to
 disk devices, tape devices, network devices, and terminals being used by other
 processes can lead to problems [Garfinkel 1996].
-"""
+'''
 severity = "Medium"
 likelihood = "Unlikely"
 priority = "P2"

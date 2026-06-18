@@ -4,7 +4,7 @@ type = "rule"
 category = "INT"
 number = 35
 title = "Use correct integer precisions"
-description = """
+description = '''
 Integer types in C have both asizeand aprecision. The size indicates the number
 of bytes used by an object and can be retrieved for any object or type using
 thesizeofoperator. The precision of an integer type is the number of bits it
@@ -61,7 +61,7 @@ the width of an un#include <limits.h> unsigned int pow2(unsigned int exp) { if
 AssessmentMistaking an integer's size for its precision can permit invalid
 precision arguments to operations such as bitwise shifts, resulting in undefined
 behavior.
-"""
+'''
 severity = "Low"
 likelihood = "Unlikely"
 priority = "P1"

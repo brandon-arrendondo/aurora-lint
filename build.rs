@@ -22,6 +22,54 @@ struct RuleSingleSettings {
     enabled: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Build-time manifest validation (see `validate_rule_manifest`).
+//
+// These structs deliberately mirror the runtime schema in
+// `src/manifest/mod.rs` (`RuleNamespaces` / `RuleConfig` / `Severity` /
+// `RuleCategory`) so that a syntax error, an unknown/typo'd field, or an
+// invalid enum value in an individual rule TOML is caught when `build.rs`
+// merges the manifests instead of only when the manifest is loaded at runtime.
+// `deny_unknown_fields` is what turns a misspelled key (e.g. `enabld`) into a
+// hard build failure. build.rs cannot depend on the crate it is building, so
+// the schema is duplicated here; keep it in sync with `src/manifest/mod.rs`.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ValidatedRulesTable {
+    #[serde(default)]
+    cert_c: HashMap<String, ValidatedRuleConfig>,
+    #[serde(default)]
+    brules: HashMap<String, ValidatedRuleConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // fields exist only to enforce the schema during deserialize
+struct ValidatedRuleConfig {
+    enabled: bool,
+    severity: Option<ValidatedSeverity>,
+    description: Option<String>,
+    category: Option<ValidatedCategory>,
+    cert_id: Option<String>,
+    parameters: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+enum ValidatedSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Deserialize)]
+enum ValidatedCategory {
+    Rule,
+    Recommendation,
+}
+
 fn main() {
     // Only compile resources on Windows
     #[cfg(target_os = "windows")]
@@ -44,6 +92,83 @@ fn main() {
         eprintln!("Error generating integration tests: {}", e);
         std::process::exit(1);
     }
+}
+
+/// Validate a single individual rule manifest (`<RULE-ID>.toml`) before its
+/// `[rules.*]` section is merged into the generated `rules-all.toml`.
+///
+/// Catches at build time what would otherwise only surface at runtime:
+/// 1. TOML syntax errors anywhere in the file;
+/// 2. a missing `[rules.<namespace>.<RULE-ID>]` section;
+/// 3. unknown / malformed fields and invalid enum values in that section
+///    (via `deny_unknown_fields` + the typed `Validated*` schema);
+/// 4. a section count other than one, or a rule id that does not match the
+///    file name (a common copy-paste error).
+fn validate_rule_manifest(path: &std::path::Path, content: &str) -> Result<()> {
+    // 1. Whole-file TOML syntax.
+    let value: toml::Value = toml::from_str(content)
+        .with_context(|| format!("Invalid TOML syntax in rule manifest {}", path.display()))?;
+
+    // 2. A [rules] table must exist.
+    let rules = value.get("rules").ok_or_else(|| {
+        anyhow::anyhow!(
+            "Rule manifest {} has no [rules.<namespace>.<RULE-ID>] section",
+            path.display()
+        )
+    })?;
+
+    // 3. Strict schema for the [rules] table.
+    let table: ValidatedRulesTable = rules.clone().try_into().with_context(|| {
+        format!(
+            "Invalid [rules] schema in {} (unknown/malformed field or bad severity/category value)",
+            path.display()
+        )
+    })?;
+
+    // 4. Exactly one rule, whose id matches the file name stem.
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("Invalid manifest file name: {}", path.display()))?;
+    let ids: Vec<&String> = table.cert_c.keys().chain(table.brules.keys()).collect();
+    match ids.as_slice() {
+        [id] if **id == *stem => Ok(()),
+        [id] => anyhow::bail!(
+            "Rule id '{}' in {} does not match its file name stem '{}'",
+            id,
+            path.display(),
+            stem
+        ),
+        _ => anyhow::bail!(
+            "Rule manifest {} must declare exactly one rule, found {}: {:?}",
+            path.display(),
+            ids.len(),
+            ids
+        ),
+    }
+}
+
+/// Validate the generated combined `rules-all.toml` for a ruleset. Catches
+/// merge-level problems the per-file checks cannot — most importantly a
+/// duplicate rule id across two files (TOML forbids redefining a table) and any
+/// schema drift in the concatenated `[rules]` tables.
+fn validate_combined_manifest(ruleset_name: &str, combined: &str) -> Result<()> {
+    let value: toml::Value = toml::from_str(combined).with_context(|| {
+        format!(
+            "Generated rules-all.toml for ruleset '{}' is not valid TOML \
+             (likely a duplicate rule id or a malformed merged section)",
+            ruleset_name
+        )
+    })?;
+    if let Some(rules) = value.get("rules") {
+        let _: ValidatedRulesTable = rules.clone().try_into().with_context(|| {
+            format!(
+                "Generated rules-all.toml for ruleset '{}' has an invalid [rules] schema",
+                ruleset_name
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn generate_rules_all_toml() -> Result<()> {
@@ -131,32 +256,38 @@ fn generate_rules_all_toml() -> Result<()> {
         combined_content.push_str("# Full metadata is in individual rule TOML files\n\n");
 
         for toml_path in &toml_files {
-            // Read full content
-            match fs::read_to_string(toml_path) {
-                Ok(content) => {
-                    // Extract the [rules.*] section (cert_c, brules, etc.)
-                    if let Some(start_idx) = content.find("[rules.") {
-                        let section_content = &content[start_idx..];
+            // Read full content — a rule manifest we cannot read is a hard error,
+            // not a silently-skipped warning (the rule would vanish from the
+            // generated manifest with no signal otherwise).
+            let content = fs::read_to_string(toml_path)
+                .with_context(|| format!("Failed to read rule manifest {}", toml_path.display()))?;
 
-                        // Find the end of this section (next section or end of file)
-                        let end_idx = section_content
-                            .find("\n[")
-                            .map(|i| i + 1)
-                            .unwrap_or(section_content.len());
+            // Validate before merging so syntax errors / schema violations /
+            // malformed fields fail the build here instead of at runtime.
+            validate_rule_manifest(toml_path, &content)?;
 
-                        let rule_section = &section_content[..end_idx];
-                        combined_content.push_str(rule_section);
-                        if !rule_section.ends_with('\n') {
-                            combined_content.push('\n');
-                        }
-                        combined_content.push('\n');
-                    }
+            // Extract the [rules.*] section (cert_c, brules, etc.)
+            if let Some(start_idx) = content.find("[rules.") {
+                let section_content = &content[start_idx..];
+
+                // Find the end of this section (next section or end of file)
+                let end_idx = section_content
+                    .find("\n[")
+                    .map(|i| i + 1)
+                    .unwrap_or(section_content.len());
+
+                let rule_section = &section_content[..end_idx];
+                combined_content.push_str(rule_section);
+                if !rule_section.ends_with('\n') {
+                    combined_content.push('\n');
                 }
-                Err(e) => {
-                    eprintln!("Warning: Failed to read {}: {}", toml_path.display(), e);
-                }
+                combined_content.push('\n');
             }
         }
+
+        // Validate the merged output before writing it (catches duplicate rule
+        // ids across files and any schema drift in the concatenation).
+        validate_combined_manifest(&ruleset_name, &combined_content)?;
 
         // Write combined file
         let mut file = File::create(&output_path).context(format!(
