@@ -432,7 +432,12 @@ fn check_callsite_null_args(
                         .map(|s| s.checks_null_params.contains(&param_idx))
                         .unwrap_or(true);
 
-                    if !callee_checks_null {
+                    // Same rc<->out-parameter success correlation as is_unsafe_at:
+                    // a pointer set through `&p` by a call whose status is stored
+                    // in `rc`, then passed under an `rc == SQLITE_OK` guard, is
+                    // non-null at the call. This interprocedural arg check does
+                    // not route through is_unsafe_at, so apply the guard here too.
+                    if !callee_checks_null && !is_guarded_by_rc_success(&var_name, &arg, source) {
                         let start_point = arg.start_position();
                         violations.push(RuleViolation {
                             rule_id: "EXP34-C".to_string(),
