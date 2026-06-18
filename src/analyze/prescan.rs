@@ -1325,11 +1325,21 @@ fn propagate_param_buffer_sizes(
     summaries: &mut HashMap<String, FunctionSummary>,
     header_declared: &HashSet<String>,
 ) {
-    // Forwarding chains are the only thing this pass resolves. If no function
-    // forwards a parameter to another, the re-collection can never add a bound,
-    // so skip the (per-pass, all-files) re-parse entirely. This keeps the cost
-    // off codebases that don't relay buffers through wrappers.
-    if summaries.values().all(|s| s.param_passthroughs.is_empty()) {
+    // This pass only ever creates a new bound by forwarding an already-bounded
+    // parameter onward, so the first propagating edge must already exist: a
+    // function whose buffer-bounded parameter index is also a key in its
+    // param_passthroughs. If none exists, no later pass can add anything either
+    // (new bounds arise only from such edges), so skip the (per-pass, all-files)
+    // re-parse entirely. Gating on bare param-forwarding was too broad — most
+    // CWE dirs forward *some* parameter, so non-buffer CWEs paid the re-parse
+    // for nothing (observed via the task-202 timing metric: non-buffer CWE-78
+    // +163s / CWE-190 +54s with zero FP change).
+    let has_forwardable_buffer = summaries.values().any(|s| {
+        s.callsite_param_buffer_size
+            .keys()
+            .any(|p| s.param_passthroughs.contains_key(p))
+    });
+    if !has_forwardable_buffer {
         return;
     }
 
