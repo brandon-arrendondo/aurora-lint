@@ -527,6 +527,20 @@ fn is_unsafe_at(
         return false;
     }
 
+    // rc<->out-parameter success correlation (the sqlite idiom):
+    //   sqlite3_stmt *p = 0;
+    //   rc = sqlite3_prepare(db, sql, -1, &p, 0);   // p set iff rc == SQLITE_OK
+    //   if (rc == SQLITE_OK) { ... use p ... }       // or: while (rc==SQLITE_OK && step(p))
+    // The pointer is assigned only through an out-parameter (&p) of a call whose
+    // status is stored in `rc`, and the deref is dominated by an `rc == SQLITE_OK`
+    // (== 0 / !rc) success guard. The null-state dataflow cannot correlate the
+    // status code with the pointer, so it reports a spurious may-be-null. This is
+    // distinct from the unguarded-malloc null-deref pattern (which has no status
+    // guard and no out-parameter), so recall for that FN is unaffected.
+    if is_guarded_by_rc_success(var_name, deref_node, source) {
+        return false;
+    }
+
     // A dereference of an iterator macro's loop variable inside the macro body
     // (e.g. `el->field` within `DL_FOREACH(head, el) { ... }`) is guarded
     // non-null by the macro's expanded loop condition, which the parser cannot
@@ -739,6 +753,241 @@ fn has_dominating_null_check(node: &Node, var_name: &str, deref_byte: usize, sou
         }
     }
 
+    false
+}
+
+// ---------------------------------------------------------------------------
+// rc<->out-parameter success correlation
+// ---------------------------------------------------------------------------
+
+/// True when `var_name` is dereferenced under a status-code success guard
+/// (`rc == SQLITE_OK` / `rc == 0` / `!rc`) and was itself assigned only through
+/// an out-parameter (`&var_name`) of a call whose status was stored in that same
+/// guard variable. See the call site in `is_unsafe_at` for the full idiom.
+fn is_guarded_by_rc_success(var_name: &str, node: &Node, source: &str) -> bool {
+    let deref_byte = node.start_byte();
+
+    // Walk ancestors to find a success guard that dominates the dereference,
+    // capturing the status variable it tests.
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "function_definition" {
+            break;
+        }
+
+        let guard_var = match parent.kind() {
+            // while/if/for condition guards the body: cond holds inside it.
+            "if_statement" | "while_statement" | "do_statement" => parent
+                .child_by_field_name("condition")
+                .and_then(|c| rc_success_guard_var(&c, source)),
+            // `rc == SQLITE_OK && <expr deref'ing var>`: the deref is in the
+            // right operand, the guard is the (whole) left operand.
+            "binary_expression" => {
+                let op = parent
+                    .child_by_field_name("operator")
+                    .map(|o| ast_utils::get_node_text_owned(&o, source));
+                if op.as_deref() == Some("&&") {
+                    parent
+                        .child_by_field_name("left")
+                        .filter(|left| !node_is_within(left, node))
+                        .and_then(|left| rc_success_guard_var(&left, source))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(rc) = guard_var {
+            if var_assigned_via_rc_outparam(var_name, &rc, node, deref_byte, source) {
+                return true;
+            }
+        }
+
+        current = parent.parent();
+    }
+
+    false
+}
+
+/// If `cond` is (or contains, across `&&` conjuncts) a status-code success
+/// test, return the status variable name. Recognises `X == SQLITE_OK`,
+/// `SQLITE_OK == X`, `X == 0`, `0 == X`, and `!X`.
+fn rc_success_guard_var(cond: &Node, source: &str) -> Option<String> {
+    match cond.kind() {
+        "parenthesized_expression" => cond
+            .child(1)
+            .and_then(|inner| rc_success_guard_var(&inner, source)),
+        "unary_expression" => {
+            // `!rc` → success
+            let op = cond
+                .child_by_field_name("operator")
+                .map(|o| ast_utils::get_node_text_owned(&o, source));
+            if op.as_deref() == Some("!") {
+                cond.child_by_field_name("argument").and_then(|arg| {
+                    if arg.kind() == "identifier" {
+                        Some(ast_utils::get_node_text_owned(&arg, source))
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        }
+        "binary_expression" => {
+            let op = cond
+                .child_by_field_name("operator")
+                .map(|o| ast_utils::get_node_text_owned(&o, source))?;
+            let left = cond.child_by_field_name("left")?;
+            let right = cond.child_by_field_name("right")?;
+            if op == "&&" {
+                // Any conjunct may carry the success test.
+                return rc_success_guard_var(&left, source)
+                    .or_else(|| rc_success_guard_var(&right, source));
+            }
+            if op == "==" {
+                return success_equality_var(&left, &right, source);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// For an `==` comparison, return the identifier operand when the other operand
+/// is a success constant (`SQLITE_OK` or `0`).
+fn success_equality_var(a: &Node, b: &Node, source: &str) -> Option<String> {
+    let is_success_const = |n: &Node| {
+        let t = ast_utils::get_node_text_owned(n, source);
+        t == "SQLITE_OK" || t == "0"
+    };
+    if a.kind() == "identifier" && is_success_const(b) {
+        return Some(ast_utils::get_node_text_owned(a, source));
+    }
+    if b.kind() == "identifier" && is_success_const(a) {
+        return Some(ast_utils::get_node_text_owned(b, source));
+    }
+    None
+}
+
+/// True when, before `deref_byte` in the enclosing function, `var_name` is
+/// taken by address (`&var_name`) inside a call expression whose result is
+/// assigned (or initialised) into the status variable `rc`. Handles both
+/// `rc = call(&var)` and `int rc = call(&var)`.
+fn var_assigned_via_rc_outparam(
+    var_name: &str,
+    rc: &str,
+    node: &Node,
+    deref_byte: usize,
+    source: &str,
+) -> bool {
+    // Find the enclosing function body.
+    let mut current = node.parent();
+    let mut func_body = None;
+    while let Some(parent) = current {
+        if parent.kind() == "function_definition" {
+            func_body = parent.child_by_field_name("body");
+            break;
+        }
+        current = parent.parent();
+    }
+    match func_body {
+        Some(body) => find_rc_outparam_assignment(&body, var_name, rc, deref_byte, source),
+        None => false,
+    }
+}
+
+fn find_rc_outparam_assignment(
+    node: &Node,
+    var_name: &str,
+    rc: &str,
+    deref_byte: usize,
+    source: &str,
+) -> bool {
+    // Out-parameter assignment must occur before the dereference.
+    if node.start_byte() < deref_byte {
+        // `rc = call(..., &var_name, ...)`
+        if node.kind() == "assignment_expression" {
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                if left.kind() == "identifier"
+                    && ast_utils::get_node_text_owned(&left, source) == rc
+                    && call_takes_address_of(&right, var_name, source)
+                {
+                    return true;
+                }
+            }
+        }
+        // `int rc = call(..., &var_name, ...)`
+        if node.kind() == "init_declarator" {
+            if let (Some(decl), Some(value)) = (
+                node.child_by_field_name("declarator"),
+                node.child_by_field_name("value"),
+            ) {
+                if ast_utils::get_node_text_owned(&decl, source) == rc
+                    && call_takes_address_of(&value, var_name, source)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.start_byte() >= deref_byte {
+                break;
+            }
+            if find_rc_outparam_assignment(&child, var_name, rc, deref_byte, source) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True when `expr` is a call expression that passes `&var_name` as an argument.
+fn call_takes_address_of(expr: &Node, var_name: &str, source: &str) -> bool {
+    let call = match expr.kind() {
+        "call_expression" => *expr,
+        // Unwrap a cast like `(int)call(...)`.
+        _ => {
+            let mut found = None;
+            for i in 0..expr.child_count() {
+                if let Some(c) = expr.child(i) {
+                    if c.kind() == "call_expression" {
+                        found = Some(c);
+                        break;
+                    }
+                }
+            }
+            match found {
+                Some(c) => c,
+                None => return false,
+            }
+        }
+    };
+    let args = match call.child_by_field_name("arguments") {
+        Some(a) => a,
+        None => return false,
+    };
+    let target = format!("&{}", var_name);
+    for i in 0..args.child_count() {
+        if let Some(arg) = args.child(i) {
+            if arg.kind() == "pointer_expression" {
+                // Normalise whitespace: `& p` and `&p` both match.
+                let t: String = ast_utils::get_node_text_owned(&arg, source)
+                    .split_whitespace()
+                    .collect();
+                if t == target {
+                    return true;
+                }
+            }
+        }
+    }
     false
 }
 
