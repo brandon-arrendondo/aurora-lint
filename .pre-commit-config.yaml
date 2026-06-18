@@ -14,6 +14,18 @@ repos:
 
   - repo: local
     hooks:
+      - id: check-toml
+        name: check TOML syntax
+        description: >-
+          Validate syntax of every changed TOML (rule manifests, benchmark
+          manifests, real-world configs, Cargo.toml). Complements build.rs,
+          which deep-validates only src/rules/** manifests and only at compile
+          time. Dependency-free (stdlib tomllib, Python 3.11+).
+        entry: python3 scripts/check_toml.py
+        language: system
+        files: \.toml$
+        verbose: true
+
       - id: cargo-fmt
         name: cargo fmt (auto-fix)
         description: Format Rust code with rustfmt
