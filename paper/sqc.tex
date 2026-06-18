@@ -422,6 +422,83 @@ implements 290 rules while cppcheck and clang-tidy implement
 approximately 20 each.  The $\sim$30$\times$ difference in raw
 violation counts reflects coverage breadth, not false positive rate.
 
+\subsection{Source Scope and SLOC Accounting}
+\label{sec:sloc-scope}
+
+Precision, recall, and finding-density figures are only meaningful when
+the line-count denominator matches the set of files actually evaluated.
+A real-world repository ships substantial code outside the analysis
+target: vendored third-party dependencies, test harnesses, build
+tooling, language bindings, generated amalgamations, and
+platform-specific backends that are not compiled in the reference
+(Linux) build configuration.  Counting source lines over the whole
+repository tree---as a naive \texttt{cloc} of the checkout would---
+inflates the denominator and understates the true defect density of the
+code under analysis.
+
+We therefore define, per project, an \emph{evaluated scope}: the set of
+first-party C translation units and headers that (a)~are built in the
+reference configuration and (b)~were adjudicated in the ground-truth
+audit (\cref{sec:realworld-results}).  All real-world SLOC figures in
+this paper are reported over exactly this set, counting non-blank,
+non-comment source lines.  \Cref{tab:eval-scope} lists the scope, the
+audited commit, and the resulting SLOC for each project, together with
+the selection criterion applied.  The exclusions are deliberate and
+recorded with each codebase: for SQLite we evaluate the \texttt{src/}
+core plus shipped \texttt{ext/} extensions but exclude the Tcl test
+harness, build tooling, and the WASM/JNI bindings; for curl we exclude
+the fourteen Windows/macOS backend files (\texttt{schannel}, Apple
+Secure Transport, Win32) that the Linux build never compiles; for
+Mosquitto we evaluate the \texttt{lib/} client library and \texttt{src/}
+broker but exclude the bundled dependencies, test client, and plugin
+examples.  libcrc is small enough that its entire shipped, tooling, and
+test tree is in scope.  Across the four audited projects, the evaluated
+scope is roughly one third smaller than the corresponding whole-repository
+line count; for Mosquitto specifically it is smaller by nearly a factor
+of three, so the choice of denominator materially changes any per-KLOC
+metric.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\begin{tabular}{@{}llrrl@{}}
+\toprule
+\textbf{Project} & \textbf{Commit} & \textbf{Files} & \textbf{SLOC} & \textbf{Scope criterion} \\
+\midrule
+\multicolumn{5}{@{}l}{\emph{Audited (C89/C90-style)}} \\
+libcrc    & \texttt{7719e21} &  19 &     751 & whole shipped + tooling + test tree \\
+mosquitto & \texttt{d3ee5c5} & 142 &  24,704 & \texttt{lib/} + \texttt{src/}; excl.\ deps, test, plugins \\
+curl      & \texttt{3e198f7} & 427 & 110,615 & \texttt{lib/} + \texttt{src/}; excl.\ 14 Win/macOS files \\
+sqlite    & \texttt{b1a73ba} & 220 & 161,312 & \texttt{src/} core + \texttt{ext/}; excl.\ test/tooling \\
+\cmidrule(l){1-5}
+\textbf{Subtotal} &        & \textbf{808} & \textbf{297,382} & \\
+\midrule
+\multicolumn{5}{@{}l}{\emph{Planned}} \\
+hostap    & \texttt{dcee604} & --- & --- & \texttt{src/} + \texttt{wpa\_supplicant/} (audit pending) \\
+Lua (C99) & \texttt{40b76de} & --- & --- & C99 idiom corpus (\cref{sec:limitations}) \\
+ReactOS   & ---              & --- & --- & Windows module subset (TP/FP scope) \\
+\bottomrule
+\end{tabular}
+\caption{Evaluated source scope per project: SLOC counted over the
+audited file set, not the whole repository.  Planned rows are reserved
+for benchmarks awaiting adjudication (hostap) or under evaluation as
+C99-conformance and Windows targets.}
+\label{tab:eval-scope}
+\end{table}
+
+The \emph{Planned} rows are placeholders for benchmarks that extend the
+suite under the same scoping discipline.  The hostapd audit is deferred
+pending adjudication budget; its evaluated scope will be the
+\texttt{src/} and \texttt{wpa\_supplicant/} trees that the benchmark
+already analyzes.  A C99-idiom corpus (Lua) and a Windows-API corpus
+(ReactOS) are under evaluation to exercise, respectively, the
+C99-conformance rules---which the current C89/C90-style suite cannot
+positively validate---and the \texttt{WIN}-category rules
+(\cref{sec:limitations}).  Because ReactOS exceeds the entire current
+suite by several multiples in line count, it is anticipated as a
+precision (true/false-positive) target with a module-scoped audit rather
+than a whole-tree recall audit.
+
 %% ============================================================
 \section{Results}
 \label{sec:results}
