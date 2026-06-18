@@ -3900,9 +3900,12 @@ impl Arr30C {
                     // is more precise than the source buffer's capacity — the
                     // distinction that keeps the bad-section overflow (fill >
                     // dest) flagged while suppressing the good-section copy.
-                    if let BufferSize::Static(dest_s) | BufferSize::DynamicCalculated(dest_s) =
-                        dest_info.size
-                    {
+                    //
+                    // Restricted to Static (stack-array) destinations: the
+                    // buffers map is file-wide, so a malloc'd pointer reused
+                    // across functions (DynamicCalculated) can carry another
+                    // function's size and make this comparison unsound.
+                    if let BufferSize::Static(dest_s) = dest_info.size {
                         if let Some(content_len) =
                             buffer_size::memset_content_length(src_text, source, node)
                         {
@@ -3989,9 +3992,9 @@ impl Arr30C {
                     // freshly-emptied destination whose source was memset to a
                     // length that fits cannot overflow. Mirrors the strcpy gate
                     // and matches Juliet's good-section `*_cat` shape (dest = "").
-                    if let BufferSize::Static(dest_s) | BufferSize::DynamicCalculated(dest_s) =
-                        dest_info.size
-                    {
+                    // Static-only: see the strcpy gate's note on file-wide
+                    // pointer aliasing for DynamicCalculated destinations.
+                    if let BufferSize::Static(dest_s) = dest_info.size {
                         if let Some(content_len) =
                             buffer_size::memset_content_length(src_text, source, node)
                         {
@@ -4045,9 +4048,9 @@ impl Arr30C {
                     // copy is safe — keeps the bad-section overflow flagged
                     // (fill 100 > dest) while suppressing the good-section copy
                     // (fill 49 fits dest[50]).
-                    if let BufferSize::Static(dest_s) | BufferSize::DynamicCalculated(dest_s) =
-                        dest_info.size
-                    {
+                    // Static-only: see the strcpy gate's note on file-wide
+                    // pointer aliasing for DynamicCalculated destinations.
+                    if let BufferSize::Static(dest_s) = dest_info.size {
                         if let Some(src_var) = strlen_argument(count_expr) {
                             if let Some(content_len) =
                                 buffer_size::memset_content_length(src_var, source, node)
