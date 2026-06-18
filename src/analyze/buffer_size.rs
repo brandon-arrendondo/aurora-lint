@@ -128,6 +128,28 @@ pub fn extract_sizeof_value(s: &str) -> Option<usize> {
     Some(8)
 }
 
+/// Allocation function names whose first (or count) argument gives an
+/// element-count buffer size. Includes the Juliet `ALLOCA` macro alias.
+pub const ALLOC_FUNCTIONS: &[&str] =
+    &["malloc", "calloc", "realloc", "alloca", "_alloca", "ALLOCA"];
+
+/// Resolve the element-count buffer size of an allocation call from its
+/// callee name and raw argument text. `calloc(n, sz)` uses the first argument;
+/// every other allocator uses the whole argument expression. Returns `None`
+/// when the size is not a compile-time constant element count.
+pub fn alloc_call_element_count(func_name: &str, args_text: &str) -> Option<usize> {
+    // calloc(nmemb, size): the element count is the first argument.
+    let size_expr = if func_name == "calloc" {
+        args_text.split(',').next().unwrap_or(args_text)
+    } else {
+        args_text
+    };
+    match calculate_malloc_size(size_expr)? {
+        BufferSize::Static(n) | BufferSize::DynamicCalculated(n) => Some(n),
+        _ => None,
+    }
+}
+
 /// Calculate the element-count size from a malloc/calloc/realloc argument
 /// expression. For `N * sizeof(T)` this returns the element count `N`, not
 /// the byte total (see [`calculate_alloc_bytes`] for bytes).

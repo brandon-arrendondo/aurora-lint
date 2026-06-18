@@ -80,6 +80,15 @@ pub struct FunctionSummary {
     /// suppress goodG2B-style FPs where data is provably a small constant.
     #[serde(default)]
     pub callsite_param_const_int: HashMap<usize, i64>,
+    /// Minimum element-count buffer size passed by callers at each parameter
+    /// position, recorded only when EVERY call site within the project passes a
+    /// pointer to a buffer of statically-known size. Absent when any caller
+    /// passes an unresolvable buffer, or the function is header-declared (so
+    /// external callers are unknown). Used by STR31-C to prove a parameter
+    /// destination is large enough for the copied content and suppress the
+    /// cross-function goodG2BSink false positives (Juliet variants 41+).
+    #[serde(default)]
+    pub callsite_param_buffer_size: HashMap<usize, usize>,
 }
 
 /// Names of functions that read externally-controlled data into their

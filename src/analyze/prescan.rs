@@ -29,6 +29,7 @@ struct FilePrescanResult {
     callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
     callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>>,
     callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>>,
+    callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>>,
     source_path: Option<PathBuf>,
 }
 
@@ -50,6 +51,7 @@ impl FilePrescanResult {
             callsite_field_args: HashMap::new(),
             callsite_pointee_args: HashMap::new(),
             callsite_int_args: HashMap::new(),
+            callsite_buf_args: HashMap::new(),
             source_path: None,
         }
     }
@@ -122,6 +124,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
                 &mut result.callsite_pointee_args,
             );
             collect_callsite_int_args_from_tree(&root, &source, &mut result.callsite_int_args);
+            collect_callsite_buf_args_from_tree(&root, &source, &mut result.callsite_buf_args);
             result.source_path = Some(file_path.to_path_buf());
         }
     }
@@ -186,6 +189,7 @@ pub fn prescan_directories(
         HashMap::new();
     let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
     let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
+    let mut callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
     let mut source_files: Vec<PathBuf> = Vec::new();
 
     for r in file_results {
@@ -240,6 +244,9 @@ pub fn prescan_directories(
         for (callee, args) in r.callsite_int_args {
             callsite_int_args.entry(callee).or_default().extend(args);
         }
+        for (callee, args) in r.callsite_buf_args {
+            callsite_buf_args.entry(callee).or_default().extend(args);
+        }
 
         if let Some(path) = r.source_path {
             source_files.push(path);
@@ -263,12 +270,24 @@ pub fn prescan_directories(
         &mut function_summaries,
         &header_declared_functions,
     );
+
+    aggregate_callsite_buf_args(
+        &callsite_buf_args,
+        &mut function_summaries,
+        &header_declared_functions,
+    );
     let mut parser = CParser::new()?;
     propagate_param_null_states(
         &source_files,
         &mut parser,
         &mut function_summaries,
         &mut callsite_args,
+        &header_declared_functions,
+    );
+    propagate_param_buffer_sizes(
+        &source_files,
+        &mut parser,
+        &mut function_summaries,
         &header_declared_functions,
     );
 
@@ -359,6 +378,7 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         HashMap::new();
     let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
     let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
+    let mut callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
     collect_callsite_args_from_tree(
         root,
         source,
@@ -367,12 +387,14 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         &mut callsite_pointee_args,
     );
     collect_callsite_int_args_from_tree(root, source, &mut callsite_int_args);
+    collect_callsite_buf_args_from_tree(root, source, &mut callsite_buf_args);
 
     let empty_headers = HashSet::new();
     aggregate_callsite_null_states(&callsite_args, &mut function_summaries, &empty_headers);
     aggregate_callsite_field_null_states(&callsite_field_args, &mut function_summaries);
     aggregate_callsite_pointee_null_states(&callsite_pointee_args, &mut function_summaries);
     aggregate_callsite_int_args(&callsite_int_args, &mut function_summaries, &empty_headers);
+    aggregate_callsite_buf_args(&callsite_buf_args, &mut function_summaries, &empty_headers);
 
     let known_functions: HashSet<String> = function_summaries.keys().cloned().collect();
 
@@ -1231,6 +1253,387 @@ fn collect_int_calls_in_node(
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             collect_int_calls_in_node(&child, source, local_ints, callsite_int_args);
+        }
+    }
+}
+
+/// Aggregate per-call-site buffer-size args into `callsite_param_buffer_size`.
+///
+/// For each parameter index, the summary records the MINIMUM element-count
+/// buffer size only when *every* call site passes a pointer to a statically
+/// sized buffer. If any call site passes an unresolvable buffer (a different
+/// parameter, a non-constant allocation, an opaque expression) the parameter is
+/// left unrecorded so the consuming rule stays conservative. Header-declared
+/// functions are skipped — external callers are unknowable, so we cannot prove
+/// the minimum over *all* callers.
+pub(crate) fn aggregate_callsite_buf_args(
+    callsite_buf_args: &HashMap<String, Vec<Vec<Option<usize>>>>,
+    summaries: &mut HashMap<String, FunctionSummary>,
+    header_declared: &HashSet<String>,
+) {
+    for (callee_name, call_sites) in callsite_buf_args {
+        if header_declared.contains(callee_name) {
+            continue;
+        }
+        if let Some(summary) = summaries.get_mut(callee_name) {
+            let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
+            for param_idx in 0..max_params {
+                let mut min_size: Option<usize> = None;
+                let mut any_site = false;
+                let mut unresolved = false;
+                for site in call_sites {
+                    match site.get(param_idx) {
+                        Some(Some(sz)) => {
+                            any_site = true;
+                            min_size = Some(min_size.map_or(*sz, |m: usize| m.min(*sz)));
+                        }
+                        // A call site that passes a non-buffer/unresolvable
+                        // argument here means we can't bound this parameter.
+                        Some(None) => {
+                            unresolved = true;
+                            break;
+                        }
+                        None => {}
+                    }
+                }
+                if !unresolved && any_site {
+                    if let Some(sz) = min_size {
+                        summary.callsite_param_buffer_size.insert(param_idx, sz);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Maximum buffer-size propagation passes. Each pass resolves one additional
+/// forwarding hop (`a → b → c …`); Juliet's deepest chain is 5 (variant 54).
+const MAX_BUFFER_PROP_PASSES: usize = 6;
+
+/// Propagate parameter buffer sizes through forwarding chains.
+///
+/// The first aggregation only resolves parameters whose callers pass a *local*
+/// buffer. Relay functions (`void mid(char *p) { low(p); }`) forward a parameter
+/// whose size is unknown until `mid`'s own callers are resolved. This pass
+/// re-collects call-site buffer args with each function's parameters seeded from
+/// the sizes proven so far, then re-aggregates — repeating until the bounds
+/// stop changing. A fresh re-collection each pass (rather than accumulating)
+/// keeps the sound "every caller passes a known buffer" invariant intact.
+fn propagate_param_buffer_sizes(
+    source_files: &[PathBuf],
+    parser: &mut CParser,
+    summaries: &mut HashMap<String, FunctionSummary>,
+    header_declared: &HashSet<String>,
+) {
+    // Forwarding chains are the only thing this pass resolves. If no function
+    // forwards a parameter to another, the re-collection can never add a bound,
+    // so skip the (per-pass, all-files) re-parse entirely. This keeps the cost
+    // off codebases that don't relay buffers through wrappers.
+    if summaries.values().all(|s| s.param_passthroughs.is_empty()) {
+        return;
+    }
+
+    for _pass in 0..MAX_BUFFER_PROP_PASSES {
+        let seeds: HashMap<String, HashMap<usize, usize>> = summaries
+            .iter()
+            .filter(|(_, s)| !s.callsite_param_buffer_size.is_empty())
+            .map(|(name, s)| (name.clone(), s.callsite_param_buffer_size.clone()))
+            .collect();
+        if seeds.is_empty() {
+            return;
+        }
+
+        let mut fresh: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
+        for file_path in source_files {
+            if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
+                let root = tree.root_node();
+                collect_callsite_buf_args_with_param_sizes(&root, &source, &seeds, &mut fresh);
+            }
+        }
+
+        for summary in summaries.values_mut() {
+            summary.callsite_param_buffer_size.clear();
+        }
+        aggregate_callsite_buf_args(&fresh, summaries, header_declared);
+
+        let converged = summaries.iter().all(|(name, s)| {
+            seeds
+                .get(name)
+                .map(|m| m == &s.callsite_param_buffer_size)
+                .unwrap_or(s.callsite_param_buffer_size.is_empty())
+        });
+        if converged {
+            return;
+        }
+    }
+}
+
+/// Like [`collect_callsite_buf_args_from_tree`], but seeds each function's
+/// parameters with the buffer sizes proven by a prior pass, so a forwarded
+/// parameter (`low(p)`) resolves to the size flowing into `p`.
+fn collect_callsite_buf_args_with_param_sizes(
+    node: &Node,
+    source: &str,
+    param_sizes: &HashMap<String, HashMap<usize, usize>>,
+    callsite_buf_args: &mut HashMap<String, Vec<Vec<Option<usize>>>>,
+) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "function_definition" => {
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let mut local_bufs = collect_local_buffer_sizes(&body, source);
+                        if let Some(func_name) = extract_function_name(&child, source) {
+                            if let Some(param_map) = param_sizes.get(&func_name) {
+                                let param_names =
+                                    function_summary::collect_param_names(&child, source);
+                                for (idx, name) in param_names.iter().enumerate() {
+                                    if let Some(sz) = param_map.get(&idx) {
+                                        // A local declaration/reassignment of the
+                                        // same name takes precedence over the seed.
+                                        local_bufs.entry(name.clone()).or_insert(*sz);
+                                    }
+                                }
+                            }
+                        }
+                        collect_buf_calls_in_node(&body, source, &local_bufs, callsite_buf_args);
+                    }
+                }
+                kind if kind.starts_with("preproc_") => {
+                    collect_callsite_buf_args_with_param_sizes(
+                        &child,
+                        source,
+                        param_sizes,
+                        callsite_buf_args,
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Collect per-call-site buffer-size arguments from a translation unit, keyed
+/// by callee name. Mirrors [`collect_callsite_int_args_from_tree`] but resolves
+/// each argument to the element-count size of the buffer it points at (when
+/// known), tracking local array declarations, allocations and pointer aliases.
+pub(crate) fn collect_callsite_buf_args_from_tree(
+    node: &Node,
+    source: &str,
+    callsite_buf_args: &mut HashMap<String, Vec<Vec<Option<usize>>>>,
+) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "function_definition" => {
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let local_bufs = collect_local_buffer_sizes(&body, source);
+                        collect_buf_calls_in_node(&body, source, &local_bufs, callsite_buf_args);
+                    }
+                }
+                kind if kind.starts_with("preproc_") => {
+                    collect_callsite_buf_args_from_tree(&child, source, callsite_buf_args);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Build a map of local variable → element-count buffer size for a function
+/// body, processing declarations, allocations and pointer aliases in source
+/// order (last write wins). Resolves the Juliet caller pattern
+/// `p = (char*)ALLOCA(N*sizeof(char)); data = p; sink(data);`.
+fn collect_local_buffer_sizes(body: &Node, source: &str) -> HashMap<String, usize> {
+    let mut sizes = HashMap::new();
+    collect_buf_sizes_in_node(body, source, &mut sizes);
+    sizes
+}
+
+fn collect_buf_sizes_in_node(node: &Node, source: &str, sizes: &mut HashMap<String, usize>) {
+    match node.kind() {
+        "declaration" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    match child.kind() {
+                        // `char buf[100];` (no initializer)
+                        "array_declarator" => {
+                            if let (Some(name), Some(sz)) = (
+                                array_declarator_name(&child, source),
+                                array_declarator_size(&child, source),
+                            ) {
+                                sizes.insert(name, sz);
+                            }
+                        }
+                        // `char *p = alloc(...);` or `char buf[100] = "";`
+                        "init_declarator" => {
+                            if let Some(decl) = child.child_by_field_name("declarator") {
+                                let name = extract_init_decl_name(&decl, source);
+                                if !name.is_empty() {
+                                    let from_array = array_declarator_size(&decl, source);
+                                    let from_value = child
+                                        .child_by_field_name("value")
+                                        .and_then(|v| resolve_buffer_size_expr(&v, source, sizes));
+                                    if let Some(sz) = from_array.or(from_value) {
+                                        sizes.insert(name, sz);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        "assignment_expression" => {
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                if left.kind() == "identifier" {
+                    let name = left.utf8_text(source.as_bytes()).unwrap_or("");
+                    if !name.is_empty() {
+                        match resolve_buffer_size_expr(&right, source, sizes) {
+                            Some(sz) => {
+                                sizes.insert(name.to_string(), sz);
+                            }
+                            // Reassigned from an unknown buffer — drop the alias.
+                            None => {
+                                sizes.remove(name);
+                            }
+                        }
+                    }
+                }
+            }
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    collect_buf_sizes_in_node(&child, source, sizes);
+                }
+            }
+        }
+        _ => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    collect_buf_sizes_in_node(&child, source, sizes);
+                }
+            }
+        }
+    }
+}
+
+/// Resolve an expression to the element-count size of the buffer it denotes:
+/// an allocation call, a pointer alias to a known buffer, or a cast/paren
+/// wrapper around either.
+fn resolve_buffer_size_expr(
+    node: &Node,
+    source: &str,
+    sizes: &HashMap<String, usize>,
+) -> Option<usize> {
+    match node.kind() {
+        "identifier" => {
+            let name = node.utf8_text(source.as_bytes()).ok()?;
+            sizes.get(name).copied()
+        }
+        "cast_expression" => {
+            let value = node.child_by_field_name("value")?;
+            resolve_buffer_size_expr(&value, source, sizes)
+        }
+        "parenthesized_expression" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if !matches!(child.kind(), "(" | ")") {
+                        return resolve_buffer_size_expr(&child, source, sizes);
+                    }
+                }
+            }
+            None
+        }
+        "call_expression" => {
+            let function = node.child_by_field_name("function")?;
+            if function.kind() != "identifier" {
+                return None;
+            }
+            let callee = function.utf8_text(source.as_bytes()).ok()?;
+            if !crate::analyze::buffer_size::ALLOC_FUNCTIONS.contains(&callee) {
+                return None;
+            }
+            let args = node.child_by_field_name("arguments")?;
+            // Inner text of the argument list, minus the enclosing parentheses.
+            let args_text = args.utf8_text(source.as_bytes()).ok()?;
+            let inner = args_text
+                .strip_prefix('(')
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or(args_text);
+            crate::analyze::buffer_size::alloc_call_element_count(callee, inner)
+        }
+        _ => None,
+    }
+}
+
+/// Extract the variable name from an `array_declarator` (`buf` in `buf[100]`).
+fn array_declarator_name(node: &Node, source: &str) -> Option<String> {
+    let inner = node.child_by_field_name("declarator")?;
+    if inner.kind() == "identifier" {
+        Some(inner.utf8_text(source.as_bytes()).ok()?.to_string())
+    } else {
+        Some(extract_init_decl_name(&inner, source)).filter(|s| !s.is_empty())
+    }
+}
+
+/// Extract the constant element count from an `array_declarator` size, if the
+/// declarator is an array with a compile-time-constant dimension.
+fn array_declarator_size(node: &Node, source: &str) -> Option<usize> {
+    if node.kind() != "array_declarator" {
+        return None;
+    }
+    let size = node.child_by_field_name("size")?;
+    let text = size.utf8_text(source.as_bytes()).ok()?;
+    crate::analyze::buffer_size::extract_numeric_value(text)
+}
+
+/// Walk call expressions in a function body, recording the element-count buffer
+/// size of each pointer argument (or `None` when it cannot be resolved).
+fn collect_buf_calls_in_node(
+    node: &Node,
+    source: &str,
+    local_bufs: &HashMap<String, usize>,
+    callsite_buf_args: &mut HashMap<String, Vec<Vec<Option<usize>>>>,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(function) = node.child_by_field_name("function") {
+            if function.kind() == "identifier" {
+                let callee = function.utf8_text(source.as_bytes()).unwrap_or("");
+                if !callee.is_empty() {
+                    if let Some(args_node) = node.child_by_field_name("arguments") {
+                        let mut arg_sizes = Vec::new();
+                        for i in 0..args_node.child_count() {
+                            if let Some(arg) = args_node.child(i) {
+                                if matches!(arg.kind(), "," | "(" | ")") {
+                                    continue;
+                                }
+                                let sz = if arg.kind() == "identifier" {
+                                    let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+                                    local_bufs.get(name).copied()
+                                } else {
+                                    None
+                                };
+                                arg_sizes.push(sz);
+                            }
+                        }
+                        if !arg_sizes.is_empty() {
+                            callsite_buf_args
+                                .entry(callee.to_string())
+                                .or_default()
+                                .push(arg_sizes);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_buf_calls_in_node(&child, source, local_bufs, callsite_buf_args);
         }
     }
 }
@@ -3003,6 +3406,57 @@ mod tests {
         parser.set_language(&tree_sitter_c::language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    // -- callsite buffer-size collection / aggregation --
+
+    #[test]
+    fn test_collect_buf_args_resolves_alloc_and_alias() {
+        // `data` aliases an ALLOCA(50) buffer; the call to `sink` should record
+        // a 50-element buffer at param 0.
+        let code = r#"
+            void caller(void) {
+                char * data;
+                char * buf = (char *)ALLOCA(50 * sizeof(char));
+                data = buf;
+                sink(data);
+            }
+        "#;
+        let (tree, source) = parse_c(code);
+        let mut out = HashMap::new();
+        collect_callsite_buf_args_from_tree(&tree.root_node(), &source, &mut out);
+        assert_eq!(out.get("sink"), Some(&vec![vec![Some(50usize)]]));
+    }
+
+    #[test]
+    fn test_aggregate_buf_args_takes_min_and_skips_unresolved() {
+        let mut sites: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
+        // Two callers of `good` pass 100 and 200 → min 100 recorded.
+        sites.insert("good".into(), vec![vec![Some(100)], vec![Some(200)]]);
+        // `mixed` has one resolved and one unresolved caller → not recorded.
+        sites.insert("mixed".into(), vec![vec![Some(100)], vec![None]]);
+        let mut summaries: HashMap<String, FunctionSummary> = HashMap::new();
+        summaries.insert("good".into(), FunctionSummary::default());
+        summaries.insert("mixed".into(), FunctionSummary::default());
+        aggregate_callsite_buf_args(&sites, &mut summaries, &HashSet::new());
+        assert_eq!(
+            summaries["good"].callsite_param_buffer_size.get(&0),
+            Some(&100usize)
+        );
+        assert!(summaries["mixed"].callsite_param_buffer_size.is_empty());
+    }
+
+    #[test]
+    fn test_aggregate_buf_args_skips_header_declared() {
+        let mut sites: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
+        sites.insert("pub_api".into(), vec![vec![Some(100)]]);
+        let mut summaries: HashMap<String, FunctionSummary> = HashMap::new();
+        summaries.insert("pub_api".into(), FunctionSummary::default());
+        let mut headers = HashSet::new();
+        headers.insert("pub_api".to_string());
+        aggregate_callsite_buf_args(&sites, &mut summaries, &headers);
+        // External callers are unknowable → no bound recorded.
+        assert!(summaries["pub_api"].callsite_param_buffer_size.is_empty());
     }
 
     // -- collect_function_names --

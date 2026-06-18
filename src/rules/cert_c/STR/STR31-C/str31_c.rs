@@ -1,10 +1,69 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::buffer_size;
+use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
+use crate::utility::cert_c::ast_utils;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
-pub struct Str31C;
+/// STR31-C bounds-string-copy rule.
+///
+/// `callsite_param_buffer_size` is seeded from the prescan: for each function it
+/// records, per parameter index, the minimum element-count buffer size that any
+/// caller passes — but only when every caller passes a statically-sized buffer.
+/// It lets the rule prove that a `strcpy(param, …)`-style copy into a parameter
+/// destination is bounded by the caller's buffer, suppressing the cross-function
+/// goodG2BSink false positives (Juliet flow variants 41+).
+#[derive(Default)]
+pub struct Str31C {
+    callsite_param_buffer_size: RefCell<HashMap<String, HashMap<usize, usize>>>,
+}
+
+impl Str31C {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// When `dest` is a parameter of the enclosing function, return the minimum
+    /// element-count buffer size that any caller passes at that position — but
+    /// only when the prescan proved *every* caller passes a statically-sized
+    /// buffer (see [`crate::analyze::function_summary::FunctionSummary::callsite_param_buffer_size`]).
+    /// Returns `None` when `dest` is not a parameter, the function has external
+    /// callers, or any caller's buffer is unresolvable.
+    fn caller_min_buffer_for_param(&self, dest: &str, node: &Node, source: &str) -> Option<usize> {
+        let func = ast_utils::find_containing_function(node)?;
+        let declarator = func.child_by_field_name("declarator")?;
+        let func_name = ast_utils::get_identifier_from_declarator(&declarator, source);
+        if func_name.is_empty() {
+            return None;
+        }
+        let params = ast_utils::get_function_parameters(&func, source)?;
+        let param_idx = params.iter().position(|(name, _)| name == dest)?;
+        let map = self.callsite_param_buffer_size.borrow();
+        map.get(&func_name)?.get(&param_idx).copied()
+    }
+
+    /// For a copy whose destination is a function parameter, decide whether the
+    /// caller-provided buffer is provably large enough to hold the source.
+    ///
+    /// `needed` is the largest number of elements (including the null
+    /// terminator) the source can contribute. The copy is safe iff every
+    /// caller's buffer is at least that large. Returns `false` whenever the
+    /// caller buffer or `needed` is unknown, so the rule stays conservative.
+    fn param_dest_bounded_by_caller(
+        &self,
+        dest: &str,
+        node: &Node,
+        source: &str,
+        needed: Option<usize>,
+    ) -> bool {
+        match (self.caller_min_buffer_for_param(dest, node, source), needed) {
+            (Some(caller_buf), Some(needed)) => caller_buf >= needed,
+            _ => false,
+        }
+    }
+}
 
 impl Str31C {
     /// Extract buffer size from array declaration or malloc call
@@ -807,6 +866,20 @@ impl Str31C {
                 return false;
             }
 
+            // Cross-function: the local destination size is unknown because
+            // `dest` is a parameter. Consult the buffer size that callers pass
+            // here (recorded by the prescan). When every caller's buffer is at
+            // least as large as the source can fill, the copy cannot overflow —
+            // this clears the goodG2BSink false positives where the same sink is
+            // reached from a caller using a large buffer (Juliet variants 41+).
+            let needed = source_length.map(|n| n + 1).or_else(|| {
+                source_name
+                    .and_then(|s| self.find_buffer_size_with_alias(s, root, source, arguments))
+            });
+            if self.param_dest_bounded_by_caller(dest, arguments, source, needed) {
+                return true;
+            }
+
             // Destination buffer size could not be determined (dynamic allocation, pointer param, etc.)
             // If source is a known string literal (bounded at compile time), we can't confirm
             // overflow without knowing the destination size — assume safe to avoid FPs in
@@ -921,6 +994,24 @@ impl Str31C {
 
                 // Buffer size is known but small and source is unknown-length — flag it
                 return false;
+            }
+
+            // Cross-function: destination is a parameter, so its size is unknown
+            // locally. If every caller passes a buffer at least as large as the
+            // source can fill, the concatenation into a freshly-provided buffer
+            // cannot overflow (Juliet goodG2BSink cat/ncat variants 41+). The
+            // bad sinks, reached from a small-buffer caller, stay flagged.
+            let needed = if src_arg_kind == "string_literal" {
+                let lit = src_arg_text
+                    .trim_start_matches('L')
+                    .trim_start_matches('"')
+                    .trim_end_matches('"');
+                Some(lit.len() + 1)
+            } else {
+                self.find_buffer_size_with_alias(src_arg_text, root, source, arguments)
+            };
+            if self.param_dest_bounded_by_caller(dest, arguments, source, needed) {
+                return true;
             }
 
             // Destination buffer size could not be determined (dynamic allocation, pointer param, etc.)
@@ -1724,6 +1815,16 @@ impl CertRule for Str31C {
 
     fn cert_id(&self) -> &'static str {
         "STR31-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        let mut map = self.callsite_param_buffer_size.borrow_mut();
+        map.clear();
+        for (name, summary) in &context.function_summaries {
+            if !summary.callsite_param_buffer_size.is_empty() {
+                map.insert(name.clone(), summary.callsite_param_buffer_size.clone());
+            }
+        }
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
