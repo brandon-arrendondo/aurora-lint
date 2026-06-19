@@ -79,6 +79,14 @@ pub struct Arr30C {
     /// finding, so nested loops in the same function don't each emit one. Cleared
     /// per file.
     param_decode_reported: RefCell<HashSet<usize>>,
+    /// Per-translation-unit interprocedural over-read summary, keyed by function
+    /// name: the positional indices of `const char *` parameters that the
+    /// function walks unbounded (embedded-increment subscript with no length
+    /// bound). Drives the task-211 callsite over-read detector, where the
+    /// over-reading loop sits in a helper (`readUtf8(z, ...)`) and the caller
+    /// passes a tainted pointer (+offset) with no length argument. Built once per
+    /// file; `None` until the root pass populates it. Cleared per file.
+    helper_overread_summary: RefCell<Option<HashMap<String, Vec<usize>>>>,
 }
 
 /// Represents an index value that can be constant or variable
@@ -182,6 +190,11 @@ impl CertRule for Arr30C {
             self.decode_taint_cache.borrow_mut().clear();
             self.param_decode_buf_cache.borrow_mut().clear();
             self.param_decode_reported.borrow_mut().clear();
+            // Build the interprocedural over-read helper summary for this file
+            // (task 211): function name -> indices of `const char *` params it
+            // walks unbounded. Consumed by `check_overread_helper_callsite`.
+            *self.helper_overread_summary.borrow_mut() =
+                Some(self.build_helper_overread_summary(node, source));
             let buffer_info = self.analyze_buffer_allocations(source);
             let pointer_aliases = self.analyze_pointer_aliases(source, &buffer_info);
             // Shared file-local function-like macro collection
@@ -219,6 +232,7 @@ impl Arr30C {
             decode_taint_cache: RefCell::new(HashMap::new()),
             param_decode_buf_cache: RefCell::new(HashMap::new()),
             param_decode_reported: RefCell::new(HashSet::new()),
+            helper_overread_summary: RefCell::new(None),
         }
     }
 
@@ -2967,6 +2981,286 @@ impl Arr30C {
             .unwrap_or(false)
     }
 
+    /// Build the per-file interprocedural over-read summary (task 211): walk every
+    /// `function_definition` in the translation unit and record, by function name,
+    /// the positional indices of its `const char *` parameters that are walked
+    /// unbounded. Only functions with at least one such parameter are stored.
+    fn build_helper_overread_summary(
+        &self,
+        root: &Node,
+        source: &str,
+    ) -> HashMap<String, Vec<usize>> {
+        let mut summary = HashMap::new();
+        self.collect_overread_helpers(root, source, &mut summary);
+        summary
+    }
+
+    fn collect_overread_helpers(
+        &self,
+        node: &Node,
+        source: &str,
+        out: &mut HashMap<String, Vec<usize>>,
+    ) {
+        if node.kind() == "function_definition" {
+            if let Some(name) = self.get_function_name(node, source) {
+                let indices = Self::helper_overread_param_indices(node, source);
+                if !indices.is_empty() {
+                    out.insert(name, indices);
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                self.collect_overread_helpers(&child, source, out);
+            }
+        }
+    }
+
+    /// Positional indices of `const char *` parameters of `func_node` that are
+    /// walked unbounded: indexed by an embedded-increment subscript (`p[i++]` /
+    /// `p[++i]`) inside a loop whose index is never relationally bounded in the
+    /// function body. Mirrors `check_param_decode_overread`'s over-read shape but
+    /// (a) reports the *parameter position* for call-site mapping and (b) drops the
+    /// condition-guard veto — the call-site taint gate in
+    /// `check_overread_helper_callsite` supplies the precision instead.
+    fn helper_overread_param_indices(func_node: &Node, source: &str) -> Vec<usize> {
+        let candidates = Self::const_char_ptr_params_without_length(func_node, source);
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+        let func_text = &source[func_node.start_byte()..func_node.end_byte()];
+        let cand_names: HashSet<String> = candidates.iter().map(|(n, _)| n.clone()).collect();
+        let mut overread: HashSet<String> = HashSet::new();
+        Self::walk_param_overread(func_node, source, &cand_names, func_text, &mut overread);
+        let mut out: Vec<usize> = candidates
+            .iter()
+            .filter(|(n, _)| overread.contains(n))
+            .map(|(_, idx)| *idx)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Ordered `(name, position)` for each `const char *` parameter of `func_node`
+    /// that has no paired length parameter (the next parameter is not an integer
+    /// scalar). Position counts only `parameter_declaration` children, matching the
+    /// positional index of named call-site arguments.
+    fn const_char_ptr_params_without_length(
+        func_node: &Node,
+        source: &str,
+    ) -> Vec<(String, usize)> {
+        let declarator = match func_node.child_by_field_name("declarator") {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+        let param_list = match find_param_list_node(&declarator) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        // (name, is_const_char_ptr, is_int_scalar) per parameter, in order.
+        let mut params: Vec<(Option<String>, bool, bool)> = Vec::new();
+        for i in 0..param_list.child_count() {
+            let param = match param_list.child(i) {
+                Some(p) if p.kind() == "parameter_declaration" => p,
+                _ => continue,
+            };
+            let text = &source[param.start_byte()..param.end_byte()];
+            let is_ptr = text.contains('*');
+            let is_ccp = is_ptr && text.contains("char") && text.contains("const");
+            let is_int = !is_ptr && Self::type_text_is_int_scalar(text);
+            let name = param
+                .child_by_field_name("declarator")
+                .and_then(|d| find_identifier_in_declarator(&d, source));
+            params.push((name, is_ccp, is_int));
+        }
+        let mut out = Vec::new();
+        for idx in 0..params.len() {
+            let (name, is_ccp, _) = &params[idx];
+            if !*is_ccp {
+                continue;
+            }
+            if let Some(name) = name {
+                let next_is_len = params.get(idx + 1).map(|p| p.2).unwrap_or(false);
+                if !next_is_len {
+                    out.push((name.clone(), idx));
+                }
+            }
+        }
+        out
+    }
+
+    /// Insert into `overread` any candidate buffer name indexed by an
+    /// embedded-increment subscript (`buf[i++]` / `buf[++i]`) inside a loop whose
+    /// index is never relationally bounded in `func_text`.
+    fn walk_param_overread(
+        node: &Node,
+        source: &str,
+        cand_names: &HashSet<String>,
+        func_text: &str,
+        overread: &mut HashSet<String>,
+    ) {
+        if node.kind() == "subscript_expression" {
+            if let (Some(arg), Some(index)) = (
+                node.child_by_field_name("argument"),
+                node.child_by_field_name("index"),
+            ) {
+                if arg.kind() == "identifier" {
+                    let buf = source[arg.start_byte()..arg.end_byte()].to_string();
+                    if cand_names.contains(&buf)
+                        && index.kind() == "update_expression"
+                        && Self::innermost_loop_of(node).is_some()
+                    {
+                        if let Some(operand) = index.child_by_field_name("argument") {
+                            if operand.kind() == "identifier" {
+                                let idx =
+                                    source[operand.start_byte()..operand.end_byte()].to_string();
+                                if !Self::index_is_relationally_bounded(&idx, func_text) {
+                                    overread.insert(buf);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::walk_param_overread(&child, source, cand_names, func_text, overread);
+            }
+        }
+    }
+
+    /// The base pointer identifier of a call argument, stripping `+ offset`
+    /// arithmetic, casts, and parentheses (`zOut + p->nPrefix` -> `zOut`,
+    /// `(const unsigned char*)a` -> `a`).
+    fn arg_base_identifier(node: &Node, source: &str) -> Option<String> {
+        match node.kind() {
+            "identifier" => Some(source[node.start_byte()..node.end_byte()].to_string()),
+            "cast_expression" => node
+                .child_by_field_name("value")
+                .and_then(|v| Self::arg_base_identifier(&v, source)),
+            "parenthesized_expression" => {
+                let mut found = None;
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if child.is_named() {
+                            found = Self::arg_base_identifier(&child, source);
+                        }
+                    }
+                }
+                found
+            }
+            "binary_expression" => node
+                .child_by_field_name("left")
+                .and_then(|l| Self::arg_base_identifier(&l, source))
+                .or_else(|| {
+                    node.child_by_field_name("right")
+                        .and_then(|r| Self::arg_base_identifier(&r, source))
+                }),
+            "pointer_expression" | "unary_expression" => node
+                .child_by_field_name("argument")
+                .and_then(|a| Self::arg_base_identifier(&a, source)),
+            _ => None,
+        }
+    }
+
+    /// Interprocedural over-read at a call site (task 211). When the callee is a
+    /// helper that walks one of its `const char *` parameters unbounded (per the
+    /// per-file `helper_overread_summary`) and the corresponding argument resolves
+    /// — after stripping `+ offset` / casts — to a pointer tainted by a
+    /// blob/value accessor in the *caller*, the call passes untrusted bytes into an
+    /// unbounded read with no length argument. Canonical: nextchar.c
+    /// `readUtf8(zOut + p->nPrefix, &cNext)` where `zOut = sqlite3_column_text(...)`.
+    fn check_overread_helper_callsite(&self, call_node: &Node, source: &str) -> Vec<RuleViolation> {
+        let mut violations = Vec::new();
+
+        // Callee must be a bare-identifier function with a known over-read summary.
+        let callee = match call_node.child_by_field_name("function") {
+            Some(f) if f.kind() == "identifier" => source[f.start_byte()..f.end_byte()].to_string(),
+            _ => return violations,
+        };
+        let indices = match self
+            .helper_overread_summary
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.get(&callee))
+        {
+            Some(v) if !v.is_empty() => v.clone(),
+            _ => return violations,
+        };
+
+        // Positional (named) arguments at the call site.
+        let arg_list = match call_node.child_by_field_name("arguments") {
+            Some(a) => a,
+            None => return violations,
+        };
+        let mut args: Vec<Node> = Vec::new();
+        for i in 0..arg_list.child_count() {
+            if let Some(child) = arg_list.child(i) {
+                if child.is_named() {
+                    args.push(child);
+                }
+            }
+        }
+
+        // Caller-scope blob/value taint, memoized in the shared decode cache.
+        let caller = match find_containing_function(call_node) {
+            Some(f) => f,
+            None => return violations,
+        };
+        let caller_key = caller.start_byte();
+        if !self.decode_taint_cache.borrow().contains_key(&caller_key) {
+            let func_text = &source[caller.start_byte()..caller.end_byte()];
+            let tainted = if Self::text_calls_blob_accessor(func_text) {
+                self.collect_blob_tainted_pointers(&caller, source)
+            } else {
+                HashSet::new()
+            };
+            self.decode_taint_cache
+                .borrow_mut()
+                .insert(caller_key, tainted);
+        }
+        let cache = self.decode_taint_cache.borrow();
+        let tainted = match cache.get(&caller_key) {
+            Some(t) if !t.is_empty() => t,
+            _ => return violations,
+        };
+
+        for k in indices {
+            let arg = match args.get(k) {
+                Some(a) => a,
+                None => continue,
+            };
+            let base = match Self::arg_base_identifier(arg, source) {
+                Some(b) => b,
+                None => continue,
+            };
+            if !tainted.contains(&base) {
+                continue;
+            }
+            let point = call_node.start_position();
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: Severity::High,
+                message: format!(
+                    "Out-of-bounds read passing untrusted pointer '{}' to '{}': the callee walks this argument unbounded (no length argument), so bytes derived from a blob/column accessor are read past their extent.",
+                    base, callee
+                ),
+                file_path: String::new(),
+                line: point.row + 1,
+                column: point.column + 1,
+                suggestion: Some(
+                    "Pass and enforce an explicit length/end for the buffer, or bound the helper's walk against the input extent.".to_string(),
+                ),
+                ..Default::default()
+            });
+            break;
+        }
+
+        violations
+    }
+
     /// Pre-scan a function body to find all buffer declarations and malloc assignments,
     /// including those in nested scopes (if-blocks, loops, compound statements).
     /// This ensures that `data = (char *)malloc(50)` inside `if(1) { ... }` is visible
@@ -3576,6 +3870,10 @@ impl Arr30C {
                     &local_buffers,
                     function_macros,
                 ));
+                // Interprocedural over-read: a tainted (blob/value-derived)
+                // pointer passed into a helper that walks the matching param
+                // unbounded, with no length argument (task 211).
+                violations.extend(self.check_overread_helper_callsite(node, source));
             }
             "return_statement" => {
                 // Check for pointer arithmetic in return statements like: return buffer + offset
