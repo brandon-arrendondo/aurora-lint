@@ -2077,10 +2077,24 @@ impl MemoryAnalyzer {
                     if upper_func_name.contains("REALLOC") {
                         // Track the old pointer passed to realloc as invalidated
                         let old_ptrs = self.track_realloc_old_pointer(&alloc_rhs, source);
-                        // For realloc, track that left_var is the result of realloc
+                        // For realloc, track that the result location holds the
+                        // realloc result. Key on BOTH the base var and the full
+                        // field path: a self-assign `cfg->topics = realloc(cfg->topics,
+                        // n)` stores the result back into the field path, so the
+                        // field — not just the base `cfg` — must be recorded as
+                        // holding a realloc result (otherwise the recursion below
+                        // re-invalidates it and the later `cfg->topics[i]` reads
+                        // false-flag as use-after-free).
                         self.realloc_updated.insert(left_var.clone());
+                        if !left_full_path.is_empty() && left_full_path != left_var {
+                            self.realloc_updated.insert(left_full_path.clone());
+                        }
                         if !old_ptrs.is_empty() {
-                            self.realloc_source.insert(left_var.clone(), old_ptrs);
+                            self.realloc_source
+                                .insert(left_var.clone(), old_ptrs.clone());
+                            if !left_full_path.is_empty() && left_full_path != left_var {
+                                self.realloc_source.insert(left_full_path.clone(), old_ptrs);
+                            }
                         }
                         self.clear_freed_state(&left_var, &left_full_path);
                     } else if is_fresh_allocation_name(&func_name) {
@@ -2560,6 +2574,18 @@ impl MemoryAnalyzer {
                         };
 
                         if !old_ptr.is_empty() {
+                            // Self-realloc guard: if the old pointer already holds a
+                            // realloc result (`X = realloc(X, n)`), the result is
+                            // stored straight back into X, so X is not dangling. The
+                            // assignment handler clears X within the statement, but
+                            // the post-assignment recursion re-enters this realloc
+                            // call; without this guard it would re-invalidate the
+                            // just-cleared self-assigned pointer (a false UAF on the
+                            // subsequent `X[i]` read). A genuine `new = realloc(old, n)`
+                            // is unaffected: `old` is not in realloc_updated.
+                            if self.realloc_updated.contains(&old_ptr) {
+                                break;
+                            }
                             // The old pointer is now potentially invalid
                             self.realloc_invalidated.insert(old_ptr.clone());
                             invalidated.push(old_ptr.clone());
