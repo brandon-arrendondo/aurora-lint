@@ -823,23 +823,6 @@ fn rc_success_guard_var(cond: &Node, source: &str) -> Option<String> {
         "parenthesized_expression" => cond
             .child(1)
             .and_then(|inner| rc_success_guard_var(&inner, source)),
-        "unary_expression" => {
-            // `!rc` → success
-            let op = cond
-                .child_by_field_name("operator")
-                .map(|o| ast_utils::get_node_text_owned(&o, source));
-            if op.as_deref() == Some("!") {
-                cond.child_by_field_name("argument").and_then(|arg| {
-                    if arg.kind() == "identifier" {
-                        Some(ast_utils::get_node_text_owned(&arg, source))
-                    } else {
-                        None
-                    }
-                })
-            } else {
-                None
-            }
-        }
         "binary_expression" => {
             let op = cond
                 .child_by_field_name("operator")
@@ -861,11 +844,17 @@ fn rc_success_guard_var(cond: &Node, source: &str) -> Option<String> {
 }
 
 /// For an `==` comparison, return the identifier operand when the other operand
-/// is a success constant (`SQLITE_OK` or `0`).
+/// is the unambiguous success constant `SQLITE_OK`.
+///
+/// Deliberately excludes bare `0` / `!x`: `rc == 0` means success for a *status
+/// code*, but `p == 0` means *failure* for a pointer-returning call
+/// (`p = f(&out); if (p==0) use(out);` uses `out` on the failure path — a real
+/// bug, not a guarded use). `SQLITE_OK` only appears in status-code context, so
+/// it carries the success polarity unambiguously.
 fn success_equality_var(a: &Node, b: &Node, source: &str) -> Option<String> {
     let is_success_const = |n: &Node| {
         let t = ast_utils::get_node_text_owned(n, source);
-        t == "SQLITE_OK" || t == "0"
+        t == "SQLITE_OK"
     };
     if a.kind() == "identifier" && is_success_const(b) {
         return Some(ast_utils::get_node_text_owned(a, source));
