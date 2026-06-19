@@ -64,6 +64,11 @@ pub struct Arr30C {
     /// (`context.macro_constants`). Merged with per-file constants so that
     /// buffer sizes defined in headers or other translation units resolve.
     macro_constants: RefCell<HashMap<String, i64>>,
+    /// Per-function cache of blob/value-accessor-tainted pointer names, keyed by
+    /// the function node's start byte. `check_unbounded_decode_loop` runs once
+    /// per loop; memoizing keeps the taint scan O(functions) instead of
+    /// O(loops × function size) on large real-world files. Cleared per file.
+    decode_taint_cache: RefCell<HashMap<usize, HashSet<String>>>,
 }
 
 /// Represents an index value that can be constant or variable
@@ -164,6 +169,7 @@ impl CertRule for Arr30C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         // Analyze all buffer allocations once at root level
         if node.parent().is_none() {
+            self.decode_taint_cache.borrow_mut().clear();
             let buffer_info = self.analyze_buffer_allocations(source);
             let pointer_aliases = self.analyze_pointer_aliases(source, &buffer_info);
             // Shared file-local function-like macro collection
@@ -198,6 +204,7 @@ impl Arr30C {
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
             macro_constants: RefCell::new(HashMap::new()),
+            decode_taint_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -2503,21 +2510,37 @@ impl Arr30C {
         );
         let body_text = source[body.start_byte()..body.end_byte()].to_string();
 
-        // Taint is scoped to the containing function.
+        // Taint is scoped to the containing function. Memoize per function so
+        // the scan runs once per function rather than once per loop.
         let func_node = match find_containing_function(loop_node) {
             Some(f) => f,
             None => return violations,
         };
-        let tainted = self.collect_blob_tainted_pointers(&func_node, source);
-        if tainted.is_empty() {
-            return violations;
+        let func_key = func_node.start_byte();
+        if !self.decode_taint_cache.borrow().contains_key(&func_key) {
+            // Cheap pre-filter: only walk the function when its text mentions a
+            // blob/value accessor at all, otherwise cache an empty set.
+            let func_text = &source[func_node.start_byte()..func_node.end_byte()];
+            let tainted = if Self::text_calls_blob_accessor(func_text) {
+                self.collect_blob_tainted_pointers(&func_node, source)
+            } else {
+                HashSet::new()
+            };
+            self.decode_taint_cache
+                .borrow_mut()
+                .insert(func_key, tainted);
         }
+        let cache = self.decode_taint_cache.borrow();
+        let tainted = match cache.get(&func_key) {
+            Some(t) if !t.is_empty() => t,
+            _ => return violations,
+        };
 
         // Candidate walked pointers: tainted pointers incremented in the loop, or
         // tainted pointers passed to a varint reader inside the loop body.
         let mut candidates: Vec<String> = Vec::new();
         let scan = format!("{}\n{}", header, body_text);
-        for ptr in &tainted {
+        for ptr in tainted {
             let incremented = scan.contains(&format!("{}++", ptr))
                 || scan.contains(&format!("++{}", ptr))
                 || scan.contains(&format!("{} +=", ptr))
