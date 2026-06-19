@@ -48,7 +48,7 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 // Import shared utility functions
@@ -92,6 +92,37 @@ struct PointerAlias {
     original_buffer: String, // The original buffer name (e.g., "arr", "buffer")
     element_size_bytes: Option<usize>, // Element size for cast pointers (e.g., 4 for int, 1 for char)
 }
+
+/// Accessors that return a pointer into untrusted/binary data that is *not*
+/// guaranteed to be NUL-terminated or length-validated at the call site.
+/// Walking such a pointer in a decode loop without a dominating bound check is
+/// an out-of-bounds read (task 172, the sqlite real-world ARR30 FN family of
+/// varint / terminator-chase decode loops over column/blob bytes). Gating on a
+/// blob/value accessor — rather than any `char *` — keeps the plain
+/// NUL-terminated C-string walk idiom (`while (*s) s++;`) out of scope, since
+/// that pointer is the caller's responsibility to terminate.
+const UNTRUSTED_BLOB_ACCESSORS: &[&str] = &[
+    "sqlite3_column_blob",
+    "sqlite3_column_text",
+    "sqlite3_column_text16",
+    "sqlite3_value_blob",
+    "sqlite3_value_text",
+    "sqlite3_value_text16",
+];
+
+/// Varint readers that consume a bounded-but-unchecked run of continuation
+/// bytes from a pointer. Called in a decode loop over an untrusted pointer with
+/// no `p < end` guard, they over-read past the buffer (CERT ARR30-C).
+const VARINT_READERS: &[&str] = &[
+    "getVarint",
+    "getVarint32",
+    "sqlite3GetVarint",
+    "sqlite3GetVarint32",
+    "fts3GetVarint",
+    "fts3GetVarint32",
+    "fts5GetVarint",
+    "fts5GetVarint32",
+];
 
 impl CertRule for Arr30C {
     fn rule_id(&self) -> &'static str {
@@ -2341,6 +2372,257 @@ impl Arr30C {
         pointers
     }
 
+    /// Collect the names of local pointers in `func_node` that are tainted by an
+    /// untrusted/binary accessor (see [`UNTRUSTED_BLOB_ACCESSORS`]). A pointer is
+    /// tainted when it is declared/assigned directly from such a call, or aliased
+    /// from an already-tainted pointer (`q = p;`). Two passes resolve simple
+    /// one-hop aliasing without a full dataflow.
+    fn collect_blob_tainted_pointers(&self, func_node: &Node, source: &str) -> HashSet<String> {
+        let mut tainted: HashSet<String> = HashSet::new();
+        // Direct taint from accessor calls.
+        Self::walk_collect_blob_taint(func_node, source, &mut tainted);
+        // One extra pass to propagate `q = p;` aliases (covers the common
+        // "advance a cursor copy of the blob pointer" shape).
+        let mut changed = true;
+        let mut guard = 0;
+        while changed && guard < 4 {
+            changed = false;
+            guard += 1;
+            Self::walk_propagate_alias_taint(func_node, source, &mut tainted, &mut changed);
+        }
+        tainted
+    }
+
+    fn walk_collect_blob_taint(node: &Node, source: &str, tainted: &mut HashSet<String>) {
+        if node.kind() == "init_declarator" {
+            if let (Some(decl), Some(value)) = (
+                node.child_by_field_name("declarator"),
+                node.child_by_field_name("value"),
+            ) {
+                let rhs = &source[value.start_byte()..value.end_byte()];
+                if Self::text_calls_blob_accessor(rhs) {
+                    if let Some(name) = find_identifier_in_declarator(&decl, source) {
+                        tainted.insert(name);
+                    }
+                }
+            }
+        } else if node.kind() == "assignment_expression" {
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                if left.kind() == "identifier" {
+                    let rhs = &source[right.start_byte()..right.end_byte()];
+                    if Self::text_calls_blob_accessor(rhs) {
+                        tainted.insert(source[left.start_byte()..left.end_byte()].to_string());
+                    }
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::walk_collect_blob_taint(&child, source, tainted);
+            }
+        }
+    }
+
+    fn walk_propagate_alias_taint(
+        node: &Node,
+        source: &str,
+        tainted: &mut HashSet<String>,
+        changed: &mut bool,
+    ) {
+        let propagate =
+            |lhs: &str, rhs_node: &Node, tainted: &mut HashSet<String>, changed: &mut bool| {
+                if rhs_node.kind() == "identifier" {
+                    let rhs = &source[rhs_node.start_byte()..rhs_node.end_byte()];
+                    if tainted.contains(rhs) && !tainted.contains(lhs) {
+                        tainted.insert(lhs.to_string());
+                        *changed = true;
+                    }
+                }
+            };
+        if node.kind() == "init_declarator" {
+            if let (Some(decl), Some(value)) = (
+                node.child_by_field_name("declarator"),
+                node.child_by_field_name("value"),
+            ) {
+                if let Some(name) = find_identifier_in_declarator(&decl, source) {
+                    propagate(&name, &value, tainted, changed);
+                }
+            }
+        } else if node.kind() == "assignment_expression" {
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                if left.kind() == "identifier" {
+                    let lhs = source[left.start_byte()..left.end_byte()].to_string();
+                    propagate(&lhs, &right, tainted, changed);
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::walk_propagate_alias_taint(&child, source, tainted, changed);
+            }
+        }
+    }
+
+    /// True if `text` contains a call to one of the untrusted blob/value accessors.
+    fn text_calls_blob_accessor(text: &str) -> bool {
+        UNTRUSTED_BLOB_ACCESSORS
+            .iter()
+            .any(|acc| text.contains(&format!("{}(", acc)))
+    }
+
+    /// Detect an unbounded decode loop over an untrusted (blob/value-derived)
+    /// pointer: a `while`/`for`/`do` loop that advances a tainted pointer (or
+    /// feeds it to a varint reader) while chasing a terminator or continuation
+    /// bit, with no dominating bound check (`p < end`, a counter `< len`, etc.).
+    /// This is the ARR30-C false-negative family from the sqlite real-world audit
+    /// (task 172): the rule formerly fired on bounded indices it misread and
+    /// missed these genuine over-reads.
+    fn check_unbounded_decode_loop(&self, loop_node: &Node, source: &str) -> Vec<RuleViolation> {
+        let mut violations = Vec::new();
+
+        // Split the loop into its control text (everything except the body — the
+        // `while`/`for` condition, the `for` update clause, and a `do`-while's
+        // trailing condition) and the body itself.
+        let body = match Self::loop_body_node(loop_node) {
+            Some(b) => b,
+            None => return violations,
+        };
+        let loop_text = &source[loop_node.start_byte()..loop_node.end_byte()];
+        let body_rel_start = body.start_byte() - loop_node.start_byte();
+        let body_rel_end = body.end_byte() - loop_node.start_byte();
+        let header = format!(
+            "{}{}",
+            &loop_text[..body_rel_start],
+            &loop_text[body_rel_end..]
+        );
+        let body_text = source[body.start_byte()..body.end_byte()].to_string();
+
+        // Taint is scoped to the containing function.
+        let func_node = match find_containing_function(loop_node) {
+            Some(f) => f,
+            None => return violations,
+        };
+        let tainted = self.collect_blob_tainted_pointers(&func_node, source);
+        if tainted.is_empty() {
+            return violations;
+        }
+
+        // Candidate walked pointers: tainted pointers incremented in the loop, or
+        // tainted pointers passed to a varint reader inside the loop body.
+        let mut candidates: Vec<String> = Vec::new();
+        let scan = format!("{}\n{}", header, body_text);
+        for ptr in &tainted {
+            let incremented = scan.contains(&format!("{}++", ptr))
+                || scan.contains(&format!("++{}", ptr))
+                || scan.contains(&format!("{} +=", ptr))
+                || scan.contains(&format!("{}+=", ptr));
+            let in_varint = VARINT_READERS.iter().any(|r| {
+                // crude arg check: "READER(...ptr..." where ptr is an early arg
+                if let Some(pos) = scan.find(&format!("{}(", r)) {
+                    let after = &scan[pos..];
+                    let argstart = after.find('(').map(|i| pos + i).unwrap_or(pos);
+                    let argend = after.find(')').map(|i| pos + i).unwrap_or(scan.len());
+                    if argstart < argend {
+                        return scan[argstart..argend]
+                            .split(|c: char| !c.is_alphanumeric() && c != '_')
+                            .any(|tok| tok == ptr);
+                    }
+                }
+                false
+            });
+            if incremented || in_varint {
+                candidates.push(ptr.clone());
+            }
+        }
+
+        for ptr in candidates {
+            if Self::pointer_walk_is_bounded(&ptr, &header, &body_text) {
+                continue;
+            }
+            let start_point = loop_node.start_position();
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: Severity::High,
+                message: format!(
+                    "Unbounded decode loop over untrusted pointer '{}': the loop advances a pointer derived from blob/column bytes with no bound check before the read, allowing an out-of-bounds read.",
+                    ptr
+                ),
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some(
+                    "Bound the walk against the buffer extent (e.g. `while (p < end)`/`p + n <= end`) before dereferencing or decoding.".to_string(),
+                ),
+                ..Default::default()
+            });
+        }
+
+        violations
+    }
+
+    /// The statement node that forms a loop's body (the compound/expression
+    /// statement following the header), for `while`/`for`/`do` loops.
+    fn loop_body_node<'a>(loop_node: &Node<'a>) -> Option<Node<'a>> {
+        if let Some(body) = loop_node.child_by_field_name("body") {
+            return Some(body);
+        }
+        // Fallback: last statement-like child.
+        let mut found = None;
+        for i in 0..loop_node.child_count() {
+            if let Some(child) = loop_node.child(i) {
+                if matches!(
+                    child.kind(),
+                    "compound_statement" | "expression_statement" | "if_statement"
+                ) {
+                    found = Some(child);
+                }
+            }
+        }
+        found
+    }
+
+    /// True if the walk of `ptr` is bounded by a guard against an end pointer or
+    /// a length counter, anywhere in the loop header or body. Conservative: any
+    /// relational comparison in the header, a pointer-difference, an inequality
+    /// of `ptr` itself against another expression, or a length countdown counts
+    /// as "bounded" so we only fire on genuinely open-ended terminator chases.
+    fn pointer_walk_is_bounded(ptr: &str, header: &str, body: &str) -> bool {
+        // A relational operator in the header (e.g. `for (...; p < end; ...)`,
+        // `while (n < len)`) is a bound. Note `*p != term` uses `!=`, not `<`/`>`,
+        // so a pure terminator chase is not caught here.
+        if header.contains('<') || header.contains('>') {
+            return true;
+        }
+        let hay = format!("{}\n{}", header, body);
+        // `ptr` itself (not `*ptr`) compared against another expression: pointer
+        // bound such as `p != end`, `p == zEnd`, `p >= end`.
+        for op in ["==", "!=", ">=", "<=", "<", ">"] {
+            if hay.contains(&format!("{} {}", ptr, op)) || hay.contains(&format!("{}{}", ptr, op)) {
+                // Exclude the dereference compare `*ptr != term`: that is the
+                // terminator test, not a bound. We already keyed on the bare
+                // identifier, so `*p` won't match `p ==` here.
+                return true;
+            }
+            if hay.contains(&format!("{} {}", op, ptr)) {
+                return true;
+            }
+        }
+        // Pointer difference against another expression (`end - p`, `p - base`).
+        if hay.contains(&format!("- {}", ptr))
+            || hay.contains(&format!("{} -", ptr))
+            || hay.contains(&format!("-{}", ptr))
+        {
+            return true;
+        }
+        false
+    }
+
     /// Pre-scan a function body to find all buffer declarations and malloc assignments,
     /// including those in nested scopes (if-blocks, loops, compound statements).
     /// This ensures that `data = (char *)malloc(50)` inside `if(1) { ... }` is visible
@@ -2967,6 +3249,12 @@ impl Arr30C {
                     source,
                     &local_buffers,
                 ));
+                // Taint-gated unbounded decode-loop over untrusted blob/column
+                // bytes (task 172).
+                violations.extend(self.check_unbounded_decode_loop(node, source));
+            }
+            "for_statement" | "do_statement" => {
+                violations.extend(self.check_unbounded_decode_loop(node, source));
             }
             "function_definition" => {
                 // Pre-scan entire function body for buffer declarations and malloc
