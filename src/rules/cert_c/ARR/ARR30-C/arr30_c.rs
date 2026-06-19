@@ -69,6 +69,16 @@ pub struct Arr30C {
     /// per loop; memoizing keeps the taint scan O(functions) instead of
     /// O(loops × function size) on large real-world files. Cleared per file.
     decode_taint_cache: RefCell<HashMap<usize, HashSet<String>>>,
+    /// Per-function cache of `const char *` / `const unsigned char *` parameter
+    /// names (and their cast-aliases) that have no paired length parameter —
+    /// candidate unbounded input buffers for the param-decoder index over-read
+    /// family (task 210, sqlite `kvvfsDecode` class). Keyed by function start
+    /// byte. Cleared per file.
+    param_decode_buf_cache: RefCell<HashMap<usize, HashSet<String>>>,
+    /// Function start bytes that already produced a param-decoder over-read
+    /// finding, so nested loops in the same function don't each emit one. Cleared
+    /// per file.
+    param_decode_reported: RefCell<HashSet<usize>>,
 }
 
 /// Represents an index value that can be constant or variable
@@ -170,6 +180,8 @@ impl CertRule for Arr30C {
         // Analyze all buffer allocations once at root level
         if node.parent().is_none() {
             self.decode_taint_cache.borrow_mut().clear();
+            self.param_decode_buf_cache.borrow_mut().clear();
+            self.param_decode_reported.borrow_mut().clear();
             let buffer_info = self.analyze_buffer_allocations(source);
             let pointer_aliases = self.analyze_pointer_aliases(source, &buffer_info);
             // Shared file-local function-like macro collection
@@ -205,6 +217,8 @@ impl Arr30C {
             vra_results: RefCell::new(HashMap::new()),
             macro_constants: RefCell::new(HashMap::new()),
             decode_taint_cache: RefCell::new(HashMap::new()),
+            param_decode_buf_cache: RefCell::new(HashMap::new()),
+            param_decode_reported: RefCell::new(HashSet::new()),
         }
     }
 
@@ -2646,6 +2660,313 @@ impl Arr30C {
         false
     }
 
+    /// Detect the param-decoder index over-read family (task 210, sqlite
+    /// `kvvfsDecode` class). Target shape: a function whose input buffer is a
+    /// `const char *` / `const unsigned char *` *parameter* (or a cast-alias of
+    /// one) with no paired length parameter, walked inside a loop by an
+    /// embedded-increment subscript (`a[++i]`, `a[i++]`) where the index is never
+    /// relationally bounded against a length. Unlike the blob-accessor walk
+    /// handled by [`Self::check_unbounded_decode_loop`], the bytes come straight
+    /// from a parameter rather than a recognised accessor call.
+    ///
+    /// The plain NUL-terminated C-string walk (`while (*s) s++;`,
+    /// `for (; s[i]; i++)`) is gated out two ways: its read sits in the loop
+    /// *condition* (condition-guarded), and the embedded-increment subscript form
+    /// is rare in that idiom.
+    fn check_param_decode_overread(&self, loop_node: &Node, source: &str) -> Vec<RuleViolation> {
+        let mut violations = Vec::new();
+
+        let func_node = match find_containing_function(loop_node) {
+            Some(f) => f,
+            None => return violations,
+        };
+        let func_key = func_node.start_byte();
+        // One finding per function: nested loops over the same buffer shouldn't
+        // each emit.
+        if self.param_decode_reported.borrow().contains(&func_key) {
+            return violations;
+        }
+
+        if !self.param_decode_buf_cache.borrow().contains_key(&func_key) {
+            let bufs = self.collect_param_decode_buffers(&func_node, source);
+            self.param_decode_buf_cache
+                .borrow_mut()
+                .insert(func_key, bufs);
+        }
+        let cache = self.param_decode_buf_cache.borrow();
+        let bufs = match cache.get(&func_key) {
+            Some(b) if !b.is_empty() => b,
+            _ => return violations,
+        };
+
+        // Split this loop into control text (condition / update) and body.
+        let body = match Self::loop_body_node(loop_node) {
+            Some(b) => b,
+            None => return violations,
+        };
+        let loop_text = &source[loop_node.start_byte()..loop_node.end_byte()];
+        let body_rel_start = body.start_byte() - loop_node.start_byte();
+        let body_rel_end = body.end_byte() - loop_node.start_byte();
+        let header = format!(
+            "{}{}",
+            &loop_text[..body_rel_start],
+            &loop_text[body_rel_end..]
+        );
+
+        let func_text = &source[func_node.start_byte()..func_node.end_byte()];
+
+        // Embedded-increment subscripts (`buf[++i]` / `buf[i++]`) on a candidate
+        // buffer, attributed to the innermost enclosing loop so the same access
+        // isn't double-reported by an outer loop.
+        let mut hits: Vec<(String, String, tree_sitter::Point)> = Vec::new();
+        Self::collect_embedded_increment_subscripts(&body, source, bufs, loop_node, &mut hits);
+
+        for (buf, idx, point) in hits {
+            // Condition-guarded read of this buffer (`while (buf[i])`) is the
+            // caller-contract NUL/length walk — not an over-read.
+            if header.contains(&format!("{}[", buf)) || header.contains(&format!("*{}", buf)) {
+                continue;
+            }
+            // The index is bounded somewhere in the function (`i < n`, `n > i`).
+            if Self::index_is_relationally_bounded(&idx, func_text) {
+                continue;
+            }
+            self.param_decode_reported.borrow_mut().insert(func_key);
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: Severity::High,
+                message: format!(
+                    "Unbounded index over-read of parameter buffer '{}': the loop advances index '{}' into a const-char* parameter (no length argument) with no bound check before the read, allowing an out-of-bounds read.",
+                    buf, idx
+                ),
+                file_path: String::new(),
+                line: point.row + 1,
+                column: point.column + 1,
+                suggestion: Some(
+                    "Pass and check an explicit length for the input buffer (e.g. `i < nIn`) before indexing it.".to_string(),
+                ),
+                ..Default::default()
+            });
+            break;
+        }
+
+        violations
+    }
+
+    /// Collect the `const char *` / `const unsigned char *` parameters of
+    /// `func_node` that have no paired length parameter (the immediately
+    /// following parameter is not an integer scalar), plus any local pointer that
+    /// is a cast-alias of such a parameter (`const unsigned char *aIn =
+    /// (const unsigned char*)a;`).
+    fn collect_param_decode_buffers(&self, func_node: &Node, source: &str) -> HashSet<String> {
+        let mut bufs = HashSet::new();
+        let declarator = match func_node.child_by_field_name("declarator") {
+            Some(d) => d,
+            None => return bufs,
+        };
+        let param_list = match find_param_list_node(&declarator) {
+            Some(p) => p,
+            None => return bufs,
+        };
+
+        // Ordered (name, is_const_char_ptr, is_int_scalar) for each parameter.
+        let mut params: Vec<(Option<String>, bool, bool)> = Vec::new();
+        for i in 0..param_list.child_count() {
+            let param = match param_list.child(i) {
+                Some(p) if p.kind() == "parameter_declaration" => p,
+                _ => continue,
+            };
+            let text = &source[param.start_byte()..param.end_byte()];
+            let is_ptr = text.contains('*');
+            let is_ccp = is_ptr && text.contains("char") && text.contains("const");
+            let is_int = !is_ptr && Self::type_text_is_int_scalar(text);
+            let name = param
+                .child_by_field_name("declarator")
+                .and_then(|d| find_identifier_in_declarator(&d, source));
+            params.push((name, is_ccp, is_int));
+        }
+
+        for idx in 0..params.len() {
+            let (name, is_ccp, _) = &params[idx];
+            if !*is_ccp {
+                continue;
+            }
+            let name = match name {
+                Some(n) => n,
+                None => continue,
+            };
+            // Paired-length convention: a (buf, len) pair places the integer
+            // length immediately after the pointer. Without that, treat the
+            // buffer as length-unbounded.
+            let next_is_len = params.get(idx + 1).map(|p| p.2).unwrap_or(false);
+            if !next_is_len {
+                bufs.insert(name.clone());
+            }
+        }
+
+        if !bufs.is_empty() {
+            // A couple of passes resolve `aIn = (cast)a; q = aIn;` chains.
+            let mut changed = true;
+            let mut guard = 0;
+            while changed && guard < 3 {
+                changed = false;
+                guard += 1;
+                Self::walk_collect_cast_aliases(func_node, source, &mut bufs, &mut changed);
+            }
+        }
+        bufs
+    }
+
+    /// True if `text` (a non-pointer parameter declaration) names an integer
+    /// scalar type — the shape of a length/count argument.
+    fn type_text_is_int_scalar(text: &str) -> bool {
+        const INT_TOKENS: &[&str] = &[
+            "int",
+            "long",
+            "short",
+            "size_t",
+            "ssize_t",
+            "unsigned",
+            "int8_t",
+            "int16_t",
+            "int32_t",
+            "int64_t",
+            "uint8_t",
+            "uint16_t",
+            "uint32_t",
+            "uint64_t",
+            "intptr_t",
+            "uintptr_t",
+            "ptrdiff_t",
+        ];
+        INT_TOKENS.iter().any(|t| {
+            text.split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|tok| tok == *t)
+        })
+    }
+
+    /// Add to `bufs` any local pointer declared as a cast (or direct alias) of an
+    /// existing candidate buffer (`const unsigned char *aIn = (cast)a;`).
+    fn walk_collect_cast_aliases(
+        node: &Node,
+        source: &str,
+        bufs: &mut HashSet<String>,
+        changed: &mut bool,
+    ) {
+        if node.kind() == "init_declarator" {
+            if let (Some(decl), Some(value)) = (
+                node.child_by_field_name("declarator"),
+                node.child_by_field_name("value"),
+            ) {
+                if let Some(inner) = Self::unwrap_to_identifier(&value, source) {
+                    if bufs.contains(&inner) {
+                        if let Some(name) = find_identifier_in_declarator(&decl, source) {
+                            if !bufs.contains(&name) {
+                                bufs.insert(name);
+                                *changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::walk_collect_cast_aliases(&child, source, bufs, changed);
+            }
+        }
+    }
+
+    /// Unwrap casts / parentheses to the bare identifier they wrap, if any.
+    fn unwrap_to_identifier(node: &Node, source: &str) -> Option<String> {
+        match node.kind() {
+            "identifier" => Some(source[node.start_byte()..node.end_byte()].to_string()),
+            "cast_expression" => node
+                .child_by_field_name("value")
+                .and_then(|v| Self::unwrap_to_identifier(&v, source)),
+            "parenthesized_expression" => {
+                // The wrapped expression is the non-punctuation child.
+                let mut found = None;
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if child.is_named() {
+                            found = Self::unwrap_to_identifier(&child, source);
+                        }
+                    }
+                }
+                found
+            }
+            _ => None,
+        }
+    }
+
+    /// Walk `body`, collecting `(buffer, index_var, position)` for every
+    /// `buf[++i]` / `buf[i++]` subscript whose `buf` is a candidate and whose
+    /// innermost enclosing loop is `loop_node` (so an outer loop won't also claim
+    /// it).
+    fn collect_embedded_increment_subscripts(
+        node: &Node,
+        source: &str,
+        bufs: &HashSet<String>,
+        loop_node: &Node,
+        out: &mut Vec<(String, String, tree_sitter::Point)>,
+    ) {
+        if node.kind() == "subscript_expression" {
+            if let (Some(arg), Some(index)) = (
+                node.child_by_field_name("argument"),
+                node.child_by_field_name("index"),
+            ) {
+                if arg.kind() == "identifier" {
+                    let buf = source[arg.start_byte()..arg.end_byte()].to_string();
+                    if bufs.contains(&buf) && index.kind() == "update_expression" {
+                        if let Some(operand) = index.child_by_field_name("argument") {
+                            if operand.kind() == "identifier"
+                                && Self::innermost_loop_of(node)
+                                    .map(|l| l.start_byte() == loop_node.start_byte())
+                                    .unwrap_or(false)
+                            {
+                                let idx =
+                                    source[operand.start_byte()..operand.end_byte()].to_string();
+                                out.push((buf, idx, node.start_position()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::collect_embedded_increment_subscripts(&child, source, bufs, loop_node, out);
+            }
+        }
+    }
+
+    /// The nearest enclosing `while`/`for`/`do` loop of `node`, if any.
+    fn innermost_loop_of<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+        let mut cur = node.parent();
+        while let Some(n) = cur {
+            if matches!(
+                n.kind(),
+                "while_statement" | "for_statement" | "do_statement"
+            ) {
+                return Some(n);
+            }
+            cur = n.parent();
+        }
+        None
+    }
+
+    /// True if `idx` appears as a whole token next to a relational operator
+    /// (`idx < n`, `n >= idx`) anywhere in `func_text` — i.e. the index is
+    /// bounded against a length somewhere in the function.
+    fn index_is_relationally_bounded(idx: &str, func_text: &str) -> bool {
+        let e = regex::escape(idx);
+        let pat = format!(r"(\b{0}\b\s*(<=?|>=?))|((<=?|>=?)\s*\b{0}\b)", e);
+        regex::Regex::new(&pat)
+            .map(|re| re.is_match(func_text))
+            .unwrap_or(false)
+    }
+
     /// Pre-scan a function body to find all buffer declarations and malloc assignments,
     /// including those in nested scopes (if-blocks, loops, compound statements).
     /// This ensures that `data = (char *)malloc(50)` inside `if(1) { ... }` is visible
@@ -3275,9 +3596,13 @@ impl Arr30C {
                 // Taint-gated unbounded decode-loop over untrusted blob/column
                 // bytes (task 172).
                 violations.extend(self.check_unbounded_decode_loop(node, source));
+                // Param-decoder index over-read: const-char* parameter walked by
+                // an embedded-increment subscript with no length bound (task 210).
+                violations.extend(self.check_param_decode_overread(node, source));
             }
             "for_statement" | "do_statement" => {
                 violations.extend(self.check_unbounded_decode_loop(node, source));
+                violations.extend(self.check_param_decode_overread(node, source));
             }
             "function_definition" => {
                 // Pre-scan entire function body for buffer declarations and malloc
