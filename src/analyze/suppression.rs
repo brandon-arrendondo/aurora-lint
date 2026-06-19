@@ -165,6 +165,10 @@ pub struct SuppressionManager {
     toml_suppressions: Vec<(String, Suppression)>,
     /// Wildcard suppressions (from `.sqc-suppress.toml` `[[wildcard]]` sections).
     wildcard_suppressions: Vec<CompiledWildcard>,
+    /// 1-based inclusive line ranges that fall inside `#if 0` dead-code blocks,
+    /// keyed by full file path. Violations landing in these ranges are suppressed
+    /// because the enclosing code is never compiled.
+    dead_code_ranges: HashMap<String, Vec<(usize, usize)>>,
 }
 
 impl SuppressionManager {
@@ -218,6 +222,12 @@ impl SuppressionManager {
             self.suppressions
                 .insert(file_path.to_string(), file_suppressions);
         }
+
+        let dead_ranges = compute_dead_code_ranges(source);
+        if !dead_ranges.is_empty() {
+            self.dead_code_ranges
+                .insert(file_path.to_string(), dead_ranges);
+        }
     }
 
     /// Check if a violation should be suppressed.
@@ -232,6 +242,17 @@ impl SuppressionManager {
         source: &str,
         message: &str,
     ) -> Option<&str> {
+        // Suppress anything inside a `#if 0` dead-code block: that code is never
+        // compiled, so any finding there is unfixable noise.
+        if let Some(ranges) = self.dead_code_ranges.get(file_path) {
+            if ranges
+                .iter()
+                .any(|&(start, end)| line >= start && line <= end)
+            {
+                return Some("code is inside a `#if 0` dead-code block (never compiled)");
+            }
+        }
+
         // Check inline comment suppressions
         if let Some(file_supps) = self.suppressions.get(file_path) {
             if let Some(s) = file_supps
@@ -458,6 +479,83 @@ fn file_path_matches(full_path: &str, pattern: &str) -> bool {
             .unwrap_or("");
         file_name == pattern
     }
+}
+
+/// Compute the 1-based inclusive line ranges that fall inside `#if 0` blocks.
+///
+/// Handles nested conditionals (a nested `#if`/`#ifdef` inside a dead block does
+/// not end the block) and ends a dead region at the matching `#else`/`#elif`/
+/// `#endif`, since for `#if 0` it is the alternative branch that is compiled.
+/// Only a literal zero condition (`#if 0`, `#if (0)`) is treated as dead; any
+/// other expression is left untouched.
+fn compute_dead_code_ranges(source: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut depth: usize = 0;
+    // (start_line, conditional-nesting depth at which the dead region opened)
+    let mut dead: Option<(usize, usize)> = None;
+
+    for (idx, line) in source.lines().enumerate() {
+        let line_no = idx + 1;
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('#') {
+            continue;
+        }
+        let after_hash = trimmed[1..].trim_start();
+        let directive: String = after_hash
+            .chars()
+            .take_while(|c| c.is_ascii_alphabetic())
+            .collect();
+
+        match directive.as_str() {
+            "if" | "ifdef" | "ifndef" => {
+                depth += 1;
+                if dead.is_none() && directive == "if" {
+                    let cond = &after_hash[directive.len()..];
+                    if is_zero_condition(cond) {
+                        dead = Some((line_no, depth));
+                    }
+                }
+            }
+            "elif" | "else" => {
+                if let Some((start, dead_depth)) = dead {
+                    if depth == dead_depth {
+                        ranges.push((start, line_no));
+                        dead = None;
+                    }
+                }
+            }
+            "endif" => {
+                if let Some((start, dead_depth)) = dead {
+                    if depth == dead_depth {
+                        ranges.push((start, line_no));
+                        dead = None;
+                    }
+                }
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    // An unterminated `#if 0` (no matching `#endif`) covers the rest of the file.
+    if let Some((start, _)) = dead {
+        let last = source.lines().count().max(start);
+        ranges.push((start, last));
+    }
+
+    ranges
+}
+
+/// Whether a `#if` condition expression is a literal zero (dead branch).
+/// Strips trailing comments and surrounding whitespace/parens before comparing.
+fn is_zero_condition(cond: &str) -> bool {
+    let cond = cond.split("//").next().unwrap_or(cond);
+    let cond = cond.split("/*").next().unwrap_or(cond);
+    let stripped: String = cond
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '(' && *c != ')')
+        .collect();
+    stripped == "0"
 }
 
 #[cfg(test)]
@@ -1066,5 +1164,54 @@ justification = "Wildcard suppression"
         // Inline hash suppression should match first (returns inline justification)
         let result = mgr.should_suppress("test.c", "EXP34-C", 2, &source, "");
         assert_eq!(result, Some("inline justification"));
+    }
+
+    #[test]
+    fn test_dead_code_simple_if0() {
+        let source = "int a;\n#if 0\nint dead;\nint dead2;\n#endif\nint b;\n";
+        let ranges = compute_dead_code_ranges(source);
+        // `#if 0` on line 2 through `#endif` on line 5 inclusive.
+        assert_eq!(ranges, vec![(2, 5)]);
+    }
+
+    #[test]
+    fn test_dead_code_ends_at_else() {
+        // For `#if 0`, the `#else` branch IS compiled, so the dead region stops there.
+        let source = "#if 0\ndead;\n#else\nlive;\n#endif\n";
+        let ranges = compute_dead_code_ranges(source);
+        assert_eq!(ranges, vec![(1, 3)]);
+    }
+
+    #[test]
+    fn test_dead_code_nested_conditional() {
+        // A nested `#if 1` inside `#if 0` must not terminate the outer dead block.
+        let source = "#if 0\n#if 1\nstill_dead;\n#endif\nalso_dead;\n#endif\nlive;\n";
+        let ranges = compute_dead_code_ranges(source);
+        assert_eq!(ranges, vec![(1, 6)]);
+    }
+
+    #[test]
+    fn test_dead_code_paren_zero() {
+        let source = "#if (0)\ndead;\n#endif\n";
+        assert_eq!(compute_dead_code_ranges(source), vec![(1, 3)]);
+        // A non-zero condition is not dead.
+        assert!(compute_dead_code_ranges("#if 1\nx;\n#endif\n").is_empty());
+        assert!(compute_dead_code_ranges("#if defined(X)\nx;\n#endif\n").is_empty());
+    }
+
+    #[test]
+    fn test_should_suppress_dead_code() {
+        let mut mgr = SuppressionManager::new();
+        let source = "int a;\n#if 0\nbad_thing();\n#endif\nint b;\n";
+        mgr.extract_from_source("test.c", source);
+
+        // A violation reported on the dead line is suppressed.
+        let result = mgr.should_suppress("test.c", "MEM30-C", 3, source, "");
+        assert!(result.is_some());
+        // A violation outside the block is not.
+        assert_eq!(
+            mgr.should_suppress("test.c", "MEM30-C", 5, source, ""),
+            None
+        );
     }
 }
