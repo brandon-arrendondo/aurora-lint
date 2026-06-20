@@ -746,6 +746,27 @@ def _completion_time(version_dir: Path, run_id: str) -> float | None:
     return max(mtimes) if mtimes else None
 
 
+def _latest_completed_version_dir(tool: str = "sqc") -> Path | None:
+    """version_dir of the most-recently-completed run of `tool` in state.
+
+    Used to drive auto-ingest off the sqc dir specifically (rather than the
+    newest dir on disk, which in a run_all batch is often a competitor dir).
+    """
+    best: Path | None = None
+    best_t = -1.0
+    try:
+        for _rid, info in _read_state().get("runs", {}).items():
+            if info.get("tool") != tool or info.get("status") != "completed":
+                continue
+            vd = info.get("version_dir")
+            t = info.get("end_time") or info.get("start_time") or 0
+            if vd and t > best_t:
+                best_t, best = t, Path(vd)
+    except Exception:
+        pass
+    return best
+
+
 def _get_version_dir(identifier: str | None = None) -> Path | None:
     """Find a results directory by name, commit SHA, or 'latest'.
 
@@ -1219,10 +1240,14 @@ def get_status() -> str:
 
             statuses.append(entry)
 
-    # Auto-ingest completed runs into SQLite, then auto-score against the oracle
+    # Auto-ingest completed runs into SQLite, then auto-score against the oracle.
+    # Ingest is keyed on the sqc result dir (it creates the run row and pulls in
+    # the sibling competitor dirs); a run_all batch finishes the fast competitor
+    # scans last, so "latest dir by mtime" can be a cppcheck/clang-tidy dir —
+    # locate the sqc dir explicitly so ingestion isn't silently skipped.
     score_summary = None
     if active_count == 0 and completed_count > 0:
-        version_dir = _get_version_dir()
+        version_dir = _latest_completed_version_dir("sqc") or _get_version_dir()
         if version_dir:
             score_summary = _auto_ingest_to_sqlite(version_dir)
 
@@ -1379,6 +1404,9 @@ def _auto_ingest_to_sqlite(version_dir: Path) -> str | None:
         run_id = db.ingest_realworld_run(dir_name, str(version_dir),
                                          machine=machine, durations=durations,
                                          metrics=metrics)
+        # Attach cppcheck/clang-tidy rows from the same run_all batch (if any)
+        # so the run row carries a full tool-vs-tool throughput comparison.
+        _ingest_competitors(db, run_id)
         return _auto_score_run(db, run_id, version_dir)
     except Exception:
         return None  # Don't fail the MCP tool if ingestion/scoring fails
@@ -1412,16 +1440,18 @@ def _auto_score_run(db, run_id: int, version_dir: Path) -> str | None:
         return None
 
 
-def _extract_run_durations() -> dict[str, float]:
+def _extract_run_durations(tool: str = "sqc") -> dict[str, float]:
     """Extract per-codebase durations from the state file.
 
-    Returns dict mapping codebase name to elapsed seconds for completed sqc runs.
+    Returns dict mapping codebase name to elapsed seconds for completed runs
+    of `tool`. end_time is the mtime of the run's output file (see
+    _completion_time), so this is real process runtime regardless of poll time.
     """
     durations = {}
     try:
         state = _read_state()
         for run_id, info in state.get("runs", {}).items():
-            if (info.get("tool") == "sqc"
+            if (info.get("tool") == tool
                     and info.get("status") == "completed"
                     and "start_time" in info
                     and "end_time" in info):
@@ -1488,6 +1518,55 @@ def _extract_run_metrics() -> dict[str, dict]:
     except Exception:
         pass
     return metrics
+
+
+def _ingest_competitors(db, run_id: int) -> int:
+    """Attach cppcheck + clang-tidy per-project rows to the sqc run row `run_id`.
+
+    Uses the most-recent completed competitor runs in the current state (the
+    run_all batch that produced this sqc run), giving the run row a full
+    tool-vs-tool comparison: violation_count + loc + duration per project.
+    loc reuses _count_c_source so the LOC/s denominator is identical across
+    tools. Per-finding detail isn't stored — competitors aren't scored against
+    the sqc oracle (which is keyed on CERT rule ids), and the historical
+    competitor rows likewise carry counts only. Returns rows written.
+    """
+    written = 0
+    try:
+        state = _read_state()
+        runs = state.get("runs", {})
+        for tool in ("cppcheck", "clang-tidy"):
+            # Most-recently-completed run per codebase for this tool.
+            latest: dict[str, tuple[str, dict]] = {}
+            for rid_name, info in runs.items():
+                if info.get("tool") != tool or info.get("status") != "completed":
+                    continue
+                cb = info.get("codebase")
+                if not cb:
+                    continue
+                if (cb not in latest
+                        or info.get("end_time", 0) > latest[cb][1].get("end_time", 0)):
+                    latest[cb] = (rid_name, info)
+            for cb, (rid_name, info) in latest.items():
+                cfg = CODEBASES.get(cb)
+                if not cfg:
+                    continue
+                version_dir = Path(info.get("version_dir", ""))
+                rf = _get_result_file(version_dir, rid_name)
+                if not rf:
+                    continue
+                vcount = _parse_result_file(rid_name, rf).get("total", 0)
+                c_files, loc = _count_c_source(cfg)
+                duration = None
+                if "start_time" in info and "end_time" in info:
+                    duration = round(info["end_time"] - info["start_time"], 1)
+                commit = _get_codebase_sha(cfg["path"]) or db.live_codebase_commit(cb)
+                db.insert_realworld_result(run_id, cb, tool, c_files, loc,
+                                           vcount, duration, commit)
+                written += 1
+    except Exception:
+        pass
+    return written
 
 
 @mcp.tool()
