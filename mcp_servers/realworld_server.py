@@ -727,6 +727,25 @@ def _get_result_file(results_dir: Path, run_id: str) -> Path | None:
     return None
 
 
+def _completion_time(version_dir: Path, run_id: str) -> float | None:
+    """Best estimate of when a run's process actually finished: the mtime of
+    its last-written output artifact (result file or log, whichever is newer).
+
+    get_status may not observe completion until long after the process exited,
+    so wall clock at poll time over-reports duration (and, when a single late
+    poll reaps several parallel runs, reports the same inflated total for all
+    of them). The output file's final write is the faithful finish timestamp.
+    """
+    mtimes = []
+    rf = _get_result_file(version_dir, run_id)
+    if rf and rf.exists():
+        mtimes.append(rf.stat().st_mtime)
+    log_file = version_dir / f"{run_id}.log"
+    if log_file.exists():
+        mtimes.append(log_file.stat().st_mtime)
+    return max(mtimes) if mtimes else None
+
+
 def _get_version_dir(identifier: str | None = None) -> Path | None:
     """Find a results directory by name, commit SHA, or 'latest'.
 
@@ -1126,13 +1145,16 @@ def get_status() -> str:
                         status = "completed"
                         completed_count += 1
                         run_info["status"] = "completed"
-                        run_info["end_time"] = now
+                        run_info["end_time"] = (
+                            _completion_time(version_dir, run_id) or now)
                     else:
                         log_file = version_dir / f"{run_id}.log"
                         if log_file.exists() and log_file.stat().st_size > 0:
                             status = "completed"
                             completed_count += 1
                             run_info["status"] = "completed"
+                            run_info["end_time"] = (
+                                _completion_time(version_dir, run_id) or now)
                         else:
                             status = "failed"
                             failed_count += 1
@@ -1162,7 +1184,8 @@ def get_status() -> str:
                     completed_count += 1
                     if run_info.get("status") != "completed":
                         run_info["status"] = "completed"
-                        run_info["end_time"] = now
+                        run_info["end_time"] = (
+                            _completion_time(version_dir, run_id) or now)
                 else:
                     log_file = version_dir / f"{run_id}.log"
                     if log_file.exists() and log_file.stat().st_size > 0:
@@ -1170,6 +1193,8 @@ def get_status() -> str:
                         completed_count += 1
                         if run_info.get("status") != "completed":
                             run_info["status"] = "completed"
+                            run_info["end_time"] = (
+                                _completion_time(version_dir, run_id) or now)
                     else:
                         status = "failed"
                         failed_count += 1
@@ -1346,12 +1371,14 @@ def _auto_ingest_to_sqlite(version_dir: Path) -> str | None:
         if not json_files:
             return None
 
-        # Extract per-codebase durations from state file
+        # Extract per-codebase durations + size metrics from state / checkout
         durations = _extract_run_durations()
+        metrics = _extract_run_metrics()
 
         machine = {"hostname": os.uname().nodename}
         run_id = db.ingest_realworld_run(dir_name, str(version_dir),
-                                         machine=machine, durations=durations)
+                                         machine=machine, durations=durations,
+                                         metrics=metrics)
         return _auto_score_run(db, run_id, version_dir)
     except Exception:
         return None  # Don't fail the MCP tool if ingestion/scoring fails
@@ -1404,6 +1431,63 @@ def _extract_run_durations() -> dict[str, float]:
     except Exception:
         pass
     return durations
+
+
+def _count_c_source(cfg: dict) -> tuple[int, int]:
+    """Count (c_files, loc) for a codebase's own C source.
+
+    Uses the curated cppcheck source_dirs (which deliberately exclude vendored
+    deps and test scaffolding) so the LOC denominator is identical across tools
+    — the right basis for a fair LOC/s throughput comparison. Falls back to the
+    project root if no source_dirs are configured. loc is physical lines across
+    .c and .h files; c_files counts .c translation units.
+    """
+    path = str(cfg["path"])
+    dirs = _expand(cfg.get("cppcheck", {}).get("source_dirs", []), path) or [path]
+    c_files = 0
+    loc = 0
+    seen: set[str] = set()
+    for d in dirs:
+        for root, _dirs, files in os.walk(d):
+            for f in files:
+                if not f.endswith((".c", ".h")):
+                    continue
+                fp = os.path.join(root, f)
+                if fp in seen:
+                    continue
+                seen.add(fp)
+                if f.endswith(".c"):
+                    c_files += 1
+                try:
+                    with open(fp, "rb") as fh:
+                        loc += sum(1 for _ in fh)
+                except OSError:
+                    pass
+    return c_files, loc
+
+
+def _extract_run_metrics() -> dict[str, dict]:
+    """Per-codebase {c_files, loc} for completed sqc runs in the current state.
+
+    Computed from the live checkout, so it reflects the exact codebase commit
+    that was scanned. Used to populate realworld_results.c_files / .loc, which
+    were previously hardcoded to 0.
+    """
+    metrics: dict[str, dict] = {}
+    try:
+        state = _read_state()
+        for _run_id, info in state.get("runs", {}).items():
+            if info.get("tool") != "sqc" or info.get("status") != "completed":
+                continue
+            codebase = info.get("codebase")
+            cfg = CODEBASES.get(codebase)
+            if not codebase or not cfg or codebase in metrics:
+                continue
+            c_files, loc = _count_c_source(cfg)
+            metrics[codebase] = {"c_files": c_files, "loc": loc}
+    except Exception:
+        pass
+    return metrics
 
 
 @mcp.tool()

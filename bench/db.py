@@ -914,7 +914,8 @@ class BenchDB:
 
     def ingest_realworld_run(self, version_dir: str, results_path: str,
                               machine: dict = None,
-                              durations: dict[str, float] = None) -> int:
+                              durations: dict[str, float] = None,
+                              metrics: dict[str, dict] = None) -> int:
         """Ingest a complete realworld run from JSON result files.
 
         Args:
@@ -922,6 +923,7 @@ class BenchDB:
             results_path: path to the directory containing JSON result files
             machine: optional dict with hostname, cpu_model, cpu_cores
             durations: optional dict mapping codebase name to elapsed seconds
+            metrics: optional dict mapping codebase name to {c_files, loc}
 
         Returns:
             The realworld_runs row id.
@@ -936,6 +938,7 @@ class BenchDB:
 
         machine = machine or {}
         durations = durations or {}
+        metrics = metrics or {}
         run_id = self.create_realworld_run(
             sqc_version=version,
             commit_sha=commit,
@@ -972,6 +975,9 @@ class BenchDB:
                 rule_counts[rid] = rule_counts.get(rid, 0) + 1
 
             duration = durations.get(project)
+            proj_metrics = metrics.get(project) or {}
+            c_files = proj_metrics.get("c_files", 0) or 0
+            loc = proj_metrics.get("loc", 0) or 0
 
             # Codebase commit: prefer the scan-time sidecar written by the
             # MCP server; fall back to the live checkout (valid because the
@@ -993,8 +999,8 @@ class BenchDB:
                     INSERT OR REPLACE INTO realworld_results
                         (run_id, project, tool, c_files, loc, violation_count,
                          duration_s, codebase_commit)
-                    VALUES (?, ?, 'sqc', 0, 0, ?, ?, ?)
-                """, (run_id, project, violation_count, duration,
+                    VALUES (?, ?, 'sqc', ?, ?, ?, ?, ?)
+                """, (run_id, project, c_files, loc, violation_count, duration,
                       codebase_commit))
                 result_id = cur.lastrowid
 
