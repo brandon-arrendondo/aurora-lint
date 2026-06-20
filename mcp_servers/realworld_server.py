@@ -1385,25 +1385,41 @@ def _auto_ingest_to_sqlite(version_dir: Path) -> str | None:
         db = _get_db()
         dir_name = version_dir.name
 
-        # Check if already ingested (match by notes field)
-        existing = [r for r in db.list_realworld_runs()
-                    if r.get("notes") and dir_name in r["notes"]]
-        if existing:
-            return None  # Already ingested (scored on the run that ingested it)
-
-        # Only ingest sqc results (skip cppcheck/clang-tidy)
-        json_files = list(version_dir.glob("sqc-*.json"))
+        # sqc result files on disk for this dir (the projects we could store).
+        json_files = [f for f in version_dir.glob("sqc-*.json")
+                      if not f.name.endswith((".meta.json", ".score.json"))]
         if not json_files:
             return None
+        disk_projects = {f.stem.split("-")[1] for f in json_files
+                         if len(f.stem.split("-")) >= 3}
 
         # Extract per-codebase durations + size metrics from state / checkout
         durations = _extract_run_durations()
         metrics = _extract_run_metrics()
-
         machine = {"hostname": os.uname().nodename}
-        run_id = db.ingest_realworld_run(dir_name, str(version_dir),
-                                         machine=machine, durations=durations,
-                                         metrics=metrics)
+
+        # Re-use the existing run row for this dir rather than skipping when one
+        # is found: a partial earlier ingest (e.g. a single-codebase smoke run)
+        # must not permanently block the later full sweep from landing. Merge
+        # only the projects not already stored, so repeated get_status polls
+        # don't re-parse / re-score an already-complete run.
+        existing = next((r for r in db.list_realworld_runs()
+                         if r.get("notes") and dir_name in r["notes"]), None)
+        if existing:
+            run_id = existing["id"]
+            stored = {r["project"] for r in db.get_realworld_results(run_id)
+                      if r["tool"] == "sqc"}
+            missing = disk_projects - stored
+            if not missing:
+                return None  # Already complete — nothing new to ingest
+            db.ingest_realworld_run(dir_name, str(version_dir),
+                                    machine=machine, durations=durations,
+                                    metrics=metrics, run_id=run_id,
+                                    only_projects=missing)
+        else:
+            run_id = db.ingest_realworld_run(dir_name, str(version_dir),
+                                             machine=machine, durations=durations,
+                                             metrics=metrics)
         # Attach cppcheck/clang-tidy rows from the same run_all batch (if any)
         # so the run row carries a full tool-vs-tool throughput comparison.
         _ingest_competitors(db, run_id)

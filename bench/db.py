@@ -915,8 +915,10 @@ class BenchDB:
     def ingest_realworld_run(self, version_dir: str, results_path: str,
                               machine: dict = None,
                               durations: dict[str, float] = None,
-                              metrics: dict[str, dict] = None) -> int:
-        """Ingest a complete realworld run from JSON result files.
+                              metrics: dict[str, dict] = None,
+                              run_id: int = None,
+                              only_projects: set = None) -> int:
+        """Ingest a realworld run from JSON result files.
 
         Args:
             version_dir: dir name like 'sqc-0.3.26-9e8e8d3b'
@@ -924,6 +926,17 @@ class BenchDB:
             machine: optional dict with hostname, cpu_model, cpu_cores
             durations: optional dict mapping codebase name to elapsed seconds
             metrics: optional dict mapping codebase name to {c_files, loc}
+            run_id: optional existing realworld_runs id to merge into instead
+                of creating a new run row. Lets a later (more complete) sweep
+                fill in projects a partial earlier ingest missed.
+            only_projects: optional set of project names to restrict ingest to
+                (the rest of the dir is left untouched). Used with run_id to
+                merge just the missing projects.
+
+        Per-project sqc rows are idempotent: any prior sqc row + its violations
+        for (run_id, project) are dropped before re-insert, so re-ingest never
+        duplicates findings or orphans violation rows (foreign_keys=ON forbids
+        leaving the children behind).
 
         Returns:
             The realworld_runs row id.
@@ -939,15 +952,16 @@ class BenchDB:
         machine = machine or {}
         durations = durations or {}
         metrics = metrics or {}
-        run_id = self.create_realworld_run(
-            sqc_version=version,
-            commit_sha=commit,
-            scanned_at=datetime.now().isoformat(),
-            hostname=machine.get("hostname"),
-            cpu_model=machine.get("cpu_model"),
-            cpu_cores=machine.get("cpu_cores"),
-            notes=f"ingested from {version_dir}",
-        )
+        if run_id is None:
+            run_id = self.create_realworld_run(
+                sqc_version=version,
+                commit_sha=commit,
+                scanned_at=datetime.now().isoformat(),
+                hostname=machine.get("hostname"),
+                cpu_model=machine.get("cpu_model"),
+                cpu_cores=machine.get("cpu_cores"),
+                notes=f"ingested from {version_dir}",
+            )
 
         results_dir = Path(results_path)
         for json_file in sorted(results_dir.glob("*.json")):
@@ -963,6 +977,8 @@ class BenchDB:
             if len(name_parts) >= 3:
                 project = name_parts[1]
             else:
+                continue
+            if only_projects is not None and project not in only_projects:
                 continue
 
             violations = json.load(open(json_file))
@@ -995,6 +1011,18 @@ class BenchDB:
 
             result_id = None
             with self._cursor() as cur:
+                # Drop any prior sqc row (and its violations) for this
+                # (run, project) first. foreign_keys=ON would otherwise abort
+                # the INSERT OR REPLACE: its implicit delete of the conflicting
+                # parent row is rejected while child violations still reference
+                # it. Deleting children up front also prevents duplicate
+                # findings on a merge/re-ingest.
+                cur.execute("""
+                    DELETE FROM realworld_violations
+                    WHERE result_id IN (
+                        SELECT id FROM realworld_results
+                        WHERE run_id = ? AND project = ? AND tool = 'sqc')
+                """, (run_id, project))
                 cur.execute("""
                     INSERT OR REPLACE INTO realworld_results
                         (run_id, project, tool, c_files, loc, violation_count,
