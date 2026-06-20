@@ -765,6 +765,41 @@ coverage vs.~$\sim$20 checks in competitors.}
 \label{tab:realworld-results}
 \end{table}
 
+\Cref{tab:realworld-timing} reports analysis throughput.  Each tool was
+run serially---one process at a time, with the full machine to itself---so
+the durations are uncontended wall-clock process runtime; throughput is
+LOC divided by that runtime.  LOC is physical lines over the same curated
+source scope used as the denominator for all three tools.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+& & \multicolumn{3}{c}{\textbf{Time (s) / Throughput (LOC\,s$^{-1}$)}} \\
+\cmidrule(l){3-5}
+\textbf{Project} & \textbf{LOC} & \textbf{sqc} & \textbf{cppcheck} & \textbf{clang-tidy} \\
+\midrule
+libcrc & 1,034 & 0.6 / 1,723 & 0.1 / 10,340 & 0.1 / 10,340 \\
+mosquitto & 39,368 & 22.6 / 1,741 & 3,278.8 / 12 & 2.3 / 17,116 \\
+curl & 186,220 & 72.5 / 2,568 & 642.5 / 289 & 4.8 / 38,795 \\
+sqlite & 218,733 & 165.5 / 1,321 & 1,198.7 / 182 & 7.0 / 31,247 \\
+hostap & 589,724 & 353.1 / 1,670 & 2,659.3 / 221 & 55.9 / 10,549 \\
+\bottomrule
+\end{tabular}}
+\caption{Real-world analysis time and throughput (sqc v0.4.55,
+cppcheck v2.10, clang-tidy v21.1.6), measured serially to avoid CPU
+contention.  SqC throughput is stable at $\sim$1{,}300--2{,}600\,LOC\,s$^{-1}$
+across codebases.  cppcheck is intrinsically slow---54.6\,min on
+mosquitto (12\,LOC\,s$^{-1}$) despite its small size---rather than
+contention-bound.  clang-tidy is fastest here but runs a narrower check
+set (cf.~its violation counts in \cref{tab:realworld-results}), so its
+throughput is not directly comparable on analysis depth.}
+\label{tab:realworld-timing}
+\end{table}
+
 \Cref{fig:realworld-reduction} shows that FP reductions developed on
 Juliet transfer to real-world code in the aggregate: total violations
 across all five codebases dropped 75.7\% from v0.2.7 to v0.4.22.
