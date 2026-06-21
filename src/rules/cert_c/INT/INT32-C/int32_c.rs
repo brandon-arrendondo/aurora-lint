@@ -1208,13 +1208,28 @@ impl Int32C {
                         // Use const_eval to check if the arithmetic provably fits
                         let macros = self.current_macros.borrow();
                         let vra_ranges = self.vra_var_ranges_at(&arg_node, source);
-                        if const_eval::expression_fits_in_signed_vra(
+                        let fits_64 = const_eval::expression_fits_in_signed_vra(
                             &arg_node,
                             source,
                             &macros,
                             64,
                             vra_ranges.as_ref(),
-                        ) {
+                        );
+                        // A size argument is computed in size_t. A product that fits
+                        // in 64 bits can still *definitely* wrap a 32-bit size_t (the
+                        // CWE-680 "data * sizeof(T) > SIZE_MAX" flaw on ILP32): e.g.
+                        // a constant `data = INT_MAX/2 + 2` gives `data * sizeof(int)`
+                        // = 4294967300 > UINT32_MAX. `expression_overflows_unsigned_vra`
+                        // fires only when the whole range exceeds the bound, so legit
+                        // small allocations (good `data = 20` -> 80) stay clean.
+                        let wraps_32_size_t = const_eval::expression_overflows_unsigned_vra(
+                            &arg_node,
+                            source,
+                            &macros,
+                            32,
+                            vra_ranges.as_ref(),
+                        );
+                        if fits_64 && !wraps_32_size_t {
                             arg_idx += 1;
                             continue;
                         }
