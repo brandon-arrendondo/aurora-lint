@@ -205,6 +205,39 @@ CODEBASES = {
             "source_dirs": ["{path}/src/"],
         },
     },
+    "lua": {
+        "path": Path.home() / "toolchain" / "lua",
+        "sqc": {
+            "scan_path": None,
+            "manifest": "conf/realworld/lua-rules.toml",
+            "includes": ["-I", "{path}"],
+            # Exclude the checked-in amalgamation (onelua.c #includes every
+            # other .c), the internal test/debug harness (ltests.c) and the
+            # C test fixtures under testes/. Scope = shipping library + the
+            # lua.c interpreter main. sqc parses raw (no preprocessor) so
+            # onelua.c wouldn't double-count, but excluding keeps the scanned
+            # fileset identical to the competitor tools below.
+            "extra_args": [
+                "--exclude", "**/onelua.c",
+                "--exclude", "**/ltests.c",
+                "--exclude", "testes/**",
+            ],
+        },
+        "cppcheck": {
+            "includes": ["-I", "{path}"],
+            "source_dirs": ["{path}/"],
+            "extra_args": [
+                "-i", "{path}/onelua.c",
+                "-i", "{path}/ltests.c",
+                "-i", "{path}/testes",
+            ],
+        },
+        "clang-tidy": {
+            "includes": ["-I", "{path}"],
+            "source_dirs": ["{path}/"],
+            "exclude": ["*/onelua.c", "*/ltests.c", "*/testes/*"],
+        },
+    },
 }
 
 # ── MCP server ────────────────────────────────────────────────────────────────
@@ -576,11 +609,17 @@ def _build_clang_tidy_cmd(codebase: str, cfg: dict, results_dir: Path, run_id: s
     path = str(cfg["path"])
     source_dirs = _expand(cfg["clang-tidy"].get("source_dirs", []), path)
     includes = _expand(cfg["clang-tidy"].get("includes", []), path)
+    # Optional glob patterns to prune from the find (e.g. checked-in
+    # amalgamations or test harnesses). Matched with find -path, so use
+    # path globs like "*/onelua.c" or "*/testes/*". Left empty for projects
+    # that scope via source_dirs alone.
+    excludes = cfg["clang-tidy"].get("exclude", [])
+    prune = "".join(f" ! -path '{pat}'" for pat in excludes)
 
     # Build find command for all source dirs
     find_parts = []
     for sd in source_dirs:
-        find_parts.append(f"find {sd} -name '*.c'")
+        find_parts.append(f"find {sd} -name '*.c'{prune}")
     find_cmd = " && ".join(find_parts) if len(find_parts) > 1 else find_parts[0]
     if len(find_parts) > 1:
         find_cmd = "( " + " ; ".join(find_parts) + " )"
