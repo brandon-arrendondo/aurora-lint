@@ -1,12 +1,62 @@
 # SqC — Real-World Benchmark Results
 
-**Last Updated**: 2026-03-06
+**Last Updated**: 2026-06-21
 
 Automated benchmark results across 5 real-world C codebases using sqc, cppcheck, and clang-tidy.
 
+> **Canonical source**: as of the SQLite migration, `data/benchmarks.db`
+> (`realworld_runs` + `realworld_results`) is the source of truth for all
+> real-world numbers. This file is a curated narrative snapshot; query the DB
+> (or the realworld MCP tools) for the full per-version history.
+
 ---
 
-## Latest Results (sqc v0.3.5)
+## Latest Results (sqc v0.4.57)
+
+Full sweep on commit `1bbbbf14` (cppcheck 2.10, clang-tidy 21.1.6, sqc v0.4.57). 83/83 runs, 0 failed.
+
+### Violation Counts — All Three Tools
+
+| Project | C Files | LOC | sqc | cppcheck | clang-tidy |
+|---------|--------:|----:|----:|--------:|-----------:|
+| **libcrc** | 9 | 1,034 | 391 | 40 | 2 |
+| **sqlite** | 125 | 218,733 | 32,358 | 503 | 137 |
+| **mosquitto** | 120 | 39,368 | 11,317 | 277 | 44 |
+| **curl** | 222 | 186,220 | 16,637 | 556 | 116 |
+| **hostap** | 430 | 589,724 | 39,898 | 1,761 | 1,710 |
+| **Total** | **906** | **1,035,079** | **100,601** | **3,137** | **2,009** |
+
+Aggregate measured precision (adjudicated oracle): **7.2%** (TP 1,941 / 26,922 labeled of 88,615 findings), **recall 94.7%** (1,941 / 2,049).
+
+### sqc Change vs v0.4.56
+
+| Project | v0.4.56 | v0.4.57 | Delta |
+|---------|--------:|--------:|------:|
+| **libcrc** | 391 | 391 | 0 |
+| **sqlite** | 32,382 | 32,358 | −24 |
+| **mosquitto** | 11,317 | 11,317 | 0 |
+| **curl** | 16,638 | 16,637 | −1 |
+| **hostap** | 39,918 | 39,898 | −20 |
+| **Total** | **100,646** | **100,601** | **−45** |
+
+**v0.4.57 changes (task 214 — EXP34-C error-path null-vote suppression)**: prescan
+no longer records an error/cleanup `x = 0; goto/return …;` null assignment as a
+variable's null state, since that value never falls through to downstream call
+sites. Previously the flow-insensitive last-write cast a spurious null call-site
+vote that poisoned callee parameters every reachable caller passes non-null
+(e.g. sqlite `whereOmitNoopJoin(pWInfo)`, `growOp3(p)`; hostap
+`nl80211_bss_msg → bss->drv`), producing spurious EXP34-C param derefs.
+
+- **EXP34-C** −43 of the −45 total: sqlite −23, hostap −19, curl −1 — all
+  reductions, 0 additions. On sqlite all 19 adjudicated removals are
+  oracle-confirmed FP (0 of 7 oracle TPs lost); curl's single removal is not an
+  oracle TP. The malloc-then-deref null-deref FN is untouched (no trailing
+  jump), and Juliet stayed 100% flat (TP 22,615 / FP 4,607 / 83.1% across all 74
+  CWEs), so null-deref recall is unaffected.
+
+---
+
+## Results (sqc v0.3.5)
 
 MCP-based benchmark infrastructure across 3 hosts (cppcheck 2.10, clang-tidy 21.1.6, sqc v0.3.5 commit `8b8e1eec`).
 
