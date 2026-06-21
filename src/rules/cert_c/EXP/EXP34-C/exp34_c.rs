@@ -546,6 +546,22 @@ fn is_unsafe_at(
         return false;
     }
 
+    // Caller-contract / precondition idiom (the sqlite internal-helper pattern):
+    //   pReg = &aMem[pC->seekResult];
+    //   assert( pReg->flags & MEM_Blob );   // documented invariant
+    //   ... use pReg ...                    // non-null by that invariant
+    // A pointer established non-null by a dominating `assert(...)` — either an
+    // explicit `assert(p)` / `assert(p != 0)` test or an unconditional
+    // dereference of `p` inside the assert — is guaranteed non-null by the
+    // documented invariant, so a later dereference is not a bug. This is
+    // distinct from the unguarded-malloc null-deref FN, which has *no* such
+    // precondition assert (the whole point of that pattern is the missing
+    // check), so recall for that FN is unaffected. Guarded against the pointer
+    // being reassigned between the assert and the dereference.
+    if is_guarded_by_precondition_assert(var_name, deref_node, source) {
+        return false;
+    }
+
     // A dereference of an iterator macro's loop variable inside the macro body
     // (e.g. `el->field` within `DL_FOREACH(head, el) { ... }`) is guarded
     // non-null by the macro's expanded loop condition, which the parser cannot
@@ -1109,6 +1125,215 @@ fn is_null_comparison(binary_expr: &Node, var_name: &str, source: &str) -> bool 
 fn node_is_within(parent_node: &Node, child_node: &Node) -> bool {
     parent_node.start_byte() <= child_node.start_byte()
         && parent_node.end_byte() >= child_node.end_byte()
+}
+
+// ---------------------------------------------------------------------------
+// Caller-contract / precondition-assert suppression (task 207, EXP34 bucket 2)
+// ---------------------------------------------------------------------------
+
+/// True when a dominating `assert(...)` (or `ALWAYS(...)`) establishes `var_name`
+/// non-null before the dereference, and `var_name` is not reassigned in between.
+/// Models the sqlite documented-invariant idiom — see the call site in
+/// `is_unsafe_at`.
+fn is_guarded_by_precondition_assert(var_name: &str, deref_node: &Node, source: &str) -> bool {
+    let base = base_identifier(var_name);
+    if base.is_empty() {
+        return false;
+    }
+    let deref_byte = deref_node.start_byte();
+
+    // Find the enclosing function body (for the reassignment check).
+    let mut current = deref_node.parent();
+    let mut func_body = None;
+    while let Some(parent) = current {
+        if parent.kind() == "function_definition" {
+            func_body = parent.child_by_field_name("body");
+            break;
+        }
+        current = parent.parent();
+    }
+    let func_body = match func_body {
+        Some(b) => b,
+        None => return false,
+    };
+
+    // Walk the block nesting from the dereference up to the function body. At each
+    // enclosing compound statement, scan the statements that lexically precede our
+    // path for an `assert`/`ALWAYS` that establishes `base` non-null. Straight-line
+    // statements before the dereference in an ancestor block dominate it.
+    let mut child = *deref_node;
+    let mut current = deref_node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "compound_statement" {
+            let mut cursor = parent.walk();
+            for stmt in parent.children(&mut cursor) {
+                if stmt.start_byte() >= child.start_byte() {
+                    break;
+                }
+                if let Some(cond) = assert_condition(&stmt, source) {
+                    if assert_establishes_nonnull(&cond, base, source)
+                        && !reassigned_between(
+                            &func_body,
+                            base,
+                            stmt.end_byte(),
+                            deref_byte,
+                            source,
+                        )
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        if parent.kind() == "function_definition" {
+            break;
+        }
+        child = parent;
+        current = parent.parent();
+    }
+    false
+}
+
+/// True when `base` is assigned (`base = ...` or `Type *base = ...`) at a byte
+/// position in `(after, before)`. A reassignment between the precondition assert
+/// and the dereference invalidates the assert's non-null guarantee.
+fn reassigned_between(node: &Node, base: &str, after: usize, before: usize, source: &str) -> bool {
+    let pos = node.start_byte();
+    if pos >= before {
+        return false; // subtree is entirely past the dereference
+    }
+    if pos > after {
+        match node.kind() {
+            "assignment_expression" => {
+                if let Some(left) = node.child_by_field_name("left") {
+                    if left.kind() == "identifier"
+                        && ast_utils::get_node_text_owned(&left, source) == base
+                    {
+                        return true;
+                    }
+                }
+            }
+            "init_declarator" => {
+                if let Some(decl) = node.child_by_field_name("declarator") {
+                    if decl.kind() == "identifier"
+                        && ast_utils::get_node_text_owned(&decl, source) == base
+                    {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(c) = node.child(i) {
+            if reassigned_between(&c, base, after, before, source) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Leading C identifier of an expression text (`p->x` → `p`, `p[i]` → `p`).
+fn base_identifier(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    let mut end = 0;
+    while end < bytes.len() {
+        let c = bytes[end];
+        if c == b'_' || c.is_ascii_alphanumeric() {
+            end += 1;
+        } else {
+            break;
+        }
+    }
+    &text[..end]
+}
+
+/// If `stmt` is an expression statement whose expression is an `assert(...)` or
+/// `ALWAYS(...)` call, return the (single) condition argument node.
+fn assert_condition<'a>(stmt: &Node<'a>, source: &str) -> Option<Node<'a>> {
+    let expr = if stmt.kind() == "expression_statement" {
+        stmt.child(0)?
+    } else {
+        return None;
+    };
+    if expr.kind() != "call_expression" {
+        return None;
+    }
+    let func = expr.child_by_field_name("function")?;
+    let name = ast_utils::get_node_text_owned(&func, source);
+    if name != "assert" && name != "ALWAYS" {
+        return None;
+    }
+    let args = expr.child_by_field_name("arguments")?;
+    for i in 0..args.child_count() {
+        let arg = args.child(i)?;
+        if !matches!(arg.kind(), "(" | ")" | ",") {
+            return Some(arg);
+        }
+    }
+    None
+}
+
+/// True when an assert condition guarantees `base` is non-null when it holds:
+/// either an explicit truthiness/`!= NULL` test, or an *unconditional*
+/// dereference of `base` (no `||` / ternary that could short-circuit it).
+fn assert_establishes_nonnull(cond: &Node, base: &str, source: &str) -> bool {
+    if analyze_condition_for_safety(cond, base, source, false) {
+        return true;
+    }
+    let text = ast_utils::get_node_text_owned(cond, source);
+    if text.contains("||") || text.contains('?') {
+        return false;
+    }
+    cond_dereferences_var(cond, base, source)
+}
+
+/// True when `base` is dereferenced (`base->`, `base[i]`, `*base`) anywhere in
+/// the expression subtree.
+fn cond_dereferences_var(node: &Node, base: &str, source: &str) -> bool {
+    let matches_base = |n: &Node| {
+        n.kind() == "identifier" && { ast_utils::get_node_text_owned(n, source) == base }
+    };
+    match node.kind() {
+        "field_expression" => {
+            if let Some(arg) = node.child_by_field_name("argument") {
+                if matches_base(&arg) {
+                    return true;
+                }
+            }
+        }
+        "subscript_expression" => {
+            if let Some(arr) = node.child(0) {
+                if matches_base(&arr) {
+                    return true;
+                }
+            }
+        }
+        "pointer_expression" => {
+            let is_deref = node
+                .child_by_field_name("operator")
+                .map(|op| ast_utils::get_node_text_owned(&op, source) == "*")
+                .unwrap_or(false);
+            if is_deref {
+                if let Some(arg) = node.child_by_field_name("argument") {
+                    if matches_base(&arg) {
+                        return true;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if cond_dereferences_var(&child, base, source) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
