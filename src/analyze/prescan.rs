@@ -2022,6 +2022,25 @@ fn is_simple_identifier(s: &str) -> bool {
             .is_some_and(|c| c.is_alphabetic() || c == '_')
 }
 
+/// True when `stmt` is immediately followed (skipping comments) by an
+/// unconditional control-flow divergence — `goto`, `return`, `break`, or
+/// `continue`. Such a statement's effect does not fall through to the next
+/// straight-line statement, so a NULL assignment here is an error/cleanup sink
+/// rather than a value that reaches downstream call sites.
+fn stmt_diverges_after(stmt: &Node) -> bool {
+    let mut sib = stmt.next_sibling();
+    while let Some(n) = sib {
+        match n.kind() {
+            "comment" => sib = n.next_sibling(),
+            "goto_statement" | "return_statement" | "break_statement" | "continue_statement" => {
+                return true
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
 fn collect_assignments_recursive(
     node: &Node,
     source: &str,
@@ -2042,7 +2061,20 @@ fn collect_assignments_recursive(
                                     left.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                                 if !var_name.is_empty() {
                                     let state = infer_rhs_null_state(&right, source);
-                                    if state != NullState::Unknown {
+                                    // An error/cleanup assignment to NULL whose statement is
+                                    // immediately followed by a divergent jump
+                                    // (`x = 0; goto err;`) never falls through to subsequent
+                                    // call sites. Recording it would let the flow-insensitive
+                                    // last-write poison a callee parameter that all reachable
+                                    // callers actually pass non-null (e.g. sqlite
+                                    // whereOmitNoopJoin / growOp3). The malloc-then-deref FN
+                                    // (`p = malloc(); sink(p);`) has no trailing jump, so it
+                                    // is unaffected.
+                                    let is_dead_end_null = matches!(
+                                        state,
+                                        NullState::DefinitelyNull | NullState::PossiblyNull
+                                    ) && stmt_diverges_after(node);
+                                    if state != NullState::Unknown && !is_dead_end_null {
                                         states.insert(var_name, state);
                                     }
                                 }
