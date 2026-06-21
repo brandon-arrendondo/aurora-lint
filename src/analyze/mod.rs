@@ -44,6 +44,7 @@ pub fn analyze_project(
     progress: Option<&dyn ProgressReporter>,
     directories: &[String],
     include_paths: &[String],
+    excludes: &[String],
     diff_only: bool,
     suppress_file: Option<&str>,
     save_prescan: Option<&str>,
@@ -136,6 +137,34 @@ pub fn analyze_project(
     } else {
         project_source.get_c_files()?
     };
+
+    // Drop files matching any --exclude path glob (e.g. checked-in
+    // amalgamations or test harnesses). Prescan/cross-file context above is
+    // intentionally left intact so excluded files still contribute callee
+    // definitions; only their own findings are suppressed.
+    if !excludes.is_empty() {
+        let patterns: Vec<regex::Regex> = excludes
+            .iter()
+            .filter_map(|g| match suppression::glob_to_regex(g, true) {
+                Ok(re) => Some(re),
+                Err(e) => {
+                    eprintln!("Warning: invalid --exclude glob '{}': {}", g, e);
+                    None
+                }
+            })
+            .collect();
+        if !patterns.is_empty() {
+            let before = c_files.len();
+            c_files.retain(|f| {
+                let normalized = f.replace('\\', "/");
+                !patterns.iter().any(|re| re.is_match(&normalized))
+            });
+            let removed = before - c_files.len();
+            if removed > 0 {
+                eprintln!("Excluded {} file(s) matching --exclude globs", removed);
+            }
+        }
+    }
 
     // LPT scheduling: sort files by size descending so largest files are dispatched first.
     // Combined with par_bridge() demand-driven dispatch, this implements Graham's LPT

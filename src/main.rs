@@ -97,6 +97,13 @@ fn run() -> Result<i32> {
                 .action(clap::ArgAction::Append),
         )
         .arg(
+            Arg::new("exclude")
+                .long("exclude")
+                .help("Exclude files matching this path glob from analysis (repeatable, e.g. --exclude '**/onelua.c' --exclude 'testes/**')")
+                .value_name("GLOB")
+                .action(clap::ArgAction::Append),
+        )
+        .arg(
             Arg::new("fail_on_violation")
                 .long("fail-on-violation")
                 .help("Exit with code 1 if any violations are found")
@@ -177,6 +184,10 @@ fn run() -> Result<i32> {
         .get_many::<String>("include_paths")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
+    let excludes: Vec<String> = matches
+        .get_many::<String>("exclude")
+        .map(|vals| vals.cloned().collect())
+        .unwrap_or_default();
     let fail_on_violation = matches.get_flag("fail_on_violation");
     let fail_on_severity: Option<Severity> = matches
         .get_one::<String>("fail_on_severity")
@@ -229,6 +240,7 @@ fn run() -> Result<i32> {
         Some(&progress_reporter),
         &directories,
         &include_paths,
+        &excludes,
         diff_only,
         suppress_file.map(|s| s.as_str()),
         save_prescan.map(|s| s.as_str()),

@@ -375,7 +375,7 @@ impl CompiledWildcard {
 /// - The pattern is matched as a suffix (preceded by `/` or start of string)
 ///
 /// When `is_path` is false (e.g., rule IDs), `*` and `**` both match any characters.
-fn glob_to_regex(pattern: &str, is_path: bool) -> Result<regex::Regex, String> {
+pub(crate) fn glob_to_regex(pattern: &str, is_path: bool) -> Result<regex::Regex, String> {
     let mut regex_str = String::new();
     let chars: Vec<char> = pattern.chars().collect();
     let len = chars.len();
