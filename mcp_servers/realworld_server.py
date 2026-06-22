@@ -33,6 +33,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -400,6 +401,76 @@ class _StateLock:
             fcntl.flock(self._fd, fcntl.LOCK_UN)
             self._fd.close()
         return False
+
+
+# ── Child-process reaping ─────────────────────────────────────────────────────
+# run_analysis() spawns detached Popen children (start_new_session=True) and then
+# drops the Popen reference, tracking the run by PID only. Because this server is
+# a persistent process, those children become defunct zombies (state Z) the moment
+# they exit and stay that way until *something* calls waitpid() — which made
+# PID-based liveness checks (os.kill(pid, 0), `ps -p PID`) report finished runs as
+# "alive" for hours (task 218).
+#
+# We keep the Popen objects in a registry and reap them with proc.poll(), which
+# waits on that specific child only. A SIGCHLD handler reaps promptly without
+# waiting for the next get_status() poll. We deliberately do NOT use
+# `os.waitpid(-1, WNOHANG)`: this server makes many returncode-sensitive
+# subprocess.run() calls (often from FastMCP's worker threads), and a wildcard
+# reaper can swallow their child before subprocess reads its exit status,
+# corrupting the reported returncode.
+_CHILD_PROCS: dict[int, "subprocess.Popen"] = {}
+_CHILD_PROCS_LOCK = threading.Lock()
+
+
+def _register_child(proc: "subprocess.Popen") -> None:
+    with _CHILD_PROCS_LOCK:
+        _CHILD_PROCS[proc.pid] = proc
+
+
+def _reap_children() -> None:
+    """Reap any finished background children. Safe to call from any thread."""
+    # Non-blocking acquire so a SIGCHLD handler interrupting the main thread can
+    # never deadlock against an in-progress reap; whoever holds the lock will
+    # finish the work.
+    if not _CHILD_PROCS_LOCK.acquire(blocking=False):
+        return
+    try:
+        for pid in list(_CHILD_PROCS):
+            proc = _CHILD_PROCS[pid]
+            try:
+                if proc.poll() is not None:  # poll() reaps this specific child
+                    del _CHILD_PROCS[pid]
+            except Exception:
+                del _CHILD_PROCS[pid]
+    finally:
+        _CHILD_PROCS_LOCK.release()
+
+
+_prev_sigchld_handler = None
+
+
+def _sigchld_handler(signum, frame):
+    _reap_children()
+    # Chain to any previously installed handler (e.g. an event loop's child
+    # watcher) so we don't silently steal SIGCHLD from it.
+    if callable(_prev_sigchld_handler):
+        _prev_sigchld_handler(signum, frame)
+
+
+def _install_sigchld_reaper() -> None:
+    """Install a SIGCHLD handler that reaps tracked children promptly."""
+    global _prev_sigchld_handler
+    if not hasattr(signal, "SIGCHLD"):
+        return  # non-POSIX; nothing to do
+    try:
+        prev = signal.getsignal(signal.SIGCHLD)
+        # SIG_DFL/SIG_IGN are ints, not callables — don't chain to those.
+        _prev_sigchld_handler = prev if callable(prev) else None
+        signal.signal(signal.SIGCHLD, _sigchld_handler)
+    except (ValueError, OSError):
+        # signal.signal() only works on the main thread; if we're not there,
+        # fall back to poll-based reaping at each tool entry point.
+        pass
 
 
 def _process_alive(pid: int) -> bool:
@@ -921,6 +992,7 @@ def run_analysis(tool: str, codebase: str, host: str | None = None,
 
     Returns immediately. Use get_status() to monitor progress.
     """
+    _reap_children()  # opportunistically clear finished children before starting
     tool = tool.strip().lower()
     codebase = codebase.strip().lower()
 
@@ -1055,6 +1127,10 @@ def run_analysis(tool: str, codebase: str, host: str | None = None,
             )
         log_fh.close()
 
+    # Track the Popen so we can reap it when it exits (task 218); otherwise the
+    # finished child lingers as a zombie and PID liveness checks misreport it.
+    _register_child(proc)
+
     # Record new run in state (locked read-modify-write)
     start_time = time.time()
     with _StateLock() as state:
@@ -1148,16 +1224,9 @@ def get_status() -> str:
 
     Returns per-run status with timing, plus overall summary.
     """
-    # Reap any zombie child processes to prevent accumulation.
-    # SSH Popen children become zombies when the remote command finishes
-    # but the parent (this server) hasn't called waitpid() yet.
-    try:
-        while True:
-            pid, _ = os.waitpid(-1, os.WNOHANG)
-            if pid == 0:
-                break
-    except ChildProcessError:
-        pass  # No children to reap
+    # Reap any finished background children so PID liveness checks below stay
+    # accurate (a zombie keeps its PID, so os.kill(pid, 0) still "succeeds").
+    _reap_children()
 
     with _StateLock() as state:
         if not state["runs"]:
@@ -2058,6 +2127,7 @@ def purge_run(run_id: str | None = None, zombies: bool = False) -> str:
     """
     zombie_threshold = 14400  # 4 hours
 
+    _reap_children()  # reap before classifying so liveness checks are accurate
     with _StateLock() as state:
         if not state["runs"]:
             return json.dumps({"status": "no_runs", "message": "No runs tracked."})
@@ -2343,4 +2413,5 @@ def _parse_run_id(run_id: str) -> tuple[str, str]:
 
 
 if __name__ == "__main__":
+    _install_sigchld_reaper()  # reap finished children promptly (task 218)
     mcp.run()
