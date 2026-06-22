@@ -142,13 +142,15 @@ impl ScopeAnalyzer {
                     continue;
                 }
                 _ => {
-                    // Add children to stack (except function bodies which are separate scopes,
-                    // but always recurse into the root node even if it's a function body)
+                    // Add children to the stack, but stop at any nested compound
+                    // statement: each block is a separate lexical scope, collected and
+                    // checked on its own by analyze_child_scopes_iterative. Folding a
+                    // block's declarations into its ancestors would re-report the same
+                    // block-local pair once per enclosing scope (task 220). The root
+                    // node itself is the scope currently being collected, so always
+                    // descend into it even when it is a compound statement.
                     let is_root = node.id() == root_id;
-                    if is_root
-                        || node.kind() != "compound_statement"
-                        || !self.is_function_body(&node)
-                    {
+                    if is_root || node.kind() != "compound_statement" {
                         for i in (0..node.child_count()).rev() {
                             if let Some(child) = node.child(i) {
                                 stack.push(child);
@@ -167,8 +169,18 @@ impl ScopeAnalyzer {
         violations: &mut Vec<RuleViolation>,
         depth: usize,
     ) {
-        // Use explicit stack instead of recursion to avoid stack overflow
-        let mut stack = vec![*root];
+        // Use an explicit stack instead of recursion to avoid stack overflow.
+        // Seed it with the root's children, never the root itself: the root is the
+        // scope already collected and checked by the caller. Re-pushing the root would
+        // let a nested-block root re-match the compound_statement arm below and
+        // re-analyze itself at depth+1 repeatedly (up to MAX_SCOPE_DEPTH), emitting the
+        // same finding ~100 times (task 220).
+        let mut stack: Vec<Node> = Vec::new();
+        for i in (0..root.child_count()).rev() {
+            if let Some(child) = root.child(i) {
+                stack.push(child);
+            }
+        }
 
         while let Some(node) = stack.pop() {
             match node.kind() {
