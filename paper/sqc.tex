@@ -855,6 +855,76 @@ and the sampled precision audit in \cref{sec:limitations} quantifies
 its cost: even after a 17$\times$ volume reduction, most remaining
 EXP34-C findings on real-world code are false positives.
 
+\subsection{A Defect Class Juliet Cannot Surface}
+\label{sec:juliet-blindspot}
+
+The precision gap above is the expected direction of disagreement:
+Juliet flatters a rule that misbehaves in the field.  The real-world
+oracles also disagree in the \emph{opposite} direction---they expose
+defects in the analyzer that Juliet structurally cannot report at all.
+The clearest case is a class of duplicate-finding bugs, where a rule
+emits the same diagnostic more than once for a single program fact.
+
+A complete adjudication of our fifth oracle, Lua~5.5
+(\texttt{lgc.c}~@\,\texttt{40b76de2}), surfaced the severe form.  DCL02-C
+(visually similar identifiers) re-emitted the identical \texttt{n}/\texttt{h}
+diagnostic 100~times on each of two source lines: 200 of the rule's
+203 findings on that file were exact duplicates of just two real
+diagnostics (\cref{tab:dup-class}).  The root cause was an
+$O(\text{depth})$ re-traversal---the rule re-analyzed each enclosing
+block, re-emitting once per pairwise comparison rather than once per
+declaration site---so the duplication factor scales with block-nesting
+depth.  Juliet never surfaced this: its synthetic test cases are small
+and shallow, and none reaches the nesting depth at which the blow-up
+becomes visible.
+
+Prompted by that finding, we audited the same bug \emph{class} across
+the rule set and found milder, constant-factor instances whose inputs
+\emph{were} present in Juliet: POS37-C emitted every dropped-privilege
+finding twice (2.0$\times$, all CWE273 cases), SIG31-C emitted some
+shared-object accesses twice (1.5$\times$, CWE364), and FIO42-C reported
+one resource under two mutually exclusive messages---unclosed
+\texttt{FILE*} \emph{and} unclosed file descriptor---a misclassification
+inflating CWE404 by 1.53$\times$.  Crucially, Juliet's pass/fail oracle
+could not flag even these: a Juliet \texttt{bad} case passes when the
+finding set for the seeded defect is non-empty, so a duplicated or
+misclassified finding scores identically to a single correct one.  The
+metric is count-blind by construction; the defects were latent in the
+Juliet corpus but invisible to its scoring.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llrl@{}}
+\toprule
+\textbf{Rule} & \textbf{Surfaced by} & \textbf{Factor} & \textbf{Mechanism} \\
+\midrule
+DCL02-C & Lua (real-world)  & 100$\times$  & $O(\text{depth})$ re-traversal \\
+POS37-C & Juliet CWE273     & 2.0$\times$  & subtree visited twice \\
+SIG31-C & Juliet CWE364     & 1.5$\times$  & per-reference emit \\
+FIO42-C & Juliet CWE404     & 1.53$\times$ & opener misclassification \\
+\bottomrule
+\end{tabular}
+\caption{Duplicate-finding defects.  DCL02-C's scale-dependent form
+(200 of 203 \texttt{lgc.c} findings were duplicates of two lines) was
+reachable only through real-world depth; the constant-factor forms were
+present in Juliet inputs but invisible to its presence-based oracle.
+All four are fixed at the rule level (v0.4.58--v0.4.63).}
+\label{tab:dup-class}
+\end{table}
+
+These are two distinct blind spots, and the real-world oracle covers
+both.  The first is one of \emph{scale}: synthetic micro-benchmarks do
+not exercise the depth, size, and idiom at which structural or
+algorithmic defects manifest.  The second is one of \emph{oracle
+granularity}: a presence-based pass/fail metric cannot detect
+over-emission at any scale, whereas the real-world audit counts and
+inspects every individual finding.  This is direct evidence that the
+five real-world oracles complement Juliet rather than duplicate it:
+they measure deployment precision (\cref{sec:limitations}), and they
+exercise the analyzer at a scale and granularity Juliet does not reach.
+
 \subsection{Runtime Performance}
 \label{sec:runtime}
 
