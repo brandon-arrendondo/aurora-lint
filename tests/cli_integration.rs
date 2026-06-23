@@ -40,6 +40,48 @@ fn run_sqc(args: &[&str]) -> (i32, String, String) {
     (code, stdout, stderr)
 }
 
+/// Remove any git environment variables inherited from the parent process.
+///
+/// When the test suite runs from inside a git hook (e.g. the pre-commit hook
+/// via `cargo llvm-cov`), `git commit` exports `GIT_DIR` and `GIT_INDEX_FILE`
+/// into the environment. Subprocesses spawned with `Command` inherit them, so a
+/// `git add` run with `current_dir(temp_repo)` would still mutate the *outer*
+/// repo's commit index instead of the temp repo's — leaving a stray `clean.c`
+/// entry that points at a blob in the temp object store and corrupting the
+/// outer commit ("invalid object … Error building trees"). Scrub these so temp
+/// repos are fully isolated.
+fn scrub_git_env(cmd: &mut Command) -> &mut Command {
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_PREFIX",
+        "GIT_CONFIG_PARAMETERS",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
+/// Run a `git` subcommand scoped to `repo_dir` with the inherited git
+/// environment scrubbed (see [`scrub_git_env`]).
+fn git_in(repo_dir: &std::path::Path, args: &[&str]) {
+    let status = scrub_git_env(&mut Command::new("git"))
+        .args(args)
+        .current_dir(repo_dir)
+        .output()
+        .expect("failed to execute git");
+    assert!(
+        status.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&status.stderr)
+    );
+}
+
 // ─── Export formats ──────────────────────────────────────────────────────────
 
 #[test]
@@ -643,36 +685,18 @@ fn diff_mode_only_analyzes_modified_files() {
     let dir = tempfile::tempdir().unwrap();
     let repo_dir = dir.path();
 
-    // Init git repo
-    Command::new("git")
-        .args(["init"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["config", "user.email", "test@test.com"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
+    // Init git repo. Scrub inherited git env vars (see git_in) so these commands
+    // operate on the temp repo and not whatever repo a parent `git commit` hook
+    // is building.
+    git_in(repo_dir, &["init"]);
+    git_in(repo_dir, &["config", "user.email", "test@test.com"]);
+    git_in(repo_dir, &["config", "user.name", "Test"]);
 
     // Create and commit a clean file
     let clean = repo_dir.join("clean.c");
     std::fs::write(&clean, "int add(int a, int b) { return a + b; }\n").unwrap();
-    Command::new("git")
-        .args(["add", "clean.c"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "initial"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
+    git_in(repo_dir, &["add", "clean.c"]);
+    git_in(repo_dir, &["commit", "-m", "initial"]);
 
     // Add an untracked file with a violation
     let violation = repo_dir.join("violation.c");
@@ -685,8 +709,10 @@ fn diff_mode_only_analyzes_modified_files() {
     let out = repo_dir.join("out.json");
 
     // --diff should only analyze the new/modified file
-    // Must run from within the repo so sqc detects the git context correctly
-    let output = Command::new(sqc_bin())
+    // Must run from within the repo so sqc detects the git context correctly.
+    // Scrub inherited git env vars so sqc's internal `git diff` targets this
+    // temp repo, not a parent hook's repo (see git_in).
+    let output = scrub_git_env(&mut Command::new(sqc_bin()))
         .args([
             repo_dir.to_str().unwrap(),
             "-m",
