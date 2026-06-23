@@ -82,7 +82,22 @@ PR-ready — awaiting submission (Brandon to confirm raylib CLA + disclose AI as
   ... 0 bytes to the right of global variable 'buffer' ... of size 1024
 ```
 **After fix:** input handled safely (warning logged, empty result), normal input `hello[X]world` →
-`hello[_]world` unchanged. Repros: `scratchpad/repro_bug2.c` (overflow) + `repro_bug2_fixed.c` (clean).
+`hello[_]world` unchanged.
+
+**Valgrind caveat (important for the PR):** the real buffer is `static char buffer[1024]` — a
+**global**. Valgrind memcheck puts red zones only on **heap** blocks, so it does **not** detect this
+overflow: `valgrind ./repro_bug2_plain` → `ERROR SUMMARY: 0 errors` even though the write runs 2001
+bytes past a 1024 buffer (confirmed). Only ASan instruments globals. To get a **valgrind-failing**
+test, `repro_bug2_valgrind.c` changes *only* the storage class of `buffer` (static → a heap block of
+the identical `MAX_TEXT_BUFFER_LENGTH`); logic/indices/inputs are unchanged, so memcheck sees the same
+OOB write:
+- **unfixed** → `Invalid write of size 1 ... at TextReplaceBetween:61`, `ERROR SUMMARY: 129 errors`, exit 99
+- **fixed** (`repro_bug2_valgrind_fixed.c`) → `ERROR SUMMARY: 0 errors`, exit 0
+
+Repro artifacts (in `raylib_pr_artifacts/`): `repro_bug2.c` (ASan, verbatim static buffer) +
+`repro_bug2_fixed.c`; `repro_bug2_valgrind.c` (memcheck, heap-framed) + `repro_bug2_valgrind_fixed.c`.
+**Recommended PR evidence:** lead with ASan (proves the real static-buffer overflow); offer the
+valgrind heap-framed repro as the memcheck-visible equivalent.
 
 **Applied diff:**
 ```c
@@ -208,7 +223,7 @@ sibling style exactly to keep the PR minimal. Decide during review.)
 | # | Bug | Branch | Repro | Fix | PR |
 |---|-----|--------|-------|-----|----|
 | 1 | `rlPushMatrix` stack overflow | ⬜ | ⬜ | ⬜ | ⬜ |
-| 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan | ✅ `f437bd8` | ⬜ submit |
+| 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan + valgrind(heap) | ✅ `f437bd8` | ⬜ submit (no CLA) |
 | 3 | gamepad-index OOB (`GetGamepadAxisCount`/`GetGamepadName`) | ⬜ | ⬜ | ⬜ | ⬜ |
 
 Tier 2 (malformed-file robustness: IQM/BDF/OBJ/glTF parsers — task 233) and Tier 3 (platform input
