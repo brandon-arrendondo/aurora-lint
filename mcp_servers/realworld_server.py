@@ -239,6 +239,34 @@ CODEBASES = {
             "exclude": ["*/onelua.c", "*/ltests.c", "*/testes/*"],
         },
     },
+    "raylib": {
+        "path": Path.home() / "toolchain" / "raylib",
+        "sqc": {
+            # Scope to raylib's OWN library code: src/ (the 7 module .c TUs +
+            # platform backends + headers), excluding src/external/** which is
+            # bundled third-party (glad, glfw, dr_*, cgltf, miniaudio, stb-like
+            # single-headers). examples/, projects/ and tools/ are demo programs,
+            # not the library, and fall outside scan_path. raylib is the suite's
+            # structural-C99 oracle (compound literals + designated initializers),
+            # the idioms Lua/the other oracles lack (task 217).
+            "scan_path": "{path}/src",
+            "manifest": "conf/realworld/raylib-rules.toml",
+            "includes": ["-I", "{path}/src"],
+            "extra_args": [
+                "--exclude", "**/external/**",
+            ],
+        },
+        "cppcheck": {
+            "includes": ["-I", "{path}/src"],
+            "source_dirs": ["{path}/src/"],
+            "extra_args": ["-i", "{path}/src/external"],
+        },
+        "clang-tidy": {
+            "includes": ["-I", "{path}/src"],
+            "source_dirs": ["{path}/src/"],
+            "exclude": ["*/external/*"],
+        },
+    },
 }
 
 # ── MCP server ────────────────────────────────────────────────────────────────
@@ -637,7 +665,8 @@ def _fetch_remote_results(host: str, version_dir: Path, run_id: str) -> dict:
 def _build_sqc_cmd(codebase: str, cfg: dict, results_dir: Path, run_id: str,
                    **_kwargs) -> list[str]:
     path = str(cfg["path"])
-    scan_path = cfg["sqc"].get("scan_path") or path
+    scan_path = cfg["sqc"].get("scan_path")
+    scan_path = _expand([scan_path], path)[0] if scan_path else path
     output_file = results_dir / f"{run_id}.json"
     extra = _expand(cfg["sqc"].get("extra_args", []), path)
     includes = _expand(cfg["sqc"].get("includes", []), path)
