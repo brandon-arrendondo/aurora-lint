@@ -46,23 +46,13 @@ impl CertRule for Pos37C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Check function bodies and file-level code
-        if node.kind() == "function_definition" {
-            if let Some(body) = node.child_by_field_name("body") {
-                self.check_privilege_drop(&body, source, &mut violations);
-                self.check_win_privilege_apis(&body, source, &mut violations);
-            }
-        } else if node.kind() == "translation_unit" {
-            self.check_privilege_drop(node, source, &mut violations);
-            self.check_win_privilege_apis(node, source, &mut violations);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
-        }
+        // Both helpers recurse over the entire subtree on their own, so each is
+        // invoked exactly once on the given node. The previous version ran them at
+        // both the translation_unit level (whole tree) and again per function body,
+        // re-walking each function and emitting every in-function finding twice
+        // (task 221).
+        self.check_privilege_drop(node, source, &mut violations);
+        self.check_win_privilege_apis(node, source, &mut violations);
 
         violations
     }
