@@ -1587,6 +1587,57 @@ def _extract_run_durations(tool: str = "sqc") -> dict[str, float]:
     return durations
 
 
+def _sqc_glob_to_regex(pattern: str) -> "re.Pattern":
+    """Python port of sqc's suppression::glob_to_regex(pattern, is_path=True).
+
+    Mirrors the exact path-glob semantics sqc applies to --exclude (src/analyze/
+    suppression.rs): `**` spans `/`, a lone `*`/`?` stays within one segment, and
+    the pattern is anchored as a suffix preceded by `/` or start-of-string. Kept
+    in lockstep so the post-exclude fileset counted here matches what sqc scans.
+    """
+    out: list[str] = []
+    chars = list(pattern)
+    n = len(chars)
+    i = 0
+    while i < n:
+        c = chars[i]
+        if c == "*":
+            if i + 1 < n and chars[i + 1] == "*":
+                out.append(".*")
+                i += 2
+                if i < n and chars[i] == "/":
+                    out.append("/?")
+                    i += 1
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            if c in ".()+|[]{}^$\\":
+                out.append("\\")
+            out.append(c)
+            i += 1
+    return re.compile(f"(?:^|/){''.join(out)}$")
+
+
+def _sqc_exclude_patterns(cfg: dict) -> list["re.Pattern"]:
+    """Compile the --exclude globs from a codebase's sqc extra_args.
+
+    These define the fileset sqc actually scans; applying them here keeps the
+    DB's c_files/loc aligned with the analyzed set rather than the whole repo.
+    For our codebases the competitor tools exclude the same files (e.g. Lua's
+    onelua.c/ltests.c/testes), so the LOC denominator stays shared across tools.
+    """
+    args = cfg.get("sqc", {}).get("extra_args", [])
+    return [
+        _sqc_glob_to_regex(args[i + 1])
+        for i in range(len(args) - 1)
+        if args[i] == "--exclude"
+    ]
+
+
 def _count_c_source(cfg: dict) -> tuple[int, int]:
     """Count (c_files, loc) for a codebase's own C source.
 
@@ -1594,10 +1645,12 @@ def _count_c_source(cfg: dict) -> tuple[int, int]:
     deps and test scaffolding) so the LOC denominator is identical across tools
     — the right basis for a fair LOC/s throughput comparison. Falls back to the
     project root if no source_dirs are configured. loc is physical lines across
-    .c and .h files; c_files counts .c translation units.
+    .c and .h files; c_files counts .c translation units. sqc --exclude globs
+    are applied so the count reflects the post-exclude set sqc actually scanned.
     """
     path = str(cfg["path"])
     dirs = _expand(cfg.get("cppcheck", {}).get("source_dirs", []), path) or [path]
+    excludes = _sqc_exclude_patterns(cfg)
     c_files = 0
     loc = 0
     seen: set[str] = set()
@@ -1610,6 +1663,9 @@ def _count_c_source(cfg: dict) -> tuple[int, int]:
                 if fp in seen:
                     continue
                 seen.add(fp)
+                normalized = fp.replace("\\", "/")
+                if any(p.search(normalized) for p in excludes):
+                    continue
                 if f.endswith(".c"):
                     c_files += 1
                 try:
