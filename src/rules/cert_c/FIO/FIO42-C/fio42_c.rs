@@ -172,83 +172,20 @@ impl FileResourceTracker {
     }
 
     fn check_file_pointer_declaration(&mut self, node: &Node, source: &str) {
-        let decl_text = get_node_text(node, source);
-
-        // Check for FILE* declarations with fopen/freopen
-        if decl_text.contains("FILE") && decl_text.contains("*") {
-            // Look for init_declarator with fopen/freopen
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "init_declarator" {
-                        if let Some(value) = child.child_by_field_name("value") {
-                            let value_text = get_node_text(&value, source);
-                            if value_text.contains("fopen") || value_text.contains("freopen") {
-                                if let Some(var_name) = self.extract_declarator_name(&child, source)
-                                {
-                                    self.file_pointers.insert(
-                                        var_name.clone(),
-                                        ResourceInfo {
-                                            var_name,
-                                            resource_type: ResourceType::FilePointer,
-                                            line: node.start_position().row + 1,
-                                            column: node.start_position().column + 1,
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check for POSIX file descriptor from open()
-        if decl_text.contains("int") && decl_text.contains("open(") {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "init_declarator" {
-                        if let Some(value) = child.child_by_field_name("value") {
-                            let value_text = get_node_text(&value, source);
-                            if value_text.contains("open(") {
-                                if let Some(var_name) = self.extract_declarator_name(&child, source)
-                                {
-                                    self.file_descriptors.insert(
-                                        var_name.clone(),
-                                        ResourceInfo {
-                                            var_name,
-                                            resource_type: ResourceType::FileDescriptor,
-                                            line: node.start_position().row + 1,
-                                            column: node.start_position().column + 1,
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check for Windows HANDLE from CreateFile()
-        if decl_text.contains("HANDLE") && decl_text.contains("CreateFile") {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "init_declarator" {
-                        if let Some(value) = child.child_by_field_name("value") {
-                            let value_text = get_node_text(&value, source);
-                            if value_text.contains("CreateFile") {
-                                if let Some(var_name) = self.extract_declarator_name(&child, source)
-                                {
-                                    self.file_handles.insert(
-                                        var_name.clone(),
-                                        ResourceInfo {
-                                            var_name,
-                                            resource_type: ResourceType::FileHandle,
-                                            line: node.start_position().row + 1,
-                                            column: node.start_position().column + 1,
-                                        },
-                                    );
-                                }
+        // Classify each initialized declarator by the actual function it calls.
+        // Substring matching is unsound here because `fopen(`/`freopen(` both
+        // contain `open(`, which would otherwise track a FILE* as both a FILE
+        // pointer and a POSIX file descriptor (task 223).
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "init_declarator" {
+                    if let Some(value) = child.child_by_field_name("value") {
+                        if let Some(rtype) = Self::callee_name(&value, source)
+                            .as_deref()
+                            .and_then(Self::classify_callee)
+                        {
+                            if let Some(var_name) = self.extract_declarator_name(&child, source) {
+                                self.track_resource(var_name, rtype, node);
                             }
                         }
                     }
@@ -262,47 +199,61 @@ impl FileResourceTracker {
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
         ) {
-            let right_text = get_node_text(&right, source);
-            let var_name = get_node_text(&left, source).to_string();
-
-            // Check for FILE* assignment from fopen/freopen
-            if right_text.contains("fopen") || right_text.contains("freopen") {
-                self.file_pointers.insert(
-                    var_name.clone(),
-                    ResourceInfo {
-                        var_name: var_name.clone(),
-                        resource_type: ResourceType::FilePointer,
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                    },
-                );
+            // Classify by the called function, not by substring, so an `fopen`
+            // RHS is tracked only as a FILE pointer and not also as a POSIX file
+            // descriptor (`fopen(` contains `open(`) — see task 223.
+            if let Some(rtype) = Self::callee_name(&right, source)
+                .as_deref()
+                .and_then(Self::classify_callee)
+            {
+                let var_name = get_node_text(&left, source).to_string();
+                self.track_resource(var_name, rtype, node);
             }
+        }
+    }
 
-            // Check for fd assignment from open()
-            if right_text.contains("open(") {
-                self.file_descriptors.insert(
-                    var_name.clone(),
-                    ResourceInfo {
-                        var_name: var_name.clone(),
-                        resource_type: ResourceType::FileDescriptor,
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                    },
-                );
-            }
+    /// Record an opened resource of the given kind, keyed on the variable that
+    /// holds it, positioned at `node`.
+    fn track_resource(&mut self, var_name: String, rtype: ResourceType, node: &Node) {
+        let info = ResourceInfo {
+            var_name: var_name.clone(),
+            resource_type: rtype.clone(),
+            line: node.start_position().row + 1,
+            column: node.start_position().column + 1,
+        };
+        match rtype {
+            ResourceType::FilePointer => self.file_pointers.insert(var_name, info),
+            ResourceType::FileDescriptor => self.file_descriptors.insert(var_name, info),
+            ResourceType::FileHandle => self.file_handles.insert(var_name, info),
+        };
+    }
 
-            // Check for HANDLE assignment from CreateFile()
-            if right_text.contains("CreateFile") {
-                self.file_handles.insert(
-                    var_name.clone(),
-                    ResourceInfo {
-                        var_name: var_name.clone(),
-                        resource_type: ResourceType::FileHandle,
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                    },
-                );
+    /// Name of the first function called within an initializer / RHS expression
+    /// (e.g. `fopen` from `fopen(...)` or `(FILE *)fopen(...)`).
+    fn callee_name(node: &Node, source: &str) -> Option<String> {
+        if node.kind() == "call_expression" {
+            if let Some(function) = node.child_by_field_name("function") {
+                return Some(get_node_text(&function, source).trim().to_string());
             }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if let Some(name) = Self::callee_name(&child, source) {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+
+    /// Map an opener function name to the kind of resource it returns. Returns
+    /// `None` for functions this rule does not track.
+    fn classify_callee(name: &str) -> Option<ResourceType> {
+        match name {
+            "fopen" | "freopen" => Some(ResourceType::FilePointer),
+            "open" => Some(ResourceType::FileDescriptor),
+            "CreateFile" | "CreateFileA" | "CreateFileW" => Some(ResourceType::FileHandle),
+            _ => None,
         }
     }
 
