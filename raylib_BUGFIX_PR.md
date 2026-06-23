@@ -69,7 +69,38 @@ counter incrementing past the cap.
 
 ---
 
-## Bug 2 — `TextReplaceBetween()` static-buffer overflow  ⬜ not started
+## Bug 2 — `TextReplaceBetween()` static-buffer overflow  ✅ ready (branch `fix-textreplacebetween-overflow`, commit `f437bd8`)
+
+**Status:** verified bug exists on master (`962bbfc` == HEAD); ASan repro confirms overflow;
+fix applied + syntax-checked + ASan-clean + correctness control passes. Diff +7/−3, one TU.
+PR-ready — awaiting submission (Brandon to confirm raylib CLA + disclose AI assistance per policy).
+
+**ASan evidence (before fix):**
+```
+==ERROR: AddressSanitizer: global-buffer-overflow ... WRITE of size 2001
+  #1 TextReplaceBetween rtext.c:1924 (third strncpy)
+  ... 0 bytes to the right of global variable 'buffer' ... of size 1024
+```
+**After fix:** input handled safely (warning logged, empty result), normal input `hello[X]world` →
+`hello[_]world` unchanged. Repros: `scratchpad/repro_bug2.c` (overflow) + `repro_bug2_fixed.c` (clean).
+
+**Applied diff:**
+```c
+-                strncpy(buffer, text, beginIndex + beginLen);
+-                if (replacement != NULL) strncpy(buffer + beginIndex + beginLen, replacement, replaceLen);
+-                strncpy(buffer + beginIndex + beginLen + replaceLen, text + endIndex, textLen - endIndex);
++                if ((beginIndex + beginLen + replaceLen + (textLen - endIndex)) < (MAX_TEXT_BUFFER_LENGTH - 1))
++                {
++                    strncpy(buffer, text, beginIndex + beginLen);
++                    if (replacement != NULL) strncpy(buffer + beginIndex + beginLen, replacement, replaceLen);
++                    strncpy(buffer + beginIndex + beginLen + replaceLen, text + endIndex, textLen - endIndex);
++                }
++                else TRACELOG(LOG_WARNING, "TEXT: Text with replaced string is longer than internal buffer (MAX_TEXT_BUFFER_LENGTH)");
+```
+
+---
+
+## Bug 2 — original characterization (kept for reference)
 
 - **File / lines:** `src/rtext.c:1900-1928` (overflowing `strncpy`s at 1922-1924)
 - **Symbol:** `char *TextReplaceBetween(const char *text, const char *begin, const char *end, const char *replacement)` (public `RLAPI`)
@@ -177,7 +208,7 @@ sibling style exactly to keep the PR minimal. Decide during review.)
 | # | Bug | Branch | Repro | Fix | PR |
 |---|-----|--------|-------|-----|----|
 | 1 | `rlPushMatrix` stack overflow | ⬜ | ⬜ | ⬜ | ⬜ |
-| 2 | `TextReplaceBetween` buffer overflow | ⬜ | ⬜ | ⬜ | ⬜ |
+| 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan | ✅ `f437bd8` | ⬜ submit |
 | 3 | gamepad-index OOB (`GetGamepadAxisCount`/`GetGamepadName`) | ⬜ | ⬜ | ⬜ | ⬜ |
 
 Tier 2 (malformed-file robustness: IQM/BDF/OBJ/glTF parsers — task 233) and Tier 3 (platform input
