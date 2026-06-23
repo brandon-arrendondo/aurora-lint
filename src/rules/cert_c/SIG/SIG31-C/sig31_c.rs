@@ -63,6 +63,14 @@ impl CertRule for Sig31C {
         // Check each handler for shared object access
         self.check_node(node, source, &handler_names, &global_vars, &mut violations);
 
+        // A shared object reached via `g->field` / `g.field` is reported once by
+        // the field_expression branch and again when the recursion reaches the
+        // base identifier — both at the same position — producing an exact
+        // duplicate. Collapse those; distinct accesses always start at distinct
+        // (line, column), so genuine multi-access lines are preserved (task 222).
+        let mut seen = HashSet::new();
+        violations.retain(|v| seen.insert((v.line, v.column)));
+
         violations
     }
 }
