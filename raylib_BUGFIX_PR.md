@@ -16,7 +16,9 @@ Each bug gets its own branch + PR (review → test case → PR description), tac
 3. **Don't break the build** — "at least on Windows; the more platforms the better, but don't worry
    if you can't test all." → we build-verify on Linux (`make PLATFORM=PLATFORM_DESKTOP`).
 - Conventions: Pascal/camel-case (we reuse existing names + the `"TEXT: ..."` TRACELOG style).
-- Issues use a `[module]` bracket tag; opening an issue first is optional for a clear bugfix.
+- `[module]` bracket tag: CONTRIBUTING mentions it for issues, but in practice nearly all open
+  PRs carry it too — so PR **titles** get `[rtext]`/`[rlgl]`/`[rcore]`. Opening an issue first is
+  optional for a clear bugfix.
 - **PR evidence = ASan only** (per decision 2026-06-23). ASan proves the real static-buffer overflow
   directly and is above raylib's bar. The valgrind heap-framed repros are kept as internal notes
   (memcheck can't see static/global overflows) and are **not** part of the PR description.
@@ -72,7 +74,7 @@ counter incrementing past the cap.
 - Negative control: balanced push/pop loops stay clean both before and after.
 
 ### PR description (draft)
-> **Fix matrix stack overflow in `rlPushMatrix()`**
+> **`[rlgl]` Fix matrix stack overflow in `rlPushMatrix()`**
 > The `RL_MAX_MATRIX_STACK_SIZE` check in `rlPushMatrix()` logs an error but does not return, so the
 > matrix is still written to `RLGL.State.stack[stackCounter]` — an out-of-bounds write once the stack
 > is full (`stackCounter == RL_MAX_MATRIX_STACK_SIZE`), corrupting adjacent `RLGL.State` fields and
@@ -81,7 +83,7 @@ counter incrementing past the cap.
 
 ---
 
-## Bug 2 — `TextReplaceBetween()` static-buffer overflow  ✅ ready (branch `fix-textreplacebetween-overflow`, commit `f437bd8`)
+## Bug 2 — `TextReplaceBetween()` static-buffer overflow  ✅ ready (branch `fix-textreplacebetween-overflow`, commit `99936bc`)
 
 **Status:** verified bug exists on master (`962bbfc` == HEAD); ASan repro confirms overflow;
 fix applied + **full lib build clean** (`make PLATFORM=PLATFORM_DESKTOP` → `libraylib.a`, rtext.c
@@ -165,7 +167,7 @@ remaining capacity. Settle the exact shape against the sibling style during impl
 - Correctness controls: short inputs produce byte-identical output before and after the fix.
 
 ### PR description (draft)
-> **Fix buffer overflow in `TextReplaceBetween()`**
+> **`[rtext]` Fix buffer overflow in `TextReplaceBetween()`**
 > `TextReplaceBetween()` copies into the 1024-byte `static char buffer[MAX_TEXT_BUFFER_LENGTH]` with
 > three `strncpy` calls whose combined length is driven by the (caller-controlled) input lengths and is
 > never clamped to the buffer size — overflowing for long inputs. The sibling `TextReplace`/`TextInsert`
@@ -217,7 +219,7 @@ sibling style exactly to keep the PR minimal. Decide during review.)
 - Control: `gamepad` 0..MAX_GAMEPADS-1 unchanged.
 
 ### PR description (draft)
-> **Bounds-check gamepad index in `GetGamepadAxisCount()` and `GetGamepadName()`**
+> **`[rcore]` Bounds-check gamepad index in `GetGamepadAxisCount()` and `GetGamepadName()`**
 > These two public getters index `CORE.Input.Gamepad.axisCount[gamepad]` / `name[gamepad]` with an
 > unvalidated `gamepad` argument, an out-of-bounds read for `gamepad >= MAX_GAMEPADS`. Every sibling
 > gamepad accessor already guards with `gamepad < MAX_GAMEPADS`; this adds the same check, returning a
@@ -237,7 +239,7 @@ sibling style exactly to keep the PR minimal. Decide during review.)
 | # | Bug | Branch | Repro | Fix | PR |
 |---|-----|--------|-------|-----|----|
 | 1 | `rlPushMatrix` stack overflow | ⬜ | ⬜ | ⬜ | ⬜ |
-| 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan (build-verified) | ✅ `f437bd8` | ⬜ submit (no CLA) |
+| 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan (build-verified) | ✅ `99936bc` | ⬜ submit (no CLA) |
 | 3 | gamepad-index OOB (`GetGamepadAxisCount`/`GetGamepadName`) | ⬜ | ⬜ | ⬜ | ⬜ |
 
 Tier 2 (malformed-file robustness: IQM/BDF/OBJ/glTF parsers — task 233) and Tier 3 (platform input
