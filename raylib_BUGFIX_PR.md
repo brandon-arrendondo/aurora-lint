@@ -9,6 +9,18 @@ oversight rather than intent.
 Upstream repo: <https://github.com/raysan5/raylib>. Target branch for PRs: typically `master`.
 Each bug gets its own branch + PR (review → test case → PR description), tackled one at a time.
 
+### raylib CONTRIBUTING.md requirements (checked 2026-06-23)
+**No CLA.** The PR bar is light — three rules:
+1. PR description clearly describes **problem + solution** (include issue # if applicable).
+2. **Small PRs, one at a time** (they explicitly dislike big changelists). Our per-bug branches fit.
+3. **Don't break the build** — "at least on Windows; the more platforms the better, but don't worry
+   if you can't test all." → we build-verify on Linux (`make PLATFORM=PLATFORM_DESKTOP`).
+- Conventions: Pascal/camel-case (we reuse existing names + the `"TEXT: ..."` TRACELOG style).
+- Issues use a `[module]` bracket tag; opening an issue first is optional for a clear bugfix.
+- **PR evidence = ASan only** (per decision 2026-06-23). ASan proves the real static-buffer overflow
+  directly and is above raylib's bar. The valgrind heap-framed repros are kept as internal notes
+  (memcheck can't see static/global overflows) and are **not** part of the PR description.
+
 ---
 
 ## Bug 1 — `rlPushMatrix()` matrix-stack buffer overflow  ⬜ not started
@@ -72,8 +84,10 @@ counter incrementing past the cap.
 ## Bug 2 — `TextReplaceBetween()` static-buffer overflow  ✅ ready (branch `fix-textreplacebetween-overflow`, commit `f437bd8`)
 
 **Status:** verified bug exists on master (`962bbfc` == HEAD); ASan repro confirms overflow;
-fix applied + syntax-checked + ASan-clean + correctness control passes. Diff +7/−3, one TU.
-PR-ready — awaiting submission (Brandon to confirm raylib CLA + disclose AI assistance per policy).
+fix applied + **full lib build clean** (`make PLATFORM=PLATFORM_DESKTOP` → `libraylib.a`, rtext.c
+compiles under raylib's `-Wall -Werror=implicit-function-declaration -std=c99`) + ASan-clean +
+correctness control passes. Diff +7/−3, one TU. **All three CONTRIBUTING rules met; no CLA.**
+PR-ready — awaiting submission (disclose AI assistance per BISSELL AI-Attribution policy).
 
 **ASan evidence (before fix):**
 ```
@@ -223,7 +237,7 @@ sibling style exactly to keep the PR minimal. Decide during review.)
 | # | Bug | Branch | Repro | Fix | PR |
 |---|-----|--------|-------|-----|----|
 | 1 | `rlPushMatrix` stack overflow | ⬜ | ⬜ | ⬜ | ⬜ |
-| 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan + valgrind(heap) | ✅ `f437bd8` | ⬜ submit (no CLA) |
+| 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan (build-verified) | ✅ `f437bd8` | ⬜ submit (no CLA) |
 | 3 | gamepad-index OOB (`GetGamepadAxisCount`/`GetGamepadName`) | ⬜ | ⬜ | ⬜ | ⬜ |
 
 Tier 2 (malformed-file robustness: IQM/BDF/OBJ/glTF parsers — task 233) and Tier 3 (platform input
