@@ -217,7 +217,44 @@ remaining capacity. Settle the exact shape against the sibling style during impl
 
 ---
 
-## Bug 3 — Unchecked gamepad index OOB in `GetGamepadAxisCount()` / `GetGamepadName()`  ⬜ not started
+## Bug 3 — Unchecked gamepad index OOB in `GetGamepadAxisCount()` / `GetGamepadName()`  ✅ ready (branch `fix-gamepad-index-bounds`, commit `fe17e47`)
+
+**Status:** verified on master (`962bbfc`); fix applied (+4/−0) + full lib build clean
+(`make PLATFORM=PLATFORM_DESKTOP` → `libraylib.a`); both repros confirm OOB read before / safe
+default after. All three CONTRIBUTING rules met; no CLA. PR title `[rcore]`.
+
+**Evidence (two repros).** `axisCount[MAX_GAMEPADS]`/`name[MAX_GAMEPADS]` are `CORE.Input.Gamepad`
+members, so a *boundary* index reads the adjacent member (intra-object) and a *large* one exits the
+global:
+- `repro_bug3.c` (faithful struct, boundary index): `GetGamepadAxisCount(4) = 0x5A5A5A5A` — leaked the
+  neighbouring `ready[0]` sentinel; `GetGamepadName(4)` returns a pointer past `name[]` into adjacent
+  state (first byte `0x7F`). After fix → `0` / `(null)`.
+- `repro_bug3_asan.c` (standalone array, clean sanitizer line): `AddressSanitizer: global-buffer-overflow,
+  READ of size 4 ... 0 bytes to the right of global variable 'axisCount' ... of size 16, in
+  GetGamepadAxisCount`. After fix → clean.
+
+**Applied diff:**
+```c
+ const char *GetGamepadName(int gamepad)
+ {
++    if ((gamepad < 0) || (gamepad >= MAX_GAMEPADS)) return NULL;
++
+     return CORE.Input.Gamepad.name[gamepad];
+ }
+ int GetGamepadAxisCount(int gamepad)
+ {
++    if ((gamepad < 0) || (gamepad >= MAX_GAMEPADS)) return 0;
++
+     return CORE.Input.Gamepad.axisCount[gamepad];
+ }
+```
+Note: chose `(gamepad < 0) || (gamepad >= MAX_GAMEPADS)` (also guards negatives) over the siblings'
+bare `gamepad < MAX_GAMEPADS`; mention in the PR so the reviewer can ask for sibling-exact style if
+preferred.
+
+---
+
+## Bug 3 — original characterization (kept for reference)
 
 - **File / lines:** `src/rcore.c:4000-4003` (`GetGamepadAxisCount`), `src/rcore.c:3935-3938` (`GetGamepadName`)
 - **Symbols:** `int GetGamepadAxisCount(int gamepad)`, `const char *GetGamepadName(int gamepad)` (public `RLAPI`)
@@ -281,7 +318,7 @@ sibling style exactly to keep the PR minimal. Decide during review.)
 |---|-----|--------|-------|-----|----|
 | 1 | `rlPushMatrix` stack overflow | ✅ `fix-rlpushmatrix-overflow` | ✅ corruption repro (intra-object; ASan/valgrind N/A) | ✅ `5cfac55` | ⬜ submit (no CLA) |
 | 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan (build-verified) | ✅ `99936bc` | ⬜ submit (no CLA) |
-| 3 | gamepad-index OOB (`GetGamepadAxisCount`/`GetGamepadName`) | ⬜ | ⬜ | ⬜ | ⬜ |
+| 3 | gamepad-index OOB (`GetGamepadAxisCount`/`GetGamepadName`) | ✅ `fix-gamepad-index-bounds` | ✅ adjacency + ASan(standalone) | ✅ `fe17e47` | ⬜ submit (no CLA) |
 
 Tier 2 (malformed-file robustness: IQM/BDF/OBJ/glTF parsers — task 233) and Tier 3 (platform input
 callbacks) are tracked separately and not part of this detour.
