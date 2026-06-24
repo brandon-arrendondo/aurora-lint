@@ -316,9 +316,9 @@ sibling style exactly to keep the PR minimal. Decide during review.)
 ## Status
 | # | Bug | Branch | Repro | Fix | PR |
 |---|-----|--------|-------|-----|----|
-| 1 | `rlPushMatrix` stack overflow | ✅ `fix-rlpushmatrix-overflow` | ✅ corruption repro (intra-object; ASan/valgrind N/A) | ✅ `5cfac55` | ⬜ submit (no CLA) |
-| 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan (build-verified) | ✅ `99936bc` | ⬜ submit (no CLA) |
-| 3 | gamepad-index OOB (`GetGamepadAxisCount`/`GetGamepadName`) | ✅ `fix-gamepad-index-bounds` | ✅ adjacency + ASan(standalone) | ✅ `fe17e47` | ⬜ submit (no CLA) |
+| 1 | `rlPushMatrix` stack overflow | ✅ `fix-rlpushmatrix-overflow` | ✅ corruption repro | ✅ `5cfac55` | ✅ [#5935](https://github.com/raysan5/raylib/pull/5935) |
+| 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan | ✅ `99936bc` | ✅ [#5936](https://github.com/raysan5/raylib/pull/5936) |
+| 3 | gamepad-index OOB (`GetGamepadAxisCount`/`GetGamepadName`) | ✅ `fix-gamepad-index-bounds` | ✅ adjacency + ASan | ✅ `fe17e47` | ✅ [#5937](https://github.com/raysan5/raylib/pull/5937) |
 
 Tier 2 (malformed-file robustness: IQM/BDF/OBJ/glTF parsers — task 233) and Tier 3 (platform input
 callbacks) are tracked separately and not part of this detour.
