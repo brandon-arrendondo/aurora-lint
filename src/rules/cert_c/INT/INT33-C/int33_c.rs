@@ -17,6 +17,9 @@ pub struct Int33C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     /// Per-function VRA results (set by set_vra_results)
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    /// Struct name -> field name -> field type (from project context), used to
+    /// resolve the type of `obj.field` / `ptr->field` divisor operands.
+    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
 }
 
 impl Int33C {
@@ -26,6 +29,7 @@ impl Int33C {
             file_macros: RefCell::new(MacroConstantMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
+            struct_field_types: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -62,6 +66,7 @@ impl CertRule for Int33C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
+        *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -87,12 +92,27 @@ impl CertRule for Int33C {
             *self.file_macros.borrow_mut() = cached;
         }
 
+        // Register simple typedef aliases (e.g. `typedef Vector4 Quaternion;`)
+        // so field-expression operands of aliased struct types resolve to the
+        // underlying struct's field types (Quaternion.w -> Vector4.w -> float).
+        self.register_typedef_aliases(source);
+
         // First pass: find division macros and zero-initialized variables
         let division_macros = self.find_division_macros(source);
         let zero_vars = self.find_zero_initialized_vars(node, source);
 
-        // Check for division or modulo operations
-        self.check_node(node, source, &mut violations, &division_macros, &zero_vars);
+        // Check for division or modulo operations. The type_map is scoped per
+        // function inside check_node (built at function_definition boundaries) so
+        // float-typed operands can suppress integer div-by-zero false positives.
+        let type_map = HashMap::new();
+        self.check_node(
+            node,
+            source,
+            &mut violations,
+            &division_macros,
+            &zero_vars,
+            &type_map,
+        );
 
         violations
     }
@@ -201,12 +221,13 @@ impl Int33C {
         violations: &mut Vec<RuleViolation>,
         division_macros: &HashMap<String, DivisionMacro>,
         zero_vars: &HashSet<String>,
+        type_map: &HashMap<String, String>,
     ) {
         // Check for division or modulo operations
         if node.kind() == "binary_expression" {
             if let Some(operator) = ast_utils::get_binary_operator(node, source) {
                 if operator == "/" || operator == "%" {
-                    self.check_division_safety(node, source, violations);
+                    self.check_division_safety(node, source, violations, type_map);
                 }
             }
         }
@@ -221,12 +242,16 @@ impl Int33C {
                     for i in 0..node.child_count() {
                         if let Some(child) = node.child(i) {
                             if child.kind() == "/=" || child.kind() == "%=" {
-                                self.check_compound_assignment_safety(node, source, violations);
+                                self.check_compound_assignment_safety(
+                                    node, source, violations, type_map,
+                                );
                                 break;
                             }
                             let text = ast_utils::get_node_text(&child, source);
                             if text == "/=" || text == "%=" {
-                                self.check_compound_assignment_safety(node, source, violations);
+                                self.check_compound_assignment_safety(
+                                    node, source, violations, type_map,
+                                );
                                 break;
                             }
                         }
@@ -243,7 +268,28 @@ impl Int33C {
         // Recursively check child nodes
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, division_macros, zero_vars);
+                // Scope the type_map per function so operand-type lookups use the
+                // correct declarations and don't collide across functions.
+                if child.kind() == "function_definition" {
+                    let fn_type_map = Self::collect_variable_types(&child, source);
+                    self.check_node(
+                        &child,
+                        source,
+                        violations,
+                        division_macros,
+                        zero_vars,
+                        &fn_type_map,
+                    );
+                } else {
+                    self.check_node(
+                        &child,
+                        source,
+                        violations,
+                        division_macros,
+                        zero_vars,
+                        type_map,
+                    );
+                }
             }
         }
     }
@@ -311,7 +357,15 @@ impl Int33C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
+        type_map: &HashMap<String, String>,
     ) {
+        // INT33-C concerns INTEGER divide-by-zero (UB). Floating-point division
+        // by zero is well-defined (yields inf/nan), so skip when either operand
+        // is float-typed — matching C's usual-arithmetic-conversion rules.
+        if self.division_is_floating(node, source, type_map) {
+            return;
+        }
+
         if let Some(right) = node.child_by_field_name("right") {
             let right_text = ast_utils::get_node_text(&right, source);
 
@@ -370,7 +424,14 @@ impl Int33C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
+        type_map: &HashMap<String, String>,
     ) {
+        // Floating-point `/=`/`%=` is not integer divide-by-zero UB; skip when
+        // either operand is float-typed.
+        if self.division_is_floating(node, source, type_map) {
+            return;
+        }
+
         if let Some(right) = node.child_by_field_name("right") {
             let right_text = ast_utils::get_node_text(&right, source);
 
@@ -1257,6 +1318,271 @@ impl Int33C {
         }
 
         false
+    }
+
+    // ---- Floating-point operand typing (INT33-C applies only to integer div) ----
+
+    /// True if the division/remainder operation `node` has at least one
+    /// float-typed operand, making it a floating-point operation (well-defined
+    /// for a zero divisor) rather than the integer divide-by-zero INT33-C covers.
+    fn division_is_floating(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> bool {
+        let left = node.child_by_field_name("left");
+        let right = node.child_by_field_name("right");
+        if let Some(l) = left {
+            if self.expr_is_float(&l, source, type_map) {
+                return true;
+            }
+        }
+        if let Some(r) = right {
+            if self.expr_is_float(&r, source, type_map) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Best-effort: does this expression have floating-point type? Returns true
+    /// only when positively determined to be float/double; unknown expressions
+    /// return false so integer divide-by-zero detection (and recall) is preserved.
+    fn expr_is_float(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> bool {
+        match node.kind() {
+            "number_literal" => Self::is_float_literal(ast_utils::get_node_text(node, source)),
+            "identifier" => {
+                let name = ast_utils::get_node_text(node, source);
+                type_map
+                    .get(name)
+                    .map(|t| Self::is_float_type(t))
+                    .unwrap_or(false)
+            }
+            "field_expression" => {
+                let sft = self.struct_field_types.borrow();
+                ast_utils::resolve_field_expression_type(node, source, type_map, &sft)
+                    .map(|t| Self::is_float_type(&t))
+                    .unwrap_or(false)
+            }
+            "cast_expression" => {
+                // `(double)x` — the cast type determines the operand's type.
+                if let Some(t) = node.child_by_field_name("type") {
+                    Self::is_float_type(ast_utils::get_node_text(&t, source))
+                } else if let Some(v) = node.child_by_field_name("value") {
+                    self.expr_is_float(&v, source, type_map)
+                } else {
+                    false
+                }
+            }
+            "parenthesized_expression" => node
+                .named_child(0)
+                .map(|c| self.expr_is_float(&c, source, type_map))
+                .unwrap_or(false),
+            "unary_expression" | "pointer_expression" => node
+                .child_by_field_name("argument")
+                .map(|a| self.expr_is_float(&a, source, type_map))
+                .unwrap_or(false),
+            "binary_expression" => {
+                // Usual arithmetic conversions: float if either operand is float.
+                let l = node
+                    .child_by_field_name("left")
+                    .map(|n| self.expr_is_float(&n, source, type_map))
+                    .unwrap_or(false);
+                let r = node
+                    .child_by_field_name("right")
+                    .map(|n| self.expr_is_float(&n, source, type_map))
+                    .unwrap_or(false);
+                l || r
+            }
+            _ => false,
+        }
+    }
+
+    /// Register simple typedef aliases of the form `typedef ExistingType Alias;`
+    /// into `struct_field_types`, copying the canonical struct's field map so
+    /// `Alias.field` resolves the same as `ExistingType.field`. Multi-token /
+    /// struct-body typedefs are ignored (only plain 1:1 aliases are handled).
+    fn register_typedef_aliases(&self, source: &str) {
+        let mut sft = self.struct_field_types.borrow_mut();
+        if sft.is_empty() {
+            return; // no struct field info available (e.g. no project context)
+        }
+        for line in source.lines() {
+            let t = line.trim();
+            let rest = match t.strip_prefix("typedef ").and_then(|r| r.strip_suffix(';')) {
+                Some(r) => r,
+                None => continue,
+            };
+            let toks: Vec<&str> = rest.split_whitespace().collect();
+            if toks.len() != 2 {
+                continue;
+            }
+            let (base, alias) = (toks[0], toks[1]);
+            if !alias.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+            if sft.contains_key(alias) {
+                continue;
+            }
+            if let Some(fields) = sft.get(base).cloned() {
+                sft.insert(alias.to_string(), fields);
+            }
+        }
+    }
+
+    /// True if a type string denotes a floating-point type (`float`, `double`,
+    /// `long double`, `float_t`, `double_t`).
+    ///
+    /// Matches whole type *tokens* — never substrings — so integer typedefs
+    /// whose names merely embed "float"/"double" (e.g. `double_buffered_count`)
+    /// are NOT misclassified as float (which would suppress a real integer
+    /// divide-by-zero finding).
+    fn is_float_type(type_str: &str) -> bool {
+        type_str
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .any(|tok| matches!(tok, "float" | "double" | "float_t" | "double_t"))
+    }
+
+    /// True if a numeric literal is a floating-point constant: contains a `.`,
+    /// an exponent, or an `f`/`F` suffix. Hexadecimal integer literals (`0x1F`)
+    /// are excluded even though they may end in `f`/`F`.
+    fn is_float_literal(text: &str) -> bool {
+        let t = text.trim();
+        if t.starts_with("0x") || t.starts_with("0X") {
+            // Hex float (C99 `0x1p4`) uses 'p'/'P' exponent; otherwise integer.
+            return t.contains('p') || t.contains('P');
+        }
+        t.contains('.')
+            || t.contains('e')
+            || t.contains('E')
+            || t.ends_with('f')
+            || t.ends_with('F')
+    }
+
+    // ---- Per-function variable type collection (params + local declarations) ----
+
+    /// Build a `name -> type` map for the parameters and local declarations of
+    /// a `function_definition` node.
+    fn collect_variable_types(node: &Node, source: &str) -> HashMap<String, String> {
+        let mut type_map = HashMap::new();
+        if node.kind() == "function_definition" {
+            if let Some(declarator) = node.child_by_field_name("declarator") {
+                Self::collect_params_from_declarator(&declarator, source, &mut type_map);
+            }
+            if let Some(body) = node.child_by_field_name("body") {
+                Self::collect_local_declarations(&body, source, &mut type_map);
+            }
+        }
+        type_map
+    }
+
+    fn collect_params_from_declarator(
+        node: &Node,
+        source: &str,
+        type_map: &mut HashMap<String, String>,
+    ) {
+        if node.kind() == "function_declarator" {
+            if let Some(params) = node.child_by_field_name("parameters") {
+                for i in 0..params.child_count() {
+                    if let Some(param) = params.child(i) {
+                        if param.kind() == "parameter_declaration" {
+                            Self::extract_type_and_name(&param, source, type_map);
+                        }
+                    }
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::collect_params_from_declarator(&child, source, type_map);
+            }
+        }
+    }
+
+    fn collect_local_declarations(
+        node: &Node,
+        source: &str,
+        type_map: &mut HashMap<String, String>,
+    ) {
+        if node.kind() == "declaration" {
+            Self::extract_type_and_name(node, source, type_map);
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::collect_local_declarations(&child, source, type_map);
+            }
+        }
+    }
+
+    fn extract_type_and_name(node: &Node, source: &str, type_map: &mut HashMap<String, String>) {
+        let mut type_text = String::new();
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                match child.kind() {
+                    "primitive_type"
+                    | "sized_type_specifier"
+                    | "type_identifier"
+                    | "struct_specifier" => {
+                        type_text = ast_utils::get_node_text(&child, source).to_string();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if type_text.is_empty() {
+            return;
+        }
+
+        if let Some(declarator) = node.child_by_field_name("declarator") {
+            let is_pointer = declarator.kind() == "pointer_declarator";
+            if let Some(name) = Self::extract_identifier_name(&declarator, source) {
+                let full_type = if is_pointer {
+                    format!("{} *", type_text)
+                } else {
+                    type_text.clone()
+                };
+                type_map.insert(name, full_type);
+            }
+        }
+
+        // `int a, b;` style init_declarator lists
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "init_declarator" {
+                    if let Some(decl) = child.child_by_field_name("declarator") {
+                        let is_pointer = decl.kind() == "pointer_declarator";
+                        if let Some(name) = Self::extract_identifier_name(&decl, source) {
+                            let full_type = if is_pointer {
+                                format!("{} *", type_text)
+                            } else {
+                                type_text.clone()
+                            };
+                            type_map.insert(name, full_type);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn extract_identifier_name(node: &Node, source: &str) -> Option<String> {
+        match node.kind() {
+            "identifier" => Some(ast_utils::get_node_text(node, source).to_string()),
+            "pointer_declarator" | "array_declarator" | "parenthesized_declarator" => node
+                .child_by_field_name("declarator")
+                .and_then(|inner| Self::extract_identifier_name(&inner, source)),
+            _ => {
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if child.kind() == "identifier" {
+                            return Some(ast_utils::get_node_text(&child, source).to_string());
+                        }
+                    }
+                }
+                None
+            }
+        }
     }
 }
 
