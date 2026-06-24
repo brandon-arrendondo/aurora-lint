@@ -25,7 +25,42 @@ Each bug gets its own branch + PR (review → test case → PR description), tac
 
 ---
 
-## Bug 1 — `rlPushMatrix()` matrix-stack buffer overflow  ⬜ not started
+## Bug 1 — `rlPushMatrix()` matrix-stack buffer overflow  ✅ ready (branch `fix-rlpushmatrix-overflow`, commit `5cfac55`)
+
+**Status:** verified on master (`962bbfc`); fix applied (+5/−1) + full lib build clean
+(`make PLATFORM=PLATFORM_DESKTOP` → `libraylib.a`); faithful repro shows adjacent-member
+corruption before fix, clean after. All three CONTRIBUTING rules met; no CLA. PR title `[rlgl]`.
+
+**Evidence — NOTE: this is an INTRA-OBJECT overflow.** `stack[RL_MAX_MATRIX_STACK_SIZE]` (rlgl.h:1081)
+is mid-`RLGL.State`, immediately followed by `int stackCounter` (1082) and more. Writing `stack[32]`
+lands *inside* the `RLGL` global, so **default ASan and valgrind do not flag it** (verified — both miss
+intra-object overflows). The repro therefore demonstrates the *real consequence* directly: mirror the
+exact field order (`Matrix stack[32]; int stackCounter; unsigned int currentTextureId;`), do 33 pushes:
+```
+after 32 pushes: stackCounter=32, currentTextureId=0xABCD1234 (intact)
+RLGL: Matrix stack overflow            <- the guard fires but does NOT prevent the write
+after 33rd push: stackCounter=1088421889, currentTextureId=0x40E00000   <- both clobbered
+>>> currentTextureId is now 0x40E00000 == bit pattern of 7.0f (the Matrix payload)
+```
+The Matrix bytes literally spill into the neighbouring `State` members. After the fix the 33rd push is
+rejected (`stackCounter` stays 32, canary intact, exit 0). Repros: `raylib_pr_artifacts/repro_bug1.c`
+(asserts/aborts before fix) + `repro_bug1_fixed.c` (clean). **PR evidence:** the before/after repro
+output above (no sanitizer line, since intra-object overflows are invisible to ASan/valgrind by default —
+the corrupted-canary demonstration is the faithful proof).
+
+**Applied diff:**
+```c
+-    if (RLGL.State.stackCounter >= RL_MAX_MATRIX_STACK_SIZE) TRACELOG(RL_LOG_ERROR, "RLGL: Matrix stack overflow (RL_MAX_MATRIX_STACK_SIZE)");
++    if (RLGL.State.stackCounter >= RL_MAX_MATRIX_STACK_SIZE)
++    {
++        TRACELOG(RL_LOG_ERROR, "RLGL: Matrix stack overflow (RL_MAX_MATRIX_STACK_SIZE)");
++        return;
++    }
+```
+
+---
+
+## Bug 1 — original characterization (kept for reference)
 
 - **File / lines:** `src/rlgl.h:1239-1250` (guard at 1240, OOB write at 1248)
 - **Symbol:** `void rlPushMatrix(void)` (public `RLAPI`)
@@ -238,7 +273,7 @@ sibling style exactly to keep the PR minimal. Decide during review.)
 ## Status
 | # | Bug | Branch | Repro | Fix | PR |
 |---|-----|--------|-------|-----|----|
-| 1 | `rlPushMatrix` stack overflow | ⬜ | ⬜ | ⬜ | ⬜ |
+| 1 | `rlPushMatrix` stack overflow | ✅ `fix-rlpushmatrix-overflow` | ✅ corruption repro (intra-object; ASan/valgrind N/A) | ✅ `5cfac55` | ⬜ submit (no CLA) |
 | 2 | `TextReplaceBetween` buffer overflow | ✅ `fix-textreplacebetween-overflow` | ✅ ASan (build-verified) | ✅ `99936bc` | ⬜ submit (no CLA) |
 | 3 | gamepad-index OOB (`GetGamepadAxisCount`/`GetGamepadName`) | ⬜ | ⬜ | ⬜ | ⬜ |
 
