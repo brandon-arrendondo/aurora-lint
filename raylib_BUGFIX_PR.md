@@ -114,7 +114,13 @@ counter incrementing past the cap.
 > matrix is still written to `RLGL.State.stack[stackCounter]` — an out-of-bounds write once the stack
 > is full (`stackCounter == RL_MAX_MATRIX_STACK_SIZE`), corrupting adjacent `RLGL.State` fields and
 > growing with each further push. `rlPopMatrix()` already guards the symmetric case. This adds the
-> missing early return. (ASan repro + before/after included.)
+> missing early return.
+>
+> Repro (33 unbalanced pushes, struct mirrors `RLGL.State` field order): the 33rd push logs the
+> overflow but still writes `stack[32]`, overwriting the adjacent `stackCounter`/`currentTextureId`
+> members with the Matrix payload (`0x40E00000` == `7.0f`); after the fix the push is rejected and the
+> neighbours are intact. (It's an intra-object write, so default ASan/valgrind don't flag it — the
+> repro shows the member corruption directly.)
 
 ---
 
