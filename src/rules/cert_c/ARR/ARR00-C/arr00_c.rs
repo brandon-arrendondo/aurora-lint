@@ -13,6 +13,7 @@
 //! Note: Other unsafe functions (strcpy, etc.) are better checked by ARR38-C
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval::{collect_macro_constants, try_evaluate_expr, MacroConstantMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     find_containing_function, get_function_parameters, is_array_parameter_type,
@@ -52,6 +53,10 @@ impl CertRule for Arr00C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+
+        // Macro/const-expr table for resolving array dimension expressions
+        // (e.g. `arr[2*SPLINE_SEGMENT_DIVISIONS + 2]`). Built once per file.
+        let macros = collect_macro_constants(node, source);
 
         // Iterative pre-order traversal: deeply nested ASTs (e.g. files with
         // thousands of chained `else if` branches) overflow the stack if each
@@ -144,7 +149,7 @@ impl CertRule for Arr00C {
                         violations.push(violation);
                     }
                     // Check for array access with constant out-of-bounds index
-                    if let Some(violation) = check_constant_out_of_bounds(node, source) {
+                    if let Some(violation) = check_constant_out_of_bounds(node, source, &macros) {
                         violations.push(violation);
                     }
                     // Check for array access with unvalidated index
@@ -1684,7 +1689,11 @@ fn check_comma_in_subscript(node: &Node, source: &str) -> Option<RuleViolation> 
     None
 }
 
-fn check_constant_out_of_bounds(node: &Node, source: &str) -> Option<RuleViolation> {
+fn check_constant_out_of_bounds(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> Option<RuleViolation> {
     // Check for array access with a constant literal index that exceeds bounds
     // Pattern: arr[5] where arr is declared as arr[5] or smaller
 
@@ -1739,11 +1748,15 @@ fn check_constant_out_of_bounds(node: &Node, source: &str) -> Option<RuleViolati
         return None;
     }
 
-    let function_start = function_node.start_byte();
-    let subscript_position = node.start_byte();
-    let preceding_text = &source[function_start..subscript_position];
-
-    if let Some(array_size) = find_array_size(array_name, preceding_text) {
+    // Resolve the array's declared size from its AST declaration, not from a
+    // fragile text scan. The text heuristic (find_array_size) latched onto
+    // subscript *uses* and failed to recognize user-typed declarations
+    // (`Vector2 point[12]`), miscounting braced/const-expr-sized arrays and
+    // flagging every legitimate access as OOB. resolve_declared_array_size
+    // returns None when the bound is a non-constant expression it cannot
+    // evaluate (e.g. `points[2*SPLINE_SEGMENT_DIVISIONS + 2]`), so we stay
+    // silent rather than guess a too-small bound.
+    if let Some(array_size) = resolve_declared_array_size(node, array_name, source, macros) {
         // Check if index is out of bounds (valid indices are 0 to size-1)
         if index_value >= array_size {
             let start_point = node.start_position();
@@ -2192,6 +2205,128 @@ fn find_pointer_source_array_recursive(
     }
 
     None
+}
+
+/// Resolve an array's declared element count from its AST declaration.
+///
+/// Finds the `array_declarator` that declares `var_name` in the nearest block
+/// scope enclosing `use_node`, then computes its size as
+/// `max(evaluated-size-expression, initializer-element-count)`.
+///
+/// Returns `None` when the bound cannot be determined safely:
+///   - the variable has no array declaration in scope,
+///   - the explicit size expression is a non-constant we cannot evaluate
+///     (e.g. a runtime expression or unknown macro), or
+///   - a designated initializer is present without an evaluable explicit size.
+///
+/// Returning `None` suppresses the out-of-bounds check — the conservative,
+/// false-positive-avoiding choice when the true bound is unknown.
+fn resolve_declared_array_size(
+    use_node: &Node,
+    var_name: &str,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> Option<usize> {
+    let arr_decl = find_array_declarator_in_scope(use_node, var_name, source)?;
+
+    // Evaluate the explicit dimension expression, if any.
+    let declared = match arr_decl.child_by_field_name("size") {
+        Some(size_expr) => match try_evaluate_expr(&size_expr, source, macros) {
+            Some(v) if v > 0 => Some(v as usize),
+            // Size expression present but not a positive constant we can
+            // evaluate -> bound unknown, do not flag.
+            _ => return None,
+        },
+        // No explicit size (`arr[] = {...}`); rely on the initializer count.
+        None => None,
+    };
+
+    // Count top-level initializer elements, if the declarator is initialized.
+    let init_count = arr_decl
+        .parent()
+        .filter(|p| p.kind() == "init_declarator")
+        .and_then(|p| p.child_by_field_name("value"))
+        .filter(|v| v.kind() == "initializer_list")
+        .and_then(|v| count_initializer_elements(&v));
+
+    match (declared, init_count) {
+        (Some(d), Some(c)) => Some(d.max(c)),
+        (Some(d), None) => Some(d),
+        (None, Some(c)) => Some(c),
+        (None, None) => None,
+    }
+}
+
+/// Find the `array_declarator` that declares `var_name` and is visible at
+/// `use_node`, honoring C block scoping: walk enclosing scopes innermost-first
+/// so a block-local `tmp[4]` shadows a `tmp[3]` declared in a sibling block.
+fn find_array_declarator_in_scope<'a>(
+    use_node: &Node<'a>,
+    var_name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    let before = use_node.start_byte();
+    let mut scope = use_node.parent();
+    while let Some(s) = scope {
+        if let Some(found) = scan_block_declarators(&s, var_name, source, before) {
+            return Some(found);
+        }
+        scope = s.parent();
+    }
+    None
+}
+
+/// Search one scope for an `array_declarator` of `var_name` declared textually
+/// before byte offset `before`, without crossing into nested block scopes
+/// (their declarations are not visible here).
+fn scan_block_declarators<'a>(
+    scope: &Node<'a>,
+    var_name: &str,
+    source: &str,
+    before: usize,
+) -> Option<Node<'a>> {
+    for i in 0..scope.child_count() {
+        if let Some(child) = scope.child(i) {
+            // A nested block / function body is a separate scope — skip it.
+            if matches!(child.kind(), "compound_statement" | "function_definition") {
+                continue;
+            }
+            if child.kind() == "array_declarator"
+                && child.start_byte() < before
+                && declarator_names(&child, source) == var_name
+            {
+                return Some(child);
+            }
+            if let Some(found) = scan_block_declarators(&child, var_name, source, before) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Count top-level elements in an `initializer_list`.
+///
+/// Returns `None` if the list uses designated initializers (e.g. `[3] = x`),
+/// where the element count does not bound the array size.
+fn count_initializer_elements(list: &Node) -> Option<usize> {
+    let mut count = 0;
+    for i in 0..list.child_count() {
+        if let Some(child) = list.child(i) {
+            match child.kind() {
+                "{" | "}" | "," | "comment" => {}
+                // Designated initializer (`[idx] = v` or `.field = v`): the
+                // element count does not bound the array size -> give up.
+                "initializer_pair" => return None,
+                _ => count += 1,
+            }
+        }
+    }
+    if count > 0 {
+        Some(count)
+    } else {
+        None
+    }
 }
 
 fn find_array_size(array_name: &str, preceding_text: &str) -> Option<usize> {
