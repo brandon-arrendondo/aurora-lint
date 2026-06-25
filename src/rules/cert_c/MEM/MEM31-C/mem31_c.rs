@@ -853,239 +853,254 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     fn process_call(&mut self, node: &Node, source: &str) {
-        if let Some(function) = node.child_by_field_name("function") {
-            let func_name = ast_utils::get_node_text_owned(&function, source);
+        let Some(function) = node.child_by_field_name("function") else {
+            return;
+        };
+        let func_name = ast_utils::get_node_text_owned(&function, source);
 
-            // Check for signal() registration - may lead to async termination
-            if func_name == "signal" {
-                self.signal_registered = true;
+        // Check for signal() registration - may lead to async termination
+        if func_name == "signal" {
+            self.signal_registered = true;
+        }
+
+        // Check for termination calls that leak memory
+        if matches!(
+            func_name.as_str(),
+            "abort" | "exit" | "_Exit" | "_exit" | "quick_exit" | "longjmp" | "siglongjmp"
+        ) {
+            self.report_termination_leaks(node, &func_name);
+            return;
+        }
+
+        // Check for custom deallocation functions: destroy_*, free_*, delete_*, cleanup_*, release_*
+        if self.is_deallocation_call(&func_name) {
+            self.process_custom_deallocator(node, source, &func_name);
+        }
+
+        if func_name == "free" {
+            self.process_free_call(node, source);
+        } else if func_name == "realloc" {
+            self.process_realloc_call(node, source);
+        } else {
+            self.process_freeing_callee(node, source, &func_name);
+        }
+    }
+
+    /// Report leaks of still-live allocations at a termination call (abort/exit/longjmp).
+    fn report_termination_leaks(&mut self, node: &Node, func_name: &str) {
+        let call_pos = node.start_position();
+
+        for (var_name, alloc_info) in &self.allocated_memory {
+            if self.escaped_memory.contains(var_name)
+                || self.freed_memory.contains_key(var_name)
+                || self.null_variables.contains(var_name)
+                || var_name.contains('@')
+            {
+                continue;
             }
 
-            // Check for termination calls that leak memory
-            if matches!(
-                func_name.as_str(),
-                "abort" | "exit" | "_Exit" | "_exit" | "quick_exit" | "longjmp" | "siglongjmp"
-            ) {
-                let call_pos = node.start_position();
+            self.leak_violations.push(RuleViolation {
+                rule_id: "MEM31-C".to_string(),
+                severity: Severity::High,
+                message: format!(
+                    "Memory leak: '{}' allocated with '{}' is not freed before {}()",
+                    var_name, alloc_info.alloc_type, func_name
+                ),
+                file_path: String::new(),
+                line: call_pos.row + 1,
+                column: call_pos.column + 1,
+                suggestion: Some(format!(
+                    "Free '{}' before calling {}()",
+                    var_name, func_name
+                )),
+                ..Default::default()
+            });
+        }
+    }
 
-                // Check for leaks at this termination point
-                for (var_name, alloc_info) in &self.allocated_memory {
-                    if self.escaped_memory.contains(var_name)
-                        || self.freed_memory.contains_key(var_name)
-                        || self.null_variables.contains(var_name)
-                        || var_name.contains('@')
-                    {
-                        continue;
-                    }
+    /// Handle a custom deallocator call (destroy_*, free_*, etc.): record double-frees
+    /// for non-idempotent deallocators and mark the argument as freed.
+    fn process_custom_deallocator(&mut self, node: &Node, source: &str, func_name: &str) {
+        // Heuristic: functions with "safe" in the name or "destroy" prefix are typically
+        // designed to be idempotent (set pointer to NULL after freeing)
+        // Other custom deallocators like "cleanup_*" may not be safe to call twice
+        let is_safe_deallocator = {
+            let lower = func_name.to_lowercase();
+            lower.contains("safe") || lower.starts_with("destroy_") || lower.ends_with("_destroy")
+        };
 
-                    self.leak_violations.push(RuleViolation {
-                        rule_id: "MEM31-C".to_string(),
-                        severity: Severity::High,
-                        message: format!(
-                            "Memory leak: '{}' allocated with '{}' is not freed before {}()",
-                            var_name, alloc_info.alloc_type, func_name
-                        ),
-                        file_path: String::new(),
-                        line: call_pos.row + 1,
-                        column: call_pos.column + 1,
-                        suggestion: Some(format!(
-                            "Free '{}' before calling {}()",
-                            var_name, func_name
-                        )),
-                        ..Default::default()
-                    });
-                }
-                return;
-            }
-
-            // Check for custom deallocation functions: destroy_*, free_*, delete_*, cleanup_*, release_*
-            if self.is_deallocation_call(&func_name) {
-                // Heuristic: functions with "safe" in the name or "destroy" prefix are typically
-                // designed to be idempotent (set pointer to NULL after freeing)
-                // Other custom deallocators like "cleanup_*" may not be safe to call twice
-                let is_safe_deallocator = {
-                    let lower = func_name.to_lowercase();
-                    lower.contains("safe")
-                        || lower.starts_with("destroy_")
-                        || lower.ends_with("_destroy")
-                };
-
-                if let Some(arguments) = node.child_by_field_name("arguments") {
-                    for i in 0..arguments.child_count() {
-                        if let Some(arg) = arguments.child(i) {
-                            let var_name = if arg.kind() == "pointer_expression" {
-                                // Handle &var pattern (address-of expression)
-                                arg.child_by_field_name("argument")
-                                    .filter(|op| op.kind() == "identifier")
-                                    .map(|op| ast_utils::get_node_text_owned(&op, source))
-                            } else if arg.kind() == "identifier" {
-                                Some(ast_utils::get_node_text_owned(&arg, source))
-                            } else {
-                                None
-                            };
-
-                            if let Some(var_name) = var_name {
-                                let free_pos = node.start_position();
-
-                                // Check for double-free only for non-safe deallocators
-                                if !is_safe_deallocator && self.freed_memory.contains_key(&var_name)
-                                {
-                                    self.double_free_violations.push(RuleViolation {
-                                        rule_id: "MEM31-C".to_string(),
-                                        severity: Severity::High,
-                                        message: format!(
-                                            "Double free detected: '{}' was already freed",
-                                            var_name
-                                        ),
-                                        file_path: String::new(),
-                                        line: free_pos.row + 1,
-                                        column: free_pos.column + 1,
-                                        suggestion: Some(format!(
-                                            "Remove this duplicate {}() call or set the pointer to NULL after first free",
-                                            func_name
-                                        )),
-                                        ..Default::default()
-                                    });
-                                }
-
-                                // Mark as freed (for leak detection)
-                                self.freed_memory.insert(
-                                    var_name.clone(),
-                                    (free_pos.row + 1, free_pos.column + 1),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            if func_name == "free" {
-                // Process free() call
-                if let Some(arguments) = node.child_by_field_name("arguments") {
-                    for i in 0..arguments.child_count() {
-                        if let Some(arg) = arguments.child(i) {
-                            // Handle identifiers, field expressions, and subscript expressions
-                            let var_name = if arg.kind() == "identifier" {
-                                ast_utils::get_node_text_owned(&arg, source)
-                            } else if arg.kind() == "field_expression"
-                                || arg.kind() == "subscript_expression"
-                            {
-                                // For field/subscript expressions like "container->data" or "arr[i]"
-                                ast_utils::get_node_text_owned(&arg, source)
-                            } else {
-                                continue;
-                            };
-
-                            if !var_name.is_empty() {
-                                let free_pos = node.start_position();
-
-                                // Check for double-free: if already freed, report violation
-                                if self.freed_memory.contains_key(&var_name) {
-                                    self.double_free_violations.push(RuleViolation {
-                                        rule_id: "MEM31-C".to_string(),
-                                        severity: Severity::High,
-                                        message: format!(
-                                            "Double free detected: '{}' was already freed",
-                                            var_name
-                                        ),
-                                        file_path: String::new(),
-                                        line: free_pos.row + 1,
-                                        column: free_pos.column + 1,
-                                        suggestion: Some(format!(
-                                            "Remove this duplicate free() call or set '{}' = NULL after first free",
-                                            var_name
-                                        )),
-                                        ..Default::default()
-                                    });
-                                }
-
-                                // Mark as freed
-                                self.freed_memory.insert(
-                                    var_name.clone(),
-                                    (free_pos.row + 1, free_pos.column + 1),
-                                );
-
-                                // Also mark any aliases as freed
-                                let vars_to_free: Vec<String> = self
-                                    .allocated_memory
-                                    .iter()
-                                    .filter_map(|(k, v)| {
-                                        if let Some(original) = self.allocated_memory.get(&var_name)
-                                        {
-                                            if v.line == original.line
-                                                && v.column == original.column
-                                            {
-                                                Some(k.clone())
-                                            } else {
-                                                None
-                                            }
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect();
-
-                                for v in vars_to_free {
-                                    self.freed_memory
-                                        .insert(v, (free_pos.row + 1, free_pos.column + 1));
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if func_name == "realloc" {
-                // realloc can be used to free memory (when new size is 0) or reallocate
-                if let Some(arguments) = node.child_by_field_name("arguments") {
-                    let mut arg_count = 0;
-                    let mut first_arg = String::new();
-                    let free_pos = node.start_position();
-
-                    for i in 0..arguments.child_count() {
-                        if let Some(arg) = arguments.child(i) {
-                            if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
-                                if arg_count == 0 && arg.kind() == "identifier" {
-                                    first_arg = ast_utils::get_node_text_owned(&arg, source);
-                                }
-                                arg_count += 1;
-                            }
-                        }
-                    }
-
-                    if !first_arg.is_empty() {
-                        // realloc frees the old memory and allocates new
-                        self.freed_memory
-                            .insert(first_arg.clone(), (free_pos.row + 1, free_pos.column + 1));
-                    }
-                }
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        for i in 0..arguments.child_count() {
+            let Some(arg) = arguments.child(i) else {
+                continue;
+            };
+            let var_name = if arg.kind() == "pointer_expression" {
+                // Handle &var pattern (address-of expression)
+                arg.child_by_field_name("argument")
+                    .filter(|op| op.kind() == "identifier")
+                    .map(|op| ast_utils::get_node_text_owned(&op, source))
+            } else if arg.kind() == "identifier" {
+                Some(ast_utils::get_node_text_owned(&arg, source))
             } else {
-                // Check if passing allocated memory to a function that frees it.
-                // Use prescan function summaries to determine if the callee frees
-                // the parameter at the corresponding index.
-                if let Some(summary) = self.function_summaries.get(&func_name) {
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
-                        let mut param_idx = 0usize;
-                        for i in 0..arguments.child_count() {
-                            if let Some(arg) = arguments.child(i) {
-                                if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
-                                    continue;
-                                }
-                                if arg.kind() == "identifier" {
-                                    let var_name = ast_utils::get_node_text_owned(&arg, source);
-                                    if self.allocated_memory.contains_key(&var_name)
-                                        && summary.frees_params.contains(&param_idx)
-                                    {
-                                        let free_pos = node.start_position();
-                                        self.freed_memory.insert(
-                                            var_name,
-                                            (free_pos.row + 1, free_pos.column + 1),
-                                        );
-                                    }
-                                }
-                                param_idx += 1;
-                            }
+                None
+            };
+
+            let Some(var_name) = var_name else {
+                continue;
+            };
+            let free_pos = node.start_position();
+
+            // Check for double-free only for non-safe deallocators
+            if !is_safe_deallocator && self.freed_memory.contains_key(&var_name) {
+                self.double_free_violations.push(RuleViolation {
+                    rule_id: "MEM31-C".to_string(),
+                    severity: Severity::High,
+                    message: format!("Double free detected: '{}' was already freed", var_name),
+                    file_path: String::new(),
+                    line: free_pos.row + 1,
+                    column: free_pos.column + 1,
+                    suggestion: Some(format!(
+                        "Remove this duplicate {}() call or set the pointer to NULL after first free",
+                        func_name
+                    )),
+                    ..Default::default()
+                });
+            }
+
+            // Mark as freed (for leak detection)
+            self.freed_memory
+                .insert(var_name.clone(), (free_pos.row + 1, free_pos.column + 1));
+        }
+    }
+
+    /// Handle a `free()` call: record double-frees and mark the argument plus any
+    /// aliases (same allocation site) as freed.
+    fn process_free_call(&mut self, node: &Node, source: &str) {
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        for i in 0..arguments.child_count() {
+            let Some(arg) = arguments.child(i) else {
+                continue;
+            };
+            // Handle identifiers, field expressions, and subscript expressions
+            let var_name = match arg.kind() {
+                "identifier" | "field_expression" | "subscript_expression" => {
+                    // For field/subscript expressions like "container->data" or "arr[i]"
+                    ast_utils::get_node_text_owned(&arg, source)
+                }
+                _ => continue,
+            };
+
+            if var_name.is_empty() {
+                continue;
+            }
+            let free_pos = node.start_position();
+
+            // Check for double-free: if already freed, report violation
+            if self.freed_memory.contains_key(&var_name) {
+                self.double_free_violations.push(RuleViolation {
+                    rule_id: "MEM31-C".to_string(),
+                    severity: Severity::High,
+                    message: format!("Double free detected: '{}' was already freed", var_name),
+                    file_path: String::new(),
+                    line: free_pos.row + 1,
+                    column: free_pos.column + 1,
+                    suggestion: Some(format!(
+                        "Remove this duplicate free() call or set '{}' = NULL after first free",
+                        var_name
+                    )),
+                    ..Default::default()
+                });
+            }
+
+            // Mark as freed
+            self.freed_memory
+                .insert(var_name.clone(), (free_pos.row + 1, free_pos.column + 1));
+
+            // Also mark any aliases as freed
+            let vars_to_free: Vec<String> = self
+                .allocated_memory
+                .iter()
+                .filter_map(|(k, v)| {
+                    if let Some(original) = self.allocated_memory.get(&var_name) {
+                        if v.line == original.line && v.column == original.column {
+                            Some(k.clone())
+                        } else {
+                            None
                         }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for v in vars_to_free {
+                self.freed_memory
+                    .insert(v, (free_pos.row + 1, free_pos.column + 1));
+            }
+        }
+    }
+
+    /// Handle a `realloc()` call: the first argument's old memory is freed.
+    fn process_realloc_call(&mut self, node: &Node, source: &str) {
+        // realloc can be used to free memory (when new size is 0) or reallocate
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let mut arg_count = 0;
+        let mut first_arg = String::new();
+        let free_pos = node.start_position();
+
+        for i in 0..arguments.child_count() {
+            if let Some(arg) = arguments.child(i) {
+                if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
+                    if arg_count == 0 && arg.kind() == "identifier" {
+                        first_arg = ast_utils::get_node_text_owned(&arg, source);
+                    }
+                    arg_count += 1;
+                }
+            }
+        }
+
+        if !first_arg.is_empty() {
+            // realloc frees the old memory and allocates new
+            self.freed_memory
+                .insert(first_arg.clone(), (free_pos.row + 1, free_pos.column + 1));
+        }
+    }
+
+    /// Handle a call to a user function whose prescan summary indicates it frees
+    /// one of its parameters: mark the matching allocated argument as freed.
+    fn process_freeing_callee(&mut self, node: &Node, source: &str, func_name: &str) {
+        // Check if passing allocated memory to a function that frees it.
+        // Use prescan function summaries to determine if the callee frees
+        // the parameter at the corresponding index.
+        let Some(summary) = self.function_summaries.get(func_name) else {
+            return;
+        };
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let mut param_idx = 0usize;
+        for i in 0..arguments.child_count() {
+            if let Some(arg) = arguments.child(i) {
+                if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
+                    continue;
+                }
+                if arg.kind() == "identifier" {
+                    let var_name = ast_utils::get_node_text_owned(&arg, source);
+                    if self.allocated_memory.contains_key(&var_name)
+                        && summary.frees_params.contains(&param_idx)
+                    {
+                        let free_pos = node.start_position();
+                        self.freed_memory
+                            .insert(var_name, (free_pos.row + 1, free_pos.column + 1));
                     }
                 }
+                param_idx += 1;
             }
         }
     }
