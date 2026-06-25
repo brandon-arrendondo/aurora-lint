@@ -340,313 +340,353 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 self.process_return(node, source);
             }
             "goto_statement" => {
-                // Goto can bypass cleanup code - check for potential leaks
-                // First, find the target label
-                let mut target_label = String::new();
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "statement_identifier" {
-                            target_label = ast_utils::get_node_text_owned(&child, source);
-                            break;
-                        }
-                    }
-                }
-
-                // Get what variables are freed at the target label
-                let label_freed_vars = self.label_frees.get(&target_label).cloned();
-
-                let goto_pos = node.start_position();
-                for (var_name, alloc_info) in &self.allocated_memory {
-                    if self.escaped_memory.contains(var_name)
-                        || self.freed_memory.contains_key(var_name)
-                        || self.null_variables.contains(var_name)
-                        || var_name.contains('@')
-                    {
-                        continue;
-                    }
-
-                    // Check if this variable is freed at the target label
-                    // Also check for field expression variants (e.g., bundle->data matches bundle)
-                    let is_freed_at_label = label_freed_vars.as_ref().is_some_and(|freed| {
-                        freed.contains(var_name)
-                            || freed
-                                .iter()
-                                .any(|f| f.starts_with(&format!("{}->", var_name)))
-                            || freed.iter().any(|f| {
-                                // Check if var_name is a field and its container is freed
-                                if let Some(base) = var_name.split("->").next() {
-                                    f == base
-                                } else {
-                                    false
-                                }
-                            })
-                    });
-
-                    if is_freed_at_label {
-                        continue; // This variable is properly cleaned up at the label
-                    }
-
-                    self.leak_violations.push(RuleViolation {
-                        rule_id: "MEM31-C".to_string(),
-                        severity: Severity::High,
-                        message: format!(
-                            "Potential memory leak: '{}' allocated with '{}' may not be freed due to goto",
-                            var_name, alloc_info.alloc_type
-                        ),
-                        file_path: String::new(),
-                        line: goto_pos.row + 1,
-                        column: goto_pos.column + 1,
-                        suggestion: Some(format!(
-                            "Ensure '{}' is freed before this goto or at the target label",
-                            var_name
-                        )),
-                        ..Default::default()
-                    });
-                }
+                self.analyze_goto(node, source);
             }
             "for_statement" => {
-                // Track loop condition for array allocation/free mismatch detection
-                let loop_condition = node
-                    .child_by_field_name("condition")
-                    .map(|c| ast_utils::get_node_text_owned(&c, source));
-
-                self.in_loop = true;
-                self.loop_depth += 1;
-
-                // Pre-scan for allocation and free patterns in this loop
-                let alloc_info = self.find_loop_array_pattern(node, source, true);
-                let free_info = self.find_loop_array_pattern(node, source, false);
-
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.analyze_node(&child, source);
-                    }
-                }
-
-                // Record pattern for later comparison
-                if let Some((array_base, _)) = alloc_info {
-                    if let Some(cond) = &loop_condition {
-                        let entry = self
-                            .loop_array_patterns
-                            .entry(array_base)
-                            .or_insert((None, None));
-                        entry.0 = Some(cond.clone());
-                    }
-                }
-                if let Some((array_base, _)) = free_info {
-                    if let Some(cond) = &loop_condition {
-                        let entry = self
-                            .loop_array_patterns
-                            .entry(array_base)
-                            .or_insert((None, None));
-                        entry.1 = Some(cond.clone());
-                    }
-                }
-
-                self.loop_depth -= 1;
-                if self.loop_depth == 0 {
-                    self.in_loop = false;
-                }
+                self.analyze_for_loop(node, source);
             }
             "while_statement" | "do_statement" => {
-                // Track loop nesting for double-free detection
-                self.in_loop = true;
-                self.loop_depth += 1;
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.analyze_node(&child, source);
-                    }
-                }
-                self.loop_depth -= 1;
-                if self.loop_depth == 0 {
-                    self.in_loop = false;
-                }
+                self.analyze_simple_loop(node, source);
             }
             "if_statement" => {
-                // For if statements, use branch-aware analysis
-                let saved_freed = self.freed_memory.clone();
-                let saved_null = self.null_variables.clone();
-                let saved_allocated = self.allocated_memory.clone();
-
-                // Check if condition is a NULL check (var == NULL)
-                let null_check_var = self.get_null_check_variable(node, source);
-
-                // Check if condition is a non-NULL check (var != NULL)
-                let non_null_check_var = self.get_non_null_check_variable(node, source);
-
-                // Check if condition is a truthiness check (if (ptr))
-                let truthiness_var = self.get_truthiness_check_variable(node, source);
-
-                // Find true branch (compound_statement) and else clause
-                let mut true_branch: Option<Node> = None;
-                let mut else_clause: Option<Node> = None;
-
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "compound_statement" && true_branch.is_none() {
-                            true_branch = Some(child);
-                        } else if child.kind() == "else_clause" {
-                            else_clause = Some(child);
-                        }
-                    }
-                }
-
-                // Check which branches have returns
-                let true_has_return = true_branch
-                    .as_ref()
-                    .map(|b| self.block_has_return(b))
-                    .unwrap_or(false);
-                let else_has_return = else_clause
-                    .as_ref()
-                    .map(|e| self.block_has_return(e))
-                    .unwrap_or(false);
-
-                // If this is a NULL check, mark the variable as null in the true branch
-                if let Some(ref var_name) = null_check_var {
-                    self.null_variables.insert(var_name.clone());
-                }
-
-                // If this is a truthiness check on a realloc result, mark old ptr as freed in true branch
-                // e.g., if (new_ptr) { ... } where new_ptr = realloc(old_ptr, ...)
-                if let Some(ref result_var) = truthiness_var {
-                    if let Some(old_ptr) = self.realloc_relations.get(result_var).cloned() {
-                        let pos = node.start_position();
-                        self.freed_memory
-                            .insert(old_ptr, (pos.row + 1, pos.column + 1));
-                    }
-                }
-                // Also for explicit != NULL checks
-                if let Some(ref result_var) = non_null_check_var {
-                    if let Some(old_ptr) = self.realloc_relations.get(result_var).cloned() {
-                        let pos = node.start_position();
-                        self.freed_memory
-                            .insert(old_ptr, (pos.row + 1, pos.column + 1));
-                    }
-                }
-
-                // Process true branch
-                if let Some(ref branch) = true_branch {
-                    self.analyze_node(branch, source);
-                }
-
-                let true_freed = self.freed_memory.clone();
-                let true_null = self.null_variables.clone();
-
-                // Process else branch if present, or use saved state if no else
-                let (else_freed, else_null) = if let Some(ref else_node) = else_clause {
-                    // Reset to saved state for else branch
-                    self.freed_memory = saved_freed.clone();
-                    self.null_variables = saved_null.clone();
-
-                    // For else clause, mark truthiness var as null
-                    if let Some(ref var_name) = truthiness_var {
-                        self.null_variables.insert(var_name.clone());
-                    }
-                    // Mark non-null check var as null in else branch
-                    if let Some(ref var_name) = non_null_check_var {
-                        self.null_variables.insert(var_name.clone());
-                    }
-
-                    self.analyze_node(else_node, source);
-                    (self.freed_memory.clone(), self.null_variables.clone())
-                } else {
-                    // No else clause - the "else path" is just the saved state
-                    (saved_freed.clone(), saved_null.clone())
-                };
-
-                // Determine final state based on which branches return
-                if true_has_return && else_has_return {
-                    // Both branches return - restore initial state
-                    self.freed_memory = saved_freed;
-                    self.null_variables = saved_null;
-                } else if true_has_return {
-                    // Only true returns - else branch state continues
-                    self.freed_memory = else_freed;
-                    self.null_variables = else_null;
-                } else if else_has_return {
-                    // Only else returns - true branch state continues
-                    self.freed_memory = true_freed;
-                    self.null_variables = true_null;
-                } else if else_clause.is_some() {
-                    // NEITHER branch returns and BOTH branches exist
-                    // Check for conditional leaks: freed in one branch but not the other
-                    let if_pos = node.start_position();
-                    for (var_name, alloc_info) in &saved_allocated {
-                        // Skip variables that shouldn't be checked
-                        if self.escaped_memory.contains(var_name)
-                            || saved_null.contains(var_name)
-                            || var_name.contains('@')
-                        {
-                            continue;
-                        }
-
-                        let freed_in_true = true_freed.contains_key(var_name);
-                        let freed_in_else = else_freed.contains_key(var_name);
-                        let null_in_else = else_null.contains(var_name);
-
-                        // Report leak only if freed in true but not else, and not null in else
-                        if freed_in_true && !freed_in_else && !null_in_else {
-                            self.leak_violations.push(RuleViolation {
-                                rule_id: "MEM31-C".to_string(),
-                                severity: Severity::High,
-                                message: format!(
-                                    "Conditional memory leak: '{}' allocated with '{}' is only freed in one branch",
-                                    var_name, alloc_info.alloc_type
-                                ),
-                                file_path: String::new(),
-                                line: if_pos.row + 1,
-                                column: if_pos.column + 1,
-                                suggestion: Some(format!(
-                                    "Ensure '{}' is freed in both branches",
-                                    var_name
-                                )),
-                                ..Default::default()
-                            });
-                        }
-                    }
-                    // Use UNION of both branches: if freed in either path, consider
-                    // it freed. The conditional leak check above already reported
-                    // the case where only one branch frees.
-                    let mut merged = true_freed;
-                    for (k, v) in else_freed {
-                        merged.entry(k).or_insert(v);
-                    }
-                    self.freed_memory = merged;
-                }
-                // else: no else clause - just keep current state
+                self.analyze_if(node, source);
             }
             "switch_statement" => {
-                // For switch statements, each case is an independent path
-                // Save state before the switch
-                let saved_freed = self.freed_memory.clone();
-                let saved_null = self.null_variables.clone();
-
-                // Find the switch body and process each case
-                if let Some(body) = node.child_by_field_name("body") {
-                    for i in 0..body.child_count() {
-                        if let Some(child) = body.child(i) {
-                            if child.kind() == "case_statement" {
-                                // Reset to saved state for each case
-                                self.freed_memory = saved_freed.clone();
-                                self.null_variables = saved_null.clone();
-                                self.analyze_node(&child, source);
-                            }
-                        }
-                    }
-                }
+                self.analyze_switch(node, source);
             }
             "compound_statement" => {
                 // Process compound statements recursively
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.analyze_node(&child, source);
-                    }
-                }
+                self.analyze_children(node, source);
             }
             _ => {
                 // Recursively process other nodes
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
+                self.analyze_children(node, source);
+            }
+        }
+    }
+
+    /// Recurse into every child of `node`.
+    fn analyze_children(&mut self, node: &Node, source: &str) {
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                self.analyze_node(&child, source);
+            }
+        }
+    }
+
+    /// A goto can bypass cleanup code; report leaks for allocations that aren't
+    /// freed at the target label.
+    fn analyze_goto(&mut self, node: &Node, source: &str) {
+        // First, find the target label
+        let mut target_label = String::new();
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "statement_identifier" {
+                    target_label = ast_utils::get_node_text_owned(&child, source);
+                    break;
+                }
+            }
+        }
+
+        // Get what variables are freed at the target label
+        let label_freed_vars = self.label_frees.get(&target_label).cloned();
+
+        let goto_pos = node.start_position();
+        for (var_name, alloc_info) in &self.allocated_memory {
+            if self.escaped_memory.contains(var_name)
+                || self.freed_memory.contains_key(var_name)
+                || self.null_variables.contains(var_name)
+                || var_name.contains('@')
+            {
+                continue;
+            }
+
+            // Check if this variable is freed at the target label
+            // Also check for field expression variants (e.g., bundle->data matches bundle)
+            let is_freed_at_label = label_freed_vars.as_ref().is_some_and(|freed| {
+                freed.contains(var_name)
+                    || freed
+                        .iter()
+                        .any(|f| f.starts_with(&format!("{}->", var_name)))
+                    || freed.iter().any(|f| {
+                        // Check if var_name is a field and its container is freed
+                        if let Some(base) = var_name.split("->").next() {
+                            f == base
+                        } else {
+                            false
+                        }
+                    })
+            });
+
+            if is_freed_at_label {
+                continue; // This variable is properly cleaned up at the label
+            }
+
+            self.leak_violations.push(RuleViolation {
+                rule_id: "MEM31-C".to_string(),
+                severity: Severity::High,
+                message: format!(
+                    "Potential memory leak: '{}' allocated with '{}' may not be freed due to goto",
+                    var_name, alloc_info.alloc_type
+                ),
+                file_path: String::new(),
+                line: goto_pos.row + 1,
+                column: goto_pos.column + 1,
+                suggestion: Some(format!(
+                    "Ensure '{}' is freed before this goto or at the target label",
+                    var_name
+                )),
+                ..Default::default()
+            });
+        }
+    }
+
+    /// Analyze a `for` loop body and record its array allocation/free patterns for
+    /// later alloc-vs-free mismatch detection.
+    fn analyze_for_loop(&mut self, node: &Node, source: &str) {
+        // Track loop condition for array allocation/free mismatch detection
+        let loop_condition = node
+            .child_by_field_name("condition")
+            .map(|c| ast_utils::get_node_text_owned(&c, source));
+
+        self.in_loop = true;
+        self.loop_depth += 1;
+
+        // Pre-scan for allocation and free patterns in this loop
+        let alloc_info = self.find_loop_array_pattern(node, source, true);
+        let free_info = self.find_loop_array_pattern(node, source, false);
+
+        self.analyze_children(node, source);
+
+        // Record pattern for later comparison
+        if let Some((array_base, _)) = alloc_info {
+            if let Some(cond) = &loop_condition {
+                let entry = self
+                    .loop_array_patterns
+                    .entry(array_base)
+                    .or_insert((None, None));
+                entry.0 = Some(cond.clone());
+            }
+        }
+        if let Some((array_base, _)) = free_info {
+            if let Some(cond) = &loop_condition {
+                let entry = self
+                    .loop_array_patterns
+                    .entry(array_base)
+                    .or_insert((None, None));
+                entry.1 = Some(cond.clone());
+            }
+        }
+
+        self.loop_depth -= 1;
+        if self.loop_depth == 0 {
+            self.in_loop = false;
+        }
+    }
+
+    /// Analyze a `while`/`do` loop body, tracking loop nesting for double-free detection.
+    fn analyze_simple_loop(&mut self, node: &Node, source: &str) {
+        // Track loop nesting for double-free detection
+        self.in_loop = true;
+        self.loop_depth += 1;
+        self.analyze_children(node, source);
+        self.loop_depth -= 1;
+        if self.loop_depth == 0 {
+            self.in_loop = false;
+        }
+    }
+
+    /// Branch-aware analysis of an `if` statement: tracks NULL/truthiness conditions,
+    /// processes each branch with its own state, and reconciles freed/null state
+    /// (reporting conditional leaks when one branch frees and the other doesn't).
+    fn analyze_if(&mut self, node: &Node, source: &str) {
+        // For if statements, use branch-aware analysis
+        let saved_freed = self.freed_memory.clone();
+        let saved_null = self.null_variables.clone();
+        let saved_allocated = self.allocated_memory.clone();
+
+        // Check if condition is a NULL check (var == NULL)
+        let null_check_var = self.get_null_check_variable(node, source);
+
+        // Check if condition is a non-NULL check (var != NULL)
+        let non_null_check_var = self.get_non_null_check_variable(node, source);
+
+        // Check if condition is a truthiness check (if (ptr))
+        let truthiness_var = self.get_truthiness_check_variable(node, source);
+
+        // Find true branch (compound_statement) and else clause
+        let mut true_branch: Option<Node> = None;
+        let mut else_clause: Option<Node> = None;
+
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "compound_statement" && true_branch.is_none() {
+                    true_branch = Some(child);
+                } else if child.kind() == "else_clause" {
+                    else_clause = Some(child);
+                }
+            }
+        }
+
+        // Check which branches have returns
+        let true_has_return = true_branch
+            .as_ref()
+            .map(|b| self.block_has_return(b))
+            .unwrap_or(false);
+        let else_has_return = else_clause
+            .as_ref()
+            .map(|e| self.block_has_return(e))
+            .unwrap_or(false);
+
+        // If this is a NULL check, mark the variable as null in the true branch
+        if let Some(ref var_name) = null_check_var {
+            self.null_variables.insert(var_name.clone());
+        }
+
+        // If this is a truthiness check on a realloc result, mark old ptr as freed in true branch
+        // e.g., if (new_ptr) { ... } where new_ptr = realloc(old_ptr, ...)
+        if let Some(ref result_var) = truthiness_var {
+            if let Some(old_ptr) = self.realloc_relations.get(result_var).cloned() {
+                let pos = node.start_position();
+                self.freed_memory
+                    .insert(old_ptr, (pos.row + 1, pos.column + 1));
+            }
+        }
+        // Also for explicit != NULL checks
+        if let Some(ref result_var) = non_null_check_var {
+            if let Some(old_ptr) = self.realloc_relations.get(result_var).cloned() {
+                let pos = node.start_position();
+                self.freed_memory
+                    .insert(old_ptr, (pos.row + 1, pos.column + 1));
+            }
+        }
+
+        // Process true branch
+        if let Some(ref branch) = true_branch {
+            self.analyze_node(branch, source);
+        }
+
+        let true_freed = self.freed_memory.clone();
+        let true_null = self.null_variables.clone();
+
+        // Process else branch if present, or use saved state if no else
+        let (else_freed, else_null) = if let Some(ref else_node) = else_clause {
+            // Reset to saved state for else branch
+            self.freed_memory = saved_freed.clone();
+            self.null_variables = saved_null.clone();
+
+            // For else clause, mark truthiness var as null
+            if let Some(ref var_name) = truthiness_var {
+                self.null_variables.insert(var_name.clone());
+            }
+            // Mark non-null check var as null in else branch
+            if let Some(ref var_name) = non_null_check_var {
+                self.null_variables.insert(var_name.clone());
+            }
+
+            self.analyze_node(else_node, source);
+            (self.freed_memory.clone(), self.null_variables.clone())
+        } else {
+            // No else clause - the "else path" is just the saved state
+            (saved_freed.clone(), saved_null.clone())
+        };
+
+        // Determine final state based on which branches return
+        if true_has_return && else_has_return {
+            // Both branches return - restore initial state
+            self.freed_memory = saved_freed;
+            self.null_variables = saved_null;
+        } else if true_has_return {
+            // Only true returns - else branch state continues
+            self.freed_memory = else_freed;
+            self.null_variables = else_null;
+        } else if else_has_return {
+            // Only else returns - true branch state continues
+            self.freed_memory = true_freed;
+            self.null_variables = true_null;
+        } else if else_clause.is_some() {
+            // NEITHER branch returns and BOTH branches exist
+            self.report_conditional_leaks(
+                node,
+                &saved_allocated,
+                &saved_null,
+                &true_freed,
+                &else_freed,
+                &else_null,
+            );
+            // Use UNION of both branches: if freed in either path, consider
+            // it freed. The conditional leak check above already reported
+            // the case where only one branch frees.
+            let mut merged = true_freed;
+            for (k, v) in else_freed {
+                merged.entry(k).or_insert(v);
+            }
+            self.freed_memory = merged;
+        }
+        // else: no else clause - just keep current state
+    }
+
+    /// When neither `if` branch returns, report allocations freed in the true branch
+    /// but not the else branch (and not nulled there) as conditional leaks.
+    #[allow(clippy::too_many_arguments)]
+    fn report_conditional_leaks(
+        &mut self,
+        node: &Node,
+        saved_allocated: &HashMap<String, AllocInfo>,
+        saved_null: &HashSet<String>,
+        true_freed: &HashMap<String, (usize, usize)>,
+        else_freed: &HashMap<String, (usize, usize)>,
+        else_null: &HashSet<String>,
+    ) {
+        let if_pos = node.start_position();
+        for (var_name, alloc_info) in saved_allocated {
+            // Skip variables that shouldn't be checked
+            if self.escaped_memory.contains(var_name)
+                || saved_null.contains(var_name)
+                || var_name.contains('@')
+            {
+                continue;
+            }
+
+            let freed_in_true = true_freed.contains_key(var_name);
+            let freed_in_else = else_freed.contains_key(var_name);
+            let null_in_else = else_null.contains(var_name);
+
+            // Report leak only if freed in true but not else, and not null in else
+            if freed_in_true && !freed_in_else && !null_in_else {
+                self.leak_violations.push(RuleViolation {
+                    rule_id: "MEM31-C".to_string(),
+                    severity: Severity::High,
+                    message: format!(
+                        "Conditional memory leak: '{}' allocated with '{}' is only freed in one branch",
+                        var_name, alloc_info.alloc_type
+                    ),
+                    file_path: String::new(),
+                    line: if_pos.row + 1,
+                    column: if_pos.column + 1,
+                    suggestion: Some(format!("Ensure '{}' is freed in both branches", var_name)),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    /// Analyze a `switch` statement, processing each case as an independent path
+    /// from the pre-switch state.
+    fn analyze_switch(&mut self, node: &Node, source: &str) {
+        // For switch statements, each case is an independent path
+        // Save state before the switch
+        let saved_freed = self.freed_memory.clone();
+        let saved_null = self.null_variables.clone();
+
+        // Find the switch body and process each case
+        if let Some(body) = node.child_by_field_name("body") {
+            for i in 0..body.child_count() {
+                if let Some(child) = body.child(i) {
+                    if child.kind() == "case_statement" {
+                        // Reset to saved state for each case
+                        self.freed_memory = saved_freed.clone();
+                        self.null_variables = saved_null.clone();
                         self.analyze_node(&child, source);
                     }
                 }
