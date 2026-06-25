@@ -3,6 +3,8 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use crate::utility::cert_c::float_typing;
+use std::collections::HashMap;
 use tree_sitter::Node;
 
 pub struct Flp06C;
@@ -26,13 +28,32 @@ impl CertRule for Flp06C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
+        let type_map = HashMap::new();
+        self.check_node(node, source, &type_map, &mut violations);
         violations
     }
 }
 
 impl Flp06C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_node(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        // Build a fresh param/local type map at each function boundary so
+        // operand types can be resolved (see the float-operand suppression
+        // below). Outside any function the map is empty.
+        if node.kind() == "function_definition" {
+            let fn_type_map = float_typing::collect_variable_types(node, source);
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                self.check_node(&child, source, &fn_type_map, violations);
+            }
+            return;
+        }
+
         // Look for declarations: float/double var = expression;
         if node.kind() == "declaration" {
             let decl_text = node.utf8_text(source.as_bytes()).unwrap_or("");
@@ -67,8 +88,18 @@ impl Flp06C {
                         expr.contains('.') || expr.contains('f') || expr.contains('F');
                     let has_cast = expr.contains("(float)") || expr.contains("(double)");
 
+                    // Operand typing: suppress when the initializer expression
+                    // has a float-typed operand (param/local), so genuinely
+                    // floating-point arithmetic like `start + amount*(end-start)`
+                    // (all float) is not misreported as integer arithmetic. This
+                    // closes the FP class the text heuristics above miss — they
+                    // only catch float *literals*/casts, not float *variables*.
+                    let has_float_operand = initializer_value_node(node)
+                        .map(|v| float_typing::expr_is_float(&v, source, type_map, &HashMap::new()))
+                        .unwrap_or(false);
+
                     // Violation: arithmetic without floating-point conversion
-                    if !has_float_literal && !has_cast {
+                    if !has_float_literal && !has_cast && !has_float_operand {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             severity: self.severity(),
@@ -87,7 +118,19 @@ impl Flp06C {
         // Recursively check children
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+            self.check_node(&child, source, type_map, violations);
         }
     }
+}
+
+/// Return the initializer expression (`value`) of the first `init_declarator`
+/// in a `declaration` node, if present.
+fn initializer_value_node<'a>(decl: &Node<'a>) -> Option<Node<'a>> {
+    let mut cursor = decl.walk();
+    for child in decl.children(&mut cursor) {
+        if child.kind() == "init_declarator" {
+            return child.child_by_field_name("value");
+        }
+    }
+    None
 }

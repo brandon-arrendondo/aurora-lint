@@ -5,6 +5,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::float_typing;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -271,7 +272,7 @@ impl Int33C {
                 // Scope the type_map per function so operand-type lookups use the
                 // correct declarations and don't collide across functions.
                 if child.kind() == "function_definition" {
-                    let fn_type_map = Self::collect_variable_types(&child, source);
+                    let fn_type_map = float_typing::collect_variable_types(&child, source);
                     self.check_node(
                         &child,
                         source,
@@ -1346,57 +1347,11 @@ impl Int33C {
         false
     }
 
-    /// Best-effort: does this expression have floating-point type? Returns true
-    /// only when positively determined to be float/double; unknown expressions
-    /// return false so integer divide-by-zero detection (and recall) is preserved.
+    /// Best-effort: does this expression have floating-point type? Delegates to
+    /// the shared [`float_typing`] engine, supplying INT33-C's struct field map.
     fn expr_is_float(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> bool {
-        match node.kind() {
-            "number_literal" => Self::is_float_literal(ast_utils::get_node_text(node, source)),
-            "identifier" => {
-                let name = ast_utils::get_node_text(node, source);
-                type_map
-                    .get(name)
-                    .map(|t| Self::is_float_type(t))
-                    .unwrap_or(false)
-            }
-            "field_expression" => {
-                let sft = self.struct_field_types.borrow();
-                ast_utils::resolve_field_expression_type(node, source, type_map, &sft)
-                    .map(|t| Self::is_float_type(&t))
-                    .unwrap_or(false)
-            }
-            "cast_expression" => {
-                // `(double)x` — the cast type determines the operand's type.
-                if let Some(t) = node.child_by_field_name("type") {
-                    Self::is_float_type(ast_utils::get_node_text(&t, source))
-                } else if let Some(v) = node.child_by_field_name("value") {
-                    self.expr_is_float(&v, source, type_map)
-                } else {
-                    false
-                }
-            }
-            "parenthesized_expression" => node
-                .named_child(0)
-                .map(|c| self.expr_is_float(&c, source, type_map))
-                .unwrap_or(false),
-            "unary_expression" | "pointer_expression" => node
-                .child_by_field_name("argument")
-                .map(|a| self.expr_is_float(&a, source, type_map))
-                .unwrap_or(false),
-            "binary_expression" => {
-                // Usual arithmetic conversions: float if either operand is float.
-                let l = node
-                    .child_by_field_name("left")
-                    .map(|n| self.expr_is_float(&n, source, type_map))
-                    .unwrap_or(false);
-                let r = node
-                    .child_by_field_name("right")
-                    .map(|n| self.expr_is_float(&n, source, type_map))
-                    .unwrap_or(false);
-                l || r
-            }
-            _ => false,
-        }
+        let sft = self.struct_field_types.borrow();
+        float_typing::expr_is_float(node, source, type_map, &sft)
     }
 
     /// Register simple typedef aliases of the form `typedef ExistingType Alias;`
@@ -1427,160 +1382,6 @@ impl Int33C {
             }
             if let Some(fields) = sft.get(base).cloned() {
                 sft.insert(alias.to_string(), fields);
-            }
-        }
-    }
-
-    /// True if a type string denotes a floating-point type (`float`, `double`,
-    /// `long double`, `float_t`, `double_t`).
-    ///
-    /// Matches whole type *tokens* — never substrings — so integer typedefs
-    /// whose names merely embed "float"/"double" (e.g. `double_buffered_count`)
-    /// are NOT misclassified as float (which would suppress a real integer
-    /// divide-by-zero finding).
-    fn is_float_type(type_str: &str) -> bool {
-        type_str
-            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .any(|tok| matches!(tok, "float" | "double" | "float_t" | "double_t"))
-    }
-
-    /// True if a numeric literal is a floating-point constant: contains a `.`,
-    /// an exponent, or an `f`/`F` suffix. Hexadecimal integer literals (`0x1F`)
-    /// are excluded even though they may end in `f`/`F`.
-    fn is_float_literal(text: &str) -> bool {
-        let t = text.trim();
-        if t.starts_with("0x") || t.starts_with("0X") {
-            // Hex float (C99 `0x1p4`) uses 'p'/'P' exponent; otherwise integer.
-            return t.contains('p') || t.contains('P');
-        }
-        t.contains('.')
-            || t.contains('e')
-            || t.contains('E')
-            || t.ends_with('f')
-            || t.ends_with('F')
-    }
-
-    // ---- Per-function variable type collection (params + local declarations) ----
-
-    /// Build a `name -> type` map for the parameters and local declarations of
-    /// a `function_definition` node.
-    fn collect_variable_types(node: &Node, source: &str) -> HashMap<String, String> {
-        let mut type_map = HashMap::new();
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                Self::collect_params_from_declarator(&declarator, source, &mut type_map);
-            }
-            if let Some(body) = node.child_by_field_name("body") {
-                Self::collect_local_declarations(&body, source, &mut type_map);
-            }
-        }
-        type_map
-    }
-
-    fn collect_params_from_declarator(
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        if node.kind() == "function_declarator" {
-            if let Some(params) = node.child_by_field_name("parameters") {
-                for i in 0..params.child_count() {
-                    if let Some(param) = params.child(i) {
-                        if param.kind() == "parameter_declaration" {
-                            Self::extract_type_and_name(&param, source, type_map);
-                        }
-                    }
-                }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::collect_params_from_declarator(&child, source, type_map);
-            }
-        }
-    }
-
-    fn collect_local_declarations(
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        if node.kind() == "declaration" {
-            Self::extract_type_and_name(node, source, type_map);
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::collect_local_declarations(&child, source, type_map);
-            }
-        }
-    }
-
-    fn extract_type_and_name(node: &Node, source: &str, type_map: &mut HashMap<String, String>) {
-        let mut type_text = String::new();
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "primitive_type"
-                    | "sized_type_specifier"
-                    | "type_identifier"
-                    | "struct_specifier" => {
-                        type_text = ast_utils::get_node_text(&child, source).to_string();
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if type_text.is_empty() {
-            return;
-        }
-
-        if let Some(declarator) = node.child_by_field_name("declarator") {
-            let is_pointer = declarator.kind() == "pointer_declarator";
-            if let Some(name) = Self::extract_identifier_name(&declarator, source) {
-                let full_type = if is_pointer {
-                    format!("{} *", type_text)
-                } else {
-                    type_text.clone()
-                };
-                type_map.insert(name, full_type);
-            }
-        }
-
-        // `int a, b;` style init_declarator lists
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(decl) = child.child_by_field_name("declarator") {
-                        let is_pointer = decl.kind() == "pointer_declarator";
-                        if let Some(name) = Self::extract_identifier_name(&decl, source) {
-                            let full_type = if is_pointer {
-                                format!("{} *", type_text)
-                            } else {
-                                type_text.clone()
-                            };
-                            type_map.insert(name, full_type);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn extract_identifier_name(node: &Node, source: &str) -> Option<String> {
-        match node.kind() {
-            "identifier" => Some(ast_utils::get_node_text(node, source).to_string()),
-            "pointer_declarator" | "array_declarator" | "parenthesized_declarator" => node
-                .child_by_field_name("declarator")
-                .and_then(|inner| Self::extract_identifier_name(&inner, source)),
-            _ => {
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "identifier" {
-                            return Some(ast_utils::get_node_text(&child, source).to_string());
-                        }
-                    }
-                }
-                None
             }
         }
     }
