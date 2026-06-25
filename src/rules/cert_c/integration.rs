@@ -21,7 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 lazy_static::lazy_static! {
@@ -57,7 +57,6 @@ fn generate_test_report() {
 }
 
 fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
-    let cert_c_dir = PathBuf::from("src/rules/cert_c");
     let output_path = PathBuf::from("docs/test-summary.md");
 
     // Ensure docs directory exists
@@ -65,7 +64,29 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(parent)?;
     }
 
-    // Collect all rule data
+    let (categories, total_rules, implemented_rules, total_tests) = collect_rule_data()?;
+
+    // Generate markdown report
+    let mut report = String::new();
+    report.push_str("# CERT C Rules Test Summary\n\n");
+    render_overview(&mut report, total_rules, implemented_rules, total_tests);
+    render_toc(&mut report, &categories);
+    render_detail_sections(&mut report, &categories);
+    render_summary_table(&mut report, &categories);
+
+    fs::write(&output_path, report)?;
+    println!("Generated test summary report: {}", output_path.display());
+    Ok(())
+}
+
+/// Walk `src/rules/cert_c/CATEGORY/RULE-ID`, parse each rule's TOML and test files,
+/// and return the per-category rule data plus aggregate counts
+/// (total_rules, implemented_rules, total_tests).
+#[allow(clippy::type_complexity)]
+fn collect_rule_data(
+) -> Result<(BTreeMap<String, Vec<RuleInfo>>, usize, usize, usize), Box<dyn std::error::Error>> {
+    let cert_c_dir = PathBuf::from("src/rules/cert_c");
+
     let mut categories: BTreeMap<String, Vec<RuleInfo>> = BTreeMap::new();
     let mut total_rules = 0;
     let mut implemented_rules = 0;
@@ -106,99 +127,24 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
 
             // Read TOML metadata
             let toml_path = rule_path.join(format!("{}.toml", rule_id));
-            let (title, description, is_enabled) = if let Ok(content) =
-                fs::read_to_string(&toml_path)
-            {
-                let title = content
-                    .lines()
-                    .find(|line| line.trim().starts_with("title = "))
-                    .and_then(|line| line.split('=').nth(1))
-                    .map(|s| s.trim().trim_matches('"').to_string())
-                    .unwrap_or_else(|| "No title".to_string());
-
-                // Extract multi-line description
-                let description = if let Some(desc_start) = content.find("description = \"\"\"") {
-                    let desc_content = &content[desc_start + 18..];
-                    if let Some(desc_end) = desc_content.find("\"\"\"") {
-                        desc_content[..desc_end].trim().to_string()
-                    } else {
-                        "No description".to_string()
-                    }
-                } else {
-                    "No description".to_string()
-                };
-
-                let enabled = content.contains("enabled = true");
-                (title, description, enabled)
-            } else {
-                ("No title".to_string(), "No description".to_string(), false)
-            };
+            let (title, description, is_enabled) = parse_rule_toml(&toml_path);
 
             // Count test files and look up their results
             let tests_dir = rule_path.join("tests");
-            let mut fail_tests = Vec::new();
-            let mut pass_tests = Vec::new();
-
-            let results = TEST_RESULTS.lock().unwrap_or_else(|e| e.into_inner());
-
-            if tests_dir.exists() {
-                let fail_dir = tests_dir.join("fail");
-                if fail_dir.exists() {
-                    for test_file in fs::read_dir(&fail_dir)? {
-                        let test_file = test_file?;
-                        if test_file.path().extension().is_some_and(|e| e == "c") {
-                            let file_name = test_file.file_name().to_string_lossy().to_string();
-                            let test_name = file_name.trim_end_matches(".c");
-                            let func_name = format!(
-                                "test_{}_fail_{}",
-                                rule_id.to_lowercase().replace("-", "_"),
-                                test_name.replace("-", "_").replace(".", "_")
-                            );
-
-                            let result = results.get(&func_name).cloned();
-                            fail_tests.push(TestCaseInfo {
-                                name: file_name,
-                                result,
-                            });
-                        }
-                    }
-                }
-
-                let pass_dir = tests_dir.join("pass");
-                if pass_dir.exists() {
-                    for test_file in fs::read_dir(&pass_dir)? {
-                        let test_file = test_file?;
-                        if test_file.path().extension().is_some_and(|e| e == "c") {
-                            let file_name = test_file.file_name().to_string_lossy().to_string();
-                            let test_name = file_name.trim_end_matches(".c");
-                            let func_name = format!(
-                                "test_{}_pass_{}",
-                                rule_id.to_lowercase().replace("-", "_"),
-                                test_name.replace("-", "_").replace(".", "_")
-                            );
-
-                            let result = results.get(&func_name).cloned();
-                            pass_tests.push(TestCaseInfo {
-                                name: file_name,
-                                result,
-                            });
-                        }
-                    }
-                }
-            }
+            let mut fail_tests = collect_test_cases(&tests_dir.join("fail"), &rule_id, "fail")?;
+            let mut pass_tests = collect_test_cases(&tests_dir.join("pass"), &rule_id, "pass")?;
 
             fail_tests.sort_by(|a, b| a.name.cmp(&b.name));
             pass_tests.sort_by(|a, b| a.name.cmp(&b.name));
 
-            let test_count = fail_tests.len() + pass_tests.len();
-            total_tests += test_count;
+            total_tests += fail_tests.len() + pass_tests.len();
             total_rules += 1;
             if is_enabled {
                 implemented_rules += 1;
             }
 
             let rule_info = RuleInfo {
-                id: rule_id.clone(),
+                id: rule_id,
                 category: category_name.clone(),
                 title,
                 description,
@@ -214,10 +160,99 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Generate markdown report
-    let mut report = String::new();
-    report.push_str("# CERT C Rules Test Summary\n\n");
+    Ok((categories, total_rules, implemented_rules, total_tests))
+}
 
+/// Parse a rule's TOML for its title, multi-line description, and enabled flag.
+/// Returns defaults if the file is missing or fields are absent.
+fn parse_rule_toml(toml_path: &Path) -> (String, String, bool) {
+    let Ok(content) = fs::read_to_string(toml_path) else {
+        return ("No title".to_string(), "No description".to_string(), false);
+    };
+
+    let title = content
+        .lines()
+        .find(|line| line.trim().starts_with("title = "))
+        .and_then(|line| line.split('=').nth(1))
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .unwrap_or_else(|| "No title".to_string());
+
+    // Extract multi-line description
+    let description = if let Some(desc_start) = content.find("description = \"\"\"") {
+        let desc_content = &content[desc_start + 18..];
+        if let Some(desc_end) = desc_content.find("\"\"\"") {
+            desc_content[..desc_end].trim().to_string()
+        } else {
+            "No description".to_string()
+        }
+    } else {
+        "No description".to_string()
+    };
+
+    let enabled = content.contains("enabled = true");
+    (title, description, enabled)
+}
+
+/// Collect the `.c` test fixtures in one test-type directory (`fail`/`pass`),
+/// pairing each with its recorded test result. Missing directories yield an empty list.
+fn collect_test_cases(
+    dir: &Path,
+    rule_id: &str,
+    test_type: &str,
+) -> Result<Vec<TestCaseInfo>, Box<dyn std::error::Error>> {
+    let mut tests = Vec::new();
+    if !dir.exists() {
+        return Ok(tests);
+    }
+
+    let results = TEST_RESULTS.lock().unwrap_or_else(|e| e.into_inner());
+
+    for test_file in fs::read_dir(dir)? {
+        let test_file = test_file?;
+        if test_file.path().extension().is_some_and(|e| e == "c") {
+            let file_name = test_file.file_name().to_string_lossy().to_string();
+            let func_name = test_func_name(rule_id, test_type, &file_name);
+            let result = results.get(&func_name).cloned();
+            tests.push(TestCaseInfo {
+                name: file_name,
+                result,
+            });
+        }
+    }
+
+    Ok(tests)
+}
+
+/// Build the generated test function name for a fixture, e.g.
+/// `test_arr00_c_fail_wiki_noncompliant_1` from rule `ARR00-C`, type `fail`, file `wiki-noncompliant-1.c`.
+fn test_func_name(rule_id: &str, test_type: &str, file_name: &str) -> String {
+    let test_name = file_name.trim_end_matches(".c");
+    format!(
+        "test_{}_{}_{}",
+        rule_id.to_lowercase().replace("-", "_"),
+        test_type,
+        test_name.replace("-", "_").replace(".", "_")
+    )
+}
+
+/// Status icon and label for a rule given its computed test total.
+fn rule_status(rule: &RuleInfo, total: usize) -> (&'static str, &'static str) {
+    if rule.is_enabled {
+        ("✅", "Implemented")
+    } else if total > 0 {
+        ("🔶", "Not Implemented (has tests)")
+    } else {
+        ("⚫", "Not Implemented (no tests)")
+    }
+}
+
+/// Render the top-level Overview section with aggregate counts.
+fn render_overview(
+    report: &mut String,
+    total_rules: usize,
+    implemented_rules: usize,
+    total_tests: usize,
+) {
     report.push_str("## Overview\n\n");
     report.push_str(&format!("- **Total Rules:** {}\n", total_rules));
     report.push_str(&format!(
@@ -230,10 +265,12 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
         "- **Average Tests per Rule:** {:.1}\n\n",
         total_tests as f64 / total_rules as f64
     ));
+}
 
-    // Table of Contents
+/// Render the Table of Contents linking each category and rule.
+fn render_toc(report: &mut String, categories: &BTreeMap<String, Vec<RuleInfo>>) {
     report.push_str("## Table of Contents\n\n");
-    for (category, rules) in &categories {
+    for (category, rules) in categories {
         let implemented_count = rules.iter().filter(|r| r.is_enabled).count();
         report.push_str(&format!(
             "- [{}](#category-{}) ({} implemented / {} total)\n",
@@ -244,21 +281,7 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
         ));
         for rule in rules {
             let (passed, total, not_run) = calculate_rule_metrics(rule);
-            let status_icon = if rule.is_enabled {
-                "✅"
-            } else if total > 0 {
-                "🔶" // Has tests but not implemented
-            } else {
-                "⚫" // No tests, not implemented
-            };
-
-            let status_text = if rule.is_enabled {
-                "Implemented"
-            } else if total > 0 {
-                "Not Implemented (has tests)"
-            } else {
-                "Not Implemented (no tests)"
-            };
+            let (status_icon, status_text) = rule_status(rule, total);
 
             let pass_rate = if total > 0 {
                 format!(
@@ -287,9 +310,11 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     report.push('\n');
+}
 
-    // Detailed sections by category
-    for (category, rules) in &categories {
+/// Render the per-category detailed sections.
+fn render_detail_sections(report: &mut String, categories: &BTreeMap<String, Vec<RuleInfo>>) {
+    for (category, rules) in categories {
         report.push_str(&format!("## Category: {}\n\n", category));
         report.push_str(&format!(
             "<a id=\"category-{}\"></a>\n\n",
@@ -305,114 +330,95 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
         ));
 
         for rule in rules {
-            let (passed, total, not_run) = calculate_rule_metrics(rule);
-            let test_count = rule.fail_tests.len() + rule.pass_tests.len();
-
-            let status_icon = if rule.is_enabled {
-                "✅"
-            } else if total > 0 {
-                "🔶"
-            } else {
-                "⚫"
-            };
-
-            let status_text = if rule.is_enabled {
-                "Implemented"
-            } else if total > 0 {
-                "Not Implemented (has tests)"
-            } else {
-                "Not Implemented (no tests)"
-            };
-
-            report.push_str(&format!(
-                "### {} {} - {}\n\n",
-                status_icon, rule.id, status_text
-            ));
-            report.push_str(&format!(
-                "<a id=\"rule-{}\"></a>\n\n",
-                rule.id.to_lowercase().replace("-", "")
-            ));
-            report.push_str(&format!("**Title:** {}\n\n", rule.title));
-            report.push_str(&format!("**Description:** {}\n\n", rule.description));
-            report.push_str(&format!(
-                "**Test Coverage:** {} tests ({} fail, {} pass)\n\n",
-                test_count,
-                rule.fail_tests.len(),
-                rule.pass_tests.len()
-            ));
-
-            if total > 0 {
-                let pass_rate = (passed as f64 / total as f64) * 100.0;
-                report.push_str(&format!(
-                    "**Test Results:** {}/{} passed ({:.1}%)",
-                    passed, total, pass_rate
-                ));
-                if not_run > 0 {
-                    report.push_str(&format!(", {} not run", not_run));
-                }
-                report.push_str("\n\n");
-            }
-
-            if !rule.fail_tests.is_empty() {
-                report.push_str("#### Fail Tests (Should Detect Violations)\n\n");
-                for test in &rule.fail_tests {
-                    let test_name = test.name.trim_end_matches(".c");
-                    let func_name = format!(
-                        "test_{}_fail_{}",
-                        rule.id.to_lowercase().replace("-", "_"),
-                        test_name.replace("-", "_").replace(".", "_")
-                    );
-
-                    let status = if let Some(result) = &test.result {
-                        if result.passed {
-                            "✅ PASS"
-                        } else {
-                            "❌ FAIL"
-                        }
-                    } else {
-                        "⏭️ NOT RUN"
-                    };
-
-                    report.push_str(&format!("- {} `{}` → `{}`\n", status, test.name, func_name));
-                }
-                report.push('\n');
-            }
-
-            if !rule.pass_tests.is_empty() {
-                report.push_str("#### Pass Tests (Should NOT Detect Violations)\n\n");
-                for test in &rule.pass_tests {
-                    let test_name = test.name.trim_end_matches(".c");
-                    let func_name = format!(
-                        "test_{}_pass_{}",
-                        rule.id.to_lowercase().replace("-", "_"),
-                        test_name.replace("-", "_").replace(".", "_")
-                    );
-
-                    let status = if let Some(result) = &test.result {
-                        if result.passed {
-                            "✅ PASS"
-                        } else {
-                            "❌ FAIL"
-                        }
-                    } else {
-                        "⏭️ NOT RUN"
-                    };
-
-                    report.push_str(&format!("- {} `{}` → `{}`\n", status, test.name, func_name));
-                }
-                report.push('\n');
-            }
-
-            report.push_str("---\n\n");
+            render_rule_detail(report, rule);
         }
     }
+}
 
-    // Summary statistics by category
+/// Render the detailed block for a single rule (header, metadata, results, test lists).
+fn render_rule_detail(report: &mut String, rule: &RuleInfo) {
+    let (passed, total, not_run) = calculate_rule_metrics(rule);
+    let test_count = rule.fail_tests.len() + rule.pass_tests.len();
+    let (status_icon, status_text) = rule_status(rule, total);
+
+    report.push_str(&format!(
+        "### {} {} - {}\n\n",
+        status_icon, rule.id, status_text
+    ));
+    report.push_str(&format!(
+        "<a id=\"rule-{}\"></a>\n\n",
+        rule.id.to_lowercase().replace("-", "")
+    ));
+    report.push_str(&format!("**Title:** {}\n\n", rule.title));
+    report.push_str(&format!("**Description:** {}\n\n", rule.description));
+    report.push_str(&format!(
+        "**Test Coverage:** {} tests ({} fail, {} pass)\n\n",
+        test_count,
+        rule.fail_tests.len(),
+        rule.pass_tests.len()
+    ));
+
+    if total > 0 {
+        let pass_rate = (passed as f64 / total as f64) * 100.0;
+        report.push_str(&format!(
+            "**Test Results:** {}/{} passed ({:.1}%)",
+            passed, total, pass_rate
+        ));
+        if not_run > 0 {
+            report.push_str(&format!(", {} not run", not_run));
+        }
+        report.push_str("\n\n");
+    }
+
+    render_test_list(
+        report,
+        rule,
+        &rule.fail_tests,
+        "fail",
+        "#### Fail Tests (Should Detect Violations)\n\n",
+    );
+    render_test_list(
+        report,
+        rule,
+        &rule.pass_tests,
+        "pass",
+        "#### Pass Tests (Should NOT Detect Violations)\n\n",
+    );
+
+    report.push_str("---\n\n");
+}
+
+/// Render a list of test cases (fail or pass) with their pass/fail/not-run status.
+fn render_test_list(
+    report: &mut String,
+    rule: &RuleInfo,
+    tests: &[TestCaseInfo],
+    test_type: &str,
+    header: &str,
+) {
+    if tests.is_empty() {
+        return;
+    }
+    report.push_str(header);
+    for test in tests {
+        let func_name = test_func_name(&rule.id, test_type, &test.name);
+        let status = match &test.result {
+            Some(result) if result.passed => "✅ PASS",
+            Some(_) => "❌ FAIL",
+            None => "⏭️ NOT RUN",
+        };
+        report.push_str(&format!("- {} `{}` → `{}`\n", status, test.name, func_name));
+    }
+    report.push('\n');
+}
+
+/// Render the closing per-category summary table.
+fn render_summary_table(report: &mut String, categories: &BTreeMap<String, Vec<RuleInfo>>) {
     report.push_str("## Summary by Category\n\n");
     report.push_str("| Category | Rules | Implemented | Tests | Avg Tests/Rule |\n");
     report.push_str("|----------|-------|-------------|-------|----------------|\n");
 
-    for (category, rules) in &categories {
+    for (category, rules) in categories {
         let implemented = rules.iter().filter(|r| r.is_enabled).count();
         let tests: usize = rules
             .iter()
@@ -429,10 +435,6 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
     report.push('\n');
-
-    fs::write(&output_path, report)?;
-    println!("Generated test summary report: {}", output_path.display());
-    Ok(())
 }
 
 fn calculate_rule_metrics(rule: &RuleInfo) -> (usize, usize, usize) {
