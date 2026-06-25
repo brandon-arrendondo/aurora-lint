@@ -1022,6 +1022,7 @@ def run_analysis(tool: str, codebase: str, host: str | None = None,
     Returns immediately. Use get_status() to monitor progress.
     """
     _reap_children()  # opportunistically clear finished children before starting
+    _start_watcher()  # ensure completion → ingest fires even without a poll
     tool = tool.strip().lower()
     codebase = codebase.strip().lower()
 
@@ -1243,6 +1244,37 @@ def run_all(codebase: str | None = None, tool: str | None = None,
         "total": len(results),
         "runs": results,
         "message": f"Launched {started} runs ({already} already running, {errors} errors).",
+    })
+
+
+@mcp.tool()
+def reconcile_db() -> str:
+    """Ingest any completed-but-uningested realworld scan results into SQLite.
+
+    Normally ingest happens automatically (on scan completion via the background
+    watcher, and at server startup). This is the manual backstop / recovery path
+    — e.g. to immediately pull in a run that finished while the server was down,
+    instead of waiting for the next watcher tick. Idempotent: already-ingested
+    runs are skipped. Replaces the hand-rolled BenchDB().ingest_realworld_run()
+    backfill.
+    """
+    _reap_children()
+    summary = _reconcile_pending_ingests()
+    n = len(summary["ingested"])
+    n_hist = len(summary["skipped_uningested"])
+    hist_note = (
+        f" {n_hist} older dir(s) are on disk but absent from the DB "
+        "(skipped as settled history — backfill explicitly if wanted)."
+        if n_hist else ""
+    )
+    return json.dumps({
+        **summary,
+        "message": (
+            (f"Reconciled: {n} run(s) newly ingested of {summary['checked']} "
+             f"current sqc dir(s) checked." if n else
+             f"Nothing to ingest — the {summary['checked']} current sqc result "
+             "dir(s) are already in the database.") + hist_note
+        ),
     })
 
 
@@ -1591,6 +1623,167 @@ def _auto_score_run(db, run_id: int, version_dir: Path) -> str | None:
                 f"{ov['run_findings']} findings){rec_s}")
     except Exception:
         return None
+
+
+# ── Ingest reconciliation ────────────────────────────────────────────────────
+# The detached scan child (start_new_session=True) only writes its JSON result
+# to RESULTS_BASE and exits — it never touches SQLite. Ingest is otherwise a
+# side effect of an interactive get_status()/get_results() poll. So a scan that
+# finishes while no poll is arriving (it completed overnight, the session ended,
+# or the server was restarted) leaves its result stranded on disk, un-ingested
+# (this happened twice; the symptom is a run stuck "running" in the state file
+# with a long-dead PID). Reconciliation makes ingest happen on completion
+# regardless of polling: it runs once at startup (catches runs finished while
+# the server was down), continuously via a background watcher (catches runs that
+# finish while the server is up but idle), and on demand via reconcile_db().
+
+def _finalize_dead_run_statuses() -> None:
+    """Flip state-file runs whose PID is dead and whose result file exists from
+    'running' to 'completed', so a finished-but-never-polled run stops being
+    reported as active and the watcher's edge trigger stays accurate."""
+    try:
+        with _StateLock() as state:
+            now = time.time()
+            for run_id, info in state.get("runs", {}).items():
+                if info.get("status") in ("completed", "cancelled"):
+                    continue
+                if _process_alive(info.get("pid", 0)):
+                    continue
+                version_dir = Path(info.get("version_dir", ""))
+                result_file = _get_result_file(version_dir, run_id)
+                log_file = version_dir / f"{run_id}.log"
+                done = (result_file and result_file.stat().st_size > 0) or (
+                    log_file.exists() and log_file.stat().st_size > 0)
+                if done:
+                    info["status"] = "completed"
+                    info["end_time"] = _completion_time(version_dir, run_id) or now
+    except Exception:
+        pass
+
+
+def _parse_sqc_version(v: str) -> tuple:
+    """Parse a dotted sqc version (`0.4.68`) into a comparable int tuple. Unknown
+    pieces sort low so a malformed version never outranks a real one."""
+    parts = []
+    for p in (v or "").split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(-1)
+    return tuple(parts)
+
+
+def _dir_version_sha(dir_name: str) -> tuple[str, str]:
+    """Split `sqc-<version>-<sha>` into (version, sha)."""
+    parts = dir_name.split("-")
+    return (parts[1], parts[2]) if len(parts) >= 3 else ("", "")
+
+
+def _reconcile_pending_ingests() -> dict:
+    """Ingest the current completed-but-uningested sqc result dir(s) on disk.
+
+    Scope is deliberately forward-only: a dir is ingested when its version is at
+    or above the newest version already in the DB (the just-finished run that a
+    missing poll would otherwise strand). Dirs *older* than the DB high-water
+    mark that are absent from the DB are NOT silently backfilled — that history
+    is settled (and may have been purged on purpose); they are surfaced under
+    `skipped_uningested` so a backfill stays an explicit decision. Idempotent:
+    _auto_ingest_to_sqlite no-ops / merges-missing-projects on dirs already
+    stored; dirs with a still-running scan are skipped so no half-written result
+    file is parsed.
+    """
+    _finalize_dead_run_statuses()
+    summary = {"checked": 0, "ingested": [], "skipped_uningested": []}
+    if not RESULTS_BASE.exists():
+        return summary
+
+    # DB high-water version and the set of (version, sha) already stored.
+    try:
+        db = _get_db()
+        db_runs = db.list_realworld_runs()
+    except Exception:
+        db_runs = []
+    ingested_keys = {(r.get("sqc_version"), r.get("commit_sha")) for r in db_runs}
+    max_ingested = max(
+        (_parse_sqc_version(r.get("sqc_version")) for r in db_runs), default=()
+    )
+
+    # version_dirs of scans still actively writing — don't touch a partial file.
+    live_dirs = set()
+    try:
+        state = _read_state()
+        for info in state.get("runs", {}).values():
+            if info.get("tool") == "sqc" and _process_alive(info.get("pid", 0)):
+                live_dirs.add(info.get("version_dir", ""))
+    except Exception:
+        pass
+
+    for version_dir in sorted(RESULTS_BASE.iterdir()):
+        if not version_dir.is_dir() or not version_dir.name.startswith("sqc-"):
+            continue
+        if str(version_dir) in live_dirs:
+            continue
+        if not any(version_dir.glob("sqc-*.json")):
+            continue
+        ver, sha = _dir_version_sha(version_dir.name)
+        key = (ver, sha)
+        is_current = _parse_sqc_version(ver) >= max_ingested
+        if not is_current and key not in ingested_keys:
+            # Present on disk, absent from DB, older than the high-water mark.
+            summary["skipped_uningested"].append(version_dir.name)
+            continue
+        if not is_current:
+            continue  # settled history already in the DB — leave it untouched
+        summary["checked"] += 1
+        try:
+            measured = _auto_ingest_to_sqlite(version_dir)
+        except Exception:
+            measured = None
+        # Non-None means a fresh ingest was scored; record it. (A fresh ingest
+        # whose codebase has no oracle labels still lands in the DB but returns
+        # None — the data guarantee holds even when the summary can't list it.)
+        if measured is not None:
+            summary["ingested"].append({"dir": version_dir.name, "measured": measured})
+    return summary
+
+
+_WATCHER_INTERVAL_S = 60
+_watcher_started = False
+_watcher_lock = threading.Lock()
+
+
+def _watcher_loop() -> None:
+    """Background daemon: when a tracked sqc scan finishes and nothing else is
+    scanning, reconcile pending ingests. Edge-triggered off the live-run set so
+    an idle server does no repeated DB work."""
+    prev_live: set[str] = set()
+    while True:
+        time.sleep(_WATCHER_INTERVAL_S)
+        try:
+            _reap_children()
+            state = _read_state()
+            now_live = {
+                rid for rid, info in state.get("runs", {}).items()
+                if info.get("tool") == "sqc" and _process_alive(info.get("pid", 0))
+            }
+            finished = prev_live - now_live  # was scanning last tick, done now
+            prev_live = now_live
+            if finished and not now_live:
+                _reconcile_pending_ingests()
+        except Exception:
+            pass
+
+
+def _start_watcher() -> None:
+    """Start the ingest watcher once (idempotent)."""
+    global _watcher_started
+    with _watcher_lock:
+        if _watcher_started:
+            return
+        threading.Thread(
+            target=_watcher_loop, name="rw-ingest-watcher", daemon=True
+        ).start()
+        _watcher_started = True
 
 
 def _extract_run_durations(tool: str = "sqc") -> dict[str, float]:
@@ -2499,4 +2692,6 @@ def _parse_run_id(run_id: str) -> tuple[str, str]:
 
 if __name__ == "__main__":
     _install_sigchld_reaper()  # reap finished children promptly (task 218)
+    _reconcile_pending_ingests()  # catch runs that finished while the server was down
+    _start_watcher()  # completion → ingest, no interactive poll required
     mcp.run()
