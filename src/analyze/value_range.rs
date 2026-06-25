@@ -1167,48 +1167,16 @@ pub fn analyze_value_ranges(
 ) -> RangeAnalysisResult {
     // Skip VRA for very large functions to bound worst-case runtime.
     if cfg.blocks.len() > VRA_BLOCK_LIMIT {
-        return RangeAnalysisResult {
-            block_entry_ranges: HashMap::new(),
-            block_exit_ranges: HashMap::new(),
-            return_ranges: HashMap::new(),
-        };
+        return empty_range_result();
     }
 
     let body = match func_node.child_by_field_name("body") {
         Some(b) => b,
-        None => {
-            return RangeAnalysisResult {
-                block_entry_ranges: HashMap::new(),
-                block_exit_ranges: HashMap::new(),
-                return_ranges: HashMap::new(),
-            }
-        }
+        None => return empty_range_result(),
     };
 
-    // Build initial state from function parameters
-    let mut initial_state = RangeMap::new();
-    if let Some(declarator) = func_node.child_by_field_name("declarator") {
-        collect_param_ranges(&declarator, source, &mut initial_state);
-    }
-    // Narrow parameter ranges when ALL callers pass the same integer constant.
-    // This suppresses goodG2B-style FPs where data=2 is always safe but VRA
-    // would otherwise assign the full type range (e.g. [INT64_MIN, INT64_MAX]).
-    if let Some(func_name) = super::function_summary::extract_function_name(func_node, source) {
-        if let Some(summary) = summaries.get(&func_name) {
-            if !summary.callsite_param_const_int.is_empty() {
-                let param_names = super::function_summary::collect_param_names(func_node, source);
-                for (&param_idx, &const_val) in &summary.callsite_param_const_int {
-                    if let Some(name) = param_names.get(param_idx) {
-                        if !name.is_empty() {
-                            if let Some(typed_range) = initial_state.get_mut(name) {
-                                typed_range.range = ValueRange::new(const_val, const_val);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let initial_state = build_initial_state(func_node, source, summaries);
+
     // Collect types for uninitialized local declarations (e.g. `int data;`).
     // These are NOT added to the initial state (would cause stale entry ranges),
     // but passed as a fallback type lookup so that assignments like `data = atoi()`
@@ -1267,51 +1235,16 @@ pub fn analyze_value_ranges(
         }
 
         // Join predecessor exit states with edge refinement
-        let preds = cfg.predecessors(block_id);
-        let mut new_entry = RangeMap::new();
-        let mut first = true;
-
-        for (pred_id, edge_kind) in &preds {
-            // Skip branches that are provably dead due to a constant condition
-            if is_dead_constant_edge(*pred_id, edge_kind, cfg, &body, source, macros) {
-                continue;
-            }
-
-            let pred_exit = exit_ranges.get(pred_id).cloned().unwrap_or_default();
-
-            let refined = apply_range_edge_refinement(
-                &pred_exit, *pred_id, edge_kind, cfg, &body, source, macros,
-            );
-
-            if first {
-                new_entry = refined;
-                first = false;
-            } else {
-                new_entry = join_range_maps(&new_entry, &refined);
-            }
-        }
-
-        if first {
+        let Some(mut new_entry) =
+            join_predecessor_entry(block_id, cfg, &body, source, macros, &exit_ranges)
+        else {
             // No predecessors (unreachable block)
             continue;
-        }
+        };
 
         // Apply widening for back-edge targets after threshold
         if back_edge_targets.contains(&block_id) {
-            let count = block_iterations.entry(block_id).or_insert(0);
-            *count += 1;
-            if *count > 3 {
-                // Widen: for each variable, if the range grew, push to type bounds
-                if let Some(old_entry) = entry_ranges.get(&block_id) {
-                    let mut widened = new_entry.clone();
-                    for (var, new_typed) in &new_entry {
-                        if let Some(old_typed) = old_entry.get(var) {
-                            widened.insert(var.clone(), widen_typed(old_typed, new_typed));
-                        }
-                    }
-                    new_entry = widened;
-                }
-            }
+            new_entry = maybe_widen(block_id, new_entry, &entry_ranges, &mut block_iterations);
         }
 
         // Compute exit state
@@ -1353,6 +1286,116 @@ pub fn analyze_value_ranges(
         block_exit_ranges: exit_ranges,
         return_ranges,
     }
+}
+
+/// An empty range-analysis result (used for skipped/bodyless functions).
+fn empty_range_result() -> RangeAnalysisResult {
+    RangeAnalysisResult {
+        block_entry_ranges: HashMap::new(),
+        block_exit_ranges: HashMap::new(),
+        return_ranges: HashMap::new(),
+    }
+}
+
+/// Build the entry-block state from function parameters, narrowing a parameter to
+/// a single constant when every caller passes the same integer literal.
+fn build_initial_state(
+    func_node: &Node,
+    source: &str,
+    summaries: &HashMap<String, FunctionSummary>,
+) -> RangeMap {
+    // Build initial state from function parameters
+    let mut initial_state = RangeMap::new();
+    if let Some(declarator) = func_node.child_by_field_name("declarator") {
+        collect_param_ranges(&declarator, source, &mut initial_state);
+    }
+    // Narrow parameter ranges when ALL callers pass the same integer constant.
+    // This suppresses goodG2B-style FPs where data=2 is always safe but VRA
+    // would otherwise assign the full type range (e.g. [INT64_MIN, INT64_MAX]).
+    if let Some(func_name) = super::function_summary::extract_function_name(func_node, source) {
+        if let Some(summary) = summaries.get(&func_name) {
+            if !summary.callsite_param_const_int.is_empty() {
+                let param_names = super::function_summary::collect_param_names(func_node, source);
+                for (&param_idx, &const_val) in &summary.callsite_param_const_int {
+                    if let Some(name) = param_names.get(param_idx) {
+                        if !name.is_empty() {
+                            if let Some(typed_range) = initial_state.get_mut(name) {
+                                typed_range.range = ValueRange::new(const_val, const_val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    initial_state
+}
+
+/// Join the exit states of a block's live predecessors (skipping provably-dead
+/// constant edges and applying edge refinement). Returns `None` if the block has
+/// no live predecessors (unreachable).
+fn join_predecessor_entry(
+    block_id: BlockId,
+    cfg: &FunctionCfg,
+    body: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    exit_ranges: &HashMap<BlockId, RangeMap>,
+) -> Option<RangeMap> {
+    let preds = cfg.predecessors(block_id);
+    let mut new_entry = RangeMap::new();
+    let mut first = true;
+
+    for (pred_id, edge_kind) in &preds {
+        // Skip branches that are provably dead due to a constant condition
+        if is_dead_constant_edge(*pred_id, edge_kind, cfg, body, source, macros) {
+            continue;
+        }
+
+        let pred_exit = exit_ranges.get(pred_id).cloned().unwrap_or_default();
+
+        let refined =
+            apply_range_edge_refinement(&pred_exit, *pred_id, edge_kind, cfg, body, source, macros);
+
+        if first {
+            new_entry = refined;
+            first = false;
+        } else {
+            new_entry = join_range_maps(&new_entry, &refined);
+        }
+    }
+
+    if first {
+        // No predecessors (unreachable block)
+        return None;
+    }
+    Some(new_entry)
+}
+
+/// Apply widening to a back-edge target after its iteration threshold: variables
+/// whose range grew are pushed out to their type bounds, ensuring termination.
+fn maybe_widen(
+    block_id: BlockId,
+    new_entry: RangeMap,
+    entry_ranges: &HashMap<BlockId, RangeMap>,
+    block_iterations: &mut HashMap<BlockId, usize>,
+) -> RangeMap {
+    let count = block_iterations.entry(block_id).or_insert(0);
+    *count += 1;
+    if *count <= 3 {
+        return new_entry;
+    }
+    // Widen: for each variable, if the range grew, push to type bounds
+    let Some(old_entry) = entry_ranges.get(&block_id) else {
+        return new_entry;
+    };
+    let mut widened = new_entry.clone();
+    for (var, new_typed) in &new_entry {
+        if let Some(old_typed) = old_entry.get(var) {
+            widened.insert(var.clone(), widen_typed(old_typed, new_typed));
+        }
+    }
+    widened
 }
 
 // ---------------------------------------------------------------------------
