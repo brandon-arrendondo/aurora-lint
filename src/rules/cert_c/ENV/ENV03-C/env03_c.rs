@@ -897,116 +897,19 @@ fn check_writes(
 
     match node.kind() {
         "init_declarator" => {
-            if let Some(decl) = node.child_by_field_name("declarator") {
-                if declarator_names(&decl, source).iter().any(|n| n == var) {
-                    let value = node.child_by_field_name("value");
-                    if !rhs_is_safe(value.as_ref(), safe_sources, source, summaries) {
-                        *all_safe = false;
-                        return;
-                    }
-                }
-            }
+            check_init_declarator_write(node, var, safe_sources, source, summaries, all_safe);
         }
         "assignment_expression" => {
-            let Some(lhs) = node.child_by_field_name("left") else {
-                // Fall through to recursion
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        check_writes(
-                            &child,
-                            var,
-                            safe_sources,
-                            source,
-                            summaries,
-                            string_macros,
-                            all_safe,
-                        );
-                        if !*all_safe {
-                            return;
-                        }
-                    }
-                }
-                return;
-            };
-            let lhs = strip_casts_and_parens(lhs);
-            // Only plain `var = ...` matters. `var[i] = ...` is an index
-            // write, which doesn't change the pointer itself; treat as
-            // neutral (and let strcat/recv checks cover buffer contents).
-            if lhs.kind() == "identifier" && get_node_text(&lhs, source) == var {
-                let op_matches = node_operator(node, source)
-                    .map(|op| op == "=")
-                    .unwrap_or(true);
-                if op_matches {
-                    let rhs = node.child_by_field_name("right");
-                    if !rhs_is_safe(rhs.as_ref(), safe_sources, source, summaries) {
-                        *all_safe = false;
-                        return;
-                    }
-                } else {
-                    // += / -= etc. on a char pointer command variable is
-                    // unusual; be conservative.
-                    *all_safe = false;
-                    return;
-                }
-            }
+            check_assignment_write(node, var, safe_sources, source, summaries, all_safe);
         }
         "call_expression" => {
-            if let Some(function) = node.child_by_field_name("function") {
-                let name = get_node_text(&function, source);
-                let ident = trailing_identifier(name);
-                // strcat(var, X) or strcpy(var, X) — dest is var; check X.
-                if matches!(
-                    ident,
-                    "strcat" | "strcpy" | "strncat" | "strncpy" | "wcscat" | "wcscpy"
-                ) {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        let named: Vec<_> = (0..args.child_count())
-                            .filter_map(|i| args.child(i))
-                            .filter(|c| c.is_named())
-                            .collect();
-                        if let Some(first) = named.first() {
-                            let first_stripped = strip_casts_and_parens(*first);
-                            if first_stripped.kind() == "identifier"
-                                && get_node_text(&first_stripped, source) == var
-                            {
-                                let second = named.get(1);
-                                let second_safe = match second {
-                                    Some(n) => {
-                                        let s = strip_casts_and_parens(*n);
-                                        match s.kind() {
-                                            "string_literal" | "concatenated_string" => true,
-                                            // ALL_CAPS identifiers are compile-time macro constants
-                                            // (e.g. Juliet CWE-426 GOOD_OS_COMMAND = "/usr/bin/ls").
-                                            // Lowercase identifiers remain conservative.
-                                            "identifier" => {
-                                                let nm = get_node_text(&s, source);
-                                                // A local safe buffer, or a macro that
-                                                // expands to an absolute path or an argument
-                                                // fragment (starts with space/dash — safe
-                                                // to append). ALL-CAPS alone is not sufficient:
-                                                // BAD_OS_COMMAND is also all-caps.
-                                                safe_sources.contains(nm)
-                                                    || const_eval::is_safe_command_macro(
-                                                        string_macros,
-                                                        nm,
-                                                    )
-                                            }
-                                            _ => false,
-                                        }
-                                    }
-                                    None => false,
-                                };
-                                if !second_safe {
-                                    *all_safe = false;
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            check_str_append_write(node, var, safe_sources, source, string_macros, all_safe);
         }
         _ => {}
+    }
+
+    if !*all_safe {
+        return;
     }
 
     for i in 0..node.child_count() {
@@ -1024,6 +927,131 @@ fn check_writes(
                 return;
             }
         }
+    }
+}
+
+/// `T var = <rhs>;` — clear `all_safe` if the initializer of `var` is not a safe source.
+fn check_init_declarator_write(
+    node: &Node,
+    var: &str,
+    safe_sources: &HashSet<String>,
+    source: &str,
+    summaries: &HashMap<String, FunctionSummary>,
+    all_safe: &mut bool,
+) {
+    if let Some(decl) = node.child_by_field_name("declarator") {
+        if declarator_names(&decl, source).iter().any(|n| n == var) {
+            let value = node.child_by_field_name("value");
+            if !rhs_is_safe(value.as_ref(), safe_sources, source, summaries) {
+                *all_safe = false;
+            }
+        }
+    }
+}
+
+/// `var = <rhs>;` (or `var += ...`) — clear `all_safe` if a direct write to `var`
+/// assigns an unsafe source. Index writes (`var[i] = ...`) are neutral.
+fn check_assignment_write(
+    node: &Node,
+    var: &str,
+    safe_sources: &HashSet<String>,
+    source: &str,
+    summaries: &HashMap<String, FunctionSummary>,
+    all_safe: &mut bool,
+) {
+    let Some(lhs) = node.child_by_field_name("left") else {
+        // No lhs field — nothing to check here; the caller recurses into children.
+        return;
+    };
+    let lhs = strip_casts_and_parens(lhs);
+    // Only plain `var = ...` matters. `var[i] = ...` is an index
+    // write, which doesn't change the pointer itself; treat as
+    // neutral (and let strcat/recv checks cover buffer contents).
+    if lhs.kind() == "identifier" && get_node_text(&lhs, source) == var {
+        let op_matches = node_operator(node, source)
+            .map(|op| op == "=")
+            .unwrap_or(true);
+        if op_matches {
+            let rhs = node.child_by_field_name("right");
+            if !rhs_is_safe(rhs.as_ref(), safe_sources, source, summaries) {
+                *all_safe = false;
+            }
+        } else {
+            // += / -= etc. on a char pointer command variable is
+            // unusual; be conservative.
+            *all_safe = false;
+        }
+    }
+}
+
+/// `strcat(var, X)` / `strcpy(var, X)` and wide/n variants — when the destination
+/// is `var`, clear `all_safe` unless the appended/copied source `X` is safe.
+fn check_str_append_write(
+    node: &Node,
+    var: &str,
+    safe_sources: &HashSet<String>,
+    source: &str,
+    string_macros: &HashMap<String, String>,
+    all_safe: &mut bool,
+) {
+    let Some(function) = node.child_by_field_name("function") else {
+        return;
+    };
+    let name = get_node_text(&function, source);
+    let ident = trailing_identifier(name);
+    // strcat(var, X) or strcpy(var, X) — dest is var; check X.
+    if !matches!(
+        ident,
+        "strcat" | "strcpy" | "strncat" | "strncpy" | "wcscat" | "wcscpy"
+    ) {
+        return;
+    }
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return;
+    };
+    let named: Vec<_> = (0..args.child_count())
+        .filter_map(|i| args.child(i))
+        .filter(|c| c.is_named())
+        .collect();
+    let Some(first) = named.first() else {
+        return;
+    };
+    let first_stripped = strip_casts_and_parens(*first);
+    if first_stripped.kind() == "identifier"
+        && get_node_text(&first_stripped, source) == var
+        && !str_append_source_is_safe(named.get(1), safe_sources, source, string_macros)
+    {
+        *all_safe = false;
+    }
+}
+
+/// Whether the source operand of a strcat/strcpy is a compile-time-safe value: a
+/// string literal, a known safe buffer, or a safe command macro.
+fn str_append_source_is_safe(
+    arg: Option<&Node>,
+    safe_sources: &HashSet<String>,
+    source: &str,
+    string_macros: &HashMap<String, String>,
+) -> bool {
+    let Some(n) = arg else {
+        return false;
+    };
+    let s = strip_casts_and_parens(*n);
+    match s.kind() {
+        "string_literal" | "concatenated_string" => true,
+        // ALL_CAPS identifiers are compile-time macro constants
+        // (e.g. Juliet CWE-426 GOOD_OS_COMMAND = "/usr/bin/ls").
+        // Lowercase identifiers remain conservative.
+        "identifier" => {
+            let nm = get_node_text(&s, source);
+            // A local safe buffer, or a macro that
+            // expands to an absolute path or an argument
+            // fragment (starts with space/dash — safe
+            // to append). ALL-CAPS alone is not sufficient:
+            // BAD_OS_COMMAND is also all-caps.
+            safe_sources.contains(nm) || const_eval::is_safe_command_macro(string_macros, nm)
+        }
+        _ => false,
     }
 }
 
