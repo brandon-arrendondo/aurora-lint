@@ -529,131 +529,28 @@ impl GlobalTracker {
     ) {
         match node.kind() {
             "call_expression" => {
-                if let Some(func) = node.child_by_field_name("function") {
-                    let called_func = get_node_text(&func, source);
-
-                    // Check for free() calls
-                    if called_func == "free" {
-                        if let Some(args) = node.child_by_field_name("arguments") {
-                            for i in 0..args.child_count() {
-                                if let Some(arg) = args.child(i) {
-                                    if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                                        let var_name = self.extract_base_variable(&arg, source);
-                                        if self.global_vars.contains(&var_name) {
-                                            freed_globals.insert(var_name.clone());
-                                        }
-                                        if params.contains(&var_name) {
-                                            freed_params.insert(var_name);
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Check for signal() registration
-                    if called_func == "signal" {
-                        if let Some(args) = node.child_by_field_name("arguments") {
-                            // Second argument is the handler
-                            let mut arg_count = 0;
-                            for i in 0..args.child_count() {
-                                if let Some(arg) = args.child(i) {
-                                    if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                                        arg_count += 1;
-                                        if arg_count == 2 {
-                                            let handler = get_node_text(&arg, source).to_string();
-                                            self.signal_handlers.insert(handler);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Check for pthread_create - third argument is thread function
-                    if called_func == "pthread_create" {
-                        if let Some(args) = node.child_by_field_name("arguments") {
-                            let mut arg_count = 0;
-                            for i in 0..args.child_count() {
-                                if let Some(arg) = args.child(i) {
-                                    if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                                        arg_count += 1;
-                                        if arg_count == 3 {
-                                            let thread_func =
-                                                get_node_text(&arg, source).to_string();
-                                            self.thread_functions.insert(thread_func);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Check for longjmp
-                    if called_func == "longjmp" {
-                        *has_longjmp = true;
-                    }
-
-                    // Check for recursive call
-                    if called_func == func_name {
-                        *has_recursive_call = true;
-                        // After this call, scan for global accesses
-                        // We need to track accesses that come AFTER this recursive call
-                        // This is tricky with recursion, so we'll collect all accesses
-                        // and check later
-                    }
-
-                    // Note: realloc zero-size pattern removed - too many false positives
-                    // The pattern where realloc(ptr, 0) may free ptr is implementation-defined
-                    // and hard to detect without knowing if size can be 0
-                }
+                self.scan_call_expression(
+                    node,
+                    source,
+                    params,
+                    freed_globals,
+                    freed_params,
+                    func_name,
+                    has_longjmp,
+                    has_recursive_call,
+                );
             }
             "identifier" => {
-                // Check if accessing a global variable
-                let var_name = get_node_text(node, source).to_string();
-                if self.global_vars.contains(&var_name) {
-                    // Check if this is a read access (not inside free() args)
-                    if !self.is_inside_free_call(node) {
-                        accessed_globals.insert(var_name.clone());
-                        // Track line/col for recursive pattern detection
-                        if *has_recursive_call {
-                            global_access_after_recursive.push((
-                                var_name,
-                                node.start_position().row + 1,
-                                node.start_position().column + 1,
-                            ));
-                        }
-                    }
-                }
+                self.scan_identifier_access(
+                    node,
+                    source,
+                    accessed_globals,
+                    has_recursive_call,
+                    global_access_after_recursive,
+                );
             }
             "assignment_expression" => {
-                // Check for VLA/stack pointer escape to global
-                if let Some(left) = node.child_by_field_name("left") {
-                    // Writing to an array element (arr[i] = x) is never a stack pointer
-                    // escape; only a direct assignment to the pointer/array variable itself
-                    // (global_ptr = local_arr) can escape a stack address.
-                    if left.kind() != "subscript_expression" {
-                        let left_var = self.extract_base_variable(&left, source);
-                        // Only pointer/array globals can actually hold a stack address;
-                        // scalar integer globals (u8/u16/u32 counters, state vars, etc.) cannot.
-                        if self.global_pointer_vars.contains(&left_var) {
-                            // Check if right side is a local array/VLA
-                            if let Some(right) = node.child_by_field_name("right") {
-                                if self.is_local_array_or_vla(&right, source, params, func_name) {
-                                    self.stack_escape_violations.push((
-                                        node.start_position().row + 1,
-                                        node.start_position().column + 1,
-                                        format!(
-                                            "Stack pointer escape: local array/VLA assigned to global '{}'",
-                                            left_var
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
+                self.scan_assignment_escape(node, source, params, func_name);
             }
             _ => {}
         }
@@ -675,6 +572,160 @@ impl GlobalTracker {
                     has_recursive_call,
                     global_access_after_recursive,
                 );
+            }
+        }
+    }
+
+    /// Text of the `n`-th (1-based) non-punctuation argument of a call expression.
+    fn nth_arg_text(&self, node: &Node, n: usize, source: &str) -> Option<String> {
+        let args = node.child_by_field_name("arguments")?;
+        let mut arg_count = 0;
+        for i in 0..args.child_count() {
+            if let Some(arg) = args.child(i) {
+                if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
+                    arg_count += 1;
+                    if arg_count == n {
+                        return Some(get_node_text(&arg, source).to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Handle a `call_expression` node: track free()'d globals/params, signal &
+    /// pthread handler registrations, longjmp use, and recursive self-calls.
+    #[allow(clippy::too_many_arguments)]
+    fn scan_call_expression(
+        &mut self,
+        node: &Node,
+        source: &str,
+        params: &HashSet<String>,
+        freed_globals: &mut HashSet<String>,
+        freed_params: &mut HashSet<String>,
+        func_name: &str,
+        has_longjmp: &mut bool,
+        has_recursive_call: &mut bool,
+    ) {
+        let Some(func) = node.child_by_field_name("function") else {
+            return;
+        };
+        let called_func = get_node_text(&func, source);
+
+        // Check for free() calls
+        if called_func == "free" {
+            if let Some(args) = node.child_by_field_name("arguments") {
+                for i in 0..args.child_count() {
+                    if let Some(arg) = args.child(i) {
+                        if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
+                            let var_name = self.extract_base_variable(&arg, source);
+                            if self.global_vars.contains(&var_name) {
+                                freed_globals.insert(var_name.clone());
+                            }
+                            if params.contains(&var_name) {
+                                freed_params.insert(var_name);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for signal() registration - second argument is the handler
+        if called_func == "signal" {
+            if let Some(handler) = self.nth_arg_text(node, 2, source) {
+                self.signal_handlers.insert(handler);
+            }
+        }
+
+        // Check for pthread_create - third argument is thread function
+        if called_func == "pthread_create" {
+            if let Some(thread_func) = self.nth_arg_text(node, 3, source) {
+                self.thread_functions.insert(thread_func);
+            }
+        }
+
+        // Check for longjmp
+        if called_func == "longjmp" {
+            *has_longjmp = true;
+        }
+
+        // Check for recursive call
+        if called_func == func_name {
+            *has_recursive_call = true;
+            // After this call, scan for global accesses
+            // We need to track accesses that come AFTER this recursive call
+            // This is tricky with recursion, so we'll collect all accesses
+            // and check later
+        }
+
+        // Note: realloc zero-size pattern removed - too many false positives
+        // The pattern where realloc(ptr, 0) may free ptr is implementation-defined
+        // and hard to detect without knowing if size can be 0
+    }
+
+    /// Handle an `identifier` node: record reads of global variables (outside free()
+    /// args), tracking those that occur after a recursive call for pattern detection.
+    fn scan_identifier_access(
+        &mut self,
+        node: &Node,
+        source: &str,
+        accessed_globals: &mut HashSet<String>,
+        has_recursive_call: &mut bool,
+        global_access_after_recursive: &mut Vec<(String, usize, usize)>,
+    ) {
+        // Check if accessing a global variable
+        let var_name = get_node_text(node, source).to_string();
+        if self.global_vars.contains(&var_name) {
+            // Check if this is a read access (not inside free() args)
+            if !self.is_inside_free_call(node) {
+                accessed_globals.insert(var_name.clone());
+                // Track line/col for recursive pattern detection
+                if *has_recursive_call {
+                    global_access_after_recursive.push((
+                        var_name,
+                        node.start_position().row + 1,
+                        node.start_position().column + 1,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Handle an `assignment_expression` node: flag a stack pointer escape when a
+    /// local array/VLA is assigned to a global pointer variable.
+    fn scan_assignment_escape(
+        &mut self,
+        node: &Node,
+        source: &str,
+        params: &HashSet<String>,
+        func_name: &str,
+    ) {
+        // Check for VLA/stack pointer escape to global
+        if let Some(left) = node.child_by_field_name("left") {
+            // Writing to an array element (arr[i] = x) is never a stack pointer
+            // escape; only a direct assignment to the pointer/array variable itself
+            // (global_ptr = local_arr) can escape a stack address.
+            if left.kind() != "subscript_expression" {
+                let left_var = self.extract_base_variable(&left, source);
+                // Only pointer/array globals can actually hold a stack address;
+                // scalar integer globals (u8/u16/u32 counters, state vars, etc.) cannot.
+                if self.global_pointer_vars.contains(&left_var) {
+                    // Check if right side is a local array/VLA
+                    if let Some(right) = node.child_by_field_name("right") {
+                        if self.is_local_array_or_vla(&right, source, params, func_name) {
+                            self.stack_escape_violations.push((
+                                node.start_position().row + 1,
+                                node.start_position().column + 1,
+                                format!(
+                                    "Stack pointer escape: local array/VLA assigned to global '{}'",
+                                    left_var
+                                ),
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
