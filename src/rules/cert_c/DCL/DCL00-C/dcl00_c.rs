@@ -44,8 +44,12 @@ impl CertRule for Dcl00C {
                             let var_name =
                                 ast_utils::get_identifier_from_declarator(&declarator, source);
 
-                            // Check if this should be const based on various patterns
+                            // Check if this should be const based on various patterns,
+                            // but only if the variable is not actually modified later in
+                            // its enclosing scope (reassignment, compound-assign, ++/--,
+                            // address-of, or member/element write).
                             if should_be_const(&parent_decl, &declarator, &value, &var_name, source)
+                                && !is_modified_in_scope(&parent_decl, &var_name, source)
                             {
                                 let start_point = parent_decl.start_position();
                                 violations.push(RuleViolation {
@@ -376,6 +380,97 @@ fn should_be_const(
     }
 
     false
+}
+
+/// Returns true if `var_name` is mutated anywhere in its enclosing scope:
+/// reassignment, compound assignment, `++`/`--`, having its address taken,
+/// or a member/element write (`v.x =`, `v->x =`, `v[i] =`, `*v =`). Used to
+/// suppress a const recommendation for a variable that is in fact modified
+/// later — including in if/else branches, loop bodies, and member writes that
+/// the name-heuristic patterns above cannot see. The declaration's own
+/// initializer is not an `assignment_expression`, so it is never counted.
+fn is_modified_in_scope(decl_node: &Node, var_name: &str, source: &str) -> bool {
+    let scope = match enclosing_scope(decl_node) {
+        Some(s) => s,
+        None => return false,
+    };
+    scope_has_mutation(&scope, var_name, source)
+}
+
+/// Walk up to the innermost enclosing block (`compound_statement`) for a local
+/// or the `translation_unit` for a file-scope variable. When neither is found
+/// — e.g. a malformed file (unbalanced `extern "C"` brace) parses with an
+/// `ERROR` root instead of a `translation_unit` — fall back to the topmost
+/// ancestor so the mutation scan still covers the whole file.
+fn enclosing_scope<'a>(node: &'a Node<'a>) -> Option<Node<'a>> {
+    let mut current = node.parent();
+    let mut topmost = None;
+    while let Some(n) = current {
+        if n.kind() == "compound_statement" || n.kind() == "translation_unit" {
+            return Some(n);
+        }
+        topmost = Some(n);
+        current = n.parent();
+    }
+    topmost
+}
+
+fn scope_has_mutation(node: &Node, var_name: &str, source: &str) -> bool {
+    match node.kind() {
+        // Covers `=` and all compound assignments (`+=`, `<<=`, ...).
+        "assignment_expression" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                if lvalue_base_is(&left, var_name, source) {
+                    return true;
+                }
+            }
+        }
+        "update_expression" => {
+            if let Some(arg) = node.child_by_field_name("argument") {
+                if lvalue_base_is(&arg, var_name, source) {
+                    return true;
+                }
+            }
+        }
+        // Address-of (`&var`): the variable may be mutated through the pointer.
+        "pointer_expression" => {
+            if let Some(op) = node.child_by_field_name("operator") {
+                if &source[op.start_byte()..op.end_byte()] == "&" {
+                    if let Some(arg) = node.child_by_field_name("argument") {
+                        if lvalue_base_is(&arg, var_name, source) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if scope_has_mutation(&child, var_name, source) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True if the base object of an lvalue is `var_name`, descending through
+/// member access (`v.x`, `v->x`), subscripts (`v[i]`), pointer deref (`*v`),
+/// and parentheses to the underlying identifier.
+fn lvalue_base_is(node: &Node, var_name: &str, source: &str) -> bool {
+    match node.kind() {
+        "identifier" => &source[node.start_byte()..node.end_byte()] == var_name,
+        "field_expression" | "subscript_expression" | "pointer_expression" => node
+            .child_by_field_name("argument")
+            .map(|a| lvalue_base_is(&a, var_name, source))
+            .unwrap_or(false),
+        "parenthesized_expression" => (0..node.child_count())
+            .filter_map(|i| node.child(i))
+            .any(|c| lvalue_base_is(&c, var_name, source)),
+        _ => false,
+    }
 }
 
 fn is_pointer_declarator(node: &Node) -> bool {
