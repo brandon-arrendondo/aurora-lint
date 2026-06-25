@@ -60,7 +60,181 @@ pub fn analyze_project(
         .enabled_rules()
         .any(|(rule_id, _)| registry.get_rule(rule_id).is_some_and(|r| r.needs_vra()));
 
-    // Load or compute cross-file context
+    // Load or compute cross-file context (prescan, includes, optional cache save)
+    let context = load_project_context(
+        project_source,
+        progress,
+        directories,
+        include_paths,
+        diff_only,
+        save_prescan,
+        load_prescan,
+        needs_vra,
+    )?;
+
+    if context.has_cross_file_data() {
+        for rule in registry.all_rules() {
+            rule.set_project_context(&context);
+        }
+    }
+
+    warn_unimplemented_rules(manifest, &registry);
+
+    let c_files = collect_c_files(project_source, diff_only, excludes)?;
+    let total_files = c_files.len();
+    let mut suppression_manager = build_suppression_manager(suppress_file, project_source);
+
+    // Determine effective parallelism
+    let effective_jobs = if jobs == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        jobs
+    };
+
+    if effective_jobs > 1 && total_files > 1 {
+        // Parallel analysis with rayon — per-file parser and rule registry
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(effective_jobs)
+            .build()?;
+        let has_cross_file_data = context.has_cross_file_data();
+        let file_counter = AtomicUsize::new(0);
+
+        let results: Vec<_> = pool.install(|| {
+            c_files
+                .iter()
+                .par_bridge()
+                .map(|file_path| {
+                    if let Some(reporter) = progress {
+                        if reporter.is_cancelled() {
+                            return (Vec::new(), Vec::new());
+                        }
+                    }
+
+                    let mut parser = match CParser::new() {
+                        Ok(p) => p,
+                        Err(_) => return (Vec::new(), Vec::new()),
+                    };
+                    let file_registry = RuleRegistry::new();
+                    if has_cross_file_data {
+                        for rule in file_registry.all_rules() {
+                            rule.set_project_context(&context);
+                        }
+                    }
+                    let mut file_supp = suppression_manager.clone();
+
+                    let result = analyze_one_file(
+                        file_path,
+                        &mut parser,
+                        &file_registry,
+                        manifest,
+                        &context,
+                        needs_vra,
+                        &mut file_supp,
+                        None,
+                        0,
+                        total_files,
+                        false,
+                    );
+
+                    let completed = file_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    if let Some(reporter) = progress {
+                        reporter.report_file(completed, total_files, file_path, "");
+                    }
+
+                    result
+                })
+                .collect()
+        });
+
+        for (v, s) in results {
+            violations.extend(v);
+            suppressed.extend(s);
+        }
+
+        // Sort for deterministic output
+        violations.sort_by(|a, b| {
+            a.file_path
+                .cmp(&b.file_path)
+                .then(a.line.cmp(&b.line))
+                .then(a.column.cmp(&b.column))
+                .then(a.rule_id.cmp(&b.rule_id))
+        });
+
+        if let Some(reporter) = progress {
+            reporter.report_complete(violations.len());
+        }
+
+        return Ok(AnalysisResults {
+            violations,
+            suppressed,
+        });
+    }
+
+    // Sequential analysis (single-threaded)
+    // Fresh registry per file to prevent cross-file state leakage from RefCell fields
+    let mut parser = CParser::new()?;
+    let has_cross_file_data = context.has_cross_file_data();
+
+    for (file_idx, file_path) in c_files.iter().enumerate() {
+        // Check for cancellation before processing each file
+        if let Some(reporter) = progress {
+            if reporter.is_cancelled() {
+                // Return partial results collected so far
+                break;
+            }
+        }
+
+        // Create fresh rule instances per file (matches parallel mode behavior)
+        let file_registry = RuleRegistry::new();
+        if has_cross_file_data {
+            for rule in file_registry.all_rules() {
+                rule.set_project_context(&context);
+            }
+        }
+
+        let (file_violations, file_suppressed) = analyze_one_file(
+            file_path,
+            &mut parser,
+            &file_registry,
+            manifest,
+            &context,
+            needs_vra,
+            &mut suppression_manager,
+            progress,
+            file_idx,
+            total_files,
+            true,
+        );
+        violations.extend(file_violations);
+        suppressed.extend(file_suppressed);
+    }
+
+    // Report completion
+    if let Some(reporter) = progress {
+        reporter.report_complete(violations.len());
+    }
+
+    Ok(AnalysisResults {
+        violations,
+        suppressed,
+    })
+}
+
+/// Load or compute the cross-file project context: prescan cache, directory
+/// prescan or sibling-header scan, #include resolution, and optional cache save.
+#[allow(clippy::too_many_arguments)]
+fn load_project_context(
+    project_source: &ProjectSource,
+    progress: Option<&dyn ProgressReporter>,
+    directories: &[String],
+    include_paths: &[String],
+    diff_only: bool,
+    save_prescan: Option<&str>,
+    load_prescan: Option<&str>,
+    needs_vra: bool,
+) -> Result<context::ProjectContext> {
     let mut context = if let Some(cache_path) = load_prescan {
         let path = std::path::Path::new(cache_path);
         if path.exists() {
@@ -110,13 +284,11 @@ pub fn analyze_project(
         );
     }
 
-    if context.has_cross_file_data() {
-        for rule in registry.all_rules() {
-            rule.set_project_context(&context);
-        }
-    }
+    Ok(context)
+}
 
-    // Validate that all enabled rules are implemented
+/// Warn about rules that are enabled in the manifest but have no implementation.
+fn warn_unimplemented_rules(manifest: &RuleManifest, registry: &RuleRegistry) {
     let mut unimplemented_rules = Vec::new();
     for (rule_id, _) in manifest.enabled_rules() {
         if registry.get_rule(rule_id).is_none() {
@@ -131,7 +303,15 @@ pub fn analyze_project(
         }
         eprintln!("These rules will be skipped during analysis.\n");
     }
+}
 
+/// Collect the C files to analyze: gather (all or modified), drop --exclude
+/// matches, then sort by size descending for LPT scheduling.
+fn collect_c_files(
+    project_source: &ProjectSource,
+    diff_only: bool,
+    excludes: &[String],
+) -> Result<Vec<String>> {
     let mut c_files = if diff_only {
         project_source.get_modified_c_files()?
     } else {
@@ -139,7 +319,7 @@ pub fn analyze_project(
     };
 
     // Drop files matching any --exclude path glob (e.g. checked-in
-    // amalgamations or test harnesses). Prescan/cross-file context above is
+    // amalgamations or test harnesses). Prescan/cross-file context is
     // intentionally left intact so excluded files still contribute callee
     // definitions; only their own findings are suppressed.
     if !excludes.is_empty() {
@@ -172,10 +352,17 @@ pub fn analyze_project(
     c_files
         .sort_by_cached_key(|f| std::cmp::Reverse(fs::metadata(f).map(|m| m.len()).unwrap_or(0)));
 
-    let total_files = c_files.len();
+    Ok(c_files)
+}
+
+/// Build a suppression manager, loading the TOML suppression file if provided
+/// or auto-detected at `<root>/.sqc-suppress.toml`.
+fn build_suppression_manager(
+    suppress_file: Option<&str>,
+    project_source: &ProjectSource,
+) -> SuppressionManager {
     let mut suppression_manager = SuppressionManager::new();
 
-    // Load TOML suppression file if provided or auto-detected
     let toml_path = suppress_file.map(String::from).or_else(|| {
         let auto_path =
             std::path::Path::new(project_source.get_root_path()).join(".sqc-suppress.toml");
@@ -204,235 +391,103 @@ pub fn analyze_project(
         }
     }
 
-    // Determine effective parallelism
-    let effective_jobs = if jobs == 0 {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    } else {
-        jobs
-    };
+    suppression_manager
+}
 
-    if effective_jobs > 1 && total_files > 1 {
-        // Parallel analysis with rayon — per-file parser and rule registry
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(effective_jobs)
-            .build()?;
-        let has_cross_file_data = context.has_cross_file_data();
-        let file_counter = AtomicUsize::new(0);
+/// Parse and run all enabled rules over a single file, partitioning findings
+/// into active and suppressed. Shared by the parallel and sequential drivers.
+///
+/// When `per_rule_progress` is set (sequential mode), cancellation is checked
+/// and progress reported before each rule; parallel mode reports once per file
+/// in the caller instead.
+#[allow(clippy::too_many_arguments)]
+fn analyze_one_file(
+    file_path: &str,
+    parser: &mut CParser,
+    file_registry: &RuleRegistry,
+    manifest: &RuleManifest,
+    context: &context::ProjectContext,
+    needs_vra: bool,
+    suppression_manager: &mut SuppressionManager,
+    progress: Option<&dyn ProgressReporter>,
+    file_idx: usize,
+    total_files: usize,
+    per_rule_progress: bool,
+) -> (Vec<RuleViolation>, Vec<SuppressedViolation>) {
+    let mut file_violations = Vec::new();
+    let mut file_suppressed = Vec::new();
 
-        let results: Vec<_> = pool.install(|| {
-            c_files
-                .iter()
-                .par_bridge()
-                .map(|file_path| {
-                    if let Some(reporter) = progress {
-                        if reporter.is_cancelled() {
-                            return (Vec::new(), Vec::new());
-                        }
-                    }
+    if let Ok((tree, source)) = parser.parse_file(file_path) {
+        let root_node = tree.root_node();
 
-                    let mut parser = match CParser::new() {
-                        Ok(p) => p,
-                        Err(_) => return (Vec::new(), Vec::new()),
-                    };
-                    let file_registry = RuleRegistry::new();
-                    if has_cross_file_data {
-                        for rule in file_registry.all_rules() {
-                            rule.set_project_context(&context);
-                        }
-                    }
-                    let mut file_supp = suppression_manager.clone();
+        // Build CFGs for all function definitions in this file
+        let mut function_cfgs: HashMap<usize, cfg::FunctionCfg> = HashMap::new();
+        collect_function_cfgs(&root_node, &source, &mut function_cfgs);
 
-                    let mut file_violations = Vec::new();
-                    let mut file_suppressed = Vec::new();
+        // Compute VRA if any enabled rule needs it
+        let vra_results = compute_vra_if_needed(
+            needs_vra,
+            &function_cfgs,
+            &root_node,
+            &source,
+            &context.function_summaries,
+        );
 
-                    if let Ok((tree, source)) = parser.parse_file(file_path) {
-                        let root_node = tree.root_node();
-                        let mut function_cfgs: HashMap<usize, cfg::FunctionCfg> = HashMap::new();
-                        collect_function_cfgs(&root_node, &source, &mut function_cfgs);
-                        let vra_results = compute_vra_if_needed(
-                            needs_vra,
-                            &function_cfgs,
-                            &root_node,
-                            &source,
-                            &context.function_summaries,
-                        );
-                        file_supp.extract_from_source(file_path, &source);
+        // Extract suppressions from the current file
+        suppression_manager.extract_from_source(file_path, &source);
 
-                        for (rule_id, rule_config) in manifest.enabled_rules() {
-                            if let Some(rule) = file_registry.get_rule(rule_id) {
-                                if !rule.applies_to_file(file_path) {
-                                    continue;
-                                }
-                                rule.set_function_cfgs(&function_cfgs);
-                                if !vra_results.is_empty() {
-                                    rule.set_vra_results(&vra_results);
-                                }
-                                let mut rule_violations = rule.check(&root_node, &source);
-                                for v in &mut rule_violations {
-                                    v.file_path = file_path.clone();
-                                    v.severity = rule_config
-                                        .severity
-                                        .clone()
-                                        .unwrap_or_else(|| rule.severity());
-                                }
-                                for v in rule_violations {
-                                    if let Some(j) = file_supp.should_suppress(
-                                        file_path, rule_id, v.line, &source, &v.message,
-                                    ) {
-                                        file_suppressed.push(SuppressedViolation {
-                                            justification: j.to_string(),
-                                            violation: v,
-                                        });
-                                    } else {
-                                        file_violations.push(v);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    let completed = file_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    if let Some(reporter) = progress {
-                        reporter.report_file(completed, total_files, file_path, "");
-                    }
-
-                    (file_violations, file_suppressed)
-                })
-                .collect()
-        });
-
-        for (v, s) in results {
-            violations.extend(v);
-            suppressed.extend(s);
-        }
-
-        // Sort for deterministic output
-        violations.sort_by(|a, b| {
-            a.file_path
-                .cmp(&b.file_path)
-                .then(a.line.cmp(&b.line))
-                .then(a.column.cmp(&b.column))
-                .then(a.rule_id.cmp(&b.rule_id))
-        });
-
-        if let Some(reporter) = progress {
-            reporter.report_complete(violations.len());
-        }
-
-        return Ok(AnalysisResults {
-            violations,
-            suppressed,
-        });
-    }
-
-    // Sequential analysis (single-threaded)
-    // Fresh registry per file to prevent cross-file state leakage from RefCell fields
-    let mut parser = CParser::new()?;
-    let has_cross_file_data = context.has_cross_file_data();
-
-    for (file_idx, file_path) in c_files.iter().enumerate() {
-        // Check for cancellation before processing each file
-        if let Some(reporter) = progress {
-            if reporter.is_cancelled() {
-                // Return partial results collected so far
-                break;
-            }
-        }
-
-        if let Ok((tree, source)) = parser.parse_file(file_path) {
-            let root_node = tree.root_node();
-
-            // Build CFGs for all function definitions in this file
-            let mut function_cfgs: HashMap<usize, cfg::FunctionCfg> = HashMap::new();
-            collect_function_cfgs(&root_node, &source, &mut function_cfgs);
-
-            // Compute VRA if any enabled rule needs it
-            let vra_results = compute_vra_if_needed(
-                needs_vra,
-                &function_cfgs,
-                &root_node,
-                &source,
-                &context.function_summaries,
-            );
-
-            // Extract suppressions from the current file
-            suppression_manager.extract_from_source(file_path, &source);
-
-            // Create fresh rule instances per file (matches parallel mode behavior)
-            let file_registry = RuleRegistry::new();
-            if has_cross_file_data {
-                for rule in file_registry.all_rules() {
-                    rule.set_project_context(&context);
-                }
-            }
-
-            for (rule_id, rule_config) in manifest.enabled_rules() {
-                // Check cancellation between rules
+        for (rule_id, rule_config) in manifest.enabled_rules() {
+            // Sequential mode: check cancellation and report progress per rule
+            if per_rule_progress {
                 if let Some(reporter) = progress {
                     if reporter.is_cancelled() {
                         break;
                     }
-                    // Report progress with current file and rule (full relative path)
                     reporter.report_file(file_idx + 1, total_files, file_path, rule_id);
                 }
+            }
 
-                // Check if rule is implemented
-                if let Some(rule) = file_registry.get_rule(rule_id) {
-                    // Skip rules that don't apply to this file type (e.g. header-only rules)
-                    if !rule.applies_to_file(file_path) {
-                        continue;
-                    }
-                    // Provide CFGs for flow-sensitive rules (e.g. EXP34-C)
-                    rule.set_function_cfgs(&function_cfgs);
-                    // Provide VRA results for integer-range-sensitive rules
-                    if !vra_results.is_empty() {
-                        rule.set_vra_results(&vra_results);
-                    }
-                    let mut file_violations = rule.check(&root_node, &source);
+            // Check if rule is implemented
+            if let Some(rule) = file_registry.get_rule(rule_id) {
+                // Skip rules that don't apply to this file type (e.g. header-only rules)
+                if !rule.applies_to_file(file_path) {
+                    continue;
+                }
+                // Provide CFGs for flow-sensitive rules (e.g. EXP34-C)
+                rule.set_function_cfgs(&function_cfgs);
+                // Provide VRA results for integer-range-sensitive rules
+                if !vra_results.is_empty() {
+                    rule.set_vra_results(&vra_results);
+                }
+                let mut rule_violations = rule.check(&root_node, &source);
 
-                    // Set file path and severity on all violations
-                    for violation in &mut file_violations {
-                        violation.file_path = file_path.clone();
-                        violation.severity = rule_config
-                            .severity
-                            .clone()
-                            .unwrap_or_else(|| rule.severity());
-                    }
+                // Set file path and severity on all violations
+                for v in &mut rule_violations {
+                    v.file_path = file_path.to_string();
+                    v.severity = rule_config
+                        .severity
+                        .clone()
+                        .unwrap_or_else(|| rule.severity());
+                }
 
-                    // Partition into active and suppressed violations
-                    for violation in file_violations {
-                        if let Some(justification) = suppression_manager.should_suppress(
-                            file_path,
-                            rule_id,
-                            violation.line,
-                            &source,
-                            &violation.message,
-                        ) {
-                            suppressed.push(SuppressedViolation {
-                                justification: justification.to_string(),
-                                violation,
-                            });
-                        } else {
-                            violations.push(violation);
-                        }
+                // Partition into active and suppressed violations
+                for v in rule_violations {
+                    if let Some(j) = suppression_manager
+                        .should_suppress(file_path, rule_id, v.line, &source, &v.message)
+                    {
+                        file_suppressed.push(SuppressedViolation {
+                            justification: j.to_string(),
+                            violation: v,
+                        });
+                    } else {
+                        file_violations.push(v);
                     }
                 }
-                // Note: Unimplemented rules are already warned about at the start of analysis
             }
         }
     }
 
-    // Report completion
-    if let Some(reporter) = progress {
-        reporter.report_complete(violations.len());
-    }
-
-    Ok(AnalysisResults {
-        violations,
-        suppressed,
-    })
+    (file_violations, file_suppressed)
 }
 
 pub fn handle_generate_suppression(spec: &str) -> Result<()> {
