@@ -100,6 +100,49 @@ pub fn expr_is_float(
     }
 }
 
+/// Best-effort dual of [`expr_is_float`]: true only when the expression is
+/// *provably* integer-typed — every leaf is an integer literal or a known
+/// non-float, non-pointer typed identifier. Unknown operands (function calls,
+/// unresolved identifiers, struct fields, casts, subscripts) yield false, so a
+/// caller that fires on "integer arithmetic" stays conservative and does not
+/// misfire on float-returning calls (`sinf`/`cosf`) or unresolved types.
+pub fn expr_is_definitely_integer(
+    node: &Node,
+    source: &str,
+    type_map: &HashMap<String, String>,
+) -> bool {
+    match node.kind() {
+        "number_literal" => !is_float_literal(ast_utils::get_node_text(node, source)),
+        "identifier" => {
+            let name = ast_utils::get_node_text(node, source);
+            match type_map.get(name) {
+                Some(t) => !is_float_type(t) && !t.contains('*'),
+                None => false,
+            }
+        }
+        "parenthesized_expression" => node
+            .named_child(0)
+            .map(|c| expr_is_definitely_integer(&c, source, type_map))
+            .unwrap_or(false),
+        "unary_expression" => node
+            .child_by_field_name("argument")
+            .map(|a| expr_is_definitely_integer(&a, source, type_map))
+            .unwrap_or(false),
+        "binary_expression" => {
+            let l = node
+                .child_by_field_name("left")
+                .map(|n| expr_is_definitely_integer(&n, source, type_map))
+                .unwrap_or(false);
+            let r = node
+                .child_by_field_name("right")
+                .map(|n| expr_is_definitely_integer(&n, source, type_map))
+                .unwrap_or(false);
+            l && r
+        }
+        _ => false,
+    }
+}
+
 /// Build a `name -> type` map for the parameters and local declarations of a
 /// `function_definition` node.
 pub fn collect_variable_types(node: &Node, source: &str) -> HashMap<String, String> {

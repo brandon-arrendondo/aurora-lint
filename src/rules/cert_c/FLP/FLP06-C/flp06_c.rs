@@ -58,59 +58,34 @@ impl Flp06C {
         if node.kind() == "declaration" {
             let decl_text = node.utf8_text(source.as_bytes()).unwrap_or("");
 
-            // Must be float or double declaration
+            // Must be a float or double declaration with an initializer.
             if (decl_text.contains("float") || decl_text.contains("double"))
                 && decl_text.contains(" = ")
             {
-                // Extract expression after =, before ; or comment
-                let after_equals = decl_text.split(" = ").nth(1).unwrap_or("");
-                let expr = after_equals
-                    .split(';')
-                    .next()
-                    .unwrap_or("")
-                    .split("/*")
-                    .next()
-                    .unwrap_or("")
-                    .split("//")
-                    .next()
-                    .unwrap_or("")
-                    .trim();
+                // Fire only when the initializer's value is genuine integer
+                // arithmetic: a top-level `+ - * /` binary expression whose
+                // operands are all provably integer. Driving off the AST
+                // (rather than the old text `contains('+-*/')`) excludes the
+                // residual FP sub-classes that scan picked up — the `->` arrow
+                // in call arguments, integer index arithmetic inside a subscript
+                // *read*, unary minus on a literal, and brace initializers — and
+                // float-returning calls or float operands (task 230/237), none
+                // of which are integer arithmetic implicitly converted to float.
+                let is_integer_arith = initializer_value_node(node)
+                    .map(|v| is_integer_arithmetic(&v, source, type_map))
+                    .unwrap_or(false);
 
-                // Check if it has arithmetic operation
-                let has_arithmetic = expr.contains('/')
-                    || expr.contains('*')
-                    || expr.contains('+')
-                    || expr.contains('-');
-
-                if has_arithmetic {
-                    // Check for floating-point indicators
-                    let has_float_literal =
-                        expr.contains('.') || expr.contains('f') || expr.contains('F');
-                    let has_cast = expr.contains("(float)") || expr.contains("(double)");
-
-                    // Operand typing: suppress when the initializer expression
-                    // has a float-typed operand (param/local), so genuinely
-                    // floating-point arithmetic like `start + amount*(end-start)`
-                    // (all float) is not misreported as integer arithmetic. This
-                    // closes the FP class the text heuristics above miss — they
-                    // only catch float *literals*/casts, not float *variables*.
-                    let has_float_operand = initializer_value_node(node)
-                        .map(|v| float_typing::expr_is_float(&v, source, type_map, &HashMap::new()))
-                        .unwrap_or(false);
-
-                    // Violation: arithmetic without floating-point conversion
-                    if !has_float_literal && !has_cast && !has_float_operand {
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: self.severity(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            file_path: String::new(),
-                            message: "Floating point variable initialized with integer arithmetic; use floating-point literals or explicit conversion".to_string(),
-                            suggestion: Some("Use floating-point literals (e.g., 7.0) or explicit casts (e.g., (double)x)".to_string()),
-                            requires_manual_review: None,
-                        });
-                    }
+                if is_integer_arith {
+                    violations.push(RuleViolation {
+                        rule_id: self.rule_id().to_string(),
+                        severity: self.severity(),
+                        line: node.start_position().row + 1,
+                        column: node.start_position().column + 1,
+                        file_path: String::new(),
+                        message: "Floating point variable initialized with integer arithmetic; use floating-point literals or explicit conversion".to_string(),
+                        suggestion: Some("Use floating-point literals (e.g., 7.0) or explicit casts (e.g., (double)x)".to_string()),
+                        requires_manual_review: None,
+                    });
                 }
             }
         }
@@ -133,4 +108,44 @@ fn initializer_value_node<'a>(decl: &Node<'a>) -> Option<Node<'a>> {
         }
     }
     None
+}
+
+/// True if `node` (after unwrapping parentheses) is *integer* arithmetic: a
+/// `+ - * /` binary expression all of whose operands are provably integer.
+///
+/// Requiring provably-integer operands (rather than merely "no float operand")
+/// keeps the rule conservative: a float-typed operand, a float-returning call
+/// (`sinf`/`cosf`), an unresolved identifier, or a struct-field access all make
+/// the expression not-provably-integer, so it is not reported. This is the
+/// integer-then-implicitly-converted-to-float pattern FLP06-C targets.
+fn is_integer_arithmetic(node: &Node, source: &str, type_map: &HashMap<String, String>) -> bool {
+    let inner = unwrap_parens(node);
+    if inner.kind() != "binary_expression" {
+        return false;
+    }
+    let is_arith_op = inner
+        .child_by_field_name("operator")
+        .map(|op| {
+            matches!(
+                &source[op.start_byte()..op.end_byte()],
+                "+" | "-" | "*" | "/"
+            )
+        })
+        .unwrap_or(false);
+    if !is_arith_op {
+        return false;
+    }
+    float_typing::expr_is_definitely_integer(&inner, source, type_map)
+}
+
+/// Peel away `( … )` wrappers to reach the underlying expression.
+fn unwrap_parens<'a>(node: &Node<'a>) -> Node<'a> {
+    let mut n = *node;
+    while n.kind() == "parenthesized_expression" {
+        match n.named_child(0) {
+            Some(inner) => n = inner,
+            None => break,
+        }
+    }
+    n
 }
