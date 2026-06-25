@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseEvent,
+        MouseEventKind,
+    },
     execute,
     terminal::{
         disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, SetTitle,
@@ -355,380 +358,425 @@ impl TerminalUI {
             match event::read()? {
                 Event::Key(key) => {
                     if self.show_progress_dialog {
-                        // Handle ESC key to cancel scan
-                        if key.code == KeyCode::Esc {
-                            // Set cancellation flag
-                            self.scan_cancellation.store(true, Ordering::Relaxed);
-                            // Dialog will be hidden automatically when scan completes
-                        }
+                        self.handle_progress_dialog_key(key);
                     } else if self.show_save_dialog {
-                        match key.code {
-                            KeyCode::Enter => {
-                                // Save the file (CSV or Excel based on extension)
-                                let path = PathBuf::from(&self.save_filename);
-                                let _ = self.export_violations(&path); // Ignore errors for now
-                                self.show_save_dialog = false;
-                            }
-                            KeyCode::Esc => {
-                                // Cancel the save dialog
-                                self.show_save_dialog = false;
-                            }
-                            KeyCode::Backspace => {
-                                // Remove last character from filename
-                                self.save_filename.pop();
-                            }
-                            KeyCode::Char(c) => {
-                                // Add character to filename
-                                self.save_filename.push(c);
-                            }
-                            _ => {}
-                        }
+                        self.handle_save_dialog_key(key);
                     } else if self.show_suppression_dialog {
-                        match key.code {
-                            KeyCode::Enter | KeyCode::Char('y') => {
-                                // Confirm suppression generation
-                                let _ = self.apply_suppressions(); // Ignore errors for now
-                                self.show_suppression_dialog = false;
-                            }
-                            KeyCode::Esc | KeyCode::Char('n') => {
-                                // Cancel suppression
-                                self.show_suppression_dialog = false;
-                            }
-                            _ => {}
-                        }
+                        self.handle_suppression_dialog_key(key);
                     } else if self.show_save_config_dialog {
-                        match key.code {
-                            KeyCode::Enter => {
-                                // Save the configuration file
-                                let path = PathBuf::from(&self.save_config_filename);
-                                let _ = self.export_config(&path); // Ignore errors for now
-                                self.show_save_config_dialog = false;
-                            }
-                            KeyCode::Esc => {
-                                // Cancel the save dialog
-                                self.show_save_config_dialog = false;
-                            }
-                            KeyCode::Backspace => {
-                                // Remove last character from filename
-                                self.save_config_filename.pop();
-                            }
-                            KeyCode::Char(c) => {
-                                // Add character to filename
-                                self.save_config_filename.push(c);
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                            KeyCode::Down => {
-                                if self.current_tab == Tab::Configuration {
-                                    self.config_scroll_down();
-                                } else if self.preview_focused && self.show_file_preview {
-                                    self.preview_scroll_down();
-                                } else {
-                                    let i = match self.selected_violation.selected() {
-                                        Some(i) => {
-                                            if i >= self.flat_display_items.len().saturating_sub(1)
-                                            {
-                                                0
-                                            } else {
-                                                i + 1
-                                            }
-                                        }
-                                        None => 0,
-                                    };
-                                    self.selected_violation.select(Some(i));
-                                    // Reset preview scroll when changing violations
-                                    self.preview_scroll_offset = 0;
-                                }
-                            }
-                            KeyCode::Up => {
-                                if self.current_tab == Tab::Configuration {
-                                    self.config_scroll_up();
-                                } else if self.preview_focused && self.show_file_preview {
-                                    self.preview_scroll_up();
-                                } else {
-                                    let i = match self.selected_violation.selected() {
-                                        Some(i) => {
-                                            if i == 0 {
-                                                self.flat_display_items.len().saturating_sub(1)
-                                            } else {
-                                                i - 1
-                                            }
-                                        }
-                                        None => 0,
-                                    };
-                                    self.selected_violation.select(Some(i));
-                                    // Reset preview scroll when changing violations
-                                    self.preview_scroll_offset = 0;
-                                }
-                            }
-                            KeyCode::PageUp => {
-                                if self.current_tab == Tab::Configuration {
-                                    // Page up in configuration - move by 10 items
-                                    for _ in 0..10 {
-                                        self.config_scroll_up();
-                                    }
-                                } else if self.preview_focused && self.show_file_preview {
-                                    // Page up in preview - scroll by 10 lines
-                                    self.preview_scroll_offset =
-                                        self.preview_scroll_offset.saturating_sub(10);
-                                } else {
-                                    // Page up in violations list - move by 10 items or to the top
-                                    let page_size = 10;
-                                    let i = match self.selected_violation.selected() {
-                                        Some(i) => i.saturating_sub(page_size),
-                                        None => 0,
-                                    };
-                                    self.selected_violation.select(Some(i));
-                                    // Reset preview scroll when changing violations
-                                    self.preview_scroll_offset = 0;
-                                }
-                            }
-                            KeyCode::PageDown => {
-                                if self.current_tab == Tab::Configuration {
-                                    // Page down in configuration - move by 10 items
-                                    for _ in 0..10 {
-                                        self.config_scroll_down();
-                                    }
-                                } else if self.preview_focused && self.show_file_preview {
-                                    // Page down in preview - scroll by 10 lines
-                                    self.preview_scroll_offset += 10;
-                                } else {
-                                    // Page down in violations list - move by 10 items or to the bottom
-                                    let page_size = 10;
-                                    let max_index = self.flat_display_items.len().saturating_sub(1);
-                                    let i = match self.selected_violation.selected() {
-                                        Some(i) => {
-                                            if i + page_size >= max_index {
-                                                max_index
-                                            } else {
-                                                i + page_size
-                                            }
-                                        }
-                                        None => 0,
-                                    };
-                                    self.selected_violation.select(Some(i));
-                                    // Reset preview scroll when changing violations
-                                    self.preview_scroll_offset = 0;
-                                }
-                            }
-                            KeyCode::Char('s')
-                                // Trigger scan (only in Violations tab)
-                                if self.current_tab == Tab::Violations => {
-                                    self.scan_repository(terminal)?;
-                                }
-                            KeyCode::Char('i')
-                                // Ignore/suppress selected violations
-                                if self.current_tab == Tab::Violations
-                                    && !self.checked_violations.is_empty()
-                                => {
-                                    self.initiate_suppression();
-                                }
-                            KeyCode::Char('h')
-                                // Toggle hidden items visibility (suppressed violations and clean files)
-                                if self.current_tab == Tab::Violations => {
-                                    self.show_suppressed = !self.show_suppressed;
-                                    self.show_clean_files = !self.show_clean_files;
-                                    if self.show_suppressed {
-                                        self.update_combined_violations();
-                                    }
-                                    self.update_display_violations();
-                                    self.update_sort();
-                                }
-                            KeyCode::Char(' ') => {
-                                if self.current_tab == Tab::Configuration {
-                                    // Toggle rule enabled/disabled in Configuration tab
-                                    self.toggle_config_item();
-                                } else {
-                                    // Check if it's a group item - if so, toggle expand/collapse
-                                    if let Some(display_index) = self.selected_violation.selected()
-                                    {
-                                        if let Some(selected_item) =
-                                            self.flat_display_items.get(display_index)
-                                        {
-                                            if selected_item.is_group() {
-                                                // Toggle group expansion
-                                                if let GroupItem::Group { expanded, .. } =
-                                                    selected_item
-                                                {
-                                                    self.toggle_group_expand(!expanded);
-                                                }
-                                            } else if let GroupItem::Violation {
-                                                original_index,
-                                                ..
-                                            } = selected_item
-                                            {
-                                                // Toggle checkbox for selected violation
-                                                if self.checked_violations.contains(original_index)
-                                                {
-                                                    self.checked_violations.remove(original_index);
-                                                } else {
-                                                    self.checked_violations.insert(*original_index);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            KeyCode::Char('e') => {
-                                if self.current_tab == Tab::Configuration {
-                                    // Show save dialog for exporting configuration
-                                    self.show_save_config_dialog = true;
-                                } else {
-                                    // Show save dialog for exporting selected violations to CSV
-                                    if !self.checked_violations.is_empty() {
-                                        self.show_save_dialog = true;
-                                    }
-                                }
-                            }
-                            KeyCode::Char('a') | KeyCode::Char('A') => {
-                                if key
-                                    .modifiers
-                                    .contains(crossterm::event::KeyModifiers::SHIFT)
-                                {
-                                    // Shift+A: Select all violations in current group (only for grouped modes)
-                                    if self.sort_mode != SortMode::Default {
-                                        self.select_all_in_current_group();
-                                    }
-                                } else {
-                                    // Regular 'a': Select all violations (using original indices)
-                                    self.checked_violations = self
-                                        .flat_display_items
-                                        .iter()
-                                        .filter_map(|item| {
-                                            if let GroupItem::Violation { original_index, .. } =
-                                                item
-                                            {
-                                                Some(*original_index)
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect();
-                                }
-                            }
-                            KeyCode::Char('n') | KeyCode::Char('N') => {
-                                if key
-                                    .modifiers
-                                    .contains(crossterm::event::KeyModifiers::SHIFT)
-                                {
-                                    // Shift+N: Deselect all violations in current group (only for grouped modes)
-                                    if self.sort_mode != SortMode::Default {
-                                        self.deselect_all_in_current_group();
-                                    }
-                                } else {
-                                    // Regular 'n': Deselect all violations
-                                    self.checked_violations.clear();
-                                }
-                            }
-                            KeyCode::Char('p') => {
-                                // Toggle file preview
-                                self.show_file_preview = !self.show_file_preview;
-                                if !self.show_file_preview {
-                                    self.preview_focused = false; // Reset focus if preview is hidden
-                                }
-                            }
-                            KeyCode::Tab
-                                // Switch focus between violations list and file preview (only in Violations tab)
-                                if self.current_tab == Tab::Violations && self.show_file_preview => {
-                                    self.preview_focused = !self.preview_focused;
-                                }
-                            KeyCode::Char('c') => {
-                                // Switch to Configuration tab
-                                self.current_tab = Tab::Configuration;
-                                self.preview_focused = false;
-                            }
-                            KeyCode::Char('v') => {
-                                // Switch to Violations tab
-                                self.current_tab = Tab::Violations;
-                            }
-                            KeyCode::Char('1') => {
-                                // Sort by default order
-                                self.sort_mode = SortMode::Default;
-                                if self.show_suppressed {
-                                    self.update_combined_violations();
-                                }
-                                self.update_sort();
-                            }
-                            KeyCode::Char('2') => {
-                                // Sort by violation ID
-                                self.sort_mode = SortMode::ViolationId;
-                                if self.show_suppressed {
-                                    self.update_combined_violations();
-                                }
-                                self.update_sort();
-                            }
-                            KeyCode::Char('3') => {
-                                // Sort by file path
-                                self.sort_mode = SortMode::FilePath;
-                                if self.show_suppressed {
-                                    self.update_combined_violations();
-                                }
-                                self.update_sort();
-                            }
-                            KeyCode::Char('4') => {
-                                // Sort by filename only
-                                self.sort_mode = SortMode::FileName;
-                                if self.show_suppressed {
-                                    self.update_combined_violations();
-                                }
-                                self.update_sort();
-                            }
-                            KeyCode::Char('r') => {
-                                // Reverse sort direction
-                                self.sort_ascending = !self.sort_ascending;
-                                if self.show_suppressed {
-                                    self.update_combined_violations();
-                                }
-                                self.update_sort();
-                            }
-                            KeyCode::Left => {
-                                if self.current_tab == Tab::Configuration {
-                                    // Collapse config group
-                                    self.toggle_config_group(false);
-                                } else if !self.preview_focused {
-                                    // Collapse group if focused on a group
-                                    self.toggle_group_expand(false);
-                                }
-                            }
-                            KeyCode::Right => {
-                                if self.current_tab == Tab::Configuration {
-                                    // Expand config group
-                                    self.toggle_config_group(true);
-                                } else if !self.preview_focused {
-                                    // Expand group if focused on a group
-                                    self.toggle_group_expand(true);
-                                }
-                            }
-                            _ => {}
-                        }
+                        self.handle_save_config_dialog_key(key);
+                    } else if self.handle_main_key(key, terminal)? {
+                        return Ok(());
                     }
                 }
                 Event::Mouse(mouse_event)
                     // Only handle mouse events when not in save dialog
-                    if !self.show_save_dialog => {
-                        match mouse_event.kind {
-                            MouseEventKind::ScrollUp => {
-                                if self.preview_focused && self.show_file_preview {
-                                    self.preview_scroll_up();
-                                } else {
-                                    self.scroll_up();
-                                }
-                            }
-                            MouseEventKind::ScrollDown => {
-                                if self.preview_focused && self.show_file_preview {
-                                    self.preview_scroll_down();
-                                } else {
-                                    self.scroll_down();
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                    if !self.show_save_dialog =>
+                {
+                    self.handle_mouse_event(mouse_event);
+                }
                 _ => {}
             }
+        }
+    }
+
+    /// ESC requests cancellation of an in-progress scan; the progress dialog
+    /// hides itself automatically when the scan completes.
+    fn handle_progress_dialog_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Esc {
+            self.scan_cancellation.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn handle_save_dialog_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                // Save the file (CSV or Excel based on extension)
+                let path = PathBuf::from(&self.save_filename);
+                let _ = self.export_violations(&path); // Ignore errors for now
+                self.show_save_dialog = false;
+            }
+            KeyCode::Esc => {
+                self.show_save_dialog = false;
+            }
+            KeyCode::Backspace => {
+                self.save_filename.pop();
+            }
+            KeyCode::Char(c) => {
+                self.save_filename.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_suppression_dialog_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('y') => {
+                // Confirm suppression generation
+                let _ = self.apply_suppressions(); // Ignore errors for now
+                self.show_suppression_dialog = false;
+            }
+            KeyCode::Esc | KeyCode::Char('n') => {
+                self.show_suppression_dialog = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_save_config_dialog_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                // Save the configuration file
+                let path = PathBuf::from(&self.save_config_filename);
+                let _ = self.export_config(&path); // Ignore errors for now
+                self.show_save_config_dialog = false;
+            }
+            KeyCode::Esc => {
+                self.show_save_config_dialog = false;
+            }
+            KeyCode::Backspace => {
+                self.save_config_filename.pop();
+            }
+            KeyCode::Char(c) => {
+                self.save_config_filename.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mouse_event(&mut self, mouse_event: MouseEvent) {
+        match mouse_event.kind {
+            MouseEventKind::ScrollUp => {
+                if self.preview_focused && self.show_file_preview {
+                    self.preview_scroll_up();
+                } else {
+                    self.scroll_up();
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if self.preview_focused && self.show_file_preview {
+                    self.preview_scroll_down();
+                } else {
+                    self.scroll_down();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle a key press in the main (no-dialog) state. Returns `Ok(true)`
+    /// when the application should quit.
+    fn handle_main_key<B: Backend>(
+        &mut self,
+        key: KeyEvent,
+        terminal: &mut Terminal<B>,
+    ) -> Result<bool> {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
+            KeyCode::Down
+            | KeyCode::Up
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Left
+            | KeyCode::Right => self.handle_navigation_key(key),
+            KeyCode::Char('1')
+            | KeyCode::Char('2')
+            | KeyCode::Char('3')
+            | KeyCode::Char('4')
+            | KeyCode::Char('r') => self.handle_sort_key(key),
+            _ => self.handle_action_key(key, terminal)?,
+        }
+        Ok(false)
+    }
+
+    /// Arrow / page navigation, dispatched by current tab and preview focus.
+    fn handle_navigation_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Down => {
+                if self.current_tab == Tab::Configuration {
+                    self.config_scroll_down();
+                } else if self.preview_focused && self.show_file_preview {
+                    self.preview_scroll_down();
+                } else {
+                    self.select_next_violation();
+                }
+            }
+            KeyCode::Up => {
+                if self.current_tab == Tab::Configuration {
+                    self.config_scroll_up();
+                } else if self.preview_focused && self.show_file_preview {
+                    self.preview_scroll_up();
+                } else {
+                    self.select_prev_violation();
+                }
+            }
+            KeyCode::PageUp => {
+                if self.current_tab == Tab::Configuration {
+                    // Page up in configuration - move by 10 items
+                    for _ in 0..10 {
+                        self.config_scroll_up();
+                    }
+                } else if self.preview_focused && self.show_file_preview {
+                    // Page up in preview - scroll by 10 lines
+                    self.preview_scroll_offset = self.preview_scroll_offset.saturating_sub(10);
+                } else {
+                    self.page_up_violations();
+                }
+            }
+            KeyCode::PageDown => {
+                if self.current_tab == Tab::Configuration {
+                    // Page down in configuration - move by 10 items
+                    for _ in 0..10 {
+                        self.config_scroll_down();
+                    }
+                } else if self.preview_focused && self.show_file_preview {
+                    // Page down in preview - scroll by 10 lines
+                    self.preview_scroll_offset += 10;
+                } else {
+                    self.page_down_violations();
+                }
+            }
+            KeyCode::Left => {
+                if self.current_tab == Tab::Configuration {
+                    // Collapse config group
+                    self.toggle_config_group(false);
+                } else if !self.preview_focused {
+                    // Collapse group if focused on a group
+                    self.toggle_group_expand(false);
+                }
+            }
+            KeyCode::Right => {
+                if self.current_tab == Tab::Configuration {
+                    // Expand config group
+                    self.toggle_config_group(true);
+                } else if !self.preview_focused {
+                    // Expand group if focused on a group
+                    self.toggle_group_expand(true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Move selection to the next violation, wrapping to the top.
+    fn select_next_violation(&mut self) {
+        let i = match self.selected_violation.selected() {
+            Some(i) => {
+                if i >= self.flat_display_items.len().saturating_sub(1) {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.selected_violation.select(Some(i));
+        // Reset preview scroll when changing violations
+        self.preview_scroll_offset = 0;
+    }
+
+    /// Move selection to the previous violation, wrapping to the bottom.
+    fn select_prev_violation(&mut self) {
+        let i = match self.selected_violation.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.flat_display_items.len().saturating_sub(1)
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.selected_violation.select(Some(i));
+        // Reset preview scroll when changing violations
+        self.preview_scroll_offset = 0;
+    }
+
+    /// Move selection up by a page (10 items), clamped to the top.
+    fn page_up_violations(&mut self) {
+        let page_size = 10;
+        let i = match self.selected_violation.selected() {
+            Some(i) => i.saturating_sub(page_size),
+            None => 0,
+        };
+        self.selected_violation.select(Some(i));
+        // Reset preview scroll when changing violations
+        self.preview_scroll_offset = 0;
+    }
+
+    /// Move selection down by a page (10 items), clamped to the bottom.
+    fn page_down_violations(&mut self) {
+        let page_size = 10;
+        let max_index = self.flat_display_items.len().saturating_sub(1);
+        let i = match self.selected_violation.selected() {
+            Some(i) => {
+                if i + page_size >= max_index {
+                    max_index
+                } else {
+                    i + page_size
+                }
+            }
+            None => 0,
+        };
+        self.selected_violation.select(Some(i));
+        // Reset preview scroll when changing violations
+        self.preview_scroll_offset = 0;
+    }
+
+    /// Sort-mode and sort-direction keys (1-4, r), then re-sort.
+    fn handle_sort_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('1') => self.sort_mode = SortMode::Default,
+            KeyCode::Char('2') => self.sort_mode = SortMode::ViolationId,
+            KeyCode::Char('3') => self.sort_mode = SortMode::FilePath,
+            KeyCode::Char('4') => self.sort_mode = SortMode::FileName,
+            KeyCode::Char('r') => self.sort_ascending = !self.sort_ascending,
+            _ => return,
+        }
+        if self.show_suppressed {
+            self.update_combined_violations();
+        }
+        self.update_sort();
+    }
+
+    /// Action keys (scan, suppress, export, selection, preview, tab switch).
+    fn handle_action_key<B: Backend>(
+        &mut self,
+        key: KeyEvent,
+        terminal: &mut Terminal<B>,
+    ) -> Result<()> {
+        match key.code {
+            KeyCode::Char('s')
+                // Trigger scan (only in Violations tab)
+                if self.current_tab == Tab::Violations =>
+            {
+                self.scan_repository(terminal)?;
+            }
+            KeyCode::Char('i')
+                // Ignore/suppress selected violations
+                if self.current_tab == Tab::Violations && !self.checked_violations.is_empty() =>
+            {
+                self.initiate_suppression();
+            }
+            KeyCode::Char('h')
+                // Toggle hidden items visibility (suppressed violations and clean files)
+                if self.current_tab == Tab::Violations =>
+            {
+                self.show_suppressed = !self.show_suppressed;
+                self.show_clean_files = !self.show_clean_files;
+                if self.show_suppressed {
+                    self.update_combined_violations();
+                }
+                self.update_display_violations();
+                self.update_sort();
+            }
+            KeyCode::Char(' ') => self.handle_space_key(),
+            KeyCode::Char('e') => {
+                if self.current_tab == Tab::Configuration {
+                    // Show save dialog for exporting configuration
+                    self.show_save_config_dialog = true;
+                } else if !self.checked_violations.is_empty() {
+                    // Show save dialog for exporting selected violations to CSV
+                    self.show_save_dialog = true;
+                }
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => self.handle_select_all_key(key),
+            KeyCode::Char('n') | KeyCode::Char('N') => self.handle_deselect_all_key(key),
+            KeyCode::Char('p') => {
+                // Toggle file preview
+                self.show_file_preview = !self.show_file_preview;
+                if !self.show_file_preview {
+                    self.preview_focused = false; // Reset focus if preview is hidden
+                }
+            }
+            KeyCode::Tab
+                // Switch focus between violations list and file preview (only in Violations tab)
+                if self.current_tab == Tab::Violations && self.show_file_preview =>
+            {
+                self.preview_focused = !self.preview_focused;
+            }
+            KeyCode::Char('c') => {
+                // Switch to Configuration tab
+                self.current_tab = Tab::Configuration;
+                self.preview_focused = false;
+            }
+            KeyCode::Char('v') => {
+                // Switch to Violations tab
+                self.current_tab = Tab::Violations;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Space toggles a config item, a group's expansion, or a violation's checkbox.
+    fn handle_space_key(&mut self) {
+        if self.current_tab == Tab::Configuration {
+            // Toggle rule enabled/disabled in Configuration tab
+            self.toggle_config_item();
+            return;
+        }
+        // Check if it's a group item - if so, toggle expand/collapse
+        let Some(display_index) = self.selected_violation.selected() else {
+            return;
+        };
+        let Some(selected_item) = self.flat_display_items.get(display_index) else {
+            return;
+        };
+        if selected_item.is_group() {
+            // Toggle group expansion
+            if let GroupItem::Group { expanded, .. } = selected_item {
+                self.toggle_group_expand(!expanded);
+            }
+        } else if let GroupItem::Violation { original_index, .. } = selected_item {
+            // Toggle checkbox for selected violation
+            if self.checked_violations.contains(original_index) {
+                self.checked_violations.remove(original_index);
+            } else {
+                self.checked_violations.insert(*original_index);
+            }
+        }
+    }
+
+    /// 'a' selects all violations; Shift+A selects all within the current group.
+    fn handle_select_all_key(&mut self, key: KeyEvent) {
+        if key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT)
+        {
+            // Shift+A: Select all violations in current group (only for grouped modes)
+            if self.sort_mode != SortMode::Default {
+                self.select_all_in_current_group();
+            }
+        } else {
+            // Regular 'a': Select all violations (using original indices)
+            self.checked_violations = self
+                .flat_display_items
+                .iter()
+                .filter_map(|item| {
+                    if let GroupItem::Violation { original_index, .. } = item {
+                        Some(*original_index)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
+    }
+
+    /// 'n' deselects all violations; Shift+N deselects all within the current group.
+    fn handle_deselect_all_key(&mut self, key: KeyEvent) {
+        if key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT)
+        {
+            // Shift+N: Deselect all violations in current group (only for grouped modes)
+            if self.sort_mode != SortMode::Default {
+                self.deselect_all_in_current_group();
+            }
+        } else {
+            // Regular 'n': Deselect all violations
+            self.checked_violations.clear();
         }
     }
 
