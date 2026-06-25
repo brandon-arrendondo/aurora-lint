@@ -41,6 +41,22 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
+  complexity:
+    name: Complexity (knots)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: knots complexity gate (AIRD <= 85)
+        run: pre-commit run knots --all-files
+
   test:
     name: Test
     runs-on: ubuntu-latest
