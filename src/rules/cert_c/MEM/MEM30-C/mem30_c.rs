@@ -2088,18 +2088,38 @@ impl MemoryAnalyzer {
                     self.aliases.remove(&left_var);
                 }
 
-                if self.is_freed(&right_var) {
-                    // Creating an alias from freed pointer - the new variable is also freed
+                if right.kind() == "identifier" && self.is_freed(&right_var) {
+                    // Aliasing a dangling pointer (`p = q;` after free(q)) — the
+                    // new variable also dangles. Gated on an identifier RHS:
+                    // a subscript/field RHS copies a value out of a container,
+                    // not the dangling pointer itself (task 232).
                     self.freed_vars.insert(left_var.clone());
                     self.aliases.insert(left_var.clone(), right_var.clone());
-                } else if right.kind() == "identifier" {
-                    // Track this as an alias
-                    self.aliases.insert(left_var.clone(), right_var.clone());
-                    // If original gets freed, alias should be considered freed too
-                    if self.freed_vars.contains(&right_var) {
-                        self.freed_vars.insert(left_var.clone());
+                } else {
+                    // Reassigning the pointer to a live value overwrites any
+                    // prior dangling state: `free(p); p = newbuf;` and the
+                    // reassign-before-return shape (`free(text); text = temp;
+                    // return text;`) must clear `p`/`text` (task 232 patterns
+                    // 1 & 2). Clear the assigned lvalue path; for a plain
+                    // identifier that IS the base name, so `free(s); s->f = x;`
+                    // does not un-track the still-freed base `s`.
+                    self.freed_vars.remove(&left_full_path);
+                    self.nullified_vars.remove(&left_full_path);
+                    self.realloc_invalidated.remove(&left_full_path);
+                    self.aliases.remove(&left_var);
+                    if right.kind() == "identifier" && left.kind() == "identifier" {
+                        // Track a fresh pointer-to-pointer alias.
+                        self.aliases.insert(left_var.clone(), right_var.clone());
                     }
                 }
+            } else if left.kind() == "identifier" {
+                // RHS is a non-variable expression (call result, etc.). A plain
+                // pointer reassignment still overwrites any prior dangling
+                // state (`free(p); p = make_buffer();`), so clear it.
+                self.freed_vars.remove(&left_var);
+                self.nullified_vars.remove(&left_var);
+                self.realloc_invalidated.remove(&left_var);
+                self.aliases.remove(&left_var);
             }
 
             // Check if right side is pointer arithmetic on freed memory
@@ -2228,14 +2248,20 @@ impl MemoryAnalyzer {
                 }
             }
 
-            let right_var = self.extract_base_variable(&value, source);
-            if !right_var.is_empty() {
-                // Track as alias
-                self.aliases.insert(left_var.clone(), right_var.clone());
-
-                // If source is freed, the new variable is also freed
-                if self.is_freed(&right_var) {
-                    self.freed_vars.insert(left_var);
+            // Only a *direct* pointer copy (`T *q = p;`) aliases the same
+            // storage. A subscript/field/cast initializer (`Image f =
+            // imFonts[0];`) copies a value OUT of a container — freeing the
+            // container (`free(imFonts)`) must NOT mark the copy freed
+            // (task 232 container-vs-member; rtext.c fullFont). Restricting
+            // aliasing to an identifier RHS prevents that false UAF.
+            if value.kind() == "identifier" {
+                let right_var = get_node_text(&value, source).to_string();
+                if !right_var.is_empty() {
+                    self.aliases.insert(left_var.clone(), right_var.clone());
+                    // If source is freed, the new variable is also freed
+                    if self.is_freed(&right_var) {
+                        self.freed_vars.insert(left_var);
+                    }
                 }
             }
         }
