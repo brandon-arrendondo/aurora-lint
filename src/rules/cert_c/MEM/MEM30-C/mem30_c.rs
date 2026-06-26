@@ -1290,6 +1290,10 @@ enum ReallocNullBranch {
 struct MemoryAnalyzer {
     // Track which variables are currently freed
     freed_vars: HashSet<String>,
+    // Byte offset (start_byte) of the free site that most recently marked each
+    // name freed. Consulted only on a candidate double-free, to detect whether a
+    // preprocessor conditional directive separates the two free sites (task 251).
+    freed_at: HashMap<String, usize>,
     // Track aliases: if alias = ptr, then aliases["alias"] = "ptr"
     aliases: HashMap<String, String>,
     // Track which variables have been set to NULL after free
@@ -1330,6 +1334,7 @@ impl MemoryAnalyzer {
     ) -> Self {
         Self {
             freed_vars: HashSet::new(),
+            freed_at: HashMap::new(),
             aliases: HashMap::new(),
             nullified_vars: HashSet::new(),
             realloc_updated: HashSet::new(),
@@ -1937,7 +1942,26 @@ impl MemoryAnalyzer {
 
         // Check for double-free (only check freed_vars, not realloc_invalidated)
         // It's OK to free a realloc-invalidated pointer (that's expected when realloc fails)
-        if self.is_actually_freed(&canonical) && !self.nullified_vars.contains(&canonical) {
+        //
+        // Suppress when a preprocessor *conditional* directive separates this free
+        // from the one that marked the object freed: sqc has no preprocessor, so the
+        // two frees may sit in mutually-exclusive build configurations (sibling
+        // `#if`-guarded `else if` arms, or a diverging `#else` branch followed by a
+        // fall-through free). Their parse order is not a real execution sequence, so
+        // the inferred double-free is unsound (task 251).
+        let preproc_split = self
+            .freed_at
+            .get(&canonical)
+            .or_else(|| self.freed_at.get(&var_name))
+            .copied()
+            .is_some_and(|prior| {
+                let here = node.start_byte();
+                preproc_conditional_between(source, prior.min(here), prior.max(here))
+            });
+        if self.is_actually_freed(&canonical)
+            && !self.nullified_vars.contains(&canonical)
+            && !preproc_split
+        {
             violations.push(RuleViolation {
                 rule_id: "MEM30-C".to_string(),
                 severity: Severity::Critical,
@@ -1955,6 +1979,10 @@ impl MemoryAnalyzer {
         // Mark as freed
         self.freed_vars.insert(canonical.clone());
         self.freed_vars.insert(var_name.clone());
+        // Record the free site for the preproc-split double-free check above.
+        let free_byte = node.start_byte();
+        self.freed_at.insert(canonical.clone(), free_byte);
+        self.freed_at.insert(var_name.clone(), free_byte);
 
         // For union support: track union member relationships
         // When free(u.member) is called, all u.* accesses become invalid.
@@ -2801,6 +2829,37 @@ fn is_preproc_if_zero(node: &tree_sitter::Node, source: &str) -> bool {
     }
     if let Some(cond) = node.child_by_field_name("condition") {
         return get_node_text(&cond, source).trim() == "0";
+    }
+    false
+}
+
+/// Returns true if a C preprocessor *conditional* directive (`#if`, `#ifdef`,
+/// `#ifndef`, `#elif`, `#else`, `#endif`) appears textually in `source` between
+/// byte offsets `start` and `end`. Used to suppress a double-free inferred across
+/// such a directive: without a preprocessor sqc cannot know whether the two free
+/// sites are co-compiled or live in mutually-exclusive configurations, so their
+/// raw parse order is not a sound execution sequence (task 251). `#define` /
+/// `#include` and other non-conditional directives are ignored — they do not
+/// gate code in or out.
+fn preproc_conditional_between(source: &str, start: usize, end: usize) -> bool {
+    if start >= end || end > source.len() {
+        return false;
+    }
+    for line in source[start..end].lines() {
+        let Some(rest) = line.trim_start().strip_prefix('#') else {
+            continue;
+        };
+        let word: String = rest
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphabetic())
+            .collect();
+        if matches!(
+            word.as_str(),
+            "if" | "ifdef" | "ifndef" | "elif" | "else" | "endif"
+        ) {
+            return true;
+        }
     }
     false
 }
