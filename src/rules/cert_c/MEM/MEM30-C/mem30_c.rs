@@ -2205,6 +2205,20 @@ impl MemoryAnalyzer {
                 return;
             }
 
+            // A declaration introduces a FRESH binding for `left_var`. The
+            // analyzer is scope-flat, so a same-named local re-declared in a
+            // sibling block (`{ T *temp = RL_CALLOC(..); ..; RL_FREE(temp); }`
+            // repeated per if/else arm — rmodels.c glTF loaders) would
+            // otherwise inherit the prior arm's freed state and false-flag the
+            // new buffer's use/free. Clearing on declaration is always sound:
+            // the new variable cannot alias the old freed storage (task 232,
+            // init-declarator analog of free-then-reassign). The alias branch
+            // below re-marks it freed if it genuinely aliases a freed pointer.
+            self.freed_vars.remove(&left_var);
+            self.nullified_vars.remove(&left_var);
+            self.realloc_invalidated.remove(&left_var);
+            self.aliases.remove(&left_var);
+
             // Check if this is a realloc initialization
             if value.kind() == "call_expression" {
                 if let Some(func) = value.child_by_field_name("function") {
