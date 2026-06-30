@@ -1,6 +1,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryCursor};
 
 /// EXP42-C: Do not compare padding data
@@ -49,12 +50,14 @@ impl CertRule for Exp42C {
             ) @call
         "#;
 
-        let language = tree_sitter_c::language();
+        let language = crate::parser::c_language();
         let query = Query::new(&language, query_str).expect("Invalid query");
         let mut query_cursor = QueryCursor::new();
-        let matches = query_cursor.matches(&query, *node, source.as_bytes());
+        // tree-sitter 0.25: `matches` returns a StreamingIterator, not a plain
+        // Iterator — drive it with `while let Some(m) = it.next()`.
+        let mut matches = query_cursor.matches(&query, *node, source.as_bytes());
 
-        for m in matches {
+        while let Some(m) = matches.next() {
             let mut func_name_node = None;
             let mut args_node = None;
             let mut call_node = None;

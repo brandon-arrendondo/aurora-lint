@@ -16,7 +16,7 @@ The parser module leverages tree-sitter's incremental parsing to:
 ```rust
 pub fn init_parser() -> Parser {
     let mut parser = Parser::new();
-    parser.set_language(tree_sitter_c::language())
+    parser.set_language(crate::parser::c_language())
         .expect("Error loading C grammar");
     parser
 }
@@ -102,7 +102,7 @@ Extract source text from nodes:
 ### Using Queries
 ```rust
 let query = Query::new(
-    tree_sitter_c::language(),
+    crate::parser::c_language(),
     "(binary_expression) @expr"
 )?;
 

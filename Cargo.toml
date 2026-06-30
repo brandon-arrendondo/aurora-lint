@@ -24,8 +24,12 @@ toml = "0.8"
 ratatui = "0.28"
 crossterm = "0.28"
 git2 = "0.19"
-tree-sitter = "0.22"
-tree-sitter-c = "0.21"
+# Language detection + the C grammar come from the shared substrate (C-only:
+# tools_sqc is a CERT-C checker). default-features = false keeps discovery
+# scoped to C/.h and avoids pulling in the other 15 grammars.
+lang-parsing-substrate = { path = "../lang_parsing_substrate", default-features = false, features = ["lang-c"] }
+tree-sitter = "0.25"
+streaming-iterator = "0.1"
 anyhow = "1.0"
 thiserror = "1.0"
 walkdir = "2.5"

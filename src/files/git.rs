@@ -28,7 +28,7 @@ impl GitRepo {
         {
             let path = entry.path();
             if let Some(extension) = path.extension() {
-                if extension == "c" || extension == "h" {
+                if lang_parsing_substrate::is_parseable_extension(extension) {
                     if let Some(path_str) = path.to_str() {
                         // Skip files in .git directory
                         if !path_str.contains("/.git/") {

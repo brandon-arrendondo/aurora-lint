@@ -777,7 +777,48 @@ fn check_subscript_read(
 // ---------------------------------------------------------------------------
 
 /// Check if an identifier node is in a read context (not a write target).
+/// True if `node` lies inside the argument subtree of a `call_expression` whose
+/// callee is a GNU asm keyword (`asm`, `__asm`, `__asm__`, any case).
+///
+/// tree-sitter-c misparses the `__asm("..." : "=r"(v) ...)` call forms, and the
+/// *shape* of that misparse differs across grammar versions (e.g. 0.21 nested
+/// the output operand as `call_expression("=r", [v])`, while 0.24 collapses the
+/// operands into an `ERROR`/`concatenated_string` that can even swallow the
+/// following statement). Rather than match one specific broken shape, treat
+/// every identifier inside such an asm-keyword call as asm-opaque — never a
+/// genuine uninitialized read. Properly-parsed `__asm__` uses `gnu_asm_*` nodes
+/// and is handled by the match in `is_read_context`.
+fn is_in_asm_call(node: &Node, source: &str) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if n.kind() == "call_expression" {
+            if let Some(func) = n.child_by_field_name("function") {
+                if func.kind() == "identifier" {
+                    let name = get_node_text(&func, source).to_ascii_lowercase();
+                    if name == "asm" || name == "__asm" || name == "__asm__" {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Bound the walk at the enclosing function.
+        if n.kind() == "function_definition" {
+            break;
+        }
+        cur = n.parent();
+    }
+    false
+}
+
 fn is_read_context(node: &Node, source: &str) -> bool {
+    // GNU asm is opaque to uninitialized analysis, and tree-sitter-c misparses
+    // the __asm(...) / __ASM(...) call forms differently across grammar
+    // versions. Any identifier inside such an asm-keyword call is asm-related,
+    // not a real read — short-circuit before the shape-specific logic below.
+    if is_in_asm_call(node, source) {
+        return false;
+    }
+
     let parent = match node.parent() {
         Some(p) => p,
         None => return true,

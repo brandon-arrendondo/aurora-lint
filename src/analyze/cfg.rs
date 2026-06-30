@@ -623,7 +623,7 @@ mod tests {
 
     fn parse_and_build_cfg(code: &str) -> Option<FunctionCfg> {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let root = tree.root_node();
 

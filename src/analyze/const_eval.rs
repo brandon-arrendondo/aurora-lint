@@ -2274,7 +2274,7 @@ mod tests {
     #[test]
     fn test_collect_macro_constants_from_ast() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "#define MY_CONST 42\n#define DOUBLE_CONST (MY_CONST * 2)\nint x;\n";
         let tree = parser.parse(code, None).unwrap();
         let macros = collect_macro_constants(&tree.root_node(), code);
@@ -2285,7 +2285,7 @@ mod tests {
     #[test]
     fn test_collect_macro_aliases_from_ast() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "#define SYSTEM system\n#define BUFSIZE 1024\nint x;\n";
         let tree = parser.parse(code, None).unwrap();
         let aliases = collect_macro_aliases(&tree.root_node(), code);
@@ -2297,7 +2297,7 @@ mod tests {
     #[test]
     fn test_try_evaluate_expr_ast() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "int x = 10 + 20;\n";
         let tree = parser.parse(code, None).unwrap();
         let macros = MacroConstantMap::new();
@@ -2349,7 +2349,7 @@ mod tests {
     #[test]
     fn test_resolve_sizeof_node_ast() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "int x = sizeof(int);\n";
         let tree = parser.parse(code, None).unwrap();
         let root = tree.root_node();
@@ -2373,7 +2373,7 @@ mod tests {
     #[test]
     fn test_try_evaluate_expr_unary() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "int x = -42;\n";
         let tree = parser.parse(code, None).unwrap();
         let macros = MacroConstantMap::new();
@@ -2393,7 +2393,7 @@ mod tests {
     #[test]
     fn test_try_evaluate_expr_cast() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "int x = (int)42;\n";
         let tree = parser.parse(code, None).unwrap();
         let macros = MacroConstantMap::new();
@@ -2413,7 +2413,7 @@ mod tests {
     #[test]
     fn test_try_evaluate_expr_modulo() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "int x = 17 % 5;\n";
         let tree = parser.parse(code, None).unwrap();
         let macros = MacroConstantMap::new();
@@ -2435,7 +2435,7 @@ mod tests {
     #[test]
     fn test_try_evaluate_range_binary_ops() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "int x = a + 10;\n";
         let tree = parser.parse(code, None).unwrap();
         let macros = MacroConstantMap::new();
@@ -2462,7 +2462,7 @@ mod tests {
     #[test]
     fn test_try_evaluate_range_unary_neg() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "int x = -a;\n";
         let tree = parser.parse(code, None).unwrap();
         let macros = MacroConstantMap::new();
@@ -2491,7 +2491,7 @@ mod tests {
     #[test]
     fn test_expression_fits_in_signed_simple() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "int x = 100 + 200;\n";
         let tree = parser.parse(code, None).unwrap();
         let macros = MacroConstantMap::new();
@@ -2513,7 +2513,7 @@ mod tests {
     #[test]
     fn test_expression_fits_in_unsigned_simple() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = "int x = 100;\n";
         let tree = parser.parse(code, None).unwrap();
         let macros = MacroConstantMap::new();
@@ -2537,7 +2537,7 @@ mod tests {
     #[test]
     fn test_extract_loop_var_ranges_for() {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let code = r#"
 void foo() {
     for (int i = 0; i < 10; i++) {

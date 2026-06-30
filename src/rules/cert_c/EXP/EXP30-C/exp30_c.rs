@@ -321,7 +321,7 @@ mod tests {
     fn parse_c_code(source: &str) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
         parser
-            .set_language(&tree_sitter_c::language())
+            .set_language(&crate::parser::c_language())
             .expect("Error loading C grammar");
         parser.parse(source, None).expect("Error parsing C code")
     }

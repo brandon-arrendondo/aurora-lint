@@ -267,7 +267,7 @@ impl Arr30C {
         // Parse the source code into AST
         let mut parser = tree_sitter::Parser::new();
         parser
-            .set_language(&tree_sitter_c::language())
+            .set_language(&crate::parser::c_language())
             .expect("Error loading C grammar");
 
         let tree = match parser.parse(source, None) {
@@ -568,7 +568,7 @@ impl Arr30C {
         // Parse the source code into AST
         let mut parser = tree_sitter::Parser::new();
         parser
-            .set_language(&tree_sitter_c::language())
+            .set_language(&crate::parser::c_language())
             .expect("Error loading C grammar");
 
         let tree = match parser.parse(source, None) {
