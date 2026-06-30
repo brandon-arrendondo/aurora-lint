@@ -635,7 +635,7 @@ mod tests {
 
     fn parse_c_code(code: &str) -> (tree_sitter::Tree, String) {
         let mut parser = Parser::new();
-        let language = tree_sitter_c::language();
+        let language = crate::parser::c_language();
         parser.set_language(&language).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())

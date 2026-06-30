@@ -1582,7 +1582,7 @@ mod tests {
 
     fn analyze(code: &str) -> (FunctionCfg, NullAnalysisResult, tree_sitter::Tree, String) {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let root = tree.root_node();
         let func = (0..root.child_count())
@@ -1758,7 +1758,7 @@ void sink() {
 }
 "#;
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let root = tree.root_node();
         let summaries = HashMap::new();
@@ -1802,7 +1802,7 @@ void sink() {
 }
 "#;
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let root = tree.root_node();
         let summaries = HashMap::new();

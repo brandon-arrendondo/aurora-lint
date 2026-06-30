@@ -1829,7 +1829,7 @@ mod tests {
 
     fn parse_and_analyze(code: &str) -> (tree_sitter::Tree, String, Option<RangeAnalysisResult>) {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let source = code.to_string();
         let root = tree.root_node();
@@ -1876,7 +1876,7 @@ mod tests {
     /// Helper: get range of a variable at a given line (1-based).
     fn get_range_at_line(code: &str, var_name: &str, line: usize) -> Option<ValueRange> {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let source = code.to_string();
         let root = tree.root_node();
@@ -2122,7 +2122,7 @@ int f(int x) {
         line: usize,
     ) -> Option<ValueRange> {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let source = code.to_string();
         let root = tree.root_node();

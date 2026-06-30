@@ -13,7 +13,7 @@ fn main() {
     std::io::stdin().read_to_string(&mut source).unwrap();
 
     let mut parser = Parser::new();
-    parser.set_language(&tree_sitter_c::language()).unwrap();
+    parser.set_language(&sqc::parser::c_language()).unwrap();
     let tree = parser.parse(&source, None).unwrap();
     let root = tree.root_node();
 

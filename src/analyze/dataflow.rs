@@ -553,7 +553,7 @@ mod tests {
 
     fn parse_function(code: &str) -> (tree_sitter::Tree, String) {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
     }
@@ -917,7 +917,7 @@ mod tests {
     fn test_find_node_at_range_basic() {
         let code = "int x = 42;\n";
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let root = tree.root_node();
 

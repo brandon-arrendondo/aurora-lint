@@ -1203,7 +1203,7 @@ mod tests {
 
     fn parse_and_summarize(code: &str) -> HashMap<String, FunctionSummary> {
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&tree_sitter_c::language()).unwrap();
+        parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let macros = const_eval::collect_macro_constants(&tree.root_node(), code);
         compute_summaries(&tree.root_node(), code, &macros, true, &[], &HashMap::new())
