@@ -12,6 +12,7 @@ mod manifest;
 mod parser;
 mod progress;
 mod rules;
+mod toolchain;
 mod ui;
 mod utility;
 

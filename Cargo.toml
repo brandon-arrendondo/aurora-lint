@@ -27,7 +27,7 @@ git2 = "0.19"
 # Language detection + the C grammar come from the shared substrate (C-only:
 # tools_sqc is a CERT-C checker). default-features = false keeps discovery
 # scoped to C/.h and avoids pulling in the other 15 grammars.
-lang-parsing-substrate = { version = "0.1.0", default-features = false, features = ["lang-c"] }
+lang-parsing-substrate = { version = "0.1.4", default-features = false, features = ["lang-c"] }
 tree-sitter = "0.25"
 streaming-iterator = "0.1"
 anyhow = "1.0"

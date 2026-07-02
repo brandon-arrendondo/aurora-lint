@@ -206,8 +206,12 @@ impl SuppressionManager {
 
     /// Extract all suppressions from source code.
     ///
-    /// Scans every line for SQC-SUPPRESS directives. Supports both standalone
-    /// comment lines and inline comments on code lines.
+    /// Scans every line for both the legacy `SQC-SUPPRESS` directive
+    /// (standalone or inline on a code line — kept during the deprecation
+    /// window described in `lang_parsing_substrate/docs/unified-config-spec.md`)
+    /// and the shared unified `tools:suppress sqc:RULE` comment (standalone
+    /// line only, matching the spec's own examples), via
+    /// `lang_parsing_substrate::suppressions`.
     pub fn extract_from_source(&mut self, file_path: &str, source: &str) {
         let mut file_suppressions = Vec::new();
 
@@ -217,6 +221,25 @@ impl SuppressionManager {
                     file_suppressions.push(suppression);
                 }
             }
+        }
+
+        for s in
+            lang_parsing_substrate::suppressions(source, lang_parsing_substrate::SlocMode::Default)
+        {
+            if !s.tool.eq_ignore_ascii_case("sqc") {
+                continue;
+            }
+            let Some(hash) = s.hash else {
+                // sqc suppressions require a HASH for tamper detection —
+                // matches the legacy parser's `extract_hash` requirement.
+                continue;
+            };
+            file_suppressions.push(Suppression {
+                rule_id: s.rule,
+                hash,
+                justification: s.justification.unwrap_or_default(),
+                comment_line: s.comment_line,
+            });
         }
 
         if !file_suppressions.is_empty() {
@@ -821,6 +844,76 @@ mod tests {
         assert!(mgr
             .should_suppress("other.c", "EXP34-C", 3, &source, "")
             .is_none());
+    }
+
+    #[test]
+    fn test_unified_syntax_suppresses_violation() {
+        let rule_id = "EXP34-C";
+        let code_line = "    *ptr = value;";
+        let hash = SuppressionManager::calculate_suppression_hash(rule_id, code_line);
+
+        let source = format!(
+            "void f(int *ptr) {{\n\
+             // tools:suppress sqc:{} HASH:{} JUSTIFICATION:\"validated by caller\"\n\
+             {}\n\
+             }}",
+            rule_id, hash, code_line
+        );
+
+        let mut mgr = SuppressionManager::new();
+        mgr.extract_from_source("test.c", &source);
+
+        assert!(mgr
+            .should_suppress("test.c", "EXP34-C", 3, &source, "")
+            .is_some());
+        assert!(mgr
+            .should_suppress("test.c", "INT30-C", 3, &source, "")
+            .is_none());
+    }
+
+    #[test]
+    fn test_unified_syntax_requires_hash() {
+        let source = "// tools:suppress sqc:EXP34-C JUSTIFICATION:\"no hash\"\n    *ptr = value;\n";
+        let mut mgr = SuppressionManager::new();
+        mgr.extract_from_source("test.c", source);
+        assert!(mgr
+            .should_suppress("test.c", "EXP34-C", 2, source, "")
+            .is_none());
+    }
+
+    #[test]
+    fn test_unified_syntax_ignores_other_tools() {
+        let source = "// tools:suppress knots:cognitive JUSTIFICATION:\"legacy\"\nvoid f() {}\n";
+        let mut mgr = SuppressionManager::new();
+        mgr.extract_from_source("test.c", source);
+        assert!(mgr
+            .should_suppress("test.c", "cognitive", 2, source, "")
+            .is_none());
+    }
+
+    #[test]
+    fn test_legacy_and_unified_syntax_coexist() {
+        let hash_legacy =
+            SuppressionManager::calculate_suppression_hash("EXP34-C", "    *ptr = value;");
+        let hash_unified =
+            SuppressionManager::calculate_suppression_hash("INT30-C", "    result = a + b;");
+        let source = format!(
+            "// SQC-SUPPRESS: EXP34-C HASH:{} JUSTIFICATION: \"legacy\"\n\
+             *ptr = value;\n\
+             // tools:suppress sqc:INT30-C HASH:{} JUSTIFICATION:\"unified\"\n\
+             result = a + b;\n",
+            hash_legacy, hash_unified
+        );
+
+        let mut mgr = SuppressionManager::new();
+        mgr.extract_from_source("test.c", &source);
+
+        assert!(mgr
+            .should_suppress("test.c", "EXP34-C", 2, &source, "")
+            .is_some());
+        assert!(mgr
+            .should_suppress("test.c", "INT30-C", 4, &source, "")
+            .is_some());
     }
 
     #[test]

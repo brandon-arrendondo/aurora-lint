@@ -305,8 +305,9 @@ fn warn_unimplemented_rules(manifest: &RuleManifest, registry: &RuleRegistry) {
     }
 }
 
-/// Collect the C files to analyze: gather (all or modified), drop --exclude
-/// matches, then sort by size descending for LPT scheduling.
+/// Collect the C files to analyze: gather (all or modified), drop ignored
+/// matches (`toolchain.toml` `[ignore].paths` plus `--exclude`), then sort by
+/// size descending for LPT scheduling.
 fn collect_c_files(
     project_source: &ProjectSource,
     diff_only: bool,
@@ -318,32 +319,18 @@ fn collect_c_files(
         project_source.get_c_files()?
     };
 
-    // Drop files matching any --exclude path glob (e.g. checked-in
-    // amalgamations or test harnesses). Prescan/cross-file context is
-    // intentionally left intact so excluded files still contribute callee
-    // definitions; only their own findings are suppressed.
-    if !excludes.is_empty() {
-        let patterns: Vec<regex::Regex> = excludes
-            .iter()
-            .filter_map(|g| match suppression::glob_to_regex(g, true) {
-                Ok(re) => Some(re),
-                Err(e) => {
-                    eprintln!("Warning: invalid --exclude glob '{}': {}", g, e);
-                    None
-                }
-            })
-            .collect();
-        if !patterns.is_empty() {
-            let before = c_files.len();
-            c_files.retain(|f| {
-                let normalized = f.replace('\\', "/");
-                !patterns.iter().any(|re| re.is_match(&normalized))
-            });
-            let removed = before - c_files.len();
-            if removed > 0 {
-                eprintln!("Excluded {} file(s) matching --exclude globs", removed);
-            }
-        }
+    // Drop files matching a project-wide `toolchain.toml` ignore or a
+    // --exclude path glob (e.g. checked-in amalgamations or test harnesses).
+    // Prescan/cross-file context is intentionally left intact so excluded
+    // files still contribute callee definitions; only their own findings are
+    // suppressed.
+    let ignore = build_path_ignore(project_source, excludes)?;
+    let root = project_source.get_root_path();
+    let before = c_files.len();
+    c_files.retain(|f| !ignore.is_ignored(std::path::Path::new(&relative_to_root(f, root))));
+    let removed = before - c_files.len();
+    if removed > 0 {
+        eprintln!("Excluded {} file(s) matching ignore patterns", removed);
     }
 
     // LPT scheduling: sort files by size descending so largest files are dispatched first.
@@ -353,6 +340,51 @@ fn collect_c_files(
         .sort_by_cached_key(|f| std::cmp::Reverse(fs::metadata(f).map(|m| m.len()).unwrap_or(0)));
 
     Ok(c_files)
+}
+
+/// Builds the combined ignore matcher from `toolchain.toml`'s shared
+/// `[ignore].paths` (discovered by walking up from the project root) and the
+/// CLI's `--exclude` globs, so a project's file/directory ignores can be
+/// expressed once instead of only via `--exclude` on every invocation.
+fn build_path_ignore(
+    project_source: &ProjectSource,
+    excludes: &[String],
+) -> Result<lang_parsing_substrate::PathIgnore> {
+    let mut patterns: Vec<String> = Vec::new();
+    let root = std::path::Path::new(project_source.get_root_path());
+    if let Some(toolchain) = crate::toolchain::ToolchainConfig::discover(root)? {
+        patterns.extend(toolchain.ignore.paths);
+    }
+    patterns.extend(excludes.iter().cloned());
+
+    // Validate patterns individually so one bad `--exclude` glob doesn't
+    // discard every other ignore pattern (toolchain.toml's included).
+    let valid: Vec<String> = patterns
+        .into_iter()
+        .filter(|p| {
+            let ok = lang_parsing_substrate::PathIgnore::new([p.as_str()]).is_ok();
+            if !ok {
+                eprintln!("Warning: invalid ignore glob '{}'", p);
+            }
+            ok
+        })
+        .collect();
+
+    lang_parsing_substrate::PathIgnore::new(&valid)
+        .map_err(|e| anyhow::anyhow!("Invalid ignore glob pattern: {e}"))
+}
+
+/// Strips `root` (and a leading path separator) from `path`, and normalizes
+/// to `/` separators, so a pattern like `"vendor/**"` in `toolchain.toml`
+/// matches regardless of whether the project was opened with an absolute or
+/// relative path — glob patterns anchor to the start of the matched string.
+fn relative_to_root(path: &str, root: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let root_normalized = root.replace('\\', "/");
+    normalized
+        .strip_prefix(&root_normalized)
+        .map(|s| s.trim_start_matches('/').to_string())
+        .unwrap_or(normalized)
 }
 
 /// Build a suppression manager, loading the TOML suppression file if provided
@@ -554,7 +586,13 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
         .and_then(|f| f.to_str())
         .unwrap_or(file_path);
 
-    println!("Add on the line before, or inline:");
+    println!("Add on the line before (standalone comment):");
+    println!(
+        "// tools:suppress sqc:{} HASH:{} JUSTIFICATION:\"TODO: Add justification\"",
+        rule_id, hash
+    );
+    println!();
+    println!("Legacy form (also accepted; standalone or inline):");
     println!(
         "// SQC-SUPPRESS: {} HASH:{} JUSTIFICATION: \"TODO: Add justification\"",
         rule_id, hash
@@ -707,6 +745,60 @@ mod tests {
         parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    // -- collect_c_files / build_path_ignore --
+
+    #[test]
+    fn collect_c_files_respects_toolchain_toml_ignore() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("toolchain.toml"),
+            "[ignore]\npaths = [\"vendor/**\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("vendor")).unwrap();
+        fs::write(dir.path().join("vendor").join("lib.c"), "int x;\n").unwrap();
+        fs::write(dir.path().join("main.c"), "int y;\n").unwrap();
+
+        let project_source = ProjectSource::open(dir.path().to_str().unwrap()).unwrap();
+        let c_files = collect_c_files(&project_source, false, &[]).unwrap();
+
+        assert!(c_files.iter().any(|f| f.ends_with("main.c")));
+        assert!(!c_files.iter().any(|f| f.contains("vendor")));
+    }
+
+    #[test]
+    fn collect_c_files_merges_toolchain_and_cli_excludes() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("toolchain.toml"),
+            "[ignore]\npaths = [\"vendor/**\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("vendor")).unwrap();
+        fs::write(dir.path().join("vendor").join("lib.c"), "int x;\n").unwrap();
+        fs::write(dir.path().join("generated.c"), "int z;\n").unwrap();
+        fs::write(dir.path().join("main.c"), "int y;\n").unwrap();
+
+        let project_source = ProjectSource::open(dir.path().to_str().unwrap()).unwrap();
+        let c_files =
+            collect_c_files(&project_source, false, &["**/generated.c".to_string()]).unwrap();
+
+        assert!(c_files.iter().any(|f| f.ends_with("main.c")));
+        assert!(!c_files.iter().any(|f| f.contains("vendor")));
+        assert!(!c_files.iter().any(|f| f.ends_with("generated.c")));
+    }
+
+    #[test]
+    fn build_path_ignore_skips_invalid_pattern_but_keeps_valid_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_source = ProjectSource::open(dir.path().to_str().unwrap()).unwrap();
+        let ignore =
+            build_path_ignore(&project_source, &["[".to_string(), "vendor/**".to_string()])
+                .unwrap();
+        assert!(ignore.is_ignored(std::path::Path::new("vendor/lib.c")));
+        assert!(!ignore.is_ignored(std::path::Path::new("src/main.c")));
     }
 
     // -- collect_function_cfgs --

@@ -13,6 +13,7 @@ pub mod manifest;
 pub mod parser;
 pub mod progress;
 pub mod rules;
+pub mod toolchain;
 pub mod ui;
 pub mod utility;
 
