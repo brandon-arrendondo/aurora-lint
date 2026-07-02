@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 /// POS44-C: Do not use signals to terminate threads
@@ -32,8 +33,8 @@ impl Pos44C {
 
     /// Check all nodes recursively for pthread_kill calls
     fn check_node(node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if Self::is_pthread_kill(node, source) {
-            let code = get_node_text(node, source);
+        for n in query::find_descendants(*node, |c| Self::is_pthread_kill(&c, source)) {
+            let code = get_node_text(&n, source);
             violations.push(RuleViolation {
                 rule_id: "POS44-C".to_string(),
                 severity: Severity::Low,
@@ -42,19 +43,13 @@ impl Pos44C {
                     code.trim()
                 ),
                 file_path: String::new(),
-                line: node.start_position().row + 1,
-                column: node.start_position().column + 1,
+                line: n.start_position().row + 1,
+                column: n.start_position().column + 1,
                 suggestion: Some(
                     "Replace pthread_kill() with pthread_cancel() for safe thread termination.".to_string()
                 ),
                 requires_manual_review: None,
             });
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            Self::check_node(&child, source, violations);
         }
     }
 }

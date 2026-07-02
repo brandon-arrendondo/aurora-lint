@@ -14,6 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -159,23 +160,19 @@ impl Exp47C {
 
     /// Recursively traverse AST
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check if this is a call expression (potential va_arg call)
-        if node.kind() == "call_expression" {
-            self.check_va_arg_call(node, source, violations);
-        }
+        for n in query::find_descendants(*node, |_| true) {
+            // Check if this is a call expression (potential va_arg call)
+            if n.kind() == "call_expression" {
+                self.check_va_arg_call(&n, source, violations);
+            }
 
-        // Also check for va_arg pattern in text for any node type
-        // (va_arg may be expanded by macros or parsed differently)
-        let node_text = get_node_text(node, source);
-        if node_text.contains("va_arg(") && node.kind() != "call_expression" {
-            // Try text-based detection as fallback
-            self.check_va_arg_text(node, &node_text, violations);
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.traverse(&child, source, violations);
+            // Also check for va_arg pattern in text for any node type
+            // (va_arg may be expanded by macros or parsed differently)
+            let node_text = get_node_text(&n, source);
+            if node_text.contains("va_arg(") && n.kind() != "call_expression" {
+                // Try text-based detection as fallback
+                self.check_va_arg_text(&n, &node_text, violations);
+            }
         }
     }
 
@@ -225,8 +222,8 @@ impl Exp47C {
         source: &str,
         funcs: &mut HashMap<String, VariadicFuncInfo>,
     ) {
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+        for n in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(declarator) = n.child_by_field_name("declarator") {
                 // Check if this is a variadic function
                 let decl_text = get_node_text(&declarator, source);
                 if decl_text.contains("...") {
@@ -235,7 +232,7 @@ impl Exp47C {
                         // Count fixed parameters
                         let fixed_params = self.count_fixed_params(&declarator, source);
                         // Count UNCONDITIONAL va_arg calls in body
-                        let va_arg_count = if let Some(body) = node.child_by_field_name("body") {
+                        let va_arg_count = if let Some(body) = n.child_by_field_name("body") {
                             self.count_unconditional_va_arg_calls(&body, source)
                         } else {
                             0
@@ -251,12 +248,6 @@ impl Exp47C {
                     }
                 }
             }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_variadic_functions(&child, source, funcs);
         }
     }
 
@@ -365,23 +356,17 @@ impl Exp47C {
 
     /// Check if a node has any conditional statement children
     fn has_conditional_children(&self, node: &Node) -> bool {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if matches!(
-                child.kind(),
+        query::find_first_descendant(*node, |n| {
+            matches!(
+                n.kind(),
                 "if_statement"
                     | "while_statement"
                     | "for_statement"
                     | "switch_statement"
                     | "do_statement"
-            ) {
-                return true;
-            }
-            if self.has_conditional_children(&child) {
-                return true;
-            }
-        }
-        false
+            )
+        })
+        .is_some()
     }
 
     /// Check calls to variadic functions
@@ -392,13 +377,13 @@ impl Exp47C {
         funcs: &HashMap<String, VariadicFuncInfo>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source).trim().to_string();
 
                 if let Some(info) = funcs.get(&func_name) {
                     // Count actual arguments passed
-                    let actual_args = if let Some(args) = node.child_by_field_name("arguments") {
+                    let actual_args = if let Some(args) = n.child_by_field_name("arguments") {
                         self.count_arguments(&args)
                     } else {
                         0
@@ -410,8 +395,8 @@ impl Exp47C {
                         violations.push(RuleViolation {
                             rule_id: "EXP47-C".to_string(),
                             severity: Severity::Medium,
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
+                            line: n.start_position().row + 1,
+                            column: n.start_position().column + 1,
                             message: format!(
                                 "Call to variadic function '{}' passes {} variadic argument(s) but function uses va_arg {} time(s)",
                                 func_name, variadic_args_passed, info.va_arg_count
@@ -426,12 +411,6 @@ impl Exp47C {
                     }
                 }
             }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_variadic_calls(&child, source, funcs, violations);
         }
     }
 

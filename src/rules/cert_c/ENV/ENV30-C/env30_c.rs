@@ -2,6 +2,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -38,14 +39,8 @@ impl CertRule for ENV30C {
 impl ENV30C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check function definitions to track variable assignments from protected functions
-        if node.kind() == "function_definition" {
-            violations.extend(self.check_function_for_violations(node, source));
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+        for n in query::find_descendants_of_kind(*node, "function_definition") {
+            violations.extend(self.check_function_for_violations(&n, source));
         }
     }
 
@@ -68,63 +63,59 @@ impl ENV30C {
         source: &str,
         protected_vars: &mut HashMap<String, String>,
     ) {
-        // Look for declarations like: char *env = getenv("X");
-        if node.kind() == "declaration" {
-            let text = get_node_text(node, source);
-            // Find if there's a protected function call
-            if let Some(func_name) = self.find_protected_function_in_text(&text) {
-                // Extract variable name
-                if let Some(var_name) = self.extract_var_name_from_declaration(node, source) {
-                    protected_vars.insert(var_name, func_name);
-                }
-            }
-            // Also check for derived pointers: char *ptr = strchr(protected_var, '.')
-            else if let Some((derived_var, orig_func)) =
-                self.check_derived_pointer_declaration(node, source, protected_vars)
-            {
-                protected_vars.insert(derived_var, format!("{} (derived)", orig_func));
-            }
-        }
-
-        // Also handle assignment expressions (reassignment)
-        if node.kind() == "assignment_expression" {
-            let text = get_node_text(node, source);
-            if let Some(func_name) = self.find_protected_function_in_text(&text) {
-                // Extract variable name from left side
-                if let Some(left) = node.child_by_field_name("left") {
-                    let var_name = get_node_text(&left, source).trim().to_string();
-                    if !var_name.is_empty() {
+        for n in query::find_descendants(*node, |_| true) {
+            // Look for declarations like: char *env = getenv("X");
+            if n.kind() == "declaration" {
+                let text = get_node_text(&n, source);
+                // Find if there's a protected function call
+                if let Some(func_name) = self.find_protected_function_in_text(&text) {
+                    // Extract variable name
+                    if let Some(var_name) = self.extract_var_name_from_declaration(&n, source) {
                         protected_vars.insert(var_name, func_name);
                     }
                 }
+                // Also check for derived pointers: char *ptr = strchr(protected_var, '.')
+                else if let Some((derived_var, orig_func)) =
+                    self.check_derived_pointer_declaration(&n, source, protected_vars)
+                {
+                    protected_vars.insert(derived_var, format!("{} (derived)", orig_func));
+                }
             }
-            // Also check for derived pointers
-            else if let Some((derived_var, orig_func)) =
-                self.check_derived_pointer_assignment(node, source, protected_vars)
-            {
-                protected_vars.insert(derived_var, format!("{} (derived)", orig_func));
-            }
-            // Check for pointer aliasing: p = protected_var
-            else if let Some((alias_var, orig_func)) =
-                self.check_pointer_alias(node, source, protected_vars)
-            {
-                protected_vars.insert(alias_var, format!("{} (alias)", orig_func));
-            }
-        }
 
-        // Handle pointer aliases in init_declarator: char *p = protected_var
-        if node.kind() == "init_declarator" {
-            if let Some((alias_var, orig_func)) =
-                self.check_init_declarator_alias(node, source, protected_vars)
-            {
-                protected_vars.insert(alias_var, format!("{} (alias)", orig_func));
+            // Also handle assignment expressions (reassignment)
+            if n.kind() == "assignment_expression" {
+                let text = get_node_text(&n, source);
+                if let Some(func_name) = self.find_protected_function_in_text(&text) {
+                    // Extract variable name from left side
+                    if let Some(left) = n.child_by_field_name("left") {
+                        let var_name = get_node_text(&left, source).trim().to_string();
+                        if !var_name.is_empty() {
+                            protected_vars.insert(var_name, func_name);
+                        }
+                    }
+                }
+                // Also check for derived pointers
+                else if let Some((derived_var, orig_func)) =
+                    self.check_derived_pointer_assignment(&n, source, protected_vars)
+                {
+                    protected_vars.insert(derived_var, format!("{} (derived)", orig_func));
+                }
+                // Check for pointer aliasing: p = protected_var
+                else if let Some((alias_var, orig_func)) =
+                    self.check_pointer_alias(&n, source, protected_vars)
+                {
+                    protected_vars.insert(alias_var, format!("{} (alias)", orig_func));
+                }
             }
-        }
 
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_protected_assignments(&child, source, protected_vars);
+            // Handle pointer aliases in init_declarator: char *p = protected_var
+            if n.kind() == "init_declarator" {
+                if let Some((alias_var, orig_func)) =
+                    self.check_init_declarator_alias(&n, source, protected_vars)
+                {
+                    protected_vars.insert(alias_var, format!("{} (alias)", orig_func));
+                }
+            }
         }
     }
 
@@ -321,51 +312,47 @@ impl ENV30C {
         protected_vars: &HashMap<String, String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check for assignments that modify memory pointed to by protected variables
-        if node.kind() == "assignment_expression" {
-            if let Some(left) = node.child_by_field_name("left") {
-                // Only flag modifications through the pointer, not reassignment of the pointer itself
-                // e.g., `env[0] = 'X'` or `*env = 'X'` or `conv->field = x` should flag
-                // but `env = something_else` should NOT flag (that's just reassigning the pointer)
-                let left_kind = left.kind();
-                if left_kind == "subscript_expression"
-                    || left_kind == "pointer_expression"
-                    || left_kind == "field_expression"
-                {
-                    if let Some((var_name, func_name)) =
-                        self.get_protected_var_ref(&left, source, protected_vars)
+        for n in query::find_descendants(*node, |_| true) {
+            // Check for assignments that modify memory pointed to by protected variables
+            if n.kind() == "assignment_expression" {
+                if let Some(left) = n.child_by_field_name("left") {
+                    // Only flag modifications through the pointer, not reassignment of the pointer itself
+                    // e.g., `env[0] = 'X'` or `*env = 'X'` or `conv->field = x` should flag
+                    // but `env = something_else` should NOT flag (that's just reassigning the pointer)
+                    let left_kind = left.kind();
+                    if left_kind == "subscript_expression"
+                        || left_kind == "pointer_expression"
+                        || left_kind == "field_expression"
                     {
-                        let start = node.start_position();
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            file_path: String::new(),
-                            message: format!(
-                                "Modifying memory referenced by '{}' which holds return value from '{}()'. The return value should not be modified.",
-                                var_name, func_name
-                            ),
-                            line: start.row + 1,
-                            column: start.column + 1,
-                            severity: self.severity(),
-                            suggestion: Some(
-                                "Copy the return value to a local buffer before modifying it"
-                                    .to_string(),
-                            ),
-                            requires_manual_review: Some(false),
-                        });
+                        if let Some((var_name, func_name)) =
+                            self.get_protected_var_ref(&left, source, protected_vars)
+                        {
+                            let start = n.start_position();
+                            violations.push(RuleViolation {
+                                rule_id: self.rule_id().to_string(),
+                                file_path: String::new(),
+                                message: format!(
+                                    "Modifying memory referenced by '{}' which holds return value from '{}()'. The return value should not be modified.",
+                                    var_name, func_name
+                                ),
+                                line: start.row + 1,
+                                column: start.column + 1,
+                                severity: self.severity(),
+                                suggestion: Some(
+                                    "Copy the return value to a local buffer before modifying it"
+                                        .to_string(),
+                                ),
+                                requires_manual_review: Some(false),
+                            });
+                        }
                     }
                 }
             }
-        }
 
-        // Check for calls that might modify protected variables
-        if node.kind() == "call_expression" {
-            self.check_call_for_modification(node, source, protected_vars, violations);
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_protected_var_modifications(&child, source, protected_vars, violations);
+            // Check for calls that might modify protected variables
+            if n.kind() == "call_expression" {
+                self.check_call_for_modification(&n, source, protected_vars, violations);
+            }
         }
     }
 

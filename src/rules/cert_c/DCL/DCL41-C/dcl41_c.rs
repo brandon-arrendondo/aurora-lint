@@ -13,6 +13,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 #[derive(Debug)]
@@ -114,12 +115,8 @@ impl Dcl41C {
 
     /// Recursively traverse AST
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        self.check_switch_statement(node, source, violations);
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.traverse(&child, source, violations);
+        for n in query::find_descendants_of_kind(*node, "switch_statement") {
+            self.check_switch_statement(&n, source, violations);
         }
     }
 }

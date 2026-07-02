@@ -21,6 +21,7 @@ use tree_sitter::Node;
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 
 /// POS50-C: Declare objects shared between POSIX threads with appropriate storage durations
 pub struct Pos50C;
@@ -58,19 +59,13 @@ impl Pos50C {
     /// Recursively check nodes for POS50-C violations
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for pthread_create calls
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source);
                 if func_name.trim() == "pthread_create" {
-                    self.check_pthread_create(node, source, violations);
+                    self.check_pthread_create(&n, source, violations);
                 }
             }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 
@@ -209,26 +204,16 @@ impl Pos50C {
 
     /// Search for a variable declaration
     fn search_for_declaration(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        if node.kind() == "declaration" {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if let Some(name) = self.get_declarator_name(&child, source) {
-                    if name == var_name {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // Recursively search children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.search_for_declaration(&child, var_name, source) {
-                return true;
-            }
-        }
-
-        false
+        query::find_descendants_of_kind(*node, "declaration")
+            .into_iter()
+            .any(|decl| {
+                let mut cursor = decl.walk();
+                let found = decl.children(&mut cursor).any(|child| {
+                    self.get_declarator_name(&child, source)
+                        .is_some_and(|name| name == var_name)
+                });
+                found
+            })
     }
 
     /// Get the declared variable name from a declarator
@@ -351,15 +336,10 @@ impl Pos50C {
 
     /// Walk all function definitions and check for TOCTOU patterns.
     fn check_toctou(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "function_definition" {
-            if let Some(body) = node.child_by_field_name("body") {
+        for n in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(body) = n.child_by_field_name("body") {
                 self.check_toctou_in_body(&body, source, violations);
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_toctou(&child, source, violations);
         }
     }
 
@@ -409,25 +389,20 @@ impl Pos50C {
         source: &str,
         calls: &mut Vec<(String, String, usize, usize)>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
                 if Self::is_check_function(func_name) || Self::is_use_function(func_name) {
-                    if let Some(path_var) = Self::extract_path_arg(node, source) {
+                    if let Some(path_var) = Self::extract_path_arg(&n, source) {
                         calls.push((
                             func_name.to_string(),
                             path_var.to_string(),
-                            node.start_position().row + 1,
-                            node.start_position().column + 1,
+                            n.start_position().row + 1,
+                            n.start_position().column + 1,
                         ));
                     }
                 }
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_calls_in_order(&child, source, calls);
         }
     }
 }

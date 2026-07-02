@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -49,19 +50,13 @@ impl Int08C {
         source: &str,
         variables: &mut HashMap<String, (String, usize)>,
     ) {
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
+        for n in query::find_descendants_of_kind(*node, "declaration") {
+            let decl_text = get_node_text(&n, source);
 
             // Extract type and variable name
             if let Some((var_type, var_name)) = self.parse_declaration(&decl_text) {
-                variables.insert(var_name, (var_type, node.start_position().row + 1));
+                variables.insert(var_name, (var_type, n.start_position().row + 1));
             }
-        }
-
-        // Recursively process children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_declarations(&child, source, variables);
         }
     }
 
@@ -169,20 +164,10 @@ impl Int08C {
 
     /// Extract variable names from an expression
     fn extract_variables(&self, node: &Node, source: &str) -> HashSet<String> {
-        let mut vars = HashSet::new();
-
-        if node.kind() == "identifier" {
-            let text = get_node_text(node, source);
-            vars.insert(text.trim().to_string());
-        }
-
-        // Recursively extract from child nodes
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            vars.extend(self.extract_variables(&child, source));
-        }
-
-        vars
+        query::find_descendants_of_kind(*node, "identifier")
+            .into_iter()
+            .map(|n| get_node_text(&n, source).trim().to_string())
+            .collect()
     }
 
     /// Check if a type is a narrow integer type (prone to overflow)
@@ -242,34 +227,20 @@ impl Int08C {
         var_name: &str,
         source: &str,
     ) -> bool {
-        let mut cursor = scope.walk();
-        for child in scope.children(&mut cursor) {
-            // Only check statements that come BEFORE the expression
-            if child.start_position().row < expr_line {
-                if child.kind() == "if_statement" {
-                    if let Some(condition) = child.child_by_field_name("condition") {
-                        let cond_text = get_node_text(&condition, source);
+        query::find_descendants_of_kind(*scope, "if_statement")
+            .into_iter()
+            .filter(|n| n.start_position().row < expr_line)
+            .any(|n| {
+                let Some(condition) = n.child_by_field_name("condition") else {
+                    return false;
+                };
+                let cond_text = get_node_text(&condition, source);
 
-                        // Check for proper overflow protection patterns
-                        // Good: "i >= INT_MAX", "i < INT_MAX", "i > MAX_VALUE"
-                        // Bad: "i + 1 <= i" (uses the overflowing expression itself)
-                        if cond_text.contains(var_name) {
-                            // Check if it's a proper range check (not using the overflow expression)
-                            if self.is_proper_range_check(&cond_text, var_name) {
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Recursively search in child scopes
-            if self.find_proper_overflow_check(&child, expr_line, var_name, source) {
-                return true;
-            }
-        }
-
-        false
+                // Check for proper overflow protection patterns
+                // Good: "i >= INT_MAX", "i < INT_MAX", "i > MAX_VALUE"
+                // Bad: "i + 1 <= i" (uses the overflowing expression itself)
+                cond_text.contains(var_name) && self.is_proper_range_check(&cond_text, var_name)
+            })
     }
 
     /// Check if a condition is a proper range check

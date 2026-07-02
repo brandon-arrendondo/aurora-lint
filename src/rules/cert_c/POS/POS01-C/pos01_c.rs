@@ -2,6 +2,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pos01C;
@@ -46,41 +47,25 @@ impl CertRule for Pos01C {
 
 impl Pos01C {
     fn check_functions(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "function_definition" {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
             // Check this function for open() without proper protection
-            let has_lstat = self.subtree_has_lstat(node, source);
-            self.check_open_calls_recursive(node, source, has_lstat, violations);
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_functions(&child, source, violations);
+            let has_lstat = self.subtree_has_lstat(&func, source);
+            self.check_open_calls_recursive(&func, source, has_lstat, violations);
         }
     }
 
     fn subtree_has_lstat(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "identifier" {
-                    let func_name = get_node_text(&child, source);
-                    if func_name == "lstat" {
-                        return true;
-                    }
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.subtree_has_lstat(&child, source) {
-                return true;
-            }
-        }
-
-        false
+            let mut cursor = n.walk();
+            let found = n.children(&mut cursor).any(|child| {
+                child.kind() == "identifier" && get_node_text(&child, source) == "lstat"
+            });
+            found
+        })
+        .is_some()
     }
 
     fn check_open_calls_recursive(
@@ -90,13 +75,13 @@ impl Pos01C {
         has_lstat: bool,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
             // Check if this is an open() call
-            let mut cursor = node.walk();
+            let mut cursor = n.walk();
             let mut is_open = false;
             let mut has_nofollow = false;
 
-            for child in node.children(&mut cursor) {
+            for child in n.children(&mut cursor) {
                 if child.kind() == "identifier" {
                     let func_name = get_node_text(&child, source);
                     if func_name == "open" {
@@ -112,7 +97,7 @@ impl Pos01C {
 
             if is_open && !has_nofollow && !has_lstat {
                 // Flag open() without O_NOFOLLOW and without lstat() validation
-                let start = node.start_position();
+                let start = n.start_position();
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     file_path: String::new(),
@@ -124,12 +109,6 @@ impl Pos01C {
                     requires_manual_review: Some(false),
                 });
             }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_open_calls_recursive(&child, source, has_lstat, violations);
         }
     }
 

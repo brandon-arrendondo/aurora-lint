@@ -37,6 +37,7 @@ use tree_sitter::Node;
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 
 pub struct Exp45C;
 
@@ -70,41 +71,43 @@ impl CertRule for Exp45C {
 
 impl Exp45C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "if_statement" => {
-                if let Some(condition) = node.child_by_field_name("condition") {
-                    self.check_condition_for_assignment(&condition, source, "if", violations);
+        for n in query::find_descendants(*node, |_| true) {
+            match n.kind() {
+                "if_statement" => {
+                    if let Some(condition) = n.child_by_field_name("condition") {
+                        self.check_condition_for_assignment(&condition, source, "if", violations);
+                    }
                 }
-            }
-            "switch_statement" => {
-                if let Some(condition) = node.child_by_field_name("condition") {
-                    self.check_condition_for_assignment(&condition, source, "switch", violations);
+                "switch_statement" => {
+                    if let Some(condition) = n.child_by_field_name("condition") {
+                        self.check_condition_for_assignment(
+                            &condition, source, "switch", violations,
+                        );
+                    }
                 }
-            }
-            "while_statement" => {
-                if let Some(condition) = node.child_by_field_name("condition") {
-                    self.check_condition_for_assignment(&condition, source, "while", violations);
+                "while_statement" => {
+                    if let Some(condition) = n.child_by_field_name("condition") {
+                        self.check_condition_for_assignment(
+                            &condition, source, "while", violations,
+                        );
+                    }
                 }
-            }
-            "do_statement" => {
-                if let Some(condition) = node.child_by_field_name("condition") {
-                    self.check_condition_for_assignment(&condition, source, "do-while", violations);
+                "do_statement" => {
+                    if let Some(condition) = n.child_by_field_name("condition") {
+                        self.check_condition_for_assignment(
+                            &condition, source, "do-while", violations,
+                        );
+                    }
                 }
-            }
-            "for_statement" => {
-                // Check condition (second expression) - assignments NOT allowed here
-                if let Some(condition) = node.child_by_field_name("condition") {
-                    self.check_condition_for_assignment(&condition, source, "for", violations);
+                "for_statement" => {
+                    // Check condition (second expression) - assignments NOT allowed here
+                    if let Some(condition) = n.child_by_field_name("condition") {
+                        self.check_condition_for_assignment(&condition, source, "for", violations);
+                    }
+                    // Note: Assignments in initializer and update expressions are allowed
                 }
-                // Note: Assignments in initializer and update expressions are allowed
+                _ => {}
             }
-            _ => {}
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 
@@ -125,13 +128,13 @@ impl Exp45C {
         statement_type: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "assignment_expression" {
+        for n in query::find_descendants_of_kind(*node, "assignment_expression") {
             // Check if this assignment is part of a comparison (EX1 exception)
             // or in the first operand of a comma expression (allowed)
-            if !self.is_assignment_in_comparison(node) && !self.is_in_first_comma_operand(node) {
-                let line = node.start_position().row + 1;
-                let column = node.start_position().column + 1;
-                let assignment_text = get_node_text(node, source);
+            if !self.is_assignment_in_comparison(&n) && !self.is_in_first_comma_operand(&n) {
+                let line = n.start_position().row + 1;
+                let column = n.start_position().column + 1;
+                let assignment_text = get_node_text(&n, source);
 
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
@@ -154,12 +157,6 @@ impl Exp45C {
                     requires_manual_review: None,
                 });
             }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.find_assignments_in_condition(&child, source, statement_type, violations);
         }
     }
 
@@ -212,15 +209,7 @@ impl Exp45C {
 
     /// Check if ancestor_node contains target_node
     fn is_ancestor_of(&self, ancestor: &Node, target: &Node) -> bool {
-        let mut cursor = ancestor.walk();
-        for child in ancestor.children(&mut cursor) {
-            if child.id() == target.id() {
-                return true;
-            }
-            if self.is_ancestor_of(&child, target) {
-                return true;
-            }
-        }
-        false
+        let target_id = target.id();
+        query::find_first_descendant(*ancestor, |n| n.id() == target_id).is_some()
     }
 }

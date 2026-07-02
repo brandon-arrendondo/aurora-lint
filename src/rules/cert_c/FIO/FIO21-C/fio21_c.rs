@@ -3,6 +3,7 @@ use tree_sitter::Node;
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 
 pub struct Fio21C;
 
@@ -37,7 +38,8 @@ impl CertRule for Fio21C {
 impl Fio21C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for calls to insecure temporary file functions
-        if node.kind() == "call_expression" {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            let node = &n;
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
@@ -119,12 +121,6 @@ impl Fio21C {
                 }
             }
         }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
-        }
     }
 
     // Check if we're in a function that uses tmpnam/tempnam
@@ -142,21 +138,16 @@ impl Fio21C {
     }
 
     fn contains_tmpnam_call(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                if func_name == "tmpnam" || func_name == "tempnam" {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.contains_tmpnam_call(&child, source) {
-                return true;
-            }
-        }
-        false
+            let Some(function) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&function, source);
+            func_name == "tmpnam" || func_name == "tempnam"
+        })
+        .is_some()
     }
 }

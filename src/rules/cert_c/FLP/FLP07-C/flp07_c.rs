@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Flp07C;
@@ -35,22 +36,18 @@ impl CertRule for Flp07C {
 
 impl Flp07C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for assignments where RHS is a function call returning float
-        // but LHS is a different floating-point type (like long double)
-        if node.kind() == "assignment_expression" {
-            if let Some(violation) = self.check_float_assignment_expr(node, source) {
-                violations.push(violation);
+        for n in query::find_descendants(*node, |_| true) {
+            // Look for assignments where RHS is a function call returning float
+            // but LHS is a different floating-point type (like long double)
+            if n.kind() == "assignment_expression" {
+                if let Some(violation) = self.check_float_assignment_expr(&n, source) {
+                    violations.push(violation);
+                }
+            } else if n.kind() == "init_declarator" {
+                if let Some(violation) = self.check_float_init(&n, source) {
+                    violations.push(violation);
+                }
             }
-        } else if node.kind() == "init_declarator" {
-            if let Some(violation) = self.check_float_init(node, source) {
-                violations.push(violation);
-            }
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 
@@ -107,27 +104,21 @@ impl Flp07C {
     }
 
     fn find_long_double_decl(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        if node.kind() == "declaration" {
-            // Check if this declares our variable
-            if let Some(type_node) = node.child_by_field_name("type") {
-                let type_text = get_node_text(&type_node, source);
-                if type_text.contains("long") && type_text.contains("double") {
-                    // Check if this declaration includes our variable
-                    let decl_text = get_node_text(node, source);
-                    if decl_text.contains(var_name) {
-                        return true;
-                    }
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "declaration" {
+                return false;
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.find_long_double_decl(&child, var_name, source) {
-                return true;
+            let Some(type_node) = n.child_by_field_name("type") else {
+                return false;
+            };
+            let type_text = get_node_text(&type_node, source);
+            if !(type_text.contains("long") && type_text.contains("double")) {
+                return false;
             }
-        }
-        false
+            // Check if this declaration includes our variable
+            get_node_text(&n, source).contains(var_name)
+        })
+        .is_some()
     }
 
     fn check_float_init(&self, node: &Node, source: &str) -> Option<RuleViolation> {
@@ -180,17 +171,7 @@ impl Flp07C {
     }
 
     fn find_call_expression<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
-        if node.kind() == "call_expression" {
-            return Some(*node);
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(result) = self.find_call_expression(&child) {
-                return Some(result);
-            }
-        }
-        None
+        query::find_first_descendant(*node, |n| n.kind() == "call_expression")
     }
 
     fn has_explicit_cast(&self, node: &Node, source: &str) -> bool {

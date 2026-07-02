@@ -20,6 +20,7 @@ use tree_sitter::Node;
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 
 /// MEM06-C: Ensure that sensitive data is not written out to disk
 pub struct Mem06C;
@@ -56,19 +57,19 @@ impl Mem06C {
     /// Recursively check AST nodes for MEM06-C violations
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for malloc/calloc/realloc calls
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source);
 
                 // Check if this is a malloc/calloc/realloc call
                 if func_name == "malloc" || func_name == "calloc" || func_name == "realloc" {
                     // Check if there's proper memory protection in the same scope
-                    if !self.has_memory_protection(node, source) {
+                    if !self.has_memory_protection(&n, source) {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             severity: self.severity(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
+                            line: n.start_position().row + 1,
+                            column: n.start_position().column + 1,
                             file_path: String::new(),
                             message: format!(
                                 "Sensitive data allocated with {} may be written to disk. \
@@ -86,12 +87,6 @@ impl Mem06C {
                     }
                 }
             }
-        }
-
-        // Recursively check all child nodes
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 
@@ -117,40 +112,30 @@ impl Mem06C {
 
     /// Search for memory protection function calls within a node's scope
     fn search_for_protection(&self, node: &Node, source: &str) -> bool {
-        // Check current node
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func_node, source);
-                let func_name_str = func_name.trim();
-
-                // Check for memory protection functions
-                match func_name_str {
-                    // POSIX memory locking
-                    "mlock" | "munlock" | "mlockall" | "munlockall" => return true,
-                    // Windows memory locking
-                    "VirtualLock" | "VirtualUnlock" => return true,
-                    // Windows secure allocation
-                    "VirtualAlloc" => return true,
-                    // POSIX resource limits (core dump disable)
-                    "setrlimit"
-                        // Check if this is specifically for RLIMIT_CORE
-                        if self.is_rlimit_core_call(node, source) => {
-                            return true;
-                        }
-                    _ => {}
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
+            let Some(func_node) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&func_node, source);
+            let func_name_str = func_name.trim();
 
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.search_for_protection(&child, source) {
-                return true;
+            // Check for memory protection functions
+            match func_name_str {
+                // POSIX memory locking
+                "mlock" | "munlock" | "mlockall" | "munlockall" => true,
+                // Windows memory locking
+                "VirtualLock" | "VirtualUnlock" => true,
+                // Windows secure allocation
+                "VirtualAlloc" => true,
+                // POSIX resource limits (core dump disable)
+                "setrlimit" => self.is_rlimit_core_call(&n, source),
+                _ => false,
             }
-        }
-
-        false
+        })
+        .is_some()
     }
 
     /// Check if a setrlimit call is specifically for RLIMIT_CORE

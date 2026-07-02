@@ -51,6 +51,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -88,16 +89,8 @@ impl Pos38C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Only check at function_definition level to avoid nested traversals
         // (translation_unit would cause redundant checks on function children)
-        if node.kind() == "function_definition" {
-            self.check_scope_for_fork_pattern(node, source, violations);
-            // Don't recurse into function body - we've already checked it
-            return;
-        }
-
-        // Recurse through children to find function definitions
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_scope_for_fork_pattern(&func, source, violations);
         }
     }
 
@@ -132,41 +125,38 @@ impl Pos38C {
         source: &str,
         file_descriptors: &mut HashSet<String>,
     ) {
-        // Look for variable declarations with file opening calls
-        if node.kind() == "declaration" {
-            // Get the full declaration text to check for open() calls
-            let decl_text = get_node_text(node, source);
-            if self.is_file_opening_call(&decl_text) {
-                // Find init_declarator children
-                let mut cursor = node.walk();
-                for child in node.children(&mut cursor) {
-                    if child.kind() == "init_declarator" {
-                        // Get the declarator to extract variable name
-                        if let Some(declarator) = child.child_by_field_name("declarator") {
-                            if let Some(var_name) = self.extract_variable_name(&declarator, source)
-                            {
-                                file_descriptors.insert(var_name);
+        for n in query::find_descendants(*node, |_| true) {
+            // Look for variable declarations with file opening calls
+            if n.kind() == "declaration" {
+                // Get the full declaration text to check for open() calls
+                let decl_text = get_node_text(&n, source);
+                if self.is_file_opening_call(&decl_text) {
+                    // Find init_declarator children
+                    let mut cursor = n.walk();
+                    for child in n.children(&mut cursor) {
+                        if child.kind() == "init_declarator" {
+                            // Get the declarator to extract variable name
+                            if let Some(declarator) = child.child_by_field_name("declarator") {
+                                if let Some(var_name) =
+                                    self.extract_variable_name(&declarator, source)
+                                {
+                                    file_descriptors.insert(var_name);
+                                }
                             }
                         }
                     }
                 }
-            }
-        } else if node.kind() == "assignment_expression" {
-            if let Some(left) = node.child_by_field_name("left") {
-                if let Some(right) = node.child_by_field_name("right") {
-                    let right_text = get_node_text(&right, source);
-                    if self.is_file_opening_call(&right_text) {
-                        let var_name = get_node_text(&left, source).trim().to_string();
-                        file_descriptors.insert(var_name);
+            } else if n.kind() == "assignment_expression" {
+                if let Some(left) = n.child_by_field_name("left") {
+                    if let Some(right) = n.child_by_field_name("right") {
+                        let right_text = get_node_text(&right, source);
+                        if self.is_file_opening_call(&right_text) {
+                            let var_name = get_node_text(&left, source).trim().to_string();
+                            file_descriptors.insert(var_name);
+                        }
                     }
                 }
             }
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_file_descriptors(&child, source, file_descriptors);
         }
     }
 
@@ -225,21 +215,14 @@ impl Pos38C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for fork() calls
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = n.child_by_field_name("function") {
                 let func_text = get_node_text(&function, source);
                 if func_text.trim() == "fork" {
                     // Found a fork() call - check for fd usage in subsequent code
-                    self.check_fd_usage_after_fork(node, source, file_descriptors, violations);
-                    return; // Don't recurse further as we've handled this subtree
+                    self.check_fd_usage_after_fork(&n, source, file_descriptors, violations);
                 }
             }
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_for_fork_with_fd_usage(&child, source, file_descriptors, violations);
         }
     }
 
@@ -393,32 +376,24 @@ impl Pos38C {
         source: &str,
         file_descriptors: &HashSet<String>,
     ) -> bool {
-        // Look for close() calls on the file descriptors
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_text = get_node_text(&function, source);
-                if func_text.trim() == "close" {
-                    // Check if the argument is one of our file descriptors
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        let args_text = get_node_text(&args, source);
-                        for fd in file_descriptors {
-                            if args_text.contains(fd) {
-                                return true;
-                            }
-                        }
-                    }
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.subtree_closes_file_descriptor(&child, source, file_descriptors) {
-                return true;
+            let Some(function) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_text = get_node_text(&function, source);
+            if func_text.trim() != "close" {
+                return false;
             }
-        }
-
-        false
+            // Check if the argument is one of our file descriptors
+            let Some(args) = n.child_by_field_name("arguments") else {
+                return false;
+            };
+            let args_text = get_node_text(&args, source);
+            file_descriptors.iter().any(|fd| args_text.contains(fd))
+        })
+        .is_some()
     }
 }

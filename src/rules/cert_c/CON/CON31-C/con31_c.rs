@@ -57,6 +57,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{find_containing_function, get_node_text};
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Con31C;
@@ -100,42 +101,34 @@ impl Con31C {
     }
 
     fn check_function(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        let mut cursor = node.walk();
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = call.child_by_field_name("function") {
+                let func_name = get_node_text(&func_node, source);
 
-        for child in node.children(&mut cursor) {
-            // Look for function calls
-            if child.kind() == "call_expression" {
-                if let Some(func_node) = child.child_by_field_name("function") {
-                    let func_name = get_node_text(&func_node, source);
-
-                    if Self::is_mutex_destroy_function(&func_name) {
-                        // Check if we're in a thread function context
-                        if self.is_thread_function(&child, source) {
-                            let start = child.start_position();
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                severity: Severity::Medium,
-                                file_path: String::new(),
-                                line: start.row + 1,
-                                column: start.column + 1,
-                                message: format!(
-                                    "Mutex destroyed in thread function with '{}()'. \
-                                    Destroying a mutex while other threads may still be using it causes undefined behavior. \
-                                    Destroy mutexes only after all threads have finished (e.g., after thread joins in main()).",
-                                    func_name
-                                ),
-                                suggestion: Some(
-                                    "Move mutex destruction to main() after all thread joins complete".to_string()
-                                ),
-                                ..Default::default()
-                            });
-                        }
+                if Self::is_mutex_destroy_function(&func_name) {
+                    // Check if we're in a thread function context
+                    if self.is_thread_function(&call, source) {
+                        let start = call.start_position();
+                        violations.push(RuleViolation {
+                            rule_id: self.rule_id().to_string(),
+                            severity: Severity::Medium,
+                            file_path: String::new(),
+                            line: start.row + 1,
+                            column: start.column + 1,
+                            message: format!(
+                                "Mutex destroyed in thread function with '{}()'. \
+                                Destroying a mutex while other threads may still be using it causes undefined behavior. \
+                                Destroy mutexes only after all threads have finished (e.g., after thread joins in main()).",
+                                func_name
+                            ),
+                            suggestion: Some(
+                                "Move mutex destruction to main() after all thread joins complete".to_string()
+                            ),
+                            ..Default::default()
+                        });
                     }
                 }
             }
-
-            // Recurse into child nodes
-            self.check_function(&child, source, violations);
         }
     }
 }

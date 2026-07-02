@@ -3,6 +3,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Mem05C;
@@ -33,62 +34,61 @@ impl CertRule for Mem05C {
 
 impl Mem05C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for array declarations with variable size (VLA)
-        if node.kind() == "declaration" {
-            // Use AST-based detection: look for array_declarator in the declaration.
-            // This avoids false positives from array subscripts in initializers
-            // (e.g., `uint8_t x = arr[i]` is NOT a VLA, but `uint8_t arr[n]` IS).
-            if let Some(size_expr) = Self::find_array_declarator_size(node, source) {
-                let size_expr = size_expr.trim();
-                // If size is not a numeric constant, it might be a VLA.
-                // ALL_CAPS identifiers are likely preprocessor constants.
-                if !size_expr.is_empty()
-                    && !size_expr.chars().all(|c| c.is_numeric())
-                    && !Self::is_likely_macro_constant(size_expr)
-                {
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: self.severity(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        file_path: String::new(),
-                        message: "Variable-length array with runtime-sized allocation; \
-                                     use malloc instead"
-                            .to_string(),
-                        suggestion: Some("Use malloc/calloc for dynamic allocation".to_string()),
-                        requires_manual_review: None,
-                    });
-                }
-            }
-        }
-
-        // Check for recursive functions (potential stack overflow)
-        if node.kind() == "function_definition" {
-            if let Some(func_name) = self.extract_function_name(node, source) {
-                if let Some(body) = node.child_by_field_name("body") {
-                    if Self::body_calls_function(&body, source, &func_name) {
+        for n in query::find_descendants(*node, |_| true) {
+            // Look for array declarations with variable size (VLA)
+            if n.kind() == "declaration" {
+                // Use AST-based detection: look for array_declarator in the declaration.
+                // This avoids false positives from array subscripts in initializers
+                // (e.g., `uint8_t x = arr[i]` is NOT a VLA, but `uint8_t arr[n]` IS).
+                if let Some(size_expr) = Self::find_array_declarator_size(&n, source) {
+                    let size_expr = size_expr.trim();
+                    // If size is not a numeric constant, it might be a VLA.
+                    // ALL_CAPS identifiers are likely preprocessor constants.
+                    if !size_expr.is_empty()
+                        && !size_expr.chars().all(|c| c.is_numeric())
+                        && !Self::is_likely_macro_constant(size_expr)
+                    {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             severity: self.severity(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
+                            line: n.start_position().row + 1,
+                            column: n.start_position().column + 1,
                             file_path: String::new(),
-                            message: "Recursive function can cause excessive stack allocation"
+                            message: "Variable-length array with runtime-sized allocation; \
+                                         use malloc instead"
                                 .to_string(),
                             suggestion: Some(
-                                "Consider iterative approach or limit recursion depth".to_string(),
+                                "Use malloc/calloc for dynamic allocation".to_string(),
                             ),
                             requires_manual_review: None,
                         });
                     }
                 }
             }
-        }
 
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+            // Check for recursive functions (potential stack overflow)
+            if n.kind() == "function_definition" {
+                if let Some(func_name) = self.extract_function_name(&n, source) {
+                    if let Some(body) = n.child_by_field_name("body") {
+                        if Self::body_calls_function(&body, source, &func_name) {
+                            violations.push(RuleViolation {
+                                rule_id: self.rule_id().to_string(),
+                                severity: self.severity(),
+                                line: n.start_position().row + 1,
+                                column: n.start_position().column + 1,
+                                file_path: String::new(),
+                                message: "Recursive function can cause excessive stack allocation"
+                                    .to_string(),
+                                suggestion: Some(
+                                    "Consider iterative approach or limit recursion depth"
+                                        .to_string(),
+                                ),
+                                requires_manual_review: None,
+                            });
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -96,21 +96,16 @@ impl Mem05C {
     /// Uses AST traversal of call_expression nodes to avoid matching occurrences in
     /// string literals, comments, or the function's own declaration.
     fn body_calls_function(node: &Node, source: &str, func_name: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let callee = function.utf8_text(source.as_bytes()).unwrap_or("");
-                if callee == func_name {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if Self::body_calls_function(&child, source, func_name) {
-                return true;
-            }
-        }
-        false
+            let Some(function) = n.child_by_field_name("function") else {
+                return false;
+            };
+            function.utf8_text(source.as_bytes()).unwrap_or("") == func_name
+        })
+        .is_some()
     }
 
     /// Check if a size expression is likely a preprocessor macro constant.

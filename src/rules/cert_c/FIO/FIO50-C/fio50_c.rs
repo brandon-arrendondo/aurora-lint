@@ -54,6 +54,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -187,90 +188,86 @@ impl Fio50C {
         source: &str,
         file_operations: &mut HashMap<String, Vec<FileOperation>>,
     ) {
-        // C-style function calls
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
+        for n in query::find_descendants(*node, |_| true) {
+            // C-style function calls
+            if n.kind() == "call_expression" {
+                if let Some(function) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&function, source);
 
-                let op_type = if self.is_input_function(func_name) {
-                    Some(OperationType::Input)
-                } else if self.is_output_function(func_name) {
-                    Some(OperationType::Output)
-                } else if self.is_positioning_function(func_name) {
-                    Some(OperationType::Positioning)
-                } else {
-                    None
-                };
+                    let op_type = if self.is_input_function(func_name) {
+                        Some(OperationType::Input)
+                    } else if self.is_output_function(func_name) {
+                        Some(OperationType::Output)
+                    } else if self.is_positioning_function(func_name) {
+                        Some(OperationType::Positioning)
+                    } else {
+                        None
+                    };
 
-                if let Some(op_type) = op_type {
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
-                        if let Some(file_var) = self.get_file_argument(&arguments, source) {
-                            let operation = FileOperation {
-                                op_type,
-                                file_var: file_var.clone(),
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
-                            };
+                    if let Some(op_type) = op_type {
+                        if let Some(arguments) = n.child_by_field_name("arguments") {
+                            if let Some(file_var) = self.get_file_argument(&arguments, source) {
+                                let operation = FileOperation {
+                                    op_type,
+                                    file_var: file_var.clone(),
+                                    line: n.start_position().row + 1,
+                                    column: n.start_position().column + 1,
+                                };
 
-                            file_operations.entry(file_var).or_default().push(operation);
+                                file_operations.entry(file_var).or_default().push(operation);
+                            }
                         }
                     }
                 }
+
+                // Check for C++ positioning calls
+                if let Some(stream_var) = self.is_cpp_positioning_call(&n, source) {
+                    let operation = FileOperation {
+                        op_type: OperationType::Positioning,
+                        file_var: stream_var.clone(),
+                        line: n.start_position().row + 1,
+                        column: n.start_position().column + 1,
+                    };
+
+                    file_operations
+                        .entry(stream_var)
+                        .or_default()
+                        .push(operation);
+                }
             }
 
-            // Check for C++ positioning calls
-            if let Some(stream_var) = self.is_cpp_positioning_call(node, source) {
-                let operation = FileOperation {
-                    op_type: OperationType::Positioning,
-                    file_var: stream_var.clone(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                };
+            // C++ stream operators (<< and >>)
+            if n.kind() == "binary_expression" {
+                // Check for input operator (>>)
+                if let Some(stream_var) = self.is_cpp_input_operator(&n, source) {
+                    let operation = FileOperation {
+                        op_type: OperationType::Input,
+                        file_var: stream_var.clone(),
+                        line: n.start_position().row + 1,
+                        column: n.start_position().column + 1,
+                    };
 
-                file_operations
-                    .entry(stream_var)
-                    .or_default()
-                    .push(operation);
+                    file_operations
+                        .entry(stream_var)
+                        .or_default()
+                        .push(operation);
+                }
+
+                // Check for output operator (<<)
+                if let Some(stream_var) = self.is_cpp_output_operator(&n, source) {
+                    let operation = FileOperation {
+                        op_type: OperationType::Output,
+                        file_var: stream_var.clone(),
+                        line: n.start_position().row + 1,
+                        column: n.start_position().column + 1,
+                    };
+
+                    file_operations
+                        .entry(stream_var)
+                        .or_default()
+                        .push(operation);
+                }
             }
-        }
-
-        // C++ stream operators (<< and >>)
-        if node.kind() == "binary_expression" {
-            // Check for input operator (>>)
-            if let Some(stream_var) = self.is_cpp_input_operator(node, source) {
-                let operation = FileOperation {
-                    op_type: OperationType::Input,
-                    file_var: stream_var.clone(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                };
-
-                file_operations
-                    .entry(stream_var)
-                    .or_default()
-                    .push(operation);
-            }
-
-            // Check for output operator (<<)
-            if let Some(stream_var) = self.is_cpp_output_operator(node, source) {
-                let operation = FileOperation {
-                    op_type: OperationType::Output,
-                    file_var: stream_var.clone(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                };
-
-                file_operations
-                    .entry(stream_var)
-                    .or_default()
-                    .push(operation);
-            }
-        }
-
-        // Recursively process children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_file_operations(&child, source, file_operations);
         }
     }
 
@@ -349,20 +346,10 @@ impl Fio50C {
 
     /// Recursively traverse AST
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Analyze at function scope
-        if node.kind() == "function_definition" {
-            self.analyze_scope(node, source, violations);
-        }
-
-        // Also analyze global scope
-        if node.kind() == "translation_unit" {
-            self.analyze_scope(node, source, violations);
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.traverse(&child, source, violations);
+        for n in
+            query::find_descendants_of_kinds(*node, &["function_definition", "translation_unit"])
+        {
+            self.analyze_scope(&n, source, violations);
         }
     }
 }

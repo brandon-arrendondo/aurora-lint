@@ -17,6 +17,7 @@ use tree_sitter::Node;
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 
 pub struct Int13C;
 
@@ -63,19 +64,13 @@ impl Int13C {
         source: &str,
         variables: &mut HashMap<String, String>,
     ) {
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
+        for n in query::find_descendants_of_kind(*node, "declaration") {
+            let decl_text = get_node_text(&n, source);
 
             // Extract type and variable name
             if let Some((var_type, var_name)) = self.parse_declaration(&decl_text) {
                 variables.insert(var_name, var_type);
             }
-        }
-
-        // Recursively process children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_declarations(&child, source, variables);
         }
     }
 
@@ -215,20 +210,8 @@ impl Int13C {
 
     /// Extract variable name from an expression node
     fn extract_variable_name(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "identifier" {
-            let text = get_node_text(node, source);
-            return Some(text.trim().to_string());
-        }
-
-        // For more complex expressions, look for identifiers
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(name) = self.extract_variable_name(&child, source) {
-                return Some(name);
-            }
-        }
-
-        None
+        query::find_first_descendant(*node, |n| n.kind() == "identifier")
+            .map(|n| get_node_text(&n, source).trim().to_string())
     }
 
     /// Check if a type is a signed integer type

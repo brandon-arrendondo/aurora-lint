@@ -15,6 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -44,22 +45,18 @@ impl CertRule for Dcl22C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Check function definitions for variables modified around function calls
-        if node.kind() == "function_definition" {
-            violations.extend(self.check_function_for_volatile_candidates(node, source));
-        }
-
-        // Check declarations for sig_atomic_t without volatile
-        if node.kind() == "declaration" {
-            if let Some(violation) = self.check_sig_atomic_declaration(node, source) {
-                violations.push(violation);
+        for n in query::find_descendants(*node, |_| true) {
+            // Check function definitions for variables modified around function calls
+            if n.kind() == "function_definition" {
+                violations.extend(self.check_function_for_volatile_candidates(&n, source));
             }
-        }
 
-        // Recursively check child nodes
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            violations.extend(self.check(&child, source));
+            // Check declarations for sig_atomic_t without volatile
+            if n.kind() == "declaration" {
+                if let Some(violation) = self.check_sig_atomic_declaration(&n, source) {
+                    violations.push(violation);
+                }
+            }
         }
 
         violations

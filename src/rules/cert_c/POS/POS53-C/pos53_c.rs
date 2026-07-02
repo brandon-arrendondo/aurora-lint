@@ -48,6 +48,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -136,14 +137,14 @@ impl Pos53C {
         cond_var_locations: &mut HashMap<String, Vec<(usize, usize)>>,
     ) {
         // Check if this is a call_expression
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source).trim();
 
                 // Check if it's pthread_cond_wait or pthread_cond_timedwait
                 if func_name == "pthread_cond_wait" || func_name == "pthread_cond_timedwait" {
                     // Extract arguments
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
+                    if let Some(arguments) = n.child_by_field_name("arguments") {
                         let args = self.extract_arguments(&arguments, source);
 
                         // We need at least 2 arguments (condition_var, mutex)
@@ -158,7 +159,7 @@ impl Pos53C {
                                 .insert(mutex);
 
                             // Track location for violation reporting
-                            let start_point = node.start_position();
+                            let start_point = n.start_position();
                             cond_var_locations
                                 .entry(cond_var)
                                 .or_default()
@@ -167,12 +168,6 @@ impl Pos53C {
                     }
                 }
             }
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_cond_wait_calls(&child, source, cond_var_to_mutexes, cond_var_locations);
         }
     }
 

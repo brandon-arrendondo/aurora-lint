@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -86,91 +87,92 @@ impl Str34C {
         source: &str,
         char_vars: &mut HashMap<String, (usize, bool)>,
     ) {
-        if node.kind() == "declaration" {
-            if let Some(type_node) = node.child_by_field_name("type") {
-                let type_text = get_node_text(&type_node, source);
-                let trimmed = type_text.trim();
+        for n in query::find_descendants(*node, |_| true) {
+            if n.kind() == "declaration" {
+                if let Some(type_node) = n.child_by_field_name("type") {
+                    let type_text = get_node_text(&type_node, source);
+                    let trimmed = type_text.trim();
 
-                // Check for any char type (signed, unsigned, or plain)
-                let is_signed_char = trimmed == "signed char";
-                let is_plain_char = trimmed == "char";
-                let _is_unsigned_char = trimmed == "unsigned char";
+                    // Check for any char type (signed, unsigned, or plain)
+                    let is_signed_char = trimmed == "signed char";
+                    let is_plain_char = trimmed == "char";
+                    let _is_unsigned_char = trimmed == "unsigned char";
 
-                if is_signed_char || is_plain_char {
-                    // Extract variable names from declarators
-                    // Only track signed/plain char pointer variables — unsigned char
-                    // doesn't need cast to unsigned char before widening
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            if child.kind() == "init_declarator" {
-                                if let Some(declarator) = child.child_by_field_name("declarator") {
-                                    // Check if it's a pointer declarator
-                                    if declarator.kind() == "pointer_declarator" {
-                                        if let Some(var_name) =
-                                            self.get_declarator_name(&declarator, source)
-                                        {
-                                            char_vars.insert(
-                                                var_name,
-                                                (node.start_position().row, is_signed_char),
-                                            );
+                    if is_signed_char || is_plain_char {
+                        // Extract variable names from declarators
+                        // Only track signed/plain char pointer variables — unsigned char
+                        // doesn't need cast to unsigned char before widening
+                        for i in 0..n.child_count() {
+                            if let Some(child) = n.child(i) {
+                                if child.kind() == "init_declarator" {
+                                    if let Some(declarator) =
+                                        child.child_by_field_name("declarator")
+                                    {
+                                        // Check if it's a pointer declarator
+                                        if declarator.kind() == "pointer_declarator" {
+                                            if let Some(var_name) =
+                                                self.get_declarator_name(&declarator, source)
+                                            {
+                                                char_vars.insert(
+                                                    var_name,
+                                                    (n.start_position().row, is_signed_char),
+                                                );
+                                            }
                                         }
                                     }
-                                }
-                            } else if child.kind() == "pointer_declarator" {
-                                // Plain declarator without initialization
-                                if let Some(var_name) = self.get_declarator_name(&child, source) {
-                                    char_vars.insert(
-                                        var_name,
-                                        (node.start_position().row, is_signed_char),
-                                    );
+                                } else if child.kind() == "pointer_declarator" {
+                                    // Plain declarator without initialization
+                                    if let Some(var_name) = self.get_declarator_name(&child, source)
+                                    {
+                                        char_vars.insert(
+                                            var_name,
+                                            (n.start_position().row, is_signed_char),
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Track char pointer/array function parameters
-        if node.kind() == "parameter_declaration" {
-            // Use full parameter text to check for unsigned char (tree-sitter may
-            // split "unsigned char" across type and qualifier nodes)
-            let full_param_text = get_node_text(node, source);
-            let has_unsigned = full_param_text.contains("unsigned");
+            // Track char pointer/array function parameters
+            if n.kind() == "parameter_declaration" {
+                // Use full parameter text to check for unsigned char (tree-sitter may
+                // split "unsigned char" across type and qualifier nodes)
+                let full_param_text = get_node_text(&n, source);
+                let has_unsigned = full_param_text.contains("unsigned");
 
-            if let Some(type_node) = node.child_by_field_name("type") {
-                let type_text = get_node_text(&type_node, source);
-                let trimmed = type_text.trim();
-                // Strip const/volatile qualifiers for matching
-                let base_type = trimmed
-                    .replace("const ", "")
-                    .replace("volatile ", "")
-                    .trim()
-                    .to_string();
+                if let Some(type_node) = n.child_by_field_name("type") {
+                    let type_text = get_node_text(&type_node, source);
+                    let trimmed = type_text.trim();
+                    // Strip const/volatile qualifiers for matching
+                    let base_type = trimmed
+                        .replace("const ", "")
+                        .replace("volatile ", "")
+                        .trim()
+                        .to_string();
 
-                let is_signed_char = base_type == "signed char";
-                let is_plain_char = base_type == "char" && !has_unsigned;
+                    let is_signed_char = base_type == "signed char";
+                    let is_plain_char = base_type == "char" && !has_unsigned;
 
-                if is_signed_char || is_plain_char {
-                    if let Some(declarator) = node.child_by_field_name("declarator") {
-                        // pointer_declarator (char *str) or array_declarator (char buf[])
-                        if declarator.kind() == "pointer_declarator"
-                            || declarator.kind() == "array_declarator"
-                        {
-                            if let Some(var_name) = self.get_declarator_name(&declarator, source) {
-                                char_vars
-                                    .insert(var_name, (node.start_position().row, is_signed_char));
+                    if is_signed_char || is_plain_char {
+                        if let Some(declarator) = n.child_by_field_name("declarator") {
+                            // pointer_declarator (char *str) or array_declarator (char buf[])
+                            if declarator.kind() == "pointer_declarator"
+                                || declarator.kind() == "array_declarator"
+                            {
+                                if let Some(var_name) =
+                                    self.get_declarator_name(&declarator, source)
+                                {
+                                    char_vars
+                                        .insert(var_name, (n.start_position().row, is_signed_char));
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_char_variables(&child, source, char_vars);
         }
     }
 
@@ -204,35 +206,31 @@ impl Str34C {
         char_vars: &HashMap<String, (usize, bool)>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check for direct assignment to larger integer types
-        if node.kind() == "init_declarator" {
-            self.check_init_declarator(node, source, char_vars, violations);
-        }
+        for n in query::find_descendants(*node, |_| true) {
+            // Check for direct assignment to larger integer types
+            if n.kind() == "init_declarator" {
+                self.check_init_declarator(&n, source, char_vars, violations);
+            }
 
-        // Check for assignment expressions
-        if node.kind() == "assignment_expression" {
-            self.check_assignment_expression(node, source, char_vars, violations);
-        }
+            // Check for assignment expressions
+            if n.kind() == "assignment_expression" {
+                self.check_assignment_expression(&n, source, char_vars, violations);
+            }
 
-        // Check for subscript expressions (array indexing)
-        if node.kind() == "subscript_expression" {
-            self.check_subscript_expression(node, source, char_vars, violations);
-        }
+            // Check for subscript expressions (array indexing)
+            if n.kind() == "subscript_expression" {
+                self.check_subscript_expression(&n, source, char_vars, violations);
+            }
 
-        // Check for pointer dereferences assigned to larger types
-        if node.kind() == "pointer_expression" {
-            self.check_pointer_expression(node, source, char_vars, violations);
-        }
+            // Check for pointer dereferences assigned to larger types
+            if n.kind() == "pointer_expression" {
+                self.check_pointer_expression(&n, source, char_vars, violations);
+            }
 
-        // Check for cast expressions that cast char to larger types
-        if node.kind() == "cast_expression" {
-            self.check_cast_expression(node, source, char_vars, violations);
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, char_vars, violations);
+            // Check for cast expressions that cast char to larger types
+            if n.kind() == "cast_expression" {
+                self.check_cast_expression(&n, source, char_vars, violations);
+            }
         }
     }
 
@@ -492,58 +490,52 @@ impl Str34C {
         char_vars: &HashMap<String, (usize, bool)>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // If the expression is a cast to unsigned char, it's compliant
-        if self.has_unsigned_char_cast(node, source) {
-            return;
-        }
-
-        // Check for identifiers that are char variables
-        if node.kind() == "identifier" {
-            let var_name = get_node_text(node, source);
-            if char_vars.contains_key(var_name) {
-                violations.push(RuleViolation {
-                    rule_id: self.rule_id().to_string(),
-                    severity: Severity::Medium,
-                    message: format!(
-                        "'{}' (signed/plain char) converted to larger integer type without cast to 'unsigned char' - may cause sign extension",
-                        var_name
-                    ),
-                    file_path: String::new(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                    suggestion: Some("Cast to 'unsigned char' before conversion to larger type".to_string()),
-                    ..Default::default()
-                });
+        // Once a node is inside an unsigned-char cast, all its descendants are
+        // too (ancestors only accumulate going down), so filtering each
+        // visited node this way matches the original short-circuit exactly.
+        for n in query::find_descendants(*node, |c| !self.has_unsigned_char_cast(&c, source)) {
+            // Check for identifiers that are char variables
+            if n.kind() == "identifier" {
+                let var_name = get_node_text(&n, source);
+                if char_vars.contains_key(var_name) {
+                    violations.push(RuleViolation {
+                        rule_id: self.rule_id().to_string(),
+                        severity: Severity::Medium,
+                        message: format!(
+                            "'{}' (signed/plain char) converted to larger integer type without cast to 'unsigned char' - may cause sign extension",
+                            var_name
+                        ),
+                        file_path: String::new(),
+                        line: n.start_position().row + 1,
+                        column: n.start_position().column + 1,
+                        suggestion: Some("Cast to 'unsigned char' before conversion to larger type".to_string()),
+                        ..Default::default()
+                    });
+                }
             }
-        }
 
-        // Check for pointer dereferences
-        if node.kind() == "pointer_expression" {
-            if let Some(argument) = node.child_by_field_name("argument") {
-                if let Some(base_name) = self.extract_identifier(&argument, source) {
-                    if char_vars.contains_key(&base_name) {
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: Severity::Medium,
-                            message: format!(
-                                "Pointer dereference '*{}' (char type) converted without cast to 'unsigned char' - may cause sign extension",
-                                base_name
-                            ),
-                            file_path: String::new(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            suggestion: Some("Cast to 'unsigned char' before conversion to larger type".to_string()),
-                            ..Default::default()
-                        });
+            // Check for pointer dereferences
+            if n.kind() == "pointer_expression" {
+                if let Some(argument) = n.child_by_field_name("argument") {
+                    if let Some(base_name) = self.extract_identifier(&argument, source) {
+                        if char_vars.contains_key(&base_name) {
+                            violations.push(RuleViolation {
+                                rule_id: self.rule_id().to_string(),
+                                severity: Severity::Medium,
+                                message: format!(
+                                    "Pointer dereference '*{}' (char type) converted without cast to 'unsigned char' - may cause sign extension",
+                                    base_name
+                                ),
+                                file_path: String::new(),
+                                line: n.start_position().row + 1,
+                                column: n.start_position().column + 1,
+                                suggestion: Some("Cast to 'unsigned char' before conversion to larger type".to_string()),
+                                ..Default::default()
+                            });
+                        }
                     }
                 }
             }
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_char_usage_in_expression(&child, source, char_vars, violations);
         }
     }
 

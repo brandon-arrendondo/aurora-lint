@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -48,17 +49,19 @@ impl Mem36C {
         source: &str,
         aligned_pointers: &mut HashSet<String>,
     ) {
-        if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
+        for n in
+            query::find_descendants_of_kinds(*node, &["assignment_expression", "init_declarator"])
+        {
             // Check if the right side is an aligned_alloc call
-            if let Some(right) = node
+            if let Some(right) = n
                 .child_by_field_name("right")
-                .or_else(|| node.child_by_field_name("value"))
+                .or_else(|| n.child_by_field_name("value"))
             {
                 if self.is_aligned_alloc_call(&right, source) {
                     // Extract the variable name on the left side
-                    if let Some(left) = node
+                    if let Some(left) = n
                         .child_by_field_name("left")
-                        .or_else(|| node.child_by_field_name("declarator"))
+                        .or_else(|| n.child_by_field_name("declarator"))
                     {
                         let var_name = self.extract_variable_name(&left, source);
                         if !var_name.is_empty() {
@@ -67,12 +70,6 @@ impl Mem36C {
                     }
                 }
             }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.find_aligned_allocs(&child, source, aligned_pointers);
         }
     }
 
@@ -83,13 +80,13 @@ impl Mem36C {
         aligned_pointers: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source);
 
                 if func_name == "realloc" {
                     // Get the first argument (the pointer)
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = n.child_by_field_name("arguments") {
                         if let Some(ptr_arg) = self.get_first_argument(&args, source) {
                             // Check if this pointer was allocated with aligned_alloc
                             if aligned_pointers.contains(&ptr_arg) {
@@ -101,8 +98,8 @@ impl Mem36C {
                                         ptr_arg
                                     ),
                                     file_path: String::new(),
-                                    line: node.start_position().row + 1,
-                                    column: node.start_position().column + 1,
+                                    line: n.start_position().row + 1,
+                                    column: n.start_position().column + 1,
                                     suggestion: Some(
                                         "Use aligned_alloc() with memcpy() instead of realloc() to preserve alignment".to_string()
                                     ),
@@ -113,12 +110,6 @@ impl Mem36C {
                     }
                 }
             }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.find_realloc_violations(&child, source, aligned_pointers, violations);
         }
     }
 

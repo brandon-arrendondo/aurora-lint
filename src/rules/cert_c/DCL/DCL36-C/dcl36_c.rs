@@ -14,6 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -194,12 +195,8 @@ impl Dcl36C {
 
     /// Recursively traverse AST
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        self.process_declaration(node, source, violations);
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.traverse(&child, source, violations);
+        for n in query::find_descendants(*node, |_| true) {
+            self.process_declaration(&n, source, violations);
         }
     }
 }

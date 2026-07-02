@@ -55,6 +55,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -89,20 +90,8 @@ impl Flp02C {
     /// Checks if expression or any of its descendants contain floating-point characteristics
     #[allow(dead_code)]
     fn appears_to_be_float_expression(&self, node: &Node, source: &str) -> bool {
-        // Check current node
-        if self.has_float_characteristics(node, source) {
-            return true;
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.appears_to_be_float_expression(&child, source) {
-                return true;
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| self.has_float_characteristics(&n, source))
+            .is_some()
     }
 
     /// Check if a node itself has floating-point characteristics
@@ -158,43 +147,20 @@ impl Flp02C {
 
     /// Collect float/double variable names from declarations
     fn collect_float_variables(&self, node: &Node, source: &str, float_vars: &mut HashSet<String>) {
-        if node.kind() == "declaration" {
-            // Check if declaration has float/double type
-            let decl_text = get_node_text(node, source);
+        for n in query::find_descendants_of_kinds(*node, &["declaration", "parameter_declaration"])
+        {
+            let decl_text = get_node_text(&n, source);
             if self.is_float_type(&decl_text) {
                 // Extract identifier names from this declaration
-                self.extract_identifiers(node, source, float_vars);
+                self.extract_identifiers(&n, source, float_vars);
             }
-        } else if node.kind() == "parameter_declaration" {
-            let decl_text = get_node_text(node, source);
-            if self.is_float_type(&decl_text) {
-                self.extract_identifiers(node, source, float_vars);
-            }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_float_variables(&child, source, float_vars);
         }
     }
 
     /// Extract identifier names from a declaration node
     fn extract_identifiers(&self, node: &Node, source: &str, identifiers: &mut HashSet<String>) {
-        if node.kind() == "identifier" {
-            identifiers.insert(get_node_text(node, source).to_string());
-        } else if node.kind() == "array_declarator" || node.kind() == "init_declarator" {
-            // Look for identifier in declarator
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                self.extract_identifiers(&child, source, identifiers);
-            }
-        } else {
-            // Recurse into children
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                self.extract_identifiers(&child, source, identifiers);
-            }
+        for n in query::find_descendants_of_kind(*node, "identifier") {
+            identifiers.insert(get_node_text(&n, source).to_string());
         }
     }
 
@@ -205,28 +171,13 @@ impl Flp02C {
         source: &str,
         float_vars: &HashSet<String>,
     ) -> bool {
-        // Check if current node is a float variable
-        if node.kind() == "identifier" {
-            let name = get_node_text(node, source);
-            if float_vars.contains(name) {
+        query::find_first_descendant(*node, |n| {
+            if n.kind() == "identifier" && float_vars.contains(get_node_text(&n, source)) {
                 return true;
             }
-        }
-
-        // Check if has float characteristics
-        if self.has_float_characteristics(node, source) {
-            return true;
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.involves_float_variable(&child, source, float_vars) {
-                return true;
-            }
-        }
-
-        false
+            self.has_float_characteristics(&n, source)
+        })
+        .is_some()
     }
 
     /// Check if a binary expression is a floating-point equality comparison
@@ -308,14 +259,8 @@ impl Flp02C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check for floating-point equality comparisons
-        if node.kind() == "binary_expression" {
-            self.check_float_equality(node, source, float_vars, violations);
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.traverse(&child, source, float_vars, violations);
+        for n in query::find_descendants_of_kind(*node, "binary_expression") {
+            self.check_float_equality(&n, source, float_vars, violations);
         }
     }
 }

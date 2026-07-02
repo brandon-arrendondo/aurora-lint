@@ -14,6 +14,7 @@ use tree_sitter::Node;
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 
 pub struct Con37C;
 
@@ -56,48 +57,41 @@ impl CertRule for Con37C {
 impl Con37C {
     /// Check if the code uses threading functions
     fn has_threading_functions(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source).trim();
-
-                // Check for C11 thread functions, POSIX thread functions, and Windows thread functions
-                if matches!(
-                    func_name,
-                    "thrd_create"
-                        | "pthread_create"
-                        | "CreateThread"
-                        | "_beginthread"
-                        | "_beginthreadex"
-                        | "thrd_join"
-                        | "pthread_join"
-                        | "mtx_init"
-                        | "pthread_mutex_init"
-                ) {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
+            let Some(func) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&func, source).trim();
 
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.has_threading_functions(&child, source) {
-                return true;
-            }
-        }
-
-        false
+            // Check for C11 thread functions, POSIX thread functions, and Windows thread functions
+            matches!(
+                func_name,
+                "thrd_create"
+                    | "pthread_create"
+                    | "CreateThread"
+                    | "_beginthread"
+                    | "_beginthreadex"
+                    | "thrd_join"
+                    | "pthread_join"
+                    | "mtx_init"
+                    | "pthread_mutex_init"
+            )
+        })
+        .is_some()
     }
 
     /// Find and flag signal() calls in multithreaded context
     fn check_signal_calls(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source).trim();
 
                 if func_name == "signal" {
-                    let line = node.start_position().row + 1;
-                    let column = node.start_position().column + 1;
+                    let line = n.start_position().row + 1;
+                    let column = n.start_position().column + 1;
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: self.severity(),
@@ -114,12 +108,6 @@ impl Con37C {
                     });
                 }
             }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_signal_calls(&child, source, violations);
         }
     }
 }

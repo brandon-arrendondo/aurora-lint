@@ -40,6 +40,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -100,21 +101,17 @@ impl Str32C {
         unsafe_arrays: &mut HashSet<String>,
         array_locations: &mut HashMap<String, (usize, usize)>,
     ) {
-        // Check for character array declarations with insufficient bounds
-        if node.kind() == "declaration" {
-            self.check_declaration_for_unsafe_array(node, source, unsafe_arrays, array_locations);
-        }
+        for n in query::find_descendants(*node, |_| true) {
+            // Check for character array declarations with insufficient bounds
+            if n.kind() == "declaration" {
+                self.check_declaration_for_unsafe_array(&n, source, unsafe_arrays, array_locations);
+            }
 
-        // Check for strncpy() calls that may not null-terminate
-        if node.kind() == "call_expression" {
-            self.check_strncpy_call(node, source, unsafe_arrays, array_locations);
-            self.check_realloc_call(node, source, unsafe_arrays, array_locations);
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.find_unsafe_arrays(&child, source, unsafe_arrays, array_locations);
+            // Check for strncpy() calls that may not null-terminate
+            if n.kind() == "call_expression" {
+                self.check_strncpy_call(&n, source, unsafe_arrays, array_locations);
+                self.check_realloc_call(&n, source, unsafe_arrays, array_locations);
+            }
         }
     }
 
@@ -239,20 +236,20 @@ impl Str32C {
         array_locations: &HashMap<String, (usize, usize)>,
     ) {
         // Look for assignments like: array[index] = '\0' or array[index] = L'\0'
-        if node.kind() == "assignment_expression" {
-            if let Some(left) = node.child_by_field_name("left") {
+        for n in query::find_descendants_of_kind(*node, "assignment_expression") {
+            if let Some(left) = n.child_by_field_name("left") {
                 if left.kind() == "subscript_expression" {
                     // Get the array name from subscript expression
                     if let Some(array_node) = left.child_by_field_name("argument") {
                         let array_name = get_node_text(&array_node, source).trim();
 
                         // Check if right side is '\0', L'\0', or 0
-                        if let Some(right) = node.child_by_field_name("right") {
+                        if let Some(right) = n.child_by_field_name("right") {
                             let right_text = get_node_text(&right, source).trim();
                             if right_text == "'\\0'" || right_text == "L'\\0'" || right_text == "0"
                             {
                                 // Check if this null-termination happens AFTER the array was marked unsafe
-                                let null_term_line = node.start_position().row;
+                                let null_term_line = n.start_position().row;
 
                                 if let Some(&(unsafe_line, _)) = array_locations.get(array_name) {
                                     // Only remove from unsafe if null-termination is AFTER the unsafe operation
@@ -266,12 +263,6 @@ impl Str32C {
                 }
             }
         }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.find_explicit_null_termination(&child, source, unsafe_arrays, array_locations);
-        }
     }
 
     fn check_unsafe_usage(
@@ -279,16 +270,16 @@ impl Str32C {
         node: &Node,
         source: &str,
         unsafe_arrays: &HashSet<String>,
-        array_locations: &HashMap<String, (usize, usize)>,
+        _array_locations: &HashMap<String, (usize, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source).trim();
 
                 // Check if this is a string function that requires null termination
                 if self.is_string_function(func_name) {
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
+                    if let Some(arguments) = n.child_by_field_name("arguments") {
                         let args = self.extract_arguments(&arguments, source);
 
                         // Check each argument against unsafe arrays
@@ -297,7 +288,7 @@ impl Str32C {
 
                             // Check if this argument is one of our unsafe arrays
                             if unsafe_arrays.contains(arg_text) {
-                                let start_point = node.start_position();
+                                let start_point = n.start_position();
 
                                 violations.push(RuleViolation {
                                     rule_id: self.rule_id().to_string(),
@@ -325,12 +316,6 @@ impl Str32C {
                     }
                 }
             }
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_unsafe_usage(&child, source, unsafe_arrays, array_locations, violations);
         }
     }
 

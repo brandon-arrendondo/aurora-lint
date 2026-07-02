@@ -12,6 +12,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -25,23 +26,26 @@ impl Err32C {
 
     /// First pass: collect function names registered as signal handlers
     fn collect_signal_handlers(&self, node: &Node, source: &str, handlers: &mut HashSet<String>) {
-        // Check for signal(SIG..., handler) pattern
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                if func_name == "signal" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        // Second argument is the handler
-                        let mut arg_idx = 0;
-                        let mut cursor = args.walk();
-                        for child in args.children(&mut cursor) {
-                            if child.kind() != "," && child.kind() != "(" && child.kind() != ")" {
-                                arg_idx += 1;
-                                if arg_idx == 2 {
-                                    let handler_name =
-                                        get_node_text(&child, source).trim().to_string();
-                                    if !handler_name.starts_with("SIG_") {
-                                        handlers.insert(handler_name);
+        for n in query::find_descendants(*node, |_| true) {
+            // Check for signal(SIG..., handler) pattern
+            if n.kind() == "call_expression" {
+                if let Some(function) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&function, source);
+                    if func_name == "signal" {
+                        if let Some(args) = n.child_by_field_name("arguments") {
+                            // Second argument is the handler
+                            let mut arg_idx = 0;
+                            let mut cursor = args.walk();
+                            for child in args.children(&mut cursor) {
+                                if child.kind() != "," && child.kind() != "(" && child.kind() != ")"
+                                {
+                                    arg_idx += 1;
+                                    if arg_idx == 2 {
+                                        let handler_name =
+                                            get_node_text(&child, source).trim().to_string();
+                                        if !handler_name.starts_with("SIG_") {
+                                            handlers.insert(handler_name);
+                                        }
                                     }
                                 }
                             }
@@ -49,27 +53,21 @@ impl Err32C {
                     }
                 }
             }
-        }
 
-        // Check for sigaction: .sa_handler = func_name or act.sa_handler = func_name
-        if node.kind() == "assignment_expression" {
-            if let Some(left) = node.child_by_field_name("left") {
-                let left_text = get_node_text(&left, source);
-                if left_text.contains("sa_handler") || left_text.contains("sa_sigaction") {
-                    if let Some(right) = node.child_by_field_name("right") {
-                        let handler_name = get_node_text(&right, source).trim().to_string();
-                        if !handler_name.is_empty() && !handler_name.starts_with("SIG_") {
-                            handlers.insert(handler_name);
+            // Check for sigaction: .sa_handler = func_name or act.sa_handler = func_name
+            if n.kind() == "assignment_expression" {
+                if let Some(left) = n.child_by_field_name("left") {
+                    let left_text = get_node_text(&left, source);
+                    if left_text.contains("sa_handler") || left_text.contains("sa_sigaction") {
+                        if let Some(right) = n.child_by_field_name("right") {
+                            let handler_name = get_node_text(&right, source).trim().to_string();
+                            if !handler_name.is_empty() && !handler_name.starts_with("SIG_") {
+                                handlers.insert(handler_name);
+                            }
                         }
                     }
                 }
             }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_signal_handlers(&child, source, handlers);
         }
     }
 
@@ -240,13 +238,9 @@ impl Err32C {
         registered_handlers: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        self.check_errno_in_handler(node, source, registered_handlers, violations);
-        self.check_error_functions_in_handler(node, source, registered_handlers, violations);
-
-        // Recursively check all children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, registered_handlers, violations);
+        for n in query::find_descendants(*node, |_| true) {
+            self.check_errno_in_handler(&n, source, registered_handlers, violations);
+            self.check_error_functions_in_handler(&n, source, registered_handlers, violations);
         }
     }
 }

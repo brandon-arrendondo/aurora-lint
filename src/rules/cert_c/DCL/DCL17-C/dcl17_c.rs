@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -144,21 +145,20 @@ fn find_direct_volatile_accesses(
     volatile_vars: &HashSet<&str>,
     violations: &mut Vec<RuleViolation>,
 ) {
-    // Check if this identifier is a volatile variable being accessed directly
-    if node.kind() == "identifier" {
-        let var_name = ast_utils::get_node_text(node, source);
+    for n in query::find_descendants_of_kind(*node, "identifier") {
+        let var_name = ast_utils::get_node_text(&n, source);
 
         if volatile_vars.contains(var_name) {
             // Check if this is a direct access (not wrapped in function call)
-            if is_direct_access(node, source) {
+            if is_direct_access(&n, source) {
                 // Skip simple volatile reads and writes — these are well-defined
                 // on all modern compilers. Only flag compound operations (++, --,
                 // +=, -=, etc.) where read-modify-write may be non-atomic or
                 // subject to optimization issues.
-                if is_simple_volatile_access(node) {
+                if is_simple_volatile_access(&n) {
                     // Simple read or simple assignment — safe, skip
                 } else {
-                    let start_point = node.start_position();
+                    let start_point = n.start_position();
                     violations.push(RuleViolation {
                         rule_id: "DCL17-C".to_string(),
                         severity: Severity::Medium,
@@ -177,12 +177,6 @@ fn find_direct_volatile_accesses(
                 }
             }
         }
-    }
-
-    // Recursively check children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        find_direct_volatile_accesses(&child, source, volatile_vars, violations);
     }
 }
 

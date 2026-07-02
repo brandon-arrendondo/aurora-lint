@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Msc33C;
@@ -35,9 +36,8 @@ impl CertRule for Msc33C {
 
 impl Msc33C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for asctime() function calls
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = n.child_by_field_name("function") {
                 let func_name = ast_utils::get_node_text(&function, source);
 
                 if func_name == "asctime" {
@@ -48,8 +48,8 @@ impl Msc33C {
                              The asctime() function can overflow if passed invalid data"
                             .to_string(),
                         file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
+                        line: n.start_position().row + 1,
+                        column: n.start_position().column + 1,
                         suggestion: Some(
                             "Use strftime() instead, which is safer and provides better error handling"
                                 .to_string(),
@@ -58,12 +58,6 @@ impl Msc33C {
                     });
                 }
             }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 }

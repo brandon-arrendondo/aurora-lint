@@ -1,6 +1,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryCursor};
 
@@ -156,34 +157,24 @@ fn has_sizeof_struct(node: &Node, source: &str) -> bool {
         return true;
     }
 
-    // Also check child nodes for sizeof_expression
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "sizeof_expression" {
-            // Check if the type is a struct
-            let sizeof_text = get_node_text(&child, source);
-            if sizeof_text.contains("struct") {
-                return true;
-            }
-
-            // Look for struct_specifier or type_identifier that might reference a struct
-            let mut sizeof_cursor = child.walk();
-            for sizeof_child in child.children(&mut sizeof_cursor) {
-                if sizeof_child.kind() == "struct_specifier"
-                    || sizeof_child.kind() == "type_identifier"
-                {
-                    return true;
-                }
-            }
+    // Also check descendant sizeof_expression nodes
+    query::find_first_descendant(*node, |n| {
+        if n.kind() != "sizeof_expression" {
+            return false;
         }
-
-        // Recursively check child nodes
-        if has_sizeof_struct(&child, source) {
+        // Check if the type is a struct
+        let sizeof_text = get_node_text(&n, source);
+        if sizeof_text.contains("struct") {
             return true;
         }
-    }
-
-    false
+        // Look for struct_specifier or type_identifier that might reference a struct
+        let mut cursor = n.walk();
+        let has_struct_child = n
+            .children(&mut cursor)
+            .any(|c| c.kind() == "struct_specifier" || c.kind() == "type_identifier");
+        has_struct_child
+    })
+    .is_some()
 }
 
 /// Checks if a size argument looks like sizeof usage (heuristic)
@@ -194,36 +185,31 @@ fn looks_like_sizeof_usage(node: &Node, source: &str) -> bool {
 
 /// Heuristic to detect if a node looks like a struct pointer
 fn looks_like_struct_pointer(node: &Node, source: &str) -> bool {
-    // Check for cast expressions to struct types
-    if node.kind() == "cast_expression" {
-        let text = get_node_text(node, source);
-        if text.contains("struct") {
+    query::find_first_descendant(*node, |n| {
+        // Check for cast expressions to struct types
+        if n.kind() == "cast_expression" {
+            let text = get_node_text(&n, source);
+            if text.contains("struct") {
+                return true;
+            }
+        }
+
+        // Check for address-of operator (&) on identifiers
+        if n.kind() == "unary_expression" {
+            let text = get_node_text(&n, source);
+            if text.starts_with('&') {
+                return true;
+            }
+        }
+
+        // Check for pointer_expression (->)
+        if n.kind() == "pointer_expression" {
             return true;
         }
-    }
 
-    // Check for address-of operator (&) on identifiers
-    if node.kind() == "unary_expression" {
-        let text = get_node_text(node, source);
-        if text.starts_with('&') {
-            return true;
-        }
-    }
-
-    // Check for pointer_expression (->)
-    if node.kind() == "pointer_expression" {
-        return true;
-    }
-
-    // Recursively check children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if looks_like_struct_pointer(&child, source) {
-            return true;
-        }
-    }
-
-    false
+        false
+    })
+    .is_some()
 }
 
 #[cfg(test)]

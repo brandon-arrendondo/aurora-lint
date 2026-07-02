@@ -13,6 +13,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use tree_sitter::Node;
 
@@ -81,18 +82,7 @@ impl Err01C {
 
     /// Check for errno in an expression
     fn contains_errno(&self, node: &Node, source: &str) -> bool {
-        if self.is_errno(node, source) {
-            return true;
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.contains_errno(&child, source) {
-                return true;
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| self.is_errno(&n, source)).is_some()
     }
 
     /// Check if a statement is checking errno
@@ -239,22 +229,17 @@ impl Err01C {
         source: &str,
         calls: &mut Vec<(usize, usize, String)>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 if self.is_errno_setting_function(func_name) {
                     calls.push((
-                        node.start_position().row + 1,
-                        node.start_position().column + 1,
+                        n.start_position().row + 1,
+                        n.start_position().column + 1,
                         func_name.to_string(),
                     ));
                 }
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_errno_setting_calls(&child, source, calls);
         }
     }
 
@@ -285,19 +270,15 @@ impl Err01C {
 
     /// Recursively traverse AST
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Handle function definitions
-        if node.kind() == "function_definition" {
-            self.process_function(node, source, violations);
-        } else if node.kind() == "translation_unit" {
-            // Handle top-level statements (for code snippets without function wrappers)
-            *self.file_stream_functions_seen.borrow_mut() = false;
-            self.traverse_top_level(node, source, violations);
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.traverse(&child, source, violations);
+        for n in query::find_descendants(*node, |_| true) {
+            // Handle function definitions
+            if n.kind() == "function_definition" {
+                self.process_function(&n, source, violations);
+            } else if n.kind() == "translation_unit" {
+                // Handle top-level statements (for code snippets without function wrappers)
+                *self.file_stream_functions_seen.borrow_mut() = false;
+                self.traverse_top_level(&n, source, violations);
+            }
         }
     }
 
@@ -344,12 +325,8 @@ impl Err01C {
 
     /// Recursively find call expressions in a node
     fn find_calls_recursive(&self, node: &Node, source: &str) {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "call_expression" {
-                self.check_call_expression(&child, source);
-            }
-            self.find_calls_recursive(&child, source);
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            self.check_call_expression(&n, source);
         }
     }
 }

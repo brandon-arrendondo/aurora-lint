@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Int05C;
@@ -36,15 +37,15 @@ impl CertRule for Int05C {
 impl Int05C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for scanf/fscanf/sscanf calls with integer format specifiers
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
 
                 if self.is_scanf_function(&func_name) {
                     // Check if this scanf call uses integer conversion specifiers
-                    if self.has_integer_conversion(node, source) {
+                    if self.has_integer_conversion(&n, source) {
                         // Check if there's an errno check nearby
-                        if !self.has_errno_check_after_call(node, source) {
+                        if !self.has_errno_check_after_call(&n, source) {
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
                                 message: format!(
@@ -52,8 +53,8 @@ impl Int05C {
                                     func_name.trim()
                                 ),
                                 severity: self.severity(),
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
+                                line: n.start_position().row + 1,
+                                column: n.start_position().column + 1,
                                 file_path: String::new(),
                                 suggestion: Some(
                                     "Either use fgets() + strtol/strtoll() for safe conversion, or check errno for ERANGE after scanf".to_string()
@@ -64,12 +65,6 @@ impl Int05C {
                     }
                 }
             }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 
@@ -208,22 +203,14 @@ impl Int05C {
 
     /// Find errno check in scope after the scanf call
     fn find_errno_check_in_scope(&self, scope: &Node, after_line: usize, source: &str) -> bool {
-        let mut cursor = scope.walk();
-        for child in scope.children(&mut cursor) {
-            // Only check nodes that come after the scanf call
-            if child.start_position().row >= after_line {
-                if self.is_errno_check(&child, source) {
-                    return true;
-                }
-
-                // Recursively search in child nodes
-                if self.find_errno_check_in_scope(&child, after_line, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        // Any binary_expression/if_statement descendant starting at/after
+        // after_line is a candidate — descendants can never start earlier
+        // than their parent, so this flat filter is equivalent to the
+        // depth-first walk that only descended into later-starting children.
+        query::find_descendants_of_kinds(*scope, &["binary_expression", "if_statement"])
+            .into_iter()
+            .filter(|n| n.start_position().row >= after_line)
+            .any(|n| self.is_errno_check(&n, source))
     }
 
     /// Check if node is an errno check (specifically for ERANGE)

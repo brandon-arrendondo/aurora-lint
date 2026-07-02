@@ -4,6 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Dcl38C;
@@ -34,25 +35,25 @@ impl CertRule for Dcl38C {
 
 impl Dcl38C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "field_declaration" {
-            let text = get_node_text(node, source);
+        for n in query::find_descendants_of_kind(*node, "field_declaration") {
+            let text = get_node_text(&n, source);
 
             if text.contains("[1]") {
-                if let Some(parent) = node.parent() {
+                if let Some(parent) = n.parent() {
                     if parent.kind() == "field_declaration_list" {
                         let mut cursor = parent.walk();
                         let fields: Vec<_> = parent
                             .children(&mut cursor)
-                            .filter(|n| n.kind() == "field_declaration")
+                            .filter(|c| c.kind() == "field_declaration")
                             .collect();
 
                         if let Some(last) = fields.last() {
-                            if last.id() == node.id() {
+                            if last.id() == n.id() {
                                 violations.push(RuleViolation {
                                     rule_id: self.rule_id().to_string(),
                                     severity: self.severity(),
-                                    line: node.start_position().row + 1,
-                                    column: node.start_position().column + 1,
+                                    line: n.start_position().row + 1,
+                                    column: n.start_position().column + 1,
                                     file_path: String::new(),
                                     message: "Flexible array member should use [] not [1]"
                                         .to_string(),
@@ -64,11 +65,6 @@ impl Dcl38C {
                     }
                 }
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 }

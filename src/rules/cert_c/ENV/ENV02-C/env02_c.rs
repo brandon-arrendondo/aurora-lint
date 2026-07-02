@@ -12,6 +12,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -108,12 +109,8 @@ impl Env02C {
     }
 
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        self.check_env_call(node, source, violations);
-
-        // Recursively check all children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+        for n in query::find_descendants(*node, |_| true) {
+            self.check_env_call(&n, source, violations);
         }
     }
 }

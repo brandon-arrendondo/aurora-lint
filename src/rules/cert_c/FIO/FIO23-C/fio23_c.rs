@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Fio23C;
@@ -70,23 +71,16 @@ impl Fio23C {
     }
 
     fn find_main_function<'a>(&self, node: &Node<'a>, source: &str) -> Option<Node<'a>> {
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if let Some(name_node) = self.find_identifier_in_declarator(&declarator) {
-                    if get_node_text(&name_node, source) == "main" {
-                        return Some(*node);
-                    }
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "function_definition" {
+                return false;
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(result) = self.find_main_function(&child, source) {
-                return Some(result);
-            }
-        }
-        None
+            let Some(declarator) = n.child_by_field_name("declarator") else {
+                return false;
+            };
+            self.find_identifier_in_declarator(&declarator)
+                .is_some_and(|name_node| get_node_text(&name_node, source) == "main")
+        })
     }
 
     fn find_identifier_in_declarator<'a>(&self, declarator: &Node<'a>) -> Option<Node<'a>> {
@@ -111,27 +105,22 @@ impl Fio23C {
     }
 
     fn check_fclose_stdout_recursive(&self, node: &Node, source: &str) -> bool {
-        // Look for fclose(stdout)
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                if get_node_text(&func, source) == "fclose" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        let args_text = get_node_text(&args, source);
-                        if args_text.contains("stdout") {
-                            return true;
-                        }
-                    }
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.check_fclose_stdout_recursive(&child, source) {
-                return true;
+            let Some(func) = n.child_by_field_name("function") else {
+                return false;
+            };
+            if get_node_text(&func, source) != "fclose" {
+                return false;
             }
-        }
-        false
+            let Some(args) = n.child_by_field_name("arguments") else {
+                return false;
+            };
+            get_node_text(&args, source).contains("stdout")
+        })
+        .is_some()
     }
 
     fn find_main_return(&self, root: &Node) -> Option<(usize, usize)> {
@@ -148,21 +137,11 @@ impl Fio23C {
     }
 
     fn find_main_function_node<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if self.is_main_declarator(&declarator) {
-                    return Some(*node);
-                }
-            }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(result) = self.find_main_function_node(&child) {
-                return Some(result);
-            }
-        }
-        None
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "function_definition"
+                && n.child_by_field_name("declarator")
+                    .is_some_and(|declarator| self.is_main_declarator(&declarator))
+        })
     }
 
     fn is_main_declarator(&self, declarator: &Node) -> bool {
@@ -180,17 +159,7 @@ impl Fio23C {
     }
 
     fn find_return_statement<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
-        if node.kind() == "return_statement" {
-            return Some(*node);
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(result) = self.find_return_statement(&child) {
-                return Some(result);
-            }
-        }
-        None
+        query::find_first_descendant(*node, |n| n.kind() == "return_statement")
     }
 
     fn check_atexit_handlers(
@@ -248,10 +217,10 @@ impl Fio23C {
     }
 
     fn collect_atexit_functions(&self, node: &Node, source: &str, funcs: &mut Vec<String>) {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = n.child_by_field_name("function") {
                 if get_node_text(&func, source) == "atexit" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = n.child_by_field_name("arguments") {
                         if let Some(arg) = self.get_first_arg(&args) {
                             let func_name = get_node_text(&arg, source).to_string();
                             funcs.push(func_name);
@@ -259,11 +228,6 @@ impl Fio23C {
                     }
                 }
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_atexit_functions(&child, source, funcs);
         }
     }
 
@@ -283,23 +247,16 @@ impl Fio23C {
         name: &str,
         source: &str,
     ) -> Option<Node<'a>> {
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if let Some(id) = self.find_identifier_in_declarator(&declarator) {
-                    if get_node_text(&id, source) == name {
-                        return Some(*node);
-                    }
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "function_definition" {
+                return false;
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(result) = self.find_function_by_name(&child, name, source) {
-                return Some(result);
-            }
-        }
-        None
+            let Some(declarator) = n.child_by_field_name("declarator") else {
+                return false;
+            };
+            self.find_identifier_in_declarator(&declarator)
+                .is_some_and(|id| get_node_text(&id, source) == name)
+        })
     }
 
     #[allow(dead_code)]
@@ -309,21 +266,16 @@ impl Fio23C {
     }
 
     fn has_printf_in_function(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if func_name == "printf" || func_name == "fprintf" || func_name == "puts" {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.has_printf_in_function(&child, source) {
-                return true;
-            }
-        }
-        false
+            let Some(func) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&func, source);
+            func_name == "printf" || func_name == "fprintf" || func_name == "puts"
+        })
+        .is_some()
     }
 }

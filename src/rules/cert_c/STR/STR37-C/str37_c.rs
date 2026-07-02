@@ -45,6 +45,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Str37C;
@@ -79,23 +80,17 @@ impl CertRule for Str37C {
 
 impl Str37C {
     fn check_ctype_calls(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source).trim();
 
                 // Check if this is a character-handling function from <ctype.h>
                 if self.is_ctype_function(func_name) {
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
+                    if let Some(arguments) = n.child_by_field_name("arguments") {
                         self.check_arguments(&arguments, source, func_name, violations);
                     }
                 }
             }
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_ctype_calls(&child, source, violations);
         }
     }
 

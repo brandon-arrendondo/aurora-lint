@@ -13,6 +13,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Con43C;
@@ -53,13 +54,13 @@ impl CertRule for Con43C {
 
 /// Check for static volatile variables that may be accessed without synchronization
 fn check_static_volatile(node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-    if node.kind() == "declaration" {
-        let text = get_node_text(node, source);
+    for n in query::find_descendants_of_kind(*node, "declaration") {
+        let text = get_node_text(&n, source);
 
         // Check if this is a static volatile variable
         if text.contains("static") && text.contains("volatile") {
             // Extract variable name
-            if let Some(var_name) = extract_var_name(node, source) {
+            if let Some(var_name) = extract_var_name(&n, source) {
                 violations.push(RuleViolation {
                     rule_id: "CON43-C".to_string(),
                     file_path: "".to_string(),
@@ -67,8 +68,8 @@ fn check_static_volatile(node: &Node, source: &str, violations: &mut Vec<RuleVio
                         "Static volatile variable '{}' may be accessed by multiple threads without synchronization",
                         var_name
                     ),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column,
+                    line: n.start_position().row + 1,
+                    column: n.start_position().column,
                     severity: Severity::High,
                     suggestion: Some("Use atomic operations, mutex locks, or other synchronization primitives to protect shared data".to_string()),
                     requires_manual_review: Some(true),
@@ -76,29 +77,23 @@ fn check_static_volatile(node: &Node, source: &str, violations: &mut Vec<RuleVio
             }
         }
     }
-
-    // Recurse through children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        check_static_volatile(&child, source, violations);
-    }
 }
 
 /// Check for double-fetch vulnerabilities (multiple pointer dereferences in control flow)
 fn check_double_fetch(node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
     // Look for switch statements with pointer dereferences
-    if node.kind() == "switch_statement" {
-        if let Some(condition) = get_switch_condition(node) {
+    for n in query::find_descendants_of_kind(*node, "switch_statement") {
+        if let Some(condition) = get_switch_condition(&n) {
             // Check if the condition contains a pointer dereference
             if contains_pointer_deref(&condition, source) {
                 // Check if the parent function has synchronization
-                if !has_synchronization_nearby(node, source) {
+                if !has_synchronization_nearby(&n, source) {
                     violations.push(RuleViolation {
                         rule_id: "CON43-C".to_string(),
                         file_path: "".to_string(),
                         message: "Dereferencing pointer in switch statement may create double-fetch vulnerability".to_string(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column,
+                        line: n.start_position().row + 1,
+                        column: n.start_position().column,
                         severity: Severity::High,
                         suggestion: Some("Store dereferenced value in a local variable or use atomic operations".to_string()),
                         requires_manual_review: Some(true),
@@ -106,12 +101,6 @@ fn check_double_fetch(node: &Node, source: &str, violations: &mut Vec<RuleViolat
                 }
             }
         }
-    }
-
-    // Recurse through children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        check_double_fetch(&child, source, violations);
     }
 }
 
@@ -137,19 +126,8 @@ fn has_synchronization_nearby(node: &Node, source: &str) -> bool {
 }
 
 /// Check if a node contains a pointer dereference
-#[allow(clippy::only_used_in_recursion)]
-fn contains_pointer_deref(node: &Node, source: &str) -> bool {
-    if node.kind() == "pointer_expression" {
-        return true;
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if contains_pointer_deref(&child, source) {
-            return true;
-        }
-    }
-    false
+fn contains_pointer_deref(node: &Node, _source: &str) -> bool {
+    query::find_first_descendant(*node, |n| n.kind() == "pointer_expression").is_some()
 }
 
 /// Extract variable name from a declaration
@@ -159,17 +137,8 @@ fn extract_var_name(node: &Node, source: &str) -> Option<String> {
 
 /// Recursively find an identifier node
 fn find_identifier(node: &Node, source: &str) -> Option<String> {
-    if node.kind() == "identifier" {
-        return Some(get_node_text(node, source).to_string());
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if let Some(id) = find_identifier(&child, source) {
-            return Some(id);
-        }
-    }
-    None
+    query::find_first_descendant(*node, |n| n.kind() == "identifier")
+        .map(|n| get_node_text(&n, source).to_string())
 }
 
 /// Get the condition node from a switch statement

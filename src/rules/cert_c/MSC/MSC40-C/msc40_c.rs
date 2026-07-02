@@ -40,6 +40,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -142,14 +143,8 @@ impl Msc40C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check for inline function definitions
-        if node.kind() == "function_definition" {
-            self.check_inline_function_with_statics(node, source, static_identifiers, violations);
-        }
-
-        // Recurse through child nodes
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node_with_statics(&child, source, static_identifiers, violations);
+        for n in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_inline_function_with_statics(&n, source, static_identifiers, violations);
         }
     }
 
@@ -175,14 +170,8 @@ impl Msc40C {
     #[allow(dead_code)]
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for inline function definitions
-        if node.kind() == "function_definition" {
-            self.check_inline_function(node, source, violations);
-        }
-
-        // Recurse through child nodes
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+        for n in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_inline_function(&n, source, violations);
         }
     }
 
@@ -256,10 +245,10 @@ impl Msc40C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
+        for n in query::find_descendants_of_kind(*node, "declaration") {
+            let decl_text = get_node_text(&n, source);
             if decl_text.trim_start().starts_with("static") {
-                let start_point = node.start_position();
+                let start_point = n.start_position();
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: Severity::Low,
@@ -273,12 +262,6 @@ impl Msc40C {
                     ..Default::default()
                 });
             }
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.find_static_declarations(&child, source, violations);
         }
     }
 
@@ -303,14 +286,14 @@ impl Msc40C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check if this is an identifier that matches a static
-        if node.kind() == "identifier" {
-            let name = get_node_text(node, source).trim().to_string();
+        for n in query::find_descendants_of_kind(*node, "identifier") {
+            let name = get_node_text(&n, source).trim().to_string();
             if static_identifiers.contains(&name) {
                 // Check if this is not a declaration (we only want references)
-                if let Some(parent) = node.parent() {
+                if let Some(parent) = n.parent() {
                     // Skip if this is the declarator in a declaration
                     if parent.kind() != "init_declarator" && !parent.kind().contains("declarator") {
-                        let start_point = node.start_position();
+                        let start_point = n.start_position();
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             severity: Severity::Low,
@@ -326,16 +309,9 @@ impl Msc40C {
                             ),
                             ..Default::default()
                         });
-                        return; // Only report once per static reference
                     }
                 }
             }
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.find_static_references(&child, source, static_identifiers, violations);
         }
     }
 

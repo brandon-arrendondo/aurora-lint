@@ -14,6 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -162,22 +163,16 @@ impl Exp44C {
     /// Track macro definitions that contain _Generic
     fn collect_generic_macros(&self, node: &Node, source: &str, macros: &mut HashSet<String>) {
         // Look for #define directives
-        if node.kind() == "preproc_function_def" || node.kind() == "preproc_def" {
-            let text = get_node_text(node, source);
+        for n in query::find_descendants_of_kinds(*node, &["preproc_function_def", "preproc_def"]) {
+            let text = get_node_text(&n, source);
             // Check if the macro body contains _Generic
             if text.contains("_Generic") {
                 // Extract macro name
-                if let Some(name_node) = node.child_by_field_name("name") {
+                if let Some(name_node) = n.child_by_field_name("name") {
                     let name = get_node_text(&name_node, source).trim().to_string();
                     macros.insert(name);
                 }
             }
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_generic_macros(&child, source, macros);
         }
     }
 
@@ -236,15 +231,11 @@ impl Exp44C {
         generic_macros: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        self.check_sizeof_expression(node, violations);
-        self.check_alignof_expression(node, violations);
-        self.check_generic_expression(node, violations);
-        self.check_generic_macro_call(node, source, generic_macros, violations);
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.traverse(&child, source, generic_macros, violations);
+        for n in query::find_descendants(*node, |_| true) {
+            self.check_sizeof_expression(&n, violations);
+            self.check_alignof_expression(&n, violations);
+            self.check_generic_expression(&n, violations);
+            self.check_generic_macro_call(&n, source, generic_macros, violations);
         }
     }
 }

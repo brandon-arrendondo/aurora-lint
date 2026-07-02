@@ -15,6 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 const RESERVED_NAMES: &[&str] = &[
@@ -93,43 +94,39 @@ impl Dcl37C {
 
     /// Check declarations for reserved identifiers
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "declaration" => {
-                // Check all init_declarators in this declaration
-                let mut cursor = node.walk();
-                for child in node.children(&mut cursor) {
-                    if child.kind() == "init_declarator" {
-                        if let Some(declarator) = child.child_by_field_name("declarator") {
-                            self.check_file_scope_declarator(&declarator, source, violations);
+        for n in query::find_descendants(*node, |_| true) {
+            match n.kind() {
+                "declaration" => {
+                    // Check all init_declarators in this declaration
+                    let mut cursor = n.walk();
+                    for child in n.children(&mut cursor) {
+                        if child.kind() == "init_declarator" {
+                            if let Some(declarator) = child.child_by_field_name("declarator") {
+                                self.check_file_scope_declarator(&declarator, source, violations);
+                            }
                         }
                     }
+                    // Also check direct declarator field if present
+                    if let Some(declarator) = n.child_by_field_name("declarator") {
+                        self.check_file_scope_declarator(&declarator, source, violations);
+                    }
                 }
-                // Also check direct declarator field if present
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    self.check_file_scope_declarator(&declarator, source, violations);
+                "preproc_def" | "preproc_function_def" => {
+                    self.check_preproc_def(&n, source, violations);
                 }
-            }
-            "preproc_def" | "preproc_function_def" => {
-                self.check_preproc_def(node, source, violations);
-            }
-            "function_definition" => {
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    // Function definitions: check against reserved function names and patterns
-                    self.check_function_declarator(&declarator, source, violations);
+                "function_definition" => {
+                    if let Some(declarator) = n.child_by_field_name("declarator") {
+                        // Function definitions: check against reserved function names and patterns
+                        self.check_function_declarator(&declarator, source, violations);
+                    }
                 }
-            }
-            "parameter_declaration" => {
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    self.check_declarator(&declarator, source, violations);
+                "parameter_declaration" => {
+                    if let Some(declarator) = n.child_by_field_name("declarator") {
+                        self.check_declarator(&declarator, source, violations);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
-        }
-
-        // Recursively check all children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 

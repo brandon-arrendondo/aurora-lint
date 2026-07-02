@@ -7,6 +7,7 @@ use tree_sitter::Node;
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 
 pub struct Dcl23C;
 
@@ -65,10 +66,10 @@ impl Dcl23C {
         source: &str,
         ids: &mut HashMap<String, Vec<(String, usize, usize)>>,
     ) {
-        if node.kind() == "declaration" {
-            let text = get_node_text(node, source);
+        for n in query::find_descendants_of_kind(*node, "declaration") {
+            let text = get_node_text(&n, source);
             if text.starts_with("extern") {
-                if let Some((name, line, col)) = self.find_identifier_info(node, source) {
+                if let Some((name, line, col)) = self.find_identifier_info(&n, source) {
                     let base = if name.len() > 1 {
                         name[..name.len() - 1].to_string()
                     } else {
@@ -78,25 +79,13 @@ impl Dcl23C {
                 }
             }
         }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_identifiers(&child, source, ids);
-        }
     }
 
     fn find_identifier_info(&self, node: &Node, source: &str) -> Option<(String, usize, usize)> {
-        if node.kind() == "identifier" {
-            let name = get_node_text(node, source).to_string();
-            let pos = node.start_position();
-            return Some((name, pos.row + 1, pos.column + 1));
-        }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(info) = self.find_identifier_info(&child, source) {
-                return Some(info);
-            }
-        }
-        None
+        let n = query::find_first_descendant(*node, |n| n.kind() == "identifier")?;
+        let name = get_node_text(&n, source).to_string();
+        let pos = n.start_position();
+        Some((name, pos.row + 1, pos.column + 1))
     }
 
     fn variants_too_similar(&self, variants: &[(String, usize, usize)]) -> bool {

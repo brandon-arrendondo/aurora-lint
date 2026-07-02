@@ -28,6 +28,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Fio19C;
@@ -63,21 +64,21 @@ impl CertRule for Fio19C {
 impl Fio19C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for fseek() calls
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source).trim();
 
                 if func_name == "fseek" {
                     // Check if fseek uses SEEK_END
-                    if self.fseek_uses_seek_end(node, source) {
+                    if self.fseek_uses_seek_end(&n, source) {
                         // Get the file pointer argument (first argument)
-                        if let Some(file_ptr) = self.get_first_argument(node) {
+                        if let Some(file_ptr) = self.get_first_argument(&n) {
                             let file_ptr_text = get_node_text(&file_ptr, source);
 
                             // Check if there's a ftell() call on the same file pointer nearby
-                            if self.has_ftell_nearby(node, file_ptr_text.trim(), source) {
-                                let line = node.start_position().row + 1;
-                                let column = node.start_position().column + 1;
+                            if self.has_ftell_nearby(&n, file_ptr_text.trim(), source) {
+                                let line = n.start_position().row + 1;
+                                let column = n.start_position().column + 1;
 
                                 violations.push(RuleViolation {
                                     rule_id: self.rule_id().to_string(),
@@ -99,12 +100,6 @@ impl Fio19C {
                     }
                 }
             }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 
@@ -169,30 +164,22 @@ impl Fio19C {
 
     /// Recursively search for ftell() calls on the specified file pointer
     fn find_ftell_on_file_ptr(&self, node: &Node, file_ptr: &str, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source).trim();
-
-                if func_name == "ftell" {
-                    // Check if ftell uses the same file pointer
-                    if let Some(first_arg) = self.get_first_argument(node) {
-                        let arg_text = get_node_text(&first_arg, source).trim();
-                        if arg_text == file_ptr {
-                            return true;
-                        }
-                    }
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.find_ftell_on_file_ptr(&child, file_ptr, source) {
-                return true;
+            let Some(func) = n.child_by_field_name("function") else {
+                return false;
+            };
+            if func.utf8_text(source.as_bytes()).unwrap_or("").trim() != "ftell" {
+                return false;
             }
-        }
-
-        false
+            // Check if ftell uses the same file pointer
+            let Some(first_arg) = self.get_first_argument(&n) else {
+                return false;
+            };
+            get_node_text(&first_arg, source).trim() == file_ptr
+        })
+        .is_some()
     }
 }

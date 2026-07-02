@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Fio44C;
@@ -47,41 +48,37 @@ impl Fio44C {
         source: &str,
         fpos_vars: &mut std::collections::HashMap<String, bool>,
     ) {
-        // Look for fpos_t declarations
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
-            if decl_text.contains("fpos_t") {
-                // Extract variable name (simple heuristic)
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    if let Some(ident) = self.get_identifier(&declarator, source) {
-                        fpos_vars.insert(ident.to_string(), false);
+        for n in query::find_descendants(*node, |_| true) {
+            // Look for fpos_t declarations
+            if n.kind() == "declaration" {
+                let decl_text = get_node_text(&n, source);
+                if decl_text.contains("fpos_t") {
+                    // Extract variable name (simple heuristic)
+                    if let Some(declarator) = n.child_by_field_name("declarator") {
+                        if let Some(ident) = self.get_identifier(&declarator, source) {
+                            fpos_vars.insert(ident.to_string(), false);
+                        }
                     }
                 }
             }
-        }
 
-        // Look for fgetpos calls
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
-                if get_node_text(&func_node, source) == "fgetpos" {
-                    // Mark the fpos_t variable as initialized by fgetpos
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        if let Some(second_arg) = args.named_child(1) {
-                            let arg_text = get_node_text(&second_arg, source);
-                            let var_name = arg_text.trim_start_matches('&').trim();
-                            if let Some(initialized) = fpos_vars.get_mut(var_name) {
-                                *initialized = true;
+            // Look for fgetpos calls
+            if n.kind() == "call_expression" {
+                if let Some(func_node) = n.child_by_field_name("function") {
+                    if get_node_text(&func_node, source) == "fgetpos" {
+                        // Mark the fpos_t variable as initialized by fgetpos
+                        if let Some(args) = n.child_by_field_name("arguments") {
+                            if let Some(second_arg) = args.named_child(1) {
+                                let arg_text = get_node_text(&second_arg, source);
+                                let var_name = arg_text.trim_start_matches('&').trim();
+                                if let Some(initialized) = fpos_vars.get_mut(var_name) {
+                                    *initialized = true;
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.track_fpos_vars(&child, source, fpos_vars);
         }
     }
 
@@ -92,10 +89,10 @@ impl Fio44C {
         fpos_vars: &std::collections::HashMap<String, bool>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = n.child_by_field_name("function") {
                 if get_node_text(&func_node, source) == "fsetpos" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = n.child_by_field_name("arguments") {
                         if let Some(second_arg) = args.named_child(1) {
                             let arg_text = get_node_text(&second_arg, source);
                             let var_name = arg_text.trim_start_matches('&').trim();
@@ -108,8 +105,8 @@ impl Fio44C {
                                         severity: self.severity(),
                                         message: "fsetpos() called with value not obtained from fgetpos()".to_string(),
                                         file_path: String::new(),
-                                        line: node.start_position().row + 1,
-                                        column: node.start_position().column + 1,
+                                        line: n.start_position().row + 1,
+                                        column: n.start_position().column + 1,
                                         suggestion: None,
                                         requires_manual_review: None,
                                     });
@@ -122,8 +119,8 @@ impl Fio44C {
                                         severity: self.severity(),
                                         message: "fsetpos() called with manually initialized fpos_t value".to_string(),
                                         file_path: String::new(),
-                                        line: node.start_position().row + 1,
-                                        column: node.start_position().column + 1,
+                                        line: n.start_position().row + 1,
+                                        column: n.start_position().column + 1,
                                         suggestion: None,
                                         requires_manual_review: None,
                                     });
@@ -134,25 +131,10 @@ impl Fio44C {
                 }
             }
         }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_fsetpos_calls(&child, source, fpos_vars, violations);
-        }
     }
 
     fn get_identifier<'a>(&self, node: &Node<'a>, source: &'a str) -> Option<&'a str> {
-        if node.kind() == "identifier" {
-            return Some(get_node_text(node, source));
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(ident) = self.get_identifier(&child, source) {
-                return Some(ident);
-            }
-        }
-        None
+        query::find_first_descendant(*node, |n| n.kind() == "identifier")
+            .map(|n| get_node_text(&n, source))
     }
 }

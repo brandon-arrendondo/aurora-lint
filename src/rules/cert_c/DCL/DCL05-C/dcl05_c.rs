@@ -19,6 +19,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Dcl05C;
@@ -70,36 +71,30 @@ fn collect_pointer_typedefs(
     source: &str,
     pointer_typedefs: &mut std::collections::HashSet<String>,
 ) {
-    if node.kind() == "type_definition" {
+    for n in query::find_descendants_of_kind(*node, "type_definition") {
         // Check if this typedef defines a pointer type (including const pointer typedefs)
-        if contains_pointer_declarator(node) {
-            if let Some(typedef_name) = extract_typedef_name(node, source) {
+        if contains_pointer_declarator(&n) {
+            if let Some(typedef_name) = extract_typedef_name(&n, source) {
                 pointer_typedefs.insert(typedef_name);
             }
         }
-    }
-
-    // Recurse through children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_pointer_typedefs(&child, source, pointer_typedefs);
     }
 }
 
 /// Check for typedef declarations that define pointer types (without const)
 fn check_typedef_declarations(node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-    if node.kind() == "type_definition" {
+    for n in query::find_descendants_of_kind(*node, "type_definition") {
         // Check if this typedef defines a pointer type
-        if is_pointer_typedef(node, source) {
+        if is_pointer_typedef(&n, source) {
             // Check if it's a const pointer typedef (allowed)
-            if is_const_pointer_typedef(node, source) {
+            if is_const_pointer_typedef(&n, source) {
                 // Compliant: typedef const TYPE *NAME is allowed
-                return;
+                continue;
             }
 
             // Extract the typedef name for better error message
             let typedef_name =
-                extract_typedef_name(node, source).unwrap_or_else(|| "unknown".to_string());
+                extract_typedef_name(&n, source).unwrap_or_else(|| "unknown".to_string());
 
             violations.push(RuleViolation {
                 rule_id: "DCL05-C".to_string(),
@@ -108,19 +103,13 @@ fn check_typedef_declarations(node: &Node, source: &str, violations: &mut Vec<Ru
                     "Typedef '{}' defines a pointer type, which can cause confusion with const-qualification",
                     typedef_name
                 ),
-                line: node.start_position().row + 1,
-                column: node.start_position().column,
+                line: n.start_position().row + 1,
+                column: n.start_position().column,
                 severity: Severity::Medium,
                 suggestion: Some("Use typedef of non-pointer type and declare pointers explicitly at point of use".to_string()),
                 requires_manual_review: Some(false),
             });
         }
-    }
-
-    // Recurse through children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        check_typedef_declarations(&child, source, violations);
     }
 }
 
@@ -132,17 +121,7 @@ fn is_pointer_typedef(node: &Node, _source: &str) -> bool {
 
 /// Recursively check if node tree contains a pointer_declarator
 fn contains_pointer_declarator(node: &Node) -> bool {
-    if node.kind() == "pointer_declarator" {
-        return true;
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if contains_pointer_declarator(&child) {
-            return true;
-        }
-    }
-    false
+    query::find_first_descendant(*node, |n| n.kind() == "pointer_declarator").is_some()
 }
 
 /// Extract the typedef name from a type_definition node
@@ -153,17 +132,8 @@ fn extract_typedef_name(node: &Node, source: &str) -> Option<String> {
 
 /// Recursively find a type_identifier node
 fn find_type_identifier(node: &Node, source: &str) -> Option<String> {
-    if node.kind() == "type_identifier" {
-        return Some(get_node_text(node, source).to_string());
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if let Some(id) = find_type_identifier(&child, source) {
-            return Some(id);
-        }
-    }
-    None
+    query::find_first_descendant(*node, |n| n.kind() == "type_identifier")
+        .map(|n| get_node_text(&n, source).to_string())
 }
 
 /// Check if a typedef is a const pointer typedef (allowed by DCL05-C)
@@ -203,9 +173,9 @@ fn check_external_pointer_typedef_usage(
     defined_typedefs: &std::collections::HashSet<String>,
 ) {
     // Look for parameter declarations or variable declarations that use type identifiers
-    if node.kind() == "parameter_declaration" || node.kind() == "declaration" {
+    for n in query::find_descendants_of_kinds(*node, &["parameter_declaration", "declaration"]) {
         // Find type_identifier nodes in parameters/declarations
-        if let Some(type_id_node) = find_first_type_identifier_node(node) {
+        if let Some(type_id_node) = find_first_type_identifier_node(&n) {
             let type_name = get_node_text(&type_id_node, source);
 
             // Check if this looks like a Windows-style pointer typedef (ends with P or LP prefix)
@@ -232,12 +202,6 @@ fn check_external_pointer_typedef_usage(
                 });
             }
         }
-    }
-
-    // Recurse through children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        check_external_pointer_typedef_usage(&child, source, violations, defined_typedefs);
     }
 }
 
@@ -281,8 +245,8 @@ fn is_likely_external_pointer_typedef(type_name: &str) -> bool {
 /// Check for complex function pointer declarations without typedef
 fn check_complex_function_pointers(node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
     // Look for function declarations with complex function pointer parameters or return types
-    if node.kind() == "function_declarator" || node.kind() == "declaration" {
-        let text = get_node_text(node, source);
+    for n in query::find_descendants_of_kinds(*node, &["function_declarator", "declaration"]) {
+        let text = get_node_text(&n, source);
 
         // Detect complex function pointer syntax: contains (* and multiple parentheses
         if is_complex_function_pointer_syntax(&text) {
@@ -291,8 +255,8 @@ fn check_complex_function_pointers(node: &Node, source: &str, violations: &mut V
                 file_path: "".to_string(),
                 message: "Complex function pointer declaration should use typedef for clarity"
                     .to_string(),
-                line: node.start_position().row + 1,
-                column: node.start_position().column,
+                line: n.start_position().row + 1,
+                column: n.start_position().column,
                 severity: Severity::Medium,
                 suggestion: Some(
                     "Use typedef to simplify complex function pointer declarations".to_string(),
@@ -300,12 +264,6 @@ fn check_complex_function_pointers(node: &Node, source: &str, violations: &mut V
                 requires_manual_review: Some(false),
             });
         }
-    }
-
-    // Recurse through children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        check_complex_function_pointers(&child, source, violations);
     }
 }
 

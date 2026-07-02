@@ -14,6 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -49,31 +50,27 @@ impl CertRule for Int00C {
 
 impl Int00C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for format specifier mismatches in scanf/printf family
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
+        for n in query::find_descendants(*node, |_| true) {
+            // Check for format specifier mismatches in scanf/printf family
+            if n.kind() == "call_expression" {
+                if let Some(func) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&func, source);
 
-                if self.is_format_function(&func_name) {
-                    self.check_format_specifiers(node, source, violations);
+                    if self.is_format_function(&func_name) {
+                        self.check_format_specifiers(&n, source, violations);
+                    }
                 }
             }
-        }
 
-        // Check for unsafe type size assumptions (cast + multiplication)
-        if node.kind() == "assignment_expression" {
-            self.check_unsafe_cast_multiplication(node, source, violations);
-        }
+            // Check for unsafe type size assumptions (cast + multiplication)
+            if n.kind() == "assignment_expression" {
+                self.check_unsafe_cast_multiplication(&n, source, violations);
+            }
 
-        // Check function bodies for unsigned subtraction without guard
-        if node.kind() == "function_definition" {
-            self.check_unsigned_subtraction(node, source, violations);
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+            // Check function bodies for unsigned subtraction without guard
+            if n.kind() == "function_definition" {
+                self.check_unsigned_subtraction(&n, source, violations);
+            }
         }
     }
 
@@ -495,10 +492,10 @@ impl Int00C {
         source: &str,
         var_types: &mut HashMap<String, String>,
     ) {
-        if node.kind() == "declaration" {
-            let mut cursor = node.walk();
+        for n in query::find_descendants_of_kind(*node, "declaration") {
+            let mut cursor = n.walk();
             let mut type_text = String::new();
-            for child in node.children(&mut cursor) {
+            for child in n.children(&mut cursor) {
                 if matches!(
                     child.kind(),
                     "primitive_type" | "sized_type_specifier" | "type_identifier"
@@ -514,11 +511,6 @@ impl Int00C {
                     }
                 }
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_local_unsigned_vars(&child, source, var_types);
         }
     }
 
@@ -537,13 +529,13 @@ impl Int00C {
         var_types: &HashMap<String, String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "binary_expression" {
-            if let Some(op) = node.child_by_field_name("operator") {
+        for n in query::find_descendants_of_kind(*node, "binary_expression") {
+            if let Some(op) = n.child_by_field_name("operator") {
                 let op_text = get_node_text(&op, source);
                 if op_text.trim() == "-" {
                     if let (Some(left), Some(right)) = (
-                        node.child_by_field_name("left"),
-                        node.child_by_field_name("right"),
+                        n.child_by_field_name("left"),
+                        n.child_by_field_name("right"),
                     ) {
                         let left_name = get_node_text(&left, source).trim().to_string();
                         let right_name = get_node_text(&right, source).trim().to_string();
@@ -556,7 +548,7 @@ impl Int00C {
                             .is_some_and(|t| Self::is_unsigned_type(t));
 
                         if left_unsigned && right_unsigned {
-                            if !self.has_subtraction_guard(node, &left_name, &right_name, source) {
+                            if !self.has_subtraction_guard(&n, &left_name, &right_name, source) {
                                 violations.push(RuleViolation {
                                     rule_id: self.rule_id().to_string(),
                                     message: format!(
@@ -564,8 +556,8 @@ impl Int00C {
                                         left_name, right_name
                                     ),
                                     severity: self.severity(),
-                                    line: node.start_position().row + 1,
-                                    column: node.start_position().column + 1,
+                                    line: n.start_position().row + 1,
+                                    column: n.start_position().column + 1,
                                     file_path: String::new(),
                                     suggestion: Some(
                                         "Add a guard: if (a >= b) before unsigned subtraction a - b"
@@ -578,11 +570,6 @@ impl Int00C {
                     }
                 }
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.find_unguarded_unsigned_sub(&child, source, var_types, violations);
         }
     }
 

@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -79,34 +80,28 @@ impl Fio13C {
         source: &str,
         file_operations: &mut HashMap<String, Vec<FileOp>>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source);
 
                 if func_name == "ungetc" {
                     // Get the FILE* argument (second argument)
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = n.child_by_field_name("arguments") {
                         if let Some(file_arg) = self.get_nth_argument(&args, 1, source) {
                             let entry = file_operations.entry(file_arg.clone()).or_default();
-                            entry.push(FileOp::Ungetc(node.start_position().row));
+                            entry.push(FileOp::Ungetc(n.start_position().row));
                         }
                     }
                 } else if self.is_read_function(&func_name) {
                     // Get the FILE* argument
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = n.child_by_field_name("arguments") {
                         if let Some(file_arg) = self.get_file_argument(&args, &func_name, source) {
                             let entry = file_operations.entry(file_arg.clone()).or_default();
-                            entry.push(FileOp::Read(node.start_position().row));
+                            entry.push(FileOp::Read(n.start_position().row));
                         }
                     }
                 }
             }
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_operations(&child, source, file_operations);
         }
     }
 

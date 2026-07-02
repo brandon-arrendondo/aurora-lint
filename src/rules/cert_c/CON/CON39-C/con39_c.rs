@@ -13,6 +13,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Con39C;
@@ -75,32 +76,22 @@ fn contains_self_detach(func_node: &Node, file_content: &str) -> bool {
 
 /// Recursively check a node and its children for thrd_detach(thrd_current())
 fn check_node_for_self_detach(node: &Node, file_content: &str) -> bool {
-    if node.kind() == "call_expression" {
-        // Check if this is a call to thrd_detach
-        if let Some(func_name_node) = node.child_by_field_name("function") {
-            let func_name = get_node_text(&func_name_node, file_content);
-            if func_name == "thrd_detach" {
-                // Check if the argument is thrd_current()
-                if let Some(args_node) = node.child_by_field_name("arguments") {
-                    let args_text = get_node_text(&args_node, file_content);
-                    // Check if arguments contain thrd_current()
-                    if args_text.contains("thrd_current()") {
-                        return true;
-                    }
-                }
-            }
+    query::find_first_descendant(*node, |n| {
+        if n.kind() != "call_expression" {
+            return false;
         }
-    }
-
-    // Recursively check all children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if check_node_for_self_detach(&child, file_content) {
-            return true;
+        let Some(func_name_node) = n.child_by_field_name("function") else {
+            return false;
+        };
+        if get_node_text(&func_name_node, file_content) != "thrd_detach" {
+            return false;
         }
-    }
-
-    false
+        let Some(args_node) = n.child_by_field_name("arguments") else {
+            return false;
+        };
+        get_node_text(&args_node, file_content).contains("thrd_current()")
+    })
+    .is_some()
 }
 
 /// Check if a thread function that self-detaches is being used with thrd_create and thrd_join
@@ -128,18 +119,18 @@ fn search_for_thread_create(
     file_content: &str,
     violations: &mut Vec<RuleViolation>,
 ) {
-    if node.kind() == "call_expression" {
-        if let Some(fn_node) = node.child_by_field_name("function") {
+    for n in query::find_descendants_of_kind(*node, "call_expression") {
+        if let Some(fn_node) = n.child_by_field_name("function") {
             let fn_name = get_node_text(&fn_node, file_content);
             if fn_name == "thrd_create" {
                 // Check if this creates the thread with our function
-                if let Some(args) = node.child_by_field_name("arguments") {
+                if let Some(args) = n.child_by_field_name("arguments") {
                     let args_text = get_node_text(&args, file_content);
                     if args_text.contains(func_name) {
                         // Found a thrd_create for this function
                         // Now check if there's a thrd_join in the same function scope
-                        if check_for_join_after_create(node, file_content) {
-                            let start_pos = node.start_position();
+                        if check_for_join_after_create(&n, file_content) {
+                            let start_pos = n.start_position();
                             let line = start_pos.row + 1;
                             let column = start_pos.column + 1;
 
@@ -162,12 +153,6 @@ fn search_for_thread_create(
             }
         }
     }
-
-    // Recursively search children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        search_for_thread_create(&child, func_name, file_content, violations);
-    }
 }
 
 /// Extract function name from a declarator node
@@ -177,19 +162,8 @@ fn get_function_name(declarator: &Node, file_content: &str) -> String {
 
 /// Recursively search for an identifier node
 fn find_identifier_in_node(node: &Node, file_content: &str) -> Option<String> {
-    if node.kind() == "identifier" {
-        return Some(get_node_text(node, file_content).to_string());
-    }
-
-    // Recursively check all children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if let Some(result) = find_identifier_in_node(&child, file_content) {
-            return Some(result);
-        }
-    }
-
-    None
+    query::find_first_descendant(*node, |n| n.kind() == "identifier")
+        .map(|n| get_node_text(&n, file_content).to_string())
 }
 
 /// Check if there's a thrd_join call in the same scope as the thrd_create
@@ -210,22 +184,14 @@ fn check_for_join_after_create(create_node: &Node, file_content: &str) -> bool {
 
 /// Recursively search for thrd_join calls
 fn find_thrd_join_in_node(node: &Node, file_content: &str) -> bool {
-    if node.kind() == "call_expression" {
-        if let Some(fn_node) = node.child_by_field_name("function") {
-            let fn_name = get_node_text(&fn_node, file_content);
-            if fn_name == "thrd_join" {
-                return true;
-            }
+    query::find_first_descendant(*node, |n| {
+        if n.kind() != "call_expression" {
+            return false;
         }
-    }
-
-    // Recursively check all children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if find_thrd_join_in_node(&child, file_content) {
-            return true;
-        }
-    }
-
-    false
+        let Some(fn_node) = n.child_by_field_name("function") else {
+            return false;
+        };
+        get_node_text(&fn_node, file_content) == "thrd_join"
+    })
+    .is_some()
 }

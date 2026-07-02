@@ -35,6 +35,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -142,46 +143,26 @@ impl Flp04C {
 
     /// Check if a node contains validation for a variable (isinf or isnan)
     fn has_validation_check(&self, node: &Node, source: &str, var_name: &str) -> bool {
-        let text = get_node_text(node, source);
+        query::find_first_descendant(*node, |n| {
+            let text = get_node_text(&n, source);
 
-        // Check for isinf(var) or isnan(var) patterns
-        if (text.contains("isinf") || text.contains("isnan")) && text.contains(var_name) {
-            return true;
-        }
-
-        // Check for fpclassify(var) patterns
-        if text.contains("fpclassify") && text.contains(var_name) {
-            return true;
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.has_validation_check(&child, source, var_name) {
+            // Check for isinf(var) or isnan(var) patterns
+            if (text.contains("isinf") || text.contains("isnan")) && text.contains(var_name) {
                 return true;
             }
-        }
 
-        false
+            // Check for fpclassify(var) patterns
+            text.contains("fpclassify") && text.contains(var_name)
+        })
+        .is_some()
     }
 
     /// Check if a variable is used in an expression
     fn is_var_used(&self, node: &Node, source: &str, var_name: &str) -> bool {
-        if node.kind() == "identifier" {
-            let name = get_node_text(node, source);
-            if name == var_name {
-                return true;
-            }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.is_var_used(&child, source, var_name) {
-                return true;
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "identifier" && get_node_text(&n, source) == var_name
+        })
+        .is_some()
     }
 
     /// Check a function for unvalidated float inputs
@@ -228,21 +209,15 @@ impl Flp04C {
         source: &str,
         float_inputs: &mut HashMap<String, (usize, usize)>,
     ) {
-        if let Some(vars) = self.is_float_input_function(node, source) {
-            for var in vars {
-                float_inputs.insert(
-                    var,
-                    (
-                        node.start_position().row + 1,
-                        node.start_position().column + 1,
-                    ),
-                );
+        for n in query::find_descendants(*node, |_| true) {
+            if let Some(vars) = self.is_float_input_function(&n, source) {
+                for var in vars {
+                    float_inputs.insert(
+                        var,
+                        (n.start_position().row + 1, n.start_position().column + 1),
+                    );
+                }
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_float_inputs(&child, source, float_inputs);
         }
     }
 
@@ -263,13 +238,8 @@ impl Flp04C {
 
     /// Traverse the AST looking for functions
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "function_definition" {
-            self.check_function(node, source, violations);
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.traverse(&child, source, violations);
+        for n in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function(&n, source, violations);
         }
     }
 }

@@ -2,6 +2,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct DCL21C;
@@ -39,19 +40,19 @@ impl CertRule for DCL21C {
 
 impl DCL21C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for & operator (pointer_expression with &)
-        if node.kind() == "pointer_expression" {
-            let text = get_node_text(node, source);
+        for n in query::find_descendants_of_kind(*node, "pointer_expression") {
+            // Look for & operator (pointer_expression with &)
+            let text = get_node_text(&n, source);
             if text.starts_with('&') {
                 // Check if the operand is a cast or type initialization (compound literal pattern)
-                let mut cursor = node.walk();
-                for child in node.children(&mut cursor) {
+                let mut cursor = n.walk();
+                for child in n.children(&mut cursor) {
                     if child.kind() == "cast_expression"
                         || child.kind() == "compound_literal_expression"
                     {
                         // Check if inside a loop
-                        if self.is_inside_loop(node) {
-                            let start = node.start_position();
+                        if self.is_inside_loop(&n) {
+                            let start = n.start_position();
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
                                 file_path: String::new(),
@@ -66,12 +67,6 @@ impl DCL21C {
                     }
                 }
             }
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
     fn is_inside_loop(&self, node: &Node) -> bool {

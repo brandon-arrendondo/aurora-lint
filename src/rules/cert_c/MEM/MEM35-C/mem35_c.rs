@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 /// MEM35-C: Allocate sufficient memory for an object
@@ -204,18 +205,17 @@ impl Mem35C {
 
     /// Check allocation calls in a node
     fn check_allocations(node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check if this node is an allocation call
-        if Self::is_allocation_function(node, source) {
-            let call_text = get_node_text(node, source);
+        for n in query::find_descendants(*node, |c| Self::is_allocation_function(&c, source)) {
+            let call_text = get_node_text(&n, source);
 
             // Check for sizeof(pointer) violations
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                Self::check_sizeof_in_node(&child, node, source, &call_text, violations);
+            let mut cursor = n.walk();
+            for child in n.children(&mut cursor) {
+                Self::check_sizeof_in_node(&child, &n, source, &call_text, violations);
             }
 
             // Check for type mismatches
-            if Self::check_array_allocation_type_mismatch(node, source) {
+            if Self::check_array_allocation_type_mismatch(&n, source) {
                 violations.push(RuleViolation {
                     rule_id: "MEM35-C".to_string(),
                     severity: Severity::High,
@@ -224,18 +224,12 @@ impl Mem35C {
                         call_text.trim()
                     ),
                     file_path: String::new(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
+                    line: n.start_position().row + 1,
+                    column: n.start_position().column + 1,
                     suggestion: None,
                     requires_manual_review: None,
                 });
             }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            Self::check_allocations(&child, source, violations);
         }
     }
 
@@ -287,14 +281,9 @@ impl Mem35C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "function_definition" {
-            if let Some(body) = node.child_by_field_name("body") {
+        for n in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(body) = n.child_by_field_name("body") {
                 Self::check_function_for_taint_alloc(&body, source, violations);
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::check_unbounded_alloc_from_input(&child, source, violations);
             }
         }
     }
@@ -344,42 +333,33 @@ impl Mem35C {
         alloc_pos: &mut Vec<(usize, usize)>,
         has_bound: &mut bool,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let name = get_node_text(&func, source).trim().to_string();
-                if Self::TAINT_SOURCES.contains(&name.as_str())
-                    || Self::TAINT_CONVERTERS.contains(&name.as_str())
-                {
-                    *has_taint = true;
-                }
-                if matches!(name.as_str(), "malloc" | "calloc" | "realloc") {
-                    alloc_pos.push((
-                        node.start_position().row + 1,
-                        node.start_position().column + 1,
-                    ));
-                }
-            }
-        }
-
-        // Check for upper-bound comparisons: data < CONSTANT
-        if node.kind() == "binary_expression" {
-            let children: Vec<_> = (0..node.child_count())
-                .filter_map(|i| node.child(i))
-                .collect();
-            for (i, child) in children.iter().enumerate() {
-                let op = get_node_text(child, source);
-                if (op == "<" || op == "<=") && i + 1 < children.len() {
-                    let right = &children[i + 1];
-                    if right.kind() == "number_literal" {
-                        *has_bound = true;
+        for n in query::find_descendants(*node, |_| true) {
+            if n.kind() == "call_expression" {
+                if let Some(func) = n.child_by_field_name("function") {
+                    let name = get_node_text(&func, source).trim().to_string();
+                    if Self::TAINT_SOURCES.contains(&name.as_str())
+                        || Self::TAINT_CONVERTERS.contains(&name.as_str())
+                    {
+                        *has_taint = true;
+                    }
+                    if matches!(name.as_str(), "malloc" | "calloc" | "realloc") {
+                        alloc_pos.push((n.start_position().row + 1, n.start_position().column + 1));
                     }
                 }
             }
-        }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::scan_taint_alloc_bounds(&child, source, has_taint, alloc_pos, has_bound);
+            // Check for upper-bound comparisons: data < CONSTANT
+            if n.kind() == "binary_expression" {
+                let children: Vec<_> = (0..n.child_count()).filter_map(|i| n.child(i)).collect();
+                for (i, child) in children.iter().enumerate() {
+                    let op = get_node_text(child, source);
+                    if (op == "<" || op == "<=") && i + 1 < children.len() {
+                        let right = &children[i + 1];
+                        if right.kind() == "number_literal" {
+                            *has_bound = true;
+                        }
+                    }
+                }
             }
         }
     }
