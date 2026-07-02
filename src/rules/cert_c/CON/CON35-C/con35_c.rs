@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Con35C;
@@ -39,22 +40,10 @@ impl CertRule for Con35C {
 impl Con35C {
     /// Check for functions that lock multiple mutexes without using ordered locking
     fn check_multiple_locks(&self, node: Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-
-        // Find all function definitions
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "function_definition" {
-                if let Some(violation) = self.analyze_function(child, source) {
-                    violations.push(violation);
-                }
-            }
-
-            // Recursively check nested nodes
-            violations.extend(self.check_multiple_locks(child, source));
-        }
-
-        violations
+        query::find_descendants_of_kind(node, "function_definition")
+            .into_iter()
+            .filter_map(|func| self.analyze_function(func, source))
+            .collect()
     }
 
     /// Analyze a single function for potential deadlock patterns
@@ -114,31 +103,16 @@ impl Con35C {
 
     /// Find all mtx_lock calls within a function
     fn find_lock_calls<'a>(&self, func_node: Node<'a>, source: &str) -> Vec<Node<'a>> {
-        let mut lock_calls = Vec::new();
-        self.find_lock_calls_recursive(func_node, source, &mut lock_calls);
-        lock_calls
-    }
-
-    fn find_lock_calls_recursive<'a>(
-        &self,
-        node: Node<'a>,
-        source: &str,
-        lock_calls: &mut Vec<Node<'a>>,
-    ) {
-        if node.kind() == "call_expression" {
-            // Check if this is a mtx_lock call
-            if let Some(func_name_node) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func_name_node, source);
-                if func_name == "mtx_lock" || func_name == "pthread_mutex_lock" {
-                    lock_calls.push(node);
-                }
+        query::find_descendants(func_node, |node| {
+            if node.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.find_lock_calls_recursive(child, source, lock_calls);
-        }
+            let Some(func_name_node) = node.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&func_name_node, source);
+            func_name == "mtx_lock" || func_name == "pthread_mutex_lock"
+        })
     }
 
     /// Check if a function has a locking order mechanism
@@ -200,38 +174,34 @@ impl Con35C {
     }
 
     fn has_comparison_recursive(&self, node: Node, source: &str) -> bool {
-        if node.kind() == "binary_expression" {
-            let operator = node.child(1).map(|n| get_node_text(&n, source));
-            if let Some(op) = operator {
-                if op == "<" || op == ">" || op == "<=" || op == ">=" {
-                    // Check if the comparison involves id fields or similar
-                    let full_text = get_node_text(&node, source);
-                    if full_text.contains("->id") || full_text.contains(".id") {
+        query::find_first_descendant(node, |n| {
+            if n.kind() == "binary_expression" {
+                let operator = n.child(1).map(|c| get_node_text(&c, source));
+                if let Some(op) = operator {
+                    if op == "<" || op == ">" || op == "<=" || op == ">=" {
+                        // Check if the comparison involves id fields or similar
+                        let full_text = get_node_text(&n, source);
+                        if full_text.contains("->id") || full_text.contains(".id") {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            // Also check for if statements that might contain ordering logic
+            if n.kind() == "if_statement" {
+                if let Some(condition) = n.child_by_field_name("condition") {
+                    let condition_text = get_node_text(&condition, source);
+                    if (condition_text.contains("->id") || condition_text.contains(".id"))
+                        && (condition_text.contains('<') || condition_text.contains('>'))
+                    {
                         return true;
                     }
                 }
             }
-        }
 
-        // Also check for if statements that might contain ordering logic
-        if node.kind() == "if_statement" {
-            if let Some(condition) = node.child_by_field_name("condition") {
-                let condition_text = get_node_text(&condition, source);
-                if (condition_text.contains("->id") || condition_text.contains(".id"))
-                    && (condition_text.contains('<') || condition_text.contains('>'))
-                {
-                    return true;
-                }
-            }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.has_comparison_recursive(child, source) {
-                return true;
-            }
-        }
-
-        false
+            false
+        })
+        .is_some()
     }
 }

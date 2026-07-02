@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pre00C;
@@ -37,11 +38,11 @@ impl Pre00C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Only flag preproc_function_def (true function-like macros)
         // with parameters that are evaluated more than once (multi-evaluation risk)
-        if node.kind() == "preproc_function_def" {
-            if self.has_multi_evaluation_risk(node, source) {
-                let macro_name = node
+        for n in query::find_descendants_of_kind(*node, "preproc_function_def") {
+            if self.has_multi_evaluation_risk(&n, source) {
+                let macro_name = n
                     .child_by_field_name("name")
-                    .map(|n| get_node_text(&n, source))
+                    .map(|c| get_node_text(&c, source))
                     .unwrap_or("unknown");
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
@@ -52,18 +53,12 @@ impl Pre00C {
                         macro_name
                     ),
                     file_path: String::new(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
+                    line: n.start_position().row + 1,
+                    column: n.start_position().column + 1,
                     suggestion: None,
                     requires_manual_review: None,
                 });
             }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 

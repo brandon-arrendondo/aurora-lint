@@ -22,6 +22,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pre10C;
@@ -59,8 +60,8 @@ impl Pre10C {
         // Check for preprocessor macro definitions
         // preproc_def: object-like macros (e.g., #define MAX 100)
         // preproc_function_def: function-like macros with parameters (e.g., #define SWAP(x, y) ...)
-        if node.kind() == "preproc_def" || node.kind() == "preproc_function_def" {
-            if let Some(value) = node.child_by_field_name("value") {
+        for n in query::find_descendants_of_kinds(*node, &["preproc_def", "preproc_function_def"]) {
+            if let Some(value) = n.child_by_field_name("value") {
                 let value_text = ast_utils::get_node_text(&value, source);
 
                 // Check if this macro has multiple statements
@@ -68,7 +69,7 @@ impl Pre10C {
                     // Check if it's wrapped in do-while(0)
                     if !self.is_wrapped_in_do_while(&value_text) {
                         // Get macro name for better error message
-                        let macro_name = if let Some(name) = node.child_by_field_name("name") {
+                        let macro_name = if let Some(name) = n.child_by_field_name("name") {
                             ast_utils::get_node_text(&name, source)
                         } else {
                             "unknown"
@@ -83,8 +84,8 @@ impl Pre10C {
                                 macro_name
                             ),
                             file_path: String::new(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
+                            line: n.start_position().row + 1,
+                            column: n.start_position().column + 1,
                             suggestion: Some(
                                 "Wrap the macro body in: do { /* statements */ } while (0)"
                                     .to_string(),
@@ -94,12 +95,6 @@ impl Pre10C {
                     }
                 }
             }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 

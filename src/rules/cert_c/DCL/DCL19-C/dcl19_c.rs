@@ -3,6 +3,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -113,20 +114,14 @@ impl DCL19C {
         source: &str,
         calls: &mut std::collections::HashSet<String>,
     ) {
-        if node.kind() == "call_expression" {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            let mut cursor = call.walk();
+            for child in call.children(&mut cursor) {
                 if child.kind() == "identifier" {
                     calls.insert(get_node_text(&child, source).to_string());
                     break;
                 }
             }
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_function_calls(&child, source, calls);
         }
     }
 

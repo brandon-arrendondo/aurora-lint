@@ -15,6 +15,7 @@ use tree_sitter::Node;
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 
 pub struct Str01C {
     pub has_static_char_array: bool,
@@ -82,20 +83,17 @@ impl CertRule for Str01C {
 }
 
 impl Str01C {
-    fn check_node(&mut self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for static char arrays: char str[SIZE]
-        if node.kind() == "declaration" {
-            self.check_static_string_declaration(node, source);
-        }
+    fn check_node(&mut self, node: &Node, source: &str, _violations: &mut Vec<RuleViolation>) {
+        for n in query::find_descendants(*node, |_| true) {
+            // Check for static char arrays: char str[SIZE]
+            if n.kind() == "declaration" {
+                self.check_static_string_declaration(&n, source);
+            }
 
-        // Check for dynamic string allocation: malloc, calloc, realloc, strdup
-        if node.kind() == "call_expression" {
-            self.check_dynamic_string_allocation(node, source);
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+            // Check for dynamic string allocation: malloc, calloc, realloc, strdup
+            if n.kind() == "call_expression" {
+                self.check_dynamic_string_allocation(&n, source);
+            }
         }
     }
 

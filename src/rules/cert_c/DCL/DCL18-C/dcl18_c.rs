@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Dcl18C;
@@ -39,22 +40,10 @@ impl CertRule for Dcl18C {
 impl Dcl18C {
     /// Recursively check nodes for integer literals that appear to be unintended octals
     fn check_node(&self, node: Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-
-        // Check if this is a number literal
-        if node.kind() == "number_literal" {
-            if let Some(violation) = self.check_number_literal(node, source) {
-                violations.push(violation);
-            }
-        }
-
-        // Recursively check all children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            violations.extend(self.check_node(child, source));
-        }
-
-        violations
+        query::find_descendants_of_kind(node, "number_literal")
+            .into_iter()
+            .filter_map(|n| self.check_number_literal(n, source))
+            .collect()
     }
 
     /// Check if a number_literal is an unintended octal constant

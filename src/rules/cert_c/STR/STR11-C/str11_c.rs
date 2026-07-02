@@ -34,6 +34,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Str11C;
@@ -68,15 +69,8 @@ impl CertRule for Str11C {
 
 impl Str11C {
     fn check_declarations(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for declarations
-        if node.kind() == "declaration" {
-            self.check_declaration_node(node, source, violations);
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_declarations(&child, source, violations);
+        for n in query::find_descendants_of_kind(*node, "declaration") {
+            self.check_declaration_node(&n, source, violations);
         }
     }
 

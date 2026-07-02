@@ -24,6 +24,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Arr02C;
@@ -73,30 +74,17 @@ impl Arr02C {
 
     /// Check all declarations for implicit array bounds
     fn check_declarations(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Only check declaration nodes
-        if node.kind() == "declaration" {
+        for n in query::find_descendants_of_kind(*node, "declaration") {
             // Skip extern declarations — incomplete array types are permitted
             // by C11 §6.7.6.2 for extern declarations where size is defined
             // at the point of definition.
-            if Self::has_extern_specifier(node, source) {
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.check_declarations(&child, source, violations);
-                    }
-                }
-                return;
+            if Self::has_extern_specifier(&n, source) {
+                continue;
             }
 
             // Check if this declaration has an initializer
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+            if let Some(declarator) = n.child_by_field_name("declarator") {
                 self.check_declarator(&declarator, source, violations);
-            }
-        }
-
-        // Recursively check all child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_declarations(&child, source, violations);
             }
         }
     }

@@ -1,6 +1,7 @@
 // Common AST utilities for CERT C rules
 // This module provides reusable functions for navigating and extracting information from the C AST
 
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 // ============================================================================
@@ -9,12 +10,12 @@ use tree_sitter::Node;
 
 /// Extract the text content of a node from the source code
 pub fn get_node_text<'a>(node: &Node, source: &'a str) -> &'a str {
-    &source[node.start_byte()..node.end_byte()]
+    query::node_text(*node, source.as_bytes())
 }
 
 /// Extract the text content of a node as an owned String
 pub fn get_node_text_owned(node: &Node, source: &str) -> String {
-    source[node.start_byte()..node.end_byte()].to_string()
+    query::node_text(*node, source.as_bytes()).to_string()
 }
 
 // ============================================================================
@@ -24,41 +25,34 @@ pub fn get_node_text_owned(node: &Node, source: &str) -> String {
 /// Find the containing function definition for a given node
 /// Returns the function_definition node that contains the given node
 pub fn find_containing_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
-    let mut current = Some(*node);
-    while let Some(n) = current {
-        if n.kind() == "function_definition" {
-            return Some(n);
-        }
-        current = n.parent();
+    if node.kind() == "function_definition" {
+        return Some(*node);
     }
-    None
+    query::nearest_ancestor_of_kind(*node, "function_definition")
 }
 
 /// Check if a node is inside a loop (for, while, or do-while)
+///
+/// No function-boundary short-circuit: `function_definition`s never nest in
+/// C, so walking past one to check outer scopes can't happen in practice —
+/// same result as the boundary-stopping version, one predicate instead of two.
 pub fn is_inside_loop(node: &Node) -> bool {
-    let mut current = node.parent();
-    while let Some(parent) = current {
-        match parent.kind() {
-            "for_statement" | "while_statement" | "do_statement" => return true,
-            "function_definition" => return false, // Stop at function boundary
-            _ => current = parent.parent(),
-        }
-    }
-    false
+    query::find_ancestor(*node, |n| {
+        matches!(
+            n.kind(),
+            "for_statement" | "while_statement" | "do_statement"
+        )
+    })
+    .is_some()
 }
 
 /// Check if a node is inside a conditional statement (if, else if, switch)
 #[allow(dead_code)]
 pub fn is_inside_conditional(node: &Node) -> bool {
-    let mut current = node.parent();
-    while let Some(parent) = current {
-        match parent.kind() {
-            "if_statement" | "switch_statement" => return true,
-            "function_definition" => return false, // Stop at function boundary
-            _ => current = parent.parent(),
-        }
-    }
-    false
+    query::find_ancestor(*node, |n| {
+        matches!(n.kind(), "if_statement" | "switch_statement")
+    })
+    .is_some()
 }
 
 // ============================================================================
@@ -413,17 +407,7 @@ pub fn is_write_context(node: &Node) -> bool {
 /// Check if a node is part of a sizeof expression
 #[allow(dead_code)]
 pub fn is_in_sizeof(node: &Node) -> bool {
-    let mut current = node.parent();
-    while let Some(parent) = current {
-        if parent.kind() == "sizeof_expression" {
-            return true;
-        }
-        if parent.kind() == "function_definition" {
-            return false;
-        }
-        current = parent.parent();
-    }
-    false
+    query::nearest_ancestor_of_kind(*node, "sizeof_expression").is_some()
 }
 
 // ============================================================================
@@ -449,14 +433,7 @@ pub fn is_in_sizeof(node: &Node) -> bool {
 /// // }
 /// ```
 pub fn find_containing_for_loop<'a>(node: &Node<'a>) -> Option<Node<'a>> {
-    let mut current = node.parent();
-    while let Some(n) = current {
-        if n.kind() == "for_statement" {
-            return Some(n);
-        }
-        current = n.parent();
-    }
-    None
+    query::nearest_ancestor_of_kind(*node, "for_statement")
 }
 
 /// Find the containing if statement for a given node
@@ -478,14 +455,7 @@ pub fn find_containing_for_loop<'a>(node: &Node<'a>) -> Option<Node<'a>> {
 /// // }
 /// ```
 pub fn find_containing_if_statement<'a>(node: &Node<'a>) -> Option<Node<'a>> {
-    let mut current = node.parent();
-    while let Some(n) = current {
-        if n.kind() == "if_statement" {
-            return Some(n);
-        }
-        current = n.parent();
-    }
-    None
+    query::nearest_ancestor_of_kind(*node, "if_statement")
 }
 
 // ============================================================================

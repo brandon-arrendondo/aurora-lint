@@ -10,6 +10,7 @@ use tree_sitter::Node;
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 
 pub struct Win00C;
 
@@ -43,15 +44,15 @@ impl CertRule for Win00C {
 
 impl Win00C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source);
                 if func_name.trim() == "LoadLibrary" {
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: self.severity(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
+                        line: n.start_position().row + 1,
+                        column: n.start_position().column + 1,
                         file_path: String::new(),
                         message:
                             "Using LoadLibrary() without specifying search paths enables DLL hijacking attacks. \
@@ -65,11 +66,6 @@ impl Win00C {
                     });
                 }
             }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 }

@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Fio17C;
@@ -35,15 +36,14 @@ impl CertRule for Fio17C {
 
 impl Fio17C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for fread() calls
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
                 if func_name == "fread" {
                     // Check if buffer appears to be used for string data without null terminator handling
-                    if self.is_unsafe_fread(node, source) {
-                        let line = node.start_position().row + 1;
-                        let column = node.start_position().column + 1;
+                    if self.is_unsafe_fread(&n, source) {
+                        let line = n.start_position().row + 1;
+                        let column = n.start_position().column + 1;
 
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
@@ -58,12 +58,6 @@ impl Fio17C {
                     }
                 }
             }
-        }
-
-        // Recurse through children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
         }
     }
 

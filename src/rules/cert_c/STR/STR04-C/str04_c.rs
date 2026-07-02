@@ -2,6 +2,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct STR04C;
@@ -36,22 +37,18 @@ impl CertRule for STR04C {
 
 impl STR04C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check declarations for signed/unsigned char arrays with string literals
-        if node.kind() == "declaration" {
-            if let Some(violation) = self.check_string_declaration(node, source) {
-                violations.push(violation);
+        for n in query::find_descendants(*node, |_| true) {
+            // Check declarations for signed/unsigned char arrays with string literals
+            if n.kind() == "declaration" {
+                if let Some(violation) = self.check_string_declaration(&n, source) {
+                    violations.push(violation);
+                }
             }
-        }
 
-        // Check function calls with signed/unsigned char arguments (e.g., strlen)
-        if node.kind() == "call_expression" {
-            violations.extend(self.check_string_function_call(node, source));
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+            // Check function calls with signed/unsigned char arguments (e.g., strlen)
+            if n.kind() == "call_expression" {
+                violations.extend(self.check_string_function_call(&n, source));
+            }
         }
     }
 
@@ -193,18 +190,10 @@ impl STR04C {
     }
 
     fn contains_identifier(&self, node: &Node, target: &str, source: &str) -> bool {
-        if node.kind() == "identifier" && get_node_text(node, source) == target {
-            return true;
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.contains_identifier(&child, target, source) {
-                return true;
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "identifier" && get_node_text(&n, source) == target
+        })
+        .is_some()
     }
 
     fn check_string_declaration(&self, node: &Node, source: &str) -> Option<RuleViolation> {

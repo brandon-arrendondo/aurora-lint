@@ -1,5 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp19C;
@@ -40,35 +41,31 @@ impl Exp19C {
     fn check_node(&self, node: Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Check if this is a control flow statement that needs braces
-        match node.kind() {
-            "if_statement" => {
-                if let Some(violation) = self.check_if_statement(node, source) {
-                    violations.push(violation);
+        for n in query::find_descendants(node, |_| true) {
+            // Check if this is a control flow statement that needs braces
+            match n.kind() {
+                "if_statement" => {
+                    if let Some(violation) = self.check_if_statement(n, source) {
+                        violations.push(violation);
+                    }
                 }
-            }
-            "for_statement" => {
-                if let Some(violation) = self.check_for_statement(node, source) {
-                    violations.push(violation);
+                "for_statement" => {
+                    if let Some(violation) = self.check_for_statement(n, source) {
+                        violations.push(violation);
+                    }
                 }
-            }
-            "while_statement" => {
-                if let Some(violation) = self.check_while_statement(node, source) {
-                    violations.push(violation);
+                "while_statement" => {
+                    if let Some(violation) = self.check_while_statement(n, source) {
+                        violations.push(violation);
+                    }
                 }
-            }
-            "do_statement" => {
-                if let Some(violation) = self.check_do_statement(node, source) {
-                    violations.push(violation);
+                "do_statement" => {
+                    if let Some(violation) = self.check_do_statement(n, source) {
+                        violations.push(violation);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
-        }
-
-        // Recursively check all children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            violations.extend(self.check_node(child, source));
         }
 
         violations

@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Str03C;
@@ -35,47 +36,43 @@ impl CertRule for Str03C {
 
 impl Str03C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for function calls that can truncate strings
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = ast_utils::get_node_text(&function, source);
+        for n in query::find_descendants(*node, |_| true) {
+            // Check for function calls that can truncate strings
+            if n.kind() == "call_expression" {
+                if let Some(function) = n.child_by_field_name("function") {
+                    let func_name = ast_utils::get_node_text(&function, source);
 
-                match func_name {
-                    "strncpy" | "strncat" | "snprintf"
-                        // Check if there's proper length validation before this call
-                        if !self.has_length_validation_before(node, source) => {
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                severity: self.severity(),
-                                message: format!(
-                                    "Call to {} may inadvertently truncate string without proper length validation",
-                                    func_name
-                                ),
-                                file_path: String::new(),
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
-                                suggestion: Some(
-                                    "Validate string length before calling truncating functions, or use strcpy() after validation"
-                                        .to_string(),
-                                ),
-                                requires_manual_review: Some(true),
-                            });
-                        }
-                    _ => {}
+                    match func_name {
+                        "strncpy" | "strncat" | "snprintf"
+                            // Check if there's proper length validation before this call
+                            if !self.has_length_validation_before(&n, source) => {
+                                violations.push(RuleViolation {
+                                    rule_id: self.rule_id().to_string(),
+                                    severity: self.severity(),
+                                    message: format!(
+                                        "Call to {} may inadvertently truncate string without proper length validation",
+                                        func_name
+                                    ),
+                                    file_path: String::new(),
+                                    line: n.start_position().row + 1,
+                                    column: n.start_position().column + 1,
+                                    suggestion: Some(
+                                        "Validate string length before calling truncating functions, or use strcpy() after validation"
+                                            .to_string(),
+                                    ),
+                                    requires_manual_review: Some(true),
+                                });
+                            }
+                        _ => {}
+                    }
                 }
             }
-        }
 
-        // CWE-464: Detect (char)atoi(...) — atoi returns 0 on failure, which becomes
-        // a null sentinel '\0' when cast to char, inadvertently truncating strings.
-        if node.kind() == "cast_expression" {
-            self.check_atoi_char_cast(node, source, violations);
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+            // CWE-464: Detect (char)atoi(...) — atoi returns 0 on failure, which becomes
+            // a null sentinel '\0' when cast to char, inadvertently truncating strings.
+            if n.kind() == "cast_expression" {
+                self.check_atoi_char_cast(&n, source, violations);
+            }
         }
     }
 
@@ -158,40 +155,33 @@ impl Str03C {
         call_line: usize,
         source: &str,
     ) -> bool {
-        let mut cursor = scope_node.walk();
-        for child in scope_node.children(&mut cursor) {
-            // Only check nodes that come before the call
-            if child.start_position().row >= call_line {
-                break;
-            }
-
-            // Check if this is an if statement with length validation
-            if child.kind() == "if_statement" {
-                if let Some(condition) = child.child_by_field_name("condition") {
-                    let cond_text = ast_utils::get_node_text(&condition, source);
-                    if self.is_length_validation(&cond_text) {
-                        // Accept if the call is in the else branch (safe path)
-                        if let Some(alternative) = child.child_by_field_name("alternative") {
-                            if self.is_ancestor(&alternative, call_line) {
-                                return true;
-                            }
-                        }
-                        // Accept if the length check precedes the call in the
-                        // same scope — the if handles the overlong case (e.g.,
-                        // error/return), so code after the if is safe.
-                        if child.end_position().row < call_line {
-                            return true;
-                        }
+        // Any if-statement descendant starting before the call line is a
+        // candidate — a descendant starting at/after call_line can never
+        // contain a nested if starting earlier (children start no earlier
+        // than their parent), so this flat filter is equivalent to the
+        // depth-first walk that stopped descending past call_line.
+        query::find_descendants_of_kind(*scope_node, "if_statement")
+            .into_iter()
+            .filter(|n| n.start_position().row < call_line)
+            .any(|if_node| {
+                let Some(condition) = if_node.child_by_field_name("condition") else {
+                    return false;
+                };
+                let cond_text = ast_utils::get_node_text(&condition, source);
+                if !self.is_length_validation(&cond_text) {
+                    return false;
+                }
+                // Accept if the call is in the else branch (safe path)
+                if let Some(alternative) = if_node.child_by_field_name("alternative") {
+                    if self.is_ancestor(&alternative, call_line) {
+                        return true;
                     }
                 }
-            }
-
-            // Recursively check nested scopes
-            if self.find_length_check_in_scope(&child, call_line, source) {
-                return true;
-            }
-        }
-        false
+                // Accept if the length check precedes the call in the
+                // same scope — the if handles the overlong case (e.g.,
+                // error/return), so code after the if is safe.
+                if_node.end_position().row < call_line
+            })
     }
 
     /// Check if a condition validates string length
@@ -205,18 +195,10 @@ impl Str03C {
             || (condition.contains("sizeof") && condition.contains("strlen"))
     }
 
-    /// Check if a node at the given line is a descendant of the given node
+    /// Check if the given line falls within this node's span. A descendant's
+    /// span is always a subset of its ancestor's, so checking `node` alone
+    /// is equivalent to checking `node` or any of its descendants.
     fn is_ancestor(&self, node: &Node, target_line: usize) -> bool {
-        if node.start_position().row <= target_line && target_line <= node.end_position().row {
-            return true;
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.is_ancestor(&child, target_line) {
-                return true;
-            }
-        }
-        false
+        node.start_position().row <= target_line && target_line <= node.end_position().row
     }
 }

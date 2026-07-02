@@ -2,6 +2,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -49,18 +50,12 @@ impl Flp37C {
         source: &str,
         float_structs: &mut HashMap<String, bool>,
     ) {
-        if node.kind() == "struct_specifier" {
-            if let Some((struct_name, has_float)) = self.check_struct_for_float(node, source) {
+        for n in query::find_descendants_of_kind(*node, "struct_specifier") {
+            if let Some((struct_name, has_float)) = self.check_struct_for_float(&n, source) {
                 if has_float {
                     float_structs.insert(struct_name, true);
                 }
             }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_float_structs(&child, source, float_structs);
         }
     }
 
@@ -89,22 +84,10 @@ impl Flp37C {
     }
 
     fn has_float_field(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "primitive_type" {
-            let type_text = get_node_text(node, source);
-            if type_text == "float" || type_text == "double" {
-                return true;
-            }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.has_float_field(&child, source) {
-                return true;
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "primitive_type" && matches!(get_node_text(&n, source), "float" | "double")
+        })
+        .is_some()
     }
 
     fn check_memcmp_calls(
@@ -114,11 +97,11 @@ impl Flp37C {
         float_structs: &HashMap<String, bool>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            let mut cursor = node.walk();
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            let mut cursor = call.walk();
             let mut is_memcmp = false;
 
-            for child in node.children(&mut cursor) {
+            for child in call.children(&mut cursor) {
                 if child.kind() == "identifier" {
                     let func_name = get_node_text(&child, source);
                     if func_name == "memcmp" {
@@ -130,10 +113,10 @@ impl Flp37C {
 
             if is_memcmp {
                 // Check if any argument involves a struct with float fields
-                for child in node.children(&mut cursor) {
+                for child in call.children(&mut cursor) {
                     if child.kind() == "argument_list" {
                         if self.args_contain_float_struct(&child, source, float_structs) {
-                            let start = node.start_position();
+                            let start = call.start_position();
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
                                 file_path: String::new(),
@@ -150,12 +133,6 @@ impl Flp37C {
                 }
             }
         }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_memcmp_calls(&child, source, float_structs, violations);
-        }
     }
 
     fn args_contain_float_struct(
@@ -164,50 +141,34 @@ impl Flp37C {
         source: &str,
         float_structs: &HashMap<String, bool>,
     ) -> bool {
-        // Check if this node or its children reference a struct with floats
-        // Look for sizeof(struct S) patterns
-        if node.kind() == "sizeof_expression" {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "type_descriptor" {
-                    if let Some(struct_name) = self.extract_struct_name(&child, source) {
-                        if float_structs.contains_key(&struct_name) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.args_contain_float_struct(&child, source, float_structs) {
-                return true;
-            }
-        }
-
-        false
+        // Check if this node or its descendants reference a struct with floats
+        // via sizeof(struct S) patterns.
+        query::find_descendants_of_kind(*node, "sizeof_expression")
+            .into_iter()
+            .any(|sizeof_node| {
+                let mut cursor = sizeof_node.walk();
+                let type_descriptors: Vec<_> = sizeof_node
+                    .children(&mut cursor)
+                    .filter(|c| c.kind() == "type_descriptor")
+                    .collect();
+                type_descriptors.into_iter().any(|type_desc| {
+                    self.extract_struct_name(&type_desc, source)
+                        .is_some_and(|name| float_structs.contains_key(&name))
+                })
+            })
     }
 
     fn extract_struct_name(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "struct_specifier" || node.kind() == "type_identifier" {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "type_identifier" {
-                    return Some(get_node_text(&child, source).to_string());
-                }
-            }
-        }
-
-        // Recurse
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(name) = self.extract_struct_name(&child, source) {
-                return Some(name);
-            }
-        }
-
-        None
+        let found = query::find_first_descendant(*node, |n| {
+            (n.kind() == "struct_specifier" || n.kind() == "type_identifier")
+                && n.children(&mut n.walk())
+                    .any(|c| c.kind() == "type_identifier")
+        })?;
+        let mut cursor = found.walk();
+        let name = found
+            .children(&mut cursor)
+            .find(|c| c.kind() == "type_identifier")
+            .map(|c| get_node_text(&c, source).to_string());
+        name
     }
 }

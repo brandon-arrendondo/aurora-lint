@@ -4,6 +4,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -40,15 +41,8 @@ impl CertRule for Fio46C {
 impl Fio46C {
     /// Recursively check nodes in the AST
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Analyze function definitions
-        if node.kind() == "function_definition" {
-            self.analyze_function(node, source, violations);
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.analyze_function(&func, source, violations);
         }
     }
     /// Analyze a function for closed file access
@@ -78,27 +72,20 @@ impl Fio46C {
         closed_streams: &mut HashMap<String, usize>,
         has_any_fclose: &mut bool,
     ) {
-        // Check current node
-        if node.kind() == "call_expression" {
-            let func_name = self.get_function_name(node, source);
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            let func_name = self.get_function_name(&call, source);
 
             if func_name.trim() == "fclose" {
                 *has_any_fclose = true;
                 // Track the closed stream with its byte position
-                if let Some(stream_name) = self.get_first_argument(node, source) {
-                    let byte_pos = node.start_byte();
+                if let Some(stream_name) = self.get_first_argument(&call, source) {
+                    let byte_pos = call.start_byte();
                     let trimmed_name = stream_name.trim().to_string();
                     closed_streams.insert(trimmed_name.clone(), byte_pos);
                     // Also try with no trim
                     closed_streams.insert(stream_name, byte_pos);
                 }
             }
-        }
-
-        // Recursively check all children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_fclose_calls(&child, source, closed_streams, has_any_fclose);
         }
     }
 
@@ -110,26 +97,14 @@ impl Fio46C {
         closed_streams: &HashMap<String, usize>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        let mut cursor = node.walk();
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            let func_name = self.get_function_name(&call, source);
 
-        for child in node.children(&mut cursor) {
-            if child.kind() == "call_expression" {
-                let func_name = self.get_function_name(&child, source);
-
-                // Don't check fclose itself
-                if func_name.trim() != "fclose" {
-                    // Check if this function call uses a closed stream
-                    self.check_function_uses_closed_stream(
-                        &child,
-                        source,
-                        closed_streams,
-                        violations,
-                    );
-                }
+            // Don't check fclose itself
+            if func_name.trim() != "fclose" {
+                // Check if this function call uses a closed stream
+                self.check_function_uses_closed_stream(&call, source, closed_streams, violations);
             }
-
-            // Recursively check nested blocks
-            self.check_closed_stream_usage(&child, source, closed_streams, violations);
         }
     }
 

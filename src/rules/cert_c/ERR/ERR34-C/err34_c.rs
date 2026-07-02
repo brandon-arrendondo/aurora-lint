@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Err34C;
@@ -29,14 +30,13 @@ impl CertRule for Err34C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Look for call expressions
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = n.child_by_field_name("function") {
                 let func_name = ast_utils::get_node_text(&function, source);
 
                 // Check for unsafe conversion functions
                 if is_unsafe_conversion_function(func_name) {
-                    let start_point = node.start_position();
+                    let start_point = n.start_position();
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: self.severity(),
@@ -55,12 +55,6 @@ impl CertRule for Err34C {
                     });
                 }
             }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            violations.extend(self.check(&child, source));
         }
 
         violations

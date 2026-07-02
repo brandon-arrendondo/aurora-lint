@@ -10,6 +10,7 @@ use tree_sitter::Node;
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 
 pub struct Pos52C;
 
@@ -43,14 +44,8 @@ impl CertRule for Pos52C {
 
 impl Pos52C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for function bodies that contain mutex locks
-        if node.kind() == "compound_statement" {
-            self.check_for_lock_and_blocking(&node, source, violations);
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.check_node(&child, source, violations);
+        for n in query::find_descendants_of_kind(*node, "compound_statement") {
+            self.check_for_lock_and_blocking(&n, source, violations);
         }
     }
 
@@ -109,19 +104,8 @@ impl Pos52C {
     }
 
     /// Find a call expression in a statement (handles if statements, etc.)
-    fn find_call_expression<'a>(&self, node: &Node<'a>, source: &str) -> Option<Node<'a>> {
-        if node.kind() == "call_expression" {
-            return Some(*node);
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if let Some(call) = self.find_call_expression(&child, source) {
-                return Some(call);
-            }
-        }
-
-        None
+    fn find_call_expression<'a>(&self, node: &Node<'a>, _source: &str) -> Option<Node<'a>> {
+        query::find_first_descendant(*node, |n| n.kind() == "call_expression")
     }
 
     /// Get function name from a call expression

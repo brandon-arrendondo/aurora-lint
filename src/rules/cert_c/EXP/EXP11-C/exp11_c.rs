@@ -43,6 +43,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -93,21 +94,8 @@ impl CertRule for Exp11C {
 /// Collects names of all structs that contain bit-field members
 fn collect_bitfield_structs<'a>(root: &Node, source: &'a str) -> HashSet<&'a str> {
     let mut bitfield_structs = HashSet::new();
-    let mut cursor = root.walk();
 
-    for child in root.children(&mut cursor) {
-        collect_bitfield_structs_recursive(&child, source, &mut bitfield_structs);
-    }
-
-    bitfield_structs
-}
-
-fn collect_bitfield_structs_recursive<'a>(
-    node: &Node,
-    source: &'a str,
-    bitfield_structs: &mut HashSet<&'a str>,
-) {
-    if node.kind() == "struct_specifier" {
+    for node in query::find_descendants_of_kind(*root, "struct_specifier") {
         // Check if struct has bit-fields in body
         if let Some(body) = node.child_by_field_name("body") {
             if contains_bitfield(&body) {
@@ -120,11 +108,7 @@ fn collect_bitfield_structs_recursive<'a>(
         }
     }
 
-    // Recursively check children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_bitfield_structs_recursive(&child, source, bitfield_structs);
-    }
+    bitfield_structs
 }
 
 /// Checks if a struct body contains bit-field declarations
@@ -151,22 +135,8 @@ fn collect_bitfield_variables<'a>(
     bitfield_structs: &HashSet<&'a str>,
 ) -> HashSet<&'a str> {
     let mut bitfield_vars = HashSet::new();
-    let mut cursor = root.walk();
 
-    for child in root.children(&mut cursor) {
-        collect_bitfield_vars_recursive(&child, source, bitfield_structs, &mut bitfield_vars);
-    }
-
-    bitfield_vars
-}
-
-fn collect_bitfield_vars_recursive<'a>(
-    node: &Node,
-    source: &'a str,
-    bitfield_structs: &HashSet<&'a str>,
-    bitfield_vars: &mut HashSet<&'a str>,
-) {
-    if node.kind() == "declaration" {
+    for node in query::find_descendants_of_kind(*root, "declaration") {
         // Check if this is a struct type declaration
         if let Some(type_node) = node.child_by_field_name("type") {
             let type_text = ast_utils::get_node_text(&type_node, source);
@@ -176,17 +146,13 @@ fn collect_bitfield_vars_recursive<'a>(
                 // Check if this struct has bit-fields
                 if bitfield_structs.contains(struct_name) {
                     // Extract variable names from declarators
-                    extract_declared_variable_names(node, source, bitfield_vars);
+                    extract_declared_variable_names(&node, source, &mut bitfield_vars);
                 }
             }
         }
     }
 
-    // Recursively check children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_bitfield_vars_recursive(&child, source, bitfield_structs, bitfield_vars);
-    }
+    bitfield_vars
 }
 
 /// Extracts struct name from type text like "struct bf"
@@ -249,14 +215,8 @@ fn find_bitfield_pointer_casts(
     bitfield_vars: &HashSet<&str>,
     violations: &mut Vec<RuleViolation>,
 ) {
-    if node.kind() == "cast_expression" {
-        check_cast_expression(node, source, bitfield_vars, violations);
-    }
-
-    // Recursively check children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        find_bitfield_pointer_casts(&child, source, bitfield_vars, violations);
+    for cast_node in query::find_descendants_of_kind(*node, "cast_expression") {
+        check_cast_expression(&cast_node, source, bitfield_vars, violations);
     }
 }
 

@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 /// MSC41-C: Never hard code sensitive information
@@ -245,8 +246,8 @@ impl Msc41C {
         violations: &mut Vec<RuleViolation>,
         context_func: Option<&str>,
     ) {
-        if node.kind() == "string_literal" {
-            let text = get_node_text(node, source);
+        for n in query::find_descendants_of_kind(*node, "string_literal") {
+            let text = get_node_text(&n, source);
 
             // In sensitive function context, use a relaxed heuristic that skips
             // obvious non-sensitive strings (format strings, debug labels, delimiters)
@@ -273,20 +274,14 @@ impl Msc41C {
                         text.trim()
                     ),
                     file_path: String::new(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
+                    line: n.start_position().row + 1,
+                    column: n.start_position().column + 1,
                     suggestion: Some(
                         "Consider reading sensitive data from environment variables, configuration files, or user input at runtime.".to_string()
                     ),
                     requires_manual_review: None,
                 });
             }
-        }
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            Self::check_node_for_string_literals(&child, source, violations, context_func);
         }
     }
 
@@ -399,15 +394,10 @@ impl Msc41C {
 
     /// Recursively check all nodes
     fn check_node(node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check this node
-        Self::check_call_expression(node, source, violations);
-        Self::check_declaration(node, source, violations);
-        Self::check_preproc_def(node, source, violations);
-
-        // Recursively check children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            Self::check_node(&child, source, violations);
+        for n in query::find_descendants(*node, |_| true) {
+            Self::check_call_expression(&n, source, violations);
+            Self::check_declaration(&n, source, violations);
+            Self::check_preproc_def(&n, source, violations);
         }
     }
 }

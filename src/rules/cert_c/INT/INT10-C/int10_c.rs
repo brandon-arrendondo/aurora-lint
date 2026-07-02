@@ -40,6 +40,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -88,39 +89,33 @@ impl Int10C {
         source: &str,
         type_map: &mut HashMap<String, String>,
     ) {
-        match node.kind() {
-            "parameter_declaration" | "declaration" => {
-                // Extract type text from the node
-                let mut type_text = String::new();
-                let mut cursor = node.walk();
-                for child in node.children(&mut cursor) {
-                    match child.kind() {
-                        "type_qualifier"
-                        | "primitive_type"
-                        | "sized_type_specifier"
-                        | "type_identifier" => {
-                            if !type_text.is_empty() {
-                                type_text.push(' ');
-                            }
-                            type_text.push_str(get_node_text(&child, source));
+        for decl in
+            query::find_descendants_of_kinds(*node, &["parameter_declaration", "declaration"])
+        {
+            // Extract type text from the node
+            let mut type_text = String::new();
+            let mut cursor = decl.walk();
+            for child in decl.children(&mut cursor) {
+                match child.kind() {
+                    "type_qualifier"
+                    | "primitive_type"
+                    | "sized_type_specifier"
+                    | "type_identifier" => {
+                        if !type_text.is_empty() {
+                            type_text.push(' ');
                         }
-                        _ => {}
+                        type_text.push_str(get_node_text(&child, source));
                     }
-                }
-                if !type_text.is_empty() {
-                    // Extract identifiers from declarators
-                    let mut cursor2 = node.walk();
-                    for child in node.children(&mut cursor2) {
-                        self.extract_var_names(&child, source, &type_text, type_map);
-                    }
+                    _ => {}
                 }
             }
-            _ => {}
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.collect_types_recursive(&child, source, type_map);
+            if !type_text.is_empty() {
+                // Extract identifiers from declarators
+                let mut cursor2 = decl.walk();
+                for child in decl.children(&mut cursor2) {
+                    self.extract_var_names(&child, source, &type_text, type_map);
+                }
+            }
         }
     }
 
@@ -131,8 +126,8 @@ impl Int10C {
         type_text: &str,
         type_map: &mut HashMap<String, String>,
     ) {
-        if node.kind() == "identifier" {
-            if let Some(parent) = node.parent() {
+        for id in query::find_descendants_of_kind(*node, "identifier") {
+            if let Some(parent) = id.parent() {
                 let pk = parent.kind();
                 if pk == "init_declarator"
                     || pk == "pointer_declarator"
@@ -140,15 +135,11 @@ impl Int10C {
                     || pk == "parameter_declaration"
                 {
                     type_map.insert(
-                        get_node_text(node, source).to_string(),
+                        get_node_text(&id, source).to_string(),
                         type_text.to_string(),
                     );
                 }
             }
-        }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.extract_var_names(&child, source, type_text, type_map);
         }
     }
 
@@ -159,13 +150,13 @@ impl Int10C {
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
     ) {
-        if node.kind() == "binary_expression" {
-            if let Some(operator) = node.child_by_field_name("operator") {
+        for n in query::find_descendants_of_kind(*node, "binary_expression") {
+            if let Some(operator) = n.child_by_field_name("operator") {
                 let op_text = get_node_text(&operator, source);
 
                 if op_text == "%" {
                     // Check if this is a signed modulo operation
-                    if self.is_potentially_signed_modulo(node, source, type_map) {
+                    if self.is_potentially_signed_modulo(&n, source, type_map) {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             message: "Modulo operator used with potentially signed operands. \
@@ -186,13 +177,6 @@ impl Int10C {
                         });
                     }
                 }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_modulo_usage(&child, source, violations, type_map);
             }
         }
     }
@@ -254,31 +238,27 @@ impl Int10C {
         source: &str,
         type_map: &HashMap<String, String>,
     ) -> bool {
-        if node.kind() == "identifier" {
-            let name = get_node_text(node, source);
-            if let Some(t) = type_map.get(name) {
-                return t.contains("size_t")
-                    || t.contains("unsigned")
-                    || t.contains("uint")
-                    || is_short_unsigned_typedef(t);
+        query::find_first_descendant(*node, |n| {
+            if n.kind() == "identifier" {
+                let name = get_node_text(&n, source);
+                if let Some(t) = type_map.get(name) {
+                    return t.contains("size_t")
+                        || t.contains("unsigned")
+                        || t.contains("uint")
+                        || is_short_unsigned_typedef(t);
+                }
             }
-        }
-        // For field expressions like self->field, we can't resolve the type
-        // but we know it's a struct access — check text heuristic
-        if node.kind() == "field_expression" {
-            let text = get_node_text(node, source);
-            if self.looks_unsigned(&text) {
-                return true;
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.operand_has_unsigned_type(&child, source, type_map) {
+            // For field expressions like self->field, we can't resolve the type
+            // but we know it's a struct access — check text heuristic
+            if n.kind() == "field_expression" {
+                let text = get_node_text(&n, source);
+                if self.looks_unsigned(&text) {
                     return true;
                 }
             }
-        }
-        false
+            false
+        })
+        .is_some()
     }
 
     /// Check if an expression appears to use unsigned types

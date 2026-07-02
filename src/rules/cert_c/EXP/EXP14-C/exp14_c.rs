@@ -27,6 +27,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp14C;
@@ -61,17 +62,12 @@ impl CertRule for Exp14C {
 
 /// Recursively checks nodes for bitwise operations on small integer types without explicit casts
 fn check_node(node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-    // Check assignment expressions and init declarators
-    match node.kind() {
-        "assignment_expression" => check_assignment(node, source, violations),
-        "init_declarator" => check_init_declarator(node, source, violations),
-        _ => {}
-    }
-
-    // Recursively check children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        check_node(&child, source, violations);
+    for n in query::find_descendants(*node, |_| true) {
+        match n.kind() {
+            "assignment_expression" => check_assignment(&n, source, violations),
+            "init_declarator" => check_init_declarator(&n, source, violations),
+            _ => {}
+        }
     }
 }
 
