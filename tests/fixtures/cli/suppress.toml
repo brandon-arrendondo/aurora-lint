@@ -1,4 +1,6 @@
-[[suppression]]
+[[suppress]]
+name = "violation-msc04"
+tool = "sqc"
 file = "violation.c"
 rule = "MSC04-C"
 hash = "745a35718a0e2d31"

@@ -388,7 +388,10 @@ fn relative_to_root(path: &str, root: &str) -> String {
 }
 
 /// Build a suppression manager, loading the TOML suppression file if provided
-/// or auto-detected at `<root>/.sqc-suppress.toml`.
+/// or auto-detected at `<root>/suppress.toml` — the shared, all-tools file
+/// from `lang_parsing_substrate/docs/unified-config-spec.md` — falling back
+/// to the legacy `<root>/.sqc-suppress.toml` name if `suppress.toml` isn't
+/// present (both are parsed with the same `[[suppress]]` schema).
 fn build_suppression_manager(
     suppress_file: Option<&str>,
     project_source: &ProjectSource,
@@ -396,13 +399,11 @@ fn build_suppression_manager(
     let mut suppression_manager = SuppressionManager::new();
 
     let toml_path = suppress_file.map(String::from).or_else(|| {
-        let auto_path =
-            std::path::Path::new(project_source.get_root_path()).join(".sqc-suppress.toml");
-        if auto_path.exists() {
-            auto_path.to_str().map(String::from)
-        } else {
-            None
-        }
+        let root = std::path::Path::new(project_source.get_root_path());
+        [root.join("suppress.toml"), root.join(".sqc-suppress.toml")]
+            .into_iter()
+            .find(|p| p.exists())
+            .and_then(|p| p.to_str().map(String::from))
     });
     if let Some(ref path) = toml_path {
         match suppression_manager.load_from_toml(path) {
@@ -598,8 +599,10 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
         rule_id, hash
     );
     println!();
-    println!("Or add to .sqc-suppress.toml (for read-only codebases):");
-    println!("[[suppression]]");
+    println!("Or add to suppress.toml (for read-only codebases):");
+    println!("[[suppress]]");
+    println!("name = \"TODO-unique-name\"");
+    println!("tool = \"sqc\"");
     println!("file = \"{}\"", filename);
     println!("rule = \"{}\"", rule_id);
     println!("hash = \"{}\"", hash);

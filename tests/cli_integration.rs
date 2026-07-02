@@ -539,8 +539,9 @@ fn generate_suppression_outputs_hash() {
     ]);
     assert_eq!(code, 0);
     assert!(stdout.contains("SQC-SUPPRESS: MSC04-C"));
+    assert!(stdout.contains("tools:suppress sqc:MSC04-C"));
     assert!(stdout.contains("HASH:745a35718a0e2d31"));
-    assert!(stdout.contains("[[suppression]]"));
+    assert!(stdout.contains("[[suppress]]"));
 }
 
 // ─── Cross-file analysis (-d) ────────────────────────────────────────────────

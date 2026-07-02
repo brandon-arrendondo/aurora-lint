@@ -15,7 +15,7 @@ The main analysis module that coordinates:
 ### `suppression.rs` - Violation Suppression System
 Implements SHA-256 based suppression management:
 - Generation of unique hashes for violations
-- Loading and saving suppression files (`.sqc-suppress.toml`)
+- Loading suppression files (`suppress.toml`, falling back to the legacy `.sqc-suppress.toml` name)
 - Filtering of suppressed violations from results
 - Audit trail for suppression reasons
 
@@ -54,10 +54,10 @@ Main entry point that:
 - Handles errors gracefully with context
 
 ### `handle_generate_suppression()`
-Creates suppression file by:
-- Running full analysis
-- Generating hashes for all violations
-- Writing `.sqc-suppress.toml` file
+Prints ready-to-paste suppression snippets for a `file:line:rule` spec:
+- The unified inline comment (`tools:suppress sqc:RULE HASH:... JUSTIFICATION:"..."`)
+- The legacy inline comment (`SQC-SUPPRESS: RULE HASH:... JUSTIFICATION: "..."`)
+- A `suppress.toml` `[[suppress]]` entry, for read-only codebases
 
 ### `apply_suppressions()`
 Filters violations by:
@@ -67,15 +67,28 @@ Filters violations by:
 
 ## Suppression File Format
 
+`suppress.toml` — the shared, all-tools file from
+`lang_parsing_substrate/docs/unified-config-spec.md`. `tool` scopes each
+entry to `"sqc"` or the wildcard `"*"`; `rule_glob`/`function_prefix` are
+sqc-specific extensions beyond the base spec.
+
 ```toml
-[[suppressions]]
-file = "src/example.c"
-rule = "ARR30-C"
-line = 42
-column = 15
-hash = "a1b2c3d4e5f6..."
-reason = "Bounds check performed in calling function"
-timestamp = "2024-01-15T10:30:00Z"
+# Hash-matched: exact code match, tamper-detected.
+[[suppress]]
+name          = "example-arr30"
+tool          = "sqc"
+file          = "src/example.c"
+rule          = "ARR30-C"
+hash          = "a1b2c3d4e5f6..."
+justification = "Bounds check performed in calling function"
+
+# Wildcard: no hash — matches by file_glob/rule/rule_glob/function_prefix (ANDed).
+[[suppress]]
+name          = "vendor-dcl"
+tool          = "sqc"
+file_glob     = "src/vendor/**"
+rule_glob     = "DCL*"
+justification = "Vendor code"
 ```
 
 ## Performance Considerations

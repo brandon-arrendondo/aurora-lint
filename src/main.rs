@@ -139,7 +139,7 @@ fn run() -> Result<i32> {
         .arg(
             Arg::new("suppress_file")
                 .long("suppress-file")
-                .help("Path to .sqc-suppress.toml file (auto-detected in project root if not specified)")
+                .help("Path to suppress.toml file (auto-detected as suppress.toml or the legacy .sqc-suppress.toml in project root if not specified)")
                 .value_name("FILE"),
         )
         .arg(

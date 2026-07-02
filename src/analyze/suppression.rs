@@ -16,37 +16,56 @@ pub struct Suppression {
     pub comment_line: usize,
 }
 
-/// A single entry in `.sqc-suppress.toml`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct TomlSuppressionEntry {
-    pub file: String,
-    pub rule: String,
-    pub hash: String,
-    #[serde(default)]
-    pub justification: String,
-}
-
-/// A wildcard entry in `.sqc-suppress.toml` `[[wildcard]]` section.
+/// A single `[[suppress]]` entry in the shared `suppress.toml` (see
+/// `lang_parsing_substrate/docs/unified-config-spec.md`). One file, all
+/// tools — `tool` scopes each entry to `"sqc"` or the wildcard `"*"`;
+/// entries for other tools (e.g. `"knots"`) are loaded and ignored.
 ///
-/// All specified fields are ANDed: a violation must match every field present.
-/// At least one matching field (file_glob, rule, rule_glob, function_prefix) must be set.
+/// `rule_glob` and `function_prefix` are sqc-specific extensions beyond the
+/// base spec, preserving CERT-C rule-family and identifier-prefix
+/// suppression that predates this migration.
+///
+/// An entry is either hash-matched (`hash` + `file` + `rule` all present —
+/// exact code match, tamper-detected) or a wildcard suppression (no `hash`;
+/// at least one of `file_glob`, `rule`, `rule_glob`, `function_prefix`).
 #[derive(Debug, Clone, Deserialize)]
-pub struct TomlWildcardEntry {
+pub struct SuppressEntry {
+    /// Human-readable label, unique within the file.
+    pub name: String,
+    /// `"sqc"`, or `"*"` to apply across every tool.
+    pub tool: String,
+    #[serde(default)]
+    pub rule: Option<String>,
+    #[serde(default)]
+    pub file: Option<String>,
     /// Glob pattern for file paths (e.g., `"src/vendor/**"`, `"**/*.generated.c"`).
     #[serde(default)]
     pub file_glob: Option<String>,
-    /// Exact rule ID match (e.g., `"DCL31-C"`).
+    /// Required for hash-matched entries; omit for wildcard entries.
     #[serde(default)]
-    pub rule: Option<String>,
-    /// Glob pattern for rule IDs (e.g., `"DCL*"`, `"INT3*-C"`).
+    pub hash: Option<String>,
+    /// Glob pattern for rule IDs (e.g., `"DCL*"`, `"INT3*-C"`) — sqc extension.
     #[serde(default)]
     pub rule_glob: Option<String>,
-    /// Prefix to match in violation messages (e.g., `"wolfSSL_"`).
+    /// Prefix to match in violation messages (e.g., `"wolfSSL_"`) — sqc extension.
     /// Matches if the message contains an identifier starting with this prefix.
     #[serde(default)]
     pub function_prefix: Option<String>,
     #[serde(default)]
     pub justification: String,
+}
+
+/// A wildcard entry, compiled from a [`SuppressEntry`] that has no `hash`.
+///
+/// All specified fields are ANDed: a violation must match every field present.
+/// At least one matching field (file_glob, rule, rule_glob, function_prefix) must be set.
+#[derive(Debug, Clone)]
+struct WildcardSpec {
+    file_glob: Option<String>,
+    rule: Option<String>,
+    rule_glob: Option<String>,
+    function_prefix: Option<String>,
+    justification: String,
 }
 
 /// Compiled wildcard suppression, ready for matching.
@@ -59,13 +78,11 @@ struct CompiledWildcard {
     justification: String,
 }
 
-/// Top-level structure of `.sqc-suppress.toml`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct TomlSuppressionFile {
+/// Top-level structure of `suppress.toml`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SuppressFile {
     #[serde(default)]
-    pub suppression: Vec<TomlSuppressionEntry>,
-    #[serde(default)]
-    pub wildcard: Vec<TomlWildcardEntry>,
+    pub suppress: Vec<SuppressEntry>,
 }
 
 impl Suppression {
@@ -161,9 +178,11 @@ impl Suppression {
 pub struct SuppressionManager {
     /// Inline comment suppressions, keyed by full file path.
     suppressions: HashMap<String, Vec<Suppression>>,
-    /// TOML file suppressions (from `.sqc-suppress.toml`), keyed by the `file` field from TOML.
+    /// Hash-matched suppressions loaded from `suppress.toml`'s `[[suppress]]`
+    /// entries, keyed by the `file` field.
     toml_suppressions: Vec<(String, Suppression)>,
-    /// Wildcard suppressions (from `.sqc-suppress.toml` `[[wildcard]]` sections).
+    /// Wildcard suppressions loaded from `suppress.toml`'s `[[suppress]]`
+    /// entries that have no `hash`.
     wildcard_suppressions: Vec<CompiledWildcard>,
     /// 1-based inclusive line ranges never compiled when the file is built as C
     /// (`#if 0` and `__cplusplus`-gated C++-only branches), keyed by full file
@@ -177,31 +196,52 @@ impl SuppressionManager {
         Self::default()
     }
 
-    /// Load suppressions from a `.sqc-suppress.toml` file.
+    /// Load suppressions from a `suppress.toml` (or legacy `.sqc-suppress.toml`) file.
     pub fn load_from_toml(&mut self, toml_path: &str) -> Result<usize, String> {
         let content = std::fs::read_to_string(toml_path)
             .map_err(|e| format!("Cannot read {}: {}", toml_path, e))?;
-        let parsed: TomlSuppressionFile = toml::from_str(&content)
+        let parsed: SuppressFile = toml::from_str(&content)
             .map_err(|e| format!("Invalid TOML in {}: {}", toml_path, e))?;
 
-        let count = parsed.suppression.len();
-        for entry in parsed.suppression {
-            let suppression = Suppression {
-                rule_id: entry.rule,
-                hash: entry.hash,
-                justification: entry.justification,
-                comment_line: 0, // sentinel: skip proximity check
-            };
-            self.toml_suppressions.push((entry.file, suppression));
+        let mut count = 0;
+        for entry in parsed.suppress {
+            if !(entry.tool == "sqc" || entry.tool == "*") {
+                continue;
+            }
+            match entry.hash.clone() {
+                Some(hash) => {
+                    let (Some(file), Some(rule)) = (entry.file.clone(), entry.rule.clone()) else {
+                        eprintln!(
+                            "Warning: suppress entry '{}' has a hash but is missing file/rule; skipping",
+                            entry.name
+                        );
+                        continue;
+                    };
+                    let suppression = Suppression {
+                        rule_id: rule,
+                        hash,
+                        justification: entry.justification.clone(),
+                        comment_line: 0, // sentinel: skip proximity check
+                    };
+                    self.toml_suppressions.push((file, suppression));
+                }
+                None => {
+                    let spec = WildcardSpec {
+                        file_glob: entry.file_glob.clone().or_else(|| entry.file.clone()),
+                        rule: entry.rule.clone(),
+                        rule_glob: entry.rule_glob.clone(),
+                        function_prefix: entry.function_prefix.clone(),
+                        justification: entry.justification.clone(),
+                    };
+                    let compiled = CompiledWildcard::try_from_spec(spec)
+                        .map_err(|e| format!("suppress entry '{}': {}", entry.name, e))?;
+                    self.wildcard_suppressions.push(compiled);
+                }
+            }
+            count += 1;
         }
 
-        let wildcard_count = parsed.wildcard.len();
-        for entry in parsed.wildcard {
-            let compiled = CompiledWildcard::try_from_entry(entry)?;
-            self.wildcard_suppressions.push(compiled);
-        }
-
-        Ok(count + wildcard_count)
+        Ok(count)
     }
 
     /// Extract all suppressions from source code.
@@ -333,24 +373,24 @@ impl SuppressionManager {
 }
 
 impl CompiledWildcard {
-    fn try_from_entry(entry: TomlWildcardEntry) -> Result<Self, String> {
-        if entry.file_glob.is_none()
-            && entry.rule.is_none()
-            && entry.rule_glob.is_none()
-            && entry.function_prefix.is_none()
+    fn try_from_spec(spec: WildcardSpec) -> Result<Self, String> {
+        if spec.file_glob.is_none()
+            && spec.rule.is_none()
+            && spec.rule_glob.is_none()
+            && spec.function_prefix.is_none()
         {
             return Err(
-                "Wildcard entry must have at least one of: file_glob, rule, rule_glob, function_prefix".to_string()
+                "wildcard suppression must have at least one of: file_glob (or file), rule, rule_glob, function_prefix".to_string()
             );
         }
 
-        let file_glob = entry
+        let file_glob = spec
             .file_glob
             .as_deref()
             .map(|g| glob_to_regex(g, true))
             .transpose()?;
 
-        let rule_glob = entry
+        let rule_glob = spec
             .rule_glob
             .as_deref()
             .map(|g| glob_to_regex(g, false))
@@ -358,10 +398,10 @@ impl CompiledWildcard {
 
         Ok(CompiledWildcard {
             file_glob,
-            rule: entry.rule,
+            rule: spec.rule,
             rule_glob,
-            function_prefix: entry.function_prefix,
-            justification: entry.justification,
+            function_prefix: spec.function_prefix,
+            justification: spec.justification,
         })
     }
 
@@ -1137,7 +1177,7 @@ mod tests {
     fn test_wildcard_file_glob() {
         let mut mgr = SuppressionManager::new();
         mgr.wildcard_suppressions.push(
-            CompiledWildcard::try_from_entry(TomlWildcardEntry {
+            CompiledWildcard::try_from_spec(WildcardSpec {
                 file_glob: Some("src/vendor/**".to_string()),
                 rule: Some("DCL31-C".to_string()),
                 rule_glob: None,
@@ -1185,7 +1225,7 @@ mod tests {
     fn test_wildcard_rule_glob() {
         let mut mgr = SuppressionManager::new();
         mgr.wildcard_suppressions.push(
-            CompiledWildcard::try_from_entry(TomlWildcardEntry {
+            CompiledWildcard::try_from_spec(WildcardSpec {
                 file_glob: Some("vendor/**".to_string()),
                 rule: None,
                 rule_glob: Some("DCL*".to_string()),
@@ -1213,7 +1253,7 @@ mod tests {
     fn test_wildcard_function_prefix() {
         let mut mgr = SuppressionManager::new();
         mgr.wildcard_suppressions.push(
-            CompiledWildcard::try_from_entry(TomlWildcardEntry {
+            CompiledWildcard::try_from_spec(WildcardSpec {
                 file_glob: None,
                 rule: Some("DCL31-C".to_string()),
                 rule_glob: None,
@@ -1255,7 +1295,7 @@ mod tests {
     fn test_wildcard_justification_returned() {
         let mut mgr = SuppressionManager::new();
         mgr.wildcard_suppressions.push(
-            CompiledWildcard::try_from_entry(TomlWildcardEntry {
+            CompiledWildcard::try_from_spec(WildcardSpec {
                 file_glob: Some("**".to_string()),
                 rule: Some("DCL31-C".to_string()),
                 rule_glob: None,
@@ -1271,7 +1311,7 @@ mod tests {
 
     #[test]
     fn test_wildcard_requires_at_least_one_field() {
-        let result = CompiledWildcard::try_from_entry(TomlWildcardEntry {
+        let result = CompiledWildcard::try_from_spec(WildcardSpec {
             file_glob: None,
             rule: None,
             rule_glob: None,
@@ -1284,26 +1324,30 @@ mod tests {
     #[test]
     fn test_wildcard_toml_parsing() {
         let toml_str = r#"
-[[wildcard]]
+[[suppress]]
+name = "vendor-dcl31"
+tool = "sqc"
 file_glob = "src/vendor/**"
 rule = "DCL31-C"
 justification = "Vendor code"
 
-[[wildcard]]
+[[suppress]]
+name = "wolfssl-dcl"
+tool = "sqc"
 rule_glob = "DCL*"
 function_prefix = "wolfSSL_"
 justification = "wolfSSL library"
 "#;
-        let parsed: TomlSuppressionFile = toml::from_str(toml_str).unwrap();
-        assert_eq!(parsed.wildcard.len(), 2);
+        let parsed: SuppressFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(parsed.suppress.len(), 2);
         assert_eq!(
-            parsed.wildcard[0].file_glob.as_deref(),
+            parsed.suppress[0].file_glob.as_deref(),
             Some("src/vendor/**")
         );
-        assert_eq!(parsed.wildcard[0].rule.as_deref(), Some("DCL31-C"));
-        assert_eq!(parsed.wildcard[1].rule_glob.as_deref(), Some("DCL*"));
+        assert_eq!(parsed.suppress[0].rule.as_deref(), Some("DCL31-C"));
+        assert_eq!(parsed.suppress[1].rule_glob.as_deref(), Some("DCL*"));
         assert_eq!(
-            parsed.wildcard[1].function_prefix.as_deref(),
+            parsed.suppress[1].function_prefix.as_deref(),
             Some("wolfSSL_")
         );
     }
@@ -1311,20 +1355,74 @@ justification = "wolfSSL library"
     #[test]
     fn test_wildcard_and_hash_coexist_in_toml() {
         let toml_str = r#"
-[[suppression]]
+[[suppress]]
+name = "ringbuffer-int30"
+tool = "sqc"
 file = "ringbuffer.c"
 rule = "INT30-C"
 hash = "a1f5861150a1e5b8"
 justification = "Hash-matched suppression"
 
-[[wildcard]]
+[[suppress]]
+name = "vendor-dcl31"
+tool = "sqc"
 file_glob = "src/vendor/**"
 rule = "DCL31-C"
 justification = "Wildcard suppression"
 "#;
-        let parsed: TomlSuppressionFile = toml::from_str(toml_str).unwrap();
-        assert_eq!(parsed.suppression.len(), 1);
-        assert_eq!(parsed.wildcard.len(), 1);
+        let parsed: SuppressFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(parsed.suppress.len(), 2);
+        assert!(parsed.suppress[0].hash.is_some());
+        assert!(parsed.suppress[1].hash.is_none());
+    }
+
+    #[test]
+    fn test_suppress_toml_ignores_other_tools() {
+        let mut mgr = SuppressionManager::new();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("suppress.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[suppress]]
+name = "knots-only"
+tool = "knots"
+rule_glob = "*"
+justification = "not sqc"
+
+[[suppress]]
+name = "sqc-wildcard"
+tool = "sqc"
+rule_glob = "DCL*"
+justification = "sqc wildcard"
+"#,
+        )
+        .unwrap();
+        let count = mgr.load_from_toml(path.to_str().unwrap()).unwrap();
+        assert_eq!(count, 1);
+        assert!(mgr.should_suppress("any.c", "DCL31-C", 1, "", "").is_some());
+    }
+
+    #[test]
+    fn test_suppress_toml_wildcard_tool_applies() {
+        let mut mgr = SuppressionManager::new();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("suppress.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[suppress]]
+name = "third-party"
+tool = "*"
+file_glob = "third_party/**"
+justification = "Third-party code"
+"#,
+        )
+        .unwrap();
+        mgr.load_from_toml(path.to_str().unwrap()).unwrap();
+        assert!(mgr
+            .should_suppress("third_party/lib.c", "INT30-C", 1, "", "")
+            .is_some());
     }
 
     #[test]
@@ -1341,7 +1439,7 @@ justification = "Wildcard suppression"
         let mut mgr = SuppressionManager::new();
         mgr.extract_from_source("test.c", &source);
         mgr.wildcard_suppressions.push(
-            CompiledWildcard::try_from_entry(TomlWildcardEntry {
+            CompiledWildcard::try_from_spec(WildcardSpec {
                 file_glob: Some("**".to_string()),
                 rule: Some("EXP34-C".to_string()),
                 rule_glob: None,
