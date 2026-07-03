@@ -1,5 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -140,10 +141,14 @@ impl FlexibleArrayAnalyzer {
     }
 
     fn collect_flexible_array_structs(&mut self, node: &Node, source: &str) {
-        // Iterative pre-order walk: deeply nested code (e.g. multi-thousand-deep
-        // else-if chains) overflows the stack with self-recursion.
-        let mut stack = vec![*node];
-        while let Some(current) = stack.pop() {
+        // Iterative pre-order walk (via substrate::query): deeply nested code
+        // (e.g. multi-thousand-deep else-if chains) overflows the stack with
+        // self-recursion.
+        let candidates = query::find_descendants_of_kinds(
+            *node,
+            &["struct_specifier", "type_definition", "declaration"],
+        );
+        for current in candidates {
             // Look for struct declarations with flexible array members
             if current.kind() == "struct_specifier" {
                 if let Some(info) = self.analyze_struct_for_flexible_array(&current, source) {
@@ -162,12 +167,6 @@ impl FlexibleArrayAnalyzer {
                     self.detect_flexible_struct_array_declaration(&current, source)
                 {
                     self.flexible_struct_arrays.insert(array_name);
-                }
-            }
-
-            for i in (0..current.child_count()).rev() {
-                if let Some(child) = current.child(i) {
-                    stack.push(child);
                 }
             }
         }
@@ -481,17 +480,11 @@ impl FlexibleArrayAnalyzer {
     fn check_violations(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Iterative pre-order walk: deeply nested code (e.g. multi-thousand-deep
-        // else-if chains) overflows the stack with self-recursion.
-        let mut stack = vec![*node];
-        while let Some(current) = stack.pop() {
+        // Iterative pre-order walk (via substrate::query): deeply nested code
+        // (e.g. multi-thousand-deep else-if chains) overflows the stack with
+        // self-recursion.
+        for current in query::find_descendants(*node, |_| true) {
             self.check_node(&current, source, &mut violations);
-
-            for i in (0..current.child_count()).rev() {
-                if let Some(child) = current.child(i) {
-                    stack.push(child);
-                }
-            }
         }
 
         violations

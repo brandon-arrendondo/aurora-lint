@@ -34,6 +34,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Mem04C;
@@ -69,26 +70,18 @@ impl CertRule for Mem04C {
 impl Mem04C {
     /// Recursively traverse the AST looking for allocation function calls with zero size
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check if this is a function call
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 // Check for malloc, calloc, realloc calls
                 if func_name == "malloc" {
-                    self.check_malloc_call(node, source, violations);
+                    self.check_malloc_call(&node, source, violations);
                 } else if func_name == "calloc" {
-                    self.check_calloc_call(node, source, violations);
+                    self.check_calloc_call(&node, source, violations);
                 } else if func_name == "realloc" {
-                    self.check_realloc_call(node, source, violations);
+                    self.check_realloc_call(&node, source, violations);
                 }
-            }
-        }
-
-        // Recurse through all children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.traverse(&child, source, violations);
             }
         }
     }

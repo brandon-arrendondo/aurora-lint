@@ -55,6 +55,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -84,16 +85,9 @@ impl CertRule for Mem12C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Only check function definitions
-        if node.kind() == "function_definition" {
-            self.check_function(node, source, &mut violations);
-        }
-
-        // Recurse to find nested functions (though uncommon in C)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
+        // Check function definitions, including nested ones (though uncommon in C)
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function(&func_node, source, &mut violations);
         }
 
         violations
@@ -122,39 +116,36 @@ impl Mem12C {
 
     /// Find all resource allocations (fopen, malloc, etc.)
     fn find_allocations(&self, node: &Node, source: &str, allocations: &mut Vec<(String, usize)>) {
-        if node.kind() == "assignment_expression" {
-            if let (Some(left), Some(right)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                let var_name = get_node_text(&left, source).trim().to_string();
-                let right_text = get_node_text(&right, source);
+        for n in
+            query::find_descendants_of_kinds(*node, &["assignment_expression", "init_declarator"])
+        {
+            if n.kind() == "assignment_expression" {
+                if let (Some(left), Some(right)) = (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) {
+                    let var_name = get_node_text(&left, source).trim().to_string();
+                    let right_text = get_node_text(&right, source);
 
-                // Check if right side is a resource allocation
-                if self.is_allocation_call(&right_text) {
-                    let line = node.start_position().row;
-                    allocations.push((var_name, line));
-                }
-            }
-        } else if node.kind() == "init_declarator" {
-            // Handle declarations with initialization: FILE *fp = fopen(...)
-            if let Some(value) = node.child_by_field_name("value") {
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    let var_name = get_node_text(&declarator, source).trim().to_string();
-                    let value_text = get_node_text(&value, source);
-
-                    if self.is_allocation_call(&value_text) {
-                        let line = node.start_position().row;
+                    // Check if right side is a resource allocation
+                    if self.is_allocation_call(&right_text) {
+                        let line = n.start_position().row;
                         allocations.push((var_name, line));
                     }
                 }
-            }
-        }
+            } else if n.kind() == "init_declarator" {
+                // Handle declarations with initialization: FILE *fp = fopen(...)
+                if let Some(value) = n.child_by_field_name("value") {
+                    if let Some(declarator) = n.child_by_field_name("declarator") {
+                        let var_name = get_node_text(&declarator, source).trim().to_string();
+                        let value_text = get_node_text(&value, source);
 
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_allocations(&child, source, allocations);
+                        if self.is_allocation_call(&value_text) {
+                            let line = n.start_position().row;
+                            allocations.push((var_name, line));
+                        }
+                    }
+                }
             }
         }
     }
@@ -166,20 +157,20 @@ impl Mem12C {
         source: &str,
         deallocations: &mut Vec<(String, usize)>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 // Check if it's a deallocation function
                 if func_name == "fclose" || func_name == "free" || func_name == "close" {
                     // Get the argument (resource being freed)
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
+                    if let Some(arguments) = n.child_by_field_name("arguments") {
                         for i in 0..arguments.child_count() {
                             if let Some(arg) = arguments.child(i) {
                                 if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
                                     let resource_name =
                                         get_node_text(&arg, source).trim().to_string();
-                                    let line = node.start_position().row;
+                                    let line = n.start_position().row;
                                     deallocations.push((resource_name, line));
                                     break;
                                 }
@@ -189,26 +180,19 @@ impl Mem12C {
                 }
             }
         }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_deallocations(&child, source, deallocations);
-            }
-        }
     }
 
     /// Check early return statements for resource leaks
     fn check_early_returns(
         &self,
         node: &Node,
-        source: &str,
+        _source: &str,
         allocations: &[(String, usize)],
         deallocations: &[(String, usize)],
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "return_statement" {
-            let return_line = node.start_position().row;
+        for n in query::find_descendants_of_kind(*node, "return_statement") {
+            let return_line = n.start_position().row;
 
             // Find which resources were allocated before this return
             let allocated_before: Vec<&String> = allocations
@@ -243,7 +227,7 @@ impl Mem12C {
                     ),
                     severity: self.severity(),
                     line: return_line + 1,
-                    column: node.start_position().column + 1,
+                    column: n.start_position().column + 1,
                     file_path: String::new(),
                     suggestion: Some(
                         "Use goto chain pattern with cleanup labels to ensure all resources are released"
@@ -251,13 +235,6 @@ impl Mem12C {
                     ),
                     requires_manual_review: None,
                 });
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_early_returns(&child, source, allocations, deallocations, violations);
             }
         }
     }

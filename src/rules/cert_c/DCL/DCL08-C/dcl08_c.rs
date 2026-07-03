@@ -9,6 +9,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Dcl08C;
@@ -42,14 +43,9 @@ impl CertRule for Dcl08C {
         self.collect_all_enum_constants(root_node, source, &mut all_enum_constants);
 
         // Second pass: check each enum for violations
-        let mut cursor = root_node.walk();
-        self.check_node(
-            root_node,
-            source,
-            &mut violations,
-            &mut cursor,
-            &all_enum_constants,
-        );
+        for enum_node in query::find_descendants_of_kind(*root_node, "enum_specifier") {
+            self.check_enum_specifier(&enum_node, source, &mut violations, &all_enum_constants);
+        }
 
         violations
     }
@@ -63,64 +59,17 @@ impl Dcl08C {
         source: &str,
         constants: &mut std::collections::HashMap<String, usize>,
     ) {
-        if node.kind() == "enum_specifier" {
-            if let Some(body) = node.child_by_field_name("body") {
-                let mut cursor = body.walk();
-                if cursor.goto_first_child() {
-                    loop {
-                        let child = cursor.node();
-                        if child.kind() == "enumerator" {
-                            if let Some(name_node) = child.child_by_field_name("name") {
-                                let name = get_node_text(&name_node, source);
-                                let line = name_node.start_position().row + 1;
-                                constants.insert(name.to_string(), line);
-                            }
-                        }
-                        if !cursor.goto_next_sibling() {
-                            break;
-                        }
-                    }
+        for enum_node in query::find_descendants_of_kind(*node, "enum_specifier") {
+            let Some(body) = enum_node.child_by_field_name("body") else {
+                continue;
+            };
+            for enumerator in query::find_descendants_of_kind(body, "enumerator") {
+                if let Some(name_node) = enumerator.child_by_field_name("name") {
+                    let name = get_node_text(&name_node, source);
+                    let line = name_node.start_position().row + 1;
+                    constants.insert(name.to_string(), line);
                 }
             }
-        }
-
-        // Recurse into children
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                self.collect_all_enum_constants(&child, source, constants);
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-    }
-
-    fn check_node(
-        &self,
-        node: &Node,
-        source: &str,
-        violations: &mut Vec<RuleViolation>,
-        cursor: &mut tree_sitter::TreeCursor,
-        all_constants: &std::collections::HashMap<String, usize>,
-    ) {
-        // Check if this is an enum declaration
-        if node.kind() == "enum_specifier" {
-            self.check_enum_specifier(node, source, violations, all_constants);
-        }
-
-        // Recursively check child nodes
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                self.check_node(&child, source, violations, cursor, all_constants);
-
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-            cursor.goto_parent();
         }
     }
 
@@ -138,21 +87,7 @@ impl Dcl08C {
         };
 
         // Collect all enumerator definitions
-        let mut enumerators = Vec::new();
-        let mut cursor = body.walk();
-
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == "enumerator" {
-                    enumerators.push(child);
-                }
-
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
+        let enumerators = query::find_descendants_of_kind(body, "enumerator");
 
         // Need at least 1 enumerator to check
         if enumerators.is_empty() {

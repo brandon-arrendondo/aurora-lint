@@ -25,6 +25,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -108,38 +109,29 @@ impl Dcl12C {
         has_extern_functions: &mut bool,
         structs_used_in_externs: &mut HashSet<String>,
     ) {
-        // Check for struct specifiers with field declarations (full definitions)
-        if node.kind() == "struct_specifier" {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let struct_name = get_node_text(&name_node, source).to_string();
-                // Check if it has a body (field declaration list)
-                if node.child_by_field_name("body").is_some() {
-                    full_struct_defs.push((struct_name, *node));
+        for n in query::find_descendants_of_kinds(*node, &["struct_specifier", "declaration"]) {
+            match n.kind() {
+                // Check for struct specifiers with field declarations (full definitions)
+                "struct_specifier" => {
+                    if let Some(name_node) = n.child_by_field_name("name") {
+                        let struct_name = get_node_text(&name_node, source).to_string();
+                        // Check if it has a body (field declaration list)
+                        if n.child_by_field_name("body").is_some() {
+                            full_struct_defs.push((struct_name, n));
+                        }
+                    }
                 }
-            }
-        }
+                // Check for extern function declarations
+                "declaration" => {
+                    let decl_text = get_node_text(&n, source);
+                    if decl_text.starts_with("extern ") && decl_text.contains('(') {
+                        *has_extern_functions = true;
 
-        // Check for extern function declarations
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
-            if decl_text.starts_with("extern ") && decl_text.contains('(') {
-                *has_extern_functions = true;
-
-                // Extract struct types used in this declaration
-                self.extract_struct_types_from_decl(node, source, structs_used_in_externs);
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.scan_file(
-                    &child,
-                    source,
-                    full_struct_defs,
-                    has_extern_functions,
-                    structs_used_in_externs,
-                );
+                        // Extract struct types used in this declaration
+                        self.extract_struct_types_from_decl(&n, source, structs_used_in_externs);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -150,24 +142,21 @@ impl Dcl12C {
         source: &str,
         structs_used: &mut HashSet<String>,
     ) {
-        // Look for type identifiers that might be struct types
-        if node.kind() == "type_identifier" {
-            let type_name = get_node_text(node, source).to_string();
-            structs_used.insert(type_name);
-        }
-
-        // Also check for struct specifiers in parameters
-        if node.kind() == "struct_specifier" {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let struct_name = get_node_text(&name_node, source).to_string();
-                structs_used.insert(struct_name);
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.extract_struct_types_from_decl(&child, source, structs_used);
+        for n in query::find_descendants_of_kinds(*node, &["type_identifier", "struct_specifier"]) {
+            match n.kind() {
+                // Look for type identifiers that might be struct types
+                "type_identifier" => {
+                    let type_name = get_node_text(&n, source).to_string();
+                    structs_used.insert(type_name);
+                }
+                // Also check for struct specifiers in parameters
+                "struct_specifier" => {
+                    if let Some(name_node) = n.child_by_field_name("name") {
+                        let struct_name = get_node_text(&name_node, source).to_string();
+                        structs_used.insert(struct_name);
+                    }
+                }
+                _ => {}
             }
         }
     }

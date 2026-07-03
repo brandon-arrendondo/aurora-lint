@@ -12,6 +12,7 @@ use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
 use crate::analyze::dataflow::find_node_at_range;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tree_sitter::Node;
@@ -131,32 +132,18 @@ impl Mem01C {
     /// Collect all free(ptr) call sites: (ptr_name, free_byte, line, column)
     fn collect_free_calls(&self, node: &Node, source: &str) -> Vec<(String, usize, usize, usize)> {
         let mut results = Vec::new();
-        self.walk_for_free_calls(node, source, &mut results);
-        results
-    }
-
-    fn walk_for_free_calls(
-        &self,
-        node: &Node,
-        source: &str,
-        results: &mut Vec<(String, usize, usize, usize)>,
-    ) {
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(func) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
                 if func_name == "free" {
-                    if let Some(ptr_name) = self.extract_free_arg(node, source) {
+                    if let Some(ptr_name) = self.extract_free_arg(&node, source) {
                         let pos = node.start_position();
                         results.push((ptr_name, node.start_byte(), pos.row + 1, pos.column + 1));
                     }
                 }
             }
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.walk_for_free_calls(&child, source, results);
-            }
-        }
+        results
     }
 
     fn extract_free_arg(&self, call_node: &Node, source: &str) -> Option<String> {
@@ -382,17 +369,10 @@ fn classify_expr_for_ptr(expr: &Node, source: &str, ptr_name: &str) -> PtrAction
 /// Check if an identifier matching ptr_name appears in the subtree.
 /// Matches only identifier nodes (not substrings of other identifiers).
 fn subtree_contains_identifier(node: &Node, source: &str, name: &str) -> bool {
-    if node.kind() == "identifier" {
-        return get_node_text(node, source) == name;
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if subtree_contains_identifier(&child, source, name) {
-                return true;
-            }
-        }
-    }
-    false
+    query::find_first_descendant(*node, |n| {
+        n.kind() == "identifier" && get_node_text(&n, source) == name
+    })
+    .is_some()
 }
 
 /// Check if ptr_name appears as an argument in an argument_list.

@@ -24,6 +24,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -88,7 +89,8 @@ impl CertRule for Dcl39C {
 impl Dcl39C {
     /// Find safe struct types (packed, explicit padding, etc.)
     fn find_safe_struct_types(&self, node: &Node, source: &str, safe_types: &mut HashSet<String>) {
-        if node.kind() == "struct_specifier" {
+        for node in query::find_descendants_of_kind(*node, "struct_specifier") {
+            let node = &node;
             let struct_text = get_node_text(node, source);
             let struct_name = self.extract_struct_name(node, source);
 
@@ -118,13 +120,6 @@ impl Dcl39C {
                 if !struct_name.is_empty() {
                     safe_types.insert(format!("struct {}", struct_name));
                 }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_safe_struct_types(&child, source, safe_types);
             }
         }
     }
@@ -228,73 +223,70 @@ impl Dcl39C {
         safe_struct_types: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check for structure variable declarations
-        if node.kind() == "declaration" {
-            if let Some((var_name, struct_type)) = self.extract_struct_declaration(node, source) {
-                struct_vars.insert(
-                    var_name.clone(),
-                    StructVarInfo {
-                        var_name,
-                        struct_type,
-                        is_zeroed: false, // Not used anymore - memset is insufficient
-                    },
-                );
+        for node in query::find_descendants_of_kinds(*node, &["declaration", "call_expression"]) {
+            // Check for structure variable declarations
+            if node.kind() == "declaration" {
+                if let Some((var_name, struct_type)) =
+                    self.extract_struct_declaration(&node, source)
+                {
+                    struct_vars.insert(
+                        var_name.clone(),
+                        StructVarInfo {
+                            var_name,
+                            struct_type,
+                            is_zeroed: false, // Not used anymore - memset is insufficient
+                        },
+                    );
+                }
             }
-        }
 
-        // Check for trust boundary function calls
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
+            // Check for trust boundary function calls
+            if node.kind() == "call_expression" {
+                if let Some(function) = node.child_by_field_name("function") {
+                    let func_name = get_node_text(&function, source);
 
-                if self.is_trust_boundary_function(&func_name) {
-                    // Check if a structure is passed directly
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        let arg_list = self.get_arguments(&args, source);
-                        for arg in &arg_list {
-                            // Check for &struct_var pattern
-                            if let Some(stripped) = arg.strip_prefix('&') {
-                                let var_name = stripped.trim().to_string();
-                                // Check if this is a known struct variable that wasn't zeroed
-                                if let Some(info) = struct_vars.get(&var_name) {
-                                    // Skip if struct type is safe (packed, explicit padding, etc.)
-                                    if safe_struct_types.contains(&info.struct_type) {
-                                        continue;
+                    if self.is_trust_boundary_function(&func_name) {
+                        // Check if a structure is passed directly
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            let arg_list = self.get_arguments(&args, source);
+                            for arg in &arg_list {
+                                // Check for &struct_var pattern
+                                if let Some(stripped) = arg.strip_prefix('&') {
+                                    let var_name = stripped.trim().to_string();
+                                    // Check if this is a known struct variable that wasn't zeroed
+                                    if let Some(info) = struct_vars.get(&var_name) {
+                                        // Skip if struct type is safe (packed, explicit padding, etc.)
+                                        if safe_struct_types.contains(&info.struct_type) {
+                                            continue;
+                                        }
+
+                                        // Structure passed to trust boundary - this is a violation
+                                        // Note: memset() is NOT sufficient per CERT wiki
+                                        violations.push(RuleViolation {
+                                            rule_id: self.rule_id().to_string(),
+                                            message: format!(
+                                                "Structure '{}' passed to trust boundary function '{}' \
+                                                 may leak padding bytes. Use packed attributes, explicit \
+                                                 padding fields, or serialize fields individually.",
+                                                var_name, func_name
+                                            ),
+                                            severity: self.severity(),
+                                            line: node.start_position().row + 1,
+                                            column: node.start_position().column + 1,
+                                            file_path: String::new(),
+                                            suggestion: Some(format!(
+                                                "Use __attribute__((__packed__)) or serialize fields: \
+                                                 copy_to_user(buf, &{}.a, sizeof({}.a)); ...",
+                                                var_name, var_name
+                                            )),
+                                            requires_manual_review: None,
+                                        });
                                     }
-
-                                    // Structure passed to trust boundary - this is a violation
-                                    // Note: memset() is NOT sufficient per CERT wiki
-                                    violations.push(RuleViolation {
-                                        rule_id: self.rule_id().to_string(),
-                                        message: format!(
-                                            "Structure '{}' passed to trust boundary function '{}' \
-                                             may leak padding bytes. Use packed attributes, explicit \
-                                             padding fields, or serialize fields individually.",
-                                            var_name, func_name
-                                        ),
-                                        severity: self.severity(),
-                                        line: node.start_position().row + 1,
-                                        column: node.start_position().column + 1,
-                                        file_path: String::new(),
-                                        suggestion: Some(format!(
-                                            "Use __attribute__((__packed__)) or serialize fields: \
-                                             copy_to_user(buf, &{}.a, sizeof({}.a)); ...",
-                                            var_name, var_name
-                                        )),
-                                        requires_manual_review: None,
-                                    });
                                 }
                             }
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_structures(&child, source, struct_vars, safe_struct_types, violations);
             }
         }
     }

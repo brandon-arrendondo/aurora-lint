@@ -63,6 +63,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pos35C;
@@ -103,24 +104,16 @@ impl Pos35C {
 
     /// Check if code contains S_ISLNK() macro usage
     fn contains_s_islnk(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source).trim();
-                if func_name == "S_ISLNK" {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_s_islnk(&child, source) {
-                    return true;
-                }
-            }
-        }
-        false
+            let Some(function) = n.child_by_field_name("function") else {
+                return false;
+            };
+            get_node_text(&function, source).trim() == "S_ISLNK"
+        })
+        .is_some()
     }
 
     /// Check for lstat() followed by S_ISLNK() check and then open()
@@ -172,18 +165,7 @@ impl Pos35C {
 
     /// Check if compound statement contains open() without O_NOFOLLOW
     fn contains_open_without_nofollow(&self, node: &Node, source: &str) -> bool {
-        if self.is_open_without_nofollow(node, source) {
-            return true;
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_open_without_nofollow(&child, source) {
-                    return true;
-                }
-            }
-        }
-        false
+        query::find_first_descendant(*node, |n| self.is_open_without_nofollow(&n, source)).is_some()
     }
 }
 
@@ -217,14 +199,8 @@ impl CertRule for Pos35C {
 
 impl Pos35C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for lstat + S_ISLNK + open pattern
-        self.check_lstat_open_pattern(node, source, violations);
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            self.check_lstat_open_pattern(&call, source, violations);
         }
     }
 }

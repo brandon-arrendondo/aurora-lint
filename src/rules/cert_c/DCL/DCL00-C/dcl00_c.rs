@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Dcl00C;
@@ -27,59 +28,55 @@ impl CertRule for Dcl00C {
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
+        query::find_descendants_of_kind(*node, "init_declarator")
+            .into_iter()
+            .filter_map(|init_declarator| self.check_init_declarator(init_declarator, source))
+            .collect()
+    }
+}
 
-        // Check init_declarators for variables that should be const
-        if node.kind() == "init_declarator" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if let Some(value) = node.child_by_field_name("value") {
-                    if let Some(parent_decl) = find_parent_declaration(node) {
-                        // Skip variables declared in for-loop init clauses — these are
-                        // loop counters modified by the update expression (++i, etc.)
-                        if is_in_for_loop_init(&parent_decl) {
-                            return violations;
-                        }
-                        // Skip if already const-qualified
-                        if !has_const_qualifier(&parent_decl, source) {
-                            let var_name =
-                                ast_utils::get_identifier_from_declarator(&declarator, source);
+impl Dcl00C {
+    fn check_init_declarator(&self, node: Node, source: &str) -> Option<RuleViolation> {
+        let declarator = node.child_by_field_name("declarator")?;
+        let value = node.child_by_field_name("value")?;
+        let parent_decl = find_parent_declaration(&node)?;
 
-                            // Check if this should be const based on various patterns,
-                            // but only if the variable is not actually modified later in
-                            // its enclosing scope (reassignment, compound-assign, ++/--,
-                            // address-of, or member/element write).
-                            if should_be_const(&parent_decl, &declarator, &value, &var_name, source)
-                                && !is_modified_in_scope(&parent_decl, &var_name, source)
-                            {
-                                let start_point = parent_decl.start_position();
-                                violations.push(RuleViolation {
-                                    rule_id: self.rule_id().to_string(),
-                                    severity: Severity::Medium,
-                                    message: format!(
-                                        "Variable '{}' is initialized but never modified, consider const-qualifying it",
-                                        var_name
-                                    ),
-                                    file_path: String::new(),
-                                    line: start_point.row + 1,
-                                    column: start_point.column + 1,
-                                    suggestion: Some(format!("Add 'const' qualifier: const {} = ...", var_name)),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                    }
-                }
-            }
+        // Skip variables declared in for-loop init clauses — these are
+        // loop counters modified by the update expression (++i, etc.)
+        if is_in_for_loop_init(&parent_decl) {
+            return None;
+        }
+        // Skip if already const-qualified
+        if has_const_qualifier(&parent_decl, source) {
+            return None;
         }
 
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
+        let var_name = ast_utils::get_identifier_from_declarator(&declarator, source);
+
+        // Check if this should be const based on various patterns,
+        // but only if the variable is not actually modified later in
+        // its enclosing scope (reassignment, compound-assign, ++/--,
+        // address-of, or member/element write).
+        if should_be_const(&parent_decl, &declarator, &value, &var_name, source)
+            && !is_modified_in_scope(&parent_decl, &var_name, source)
+        {
+            let start_point = parent_decl.start_position();
+            return Some(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: Severity::Medium,
+                message: format!(
+                    "Variable '{}' is initialized but never modified, consider const-qualifying it",
+                    var_name
+                ),
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some(format!("Add 'const' qualifier: const {} = ...", var_name)),
+                ..Default::default()
+            });
         }
 
-        violations
+        None
     }
 }
 
@@ -416,44 +413,30 @@ fn enclosing_scope<'a>(node: &'a Node<'a>) -> Option<Node<'a>> {
 }
 
 fn scope_has_mutation(node: &Node, var_name: &str, source: &str) -> bool {
-    match node.kind() {
+    query::find_first_descendant(*node, |n| match n.kind() {
         // Covers `=` and all compound assignments (`+=`, `<<=`, ...).
-        "assignment_expression" => {
-            if let Some(left) = node.child_by_field_name("left") {
-                if lvalue_base_is(&left, var_name, source) {
-                    return true;
-                }
-            }
-        }
-        "update_expression" => {
-            if let Some(arg) = node.child_by_field_name("argument") {
-                if lvalue_base_is(&arg, var_name, source) {
-                    return true;
-                }
-            }
-        }
+        "assignment_expression" => n
+            .child_by_field_name("left")
+            .map(|left| lvalue_base_is(&left, var_name, source))
+            .unwrap_or(false),
+        "update_expression" => n
+            .child_by_field_name("argument")
+            .map(|arg| lvalue_base_is(&arg, var_name, source))
+            .unwrap_or(false),
         // Address-of (`&var`): the variable may be mutated through the pointer.
         "pointer_expression" => {
-            if let Some(op) = node.child_by_field_name("operator") {
+            if let Some(op) = n.child_by_field_name("operator") {
                 if &source[op.start_byte()..op.end_byte()] == "&" {
-                    if let Some(arg) = node.child_by_field_name("argument") {
-                        if lvalue_base_is(&arg, var_name, source) {
-                            return true;
-                        }
+                    if let Some(arg) = n.child_by_field_name("argument") {
+                        return lvalue_base_is(&arg, var_name, source);
                     }
                 }
             }
+            false
         }
-        _ => {}
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if scope_has_mutation(&child, var_name, source) {
-                return true;
-            }
-        }
-    }
-    false
+        _ => false,
+    })
+    .is_some()
 }
 
 /// True if the base object of an lvalue is `var_name`, descending through

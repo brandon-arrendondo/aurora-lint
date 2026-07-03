@@ -15,6 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -45,16 +46,9 @@ impl CertRule for Mem34C {
         let mut violations = Vec::new();
 
         // Analyze each function independently
-        if node.kind() == "function_definition" {
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
             let mut analyzer = MemorySourceAnalyzer::new();
-            analyzer.analyze_function(node, source, &mut violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
+            analyzer.analyze_function(&func_node, source, &mut violations);
         }
 
         violations
@@ -192,22 +186,15 @@ impl MemorySourceAnalyzer {
     }
 
     fn check_free_calls(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call_node.child_by_field_name("function") {
                 let func_name = ast_utils::get_node_text_owned(&function, source);
 
                 if func_name == "free" {
-                    self.check_free_argument(node, source, violations);
+                    self.check_free_argument(&call_node, source, violations);
                 } else if func_name == "realloc" {
-                    self.check_realloc_argument(node, source, violations);
+                    self.check_realloc_argument(&call_node, source, violations);
                 }
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_free_calls(&child, source, violations);
             }
         }
     }
@@ -311,20 +298,9 @@ impl MemorySourceAnalyzer {
     }
 
     fn find_identifier_in_expr(&self, node: &Node, source: &str) -> String {
-        if node.kind() == "identifier" {
-            return ast_utils::get_node_text_owned(node, source);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let result = self.find_identifier_in_expr(&child, source);
-                if !result.is_empty() {
-                    return result;
-                }
-            }
-        }
-
-        String::new()
+        query::find_first_descendant(*node, |n| n.kind() == "identifier")
+            .map(|n| ast_utils::get_node_text_owned(&n, source))
+            .unwrap_or_default()
     }
 
     fn is_allocation_call(&self, node: &Node, source: &str) -> bool {

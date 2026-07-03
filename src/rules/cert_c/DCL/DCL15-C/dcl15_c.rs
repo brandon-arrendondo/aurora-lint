@@ -8,6 +8,7 @@ use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -64,20 +65,13 @@ impl Dcl15C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Only check children of translation_unit (file scope)
-        if node.kind() == "translation_unit" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
+        // Only check children of translation_unit (file scope). There may be
+        // a nested translation_unit if we're not already at one (e.g. an
+        // unbalanced extern "C" makes tree-sitter return an ERROR root).
+        for tu in query::find_descendants_of_kind(*node, "translation_unit") {
+            for i in 0..tu.child_count() {
+                if let Some(child) = tu.child(i) {
                     self.check_file_scope_declaration(&child, source, violations);
-                }
-            }
-        }
-
-        // Recursively find translation_unit if we're not at root yet
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "translation_unit" {
-                    self.check_translation_unit(&child, source, violations);
                 }
             }
         }

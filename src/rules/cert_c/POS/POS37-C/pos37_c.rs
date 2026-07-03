@@ -8,6 +8,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pos37C;
@@ -96,7 +97,8 @@ impl Pos37C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
+            let node = &node;
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 let func_name = func_name.trim();
@@ -122,12 +124,6 @@ impl Pos37C {
                 }
             }
         }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_win_privilege_apis(&child, source, violations);
-            }
-        }
     }
 
     /// A call is "unchecked" if its immediate parent is an expression_statement
@@ -140,7 +136,7 @@ impl Pos37C {
     }
 
     fn find_priv_drops(&self, node: &Node, source: &str, drops: &mut Vec<PrivDrop>) {
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
@@ -158,13 +154,6 @@ impl Pos37C {
                 }
             }
         }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_priv_drops(&child, source, drops);
-            }
-        }
     }
 
     fn has_verification_check(&self, scope: &Node, source: &str, drop_line: usize) -> bool {
@@ -173,35 +162,30 @@ impl Pos37C {
     }
 
     fn find_verification(&self, node: &Node, source: &str, after_line: usize) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-
-                if func_name == "setuid" {
-                    let line = node.start_position().row + 1;
-                    if line > after_line {
-                        // Check if argument is 0 (trying to regain root)
-                        if let Some(args) = node.child_by_field_name("arguments") {
-                            let args_text = get_node_text(&args, source);
-                            if args_text.contains("0") && !args_text.contains("getuid") {
-                                return true;
-                            }
-                        }
-                    }
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
+            let Some(function) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&function, source);
 
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.find_verification(&child, source, after_line) {
-                    return true;
-                }
+            if func_name != "setuid" {
+                return false;
             }
-        }
-
-        false
+            let line = n.start_position().row + 1;
+            if line <= after_line {
+                return false;
+            }
+            // Check if argument is 0 (trying to regain root)
+            let Some(args) = n.child_by_field_name("arguments") else {
+                return false;
+            };
+            let args_text = get_node_text(&args, source);
+            args_text.contains("0") && !args_text.contains("getuid")
+        })
+        .is_some()
     }
 }
 

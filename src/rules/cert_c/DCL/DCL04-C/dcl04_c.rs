@@ -20,6 +20,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Dcl04C;
@@ -46,53 +47,46 @@ impl CertRule for Dcl04C {
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-
-        // Check declarations for multiple variables
-        if node.kind() == "declaration" {
-            // Skip if this is a for loop declaration (exception)
-            if self.is_for_loop_declaration(node) {
-                return violations;
-            }
-
-            let declarator_count = self.count_declarators(node);
-
-            if declarator_count > 1 {
-                let start_point = node.start_position();
-                let declaration_text = ast_utils::get_node_text(node, source);
-
-                violations.push(RuleViolation {
-                    rule_id: "DCL04-C".to_string(),
-                    severity: Severity::Low,
-                    message: format!(
-                        "Multiple variables ({}) declared in single declaration: {}",
-                        declarator_count,
-                        declaration_text.lines().next().unwrap_or(&declaration_text)
-                    ),
-                    file_path: String::new(),
-                    line: start_point.row + 1,
-                    column: start_point.column + 1,
-                    suggestion: Some(
-                        "Declare each variable on its own line with an explanatory comment"
-                            .to_string(),
-                    ),
-                    ..Default::default()
-                });
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
-        }
-
-        violations
+        query::find_descendants_of_kind(*node, "declaration")
+            .into_iter()
+            .filter_map(|declaration| self.check_declaration(declaration, source))
+            .collect()
     }
 }
 
 impl Dcl04C {
+    fn check_declaration(&self, node: Node, source: &str) -> Option<RuleViolation> {
+        // Skip if this is a for loop declaration (exception)
+        if self.is_for_loop_declaration(&node) {
+            return None;
+        }
+
+        let declarator_count = self.count_declarators(&node);
+
+        if declarator_count > 1 {
+            let start_point = node.start_position();
+            let declaration_text = ast_utils::get_node_text(&node, source);
+
+            return Some(RuleViolation {
+                rule_id: "DCL04-C".to_string(),
+                severity: Severity::Low,
+                message: format!(
+                    "Multiple variables ({}) declared in single declaration: {}",
+                    declarator_count,
+                    declaration_text.lines().next().unwrap_or(&declaration_text)
+                ),
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some(
+                    "Declare each variable on its own line with an explanatory comment".to_string(),
+                ),
+                ..Default::default()
+            });
+        }
+
+        None
+    }
     /// Check if this declaration is part of a for loop (exception to the rule)
     fn is_for_loop_declaration(&self, node: &Node) -> bool {
         if let Some(parent) = node.parent() {

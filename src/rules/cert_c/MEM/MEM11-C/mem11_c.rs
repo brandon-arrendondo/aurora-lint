@@ -43,6 +43,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Mem11C;
@@ -83,63 +84,52 @@ impl Mem11C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for loop statements
-        match node.kind() {
-            "while_statement" | "do_statement" | "for_statement"
-                // Check if this loop contains memory allocations
-                if self.contains_memory_allocation(node, source)
-                    // Check if there's a bound check (like a counter)
-                    && !self.has_bound_check(node, source) => {
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            message: "Memory allocation in loop without upper bound check. \
-                                     Unbounded memory allocation can exhaust heap space. \
-                                     Consider using databases, file storage, or implementing \
-                                     a maximum size limit for data structures."
-                                .to_string(),
-                            severity: self.severity(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            file_path: String::new(),
-                            suggestion: Some(
-                                "Add a counter to limit iterations or use persistent storage \
-                                 (database/file) instead of accumulating unbounded data in memory"
-                                    .to_string(),
-                            ),
-                            requires_manual_review: Some(true),
-                        });
-                    }
-            _ => {}
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_unbounded_allocations(&child, source, violations);
+        for loop_node in query::find_descendants_of_kinds(
+            *node,
+            &["while_statement", "do_statement", "for_statement"],
+        ) {
+            // Check if this loop contains memory allocations
+            if self.contains_memory_allocation(&loop_node, source)
+                // Check if there's a bound check (like a counter)
+                && !self.has_bound_check(&loop_node, source)
+            {
+                violations.push(RuleViolation {
+                    rule_id: self.rule_id().to_string(),
+                    message: "Memory allocation in loop without upper bound check. \
+                             Unbounded memory allocation can exhaust heap space. \
+                             Consider using databases, file storage, or implementing \
+                             a maximum size limit for data structures."
+                        .to_string(),
+                    severity: self.severity(),
+                    line: loop_node.start_position().row + 1,
+                    column: loop_node.start_position().column + 1,
+                    file_path: String::new(),
+                    suggestion: Some(
+                        "Add a counter to limit iterations or use persistent storage \
+                         (database/file) instead of accumulating unbounded data in memory"
+                            .to_string(),
+                    ),
+                    requires_manual_review: Some(true),
+                });
             }
         }
     }
 
     /// Check if a node contains memory allocation calls (malloc, calloc, realloc)
     fn contains_memory_allocation(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                if func_name == "malloc" || func_name == "calloc" || func_name == "realloc" {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_memory_allocation(&child, source) {
-                    return true;
+            match n.child_by_field_name("function") {
+                Some(function) => {
+                    let func_name = get_node_text(&function, source);
+                    func_name == "malloc" || func_name == "calloc" || func_name == "realloc"
                 }
+                None => false,
             }
-        }
-
-        false
+        })
+        .is_some()
     }
 
     /// Check if there's a bound check in the loop (heuristic: look for counter variables)
@@ -179,61 +169,66 @@ impl Mem11C {
         has_increment: &mut bool,
         has_comparison: &mut bool,
     ) {
-        let node_text = get_node_text(node, source);
+        for n in query::find_descendants_of_kinds(
+            *node,
+            &[
+                "update_expression",
+                "assignment_expression",
+                "binary_expression",
+                "if_statement",
+            ],
+        ) {
+            let node_text = get_node_text(&n, source);
 
-        // Check for increment patterns (count++, ++count, count += 1, i++, etc.)
-        if node.kind() == "update_expression" {
-            // count++, ++count
-            *has_increment = true;
-        } else if node.kind() == "assignment_expression" {
-            // count += 1, count = count + 1
-            if node_text.contains("+=") || node_text.contains("= ") && node_text.contains(" + 1") {
+            // Check for increment patterns (count++, ++count, count += 1, i++, etc.)
+            if n.kind() == "update_expression" {
+                // count++, ++count
                 *has_increment = true;
-            }
-        }
-
-        // Check for comparison patterns in conditions
-        if node.kind() == "binary_expression" {
-            if let Some(operator) = node.child_by_field_name("operator") {
-                let op = get_node_text(&operator, source);
-                if op == ">=" || op == ">" || op == "<" || op == "<=" {
-                    // Check if this is comparing a variable to something
-                    // (not just any comparison, but one that looks like a limit)
-                    if node_text.contains("count")
-                        || node_text.contains("limit")
-                        || (node_text.contains("MAX") && node_text.contains(">="))
-                        || (node_text.contains("MAX") && node_text.contains(">"))
-                    {
-                        *has_comparison = true;
-                    }
+            } else if n.kind() == "assignment_expression" {
+                // count += 1, count = count + 1
+                if node_text.contains("+=")
+                    || node_text.contains("= ") && node_text.contains(" + 1")
+                {
+                    *has_increment = true;
                 }
             }
-        }
 
-        // Check for break statements with conditions
-        if node.kind() == "if_statement" {
-            if let Some(body) = node.child_by_field_name("consequence") {
-                let body_text = get_node_text(&body, source);
-                if body_text.contains("break") {
-                    // This is a conditional break, check if condition has comparison
-                    if let Some(condition) = node.child_by_field_name("condition") {
-                        let cond_text = get_node_text(&condition, source);
-                        if cond_text.contains(">=")
-                            || cond_text.contains(">")
-                            || cond_text.contains("MAX")
-                            || cond_text.contains("limit")
+            // Check for comparison patterns in conditions
+            if n.kind() == "binary_expression" {
+                if let Some(operator) = n.child_by_field_name("operator") {
+                    let op = get_node_text(&operator, source);
+                    if op == ">=" || op == ">" || op == "<" || op == "<=" {
+                        // Check if this is comparing a variable to something
+                        // (not just any comparison, but one that looks like a limit)
+                        if node_text.contains("count")
+                            || node_text.contains("limit")
+                            || (node_text.contains("MAX") && node_text.contains(">="))
+                            || (node_text.contains("MAX") && node_text.contains(">"))
                         {
                             *has_comparison = true;
                         }
                     }
                 }
             }
-        }
 
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.search_counter_patterns(&child, source, has_increment, has_comparison);
+            // Check for break statements with conditions
+            if n.kind() == "if_statement" {
+                if let Some(body) = n.child_by_field_name("consequence") {
+                    let body_text = get_node_text(&body, source);
+                    if body_text.contains("break") {
+                        // This is a conditional break, check if condition has comparison
+                        if let Some(condition) = n.child_by_field_name("condition") {
+                            let cond_text = get_node_text(&condition, source);
+                            if cond_text.contains(">=")
+                                || cond_text.contains(">")
+                                || cond_text.contains("MAX")
+                                || cond_text.contains("limit")
+                            {
+                                *has_comparison = true;
+                            }
+                        }
+                    }
+                }
             }
         }
     }

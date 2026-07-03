@@ -15,6 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Dcl09C;
@@ -41,23 +42,10 @@ impl CertRule for Dcl09C {
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-
-        // Check function definitions
-        if node.kind() == "function_definition" {
-            if let Some(violation) = self.check_function(node, source) {
-                violations.push(violation);
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
-        }
-
-        violations
+        query::find_descendants_of_kind(*node, "function_definition")
+            .into_iter()
+            .filter_map(|func| self.check_function(&func, source))
+            .collect()
     }
 }
 
@@ -150,34 +138,26 @@ impl Dcl09C {
         false
     }
 
-    /// Recursively check for return statements that return errno values
+    /// Check for return statements that return errno values
     fn check_for_errno_returns(&self, node: &Node, source: &str) -> bool {
-        // Check if this is a return statement
-        if node.kind() == "return_statement" {
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "return_statement" {
+                return false;
+            }
             // Get the return expression
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() != "return" && child.kind() != ";" {
-                        // This is the return expression
-                        let return_text = ast_utils::get_node_text(&child, source);
-                        if self.is_errno_value(&return_text) {
-                            return true;
-                        }
+            let mut cursor = n.walk();
+            for child in n.children(&mut cursor) {
+                if child.kind() != "return" && child.kind() != ";" {
+                    // This is the return expression
+                    let return_text = ast_utils::get_node_text(&child, source);
+                    if self.is_errno_value(&return_text) {
+                        return true;
                     }
                 }
             }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.check_for_errno_returns(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            false
+        })
+        .is_some()
     }
 
     /// Check if a value is an errno constant or errno itself

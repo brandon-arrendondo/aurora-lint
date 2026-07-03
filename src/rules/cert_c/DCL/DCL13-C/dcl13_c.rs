@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Dcl13C;
@@ -30,31 +31,22 @@ impl CertRule for Dcl13C {
         let mut violations = Vec::new();
 
         // Check all function definitions and declarations
-        check_functions_recursively(node, source, &mut violations, self.rule_id());
+        for found in
+            query::find_descendants_of_kinds(*node, &["function_definition", "declaration"])
+        {
+            match found.kind() {
+                "function_definition" => {
+                    check_function_definition(&found, source, &mut violations, self.rule_id());
+                }
+                "declaration" => {
+                    // Check for function declarations (prototypes)
+                    check_function_declaration(&found, source, &mut violations, self.rule_id());
+                }
+                _ => {}
+            }
+        }
 
         violations
-    }
-}
-
-/// Recursively check all function definitions and declarations in the AST
-fn check_functions_recursively(
-    node: &Node,
-    source: &str,
-    violations: &mut Vec<RuleViolation>,
-    rule_id: &str,
-) {
-    if node.kind() == "function_definition" {
-        check_function_definition(node, source, violations, rule_id);
-    } else if node.kind() == "declaration" {
-        // Check for function declarations (prototypes)
-        check_function_declaration(node, source, violations, rule_id);
-    }
-
-    // Recursively check children
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            check_functions_recursively(&child, source, violations, rule_id);
-        }
     }
 }
 
@@ -311,7 +303,35 @@ const READ_ONLY_FUNCTIONS: &[&str] = &[
 
 /// Check if a pointer parameter is modified in the function body
 fn is_pointer_param_modified(body: &Node, param_name: &str, source: &str) -> bool {
-    check_node_for_pointer_modification(body, param_name, source)
+    query::find_first_descendant(*body, |node| {
+        // Check if this is an assignment where LHS writes through param
+        if node.kind() == "assignment_expression" {
+            if let Some(left) = node.child_by_field_name("left") {
+                if is_write_through_param(&left, param_name, source) {
+                    return true;
+                }
+            }
+        }
+
+        // Check for increment/decrement through param (e.g., (*p)++, p->field++)
+        if node.kind() == "update_expression" {
+            if let Some(argument) = node.child_by_field_name("argument") {
+                if is_write_through_param(&argument, param_name, source) {
+                    return true;
+                }
+            }
+        }
+
+        // Check if param is passed to a function that may modify it
+        if node.kind() == "call_expression"
+            && is_param_passed_to_modifying_call(&node, param_name, source)
+        {
+            return true;
+        }
+
+        false
+    })
+    .is_some()
 }
 
 /// Collect local pointer variables that are initialized from a parameter.
@@ -321,17 +341,7 @@ fn is_pointer_param_modified(body: &Node, param_name: &str, source: &str) -> boo
 /// can be attributed back to the original parameter.
 fn collect_pointer_aliases(body: &Node, param_name: &str, source: &str) -> Vec<String> {
     let mut aliases = Vec::new();
-    collect_aliases_recursive(body, param_name, source, &mut aliases);
-    aliases
-}
-
-fn collect_aliases_recursive(
-    node: &Node,
-    param_name: &str,
-    source: &str,
-    aliases: &mut Vec<String>,
-) {
-    if node.kind() == "declaration" {
+    for node in query::find_descendants_of_kind(*body, "declaration") {
         // Look for init_declarator children with pointer declarator
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
@@ -353,12 +363,7 @@ fn collect_aliases_recursive(
             }
         }
     }
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_aliases_recursive(&child, param_name, source, aliases);
-        }
-    }
+    aliases
 }
 
 /// Extract the identifier name from a declarator node (handles pointer_declarator wrapping).
@@ -374,53 +379,6 @@ fn find_identifier_in_declarator(node: &Node, source: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// Recursively check if a node contains modifications through a pointer parameter.
-///
-/// Detects:
-/// - Direct dereference writes: `*param = expr`
-/// - Struct member writes via arrow: `param->field = expr`
-/// - Array subscript writes: `param[i] = expr`, `param->field[i] = expr`
-/// - Compound assignments: `param->field += expr`
-/// - Increment/decrement: `param->field++`, `(*param)++`
-/// - Function calls passing param to potentially-modifying functions
-fn check_node_for_pointer_modification(node: &Node, param_name: &str, source: &str) -> bool {
-    // Check if this is an assignment where LHS writes through param
-    if node.kind() == "assignment_expression" {
-        if let Some(left) = node.child_by_field_name("left") {
-            if is_write_through_param(&left, param_name, source) {
-                return true;
-            }
-        }
-    }
-
-    // Check for increment/decrement through param (e.g., (*p)++, p->field++)
-    if node.kind() == "update_expression" {
-        if let Some(argument) = node.child_by_field_name("argument") {
-            if is_write_through_param(&argument, param_name, source) {
-                return true;
-            }
-        }
-    }
-
-    // Check if param is passed to a function that may modify it
-    if node.kind() == "call_expression" {
-        if is_param_passed_to_modifying_call(node, param_name, source) {
-            return true;
-        }
-    }
-
-    // Recursively check children
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if check_node_for_pointer_modification(&child, param_name, source) {
-                return true;
-            }
-        }
-    }
-
-    false
 }
 
 /// Check if a node represents writing through a parameter (dereferencing the pointed-to data).

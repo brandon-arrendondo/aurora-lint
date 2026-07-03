@@ -23,6 +23,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -84,23 +85,16 @@ impl CertRule for Pos39C {
 impl Pos39C {
     /// Find multi-byte integer variable declarations
     fn find_multi_byte_vars(&self, node: &Node, source: &str, vars: &mut HashMap<String, String>) {
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
+        for node in query::find_descendants_of_kind(*node, "declaration") {
+            let decl_text = get_node_text(&node, source);
 
             // Check for multi-byte integer types
             if self.is_multi_byte_type(&decl_text) {
                 // Extract variable name
-                if let Some(var_name) = self.extract_var_name(node, source) {
+                if let Some(var_name) = self.extract_var_name(&node, source) {
                     let type_name = self.extract_type_name(&decl_text);
                     vars.insert(var_name, type_name);
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_multi_byte_vars(&child, source, vars);
             }
         }
     }
@@ -146,19 +140,8 @@ impl Pos39C {
 
     /// Find identifier in node tree
     fn find_identifier(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "identifier" {
-            return Some(get_node_text(node, source).to_string());
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(name) = self.find_identifier(&child, source) {
-                    return Some(name);
-                }
-            }
-        }
-
-        None
+        query::find_first_descendant(*node, |n| n.kind() == "identifier")
+            .map(|n| get_node_text(&n, source).to_string())
     }
 
     /// Find byte order conversion function calls
@@ -168,39 +151,36 @@ impl Pos39C {
         source: &str,
         converted: &mut HashSet<String>,
     ) {
-        if node.kind() == "assignment_expression" {
-            // Look for: var = ntohl(var)
-            if let Some(left) = node.child_by_field_name("left") {
-                let var_name = get_node_text(&left, source);
-                if let Some(right) = node.child_by_field_name("right") {
-                    let right_text = get_node_text(&right, source);
-                    if self.has_byte_order_conversion(&right_text) {
-                        converted.insert(var_name.to_string());
+        for node in
+            query::find_descendants_of_kinds(*node, &["assignment_expression", "call_expression"])
+        {
+            if node.kind() == "assignment_expression" {
+                // Look for: var = ntohl(var)
+                if let Some(left) = node.child_by_field_name("left") {
+                    let var_name = get_node_text(&left, source);
+                    if let Some(right) = node.child_by_field_name("right") {
+                        let right_text = get_node_text(&right, source);
+                        if self.has_byte_order_conversion(&right_text) {
+                            converted.insert(var_name.to_string());
+                        }
                     }
                 }
             }
-        }
 
-        // Also check call expressions for byte order functions
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                if self.is_byte_order_function(&func_name) {
-                    // Mark parent context as having conversion
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        let args_text = get_node_text(&args, source);
-                        // Extract variable name from arguments
-                        let clean_args = args_text.trim_matches(|c| c == '(' || c == ')');
-                        converted.insert(clean_args.to_string());
+            // Also check call expressions for byte order functions
+            if node.kind() == "call_expression" {
+                if let Some(function) = node.child_by_field_name("function") {
+                    let func_name = get_node_text(&function, source);
+                    if self.is_byte_order_function(&func_name) {
+                        // Mark parent context as having conversion
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            let args_text = get_node_text(&args, source);
+                            // Extract variable name from arguments
+                            let clean_args = args_text.trim_matches(|c| c == '(' || c == ')');
+                            converted.insert(clean_args.to_string());
+                        }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_byte_order_conversions(&child, source, converted);
             }
         }
     }
@@ -228,7 +208,7 @@ impl Pos39C {
         _received_vars: &mut HashMap<String, (usize, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
@@ -271,20 +251,6 @@ impl Pos39C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_recv_calls(
-                    &child,
-                    source,
-                    multi_byte_vars,
-                    converted_vars,
-                    _received_vars,
-                    violations,
-                );
             }
         }
     }

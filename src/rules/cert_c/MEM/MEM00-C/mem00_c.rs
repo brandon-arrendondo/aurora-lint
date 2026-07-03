@@ -29,6 +29,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -65,23 +66,15 @@ impl CertRule for Mem00C {
 impl Mem00C {
     /// Find functions that free memory passed as parameters
     fn find_parameter_frees(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for function definitions
-        if node.kind() == "function_definition" {
+        for func_def in query::find_descendants_of_kind(*node, "function_definition") {
             // Get parameter names
-            let params = self.get_pointer_params(node, source);
+            let params = self.get_pointer_params(&func_def, source);
 
             if !params.is_empty() {
                 // Check if any free() calls are made on parameters
-                if let Some(body) = node.child_by_field_name("body") {
+                if let Some(body) = func_def.child_by_field_name("body") {
                     self.check_free_on_params(&body, source, &params, violations);
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_parameter_frees(&child, source, violations);
             }
         }
     }
@@ -126,7 +119,7 @@ impl Mem00C {
         params: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 if func_name == "free" {
@@ -158,13 +151,6 @@ impl Mem00C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_free_on_params(&child, source, params, violations);
             }
         }
     }

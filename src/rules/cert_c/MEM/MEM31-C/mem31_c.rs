@@ -3,6 +3,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -49,16 +50,9 @@ impl CertRule for Mem31C {
         let summaries = self.function_summaries.borrow();
 
         // Analyze each function independently for memory leaks
-        if node.kind() == "function_definition" {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
             let mut analyzer = MemoryLeakAnalyzer::new(&summaries);
-            analyzer.analyze_function(node, source, &mut violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
+            analyzer.analyze_function(&func, source, &mut violations);
         }
 
         violations
@@ -152,67 +146,45 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         source: &str,
         is_alloc: bool,
     ) -> Option<(String, bool)> {
-        self.find_loop_array_pattern_recursive(node, source, is_alloc)
-    }
-
-    fn find_loop_array_pattern_recursive(
-        &self,
-        node: &Node,
-        source: &str,
-        is_alloc: bool,
-    ) -> Option<(String, bool)> {
         if is_alloc {
             // Looking for array[i] = malloc() pattern
-            if node.kind() == "assignment_expression" {
-                if let Some(left) = node.child_by_field_name("left") {
-                    if left.kind() == "subscript_expression" {
-                        if let Some(right) = node.child_by_field_name("right") {
-                            if self.is_allocation_call(&right, source) {
-                                // Extract array base (e.g., "array" from "array[i]")
-                                if let Some(base) = left.child_by_field_name("argument") {
-                                    let base_name = ast_utils::get_node_text_owned(&base, source);
-                                    return Some((base_name, true));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            let assign = query::find_first_descendant(*node, |n| {
+                n.kind() == "assignment_expression"
+                    && n.child_by_field_name("left")
+                        .is_some_and(|left| left.kind() == "subscript_expression")
+                    && n.child_by_field_name("right")
+                        .is_some_and(|right| self.is_allocation_call(&right, source))
+            })?;
+            let left = assign.child_by_field_name("left")?;
+            // Extract array base (e.g., "array" from "array[i]")
+            let base = left.child_by_field_name("argument")?;
+            Some((ast_utils::get_node_text_owned(&base, source), true))
         } else {
             // Looking for free(array[i]) pattern
-            if node.kind() == "call_expression" {
-                if let Some(function) = node.child_by_field_name("function") {
-                    let func_name = ast_utils::get_node_text_owned(&function, source);
-                    if func_name == "free" {
-                        if let Some(arguments) = node.child_by_field_name("arguments") {
-                            for i in 0..arguments.child_count() {
-                                if let Some(arg) = arguments.child(i) {
-                                    if arg.kind() == "subscript_expression" {
-                                        if let Some(base) = arg.child_by_field_name("argument") {
-                                            let base_name =
-                                                ast_utils::get_node_text_owned(&base, source);
-                                            return Some((base_name, true));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            let call = query::find_first_descendant(*node, |n| {
+                if n.kind() != "call_expression" {
+                    return false;
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(result) =
-                    self.find_loop_array_pattern_recursive(&child, source, is_alloc)
-                {
-                    return Some(result);
+                let Some(function) = n.child_by_field_name("function") else {
+                    return false;
+                };
+                if ast_utils::get_node_text_owned(&function, source) != "free" {
+                    return false;
                 }
-            }
+                let Some(arguments) = n.child_by_field_name("arguments") else {
+                    return false;
+                };
+                (0..arguments.child_count())
+                    .filter_map(|i| arguments.child(i))
+                    .any(|arg| arg.kind() == "subscript_expression")
+            })?;
+            let arguments = call.child_by_field_name("arguments")?;
+            let arg = (0..arguments.child_count())
+                .filter_map(|i| arguments.child(i))
+                .find(|arg| arg.kind() == "subscript_expression")?;
+            let base = arg.child_by_field_name("argument")?;
+            Some((ast_utils::get_node_text_owned(&base, source), true))
         }
-        None
     }
 
     /// Check for macro calls that might hide early returns (e.g., CHECK_AND_RETURN, ASSERT_RETURN)
@@ -267,34 +239,37 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Pre-analyze function to find what variables are freed at each labeled statement
     fn collect_label_frees(&mut self, node: &Node, source: &str) {
-        if node.kind() == "labeled_statement" {
+        for label in query::find_descendants_of_kind(*node, "labeled_statement") {
             // Get the label name
-            if let Some(label_node) = node.child(0) {
+            if let Some(label_node) = label.child(0) {
                 if label_node.kind() == "statement_identifier" {
                     let label_name = ast_utils::get_node_text_owned(&label_node, source);
                     // Collect all free() calls reachable from this label
                     let mut freed_vars = HashSet::new();
-                    self.collect_frees_in_label(node, source, &mut freed_vars);
+                    self.collect_frees_in_label(&label, source, &mut freed_vars);
                     self.label_frees.insert(label_name, freed_vars);
                 }
             }
         }
-
-        // Recurse to find all labels
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_label_frees(&child, source);
-            }
-        }
     }
 
-    /// Collect all free() calls reachable from a labeled statement
+    /// Collect all free() calls reachable from a labeled statement. Calls
+    /// nested inside a `return` statement's own expression are excluded (a
+    /// `return_statement` node prunes further descent into its children in
+    /// the original recursive walk) — replicated here by filtering out any
+    /// `call_expression` with a `return_statement` ancestor. A label can
+    /// never be lexically nested inside a `return` expression in valid C, so
+    /// walking the full (unbounded) ancestor chain from each call cannot
+    /// cross above `node` and pick up an unrelated `return_statement`.
     fn collect_frees_in_label(&self, node: &Node, source: &str, freed_vars: &mut HashSet<String>) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if query::find_ancestor(call, |a| a.kind() == "return_statement").is_some() {
+                continue;
+            }
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = ast_utils::get_node_text_owned(&function, source);
                 if func_name == "free" {
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
+                    if let Some(arguments) = call.child_by_field_name("arguments") {
                         for i in 0..arguments.child_count() {
                             if let Some(arg) = arguments.child(i) {
                                 if matches!(
@@ -308,17 +283,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse, but stop at return statements (code after return is unreachable)
-        if node.kind() == "return_statement" {
-            return;
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_frees_in_label(&child, source, freed_vars);
             }
         }
     }
@@ -1509,18 +1473,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Check if a node contains a return statement
     fn block_has_return(&self, node: &Node) -> bool {
-        if node.kind() == "return_statement" {
-            return true;
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.block_has_return(&child) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| n.kind() == "return_statement").is_some()
     }
 }

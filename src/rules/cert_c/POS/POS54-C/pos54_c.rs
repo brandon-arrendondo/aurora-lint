@@ -37,6 +37,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pos54C;
@@ -87,7 +88,8 @@ impl Pos54C {
 
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for call expressions
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
+            let node = &node;
             if let Some(function_node) = node.child_by_field_name("function") {
                 let function_name = get_node_text(&function_node, source);
 
@@ -127,13 +129,6 @@ impl Pos54C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }
@@ -205,7 +200,6 @@ impl Pos54C {
     }
 
     /// Check if a statement contains an error check for the variable
-    #[allow(clippy::only_used_in_recursion)]
     fn statement_checks_error(
         &self,
         node: &Node,
@@ -213,46 +207,41 @@ impl Pos54C {
         function_name: &str,
         source: &str,
     ) -> bool {
-        // Look for if statements
-        if node.kind() == "if_statement" {
-            if let Some(condition) = node.child_by_field_name("condition") {
-                let condition_text = get_node_text(&condition, source);
-
-                // Check for NULL check (fmemopen, open_memstream)
-                if Self::is_posix_null_error_function(function_name)
-                    && condition_text.contains(var_name)
-                    && (condition_text.contains("== NULL")
-                        || condition_text.contains("!= NULL")
-                        || condition_text.contains("==NULL")
-                        || condition_text.contains("!=NULL")
-                        || format!("!{}", var_name) == condition_text.trim())
-                {
-                    return true;
-                }
-
-                // Check for non-zero check (posix_memalign)
-                if Self::is_posix_nonzero_error_function(function_name)
-                    && condition_text.contains(var_name)
-                    && (condition_text.contains("!= 0")
-                        || condition_text.contains("== 0")
-                        || condition_text.contains("!=0")
-                        || condition_text.contains("==0"))
-                {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            // Look for if statements
+            if n.kind() != "if_statement" {
+                return false;
             }
-        }
+            let Some(condition) = n.child_by_field_name("condition") else {
+                return false;
+            };
+            let condition_text = get_node_text(&condition, source);
 
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.statement_checks_error(&child, var_name, function_name, source) {
-                    return true;
-                }
+            // Check for NULL check (fmemopen, open_memstream)
+            if Self::is_posix_null_error_function(function_name)
+                && condition_text.contains(var_name)
+                && (condition_text.contains("== NULL")
+                    || condition_text.contains("!= NULL")
+                    || condition_text.contains("==NULL")
+                    || condition_text.contains("!=NULL")
+                    || format!("!{}", var_name) == condition_text.trim())
+            {
+                return true;
             }
-        }
 
-        false
+            // Check for non-zero check (posix_memalign)
+            if Self::is_posix_nonzero_error_function(function_name)
+                && condition_text.contains(var_name)
+                && (condition_text.contains("!= 0")
+                    || condition_text.contains("== 0")
+                    || condition_text.contains("!=0")
+                    || condition_text.contains("==0"))
+            {
+                return true;
+            }
+            false
+        })
+        .is_some()
     }
 
     fn report_violation(

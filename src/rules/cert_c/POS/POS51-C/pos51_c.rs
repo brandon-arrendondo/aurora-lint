@@ -42,6 +42,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pos51C;
@@ -78,55 +79,40 @@ impl Pos51C {
 
     /// Collect all pthread_mutex_lock() calls in a compound statement
     fn collect_mutex_locks<'a>(&self, node: &Node<'a>, source: &str) -> Vec<(Node<'a>, String)> {
-        let mut locks = Vec::new();
-
-        if self.is_mutex_lock_call(node, source) {
-            if let Some(mutex_arg) = self.get_mutex_argument(node, source) {
-                locks.push((*node, mutex_arg));
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                locks.extend(self.collect_mutex_locks(&child, source));
-            }
-        }
-
-        locks
+        query::find_descendants(*node, |n| self.is_mutex_lock_call(&n, source))
+            .into_iter()
+            .filter_map(|n| self.get_mutex_argument(&n, source).map(|arg| (n, arg)))
+            .collect()
     }
 
     /// Check if a node contains conditional statements that order locks based on comparison
     /// The condition should compare the lock arguments (e.g., from->id < to->id)
     fn contains_conditional_ordering(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "if_statement" {
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "if_statement" {
+                return false;
+            }
             // Check if the condition involves a comparison that could be lock ordering
-            if let Some(condition) = node.child_by_field_name("condition") {
-                let cond_text = get_node_text(&condition, source);
-                // Look for comparison patterns like "->id <" or "->id >" or address comparisons
-                if (cond_text.contains("->id") || cond_text.contains(".id"))
-                    && (cond_text.contains('<') || cond_text.contains('>'))
-                {
-                    return true;
-                }
-                // Also check for address comparisons (comparing pointers directly)
-                if cond_text.contains('<') || cond_text.contains('>') {
-                    // Check if both sides of the comparison are pointer variables
-                    if self.is_pointer_comparison(&condition, source) {
-                        return true;
-                    }
-                }
+            let Some(condition) = n.child_by_field_name("condition") else {
+                return false;
+            };
+            let cond_text = get_node_text(&condition, source);
+            // Look for comparison patterns like "->id <" or "->id >" or address comparisons
+            if (cond_text.contains("->id") || cond_text.contains(".id"))
+                && (cond_text.contains('<') || cond_text.contains('>'))
+            {
+                return true;
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_conditional_ordering(&child, source) {
+            // Also check for address comparisons (comparing pointers directly)
+            if cond_text.contains('<') || cond_text.contains('>') {
+                // Check if both sides of the comparison are pointer variables
+                if self.is_pointer_comparison(&condition, source) {
                     return true;
                 }
             }
-        }
-
-        false
+            false
+        })
+        .is_some()
     }
 
     /// Check if the condition is a pointer comparison (used for lock ordering)
@@ -243,13 +229,8 @@ impl CertRule for Pos51C {
 impl Pos51C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for deadlock patterns in function definitions
-        self.check_function_for_deadlock(node, source, violations);
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function_for_deadlock(&func, source, violations);
         }
     }
 }

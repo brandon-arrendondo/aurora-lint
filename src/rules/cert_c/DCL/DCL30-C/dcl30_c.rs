@@ -16,6 +16,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Dcl30C;
@@ -44,26 +45,24 @@ impl CertRule for Dcl30C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        match node.kind() {
-            // Check return statements for local variable pointers
-            "return_statement" => {
-                if let Some(violation) = self.check_return_local(node, source) {
-                    violations.push(violation);
+        for found in
+            query::find_descendants_of_kinds(*node, &["return_statement", "assignment_expression"])
+        {
+            match found.kind() {
+                // Check return statements for local variable pointers
+                "return_statement" => {
+                    if let Some(violation) = self.check_return_local(&found, source) {
+                        violations.push(violation);
+                    }
                 }
-            }
-            // Check assignments for local variables assigned to globals or output params
-            "assignment_expression" => {
-                if let Some(violation) = self.check_assignment_storage_duration(node, source) {
-                    violations.push(violation);
+                // Check assignments for local variables assigned to globals or output params
+                "assignment_expression" => {
+                    if let Some(violation) = self.check_assignment_storage_duration(&found, source)
+                    {
+                        violations.push(violation);
+                    }
                 }
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+                _ => {}
             }
         }
 
@@ -410,51 +409,32 @@ impl Dcl30C {
     /// (struct member access, function call, NULL) — not from address-of-local.
     fn only_assigned_safe_sources(&self, body: &Node, var_name: &str, source: &str) -> bool {
         let mut found_any_assignment = false;
-        self.check_assignments_safe(body, var_name, source, &mut found_any_assignment)
-            && found_any_assignment
-    }
-
-    fn check_assignments_safe(
-        &self,
-        node: &Node,
-        var_name: &str,
-        source: &str,
-        found: &mut bool,
-    ) -> bool {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "expression_statement" {
-                    if let Some(expr) = child.child(0) {
-                        if expr.kind() == "assignment_expression" {
-                            if let (Some(left), Some(right)) = (
-                                expr.child_by_field_name("left"),
-                                expr.child_by_field_name("right"),
-                            ) {
-                                let left_text = ast_utils::get_node_text(&left, source);
-                                if left_text == var_name {
-                                    *found = true;
-                                    // Unsafe: address-of expression
-                                    if right.kind() == "pointer_expression" {
-                                        return false;
-                                    }
-                                    let rt = ast_utils::get_node_text(&right, source);
-                                    if rt.starts_with('&') {
-                                        return false;
-                                    }
-                                    // Safe sources: field_expression, call_expression,
-                                    // subscript_expression, identifier, NULL
-                                }
+        for stmt in query::find_descendants_of_kind(*body, "expression_statement") {
+            if let Some(expr) = stmt.child(0) {
+                if expr.kind() == "assignment_expression" {
+                    if let (Some(left), Some(right)) = (
+                        expr.child_by_field_name("left"),
+                        expr.child_by_field_name("right"),
+                    ) {
+                        let left_text = ast_utils::get_node_text(&left, source);
+                        if left_text == var_name {
+                            found_any_assignment = true;
+                            // Unsafe: address-of expression
+                            if right.kind() == "pointer_expression" {
+                                return false;
                             }
+                            let rt = ast_utils::get_node_text(&right, source);
+                            if rt.starts_with('&') {
+                                return false;
+                            }
+                            // Safe sources: field_expression, call_expression,
+                            // subscript_expression, identifier, NULL
                         }
                     }
                 }
-                // Recurse
-                if !self.check_assignments_safe(&child, var_name, source, found) {
-                    return false;
-                }
             }
         }
-        true
+        found_any_assignment
     }
 
     /// Check if a declaration has an initializer that is a heap allocation call.
@@ -754,19 +734,10 @@ impl Dcl30C {
 
     /// Check if a node tree contains an identifier with given name.
     fn contains_identifier_by_name(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        if node.kind() == "identifier" {
-            if ast_utils::get_node_text(node, source) == var_name {
-                return true;
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_identifier_by_name(&child, var_name, source) {
-                    return true;
-                }
-            }
-        }
-        false
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "identifier" && ast_utils::get_node_text(&n, source) == var_name
+        })
+        .is_some()
     }
 
     /// Check if a global variable is reassigned later in the same function

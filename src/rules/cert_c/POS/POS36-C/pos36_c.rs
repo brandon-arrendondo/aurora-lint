@@ -24,6 +24,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pos36C;
@@ -52,22 +53,19 @@ impl CertRule for Pos36C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Check function bodies for privilege dropping order
-        if node.kind() == "function_definition" {
-            if let Some(body) = node.child_by_field_name("body") {
-                self.check_privilege_order(&body, source, &mut violations);
+        for n in
+            query::find_descendants_of_kinds(*node, &["function_definition", "translation_unit"])
+        {
+            // Check function bodies for privilege dropping order
+            if n.kind() == "function_definition" {
+                if let Some(body) = n.child_by_field_name("body") {
+                    self.check_privilege_order(&body, source, &mut violations);
+                }
             }
-        }
 
-        // Also check at file level (code outside functions)
-        if node.kind() == "translation_unit" {
-            self.check_privilege_order(node, source, &mut violations);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+            // Also check at file level (code outside functions)
+            if n.kind() == "translation_unit" {
+                self.check_privilege_order(&n, source, &mut violations);
             }
         }
 
@@ -130,7 +128,7 @@ impl Pos36C {
     }
 
     fn collect_priv_calls(&self, node: &Node, source: &str, calls: &mut Vec<PrivCall>) {
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
@@ -149,13 +147,6 @@ impl Pos36C {
                         column: node.start_position().column + 1,
                     });
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_priv_calls(&child, source, calls);
             }
         }
     }

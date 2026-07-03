@@ -37,6 +37,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Mem10C;
@@ -146,8 +147,8 @@ impl Mem10C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for if statements
-        if node.kind() == "if_statement" {
-            if let Some(condition) = node.child_by_field_name("condition") {
+        for if_node in query::find_descendants_of_kind(*node, "if_statement") {
+            if let Some(condition) = if_node.child_by_field_name("condition") {
                 // Check if this is a direct NULL comparison
                 if self.is_direct_null_check(&condition, source) {
                     // Only flag when the checked pointer is a function parameter.
@@ -155,14 +156,14 @@ impl Mem10C {
                     // practice; the "use a validation function" advice is primarily
                     // relevant when validating inputs at function boundaries.
                     let checked_var = extract_checked_var_name(&condition, source);
-                    let params = self.collect_enclosing_params(node, source);
+                    let params = self.collect_enclosing_params(&if_node, source);
                     if checked_var.as_deref().is_some_and(|v| params.contains(v)) {
                         // Suppress positive null guards where the param is only used
                         // inside the guarded block. Pattern: if (ptr != NULL) { use(ptr); }
                         // This is the prescribed fix per EXP34-C and should not be flagged.
                         let suppress = checked_var.as_ref().is_some_and(|var_name| {
                             is_positive_guard(&condition, source)
-                                && !is_param_used_after_if(node, var_name, source)
+                                && !is_param_used_after_if(&if_node, var_name, source)
                         });
                         if !suppress {
                             violations.push(RuleViolation {
@@ -186,13 +187,6 @@ impl Mem10C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_pointer_validation(&child, source, violations);
             }
         }
     }
@@ -238,20 +232,7 @@ impl Mem10C {
     }
 
     fn contains_call_expression(&self, node: &Node, _source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            return true;
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_call_expression(&child, _source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| n.kind() == "call_expression").is_some()
     }
 
     /// Check for sizeof(pointer) misuse in allocation/memory functions.
@@ -264,24 +245,19 @@ impl Mem10C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = call_node.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
                 if matches!(
                     func_name,
                     "malloc" | "calloc" | "realloc" | "memset" | "memcpy" | "memmove"
                 ) {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        self.check_sizeof_args_in_call(func_name, &args, node, source, violations);
+                    if let Some(args) = call_node.child_by_field_name("arguments") {
+                        self.check_sizeof_args_in_call(
+                            func_name, &args, &call_node, source, violations,
+                        );
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_sizeof_pointer_misuse(&child, source, violations);
             }
         }
     }
@@ -527,17 +503,10 @@ fn is_param_used_after_if(if_node: &Node, var_name: &str, source: &str) -> bool 
     false
 }
 
-/// Recursively check if a node contains an identifier matching `name`.
+/// Check if a node contains an identifier matching `name`.
 fn contains_identifier(node: &Node, name: &str, source: &str) -> bool {
-    if node.kind() == "identifier" && get_node_text(node, source) == name {
-        return true;
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if contains_identifier(&child, name, source) {
-                return true;
-            }
-        }
-    }
-    false
+    query::find_first_descendant(*node, |n| {
+        n.kind() == "identifier" && get_node_text(&n, source) == name
+    })
+    .is_some()
 }

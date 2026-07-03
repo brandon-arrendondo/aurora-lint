@@ -14,6 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pos04C;
@@ -44,26 +45,15 @@ impl CertRule for Pos04C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
+        // Look for pthread_mutexattr_settype calls
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            self.check_mutex_settype(&call, source, &mut violations);
+        }
         violations
     }
 }
 
 impl Pos04C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for pthread_mutexattr_settype calls
-        if node.kind() == "call_expression" {
-            self.check_mutex_settype(node, source, violations);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     fn check_mutex_settype(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if let Some(func) = node.child_by_field_name("function") {
             let func_name = get_node_text(&func, source);

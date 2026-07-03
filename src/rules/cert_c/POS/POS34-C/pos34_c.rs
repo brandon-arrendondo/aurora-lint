@@ -45,6 +45,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pos34C;
@@ -79,7 +80,8 @@ impl CertRule for Pos34C {
 
 impl Pos34C {
     fn check_putenv_calls(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
+            let node = &node;
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
@@ -116,13 +118,6 @@ impl Pos34C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_putenv_calls(&child, source, violations);
             }
         }
     }
@@ -224,26 +219,16 @@ impl Pos34C {
         var_name: &str,
         source: &str,
     ) -> Option<Node<'a>> {
-        if node.kind() == "declaration" {
-            // Check if this declaration declares our variable
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "declaration" {
+                return false;
+            }
+            if let Some(declarator) = n.child_by_field_name("declarator") {
                 let decl_text = get_node_text(&declarator, source);
-                if decl_text.contains(var_name) {
-                    return Some(*node);
-                }
+                return decl_text.contains(var_name);
             }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(found) = self.search_declaration(&child, var_name, source) {
-                    return Some(found);
-                }
-            }
-        }
-
-        None
+            false
+        })
     }
 
     /// Check if a declaration is static

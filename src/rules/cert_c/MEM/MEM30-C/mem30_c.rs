@@ -3,6 +3,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::FunctionMacro;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -99,22 +100,17 @@ impl CertRule for Mem30C {
 /// `typedef union Tag NAME;`) under `node`. These let MEM30-C recognize
 /// union-typed variable declarations without full type resolution.
 fn collect_union_typedef_names(node: &Node, source: &str, out: &mut HashSet<String>) {
-    if node.kind() == "type_definition" {
-        if let Some(ty) = node.child_by_field_name("type") {
+    for td in query::find_descendants_of_kind(*node, "type_definition") {
+        if let Some(ty) = td.child_by_field_name("type") {
             if ty.kind() == "union_specifier" {
-                let mut cursor = node.walk();
-                for decl in node.children_by_field_name("declarator", &mut cursor) {
+                let mut cursor = td.walk();
+                for decl in td.children_by_field_name("declarator", &mut cursor) {
                     let name = type_identifier_name(&decl, source);
                     if !name.is_empty() {
                         out.insert(name);
                     }
                 }
             }
-        }
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_union_typedef_names(&child, source, out);
         }
     }
 }
@@ -147,19 +143,14 @@ fn collect_invoked_macro_names(
     macros: &HashMap<String, FunctionMacro>,
     out: &mut HashSet<String>,
 ) {
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
+    for call in query::find_descendants_of_kind(*node, "call_expression") {
+        if let Some(func) = call.child_by_field_name("function") {
             if func.kind() == "identifier" {
                 let name = get_node_text(&func, source);
                 if macros.contains_key(name) {
                     out.insert(name.to_string());
                 }
             }
-        }
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_invoked_macro_names(&child, source, macros, out);
         }
     }
 }
@@ -222,25 +213,17 @@ impl GlobalTracker {
         }
     }
 
-    /// First scan: identify global variables at file scope
+    /// First scan: identify global variables at file scope. A `declaration`
+    /// with `translation_unit` as its direct parent can never itself be
+    /// nested inside a `#if 0` block (a `preproc_if` node, not
+    /// `translation_unit`, would be its direct parent in that case), so the
+    /// original recursive `is_preproc_if_zero` prune never actually changed
+    /// which declarations matched here — this flat query is behavior-identical.
     fn scan_for_globals(&mut self, node: &Node, source: &str) {
-        if is_preproc_if_zero(node, source) {
-            return;
-        }
-        if node.kind() == "declaration" {
-            // Check if this is at file scope (parent is translation_unit)
-            if let Some(parent) = node.parent() {
-                if parent.kind() == "translation_unit" {
-                    // Extract declared variable names
-                    self.extract_global_declarations(node, source);
-                }
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.scan_for_globals(&child, source);
-            }
+        for decl in query::find_descendants(*node, |n| {
+            n.kind() == "declaration" && n.parent().is_some_and(|p| p.kind() == "translation_unit")
+        }) {
+            self.extract_global_declarations(&decl, source);
         }
     }
 
@@ -277,23 +260,22 @@ impl GlobalTracker {
         }
     }
 
-    /// Second scan: analyze functions for free/access patterns
+    /// Second scan: analyze functions for free/access patterns. Unlike
+    /// `scan_for_globals`, a `function_definition` is not required to be a
+    /// direct child of `translation_unit`, so a function nested inside a
+    /// `#if 0` block would otherwise be picked up by a plain kind search —
+    /// the ancestor check below replicates the original recursive prune that
+    /// skipped descending into `is_preproc_if_zero` subtrees entirely.
     fn scan_functions(&mut self, node: &Node, source: &str) {
-        if is_preproc_if_zero(node, source) {
-            return;
-        }
-        if node.kind() == "function_definition" {
-            self.analyze_function_patterns(node, source);
+        for func in query::find_descendants(*node, |n| {
+            n.kind() == "function_definition"
+                && query::find_ancestor(n, |a| is_preproc_if_zero(&a, source)).is_none()
+        }) {
+            self.analyze_function_patterns(&func, source);
             // Also check for recursive UAF pattern via text analysis
-            self.check_recursive_uaf_text_pattern(node, source);
+            self.check_recursive_uaf_text_pattern(&func, source);
             // Check for realloc zero-size pattern
-            self.check_realloc_noncompliant_pattern(node, source);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.scan_functions(&child, source);
-            }
+            self.check_realloc_noncompliant_pattern(&func, source);
         }
     }
 
@@ -999,7 +981,8 @@ impl GlobalTracker {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for if statements with setjmp condition
-        if node.kind() == "if_statement" {
+        for if_node in query::find_descendants_of_kind(*node, "if_statement") {
+            let node = &if_node;
             if let Some(condition) = node.child_by_field_name("condition") {
                 let cond_text = get_node_text(&condition, source);
                 // Check if condition involves setjmp
@@ -1051,13 +1034,6 @@ impl GlobalTracker {
                 }
             }
         }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_setjmp_longjmp_pattern(&child, source, violations);
-            }
-        }
     }
 
     /// Check for sequences like: call free_func(); call access_func();
@@ -1068,15 +1044,9 @@ impl GlobalTracker {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Find function bodies and check call sequences
-        if node.kind() == "function_definition" {
-            if let Some(body) = node.child_by_field_name("body") {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(body) = func.child_by_field_name("body") {
                 self.analyze_call_sequence(&body, source, violations);
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_call_sequence_violations(&child, source, violations);
             }
         }
     }
@@ -1128,21 +1098,20 @@ impl GlobalTracker {
         }
     }
 
+    /// Collect all call expressions under `node` in source order — order
+    /// matters here (the result feeds a sequential scan in
+    /// `analyze_call_sequence`). `query::find_descendants_of_kind` preserves
+    /// the same left-to-right pre-order a recursive descent produces, so
+    /// this is order-identical to the original recursive walk.
     fn collect_calls(&self, node: &Node, source: &str, calls: &mut Vec<(String, usize, usize)>) {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source).to_string();
                 calls.push((
                     func_name,
-                    node.start_position().row + 1,
-                    node.start_position().column + 1,
+                    call.start_position().row + 1,
+                    call.start_position().column + 1,
                 ));
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_calls(&child, source, calls);
             }
         }
     }
@@ -1382,27 +1351,24 @@ impl MemoryAnalyzer {
     /// `union {...}`/`union Tag`, or a union typedef from `union_typedef_names`)
     /// and record the declared variable names in `union_typed_vars`.
     fn collect_union_typed_vars(&mut self, node: &Node, source: &str) {
-        if node.kind() == "declaration" || node.kind() == "parameter_declaration" {
-            if let Some(ty) = node.child_by_field_name("type") {
+        let candidates =
+            query::find_descendants_of_kinds(*node, &["declaration", "parameter_declaration"]);
+        for decl_node in candidates {
+            if let Some(ty) = decl_node.child_by_field_name("type") {
                 let is_union = ty.kind() == "union_specifier"
                     || (ty.kind() == "type_identifier"
                         && self
                             .union_typedef_names
                             .contains(get_node_text(&ty, source)));
                 if is_union {
-                    let mut cursor = node.walk();
-                    for decl in node.children_by_field_name("declarator", &mut cursor) {
+                    let mut cursor = decl_node.walk();
+                    for decl in decl_node.children_by_field_name("declarator", &mut cursor) {
                         let name = self.extract_declarator_name(&decl, source);
                         if !name.is_empty() {
                             self.union_typed_vars.insert(name);
                         }
                     }
                 }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_union_typed_vars(&child, source);
             }
         }
     }
@@ -1791,17 +1757,7 @@ impl MemoryAnalyzer {
     /// Check if a node contains a return statement
     #[allow(dead_code)]
     fn contains_return(&self, node: &Node) -> bool {
-        if node.kind() == "return_statement" {
-            return true;
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_return(&child) {
-                    return true;
-                }
-            }
-        }
-        false
+        query::find_first_descendant(*node, |n| n.kind() == "return_statement").is_some()
     }
 
     /// Process function calls - free(), malloc(), printf(), etc.
@@ -2868,17 +2824,8 @@ fn preproc_conditional_between(source: &str, start: usize, end: usize) -> bool {
 /// pointer_declarator or array_declarator child, meaning the variable is a
 /// pointer or array rather than a scalar integer.
 fn declarator_contains_pointer_or_array(node: &tree_sitter::Node) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "pointer_declarator" | "array_declarator" => return true,
-                _ => {
-                    if declarator_contains_pointer_or_array(&child) {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
+    query::find_first_descendant(*node, |n| {
+        matches!(n.kind(), "pointer_declarator" | "array_declarator")
+    })
+    .is_some()
 }

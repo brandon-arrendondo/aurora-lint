@@ -26,6 +26,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -159,54 +160,49 @@ impl Dcl06C {
         occurrences: &mut HashMap<String, Vec<LiteralInfo>>,
         array_sizes: &mut Vec<LiteralInfo>,
     ) {
-        let kind = node.kind();
-
-        // Check for array declarator with numeric size
-        if kind == "array_declarator" {
-            if let Some(size_node) = self.find_array_size(node) {
-                if size_node.kind() == "number_literal" {
-                    let value = get_node_text(&size_node, source).to_string();
-                    // Extract array name to check for sizeof usage
-                    let array_name = self.extract_array_name(node, source);
-                    array_sizes.push(LiteralInfo {
-                        value,
-                        line: size_node.start_position().row + 1,
-                        column: size_node.start_position().column + 1,
-                        context: array_name.unwrap_or_default(),
-                    });
+        for n in query::find_descendants_of_kinds(*node, &["array_declarator", "number_literal"]) {
+            match n.kind() {
+                // Check for array declarator with numeric size
+                "array_declarator" => {
+                    if let Some(size_node) = self.find_array_size(&n) {
+                        if size_node.kind() == "number_literal" {
+                            let value = get_node_text(&size_node, source).to_string();
+                            // Extract array name to check for sizeof usage
+                            let array_name = self.extract_array_name(&n, source);
+                            array_sizes.push(LiteralInfo {
+                                value,
+                                line: size_node.start_position().row + 1,
+                                column: size_node.start_position().column + 1,
+                                context: array_name.unwrap_or_default(),
+                            });
+                        }
+                    }
                 }
-            }
-        }
+                // Track number literals in various contexts
+                "number_literal" => {
+                    let value = get_node_text(&n, source).to_string();
 
-        // Track number literals in various contexts
-        if kind == "number_literal" {
-            let value = get_node_text(node, source).to_string();
+                    // Determine context
+                    let context = self.get_literal_context(&n);
 
-            // Determine context
-            let context = self.get_literal_context(node);
+                    // Only track literals in suspicious contexts
+                    if self.is_suspicious_context(&context) {
+                        let info = LiteralInfo {
+                            value: value.clone(),
+                            line: n.start_position().row + 1,
+                            column: n.start_position().column + 1,
+                            context,
+                        };
 
-            // Only track literals in suspicious contexts
-            if self.is_suspicious_context(&context) {
-                let info = LiteralInfo {
-                    value: value.clone(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                    context,
-                };
-
-                occurrences.entry(value).or_default().push(info);
+                        occurrences.entry(value).or_default().push(info);
+                    }
+                }
+                _ => {}
             }
         }
 
         // Note: String literals are generally acceptable in context (error messages, etc.)
         // so we don't flag them to avoid false positives
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_literals(&child, source, occurrences, array_sizes);
-            }
-        }
     }
 
     /// Extract array name from array declarator
@@ -326,33 +322,22 @@ impl Dcl06C {
 
     /// Find all sizeof() usages and return the variable names
     fn find_sizeof_usages(&self, node: &Node, source: &str) -> HashSet<String> {
-        let mut sizeof_vars = HashSet::new();
-        self.collect_sizeof_usages(node, source, &mut sizeof_vars);
-        sizeof_vars
-    }
-
-    /// Recursively collect sizeof usages
-    fn collect_sizeof_usages(&self, node: &Node, source: &str, sizeof_vars: &mut HashSet<String>) {
-        if node.kind() == "sizeof_expression" {
-            // Look for the argument to sizeof
-            let text = get_node_text(node, source);
-            // Extract identifier from sizeof(identifier)
-            if let Some(start) = text.find('(') {
-                if let Some(end) = text.rfind(')') {
-                    let inner = text[start + 1..end].trim();
-                    // Could be an identifier
-                    if !inner.is_empty() && !inner.contains(' ') {
-                        sizeof_vars.insert(inner.to_string());
-                    }
+        query::find_descendants_of_kind(*node, "sizeof_expression")
+            .into_iter()
+            .filter_map(|n| {
+                // Look for the argument to sizeof
+                let text = get_node_text(&n, source);
+                // Extract identifier from sizeof(identifier)
+                let start = text.find('(')?;
+                let end = text.rfind(')')?;
+                let inner = text[start + 1..end].trim();
+                // Could be an identifier
+                if !inner.is_empty() && !inner.contains(' ') {
+                    Some(inner.to_string())
+                } else {
+                    None
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_sizeof_usages(&child, source, sizeof_vars);
-            }
-        }
+            })
+            .collect()
     }
 }

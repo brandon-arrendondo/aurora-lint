@@ -14,6 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -63,8 +64,8 @@ impl Mem02C {
         var_types: &mut HashMap<String, String>,
     ) {
         // Look for declarations to track pointer types
-        if node.kind() == "declaration" {
-            if let Some(decl_type) = self.extract_declaration_type(node, source) {
+        for node in query::find_descendants_of_kind(*node, "declaration") {
+            if let Some(decl_type) = self.extract_declaration_type(&node, source) {
                 // Get declarators
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
@@ -75,13 +76,6 @@ impl Mem02C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_var_types(&child, source, var_types);
             }
         }
     }
@@ -127,20 +121,17 @@ impl Mem02C {
         violations: &mut Vec<RuleViolation>,
         var_types: &HashMap<String, String>,
     ) {
-        // Check assignment expressions for malloc without cast
-        if node.kind() == "assignment_expression" {
-            self.check_assignment(node, source, violations, var_types);
-        }
+        for node in
+            query::find_descendants_of_kinds(*node, &["assignment_expression", "init_declarator"])
+        {
+            // Check assignment expressions for malloc without cast
+            if node.kind() == "assignment_expression" {
+                self.check_assignment(&node, source, violations, var_types);
+            }
 
-        // Check init_declarator for malloc in declarations
-        if node.kind() == "init_declarator" {
-            self.check_init_declarator(node, source, violations, var_types);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, var_types);
+            // Check init_declarator for malloc in declarations
+            if node.kind() == "init_declarator" {
+                self.check_init_declarator(&node, source, violations, var_types);
             }
         }
     }
@@ -282,17 +273,7 @@ impl Mem02C {
     }
 
     fn contains_alloc_call(&self, node: &Node, source: &str) -> bool {
-        if self.is_alloc_call(node, source) {
-            return true;
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_alloc_call(&child, source) {
-                    return true;
-                }
-            }
-        }
-        false
+        query::find_first_descendant(*node, |n| self.is_alloc_call(&n, source)).is_some()
     }
 
     fn get_cast_type(&self, node: &Node, source: &str) -> Option<String> {

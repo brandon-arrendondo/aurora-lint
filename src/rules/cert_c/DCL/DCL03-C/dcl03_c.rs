@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Dcl03C;
@@ -27,48 +28,44 @@ impl CertRule for Dcl03C {
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
+        query::find_descendants_of_kind(*node, "call_expression")
+            .into_iter()
+            .filter_map(|call| self.check_call_expression(call, source))
+            .collect()
+    }
+}
 
-        // Look for assert() function calls
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_text = ast_utils::get_node_text(&function, source);
+impl Dcl03C {
+    fn check_call_expression(&self, node: Node, source: &str) -> Option<RuleViolation> {
+        let function = node.child_by_field_name("function")?;
+        let func_text = ast_utils::get_node_text(&function, source);
 
-                // Check if this is an assert() call
-                if func_text == "assert" {
-                    // Get the arguments
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
-                        // Check if the argument is a constant expression
-                        if is_constant_expression(&arguments, source) {
-                            let start_point = node.start_position();
-
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                severity: Severity::Low,
-                                message: "Runtime assert() used with constant expression; consider using static_assert() instead".to_string(),
-                                file_path: String::new(),
-                                line: start_point.row + 1,
-                                column: start_point.column + 1,
-                                suggestion: Some(
-                                    "Replace assert() with static_assert() to evaluate at compile time"
-                                        .to_string(),
-                                ),
-                                ..Default::default()
-                            });
-                        }
-                    }
-                }
-            }
+        // Check if this is an assert() call
+        if func_text != "assert" {
+            return None;
         }
 
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
+        // Get the arguments
+        let arguments = node.child_by_field_name("arguments")?;
+        // Check if the argument is a constant expression
+        if !is_constant_expression(&arguments, source) {
+            return None;
         }
 
-        violations
+        let start_point = node.start_position();
+        Some(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: Severity::Low,
+            message: "Runtime assert() used with constant expression; consider using static_assert() instead".to_string(),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some(
+                "Replace assert() with static_assert() to evaluate at compile time"
+                    .to_string(),
+            ),
+            ..Default::default()
+        })
     }
 }
 

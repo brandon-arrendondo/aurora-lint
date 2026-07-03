@@ -14,6 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -58,15 +59,8 @@ impl CertRule for Mem03C {
 impl Mem03C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check function definitions for free/realloc patterns
-        if node.kind() == "function_definition" {
-            self.check_function(node, source, violations);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function(&func, source, violations);
         }
     }
 
@@ -258,29 +252,19 @@ impl Mem03C {
     }
 
     fn find_realloc_in_node(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if func_name == "realloc" {
-                    // Get first argument (pointer being reallocated)
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        for j in 0..args.child_count() {
-                            if let Some(arg) = args.child(j) {
-                                if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                                    return Some(get_node_text(&arg, source).to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let call = query::find_first_descendant(*node, |n| {
+            n.kind() == "call_expression"
+                && n.child_by_field_name("function")
+                    .map(|func| get_node_text(&func, source) == "realloc")
+                    .unwrap_or(false)
+        })?;
 
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(ptr) = self.find_realloc_in_node(&child, source) {
-                    return Some(ptr);
+        // Get first argument (pointer being reallocated)
+        let args = call.child_by_field_name("arguments")?;
+        for j in 0..args.child_count() {
+            if let Some(arg) = args.child(j) {
+                if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
+                    return Some(get_node_text(&arg, source).to_string());
                 }
             }
         }
@@ -333,57 +317,53 @@ impl Mem03C {
         sensitive_vars: &mut Vec<(String, usize, usize)>,
         cleared_vars: &mut HashSet<String>,
     ) {
-        match node.kind() {
-            "declaration" => {
-                // Check for sensitive-named pointer/array declarations (buffers only)
-                let decl_text = get_node_text(node, source);
-                let decl_lower = decl_text.to_lowercase();
-                // Must be a buffer type (pointer or array), not a scalar like size_t
-                let is_buffer = decl_text.contains('*') || decl_text.contains('[');
-                if is_buffer {
-                    for name in Self::SENSITIVE_NAMES {
-                        if decl_lower.contains(name) {
-                            if let Some(var_name) = self.extract_decl_var_name(node, source) {
-                                let lower = var_name.to_lowercase();
-                                if Self::SENSITIVE_NAMES.iter().any(|n| lower.contains(n)) {
-                                    sensitive_vars.push((
-                                        var_name,
-                                        node.start_position().row + 1,
-                                        node.start_position().column + 1,
-                                    ));
+        for node in query::find_descendants_of_kinds(*node, &["declaration", "call_expression"]) {
+            match node.kind() {
+                "declaration" => {
+                    // Check for sensitive-named pointer/array declarations (buffers only)
+                    let decl_text = get_node_text(&node, source);
+                    let decl_lower = decl_text.to_lowercase();
+                    // Must be a buffer type (pointer or array), not a scalar like size_t
+                    let is_buffer = decl_text.contains('*') || decl_text.contains('[');
+                    if is_buffer {
+                        for name in Self::SENSITIVE_NAMES {
+                            if decl_lower.contains(name) {
+                                if let Some(var_name) = self.extract_decl_var_name(&node, source) {
+                                    let lower = var_name.to_lowercase();
+                                    if Self::SENSITIVE_NAMES.iter().any(|n| lower.contains(n)) {
+                                        sensitive_vars.push((
+                                            var_name,
+                                            node.start_position().row + 1,
+                                            node.start_position().column + 1,
+                                        ));
+                                    }
                                 }
+                                break;
                             }
-                            break;
                         }
                     }
                 }
-            }
-            "call_expression" => {
-                // Check for clearing functions
-                if let Some(func) = node.child_by_field_name("function") {
-                    let func_name = get_node_text(&func, source);
-                    if CLEAR_FUNCS.contains(&func_name) {
-                        if let Some(args) = node.child_by_field_name("arguments") {
-                            for j in 0..args.child_count() {
-                                if let Some(arg) = args.child(j) {
-                                    let kind = arg.kind();
-                                    if kind != "(" && kind != ")" && kind != "," {
-                                        let ptr = self.extract_base_ptr(&arg, source);
-                                        cleared_vars.insert(ptr);
-                                        break;
+                "call_expression" => {
+                    // Check for clearing functions
+                    if let Some(func) = node.child_by_field_name("function") {
+                        let func_name = get_node_text(&func, source);
+                        if CLEAR_FUNCS.contains(&func_name) {
+                            if let Some(args) = node.child_by_field_name("arguments") {
+                                for j in 0..args.child_count() {
+                                    if let Some(arg) = args.child(j) {
+                                        let kind = arg.kind();
+                                        if kind != "(" && kind != ")" && kind != "," {
+                                            let ptr = self.extract_base_ptr(&arg, source);
+                                            cleared_vars.insert(ptr);
+                                            break;
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
-            _ => {}
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.scan_sensitive_vars_and_clears(&child, source, sensitive_vars, cleared_vars);
+                _ => {}
             }
         }
     }

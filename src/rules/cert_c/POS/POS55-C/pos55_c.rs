@@ -9,6 +9,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pos55C;
@@ -43,14 +44,9 @@ impl CertRule for Pos55C {
 
 impl Pos55C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "function_definition" {
-            if let Some(body) = node.child_by_field_name("body") {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(body) = func.child_by_field_name("body") {
                 self.check_socket_ordering(&body, source, violations);
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }
@@ -146,7 +142,7 @@ impl Pos55C {
         listen_pos: &mut Option<(usize, usize, usize)>,
         accept_pos: &mut Option<(usize, usize, usize)>,
     ) {
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(func) = node.child_by_field_name("function") {
                 let name = get_node_text(&func, source).trim().to_string();
                 let pos = (
@@ -166,12 +162,6 @@ impl Pos55C {
                     }
                     _ => {}
                 }
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.scan_socket_calls(&child, source, bind_pos, listen_pos, accept_pos);
             }
         }
     }

@@ -39,6 +39,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pos47C;
@@ -74,19 +75,12 @@ impl CertRule for Pos47C {
 impl Pos47C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for pthread_setcanceltype() calls
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 if func_name == "pthread_setcanceltype" {
-                    self.check_pthread_setcanceltype_call(node, source, violations);
+                    self.check_pthread_setcanceltype_call(&node, source, violations);
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }
