@@ -23,6 +23,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp02C;
@@ -57,69 +58,70 @@ impl CertRule for Exp02C {
 
 impl Exp02C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for binary expressions that are logical AND or OR
-        if node.kind() == "binary_expression" {
-            if let Some(operator) = node.child_by_field_name("operator") {
-                let op_text = get_node_text(&operator, source);
+        for bin_node in query::find_descendants_of_kind(*node, "binary_expression") {
+            self.check_binary_expression(&bin_node, source, violations);
+        }
+    }
 
-                // Only check logical AND (&&) and OR (||) operators
-                if matches!(op_text, "&&" | "||") {
-                    if let Some(right) = node.child_by_field_name("right") {
-                        // Exempt guarded short-circuit idioms for both && and ||.
-                        // A guard is any comparison (==, !=, <, >, <=, >=), a
-                        // truthiness check, or an &&/|| chain of guards.
-                        // Exempt only when the RHS carries no assignment, compound
-                        // assignment, or increment/decrement — pure function calls
-                        // are the expected payload.
-                        //   `ptr != NULL && func(ptr)`
-                        //   `ptr == NULL || fallback(ptr)`
-                        //   `file_size > 0 && buflen >= file_size && fseek(...)`
-                        //   `len == capacity && !grow(self)`
-                        if let Some(left) = node.child_by_field_name("left") {
-                            if self.is_guard_pattern(&left, source)
-                                && !self.has_mutation_side_effects(&right, source)
-                            {
-                                return;
-                            }
-                            // Also exempt: guard && (--countdown) — intentional hardware
-                            // busy-wait countdown pattern, e.g. (reg & mask) && (--timeout)
-                            if self.is_guard_pattern(&left, source)
-                                && Self::is_simple_decrement(&right)
-                            {
-                                return;
-                            }
+    /// Check a single binary_expression node for short-circuit side-effect violations
+    fn check_binary_expression(
+        &self,
+        node: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        if let Some(operator) = node.child_by_field_name("operator") {
+            let op_text = get_node_text(&operator, source);
+
+            // Only check logical AND (&&) and OR (||) operators
+            if matches!(op_text, "&&" | "||") {
+                if let Some(right) = node.child_by_field_name("right") {
+                    // Exempt guarded short-circuit idioms for both && and ||.
+                    // A guard is any comparison (==, !=, <, >, <=, >=), a
+                    // truthiness check, or an &&/|| chain of guards.
+                    // Exempt only when the RHS carries no assignment, compound
+                    // assignment, or increment/decrement — pure function calls
+                    // are the expected payload.
+                    //   `ptr != NULL && func(ptr)`
+                    //   `ptr == NULL || fallback(ptr)`
+                    //   `file_size > 0 && buflen >= file_size && fseek(...)`
+                    //   `len == capacity && !grow(self)`
+                    if let Some(left) = node.child_by_field_name("left") {
+                        if self.is_guard_pattern(&left, source)
+                            && !self.has_mutation_side_effects(&right, source)
+                        {
+                            return;
                         }
-
-                        // Check if the right operand has side effects
-                        if self.has_side_effects(&right, source) {
-                            let start_point = right.start_position();
-                            let right_text = get_node_text(&right, source);
-
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                severity: Severity::Low,
-                                message: format!(
-                                    "Side effect in right operand of '{}' operator may not execute due to short-circuit evaluation: '{}'",
-                                    op_text, right_text
-                                ),
-                                file_path: String::new(),
-                                line: start_point.row + 1,
-                                column: start_point.column + 1,
-                                suggestion: Some(
-                                    "Move side effects to separate statements before the logical expression".to_string()
-                                ),
-                                ..Default::default()
-                            });
+                        // Also exempt: guard && (--countdown) — intentional hardware
+                        // busy-wait countdown pattern, e.g. (reg & mask) && (--timeout)
+                        if self.is_guard_pattern(&left, source) && Self::is_simple_decrement(&right)
+                        {
+                            return;
                         }
                     }
-                }
-            }
-        }
 
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+                    // Check if the right operand has side effects
+                    if self.has_side_effects(&right, source) {
+                        let start_point = right.start_position();
+                        let right_text = get_node_text(&right, source);
+
+                        violations.push(RuleViolation {
+                            rule_id: self.rule_id().to_string(),
+                            severity: Severity::Low,
+                            message: format!(
+                                "Side effect in right operand of '{}' operator may not execute due to short-circuit evaluation: '{}'",
+                                op_text, right_text
+                            ),
+                            file_path: String::new(),
+                            line: start_point.row + 1,
+                            column: start_point.column + 1,
+                            suggestion: Some(
+                                "Move side effects to separate statements before the logical expression".to_string()
+                            ),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
         }
     }
@@ -180,19 +182,11 @@ impl Exp02C {
     /// assignment (+=, etc.), increment (++), or decrement (--).
     /// Pure function calls are NOT considered mutations — they're common in
     /// intentional guard patterns like `ptr == NULL || fallback()`.
-    fn has_mutation_side_effects(&self, node: &Node, source: &str) -> bool {
-        match node.kind() {
-            "assignment_expression" | "update_expression" => return true,
-            _ => {}
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.has_mutation_side_effects(&child, source) {
-                    return true;
-                }
-            }
-        }
-        false
+    fn has_mutation_side_effects(&self, node: &Node, _source: &str) -> bool {
+        query::find_first_descendant(*node, |n| {
+            matches!(n.kind(), "assignment_expression" | "update_expression")
+        })
+        .is_some()
     }
 
     /// Returns true if `node` is a simple pre/post decrement of a single identifier:

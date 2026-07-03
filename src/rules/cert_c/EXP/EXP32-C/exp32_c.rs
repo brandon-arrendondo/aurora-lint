@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp32C;
@@ -30,15 +31,8 @@ impl CertRule for Exp32C {
         let mut violations = Vec::new();
 
         // Check for assignment expressions that might violate volatile rules
-        if node.kind() == "assignment_expression" {
-            self.check_volatile_assignment(node, source, &mut violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
+        for assign_node in query::find_descendants_of_kind(*node, "assignment_expression") {
+            self.check_volatile_assignment(&assign_node, source, &mut violations);
         }
 
         violations

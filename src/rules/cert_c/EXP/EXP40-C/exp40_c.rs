@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -43,47 +44,45 @@ impl CertRule for Exp40C {
 
 /// Collect all const-qualified variable names from declarations and parameters
 fn collect_const_vars(node: &Node, source: &str, const_vars: &mut HashSet<String>) {
-    match node.kind() {
-        "declaration" => {
-            // Check if declaration has const qualifier
-            let decl_text = get_node_text(node, source);
-            if decl_text.contains("const") {
-                // Extract variable names from this declaration
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "init_declarator" {
-                            if let Some(declarator) = child.child_by_field_name("declarator") {
-                                if let Some(name) = extract_var_name(&declarator, source) {
+    for descendant in
+        query::find_descendants_of_kinds(*node, &["declaration", "parameter_declaration"])
+    {
+        match descendant.kind() {
+            "declaration" => {
+                // Check if declaration has const qualifier
+                let decl_text = get_node_text(&descendant, source);
+                if decl_text.contains("const") {
+                    // Extract variable names from this declaration
+                    for i in 0..descendant.child_count() {
+                        if let Some(child) = descendant.child(i) {
+                            if child.kind() == "init_declarator" {
+                                if let Some(declarator) = child.child_by_field_name("declarator") {
+                                    if let Some(name) = extract_var_name(&declarator, source) {
+                                        const_vars.insert(name);
+                                    }
+                                }
+                            } else if child.kind() == "pointer_declarator"
+                                || child.kind() == "identifier"
+                            {
+                                if let Some(name) = extract_var_name(&child, source) {
                                     const_vars.insert(name);
                                 }
-                            }
-                        } else if child.kind() == "pointer_declarator"
-                            || child.kind() == "identifier"
-                        {
-                            if let Some(name) = extract_var_name(&child, source) {
-                                const_vars.insert(name);
                             }
                         }
                     }
                 }
             }
-        }
-        "parameter_declaration" => {
-            let param_text = get_node_text(node, source);
-            if param_text.contains("const") {
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    if let Some(name) = extract_var_name(&declarator, source) {
-                        const_vars.insert(name);
+            "parameter_declaration" => {
+                let param_text = get_node_text(&descendant, source);
+                if param_text.contains("const") {
+                    if let Some(declarator) = descendant.child_by_field_name("declarator") {
+                        if let Some(name) = extract_var_name(&declarator, source) {
+                            const_vars.insert(name);
+                        }
                     }
                 }
             }
-        }
-        _ => {}
-    }
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_const_vars(&child, source, const_vars);
+            _ => {}
         }
     }
 }
@@ -115,22 +114,25 @@ fn check_node_recursive(
     const_vars: &HashSet<String>,
     violations: &mut Vec<RuleViolation>,
 ) {
-    match node.kind() {
-        "assignment_expression" => {
-            check_assignment(node, source, const_vars, violations);
-        }
-        "init_declarator" => {
-            check_init_declarator(node, source, const_vars, violations);
-        }
-        "pointer_declarator" => {
-            check_pointer_assignment(node, source, violations);
-        }
-        _ => {}
-    }
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            check_node_recursive(&child, source, const_vars, violations);
+    for descendant in query::find_descendants_of_kinds(
+        *node,
+        &[
+            "assignment_expression",
+            "init_declarator",
+            "pointer_declarator",
+        ],
+    ) {
+        match descendant.kind() {
+            "assignment_expression" => {
+                check_assignment(&descendant, source, const_vars, violations);
+            }
+            "init_declarator" => {
+                check_init_declarator(&descendant, source, const_vars, violations);
+            }
+            "pointer_declarator" => {
+                check_pointer_assignment(&descendant, source, violations);
+            }
+            _ => {}
         }
     }
 }
@@ -205,29 +207,26 @@ fn is_const_pointer_to_pointer_var(var_name: &str, node: &Node, source: &str) ->
 }
 
 fn find_const_ptr_ptr_decl(node: &Node, var_name: &str, source: &str) -> bool {
-    if node.kind() == "declaration" {
-        let decl_text = get_node_text(node, source);
-        // Check for patterns like "const int **varname" or "const T **varname"
-        if decl_text.contains("const") && decl_text.contains("**") && decl_text.contains(var_name) {
-            // Make sure const is before ** (not after like int * const *)
-            if let Some(const_pos) = decl_text.find("const") {
-                if let Some(ptr_ptr_pos) = decl_text.find("**") {
-                    if const_pos < ptr_ptr_pos {
-                        return true;
+    query::find_descendants_of_kind(*node, "declaration")
+        .into_iter()
+        .any(|decl| {
+            let decl_text = get_node_text(&decl, source);
+            // Check for patterns like "const int **varname" or "const T **varname"
+            if decl_text.contains("const")
+                && decl_text.contains("**")
+                && decl_text.contains(var_name)
+            {
+                // Make sure const is before ** (not after like int * const *)
+                if let Some(const_pos) = decl_text.find("const") {
+                    if let Some(ptr_ptr_pos) = decl_text.find("**") {
+                        if const_pos < ptr_ptr_pos {
+                            return true;
+                        }
                     }
                 }
             }
-        }
-    }
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if find_const_ptr_ptr_decl(&child, var_name, source) {
-                return true;
-            }
-        }
-    }
-    false
+            false
+        })
 }
 
 /// Check init_declarator for const removal in initialization
@@ -335,21 +334,10 @@ fn contains_const_keyword(node: &Node, source: &str) -> bool {
     }
 
     // Check children
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "type_qualifier" {
-                let qualifier_text = get_node_text(&child, source);
-                if qualifier_text == "const" {
-                    return true;
-                }
-            }
-            if contains_const_keyword(&child, source) {
-                return true;
-            }
-        }
-    }
-
-    false
+    query::find_first_descendant(*node, |n| {
+        n.kind() == "type_qualifier" && get_node_text(&n, source) == "const"
+    })
+    .is_some()
 }
 
 /// Check if a value is const-qualified

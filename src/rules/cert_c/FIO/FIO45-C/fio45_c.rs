@@ -54,6 +54,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -114,15 +115,8 @@ impl ToctouTracker {
 
     fn analyze_node(&mut self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Find function definitions to analyze
-        if node.kind() == "function_definition" {
-            self.analyze_function(node, source, violations);
-        }
-
-        // Recurse to find all functions
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_node(&child, source, violations);
-            }
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.analyze_function(&func, source, violations);
         }
     }
 
@@ -150,31 +144,24 @@ impl ToctouTracker {
 
     fn collect_fopen_calls(&mut self, node: &Node, source: &str, scope_id: usize) {
         // Look for call expressions
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 if func_name == "fopen" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call.child_by_field_name("arguments") {
                         // Extract filename and mode arguments
                         if let Some((filename, mode)) = self.extract_fopen_args(&args, source) {
                             let calls = self.fopen_calls.entry(scope_id).or_default();
                             calls.push(FopenCall {
                                 filename,
                                 mode,
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
+                                line: call.start_position().row + 1,
+                                column: call.start_position().column + 1,
                             });
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_fopen_calls(&child, source, scope_id);
             }
         }
     }

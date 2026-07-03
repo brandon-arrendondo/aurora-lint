@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp12C;
@@ -31,20 +32,13 @@ impl CertRule for Exp12C {
 
         // Check for expression statements that contain function calls
         // Expression statements are where return values might be ignored
-        if node.kind() == "expression_statement" {
+        for stmt_node in query::find_descendants_of_kind(*node, "expression_statement") {
             // Check if this is an explicit void cast (intentional dismissal)
-            if is_explicit_void_cast(node, source) {
+            if is_explicit_void_cast(&stmt_node, source) {
                 // This is compliant - explicit (void) cast indicates intentional dismissal
             } else {
                 // Look for function calls in this expression statement
-                check_for_ignored_return_values(node, source, &mut violations);
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+                check_for_ignored_return_values(&stmt_node, source, &mut violations);
             }
         }
 

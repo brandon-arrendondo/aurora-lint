@@ -32,6 +32,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -410,14 +411,8 @@ impl Fio47C {
         source: &str,
         types: &mut HashMap<String, TypeCategory>,
     ) {
-        if node.kind() == "declaration" {
-            self.process_declaration(node, source, types);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_types_recursive(&child, source, types);
-            }
+        for decl in query::find_descendants_of_kind(*node, "declaration") {
+            self.process_declaration(&decl, source, types);
         }
     }
 
@@ -466,25 +461,18 @@ impl Fio47C {
         var_type: &TypeCategory,
     ) {
         // Check if this node is an identifier that's part of a declarator
-        if node.kind() == "identifier" {
+        for id in query::find_descendants_of_kind(*node, "identifier") {
             // Make sure it's a variable declaration, not a type name or function name
-            if let Some(parent) = node.parent() {
+            if let Some(parent) = id.parent() {
                 let parent_kind = parent.kind();
                 if parent_kind == "pointer_declarator"
                     || parent_kind == "init_declarator"
                     || parent_kind == "declarator"
                     || parent_kind == "array_declarator"
                 {
-                    let var_name = get_node_text(node, source).to_string();
+                    let var_name = get_node_text(&id, source).to_string();
                     types.insert(var_name, var_type.clone());
                 }
-            }
-        }
-
-        // Recursively search children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_and_register_identifiers(&child, source, types, var_type);
             }
         }
     }
@@ -702,20 +690,13 @@ impl Fio47C {
         var_types: &HashMap<String, TypeCategory>,
     ) {
         // Check for call expressions
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let function_name = get_node_text(&function, source);
 
                 if self.is_format_function(function_name) {
-                    self.check_format_call(node, source, function_name, violations, var_types);
+                    self.check_format_call(&call, source, function_name, violations, var_types);
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, var_types);
             }
         }
     }

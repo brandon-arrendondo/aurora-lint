@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp00C;
@@ -30,21 +31,21 @@ impl CertRule for Exp00C {
         let mut violations = Vec::new();
 
         // Check for binary expressions with precedence issues
-        if node.kind() == "binary_expression" {
-            if let Some(operator_node) = node.child_by_field_name("operator") {
+        for bin_node in query::find_descendants_of_kind(*node, "binary_expression") {
+            if let Some(operator_node) = bin_node.child_by_field_name("operator") {
                 let operator = get_node_text(&operator_node, source);
 
                 // Check if this is a comparison operator
                 if is_comparison_operator(operator) {
                     // Check left operand for bitwise operators
-                    if let Some(left) = node.child_by_field_name("left") {
+                    if let Some(left) = bin_node.child_by_field_name("left") {
                         if has_unparenthesized_bitwise_operator(&left, source) {
                             report_violation(&left, source, &mut violations);
                         }
                     }
 
                     // Check right operand for bitwise operators
-                    if let Some(right) = node.child_by_field_name("right") {
+                    if let Some(right) = bin_node.child_by_field_name("right") {
                         if has_unparenthesized_bitwise_operator(&right, source) {
                             report_violation(&right, source, &mut violations);
                         }
@@ -53,34 +54,27 @@ impl CertRule for Exp00C {
                 // Check if this is a bitwise operator with comparison in operands or constant 0
                 else if is_bitwise_operator(operator) {
                     // Check if either operand contains a comparison operator
-                    if let Some(left) = node.child_by_field_name("left") {
+                    if let Some(left) = bin_node.child_by_field_name("left") {
                         if contains_comparison_operator(&left, source) {
-                            report_violation(node, source, &mut violations);
+                            report_violation(&bin_node, source, &mut violations);
                         }
                     }
-                    if let Some(right) = node.child_by_field_name("right") {
+                    if let Some(right) = bin_node.child_by_field_name("right") {
                         if contains_comparison_operator(&right, source) {
-                            report_violation(node, source, &mut violations);
+                            report_violation(&bin_node, source, &mut violations);
                         }
                     }
 
                     // Check for bitwise AND/OR/XOR with constant 0
                     if operator == "&" || operator == "|" || operator == "^" {
-                        if let Some(right) = node.child_by_field_name("right") {
+                        if let Some(right) = bin_node.child_by_field_name("right") {
                             let right_text = get_node_text(&right, source).trim();
                             if right_text == "0" {
-                                report_violation(node, source, &mut violations);
+                                report_violation(&bin_node, source, &mut violations);
                             }
                         }
                     }
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
             }
         }
 
@@ -119,47 +113,18 @@ fn has_unparenthesized_bitwise_operator(node: &Node, source: &str) -> bool {
 
 /// Check if a node or its children contain a comparison operator
 fn contains_comparison_operator(node: &Node, source: &str) -> bool {
-    match node.kind() {
-        "binary_expression" => {
-            if let Some(operator_node) = node.child_by_field_name("operator") {
+    query::find_first_descendant(*node, |n| {
+        if n.kind() == "binary_expression" {
+            if let Some(operator_node) = n.child_by_field_name("operator") {
                 let operator = get_node_text(&operator_node, source);
                 if is_comparison_operator(operator) {
                     return true;
                 }
             }
-            // Also check children recursively
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if contains_comparison_operator(&child, source) {
-                        return true;
-                    }
-                }
-            }
-            false
         }
-        "parenthesized_expression" => {
-            // Look inside parenthesized expressions to find comparisons
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if contains_comparison_operator(&child, source) {
-                        return true;
-                    }
-                }
-            }
-            false
-        }
-        _ => {
-            // Check children for other node types
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if contains_comparison_operator(&child, source) {
-                        return true;
-                    }
-                }
-            }
-            false
-        }
-    }
+        false
+    })
+    .is_some()
 }
 
 /// Report a violation for operator precedence issues

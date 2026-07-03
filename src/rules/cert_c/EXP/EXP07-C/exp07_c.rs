@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp07C;
@@ -30,13 +31,13 @@ impl CertRule for Exp07C {
         let mut violations = Vec::new();
 
         // Check for binary expressions with shift operators that use magic numbers
-        if node.kind() == "binary_expression" {
-            if let Some(operator_node) = node.child_by_field_name("operator") {
+        for bin_node in query::find_descendants_of_kind(*node, "binary_expression") {
+            if let Some(operator_node) = bin_node.child_by_field_name("operator") {
                 let operator = get_node_text(&operator_node, source);
 
                 // Check for shift operators
                 if operator == "<<" || operator == ">>" {
-                    if let Some(right) = node.child_by_field_name("right") {
+                    if let Some(right) = bin_node.child_by_field_name("right") {
                         if is_numeric_literal(&right, source) {
                             let shift_text = get_node_text(&right, source).trim();
                             let shift_text = shift_text.trim_end_matches(['u', 'U', 'l', 'L']);
@@ -47,21 +48,14 @@ impl CertRule for Exp07C {
                                 let is_bit_position = shift_val <= 7;
                                 let is_byte_boundary = shift_val > 0 && shift_val % 8 == 0;
                                 if !is_bit_position && !is_byte_boundary {
-                                    report_violation(node, source, &mut violations);
+                                    report_violation(&bin_node, source, &mut violations);
                                 }
                             } else {
-                                report_violation(node, source, &mut violations);
+                                report_violation(&bin_node, source, &mut violations);
                             }
                         }
                     }
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
             }
         }
 

@@ -42,6 +42,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -121,25 +122,24 @@ impl Exp39C {
         struct_field_ptrs: &mut HashSet<String>,
         union_vars: &mut HashSet<String>,
     ) {
-        if node.kind() == "declaration" {
-            self.process_declaration(node, source, var_types);
-            self.check_union_declaration(node, source, union_vars);
-        }
-
-        // Track struct field pointer assignments: ptr = &struct.field
-        if node.kind() == "assignment_expression" {
-            self.check_struct_field_ptr_assignment(node, source, struct_field_ptrs);
-        }
-
-        // Track struct field pointer initializations: type *ptr = &struct.field
-        if node.kind() == "init_declarator" {
-            self.check_struct_field_ptr_init(node, source, struct_field_ptrs);
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_var_types(&child, source, var_types, struct_field_ptrs, union_vars);
+        for descendant in query::find_descendants_of_kinds(
+            *node,
+            &["declaration", "assignment_expression", "init_declarator"],
+        ) {
+            match descendant.kind() {
+                "declaration" => {
+                    self.process_declaration(&descendant, source, var_types);
+                    self.check_union_declaration(&descendant, source, union_vars);
+                }
+                // Track struct field pointer assignments: ptr = &struct.field
+                "assignment_expression" => {
+                    self.check_struct_field_ptr_assignment(&descendant, source, struct_field_ptrs);
+                }
+                // Track struct field pointer initializations: type *ptr = &struct.field
+                "init_declarator" => {
+                    self.check_struct_field_ptr_init(&descendant, source, struct_field_ptrs);
+                }
+                _ => {}
             }
         }
     }
@@ -313,39 +313,44 @@ impl Exp39C {
         union_vars: &HashSet<String>,
         union_member_accesses: &mut HashMap<String, Vec<(String, usize, usize, bool)>>,
     ) {
-        // Look for cast_expression nodes
-        if node.kind() == "cast_expression" {
-            self.check_cast_expression(node, source, violations, var_types);
-            self.check_struct_field_ptr_arithmetic(node, source, struct_field_ptrs, violations);
-        }
-
-        // Check for realloc with struct type casting
-        if node.kind() == "assignment_expression" {
-            self.check_realloc_cast(node, source, violations, var_types);
-        }
-
-        // Also check pointer_declarator assignments with incompatible array types
-        if node.kind() == "init_declarator" {
-            self.check_init_declarator(node, source, violations, var_types);
-        }
-
-        // Track union member accesses for CWE-188 type punning detection
-        if node.kind() == "field_expression" {
-            self.track_union_member_access(node, source, union_vars, union_member_accesses);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(
-                    &child,
-                    source,
-                    violations,
-                    var_types,
-                    struct_field_ptrs,
-                    union_vars,
-                    union_member_accesses,
-                );
+        for descendant in query::find_descendants_of_kinds(
+            *node,
+            &[
+                "cast_expression",
+                "assignment_expression",
+                "init_declarator",
+                "field_expression",
+            ],
+        ) {
+            match descendant.kind() {
+                // Look for cast_expression nodes
+                "cast_expression" => {
+                    self.check_cast_expression(&descendant, source, violations, var_types);
+                    self.check_struct_field_ptr_arithmetic(
+                        &descendant,
+                        source,
+                        struct_field_ptrs,
+                        violations,
+                    );
+                }
+                // Check for realloc with struct type casting
+                "assignment_expression" => {
+                    self.check_realloc_cast(&descendant, source, violations, var_types);
+                }
+                // Also check pointer_declarator assignments with incompatible array types
+                "init_declarator" => {
+                    self.check_init_declarator(&descendant, source, violations, var_types);
+                }
+                // Track union member accesses for CWE-188 type punning detection
+                "field_expression" => {
+                    self.track_union_member_access(
+                        &descendant,
+                        source,
+                        union_vars,
+                        union_member_accesses,
+                    );
+                }
+                _ => {}
             }
         }
     }

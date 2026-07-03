@@ -22,6 +22,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -66,14 +67,15 @@ impl Fio08C {
         open_files: &mut HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        // Iterate in document order (important for tracking state)
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 match func_name {
                     "fopen" | "fopen_s" | "freopen" => {
                         // Track opened file
-                        if let Some(args) = node.child_by_field_name("arguments") {
+                        if let Some(args) = call.child_by_field_name("arguments") {
                             if let Some(filename) = self.get_first_arg(&args, source) {
                                 open_files.insert(filename);
                             }
@@ -85,7 +87,7 @@ impl Fio08C {
                     }
                     "remove" => {
                         // Check if removing an open file
-                        if let Some(args) = node.child_by_field_name("arguments") {
+                        if let Some(args) = call.child_by_field_name("arguments") {
                             if let Some(filename) = self.get_first_arg(&args, source) {
                                 if open_files.contains(&filename) {
                                     violations.push(RuleViolation {
@@ -96,8 +98,8 @@ impl Fio08C {
                                             filename
                                         ),
                                         severity: self.severity(),
-                                        line: node.start_position().row + 1,
-                                        column: node.start_position().column + 1,
+                                        line: call.start_position().row + 1,
+                                        column: call.start_position().column + 1,
                                         file_path: String::new(),
                                         suggestion: Some(
                                             "Close the file with fclose() before calling remove(), \
@@ -112,13 +114,6 @@ impl Fio08C {
                     }
                     _ => {}
                 }
-            }
-        }
-
-        // Recurse in order (important for tracking state)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_file_operations(&child, source, open_files, violations);
             }
         }
     }

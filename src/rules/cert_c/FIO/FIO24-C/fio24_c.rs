@@ -15,6 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -102,12 +103,12 @@ impl Fio24C {
         violations: &mut Vec<RuleViolation>,
         open_files: &mut HashMap<String, Vec<(String, tree_sitter::Point)>>,
         file_pointers: &mut HashMap<String, String>,
-        closed_vars: &mut HashMap<String, usize>,
+        _closed_vars: &mut HashMap<String, usize>,
     ) {
-        if node.kind() == "function_definition" {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
             // Each function gets its own double-close tracking scope
             let mut fn_closed: HashMap<String, usize> = HashMap::new();
-            if let Some(body) = node.child_by_field_name("body") {
+            if let Some(body) = func.child_by_field_name("body") {
                 self.check_node(
                     &body,
                     source,
@@ -115,21 +116,6 @@ impl Fio24C {
                     open_files,
                     file_pointers,
                     &mut fn_closed,
-                );
-            }
-            return;
-        }
-
-        // Recurse to find function_definitions
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.walk_functions(
-                    &child,
-                    source,
-                    violations,
-                    open_files,
-                    file_pointers,
-                    closed_vars,
                 );
             }
         }
@@ -144,29 +130,15 @@ impl Fio24C {
         file_pointers: &mut HashMap<String, String>,
         closed_vars: &mut HashMap<String, usize>,
     ) {
-        if node.kind() == "call_expression" {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
             self.check_call_expression(
-                node,
+                &call,
                 source,
                 violations,
                 open_files,
                 file_pointers,
                 closed_vars,
             );
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(
-                    &child,
-                    source,
-                    violations,
-                    open_files,
-                    file_pointers,
-                    closed_vars,
-                );
-            }
         }
     }
 

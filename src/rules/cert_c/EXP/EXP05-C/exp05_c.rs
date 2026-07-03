@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp05C;
@@ -30,9 +31,9 @@ impl CertRule for Exp05C {
         let mut violations = Vec::new();
 
         // Check for explicit casts that remove const qualification
-        if node.kind() == "cast_expression" {
-            if let Some(type_node) = node.child_by_field_name("type") {
-                if let Some(value_node) = node.child_by_field_name("value") {
+        for cast_node in query::find_descendants_of_kind(*node, "cast_expression") {
+            if let Some(type_node) = cast_node.child_by_field_name("type") {
+                if let Some(value_node) = cast_node.child_by_field_name("value") {
                     // Get the target type (what we're casting to)
                     let target_type = get_node_text(&type_node, source);
 
@@ -40,8 +41,8 @@ impl CertRule for Exp05C {
                     // Target type should be a non-const pointer
                     if is_pointer_type(&target_type) && !target_type.contains("const") {
                         // Check if the value refers to a const-qualified variable
-                        if is_value_const_qualified(&value_node, node, source) {
-                            report_violation(node, source, &mut violations);
+                        if is_value_const_qualified(&value_node, &cast_node, source) {
+                            report_violation(&cast_node, source, &mut violations);
                         }
                     }
                 }
@@ -49,29 +50,22 @@ impl CertRule for Exp05C {
         }
 
         // Check for implicit const removal in function calls
-        if node.kind() == "call_expression" {
-            if let Some(function_node) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function_node) = call_node.child_by_field_name("function") {
                 let function_name = get_node_text(&function_node, source);
 
                 // Check known functions that take non-const pointers
                 if is_modifying_function(function_name) {
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
+                    if let Some(arguments) = call_node.child_by_field_name("arguments") {
                         check_function_arguments(
                             &arguments,
-                            node,
+                            &call_node,
                             source,
                             function_name,
                             &mut violations,
                         );
                     }
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
             }
         }
 

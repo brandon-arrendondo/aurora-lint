@@ -45,6 +45,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -99,35 +100,38 @@ impl Fio02C {
         tainted_vars: &mut HashSet<String>,
         canonicalized_vars: &mut HashSet<String>,
     ) {
-        match node.kind() {
-            "function_definition" => {
-                // Check for main function with argv parameter
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    if self.is_main_function(&declarator, source) {
-                        // Mark argv as tainted
-                        tainted_vars.insert("argv".to_string());
+        for n in query::find_descendants(*node, |n| {
+            matches!(
+                n.kind(),
+                "function_definition"
+                    | "assignment_expression"
+                    | "init_declarator"
+                    | "call_expression"
+            )
+        }) {
+            match n.kind() {
+                "function_definition" => {
+                    // Check for main function with argv parameter
+                    if let Some(declarator) = n.child_by_field_name("declarator") {
+                        if self.is_main_function(&declarator, source) {
+                            // Mark argv as tainted
+                            tainted_vars.insert("argv".to_string());
+                        }
                     }
                 }
-            }
-            "assignment_expression" | "init_declarator" => {
-                self.check_assignment(node, source, tainted_vars, canonicalized_vars);
-            }
-            "call_expression" => {
-                self.check_call_expression(
-                    node,
-                    source,
-                    violations,
-                    tainted_vars,
-                    canonicalized_vars,
-                );
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, tainted_vars, canonicalized_vars);
+                "assignment_expression" | "init_declarator" => {
+                    self.check_assignment(&n, source, tainted_vars, canonicalized_vars);
+                }
+                "call_expression" => {
+                    self.check_call_expression(
+                        &n,
+                        source,
+                        violations,
+                        tainted_vars,
+                        canonicalized_vars,
+                    );
+                }
+                _ => {}
             }
         }
     }
@@ -225,44 +229,37 @@ impl Fio02C {
     }
 
     fn is_tainted_source(&self, node: &Node, source: &str, tainted_vars: &HashSet<String>) -> bool {
-        match node.kind() {
-            "call_expression" => {
-                // Check for taint source functions
-                if let Some(func) = node.child_by_field_name("function") {
-                    let func_name = get_node_text(&func, source).trim();
-                    if self.is_taint_source_function(func_name) {
+        query::find_first_descendant(*node, |n| {
+            match n.kind() {
+                "call_expression" => {
+                    // Check for taint source functions
+                    if let Some(func) = n.child_by_field_name("function") {
+                        let func_name = get_node_text(&func, source).trim();
+                        if self.is_taint_source_function(func_name) {
+                            return true;
+                        }
+                    }
+                }
+                "subscript_expression" => {
+                    // Check for argv[i] access
+                    if let Some(array) = n.child_by_field_name("argument") {
+                        let array_name = get_node_text(&array, source).trim();
+                        if tainted_vars.contains(array_name) || array_name == "argv" {
+                            return true;
+                        }
+                    }
+                }
+                "identifier" => {
+                    let var_name = get_node_text(&n, source).trim();
+                    if tainted_vars.contains(var_name) {
                         return true;
                     }
                 }
+                _ => {}
             }
-            "subscript_expression" => {
-                // Check for argv[i] access
-                if let Some(array) = node.child_by_field_name("argument") {
-                    let array_name = get_node_text(&array, source).trim();
-                    if tainted_vars.contains(array_name) || array_name == "argv" {
-                        return true;
-                    }
-                }
-            }
-            "identifier" => {
-                let var_name = get_node_text(node, source).trim();
-                if tainted_vars.contains(var_name) {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.is_tainted_source(&child, source, tainted_vars) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            false
+        })
+        .is_some()
     }
 
     fn is_taint_source_function(&self, func_name: &str) -> bool {

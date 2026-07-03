@@ -36,6 +36,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp15C;
@@ -70,24 +71,17 @@ impl CertRule for Exp15C {
 
 impl Exp15C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "if_statement" => {
-                self.check_control_statement(node, source, "if", violations);
-            }
-            "while_statement" => {
-                self.check_control_statement(node, source, "while", violations);
-            }
-            "for_statement" => {
-                self.check_control_statement(node, source, "for", violations);
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for n in query::find_descendants_of_kinds(
+            *node,
+            &["if_statement", "while_statement", "for_statement"],
+        ) {
+            let statement_type = match n.kind() {
+                "if_statement" => "if",
+                "while_statement" => "while",
+                "for_statement" => "for",
+                _ => unreachable!(),
+            };
+            self.check_control_statement(&n, source, statement_type, violations);
         }
     }
 

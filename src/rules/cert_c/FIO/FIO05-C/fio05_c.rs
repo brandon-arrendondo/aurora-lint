@@ -61,6 +61,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -97,17 +98,11 @@ impl CertRule for Fio05C {
             return violations;
         }
 
-        // Analyze each function for file reopen violations
-        if node.kind() == "function_definition" {
+        // Analyze each function for file reopen violations (this node itself, if it is
+        // a function_definition, plus any nested function definitions within it)
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
             let mut analyzer = FileReopenAnalyzer::new();
-            analyzer.analyze_scope(node, source, &mut violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
+            analyzer.analyze_scope(&func, source, &mut violations);
         }
 
         violations
@@ -174,29 +169,29 @@ impl FileReopenAnalyzer {
     }
 
     fn collect_operations(&mut self, node: &Node, source: &str) {
-        match node.kind() {
-            "call_expression" => {
-                self.process_call(node, source);
-            }
-            "assignment_expression" => {
-                // Check for fopen() assigned to a variable
-                self.process_assignment(node, source);
-            }
-            "declaration" => {
-                // Check for declarations with fopen() initializers
-                self.process_declaration(node, source);
-            }
-            "binary_expression" => {
-                // Check for file attribute comparisons (st_dev, st_ino)
-                self.check_attribute_comparison(node, source);
-            }
-            _ => {}
-        }
-
-        // Recursively process children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_operations(&child, source);
+        for n in query::find_descendants(*node, |n| {
+            matches!(
+                n.kind(),
+                "call_expression" | "assignment_expression" | "declaration" | "binary_expression"
+            )
+        }) {
+            match n.kind() {
+                "call_expression" => {
+                    self.process_call(&n, source);
+                }
+                "assignment_expression" => {
+                    // Check for fopen() assigned to a variable
+                    self.process_assignment(&n, source);
+                }
+                "declaration" => {
+                    // Check for declarations with fopen() initializers
+                    self.process_declaration(&n, source);
+                }
+                "binary_expression" => {
+                    // Check for file attribute comparisons (st_dev, st_ino)
+                    self.check_attribute_comparison(&n, source);
+                }
+                _ => {}
             }
         }
     }

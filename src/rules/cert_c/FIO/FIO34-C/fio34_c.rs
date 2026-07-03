@@ -20,6 +20,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Fio34C;
@@ -60,33 +61,41 @@ impl CertRule for Fio34C {
 
 impl Fio34C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "function_definition" => {
-                // Check for EOF comparison without feof/ferror verification
-                self.check_eof_without_verification(node, source, violations);
-            }
-            "assignment_expression" => {
-                self.check_assignment(node, source, violations);
-            }
-            "init_declarator" => {
-                self.check_init_declarator(node, source, violations);
-            }
-            "binary_expression" => {
-                self.check_comparison(node, source, violations);
-            }
-            "while_statement" | "do_statement" | "for_statement" => {
-                self.check_loop_condition(node, source, violations);
-            }
-            "cast_expression" => {
-                self.check_cast_expression(node, source, violations);
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+        let matched = query::find_descendants_of_kinds(
+            *node,
+            &[
+                "function_definition",
+                "assignment_expression",
+                "init_declarator",
+                "binary_expression",
+                "while_statement",
+                "do_statement",
+                "for_statement",
+                "cast_expression",
+            ],
+        );
+        for n in matched {
+            match n.kind() {
+                "function_definition" => {
+                    // Check for EOF comparison without feof/ferror verification
+                    self.check_eof_without_verification(&n, source, violations);
+                }
+                "assignment_expression" => {
+                    self.check_assignment(&n, source, violations);
+                }
+                "init_declarator" => {
+                    self.check_init_declarator(&n, source, violations);
+                }
+                "binary_expression" => {
+                    self.check_comparison(&n, source, violations);
+                }
+                "while_statement" | "do_statement" | "for_statement" => {
+                    self.check_loop_condition(&n, source, violations);
+                }
+                "cast_expression" => {
+                    self.check_cast_expression(&n, source, violations);
+                }
+                _ => {}
             }
         }
     }
@@ -579,24 +588,13 @@ impl Fio34C {
 
     /// Check if function contains a loop comparing to EOF
     fn has_eof_comparison_in_loop(&self, node: &Node, source: &str) -> bool {
-        match node.kind() {
-            "while_statement" | "do_statement" | "for_statement"
-                // Check if this loop compares to EOF
-                if self.loop_compares_to_eof(node, source) => {
-                    return true;
-                }
-            _ => {}
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.has_eof_comparison_in_loop(&child, source) {
-                    return true;
-                }
-            }
-        }
-        false
+        query::find_first_descendant(*node, |n| {
+            matches!(
+                n.kind(),
+                "while_statement" | "do_statement" | "for_statement"
+            ) && self.loop_compares_to_eof(&n, source)
+        })
+        .is_some()
     }
 
     /// Check if a loop compares to EOF
@@ -617,54 +615,42 @@ impl Fio34C {
 
     /// Check if an expression contains EOF comparison with getchar/getc/fgetc
     fn contains_eof_comparison(&self, node: &Node, source: &str) -> bool {
-        let node_text = get_node_text(node, source);
+        query::find_first_descendant(*node, |n| {
+            let node_text = get_node_text(&n, source);
 
-        // Check for patterns like: (c = getchar()) != EOF or c != EOF
-        if node_text.contains("EOF") || node_text.contains("WEOF") {
-            // Also check for character input function calls
-            if node_text.contains("getchar")
-                || node_text.contains("getc")
-                || node_text.contains("fgetc")
-            {
-                return true;
-            }
-            // Check if there's any getchar/getc/fgetc call in the loop body
-            if node.kind() == "binary_expression" {
-                return true;
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_eof_comparison(&child, source) {
+            // Check for patterns like: (c = getchar()) != EOF or c != EOF
+            if node_text.contains("EOF") || node_text.contains("WEOF") {
+                // Also check for character input function calls
+                if node_text.contains("getchar")
+                    || node_text.contains("getc")
+                    || node_text.contains("fgetc")
+                {
+                    return true;
+                }
+                // Check if there's any getchar/getc/fgetc call in the loop body
+                if n.kind() == "binary_expression" {
                     return true;
                 }
             }
-        }
-        false
+            false
+        })
+        .is_some()
     }
 
     /// Check if function contains feof() or ferror() calls
     fn has_feof_or_ferror_call(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                if func_name == "feof" || func_name == "ferror" {
-                    return true;
+        query::find_first_descendant(*node, |n| {
+            if n.kind() == "call_expression" {
+                if let Some(function) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&function, source);
+                    if func_name == "feof" || func_name == "ferror" {
+                        return true;
+                    }
                 }
             }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.has_feof_or_ferror_call(&child, source) {
-                    return true;
-                }
-            }
-        }
-        false
+            false
+        })
+        .is_some()
     }
 
     /// Find and report loops with EOF comparisons
@@ -674,19 +660,12 @@ impl Fio34C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        match node.kind() {
-            "while_statement" | "do_statement" | "for_statement"
-                if self.loop_compares_to_eof(node, source) =>
-            {
-                self.report_eof_verification_violation(node, source, violations);
-            }
-            _ => {}
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_and_report_eof_loops(&child, source, violations);
+        for loop_node in query::find_descendants_of_kinds(
+            *node,
+            &["while_statement", "do_statement", "for_statement"],
+        ) {
+            if self.loop_compares_to_eof(&loop_node, source) {
+                self.report_eof_verification_violation(&loop_node, source, violations);
             }
         }
     }

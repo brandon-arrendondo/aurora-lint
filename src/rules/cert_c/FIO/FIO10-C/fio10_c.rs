@@ -37,6 +37,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Fio10C;
@@ -78,20 +79,20 @@ impl Fio10C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for rename() calls
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 if func_name == "rename" {
                     // Check if this rename() is properly handled
-                    if !self.is_properly_handled(node, source) {
+                    if !self.is_properly_handled(&call, source) {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             message: "rename() called without handling destination file existence. \
                                       Behavior is implementation-defined (POSIX removes dest, Windows fails)."
                                 .to_string(),
                             severity: self.severity(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
+                            line: call.start_position().row + 1,
+                            column: call.start_position().column + 1,
                             file_path: String::new(),
                             suggestion: Some(
                                 "Either: (1) Call remove(dest) before rename(), OR \
@@ -103,13 +104,6 @@ impl Fio10C {
                         });
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_unhandled_rename(&child, source, violations);
             }
         }
     }
@@ -176,23 +170,17 @@ impl Fio10C {
 
     /// Check if node or its children contain a remove() call
     fn contains_remove_call(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                if func_name == "remove" || func_name == "unlink" {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_remove_call(&child, source) {
-                    return true;
-                }
-            }
-        }
-        false
+            let Some(function) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&function, source);
+            func_name == "remove" || func_name == "unlink"
+        })
+        .is_some()
     }
 
     /// Check if rename() is wrapped in a file existence check

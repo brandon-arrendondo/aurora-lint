@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp13C;
@@ -30,32 +31,25 @@ impl CertRule for Exp13C {
         let mut violations = Vec::new();
 
         // Check for binary expressions with relational or equality operators
-        if node.kind() == "binary_expression" {
-            if let Some(operator_node) = node.child_by_field_name("operator") {
+        for bin_node in query::find_descendants_of_kind(*node, "binary_expression") {
+            if let Some(operator_node) = bin_node.child_by_field_name("operator") {
                 let operator = get_node_text(&operator_node, source);
 
                 // Check if this is a relational or equality operator
                 if is_relational_or_equality_operator(operator) {
                     // Check if either operand contains another relational/equality operator
                     // This would indicate chaining like a < b < c
-                    if let Some(left) = node.child_by_field_name("left") {
+                    if let Some(left) = bin_node.child_by_field_name("left") {
                         if contains_relational_or_equality(&left, source) {
-                            report_violation(node, source, &mut violations);
+                            report_violation(&bin_node, source, &mut violations);
                         }
                     }
-                    if let Some(right) = node.child_by_field_name("right") {
+                    if let Some(right) = bin_node.child_by_field_name("right") {
                         if contains_relational_or_equality(&right, source) {
-                            report_violation(node, source, &mut violations);
+                            report_violation(&bin_node, source, &mut violations);
                         }
                     }
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
             }
         }
 

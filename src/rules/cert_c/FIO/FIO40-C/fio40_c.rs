@@ -22,6 +22,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Fio40C;
@@ -57,16 +58,16 @@ impl CertRule for Fio40C {
 impl Fio40C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for if statements that check fgets/fgetws return value
-        if node.kind() == "if_statement" {
-            if let Some(condition) = node.child_by_field_name("condition") {
+        for n in query::find_descendants_of_kind(*node, "if_statement") {
+            if let Some(condition) = n.child_by_field_name("condition") {
                 // Check if this condition compares fgets/fgetws to NULL
                 if let Some((func_name, buffer_var)) =
                     self.find_fgets_null_check(&condition, source)
                 {
                     // Check if the consequence (then branch) resets the buffer
-                    if let Some(consequence) = node.child_by_field_name("consequence") {
+                    if let Some(consequence) = n.child_by_field_name("consequence") {
                         if !self.has_buffer_reset(&consequence, &buffer_var, source) {
-                            let start_point = node.start_position();
+                            let start_point = n.start_position();
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
                                 severity: Severity::Low,
@@ -87,13 +88,6 @@ impl Fio40C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }
@@ -230,19 +224,7 @@ impl Fio40C {
 
     /// Find assignment expression in node tree
     fn find_assignment<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
-        if node.kind() == "assignment_expression" {
-            return Some(*node);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(assignment) = self.find_assignment(&child) {
-                    return Some(assignment);
-                }
-            }
-        }
-
-        None
+        query::find_first_descendant(*node, |n| n.kind() == "assignment_expression")
     }
 
     /// Extract function call arguments

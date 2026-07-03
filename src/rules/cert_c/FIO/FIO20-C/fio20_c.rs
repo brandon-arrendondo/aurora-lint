@@ -24,6 +24,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Fio20C;
@@ -64,12 +65,12 @@ impl Fio20C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 if func_name == "fgets" || func_name == "fgetws" {
                     // Check if followed by newline check
-                    if !self.has_newline_check(node, source) {
+                    if !self.has_newline_check(&call, source) {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             message: format!(
@@ -77,8 +78,8 @@ impl Fio20C {
                                 func_name
                             ),
                             severity: self.severity(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
+                            line: call.start_position().row + 1,
+                            column: call.start_position().column + 1,
                             file_path: String::new(),
                             suggestion: Some(
                                 "Check for newline character to detect truncation: \
@@ -90,7 +91,7 @@ impl Fio20C {
                     }
 
                     // Check for small buffer sizes
-                    if let Some(size) = self.get_buffer_size(node, source) {
+                    if let Some(size) = self.get_buffer_size(&call, source) {
                         if size < 32 {
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
@@ -99,8 +100,8 @@ impl Fio20C {
                                     func_name, size
                                 ),
                                 severity: self.severity(),
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
+                                line: call.start_position().row + 1,
+                                column: call.start_position().column + 1,
                                 file_path: String::new(),
                                 suggestion: Some(
                                     "Consider larger buffer for user input, or validate input length"
@@ -111,13 +112,6 @@ impl Fio20C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_fgets_truncation(&child, source, violations);
             }
         }
     }

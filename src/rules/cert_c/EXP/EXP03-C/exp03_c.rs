@@ -45,6 +45,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp03C;
@@ -80,26 +81,19 @@ impl CertRule for Exp03C {
 impl Exp03C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for call_expression nodes
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = call_node.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source).trim().to_string();
 
                 // Check if it's an allocation function
                 if self.is_allocation_function(&func_name) {
                     // Get the arguments
-                    if let Some(args_node) = node.child_by_field_name("arguments") {
+                    if let Some(args_node) = call_node.child_by_field_name("arguments") {
                         // For malloc/realloc, first argument is size
                         // For calloc, second argument is size (but also check first for element count)
                         self.check_allocation_size(&args_node, source, violations, &func_name);
                     }
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }

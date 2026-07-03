@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp35C;
@@ -43,22 +44,26 @@ impl Exp35C {
         has_c11_guard: bool,
         violations: &mut Vec<RuleViolation>,
     ) {
-        match node.kind() {
-            "unary_expression" => {
-                self.check_unary_expression(node, source, violations);
-            }
-            "init_declarator" | "assignment_expression" => {
-                self.check_pointer_assignment(node, source, violations);
-            }
-            "call_expression" if !has_c11_guard => {
-                self.check_c99_temporary_access(node, source, violations);
-            }
-            _ => {}
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, has_c11_guard, violations);
+        for n in query::find_descendants_of_kinds(
+            *node,
+            &[
+                "unary_expression",
+                "init_declarator",
+                "assignment_expression",
+                "call_expression",
+            ],
+        ) {
+            match n.kind() {
+                "unary_expression" => {
+                    self.check_unary_expression(&n, source, violations);
+                }
+                "init_declarator" | "assignment_expression" => {
+                    self.check_pointer_assignment(&n, source, violations);
+                }
+                "call_expression" if !has_c11_guard => {
+                    self.check_c99_temporary_access(&n, source, violations);
+                }
+                _ => {}
             }
         }
     }
@@ -229,20 +234,7 @@ impl Exp35C {
 
     /// Check if a node or its ancestors represent accessing an array member from a temporary
     fn contains_temporary_array_access(&self, node: &Node, _source: &str) -> bool {
-        // Check the node itself
-        if self.is_temporary_array_access(node, _source) {
-            return true;
-        }
-
-        // Check all child nodes recursively
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_temporary_array_access(&child, _source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| self.is_temporary_array_access(&n, _source))
+            .is_some()
     }
 }

@@ -20,6 +20,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp10C;
@@ -55,6 +56,26 @@ impl CertRule for Exp10C {
 impl Exp10C {
     /// Find expressions with multiple function calls that could have unsequenced side effects
     fn find_unsequenced_side_effects(
+        &self,
+        node: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        for n in query::find_descendants_of_kinds(
+            *node,
+            &[
+                "binary_expression",
+                "call_expression",
+                "subscript_expression",
+            ],
+        ) {
+            self.check_unsequenced_node(&n, source, violations);
+        }
+    }
+
+    /// Check a single node (binary_expression / call_expression / subscript_expression)
+    /// for unsequenced side effects
+    fn check_unsequenced_node(
         &self,
         node: &Node,
         source: &str,
@@ -146,13 +167,6 @@ impl Exp10C {
                 });
             }
         }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_unsequenced_side_effects(&child, source, violations);
-            }
-        }
     }
 
     /// Count the number of non-pure function calls in a subtree.
@@ -160,26 +174,18 @@ impl Exp10C {
     /// order doesn't matter — counting them creates false positives on safe patterns like
     /// `if (abs(data) <= sqrt(CHAR_MAX))`.
     fn count_function_calls(&self, node: &Node, source: &str) -> usize {
-        let mut count = 0;
-
-        if node.kind() == "call_expression" {
+        query::find_descendants(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
+            }
             // Check if this is a known pure function — if so, skip it
-            let is_pure = node
+            let is_pure = n
                 .child_by_field_name("function")
                 .map(|func| self.is_pure_function(get_node_text(&func, source)))
                 .unwrap_or(false);
-            if !is_pure {
-                count += 1;
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                count += self.count_function_calls(&child, source);
-            }
-        }
-
-        count
+            !is_pure
+        })
+        .len()
     }
 
     /// Check if a function is known to be pure (no side effects).

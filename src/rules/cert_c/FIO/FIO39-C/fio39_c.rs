@@ -19,6 +19,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Fio39C;
@@ -67,16 +68,9 @@ impl CertRule for Fio39C {
 impl Fio39C {
     fn check_function_body(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Find function definitions and check their bodies
-        if node.kind() == "function_definition" {
-            if let Some(body) = node.child_by_field_name("body") {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(body) = func.child_by_field_name("body") {
                 self.analyze_compound_statement(&body, source, violations);
-            }
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_function_body(&child, source, violations);
             }
         }
     }
@@ -155,32 +149,19 @@ impl Fio39C {
     }
 
     fn collect_calls_in_order(&self, node: &Node, source: &str) -> Vec<(String, usize, usize)> {
-        let mut calls = Vec::new();
-        self.collect_calls_recursive(node, source, &mut calls);
+        let mut calls: Vec<(String, usize, usize)> =
+            query::find_descendants_of_kind(*node, "call_expression")
+                .into_iter()
+                .filter_map(|call| {
+                    call.child_by_field_name("function").map(|function| {
+                        let func_name = get_node_text(&function, source);
+                        let pos = call.start_position();
+                        (func_name.to_string(), pos.row + 1, pos.column + 1)
+                    })
+                })
+                .collect();
         // Sort by line number to ensure correct order
         calls.sort_by_key(|c| (c.1, c.2));
         calls
-    }
-
-    fn collect_calls_recursive(
-        &self,
-        node: &Node,
-        source: &str,
-        calls: &mut Vec<(String, usize, usize)>,
-    ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                let pos = node.start_position();
-                calls.push((func_name.to_string(), pos.row + 1, pos.column + 1));
-            }
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_calls_recursive(&child, source, calls);
-            }
-        }
     }
 }

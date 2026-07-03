@@ -12,6 +12,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -68,52 +69,50 @@ impl Exp43C {
         restrict_vars: &mut HashSet<String>,
         pointer_bases: &mut HashMap<String, String>,
     ) {
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
-            if decl_text.contains("restrict") {
-                // Extract variable name
-                if let Some(var_name) = self.extract_var_name(node, source) {
-                    restrict_vars.insert(var_name);
-                }
-            }
-        }
-
-        // Track pointer assignments like: ptr2 = ptr1 + 3
-        if node.kind() == "assignment_expression" {
-            if let (Some(left), Some(right)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                let left_text = get_node_text(&left, source).to_string();
-                let right_text = get_node_text(&right, source);
-                // Extract base from expressions like "ptr1 + 3" or "c_str"
-                let base = self.extract_base_pointer(right_text);
-                if !base.is_empty() {
-                    pointer_bases.insert(left_text, base);
-                }
-            }
-        }
-
-        // Track init_declarator like: char *ptr2 = ptr1 + 3
-        if node.kind() == "init_declarator" {
-            if let (Some(declarator), Some(value)) = (
-                node.child_by_field_name("declarator"),
-                node.child_by_field_name("value"),
-            ) {
-                if let Some(var_name) = self.find_identifier(&declarator, source) {
-                    let value_text = get_node_text(&value, source);
-                    let base = self.extract_base_pointer(value_text);
-                    if !base.is_empty() {
-                        pointer_bases.insert(var_name, base);
+        for n in query::find_descendants_of_kinds(
+            *node,
+            &["declaration", "assignment_expression", "init_declarator"],
+        ) {
+            if n.kind() == "declaration" {
+                let decl_text = get_node_text(&n, source);
+                if decl_text.contains("restrict") {
+                    // Extract variable name
+                    if let Some(var_name) = self.extract_var_name(&n, source) {
+                        restrict_vars.insert(var_name);
                     }
                 }
             }
-        }
 
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_restrict_declarations(&child, source, restrict_vars, pointer_bases);
+            // Track pointer assignments like: ptr2 = ptr1 + 3
+            if n.kind() == "assignment_expression" {
+                if let (Some(left), Some(right)) = (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) {
+                    let left_text = get_node_text(&left, source).to_string();
+                    let right_text = get_node_text(&right, source);
+                    // Extract base from expressions like "ptr1 + 3" or "c_str"
+                    let base = self.extract_base_pointer(right_text);
+                    if !base.is_empty() {
+                        pointer_bases.insert(left_text, base);
+                    }
+                }
+            }
+
+            // Track init_declarator like: char *ptr2 = ptr1 + 3
+            if n.kind() == "init_declarator" {
+                if let (Some(declarator), Some(value)) = (
+                    n.child_by_field_name("declarator"),
+                    n.child_by_field_name("value"),
+                ) {
+                    if let Some(var_name) = self.find_identifier(&declarator, source) {
+                        let value_text = get_node_text(&value, source);
+                        let base = self.extract_base_pointer(value_text);
+                        if !base.is_empty() {
+                            pointer_bases.insert(var_name, base);
+                        }
+                    }
+                }
             }
         }
     }
@@ -142,80 +141,77 @@ impl Exp43C {
         restrict_vars: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check assignment expressions: a = b
-        if node.kind() == "assignment_expression" {
-            if let (Some(left), Some(right)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                let left_text = get_node_text(&left, source);
-                let right_text = get_node_text(&right, source);
+        for n in
+            query::find_descendants_of_kinds(*node, &["assignment_expression", "init_declarator"])
+        {
+            // Check assignment expressions: a = b
+            if n.kind() == "assignment_expression" {
+                if let (Some(left), Some(right)) = (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) {
+                    let left_text = get_node_text(&left, source);
+                    let right_text = get_node_text(&right, source);
 
-                // Check if both sides are restrict-qualified variables
-                if restrict_vars.contains(left_text) && restrict_vars.contains(right_text) {
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        message: format!(
-                            "Assignment from restrict pointer '{}' to restrict pointer '{}'. \
-                             This causes undefined behavior due to pointer aliasing.",
-                            right_text, left_text
-                        ),
-                        severity: self.severity(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        file_path: String::new(),
-                        suggestion: Some(
-                            "Use non-restrict pointers for aliased references".to_string(),
-                        ),
-                        requires_manual_review: None,
-                    });
-                }
-            }
-        }
-
-        // Check init_declarator: int *restrict p2 = p1
-        if node.kind() == "init_declarator" {
-            // Check if parent declaration has restrict
-            let parent_text = if let Some(parent) = node.parent() {
-                get_node_text(&parent, source)
-            } else {
-                ""
-            };
-
-            if parent_text.contains("restrict") {
-                if let Some(value) = node.child_by_field_name("value") {
-                    let value_text = get_node_text(&value, source);
-                    // If initializing from another restrict pointer
-                    if restrict_vars.contains(value_text) {
-                        // Check if this is inside an inner block (compound_statement)
-                        // Inner block scope allows restrict aliasing
-                        if !self.is_in_inner_block(node) {
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                message: format!(
-                                    "Initializing restrict pointer from another restrict pointer '{}'. \
-                                     This causes undefined behavior due to pointer aliasing.",
-                                    value_text
-                                ),
-                                severity: self.severity(),
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
-                                file_path: String::new(),
-                                suggestion: Some(
-                                    "Use non-restrict pointers for aliased references".to_string(),
-                                ),
-                                requires_manual_review: None,
-                            });
-                        }
+                    // Check if both sides are restrict-qualified variables
+                    if restrict_vars.contains(left_text) && restrict_vars.contains(right_text) {
+                        violations.push(RuleViolation {
+                            rule_id: self.rule_id().to_string(),
+                            message: format!(
+                                "Assignment from restrict pointer '{}' to restrict pointer '{}'. \
+                                 This causes undefined behavior due to pointer aliasing.",
+                                right_text, left_text
+                            ),
+                            severity: self.severity(),
+                            line: n.start_position().row + 1,
+                            column: n.start_position().column + 1,
+                            file_path: String::new(),
+                            suggestion: Some(
+                                "Use non-restrict pointers for aliased references".to_string(),
+                            ),
+                            requires_manual_review: None,
+                        });
                     }
                 }
             }
-        }
 
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_restrict_violations(&child, source, restrict_vars, violations);
+            // Check init_declarator: int *restrict p2 = p1
+            if n.kind() == "init_declarator" {
+                // Check if parent declaration has restrict
+                let parent_text = if let Some(parent) = n.parent() {
+                    get_node_text(&parent, source)
+                } else {
+                    ""
+                };
+
+                if parent_text.contains("restrict") {
+                    if let Some(value) = n.child_by_field_name("value") {
+                        let value_text = get_node_text(&value, source);
+                        // If initializing from another restrict pointer
+                        if restrict_vars.contains(value_text) {
+                            // Check if this is inside an inner block (compound_statement)
+                            // Inner block scope allows restrict aliasing
+                            if !self.is_in_inner_block(&n) {
+                                violations.push(RuleViolation {
+                                    rule_id: self.rule_id().to_string(),
+                                    message: format!(
+                                        "Initializing restrict pointer from another restrict pointer '{}'. \
+                                         This causes undefined behavior due to pointer aliasing.",
+                                        value_text
+                                    ),
+                                    severity: self.severity(),
+                                    line: n.start_position().row + 1,
+                                    column: n.start_position().column + 1,
+                                    file_path: String::new(),
+                                    suggestion: Some(
+                                        "Use non-restrict pointers for aliased references".to_string(),
+                                    ),
+                                    requires_manual_review: None,
+                                });
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -30,20 +31,20 @@ impl CertRule for Exp30C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Check function calls for unsequenced modifications
-        if node.kind() == "call_expression" {
-            self.check_function_arguments(node, source, &mut violations);
-        }
+        let kinds = [
+            "call_expression",
+            "binary_expression",
+            "assignment_expression",
+        ];
+        for n in query::find_descendants_of_kinds(*node, &kinds) {
+            // Check function calls for unsequenced modifications
+            if n.kind() == "call_expression" {
+                self.check_function_arguments(&n, source, &mut violations);
+            }
 
-        // Check binary expressions for unsequenced modifications
-        if node.kind() == "binary_expression" || node.kind() == "assignment_expression" {
-            self.check_expression_for_unsequenced_effects(node, source, &mut violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+            // Check binary expressions for unsequenced modifications
+            if n.kind() == "binary_expression" || n.kind() == "assignment_expression" {
+                self.check_expression_for_unsequenced_effects(&n, source, &mut violations);
             }
         }
 
@@ -238,28 +239,25 @@ impl Exp30C {
     fn find_modifications(&self, node: &Node, source: &str) -> HashSet<String> {
         let mut vars = HashSet::new();
 
-        // Check for update expressions (++, --)
-        if node.kind() == "update_expression" {
-            if let Some(arg) = node.child_by_field_name("argument") {
-                if arg.kind() == "identifier" {
-                    vars.insert(ast_utils::get_node_text(&arg, source).to_string());
+        for n in
+            query::find_descendants_of_kinds(*node, &["update_expression", "assignment_expression"])
+        {
+            // Check for update expressions (++, --)
+            if n.kind() == "update_expression" {
+                if let Some(arg) = n.child_by_field_name("argument") {
+                    if arg.kind() == "identifier" {
+                        vars.insert(ast_utils::get_node_text(&arg, source).to_string());
+                    }
                 }
             }
-        }
 
-        // Check for assignment expressions
-        if node.kind() == "assignment_expression" {
-            if let Some(left) = node.child_by_field_name("left") {
-                if left.kind() == "identifier" {
-                    vars.insert(ast_utils::get_node_text(&left, source).to_string());
+            // Check for assignment expressions
+            if n.kind() == "assignment_expression" {
+                if let Some(left) = n.child_by_field_name("left") {
+                    if left.kind() == "identifier" {
+                        vars.insert(ast_utils::get_node_text(&left, source).to_string());
+                    }
                 }
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                vars.extend(self.find_modifications(&child, source));
             }
         }
 

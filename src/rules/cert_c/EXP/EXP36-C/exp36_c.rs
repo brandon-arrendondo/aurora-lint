@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -30,22 +31,19 @@ impl CertRule for Exp36C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        match node.kind() {
-            // Pattern 1: Direct casts - (int *)&c or (struct foo *)data
-            "cast_expression" => {
-                self.check_cast_expression(node, source, &mut violations);
-            }
-            // Pattern 2: Init declarators with function calls returning void* from less-aligned types
-            "init_declarator" => {
-                self.check_init_declarator(node, source, &mut violations);
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+        for descendant in
+            query::find_descendants_of_kinds(*node, &["cast_expression", "init_declarator"])
+        {
+            match descendant.kind() {
+                // Pattern 1: Direct casts - (int *)&c or (struct foo *)data
+                "cast_expression" => {
+                    self.check_cast_expression(&descendant, source, &mut violations);
+                }
+                // Pattern 2: Init declarators with function calls returning void* from less-aligned types
+                "init_declarator" => {
+                    self.check_init_declarator(&descendant, source, &mut violations);
+                }
+                _ => {}
             }
         }
 

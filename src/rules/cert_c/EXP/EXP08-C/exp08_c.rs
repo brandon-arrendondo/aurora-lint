@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp08C;
@@ -29,29 +30,20 @@ impl CertRule for Exp08C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Check for improper pointer arithmetic in comparisons
-        if node.kind() == "binary_expression" {
-            if let Some(operator) = ast_utils::get_binary_operator(node, source) {
+        for bin_node in query::find_descendants_of_kind(*node, "binary_expression") {
+            // Check for improper pointer arithmetic in comparisons
+            if let Some(operator) = ast_utils::get_binary_operator(&bin_node, source) {
                 // Check for comparison operators
                 if matches!(operator, "<" | ">" | "<=" | ">=" | "==" | "!=") {
-                    self.check_pointer_comparison(node, source, &mut violations);
+                    self.check_pointer_comparison(&bin_node, source, &mut violations);
                 }
             }
-        }
 
-        // Check for pointer arithmetic with struct pointers
-        if node.kind() == "binary_expression" {
-            if let Some(operator) = ast_utils::get_binary_operator(node, source) {
+            // Check for pointer arithmetic with struct pointers
+            if let Some(operator) = ast_utils::get_binary_operator(&bin_node, source) {
                 if operator == "+" || operator == "-" {
-                    self.check_struct_pointer_arithmetic(node, source, &mut violations);
+                    self.check_struct_pointer_arithmetic(&bin_node, source, &mut violations);
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
             }
         }
 

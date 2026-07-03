@@ -20,6 +20,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -69,29 +70,24 @@ impl Fio18C {
         strlen_vars: &mut HashSet<String>,
     ) {
         // Check for assignment expressions like: size2 = strlen(buffer) + 1;
-        if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
-            let node_text = get_node_text(node, source);
+        for n in
+            query::find_descendants_of_kinds(*node, &["assignment_expression", "init_declarator"])
+        {
+            let node_text = get_node_text(&n, source);
 
             // Check if right side contains strlen
             if node_text.contains("strlen") {
                 // Extract the variable name from left side
-                if let Some(left) = node.child_by_field_name("left") {
+                if let Some(left) = n.child_by_field_name("left") {
                     let var_name = get_node_text(&left, source).trim().to_string();
                     strlen_vars.insert(var_name);
-                } else if let Some(declarator) = node.child_by_field_name("declarator") {
+                } else if let Some(declarator) = n.child_by_field_name("declarator") {
                     // For init_declarator, get the name
                     let var_name = self.extract_identifier(&declarator, source);
                     if !var_name.is_empty() {
                         strlen_vars.insert(var_name);
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_strlen_assignments(&child, source, strlen_vars);
             }
         }
     }
@@ -122,21 +118,14 @@ impl Fio18C {
         strlen_vars: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 if func_name == "fwrite" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        self.analyze_fwrite_args(&args, source, node, strlen_vars, violations);
+                    if let Some(args) = call.child_by_field_name("arguments") {
+                        self.analyze_fwrite_args(&args, source, &call, strlen_vars, violations);
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_fwrite_usage(&child, source, strlen_vars, violations);
             }
         }
     }

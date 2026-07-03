@@ -35,6 +35,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -111,16 +112,9 @@ impl FileResourceTracker {
     }
 
     fn analyze_node(&mut self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // First pass: find function definitions to analyze
-        if node.kind() == "function_definition" {
-            self.analyze_function(node, source, violations);
-        }
-
-        // Recurse to find all functions
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_node(&child, source, violations);
-            }
+        // Find all function definitions to analyze
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.analyze_function(&func, source, violations);
         }
     }
 
@@ -153,20 +147,16 @@ impl FileResourceTracker {
     }
 
     fn collect_resources(&mut self, node: &Node, source: &str) {
-        match node.kind() {
-            "declaration" => {
-                self.check_file_pointer_declaration(node, source);
-            }
-            "assignment_expression" => {
-                self.check_file_pointer_assignment(node, source);
-            }
-            _ => {}
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_resources(&child, source);
+        for n in query::find_descendants_of_kinds(*node, &["declaration", "assignment_expression"])
+        {
+            match n.kind() {
+                "declaration" => {
+                    self.check_file_pointer_declaration(&n, source);
+                }
+                "assignment_expression" => {
+                    self.check_file_pointer_assignment(&n, source);
+                }
+                _ => {}
             }
         }
     }
@@ -258,13 +248,13 @@ impl FileResourceTracker {
     }
 
     fn collect_closes(&mut self, node: &Node, source: &str) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 // Track fclose() calls
                 if func_name == "fclose" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call.child_by_field_name("arguments") {
                         let args_text = get_node_text(&args, source);
                         let var_name = args_text.trim_matches(|c| c == '(' || c == ')').trim();
                         self.closed_resources.insert(var_name.to_string());
@@ -273,7 +263,7 @@ impl FileResourceTracker {
 
                 // Track POSIX close() calls
                 if func_name == "close" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call.child_by_field_name("arguments") {
                         let args_text = get_node_text(&args, source);
                         let var_name = args_text.trim_matches(|c| c == '(' || c == ')').trim();
                         self.closed_resources.insert(var_name.to_string());
@@ -282,19 +272,12 @@ impl FileResourceTracker {
 
                 // Track Windows CloseHandle() calls
                 if func_name == "CloseHandle" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call.child_by_field_name("arguments") {
                         let args_text = get_node_text(&args, source);
                         let var_name = args_text.trim_matches(|c| c == '(' || c == ')').trim();
                         self.closed_resources.insert(var_name.to_string());
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_closes(&child, source);
             }
         }
     }
@@ -432,15 +415,15 @@ impl FileResourceTracker {
         temp_creations: &mut Vec<(usize, usize)>,
         has_cleanup: &mut bool,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = call.child_by_field_name("function") {
                 let name = get_node_text(&func, source).trim().to_string();
                 match name.as_str() {
                     "mkstemp" | "MKSTEMP" | "_mkstemp" | "mktemp" | "MKTEMP" | "_wmktemp"
                     | "mkdtemp" | "tmpnam" => {
                         temp_creations.push((
-                            node.start_position().row + 1,
-                            node.start_position().column + 1,
+                            call.start_position().row + 1,
+                            call.start_position().column + 1,
                         ));
                     }
                     "unlink" | "UNLINK" | "_unlink" | "_wunlink" | "remove" | "DeleteFile"
@@ -449,12 +432,6 @@ impl FileResourceTracker {
                     }
                     _ => {}
                 }
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.scan_temp_file_calls(&child, source, temp_creations, has_cleanup);
             }
         }
     }

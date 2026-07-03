@@ -22,6 +22,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -301,19 +302,8 @@ impl Fio22CChecker {
     }
 
     /// Find a call_expression in the AST subtree
-    fn find_call_expression<'a>(&self, node: &Node<'a>, source: &str) -> Option<Node<'a>> {
-        if node.kind() == "call_expression" {
-            return Some(*node);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(call) = self.find_call_expression(&child, source) {
-                    return Some(call);
-                }
-            }
-        }
-        None
+    fn find_call_expression<'a>(&self, node: &Node<'a>, _source: &str) -> Option<Node<'a>> {
+        query::find_first_descendant(*node, |n| n.kind() == "call_expression")
     }
 
     /// Extract the variable name being assigned in a declaration or assignment
@@ -364,18 +354,7 @@ impl Fio22CChecker {
     }
 
     /// Find an assignment_expression in the AST subtree
-    fn find_assignment_expression<'a>(&self, node: &Node<'a>, source: &str) -> Option<Node<'a>> {
-        if node.kind() == "assignment_expression" {
-            return Some(*node);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(assign) = self.find_assignment_expression(&child, source) {
-                    return Some(assign);
-                }
-            }
-        }
-        None
+    fn find_assignment_expression<'a>(&self, node: &Node<'a>, _source: &str) -> Option<Node<'a>> {
+        query::find_first_descendant(*node, |n| n.kind() == "assignment_expression")
     }
 }

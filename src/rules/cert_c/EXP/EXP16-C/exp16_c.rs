@@ -18,6 +18,7 @@ use std::collections::HashSet;
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Exp16C;
@@ -65,27 +66,24 @@ impl Exp16C {
         source: &str,
         names: &mut HashSet<String>,
     ) {
-        match node.kind() {
-            "function_definition" => {
-                if let Some(name) = self.extract_function_name(node, source) {
-                    names.insert(name);
+        for n in query::find_descendants_of_kinds(*node, &["function_definition", "declaration"]) {
+            match n.kind() {
+                "function_definition" => {
+                    if let Some(name) = self.extract_function_name(&n, source) {
+                        names.insert(name);
+                    }
                 }
-            }
-            "declaration" => {
-                // Forward declarations: check if declarator contains a function_declarator
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    if self.has_function_declarator(&declarator) {
-                        if let Some(name) = self.extract_declarator_name(&declarator, source) {
-                            names.insert(name);
+                "declaration" => {
+                    // Forward declarations: check if declarator contains a function_declarator
+                    if let Some(declarator) = n.child_by_field_name("declarator") {
+                        if self.has_function_declarator(&declarator) {
+                            if let Some(name) = self.extract_declarator_name(&declarator, source) {
+                                names.insert(name);
+                            }
                         }
                     }
                 }
-            }
-            _ => {}
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_function_names_recursive(&child, source, names);
+                _ => {}
             }
         }
     }
@@ -117,17 +115,7 @@ impl Exp16C {
     }
 
     fn has_function_declarator(&self, node: &Node) -> bool {
-        if node.kind() == "function_declarator" {
-            return true;
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.has_function_declarator(&child) {
-                    return true;
-                }
-            }
-        }
-        false
+        query::find_first_descendant(*node, |n| n.kind() == "function_declarator").is_some()
     }
 
     fn check_node(
@@ -137,55 +125,57 @@ impl Exp16C {
         function_names: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        match node.kind() {
-            // Check binary expressions for comparisons
-            "binary_expression" => {
-                self.check_binary_expression(node, source, function_names, violations);
-            }
-            // Check for standalone comparison as expression statement (CWE-482)
-            // e.g., `x == 5;` where the result is discarded
-            "expression_statement" => {
-                self.check_dead_comparison(node, source, violations);
-            }
-            // Check if/while conditions for implicit boolean conversion
-            "if_statement" | "while_statement" => {
-                if let Some(condition) = node.child_by_field_name("condition") {
-                    self.check_condition_for_implicit_conversion(
-                        &condition,
-                        source,
-                        function_names,
-                        violations,
-                    );
+        let kinds = [
+            "binary_expression",
+            "expression_statement",
+            "if_statement",
+            "while_statement",
+            "parenthesized_expression",
+        ];
+        for n in query::find_descendants_of_kinds(*node, &kinds) {
+            match n.kind() {
+                // Check binary expressions for comparisons
+                "binary_expression" => {
+                    self.check_binary_expression(&n, source, function_names, violations);
                 }
-            }
-            // Check parenthesized expressions in conditions
-            "parenthesized_expression" => {
-                // Check if this is directly inside an if/while (the condition)
-                if let Some(parent) = node.parent() {
-                    if parent.kind() == "if_statement" || parent.kind() == "while_statement" {
-                        // Check the inner expression
-                        for i in 0..node.child_count() {
-                            if let Some(child) = node.child(i) {
-                                if child.kind() == "identifier" {
-                                    self.check_identifier_as_condition(
-                                        &child,
-                                        source,
-                                        function_names,
-                                        violations,
-                                    );
+                // Check for standalone comparison as expression statement (CWE-482)
+                // e.g., `x == 5;` where the result is discarded
+                "expression_statement" => {
+                    self.check_dead_comparison(&n, source, violations);
+                }
+                // Check if/while conditions for implicit boolean conversion
+                "if_statement" | "while_statement" => {
+                    if let Some(condition) = n.child_by_field_name("condition") {
+                        self.check_condition_for_implicit_conversion(
+                            &condition,
+                            source,
+                            function_names,
+                            violations,
+                        );
+                    }
+                }
+                // Check parenthesized expressions in conditions
+                "parenthesized_expression" => {
+                    // Check if this is directly inside an if/while (the condition)
+                    if let Some(parent) = n.parent() {
+                        if parent.kind() == "if_statement" || parent.kind() == "while_statement" {
+                            // Check the inner expression
+                            for i in 0..n.child_count() {
+                                if let Some(child) = n.child(i) {
+                                    if child.kind() == "identifier" {
+                                        self.check_identifier_as_condition(
+                                            &child,
+                                            source,
+                                            function_names,
+                                            violations,
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            _ => {}
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, function_names, violations);
+                _ => {}
             }
         }
     }

@@ -23,6 +23,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::{const_eval, init_state};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -77,16 +78,9 @@ impl CertRule for Fio30C {
         }
 
         // For non-translation_unit nodes, use simpler per-function analysis
-        if node.kind() == "function_definition" {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
             let mut analyzer = FormatStringAnalyzer::new();
-            analyzer.analyze_function(node, source, &mut violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
+            analyzer.analyze_function(&func, source, &mut violations);
         }
 
         violations
@@ -101,14 +95,8 @@ impl Fio30C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "function_definition" {
-            analyzer.analyze_function(node, source, violations);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_with_taint(analyzer, &child, source, violations);
-            }
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            analyzer.analyze_function(&func, source, violations);
         }
     }
 }
@@ -204,36 +192,26 @@ impl FormatStringAnalyzer {
 
     /// Identify functions whose body contains user input calls (fgets, recv, getenv, etc.)
     fn identify_taint_source_functions(&mut self, node: &Node, source: &str) {
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(declarator) = func.child_by_field_name("declarator") {
                 let func_name = self.get_function_name(&declarator, source);
-                if let Some(body) = node.child_by_field_name("body") {
+                if let Some(body) = func.child_by_field_name("body") {
                     if self.body_contains_user_input_call(&body, source) {
                         self.taint_source_functions.insert(func_name.clone());
                     }
                 }
             }
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.identify_taint_source_functions(&child, source);
-            }
-        }
     }
 
     /// Record the names of all functions invoked by name in the translation unit.
     fn collect_called_function_names(&mut self, node: &Node, source: &str) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 if function.kind() == "identifier" {
                     self.called_function_names
                         .insert(ast_utils::get_node_text_owned(&function, source));
                 }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_called_function_names(&child, source);
             }
         }
     }
@@ -377,40 +355,35 @@ impl FormatStringAnalyzer {
 
     /// Check if a function body contains any user input source calls
     fn body_contains_user_input_call(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let raw_name = ast_utils::get_node_text_owned(&function, source);
-                let func_name = self.resolve_func_name(&raw_name);
-                if matches!(
-                    func_name,
-                    "fgets"
-                        | "fgetws"
-                        | "gets"
-                        | "getline"
-                        | "fread"
-                        | "read"
-                        | "recv"
-                        | "recvfrom"
-                        | "recvmsg"
-                        | "scanf"
-                        | "fscanf"
-                        | "wscanf"
-                        | "fwscanf"
-                        | "getenv"
-                        | "_wgetenv"
-                ) {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.body_contains_user_input_call(&child, source) {
-                    return true;
-                }
-            }
-        }
-        false
+            let Some(function) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let raw_name = ast_utils::get_node_text_owned(&function, source);
+            let func_name = self.resolve_func_name(&raw_name);
+            matches!(
+                func_name,
+                "fgets"
+                    | "fgetws"
+                    | "gets"
+                    | "getline"
+                    | "fread"
+                    | "read"
+                    | "recv"
+                    | "recvfrom"
+                    | "recvmsg"
+                    | "scanf"
+                    | "fscanf"
+                    | "wscanf"
+                    | "fwscanf"
+                    | "getenv"
+                    | "_wgetenv"
+            )
+        })
+        .is_some()
     }
 
     fn analyze_function(

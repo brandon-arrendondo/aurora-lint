@@ -5,6 +5,7 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::null_state::{self, NullAnalysisResult, NullState, StateMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -66,70 +67,69 @@ impl CertRule for Exp34C {
         let summaries = self.function_summaries.borrow();
         let cfgs = self.function_cfgs.borrow();
 
-        // At the top level (translation_unit), collect file-scope global null states
-        if node.kind() == "translation_unit" {
-            let mut globals = null_state::collect_file_scope_null_states(node, source, &summaries);
+        for n in
+            query::find_descendants_of_kinds(*node, &["translation_unit", "function_definition"])
+        {
+            let node = &n;
+            // At the top level (translation_unit), collect file-scope global null states
+            if node.kind() == "translation_unit" {
+                let mut globals =
+                    null_state::collect_file_scope_null_states(node, source, &summaries);
 
-            // Merge prescan cross-file states for extern pointer declarations.
-            // For variables declared `extern` in this file, the file-scope analysis
-            // has no assignments to track — inject prescan-derived states.
-            let prescan_states = self.prescan_global_var_states.borrow();
-            if !prescan_states.is_empty() {
-                merge_extern_global_states(node, source, &prescan_states, &mut globals);
+                // Merge prescan cross-file states for extern pointer declarations.
+                // For variables declared `extern` in this file, the file-scope analysis
+                // has no assignments to track — inject prescan-derived states.
+                let prescan_states = self.prescan_global_var_states.borrow();
+                if !prescan_states.is_empty() {
+                    merge_extern_global_states(node, source, &prescan_states, &mut globals);
+                }
+
+                *self.file_global_states.borrow_mut() = globals;
             }
 
-            *self.file_global_states.borrow_mut() = globals;
-        }
+            if node.kind() == "function_definition" {
+                if let Some(body) = node.child_by_field_name("body") {
+                    // Get pre-built CFG or build one on the fly
+                    let inline_cfg;
+                    let cfg = if let Some(c) = cfgs.get(&node.start_byte()) {
+                        c
+                    } else if let Some(c) = cfg_mod::build_function_cfg(node, source) {
+                        inline_cfg = c;
+                        &inline_cfg
+                    } else {
+                        // Skip: no CFG available for this function
+                        continue;
+                    };
 
-        if node.kind() == "function_definition" {
-            if let Some(body) = node.child_by_field_name("body") {
-                // Get pre-built CFG or build one on the fly
-                let inline_cfg;
-                let cfg = if let Some(c) = cfgs.get(&node.start_byte()) {
-                    c
-                } else if let Some(c) = cfg_mod::build_function_cfg(node, source) {
-                    inline_cfg = c;
-                    &inline_cfg
-                } else {
-                    // Skip: no CFG available for this function
-                    return violations;
-                };
+                    // Extract function name for call-site param seeding
+                    let func_name = node
+                        .child_by_field_name("declarator")
+                        .and_then(|d| extract_function_name(&d, source));
 
-                // Extract function name for call-site param seeding
-                let func_name = node
-                    .child_by_field_name("declarator")
-                    .and_then(|d| extract_function_name(&d, source));
+                    // Run CFG-based null-state dataflow, seeded with global states
+                    let global_states = self.file_global_states.borrow();
+                    let analysis = null_state::analyze_null_states_with_globals(
+                        cfg,
+                        node,
+                        source,
+                        &summaries,
+                        &global_states,
+                        func_name.as_deref(),
+                    );
 
-                // Run CFG-based null-state dataflow, seeded with global states
-                let global_states = self.file_global_states.borrow();
-                let analysis = null_state::analyze_null_states_with_globals(
-                    cfg,
-                    node,
-                    source,
-                    &summaries,
-                    &global_states,
-                    func_name.as_deref(),
-                );
-
-                // Walk AST for dereferences and check each against the dataflow result
-                let mut reported_vars: HashSet<String> = HashSet::new();
-                check_dereferences_cfg(
-                    &body,
-                    source,
-                    &analysis,
-                    cfg,
-                    &body,
-                    &summaries,
-                    &mut violations,
-                    &mut reported_vars,
-                );
-            }
-        }
-
-        // Recursively check child nodes (handles nested functions, preproc blocks)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+                    // Walk AST for dereferences and check each against the dataflow result
+                    let mut reported_vars: HashSet<String> = HashSet::new();
+                    check_dereferences_cfg(
+                        &body,
+                        source,
+                        &analysis,
+                        cfg,
+                        &body,
+                        &summaries,
+                        &mut violations,
+                        &mut reported_vars,
+                    );
+                }
             }
         }
 
@@ -151,74 +151,84 @@ fn check_dereferences_cfg(
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut HashSet<String>,
 ) {
-    match node.kind() {
-        "pointer_expression" => {
-            // tree-sitter uses pointer_expression for both *ptr and &var.
-            // Only dereference (*) can be a null-ptr bug.
-            let is_deref = node
-                .child_by_field_name("operator")
-                .map(|op| ast_utils::get_node_text_owned(&op, source) == "*")
-                .unwrap_or(false);
+    for n in query::find_descendants_of_kinds(
+        *node,
+        &[
+            "pointer_expression",
+            "subscript_expression",
+            "field_expression",
+            "call_expression",
+        ],
+    ) {
+        let node = &n;
+        match node.kind() {
+            "pointer_expression" => {
+                // tree-sitter uses pointer_expression for both *ptr and &var.
+                // Only dereference (*) can be a null-ptr bug.
+                let is_deref = node
+                    .child_by_field_name("operator")
+                    .map(|op| ast_utils::get_node_text_owned(&op, source) == "*")
+                    .unwrap_or(false);
 
-            if is_deref {
-                if let Some(argument) = node.child_by_field_name("argument") {
-                    let mut deref_text = ast_utils::get_node_text_owned(&argument, source);
+                if is_deref {
+                    if let Some(argument) = node.child_by_field_name("argument") {
+                        let mut deref_text = ast_utils::get_node_text_owned(&argument, source);
 
-                    // Strip parentheses
-                    if argument.kind() == "parenthesized_expression" {
-                        if let Some(inner) = argument.child(1) {
-                            deref_text = ast_utils::get_node_text_owned(&inner, source);
+                        // Strip parentheses
+                        if argument.kind() == "parenthesized_expression" {
+                            if let Some(inner) = argument.child(1) {
+                                deref_text = ast_utils::get_node_text_owned(&inner, source);
+                            }
                         }
-                    }
 
-                    if argument.kind() == "identifier"
-                        || argument.kind() == "field_expression"
-                        || argument.kind() == "parenthesized_expression"
-                    {
-                        if !reported_vars.contains(&deref_text)
-                            && is_unsafe_at(
-                                &deref_text,
-                                node,
-                                source,
-                                analysis,
-                                cfg,
-                                body,
-                                summaries,
-                            )
+                        if argument.kind() == "identifier"
+                            || argument.kind() == "field_expression"
+                            || argument.kind() == "parenthesized_expression"
                         {
-                            reported_vars.insert(deref_text.clone());
-                            let start_point = node.start_position();
-                            violations.push(RuleViolation {
-                                rule_id: "EXP34-C".to_string(),
-                                severity: Severity::High,
-                                message: format!(
-                                    "Potential null pointer dereference of variable '{}'",
-                                    deref_text
-                                ),
-                                file_path: String::new(),
-                                line: start_point.row + 1,
-                                column: start_point.column + 1,
-                                suggestion: Some(format!(
-                                    "Check if '{}' is not NULL before dereferencing",
-                                    deref_text
-                                )),
-                                ..Default::default()
-                            });
+                            if !reported_vars.contains(&deref_text)
+                                && is_unsafe_at(
+                                    &deref_text,
+                                    node,
+                                    source,
+                                    analysis,
+                                    cfg,
+                                    body,
+                                    summaries,
+                                )
+                            {
+                                reported_vars.insert(deref_text.clone());
+                                let start_point = node.start_position();
+                                violations.push(RuleViolation {
+                                    rule_id: "EXP34-C".to_string(),
+                                    severity: Severity::High,
+                                    message: format!(
+                                        "Potential null pointer dereference of variable '{}'",
+                                        deref_text
+                                    ),
+                                    file_path: String::new(),
+                                    line: start_point.row + 1,
+                                    column: start_point.column + 1,
+                                    suggestion: Some(format!(
+                                        "Check if '{}' is not NULL before dereferencing",
+                                        deref_text
+                                    )),
+                                    ..Default::default()
+                                });
+                            }
                         }
                     }
                 }
             }
-        }
-        "subscript_expression" => {
-            if let Some(array) = node.child(0) {
-                if array.kind() == "identifier" {
-                    let var_name = ast_utils::get_node_text_owned(&array, source);
-                    if !reported_vars.contains(&var_name)
-                        && is_unsafe_at(&var_name, node, source, analysis, cfg, body, summaries)
-                    {
-                        reported_vars.insert(var_name.clone());
-                        let start_point = node.start_position();
-                        violations.push(RuleViolation {
+            "subscript_expression" => {
+                if let Some(array) = node.child(0) {
+                    if array.kind() == "identifier" {
+                        let var_name = ast_utils::get_node_text_owned(&array, source);
+                        if !reported_vars.contains(&var_name)
+                            && is_unsafe_at(&var_name, node, source, analysis, cfg, body, summaries)
+                        {
+                            reported_vars.insert(var_name.clone());
+                            let start_point = node.start_position();
+                            violations.push(RuleViolation {
                             rule_id: "EXP34-C".to_string(),
                             severity: Severity::High,
                             message: format!(
@@ -234,20 +244,20 @@ fn check_dereferences_cfg(
                             )),
                             ..Default::default()
                         });
+                        }
                     }
                 }
             }
-        }
-        "field_expression" => {
-            if let Some(argument) = node.child_by_field_name("argument") {
-                if argument.kind() == "identifier" {
-                    let var_name = ast_utils::get_node_text_owned(&argument, source);
-                    if !reported_vars.contains(&var_name)
-                        && is_unsafe_at(&var_name, node, source, analysis, cfg, body, summaries)
-                    {
-                        reported_vars.insert(var_name.clone());
-                        let start_point = node.start_position();
-                        violations.push(RuleViolation {
+            "field_expression" => {
+                if let Some(argument) = node.child_by_field_name("argument") {
+                    if argument.kind() == "identifier" {
+                        let var_name = ast_utils::get_node_text_owned(&argument, source);
+                        if !reported_vars.contains(&var_name)
+                            && is_unsafe_at(&var_name, node, source, analysis, cfg, body, summaries)
+                        {
+                            reported_vars.insert(var_name.clone());
+                            let start_point = node.start_position();
+                            violations.push(RuleViolation {
                             rule_id: "EXP34-C".to_string(),
                             severity: Severity::High,
                             message: format!(
@@ -263,88 +273,75 @@ fn check_dereferences_cfg(
                             )),
                             ..Default::default()
                         });
-                    }
-                }
-            }
-        }
-        "call_expression" => {
-            if let Some(function) = node.child_by_field_name("function") {
-                // Function pointer call
-                if function.kind() == "identifier" {
-                    let func_name = ast_utils::get_node_text_owned(&function, source);
-                    if !reported_vars.contains(&func_name)
-                        && is_unsafe_at(&func_name, node, source, analysis, cfg, body, summaries)
-                    {
-                        reported_vars.insert(func_name.clone());
-                        let start_point = function.start_position();
-                        violations.push(RuleViolation {
-                            rule_id: "EXP34-C".to_string(),
-                            severity: Severity::High,
-                            message: format!(
-                                "Calling potentially null function pointer '{}'",
-                                func_name
-                            ),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some(format!(
-                                "Check if '{}' is not NULL before calling",
-                                func_name
-                            )),
-                            ..Default::default()
-                        });
-                    }
-                }
-
-                // Check deref-function arguments. Skip when the callee is
-                // known to accept NULL (free/fclose no-op on NULL per C standard).
-                let func_name = ast_utils::get_node_text_owned(&function, source);
-                if is_deref_function(&func_name) && !is_null_safe_function(&func_name) {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        check_function_arguments_cfg(
-                            &args,
-                            source,
-                            analysis,
-                            cfg,
-                            body,
-                            summaries,
-                            violations,
-                            reported_vars,
-                        );
-                    }
-                }
-
-                // Call-site null propagation: flag DefinitelyNull args to callees
-                // that don't null-check them. Only when callee has a summary
-                // (guards against flagging unknown library functions).
-                if !is_deref_function(&func_name) && !is_null_safe_function(&func_name) {
-                    if summaries.contains_key(&func_name) {
-                        if let Some(args_node) = node.child_by_field_name("arguments") {
-                            check_callsite_null_args(
-                                &func_name, &args_node, source, analysis, cfg, body, summaries,
-                                violations,
-                            );
                         }
                     }
                 }
             }
-        }
-        _ => {}
-    }
+            "call_expression" => {
+                if let Some(function) = node.child_by_field_name("function") {
+                    // Function pointer call
+                    if function.kind() == "identifier" {
+                        let func_name = ast_utils::get_node_text_owned(&function, source);
+                        if !reported_vars.contains(&func_name)
+                            && is_unsafe_at(
+                                &func_name, node, source, analysis, cfg, body, summaries,
+                            )
+                        {
+                            reported_vars.insert(func_name.clone());
+                            let start_point = function.start_position();
+                            violations.push(RuleViolation {
+                                rule_id: "EXP34-C".to_string(),
+                                severity: Severity::High,
+                                message: format!(
+                                    "Calling potentially null function pointer '{}'",
+                                    func_name
+                                ),
+                                file_path: String::new(),
+                                line: start_point.row + 1,
+                                column: start_point.column + 1,
+                                suggestion: Some(format!(
+                                    "Check if '{}' is not NULL before calling",
+                                    func_name
+                                )),
+                                ..Default::default()
+                            });
+                        }
+                    }
 
-    // Recurse
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            check_dereferences_cfg(
-                &child,
-                source,
-                analysis,
-                cfg,
-                body,
-                summaries,
-                violations,
-                reported_vars,
-            );
+                    // Check deref-function arguments. Skip when the callee is
+                    // known to accept NULL (free/fclose no-op on NULL per C standard).
+                    let func_name = ast_utils::get_node_text_owned(&function, source);
+                    if is_deref_function(&func_name) && !is_null_safe_function(&func_name) {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            check_function_arguments_cfg(
+                                &args,
+                                source,
+                                analysis,
+                                cfg,
+                                body,
+                                summaries,
+                                violations,
+                                reported_vars,
+                            );
+                        }
+                    }
+
+                    // Call-site null propagation: flag DefinitelyNull args to callees
+                    // that don't null-check them. Only when callee has a summary
+                    // (guards against flagging unknown library functions).
+                    if !is_deref_function(&func_name) && !is_null_safe_function(&func_name) {
+                        if summaries.contains_key(&func_name) {
+                            if let Some(args_node) = node.child_by_field_name("arguments") {
+                                check_callsite_null_args(
+                                    &func_name, &args_node, source, analysis, cfg, body, summaries,
+                                    violations,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -1296,44 +1293,25 @@ fn cond_dereferences_var(node: &Node, base: &str, source: &str) -> bool {
     let matches_base = |n: &Node| {
         n.kind() == "identifier" && { ast_utils::get_node_text_owned(n, source) == base }
     };
-    match node.kind() {
-        "field_expression" => {
-            if let Some(arg) = node.child_by_field_name("argument") {
-                if matches_base(&arg) {
-                    return true;
-                }
-            }
-        }
-        "subscript_expression" => {
-            if let Some(arr) = node.child(0) {
-                if matches_base(&arr) {
-                    return true;
-                }
-            }
-        }
+    query::find_first_descendant(*node, |n| match n.kind() {
+        "field_expression" => n
+            .child_by_field_name("argument")
+            .map(|arg| matches_base(&arg))
+            .unwrap_or(false),
+        "subscript_expression" => n.child(0).map(|arr| matches_base(&arr)).unwrap_or(false),
         "pointer_expression" => {
-            let is_deref = node
+            let is_deref = n
                 .child_by_field_name("operator")
                 .map(|op| ast_utils::get_node_text_owned(&op, source) == "*")
                 .unwrap_or(false);
-            if is_deref {
-                if let Some(arg) = node.child_by_field_name("argument") {
-                    if matches_base(&arg) {
-                        return true;
-                    }
-                }
-            }
+            is_deref
+                && n.child_by_field_name("argument")
+                    .map(|arg| matches_base(&arg))
+                    .unwrap_or(false)
         }
-        _ => {}
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if cond_dereferences_var(&child, base, source) {
-                return true;
-            }
-        }
-    }
-    false
+        _ => false,
+    })
+    .is_some()
 }
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state::{self, InitAnalysisResult, InitState, InitStateMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -116,118 +117,117 @@ impl CertRule for Exp33C {
         let mut violations = Vec::new();
         let cfgs = self.function_cfgs.borrow();
 
-        // At translation_unit level: collect file-scope statics and pre-scan functions
-        if node.kind() == "translation_unit" {
-            let statics = init_state::collect_file_scope_statics(node, source);
-            *self.file_scope_statics.borrow_mut() = statics;
+        for n in
+            query::find_descendants_of_kinds(*node, &["translation_unit", "function_definition"])
+        {
+            let node = &n;
+            // At translation_unit level: collect file-scope statics and pre-scan functions
+            if node.kind() == "translation_unit" {
+                let statics = init_state::collect_file_scope_statics(node, source);
+                *self.file_scope_statics.borrow_mut() = statics;
 
-            // Collect file-scope constants for dead-branch elimination.
-            // Merge with prescan global constants (file-scope wins on conflict).
-            let file_constants = init_state::collect_file_scope_constants(node, source);
-            // Also collect zero-arg constant-return functions (e.g., staticReturnsTrue()).
-            let fn_constants = init_state::collect_constant_functions(node, source);
-            {
-                let mut constants = self.file_scope_constants.borrow_mut();
-                // File-scope constants and constant functions override prescan globals
-                constants.extend(file_constants);
-                constants.extend(fn_constants);
-            }
-
-            // Pre-scan for realloc wrapper functions
-            let mut wrappers = HashSet::new();
-            scan_realloc_wrappers(node, source, &mut wrappers);
-            *self.realloc_wrapper_fns.borrow_mut() = wrappers;
-
-            // Pre-scan for functions that conditionally initialize pointer params
-            let mut cond_init = HashMap::new();
-            scan_conditionally_init_functions(node, source, &mut cond_init);
-            *self.conditionally_init_fns.borrow_mut() = cond_init;
-
-            // Precompute output-parameter indices for the function-like macros
-            // actually invoked in this file (cheap: only invoked names, once per
-            // file). Macros whose body assigns a parameter (e.g. CF_DATA_SAVE)
-            // write that argument — feeds the init-state transfer + read-checker.
-            let macros = self.function_macros.borrow();
-            if !macros.is_empty() {
-                let mut invoked = HashSet::new();
-                collect_invoked_macro_names(node, source, &macros, &mut invoked);
-                let mut out_params = HashMap::new();
-                for name in invoked {
-                    let idx =
-                        crate::analyze::macro_expand::macro_output_param_indices(&macros, &name);
-                    if !idx.is_empty() {
-                        out_params.insert(name, idx);
-                    }
+                // Collect file-scope constants for dead-branch elimination.
+                // Merge with prescan global constants (file-scope wins on conflict).
+                let file_constants = init_state::collect_file_scope_constants(node, source);
+                // Also collect zero-arg constant-return functions (e.g., staticReturnsTrue()).
+                let fn_constants = init_state::collect_constant_functions(node, source);
+                {
+                    let mut constants = self.file_scope_constants.borrow_mut();
+                    // File-scope constants and constant functions override prescan globals
+                    constants.extend(file_constants);
+                    constants.extend(fn_constants);
                 }
-                *self.macro_output_params.borrow_mut() = out_params;
+
+                // Pre-scan for realloc wrapper functions
+                let mut wrappers = HashSet::new();
+                scan_realloc_wrappers(node, source, &mut wrappers);
+                *self.realloc_wrapper_fns.borrow_mut() = wrappers;
+
+                // Pre-scan for functions that conditionally initialize pointer params
+                let mut cond_init = HashMap::new();
+                scan_conditionally_init_functions(node, source, &mut cond_init);
+                *self.conditionally_init_fns.borrow_mut() = cond_init;
+
+                // Precompute output-parameter indices for the function-like macros
+                // actually invoked in this file (cheap: only invoked names, once per
+                // file). Macros whose body assigns a parameter (e.g. CF_DATA_SAVE)
+                // write that argument — feeds the init-state transfer + read-checker.
+                let macros = self.function_macros.borrow();
+                if !macros.is_empty() {
+                    let mut invoked = HashSet::new();
+                    collect_invoked_macro_names(node, source, &macros, &mut invoked);
+                    let mut out_params = HashMap::new();
+                    for name in invoked {
+                        let idx = crate::analyze::macro_expand::macro_output_param_indices(
+                            &macros, &name,
+                        );
+                        if !idx.is_empty() {
+                            out_params.insert(name, idx);
+                        }
+                    }
+                    *self.macro_output_params.borrow_mut() = out_params;
+                }
             }
-        }
 
-        if node.kind() == "function_definition" {
-            if let Some(body) = node.child_by_field_name("body") {
-                // Get pre-built CFG or build one on the fly
-                let inline_cfg;
-                let cfg = if let Some(c) = cfgs.get(&node.start_byte()) {
-                    c
-                } else if let Some(c) = cfg_mod::build_function_cfg(node, source) {
-                    inline_cfg = c;
-                    &inline_cfg
-                } else {
-                    return violations;
-                };
+            if node.kind() == "function_definition" {
+                if let Some(body) = node.child_by_field_name("body") {
+                    // Get pre-built CFG or build one on the fly
+                    let inline_cfg;
+                    let cfg = if let Some(c) = cfgs.get(&node.start_byte()) {
+                        c
+                    } else if let Some(c) = cfg_mod::build_function_cfg(node, source) {
+                        inline_cfg = c;
+                        &inline_cfg
+                    } else {
+                        continue;
+                    };
 
-                // Run CFG-based init-state dataflow
-                let statics = self.file_scope_statics.borrow();
-                let cond_fns = self.conditionally_init_fns.borrow();
-                let realloc_fns = self.realloc_wrapper_fns.borrow();
-                let read_only_fns = self.build_read_only_deref_fns();
-                let file_constants = self.file_scope_constants.borrow();
-                let macro_out = self.macro_output_params.borrow();
-                let config = init_state::InitAnalysisConfig {
-                    conditionally_init_fns: cond_fns.clone(),
-                    realloc_wrapper_fns: realloc_fns.clone(),
-                    read_only_deref_fns: read_only_fns.clone(),
-                    file_scope_constants: file_constants.clone(),
-                    macro_output_params: macro_out.clone(),
-                };
-                let analysis = init_state::analyze_init_states_with_statics(
-                    cfg, node, source, &statics, &config,
-                );
+                    // Run CFG-based init-state dataflow
+                    let statics = self.file_scope_statics.borrow();
+                    let cond_fns = self.conditionally_init_fns.borrow();
+                    let realloc_fns = self.realloc_wrapper_fns.borrow();
+                    let read_only_fns = self.build_read_only_deref_fns();
+                    let file_constants = self.file_scope_constants.borrow();
+                    let macro_out = self.macro_output_params.borrow();
+                    let config = init_state::InitAnalysisConfig {
+                        conditionally_init_fns: cond_fns.clone(),
+                        realloc_wrapper_fns: realloc_fns.clone(),
+                        read_only_deref_fns: read_only_fns.clone(),
+                        file_scope_constants: file_constants.clone(),
+                        macro_output_params: macro_out.clone(),
+                    };
+                    let analysis = init_state::analyze_init_states_with_statics(
+                        cfg, node, source, &statics, &config,
+                    );
 
-                // Walk AST for read sites and check each against dataflow result
-                let mut reported: HashSet<String> = HashSet::new();
-                check_reads(
-                    &body,
-                    source,
-                    &analysis,
-                    cfg,
-                    &body,
-                    &mut violations,
-                    &mut reported,
-                    &config,
-                );
-
-                // Check for cross-file calls passing &uninit_var to functions
-                // that read through the pointer (variant 63/64 pattern).
-                if !read_only_fns.is_empty() {
-                    check_cross_file_uninit_calls(
+                    // Walk AST for read sites and check each against dataflow result
+                    let mut reported: HashSet<String> = HashSet::new();
+                    check_reads(
                         &body,
                         source,
                         &analysis,
                         cfg,
                         &body,
-                        &read_only_fns,
                         &mut violations,
                         &mut reported,
+                        &config,
                     );
-                }
-            }
-        }
 
-        // Recurse into child nodes (handles preproc blocks, nested structures)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+                    // Check for cross-file calls passing &uninit_var to functions
+                    // that read through the pointer (variant 63/64 pattern).
+                    if !read_only_fns.is_empty() {
+                        check_cross_file_uninit_calls(
+                            &body,
+                            source,
+                            &analysis,
+                            cfg,
+                            &body,
+                            &read_only_fns,
+                            &mut violations,
+                            &mut reported,
+                        );
+                    }
+                }
             }
         }
 
@@ -239,7 +239,7 @@ impl CertRule for Exp33C {
 // AST walk for read sites
 // ---------------------------------------------------------------------------
 
-/// Recursively walk the AST looking for reads of tracked variables.
+/// Walk the AST looking for reads of tracked variables.
 fn check_reads(
     node: &Node,
     source: &str,
@@ -250,35 +250,31 @@ fn check_reads(
     reported: &mut HashSet<String>,
     config: &init_state::InitAnalysisConfig,
 ) {
-    match node.kind() {
-        "identifier" => {
-            check_identifier_read(
-                node, source, analysis, cfg, body, violations, reported, config,
-            );
-        }
-        "pointer_expression" => {
-            // *ptr — check if ptr content is uninitialized
-            let text = get_node_text(node, source);
-            if text.starts_with('*') {
-                check_deref_read(
-                    node, source, analysis, cfg, body, violations, reported, config,
+    for n in query::find_descendants_of_kinds(
+        *node,
+        &["identifier", "pointer_expression", "subscript_expression"],
+    ) {
+        match n.kind() {
+            "identifier" => {
+                check_identifier_read(
+                    &n, source, analysis, cfg, body, violations, reported, config,
                 );
             }
-        }
-        "subscript_expression" => {
-            check_subscript_read(
-                node, source, analysis, cfg, body, violations, reported, config,
-            );
-        }
-        _ => {}
-    }
-
-    // Recurse into children
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            check_reads(
-                &child, source, analysis, cfg, body, violations, reported, config,
-            );
+            "pointer_expression" => {
+                // *ptr — check if ptr content is uninitialized
+                let text = get_node_text(&n, source);
+                if text.starts_with('*') {
+                    check_deref_read(
+                        &n, source, analysis, cfg, body, violations, reported, config,
+                    );
+                }
+            }
+            "subscript_expression" => {
+                check_subscript_read(
+                    &n, source, analysis, cfg, body, violations, reported, config,
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -293,19 +289,14 @@ fn collect_invoked_macro_names(
     macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     out: &mut HashSet<String>,
 ) {
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
+    for call in query::find_descendants_of_kind(*node, "call_expression") {
+        if let Some(func) = call.child_by_field_name("function") {
             if func.kind() == "identifier" {
                 let name = get_node_text(&func, source);
                 if macros.contains_key(name) {
                     out.insert(name.to_string());
                 }
             }
-        }
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_invoked_macro_names(&child, source, macros, out);
         }
     }
 }
@@ -362,11 +353,11 @@ fn check_cross_file_uninit_calls(
     violations: &mut Vec<RuleViolation>,
     reported: &mut HashSet<String>,
 ) {
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
+    for call in query::find_descendants_of_kind(*node, "call_expression") {
+        if let Some(func) = call.child_by_field_name("function") {
             let func_name = get_node_text(&func, source).to_string();
             if let Some(read_only_params) = read_only_fns.get(&func_name) {
-                if let Some(args) = node.child_by_field_name("arguments") {
+                if let Some(args) = call.child_by_field_name("arguments") {
                     let mut arg_idx: usize = 0;
                     for i in 0..args.child_count() {
                         if let Some(arg) = args.child(i) {
@@ -386,7 +377,7 @@ fn check_cross_file_uninit_calls(
                                         body,
                                         source,
                                         &var_name,
-                                        node.start_byte(),
+                                        call.start_byte(),
                                         &init_state::InitAnalysisConfig::default(),
                                     ) {
                                         if info.state.is_unsafe() && !info.is_unsigned_char {
@@ -399,8 +390,8 @@ fn check_cross_file_uninit_calls(
                                                     var_name, func_name
                                                 ),
                                                 file_path: String::new(),
-                                                line: node.start_position().row + 1,
-                                                column: node.start_position().column + 1,
+                                                line: call.start_position().row + 1,
+                                                column: call.start_position().column + 1,
                                                 suggestion: Some(format!(
                                                     "Initialize '{}' before passing its address to '{}'",
                                                     var_name, func_name
@@ -416,22 +407,6 @@ fn check_cross_file_uninit_calls(
                     }
                 }
             }
-        }
-    }
-
-    // Recurse into children
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            check_cross_file_uninit_calls(
-                &child,
-                source,
-                analysis,
-                cfg,
-                body,
-                read_only_fns,
-                violations,
-                reported,
-            );
         }
     }
 }
@@ -1029,17 +1004,8 @@ fn is_read_in_argument_list(node: &Node, arg_list: &Node, source: &str) -> bool 
 
 /// Check if a node contains a specific descendant (by ID).
 fn contains_node(haystack: &Node, needle: &Node) -> bool {
-    if haystack.id() == needle.id() {
-        return true;
-    }
-    for i in 0..haystack.child_count() {
-        if let Some(child) = haystack.child(i) {
-            if contains_node(&child, needle) {
-                return true;
-            }
-        }
-    }
-    false
+    let needle_id = needle.id();
+    query::find_first_descendant(*haystack, |n| n.id() == needle_id).is_some()
 }
 
 /// Check if a dereference (*ptr) is in a read context.
@@ -1095,22 +1061,17 @@ fn is_subscript_read_context(node: &Node) -> bool {
 
 /// Scan translation unit for functions that wrap realloc.
 fn scan_realloc_wrappers(node: &Node, source: &str, wrappers: &mut HashSet<String>) {
-    if node.kind() == "function_definition" {
-        if let Some(body) = node.child_by_field_name("body") {
+    for func_def in query::find_descendants_of_kind(*node, "function_definition") {
+        if let Some(body) = func_def.child_by_field_name("body") {
             let body_text = get_node_text(&body, source);
             if body_text.contains("realloc(") && !body_text.contains("memset") {
-                if let Some(declarator) = node.child_by_field_name("declarator") {
+                if let Some(declarator) = func_def.child_by_field_name("declarator") {
                     let name = get_func_name(&declarator, source);
                     if !name.is_empty() {
                         wrappers.insert(name);
                     }
                 }
             }
-        }
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            scan_realloc_wrappers(&child, source, wrappers);
         }
     }
 }
@@ -1123,20 +1084,15 @@ fn scan_conditionally_init_functions(
     source: &str,
     result: &mut HashMap<String, HashSet<usize>>,
 ) {
-    if node.kind() == "function_definition" {
-        let cond_indices = get_conditional_init_param_indices(node, source);
+    for func_def in query::find_descendants_of_kind(*node, "function_definition") {
+        let cond_indices = get_conditional_init_param_indices(&func_def, source);
         if !cond_indices.is_empty() {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+            if let Some(declarator) = func_def.child_by_field_name("declarator") {
                 let name = get_func_name(&declarator, source);
                 if !name.is_empty() {
                     result.insert(name, cond_indices);
                 }
             }
-        }
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            scan_conditionally_init_functions(&child, source, result);
         }
     }
 }
@@ -1226,17 +1182,7 @@ fn collect_param_list_with_indices(
 }
 
 fn find_function_declarator_node<'a>(node: &Node<'a>) -> Option<Node<'a>> {
-    if node.kind() == "function_declarator" {
-        return Some(*node);
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if let Some(found) = find_function_declarator_node(&child) {
-                return Some(found);
-            }
-        }
-    }
-    None
+    query::find_first_descendant(*node, |n| n.kind() == "function_declarator")
 }
 
 fn get_declarator_name_from(node: &Node, source: &str) -> String {

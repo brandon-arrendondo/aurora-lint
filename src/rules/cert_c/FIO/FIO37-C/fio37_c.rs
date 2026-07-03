@@ -32,6 +32,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -68,15 +69,8 @@ impl CertRule for Fio37C {
 impl Fio37C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for function bodies
-        if node.kind() == "compound_statement" {
-            self.check_function_body(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for body in query::find_descendants_of_kind(*node, "compound_statement") {
+            self.check_function_body(&body, source, violations);
         }
     }
 
@@ -92,14 +86,13 @@ impl Fio37C {
     }
 
     fn collect_fgets_vars(&self, node: &Node, source: &str, fgets_vars: &mut HashSet<String>) {
-        // Look for call_expression
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 if func_name == "fgets" || func_name == "fgetws" {
                     // Get the first argument (the buffer)
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call.child_by_field_name("arguments") {
                         for i in 0..args.child_count() {
                             if let Some(arg) = args.child(i) {
                                 if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
@@ -114,13 +107,6 @@ impl Fio37C {
                 }
             }
         }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_fgets_vars(&child, source, fgets_vars);
-            }
-        }
     }
 
     fn check_strlen_usage(
@@ -131,24 +117,17 @@ impl Fio37C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for strlen() in subtraction
-        if node.kind() == "binary_expression" {
-            let operator = self.get_operator(node, source);
+        for binary in query::find_descendants_of_kind(*node, "binary_expression") {
+            let operator = self.get_operator(&binary, source);
             if operator == "-" {
                 // Check if left side is strlen(fgets_var)
-                if let Some(left) = node.child_by_field_name("left") {
+                if let Some(left) = binary.child_by_field_name("left") {
                     if let Some(var_name) = self.is_strlen_of_var(&left, source) {
                         if fgets_vars.contains(&var_name) {
-                            self.report_violation(node, &var_name, source, violations);
+                            self.report_violation(&binary, &var_name, source, violations);
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_strlen_usage(&child, source, fgets_vars, violations);
             }
         }
     }
