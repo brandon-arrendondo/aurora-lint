@@ -43,6 +43,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Int35C;
@@ -76,55 +77,50 @@ impl CertRule for Int35C {
 }
 
 impl Int35C {
-    /// Recursively traverse the AST looking for sizeof * CHAR_BIT pattern
+    /// Traverse the AST looking for sizeof * CHAR_BIT pattern
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check if this is a binary expression (multiplication)
-        if node.kind() == "binary_expression" {
-            if let Some(operator) = node.child_by_field_name("operator") {
-                let op_text = get_node_text(&operator, source);
+        for node in query::find_descendants_of_kind(*node, "binary_expression") {
+            let Some(operator) = node.child_by_field_name("operator") else {
+                continue;
+            };
+            let op_text = get_node_text(&operator, source);
 
-                // Check for multiplication operator
-                if op_text == "*" {
-                    // Get left and right operands
-                    if let (Some(left), Some(right)) = (
-                        node.child_by_field_name("left"),
-                        node.child_by_field_name("right"),
-                    ) {
-                        let left_text = get_node_text(&left, source);
-                        let right_text = get_node_text(&right, source);
-
-                        // Check for pattern: sizeof(...) * CHAR_BIT or CHAR_BIT * sizeof(...)
-                        let has_sizeof_char_bit = (self.is_sizeof_expression(left_text)
-                            && self.is_char_bit(right_text))
-                            || (self.is_char_bit(left_text)
-                                && self.is_sizeof_expression(right_text));
-
-                        if has_sizeof_char_bit {
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                message: "Using 'sizeof(...) * CHAR_BIT' to determine integer precision \
-                                     is incorrect when padding bits exist. Use PRECISION() macro, \
-                                     popcount(), or C23 *_WIDTH macros instead.".to_string(),
-                                severity: self.severity(),
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
-                                file_path: String::new(),
-                                suggestion: Some(
-                                    "Use popcount(TYPE_MAX) for actual precision, or *_WIDTH macros in C23"
-                                        .to_string(),
-                                ),
-                                requires_manual_review: None,
-                            });
-                        }
-                    }
-                }
+            // Check for multiplication operator
+            if op_text != "*" {
+                continue;
             }
-        }
+            // Get left and right operands
+            let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) else {
+                continue;
+            };
+            let left_text = get_node_text(&left, source);
+            let right_text = get_node_text(&right, source);
 
-        // Recurse through all children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.traverse(&child, source, violations);
+            // Check for pattern: sizeof(...) * CHAR_BIT or CHAR_BIT * sizeof(...)
+            let has_sizeof_char_bit = (self.is_sizeof_expression(left_text)
+                && self.is_char_bit(right_text))
+                || (self.is_char_bit(left_text) && self.is_sizeof_expression(right_text));
+
+            if has_sizeof_char_bit {
+                violations.push(RuleViolation {
+                    rule_id: self.rule_id().to_string(),
+                    message: "Using 'sizeof(...) * CHAR_BIT' to determine integer precision \
+                         is incorrect when padding bits exist. Use PRECISION() macro, \
+                         popcount(), or C23 *_WIDTH macros instead."
+                        .to_string(),
+                    severity: self.severity(),
+                    line: node.start_position().row + 1,
+                    column: node.start_position().column + 1,
+                    file_path: String::new(),
+                    suggestion: Some(
+                        "Use popcount(TYPE_MAX) for actual precision, or *_WIDTH macros in C23"
+                            .to_string(),
+                    ),
+                    requires_manual_review: None,
+                });
             }
         }
     }

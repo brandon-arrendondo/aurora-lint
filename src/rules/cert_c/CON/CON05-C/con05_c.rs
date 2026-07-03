@@ -19,6 +19,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -47,26 +48,14 @@ impl CertRule for Con05C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_function(node, source, &mut violations);
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
+            self.analyze_function_body(&func_node, source, &mut violations);
+        }
         violations
     }
 }
 
 impl Con05C {
-    fn check_function(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for function definitions
-        if node.kind() == "function_definition" {
-            self.analyze_function_body(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_function(&child, source, violations);
-            }
-        }
-    }
-
     fn analyze_function_body(
         &self,
         function_node: &Node,
@@ -126,21 +115,14 @@ impl Con05C {
         locks: &mut Vec<Node<'a>>,
         unlocks: &mut Vec<Node<'a>>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call_node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 if func_name == "mtx_lock" || func_name == "pthread_mutex_lock" {
-                    locks.push(*node);
+                    locks.push(call_node);
                 } else if func_name == "mtx_unlock" || func_name == "pthread_mutex_unlock" {
-                    unlocks.push(*node);
+                    unlocks.push(call_node);
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_lock_unlock_calls(&child, source, locks, unlocks);
             }
         }
     }
@@ -200,23 +182,16 @@ impl Con05C {
         calls: &mut Vec<Node<'a>>,
     ) {
         // Only collect calls that are strictly between lock and unlock
-        if node.kind() == "call_expression" {
-            let call_start = node.start_byte();
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            let call_start = call_node.start_byte();
             if call_start > lock_start && call_start < unlock_start {
                 // Exclude the unlock call itself
-                if let Some(function) = node.child_by_field_name("function") {
+                if let Some(function) = call_node.child_by_field_name("function") {
                     let func_name = get_node_text(&function, source);
                     if func_name != "mtx_unlock" && func_name != "pthread_mutex_unlock" {
-                        calls.push(*node);
+                        calls.push(call_node);
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_calls_in_region(&child, source, lock_start, unlock_start, calls);
             }
         }
     }

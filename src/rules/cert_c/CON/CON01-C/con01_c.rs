@@ -57,6 +57,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -87,26 +88,15 @@ impl CertRule for Con01C {
         let mut violations = Vec::new();
 
         // Find all function definitions
-        self.check_node(node, source, &mut violations);
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function(&func_node, source, &mut violations);
+        }
 
         violations
     }
 }
 
 impl Con01C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "function_definition" {
-            self.check_function(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     fn check_function(&self, func_node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Get function name
         let func_name = if let Some(declarator) = func_node.child_by_field_name("declarator") {
@@ -185,31 +175,24 @@ impl Con01C {
         unlocked_mutexes: &mut Vec<(String, usize, usize)>,
     ) {
         // Look for function calls
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = call_node.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source);
 
                 // Check if it's a lock function
                 if self.is_lock_function(&func_name) {
-                    if let Some(mutex_name) = self.get_mutex_argument(node, source) {
+                    if let Some(mutex_name) = self.get_mutex_argument(&call_node, source) {
                         locked_mutexes.insert(mutex_name);
                     }
                 }
                 // Check if it's an unlock function
                 else if self.is_unlock_function(&func_name) {
-                    if let Some(mutex_name) = self.get_mutex_argument(node, source) {
-                        let line = node.start_position().row + 1;
-                        let column = node.start_position().column + 1;
+                    if let Some(mutex_name) = self.get_mutex_argument(&call_node, source) {
+                        let line = call_node.start_position().row + 1;
+                        let column = call_node.start_position().column + 1;
                         unlocked_mutexes.push((mutex_name, line, column));
                     }
                 }
-            }
-        }
-
-        // Recursively analyze children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_body(&child, source, locked_mutexes, unlocked_mutexes);
             }
         }
     }

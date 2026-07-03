@@ -67,6 +67,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Con34C;
@@ -122,29 +123,25 @@ const THREAD_UNSAFE_FUNCTIONS: &[(&str, &str)] = &[
 
 impl Con34C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for thrd_create() calls and thread-unsafe function calls
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if func_name == "thrd_create" {
-                    self.check_thrd_create_call(node, source, violations);
-                } else if func_name == "tss_set" {
-                    self.check_tss_set_call(node, source, violations);
-                } else {
-                    self.check_thread_unsafe_call(&func_name, node, violations);
+        for n in query::find_descendants_of_kinds(*node, &["call_expression", "compound_statement"])
+        {
+            // Check for thrd_create() calls and thread-unsafe function calls
+            if n.kind() == "call_expression" {
+                if let Some(func) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&func, source);
+                    if func_name == "thrd_create" {
+                        self.check_thrd_create_call(&n, source, violations);
+                    } else if func_name == "tss_set" {
+                        self.check_tss_set_call(&n, source, violations);
+                    } else {
+                        self.check_thread_unsafe_call(&func_name, &n, violations);
+                    }
                 }
             }
-        }
 
-        // Check for OpenMP parallel regions
-        if node.kind() == "compound_statement" {
-            self.check_openmp_parallel_region(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+            // Check for OpenMP parallel regions
+            if n.kind() == "compound_statement" {
+                self.check_openmp_parallel_region(&n, source, violations);
             }
         }
     }
@@ -348,42 +345,45 @@ impl Con34C {
     }
 
     fn find_malloc_assignment(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        // Look for: var_name = malloc(...) or similar
-        if node.kind() == "assignment_expression" {
-            if let Some(left) = node.child_by_field_name("left") {
-                let left_text = get_node_text(&left, source);
-                if left_text == var_name {
-                    // Check if right side is a malloc/calloc call
-                    if let Some(right) = node.child_by_field_name("right") {
-                        return self.is_allocation_call(&right, source);
+        // Find the first node that either assigns to var_name or declares it with
+        // an initializer, matching the same node exactly like the original
+        // recursive walk (which stopped the entire search at the first such node,
+        // regardless of whether that particular node turned out to be an
+        // allocation call).
+        let candidate = query::find_first_descendant(*node, |n| {
+            if n.kind() == "assignment_expression" {
+                if let Some(left) = n.child_by_field_name("left") {
+                    if get_node_text(&left, source) == var_name {
+                        return true;
                     }
                 }
+                return false;
             }
-        }
 
-        // Check init_declarator: int *var = malloc(...)
-        if node.kind() == "init_declarator" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if let Some(name) = self.get_identifier_name(&declarator, source) {
-                    if name == var_name {
-                        if let Some(value) = node.child_by_field_name("value") {
-                            return self.is_allocation_call(&value, source);
+            if n.kind() == "init_declarator" {
+                if let Some(declarator) = n.child_by_field_name("declarator") {
+                    if let Some(name) = self.get_identifier_name(&declarator, source) {
+                        if name == var_name {
+                            return true;
                         }
                     }
                 }
             }
-        }
 
-        // Recursively search
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.find_malloc_assignment(&child, var_name, source) {
-                    return true;
-                }
-            }
-        }
+            false
+        });
 
-        false
+        match candidate {
+            Some(n) if n.kind() == "assignment_expression" => n
+                .child_by_field_name("right")
+                .map(|right| self.is_allocation_call(&right, source))
+                .unwrap_or(false),
+            Some(n) => n
+                .child_by_field_name("value")
+                .map(|value| self.is_allocation_call(&value, source))
+                .unwrap_or(false),
+            None => false,
+        }
     }
 
     #[allow(clippy::only_used_in_recursion)]
@@ -425,14 +425,18 @@ impl Con34C {
     }
 
     fn find_pointer_parameter(&self, node: &Node, param_name: &str, source: &str) -> bool {
-        if node.kind() == "parameter_declaration" {
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "parameter_declaration" {
+                return false;
+            }
+
             // Get the full text of the parameter declaration
-            let param_text = get_node_text(node, source);
+            let param_text = get_node_text(&n, source);
 
             // Simple heuristic: if it contains * and the param name, it's likely a pointer parameter
             if param_text.contains('*') && param_text.contains(param_name) {
                 // Double-check by finding the declarator
-                if let Some(declarator) = node.child_by_field_name("declarator") {
+                if let Some(declarator) = n.child_by_field_name("declarator") {
                     if let Some(name) = self.get_identifier_name(&declarator, source) {
                         if name == param_name {
                             return true;
@@ -440,17 +444,10 @@ impl Con34C {
                     }
                 }
             }
-        }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.find_pointer_parameter(&child, param_name, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            false
+        })
+        .is_some()
     }
 
     fn is_local_variable(&self, var_name: &str, context: &Node, source: &str) -> bool {
@@ -471,13 +468,17 @@ impl Con34C {
     }
 
     fn find_local_declaration(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        if node.kind() == "declaration" {
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "declaration" {
+                return false;
+            }
+
             // Check if it's NOT static
             let mut is_static = false;
             let mut has_var = false;
 
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
+            for i in 0..n.child_count() {
+                if let Some(child) = n.child(i) {
                     if child.kind() == "storage_class_specifier"
                         && get_node_text(&child, source) == "static"
                     {
@@ -501,21 +502,9 @@ impl Con34C {
             }
 
             // It's a local variable if it's declared here and NOT static
-            if has_var && !is_static {
-                return true;
-            }
-        }
-
-        // Recursively search
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.find_local_declaration(&child, var_name, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            has_var && !is_static
+        })
+        .is_some()
     }
 
     fn is_function_parameter(&self, function: &Node, var_name: &str, source: &str) -> bool {
@@ -533,42 +522,21 @@ impl Con34C {
     }
 
     fn find_parameter_name(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        if node.kind() == "parameter_declaration" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if let Some(name) = self.get_identifier_name(&declarator, source) {
-                    if name == var_name {
-                        return true;
-                    }
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "parameter_declaration" {
+                return false;
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.find_parameter_name(&child, var_name, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            n.child_by_field_name("declarator")
+                .and_then(|declarator| self.get_identifier_name(&declarator, source))
+                .map(|name| name == var_name)
+                .unwrap_or(false)
+        })
+        .is_some()
     }
 
-    #[allow(clippy::only_used_in_recursion)]
     fn get_identifier_name(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "identifier" {
-            return Some(get_node_text(node, source).to_string());
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(name) = self.get_identifier_name(&child, source) {
-                    return Some(name);
-                }
-            }
-        }
-
-        None
+        query::find_first_descendant(*node, |n| n.kind() == "identifier")
+            .map(|n| get_node_text(&n, source).to_string())
     }
 
     fn find_enclosing_function<'a>(&self, node: &'a Node) -> Option<Node<'a>> {
@@ -593,25 +561,16 @@ impl Con34C {
         false
     }
 
-    #[allow(clippy::only_used_in_recursion)]
     fn has_thrd_create(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                if get_node_text(&func, source) == "thrd_create" {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.has_thrd_create(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            n.child_by_field_name("function")
+                .map(|func| get_node_text(&func, source) == "thrd_create")
+                .unwrap_or(false)
+        })
+        .is_some()
     }
 
     fn has_tss_get_before_thread_create(&self, function: &Node, source: &str) -> bool {
@@ -622,25 +581,16 @@ impl Con34C {
         false
     }
 
-    #[allow(clippy::only_used_in_recursion)]
     fn has_tss_get(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                if get_node_text(&func, source) == "tss_get" {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.has_tss_get(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            n.child_by_field_name("function")
+                .map(|func| get_node_text(&func, source) == "tss_get")
+                .unwrap_or(false)
+        })
+        .is_some()
     }
 
     fn check_openmp_parallel_region(
@@ -786,25 +736,13 @@ impl Con34C {
         }
     }
 
-    #[allow(clippy::only_used_in_recursion)]
     fn is_var_modified_in_node(&self, node: &Node, var_name: &str, source: &str) -> bool {
         // Check for assignment or update expressions involving this variable
-        if matches!(node.kind(), "update_expression" | "assignment_expression") {
-            let text = get_node_text(node, source);
-            if text.contains(var_name) {
-                return true;
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.is_var_modified_in_node(&child, var_name, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| {
+            matches!(n.kind(), "update_expression" | "assignment_expression")
+                && get_node_text(&n, source).contains(var_name)
+        })
+        .is_some()
     }
 
     fn check_thread_unsafe_call(

@@ -20,6 +20,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -62,8 +63,8 @@ impl CertRule for Int04C {
 impl Int04C {
     fn check_function(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for function definitions and analyze their bodies
-        if node.kind() == "function_definition" {
-            if let Some(body) = node.child_by_field_name("body") {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(body) = func.child_by_field_name("body") {
                 // Track: tainted vars, validated vars, and dependencies
                 let mut tainted_vars: HashSet<String> = HashSet::new();
                 let mut validated_vars: HashSet<String> = HashSet::new();
@@ -77,13 +78,6 @@ impl Int04C {
                     &mut validated_vars,
                     &mut var_dependencies,
                 );
-            }
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_function(&child, source, violations);
             }
         }
     }
@@ -117,110 +111,84 @@ impl Int04C {
         tainted_vars: &mut HashSet<String>,
         var_dependencies: &mut HashMap<String, HashSet<String>>,
     ) {
-        // Check for declarations/assignments
-        if node.kind() == "init_declarator" {
-            if let (Some(declarator), Some(value)) = (
-                node.child_by_field_name("declarator"),
-                node.child_by_field_name("value"),
-            ) {
-                let var_name = get_node_text(&declarator, source).to_string();
+        // Full-subtree scan in pre-order — matches the original recursive
+        // descent order exactly, which matters because taint propagation
+        // below depends on `tainted_vars` reflecting earlier-visited nodes.
+        for n in query::find_descendants_of_kinds(*node, &["init_declarator", "call_expression"]) {
+            // Check for declarations/assignments
+            if n.kind() == "init_declarator" {
+                if let (Some(declarator), Some(value)) = (
+                    n.child_by_field_name("declarator"),
+                    n.child_by_field_name("value"),
+                ) {
+                    let var_name = get_node_text(&declarator, source).to_string();
 
-                // Check if value is from tainted source
-                if self.is_direct_tainted_source(&value, source) {
-                    tainted_vars.insert(var_name.clone());
+                    // Check if value is from tainted source
+                    if self.is_direct_tainted_source(&value, source) {
+                        tainted_vars.insert(var_name.clone());
+                    }
+
+                    // Track dependencies (which vars this var depends on)
+                    let deps = self.extract_var_references(&value, source);
+                    if !deps.is_empty() {
+                        var_dependencies.insert(var_name.clone(), deps.clone());
+
+                        // If any dependency is tainted, this var is tainted too
+                        for dep in &deps {
+                            if tainted_vars.contains(dep) {
+                                tainted_vars.insert(var_name.clone());
+                                break;
+                            }
+                        }
+                    }
                 }
-
-                // Track dependencies (which vars this var depends on)
-                let deps = self.extract_var_references(&value, source);
-                if !deps.is_empty() {
-                    var_dependencies.insert(var_name.clone(), deps.clone());
-
-                    // If any dependency is tainted, this var is tainted too
-                    for dep in &deps {
-                        if tainted_vars.contains(dep) {
-                            tainted_vars.insert(var_name.clone());
-                            break;
+            } else if n.kind() == "call_expression" {
+                // Check for call expressions that are tainted macros
+                if let Some(func) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&func, source);
+                    if TAINTED_MACROS.contains(&func_name) {
+                        // Check arguments for variables being tainted
+                        if let Some(args) = n.child_by_field_name("arguments") {
+                            self.mark_tainted_from_macro(&args, source, tainted_vars);
                         }
                     }
                 }
             }
         }
-
-        // Check for call expressions that are tainted macros
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if TAINTED_MACROS.contains(&func_name) {
-                    // Check arguments for variables being tainted
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        self.mark_tainted_from_macro(&args, source, tainted_vars);
-                    }
-                }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_tainted_and_deps(&child, source, tainted_vars, var_dependencies);
-            }
-        }
     }
 
     fn is_direct_tainted_source(&self, node: &Node, source: &str) -> bool {
-        // Check if this is a call to a tainted source
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if TAINTED_SOURCES.contains(&func_name) || TAINTED_MACROS.contains(&func_name) {
-                    return true;
-                }
-            }
-        }
-
-        // Check if it's a conditional with tainted source
-        if node.kind() == "conditional_expression" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if self.is_direct_tainted_source(&child, source) {
+        // The original conditional_expression special-case recursed into the
+        // same children as the generic fallback below it, so it never
+        // changed the result — this is a plain "does any descendant
+        // (including the node itself) call a tainted source" search.
+        query::find_first_descendant(*node, |n| {
+            if n.kind() == "call_expression" {
+                if let Some(func) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&func, source);
+                    if TAINTED_SOURCES.contains(&func_name) || TAINTED_MACROS.contains(&func_name) {
                         return true;
                     }
                 }
             }
-        }
-
-        // Check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.is_direct_tainted_source(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            false
+        })
+        .is_some()
     }
 
     fn extract_var_references(&self, node: &Node, source: &str) -> HashSet<String> {
-        let mut vars = HashSet::new();
-        self.collect_var_refs(node, source, &mut vars);
-        vars
-    }
-
-    fn collect_var_refs(&self, node: &Node, source: &str, vars: &mut HashSet<String>) {
-        if node.kind() == "identifier" {
-            let name = get_node_text(node, source).to_string();
-            // Filter out known non-variables (sizeof, types, etc.)
-            if name != "sizeof" && !name.starts_with("char") && !name.starts_with("size_t") {
-                vars.insert(name);
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_var_refs(&child, source, vars);
-            }
-        }
+        query::find_descendants_of_kind(*node, "identifier")
+            .into_iter()
+            .filter_map(|n| {
+                let name = get_node_text(&n, source).to_string();
+                // Filter out known non-variables (sizeof, types, etc.)
+                if name != "sizeof" && !name.starts_with("char") && !name.starts_with("size_t") {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn mark_tainted_from_macro(
@@ -252,8 +220,8 @@ impl Int04C {
         tainted_vars: &HashSet<String>,
     ) {
         // Look for if statements that validate bounds
-        if node.kind() == "if_statement" {
-            if let Some(condition) = node.child_by_field_name("condition") {
+        for n in query::find_descendants_of_kind(*node, "if_statement") {
+            if let Some(condition) = n.child_by_field_name("condition") {
                 let cond_text = get_node_text(&condition, source);
 
                 // Check each tainted variable to see if it appears in bounds check
@@ -270,7 +238,7 @@ impl Int04C {
 
                         if has_practical_bound {
                             // Check if this is followed by error handling
-                            if let Some(consequence) = node.child_by_field_name("consequence") {
+                            if let Some(consequence) = n.child_by_field_name("consequence") {
                                 let cons_text = get_node_text(&consequence, source);
                                 if cons_text.contains("return")
                                     || cons_text.contains("NULL")
@@ -283,13 +251,6 @@ impl Int04C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_validations(&child, source, validated_vars, tainted_vars);
             }
         }
     }
@@ -324,56 +285,54 @@ impl Int04C {
         tainted_vars: &HashSet<String>,
         validated_vars: &HashSet<String>,
     ) {
-        // Check for subscript with tainted unvalidated index
-        if node.kind() == "subscript_expression" {
-            if let Some(index) = node.child_by_field_name("index") {
-                let index_text = get_node_text(&index, source);
-                for var in tainted_vars.iter() {
-                    if index_text.contains(var) && !validated_vars.contains(var) {
-                        let pos = node.start_position();
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: Severity::High,
-                            message: format!(
-                                "Tainted integer '{}' used as array index without bounds validation",
-                                var
-                            ),
-                            file_path: String::new(),
-                            line: pos.row + 1,
-                            column: pos.column + 1,
-                            suggestion: Some(
-                                "Validate the tainted value against array bounds before use".to_string(),
-                            ),
-                            ..Default::default()
-                        });
+        for n in
+            query::find_descendants_of_kinds(*node, &["subscript_expression", "call_expression"])
+        {
+            // Check for subscript with tainted unvalidated index
+            if n.kind() == "subscript_expression" {
+                if let Some(index) = n.child_by_field_name("index") {
+                    let index_text = get_node_text(&index, source);
+                    for var in tainted_vars.iter() {
+                        if index_text.contains(var) && !validated_vars.contains(var) {
+                            let pos = n.start_position();
+                            violations.push(RuleViolation {
+                                rule_id: self.rule_id().to_string(),
+                                severity: Severity::High,
+                                message: format!(
+                                    "Tainted integer '{}' used as array index without bounds validation",
+                                    var
+                                ),
+                                file_path: String::new(),
+                                line: pos.row + 1,
+                                column: pos.column + 1,
+                                suggestion: Some(
+                                    "Validate the tainted value against array bounds before use".to_string(),
+                                ),
+                                ..Default::default()
+                            });
+                        }
                     }
                 }
-            }
-        }
-
-        // Check for memcpy/malloc with tainted size
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if func_name == "memcpy" || func_name == "malloc" || func_name == "OPENSSL_malloc" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        self.check_tainted_size_arg(
-                            &args,
-                            source,
-                            violations,
-                            tainted_vars,
-                            validated_vars,
-                            func_name,
-                        );
+            } else if n.kind() == "call_expression" {
+                // Check for memcpy/malloc with tainted size
+                if let Some(func) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&func, source);
+                    if func_name == "memcpy"
+                        || func_name == "malloc"
+                        || func_name == "OPENSSL_malloc"
+                    {
+                        if let Some(args) = n.child_by_field_name("arguments") {
+                            self.check_tainted_size_arg(
+                                &args,
+                                source,
+                                violations,
+                                tainted_vars,
+                                validated_vars,
+                                func_name,
+                            );
+                        }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_unsafe_uses(&child, source, violations, tainted_vars, validated_vars);
             }
         }
     }

@@ -42,6 +42,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Con38C;
@@ -77,20 +78,13 @@ impl CertRule for Con38C {
 impl Con38C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for call expressions that might be cnd_signal()
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source);
 
                 if self.is_signal_function(&func_name) {
-                    self.report_violation(node, source, violations);
+                    self.report_violation(&call, source, violations);
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }
@@ -157,19 +151,6 @@ impl Con38C {
     }
 
     fn contains_subscript(&self, node: &Node) -> bool {
-        // Check if node is a unary expression containing a subscript
-        if node.kind() == "subscript_expression" {
-            return true;
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "subscript_expression" || self.contains_subscript(&child) {
-                    return true;
-                }
-            }
-        }
-        false
+        query::find_first_descendant(*node, |n| n.kind() == "subscript_expression").is_some()
     }
 }

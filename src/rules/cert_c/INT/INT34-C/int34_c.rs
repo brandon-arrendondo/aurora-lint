@@ -5,6 +5,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -81,16 +82,11 @@ impl CertRule for Int34C {
 
 impl Int34C {
     fn check_recursive(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "binary_expression" {
-            if let Some(operator) = ast_utils::get_binary_operator(node, source) {
+        for binary_node in query::find_descendants_of_kind(*node, "binary_expression") {
+            if let Some(operator) = ast_utils::get_binary_operator(&binary_node, source) {
                 if operator == "<<" || operator == ">>" {
-                    self.check_shift_operation(node, source, operator, violations);
+                    self.check_shift_operation(&binary_node, source, operator, violations);
                 }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_recursive(&child, source, violations);
             }
         }
     }
@@ -471,15 +467,10 @@ impl Int34C {
     }
 
     fn collect_identifiers_from(node: &Node, source: &str, names: &mut Vec<String>) {
-        if node.kind() == "identifier" {
-            let name = ast_utils::get_node_text(node, source).to_string();
+        for id_node in query::find_descendants_of_kind(*node, "identifier") {
+            let name = ast_utils::get_node_text(&id_node, source).to_string();
             if !names.contains(&name) {
                 names.push(name);
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::collect_identifiers_from(&child, source, names);
             }
         }
     }
@@ -725,22 +716,18 @@ impl Int34C {
             return true;
         }
 
-        // Check for return/exit statements
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "return_statement"
-                    || child.kind() == "break_statement"
-                    || child.kind() == "continue_statement"
-                {
-                    return true;
-                }
-                if Self::has_return_or_error_handling(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        // Check for return/exit statements in any child subtree
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.children(&mut cursor).collect();
+        children.iter().any(|child| {
+            query::find_first_descendant(*child, |n| {
+                matches!(
+                    n.kind(),
+                    "return_statement" | "break_statement" | "continue_statement"
+                )
+            })
+            .is_some()
+        })
     }
 
     /// Check if shift operation is in a safe branch
@@ -923,19 +910,7 @@ impl Int34C {
 
     /// Check if target is a descendant of node
     fn is_descendant(node: &Node, target: &Node) -> bool {
-        if node.id() == target.id() {
-            return true;
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if Self::is_descendant(&child, target) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| n.id() == target.id()).is_some()
     }
 
     /// Evaluate the shift amount's range using CFG-based VRA.

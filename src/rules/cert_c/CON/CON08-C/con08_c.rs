@@ -58,6 +58,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -107,19 +108,12 @@ impl Con08C {
     }
 
     fn find_atomic_functions(&self, node: &Node, source: &str, atomic_funcs: &mut HashSet<String>) {
-        if node.kind() == "function_definition" {
-            if let Some(func_name) = self.get_function_name(node, source) {
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(func_name) = self.get_function_name(&func_node, source) {
                 // Check if this function uses mutex locks
-                if self.uses_mutex_lock(node, source) {
+                if self.uses_mutex_lock(&func_node, source) {
                     atomic_funcs.insert(func_name);
                 }
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_atomic_functions(&child, source, atomic_funcs);
             }
         }
     }
@@ -132,20 +126,13 @@ impl Con08C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for function definitions
-        if node.kind() == "function_definition" {
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
             self.check_function_for_grouped_atomic_calls(
-                node,
+                &func_node,
                 source,
                 atomic_functions,
                 violations,
             );
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, atomic_functions, violations);
-            }
         }
     }
 
@@ -248,16 +235,10 @@ impl Con08C {
     }
 
     fn collect_all_function_calls(&self, node: &Node, source: &str, calls: &mut Vec<String>) {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = call_node.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source).to_string();
                 calls.push(func_name);
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_all_function_calls(&child, source, calls);
             }
         }
     }
@@ -317,26 +298,19 @@ impl Con08C {
     }
 
     fn uses_mutex_lock(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if matches!(
-                    func_name,
-                    "mtx_lock" | "mtx_unlock" | "pthread_mutex_lock" | "pthread_mutex_unlock"
-                ) {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.uses_mutex_lock(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            let Some(func) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&func, source);
+            matches!(
+                func_name,
+                "mtx_lock" | "mtx_unlock" | "pthread_mutex_lock" | "pthread_mutex_unlock"
+            )
+        })
+        .is_some()
     }
 }

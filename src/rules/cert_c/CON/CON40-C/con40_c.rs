@@ -14,6 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -51,15 +52,15 @@ impl Con40C {
         atomic_vars: &mut HashMap<String, bool>,
     ) {
         // Check if this is an atomic variable declaration
-        if node.kind() == "declaration" {
-            if let Some(type_node) = node.child_by_field_name("type") {
+        for decl in query::find_descendants_of_kind(*node, "declaration") {
+            if let Some(type_node) = decl.child_by_field_name("type") {
                 let type_text = get_node_text(&type_node, source);
 
                 // Check for atomic types
                 if type_text.contains("atomic_") || type_text.contains("_Atomic") {
                     // Find the declarator(s)
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
+                    for i in 0..decl.child_count() {
+                        if let Some(child) = decl.child(i) {
                             if child.kind() == "init_declarator" || child.kind() == "identifier" {
                                 if let Some(id) = self.get_identifier(&child, source) {
                                     atomic_vars.insert(id.to_string(), true);
@@ -68,13 +69,6 @@ impl Con40C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_atomic_vars(&child, source, atomic_vars);
             }
         }
     }
@@ -115,32 +109,30 @@ impl Con40C {
         atomic_vars: &HashMap<String, bool>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check if this is an expression node
-        let is_expression = matches!(
-            node.kind(),
-            "binary_expression"
-                | "assignment_expression"
-                | "call_expression"
-                | "conditional_expression"
-                | "unary_expression"
-                | "parenthesized_expression"
-        );
+        let expr_kinds = [
+            "binary_expression",
+            "assignment_expression",
+            "call_expression",
+            "conditional_expression",
+            "unary_expression",
+            "parenthesized_expression",
+        ];
 
-        if is_expression {
+        for expr in query::find_descendants_of_kinds(*node, &expr_kinds) {
             // Count references to each atomic variable in this expression
             let mut var_counts: HashMap<String, Vec<Node>> = HashMap::new();
-            self.count_var_references(node, source, atomic_vars, &mut var_counts);
+            self.count_var_references(&expr, source, atomic_vars, &mut var_counts);
 
             // Check for variables referenced multiple times
             for (var_name, refs) in &var_counts {
                 if refs.len() >= 2 {
                     // Check if this is a compound assignment (which is safe)
-                    if !self.is_safe_compound_assignment(node, source, var_name) {
+                    if !self.is_safe_compound_assignment(&expr, source, var_name) {
                         // Report violation on the expression node
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
+                            line: expr.start_position().row + 1,
+                            column: expr.start_position().column + 1,
                             message: format!(
                                 "Atomic variable '{}' referenced {} times in single expression - creates race condition",
                                 var_name, refs.len()
@@ -152,13 +144,6 @@ impl Con40C {
                         });
                     }
                 }
-            }
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_expressions(&child, source, atomic_vars, violations);
             }
         }
     }
@@ -197,32 +182,28 @@ impl Con40C {
     }
 
     /// Check if this is a safe compound assignment operation
-    #[allow(clippy::only_used_in_recursion)]
     fn is_safe_compound_assignment(&self, node: &Node, source: &str, var_name: &str) -> bool {
         // Compound assignments like +=, -=, *=, /=, ^=, etc. are atomic operations
-        if node.kind() == "assignment_expression" {
-            if let Some(op) = node.child_by_field_name("operator") {
-                let op_text = get_node_text(&op, source);
-
-                // Check for compound assignment operators
-                if op_text != "=" {
-                    // This is a compound assignment - check if it's operating on our var
-                    if let Some(left) = node.child_by_field_name("left") {
-                        let left_text = get_node_text(&left, source);
-                        if left_text == var_name {
-                            return true;
-                        }
-                    }
-                }
+        let is_compound_assignment_on_var = |n: &Node| -> bool {
+            if n.kind() != "assignment_expression" {
+                return false;
             }
-        }
+            let Some(op) = n.child_by_field_name("operator") else {
+                return false;
+            };
+            // Check for compound assignment operators
+            if get_node_text(&op, source) == "=" {
+                return false;
+            }
+            // This is a compound assignment - check if it's operating on our var
+            n.child_by_field_name("left")
+                .map(|left| get_node_text(&left, source) == var_name)
+                .unwrap_or(false)
+        };
 
-        // Check parent nodes for compound assignment context
-        if let Some(parent) = node.parent() {
-            return self.is_safe_compound_assignment(&parent, source, var_name);
-        }
-
-        false
+        // Check this node, then walk up parent nodes for compound assignment context
+        is_compound_assignment_on_var(node)
+            || query::find_ancestor(*node, |n| is_compound_assignment_on_var(&n)).is_some()
     }
 
     /// Check for load-modify-store patterns using atomic_load/atomic_store
@@ -233,54 +214,38 @@ impl Con40C {
         atomic_vars: &HashMap<String, bool>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Only check function definitions
-        if node.kind() != "function_definition" {
-            // Recurse into children
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    self.check_load_modify_store(&child, source, atomic_vars, violations);
+        // Check every function definition (including nested ones)
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            // Get the function body
+            let Some(body) = func.child_by_field_name("body") else {
+                continue;
+            };
+
+            // Look for atomic_load calls followed by atomic_store on the same variable
+            let mut loads: HashMap<String, Node> = HashMap::new();
+            let mut stores: HashMap<String, Node> = HashMap::new();
+
+            self.collect_atomic_operations(&body, source, atomic_vars, &mut loads, &mut stores);
+
+            // Check if any variable has both load and store in the same function
+            for (var_name, load_node) in &loads {
+                if stores.contains_key(var_name) {
+                    // This is a potential load-modify-store pattern
+                    // Report violation at the load site
+                    violations.push(RuleViolation {
+                        rule_id: self.rule_id().to_string(),
+                        line: load_node.start_position().row + 1,
+                        column: load_node.start_position().column + 1,
+                        message: format!(
+                            "Non-atomic load-modify-store pattern detected on atomic variable '{}' - use atomic operations or mutex protection",
+                            var_name
+                        ),
+                        severity: self.severity(),
+                        file_path: String::new(),
+                        suggestion: Some("Consider using atomic_fetch_* operations or wrap with mutex locks".to_string()),
+                        requires_manual_review: None,
+                    });
                 }
-            }
-            return;
-        }
-
-        // Get the function body
-        let body = match node.child_by_field_name("body") {
-            Some(b) => b,
-            None => return,
-        };
-
-        // Look for atomic_load calls followed by atomic_store on the same variable
-        let mut loads: HashMap<String, Node> = HashMap::new();
-        let mut stores: HashMap<String, Node> = HashMap::new();
-
-        self.collect_atomic_operations(&body, source, atomic_vars, &mut loads, &mut stores);
-
-        // Check if any variable has both load and store in the same function
-        for (var_name, load_node) in &loads {
-            if stores.contains_key(var_name) {
-                // This is a potential load-modify-store pattern
-                // Report violation at the load site
-                violations.push(RuleViolation {
-                    rule_id: self.rule_id().to_string(),
-                    line: load_node.start_position().row + 1,
-                    column: load_node.start_position().column + 1,
-                    message: format!(
-                        "Non-atomic load-modify-store pattern detected on atomic variable '{}' - use atomic operations or mutex protection",
-                        var_name
-                    ),
-                    severity: self.severity(),
-                    file_path: String::new(),
-                    suggestion: Some("Consider using atomic_fetch_* operations or wrap with mutex locks".to_string()),
-                    requires_manual_review: None,
-                });
-            }
-        }
-
-        // Continue recursing for nested functions
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_load_modify_store(&child, source, atomic_vars, violations);
             }
         }
     }
@@ -295,39 +260,32 @@ impl Con40C {
         stores: &mut HashMap<String, Node<'a>>,
     ) {
         // Look for call expressions
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source);
 
                 // Check for atomic_load
                 if func_name == "atomic_load" {
                     // Get the argument - should be &flag or similar
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call.child_by_field_name("arguments") {
                         if let Some(var_name) =
                             self.extract_atomic_var_from_args(&args, source, atomic_vars)
                         {
-                            loads.insert(var_name.to_string(), *node);
+                            loads.insert(var_name.to_string(), call);
                         }
                     }
                 }
 
                 // Check for atomic_store
                 if func_name == "atomic_store" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call.child_by_field_name("arguments") {
                         if let Some(var_name) =
                             self.extract_atomic_var_from_args(&args, source, atomic_vars)
                         {
-                            stores.insert(var_name.to_string(), *node);
+                            stores.insert(var_name.to_string(), call);
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_atomic_operations(&child, source, atomic_vars, loads, stores);
             }
         }
     }

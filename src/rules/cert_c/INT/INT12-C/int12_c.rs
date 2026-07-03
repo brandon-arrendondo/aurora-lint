@@ -22,6 +22,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Int12C;
@@ -58,18 +59,10 @@ impl CertRule for Int12C {
 }
 
 impl Int12C {
-    /// Recursively traverse the AST looking for bit-field declarations
+    /// Traverse the AST looking for bit-field declarations
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check if this is a field declaration
-        if node.kind() == "field_declaration" {
-            self.check_field_declaration(node, source, violations);
-        }
-
-        // Recurse through all children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.traverse(&child, source, violations);
-            }
+        for field in query::find_descendants_of_kind(*node, "field_declaration") {
+            self.check_field_declaration(&field, source, violations);
         }
     }
 

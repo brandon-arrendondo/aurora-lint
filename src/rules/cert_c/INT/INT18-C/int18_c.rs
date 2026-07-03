@@ -30,6 +30,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Int18C;
@@ -64,22 +65,26 @@ impl CertRule for Int18C {
 
 impl Int18C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check binary expressions in comparisons
-        if node.kind() == "binary_expression" {
-            self.check_binary_in_comparison(node, source, violations);
-            // Also check for size_t compared to negative literal
-            self.check_unsigned_vs_negative(node, source, violations);
-        }
+        let matches = query::find_descendants_of_kinds(
+            *node,
+            &[
+                "binary_expression",
+                "assignment_expression",
+                "init_declarator",
+            ],
+        );
 
-        // Check binary expressions in assignments
-        if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
-            self.check_binary_in_assignment(node, source, violations);
-        }
+        for n in matches.iter() {
+            // Check binary expressions in comparisons
+            if n.kind() == "binary_expression" {
+                self.check_binary_in_comparison(n, source, violations);
+                // Also check for size_t compared to negative literal
+                self.check_unsigned_vs_negative(n, source, violations);
+            }
 
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+            // Check binary expressions in assignments
+            if n.kind() == "assignment_expression" || n.kind() == "init_declarator" {
+                self.check_binary_in_assignment(n, source, violations);
             }
         }
     }

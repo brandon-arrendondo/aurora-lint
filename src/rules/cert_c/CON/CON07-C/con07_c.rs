@@ -68,6 +68,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Con07C;
@@ -115,16 +116,16 @@ impl Con07C {
     }
 
     fn find_static_variables(&self, node: &Node, source: &str, static_vars: &mut Vec<String>) {
-        if node.kind() == "declaration" {
+        for decl_node in query::find_descendants_of_kind(*node, "declaration") {
             let mut is_static = false;
-            let mut is_file_scope = node
+            let mut is_file_scope = decl_node
                 .parent()
                 .is_some_and(|p| p.kind() == "translation_unit");
             let mut is_mutex_or_thread_type = false;
             let mut var_names = Vec::new();
 
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
+            for i in 0..decl_node.child_count() {
+                if let Some(child) = decl_node.child(i) {
                     match child.kind() {
                         "storage_class_specifier" => {
                             if get_node_text(&child, source) == "static" {
@@ -167,13 +168,6 @@ impl Con07C {
                 static_vars.extend(var_names);
             }
         }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_static_variables(&child, source, static_vars);
-            }
-        }
     }
 
     fn get_identifier_name(&self, node: &Node, source: &str) -> Option<String> {
@@ -200,15 +194,13 @@ impl Con07C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for function definitions that might access static variables
-        if node.kind() == "function_definition" {
-            self.check_function_for_non_atomic_operations(node, source, static_vars, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, static_vars, violations);
-            }
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function_for_non_atomic_operations(
+                &func_node,
+                source,
+                static_vars,
+                violations,
+            );
         }
     }
 
@@ -308,61 +300,49 @@ impl Con07C {
     }
 
     fn uses_mutex_lock(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if matches!(
-                    func_name,
-                    "mtx_lock"
-                        | "mtx_unlock"
-                        | "pthread_mutex_lock"
-                        | "pthread_mutex_unlock"
-                        | "stdThreadLockAcquire"
-                        | "stdThreadLockRelease"
-                ) {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.uses_mutex_lock(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            let Some(func) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&func, source);
+            matches!(
+                func_name,
+                "mtx_lock"
+                    | "mtx_unlock"
+                    | "pthread_mutex_lock"
+                    | "pthread_mutex_unlock"
+                    | "stdThreadLockAcquire"
+                    | "stdThreadLockRelease"
+            )
+        })
+        .is_some()
     }
 
     fn uses_atomic_operations(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if func_name.starts_with("atomic_") {
+        query::find_first_descendant(*node, |n| {
+            if n.kind() == "call_expression" {
+                if let Some(func) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&func, source);
+                    if func_name.starts_with("atomic_") {
+                        return true;
+                    }
+                }
+            }
+
+            // Check for _Atomic type qualifier
+            if n.kind() == "type_qualifier" {
+                let text = get_node_text(&n, source);
+                if text == "_Atomic" {
                     return true;
                 }
             }
-        }
 
-        // Check for _Atomic type qualifier
-        if node.kind() == "type_qualifier" {
-            let text = get_node_text(node, source);
-            if text == "_Atomic" {
-                return true;
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.uses_atomic_operations(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            false
+        })
+        .is_some()
     }
 
     fn find_static_var_accesses(
@@ -385,65 +365,62 @@ impl Con07C {
         static_vars: &[String],
         accesses: &mut Vec<String>,
     ) {
-        if node.kind() == "identifier" {
-            let name = get_node_text(node, source);
+        for id_node in query::find_descendants_of_kind(*node, "identifier") {
+            let name = get_node_text(&id_node, source);
             if static_vars.contains(&name.to_string()) {
                 accesses.push(name.to_string());
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_static_var_accesses(&child, source, static_vars, accesses);
             }
         }
     }
 
     fn has_compound_operation_on_var(&self, node: &Node, source: &str, var_name: &str) -> bool {
-        if node.kind() == "assignment_expression" {
-            let left = node.child_by_field_name("left");
-            let right = node.child_by_field_name("right");
-            if let Some(left_node) = left {
-                let left_text = get_node_text(&left_node, source);
-                if left_text == var_name {
-                    // Compound assignment: x += 1, x -= 1, etc.
-                    if let Some(operator) = node.child_by_field_name("operator") {
-                        let op_text = get_node_text(&operator, source);
-                        if matches!(
-                            op_text,
-                            "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "^=" | "|="
-                        ) {
-                            return true;
+        query::find_first_descendant(*node, |n| {
+            if n.kind() == "assignment_expression" {
+                let left = n.child_by_field_name("left");
+                let right = n.child_by_field_name("right");
+                if let Some(left_node) = left {
+                    let left_text = get_node_text(&left_node, source);
+                    if left_text == var_name {
+                        // Compound assignment: x += 1, x -= 1, etc.
+                        if let Some(operator) = n.child_by_field_name("operator") {
+                            let op_text = get_node_text(&operator, source);
+                            if matches!(
+                                op_text,
+                                "+=" | "-="
+                                    | "*="
+                                    | "/="
+                                    | "%="
+                                    | "<<="
+                                    | ">>="
+                                    | "&="
+                                    | "^="
+                                    | "|="
+                            ) {
+                                return true;
+                            }
+                        }
+                        // Read-modify-write: x = x OP expr (var appears in RHS)
+                        if let Some(right_node) = right {
+                            let right_text = get_node_text(&right_node, source);
+                            if right_text.contains(var_name) {
+                                return true;
+                            }
                         }
                     }
-                    // Read-modify-write: x = x OP expr (var appears in RHS)
-                    if let Some(right_node) = right {
-                        let right_text = get_node_text(&right_node, source);
-                        if right_text.contains(var_name) {
-                            return true;
-                        }
+                }
+            }
+
+            // Increment/decrement: x++, ++x, x--, --x
+            if matches!(n.kind(), "update_expression") {
+                if let Some(argument) = n.child_by_field_name("argument") {
+                    if get_node_text(&argument, source) == var_name {
+                        return true;
                     }
                 }
             }
-        }
 
-        // Increment/decrement: x++, ++x, x--, --x
-        if matches!(node.kind(), "update_expression") {
-            if let Some(argument) = node.child_by_field_name("argument") {
-                if get_node_text(&argument, source) == var_name {
-                    return true;
-                }
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.has_compound_operation_on_var(&child, source, var_name) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            false
+        })
+        .is_some()
     }
 }

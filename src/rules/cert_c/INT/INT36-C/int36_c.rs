@@ -43,6 +43,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Int36C;
@@ -286,21 +287,18 @@ impl CertRule for Int36C {
 
 impl Int36C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "cast_expression" => {
-                self.check_pointer_to_integer_cast(node, source, violations);
-                self.check_integer_to_pointer_cast(node, source, violations);
-            }
-            "init_declarator" => {
-                self.check_pointer_initialization(node, source, violations);
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+        let targets =
+            query::find_descendants_of_kinds(*node, &["cast_expression", "init_declarator"]);
+        for target in targets {
+            match target.kind() {
+                "cast_expression" => {
+                    self.check_pointer_to_integer_cast(&target, source, violations);
+                    self.check_integer_to_pointer_cast(&target, source, violations);
+                }
+                "init_declarator" => {
+                    self.check_pointer_initialization(&target, source, violations);
+                }
+                _ => {}
             }
         }
     }

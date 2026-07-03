@@ -13,6 +13,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 #[derive(Default)]
@@ -47,11 +48,10 @@ impl CertRule for Con33C {
 }
 
 impl Con33C {
-    /// Recursively check the AST for non-thread-safe library function calls
+    /// Check the AST for non-thread-safe library function calls
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check if this is a call to a non-thread-safe function
-        if node.kind() == "call_expression" {
-            if let Some(function_node) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function_node) = call.child_by_field_name("function") {
                 let raw_name = get_node_text(&function_node, source);
                 let function_name = raw_name.trim().to_lowercase();
                 let function_name = function_name.as_str();
@@ -61,8 +61,8 @@ impl Con33C {
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         file_path: String::new(), // Filled by caller
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
+                        line: call.start_position().row + 1,
+                        column: call.start_position().column + 1,
                         severity: self.severity(),
                         message: format!(
                             "Call to non-thread-safe function '{}'. {}",
@@ -73,13 +73,6 @@ impl Con33C {
                         ..Default::default()
                     });
                 }
-            }
-        }
-
-        // Recursively check all child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }

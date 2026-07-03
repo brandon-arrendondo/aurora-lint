@@ -9,6 +9,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::std_functions;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -125,43 +126,77 @@ impl Int32C {
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
     ) {
-        // Skip nodes inside compile-time contexts (cannot overflow at runtime)
-        if self.is_in_compile_time_context(node) {
-            return;
-        }
+        let candidates = query::find_descendants_of_kinds(
+            *node,
+            &[
+                "binary_expression",
+                "assignment_expression",
+                "unary_expression",
+                "update_expression",
+                "call_expression",
+            ],
+        );
 
-        match node.kind() {
-            "binary_expression" => {
-                self.check_binary_operation(node, source, violations, type_map);
-            }
-            "assignment_expression" => {
-                self.check_assignment_operation(node, source, violations, type_map);
-            }
-            "unary_expression" => {
-                self.check_unary_operation(node, source, violations, type_map);
-            }
-            "update_expression" => {
-                self.check_increment_decrement(node, source, violations, type_map);
-            }
-            "call_expression" => {
-                self.check_function_call(node, source, violations);
-            }
-            _ => {}
-        }
+        // Scope type_map per function to avoid cross-function name collisions
+        // (e.g., float X_pred in one function vs int32_t X_pred in another).
+        // Memoized per enclosing function_definition node id so it's only
+        // computed once even though many candidates share the same function.
+        let mut fn_type_maps: HashMap<usize, HashMap<String, String>> = HashMap::new();
 
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                // Scope type_map per function to avoid cross-function name collisions
-                // (e.g., float X_pred in one function vs int32_t X_pred in another)
-                if child.kind() == "function_definition" {
-                    let fn_type_map = self.collect_variable_types(&child, source);
-                    self.check_node(&child, source, violations, &fn_type_map);
-                } else {
-                    self.check_node(&child, source, violations, type_map);
+        for candidate in candidates {
+            // Skip nodes inside compile-time contexts (cannot overflow at runtime)
+            if self.is_in_compile_time_context(&candidate) {
+                continue;
+            }
+
+            let scoped_type_map: &HashMap<String, String> =
+                match Self::enclosing_function_definition(&candidate) {
+                    Some(func_node) => fn_type_maps
+                        .entry(func_node.id())
+                        .or_insert_with(|| self.collect_variable_types(&func_node, source)),
+                    None => type_map,
+                };
+
+            match candidate.kind() {
+                "binary_expression" => {
+                    self.check_binary_operation(&candidate, source, violations, scoped_type_map);
                 }
+                "assignment_expression" => {
+                    self.check_assignment_operation(
+                        &candidate,
+                        source,
+                        violations,
+                        scoped_type_map,
+                    );
+                }
+                "unary_expression" => {
+                    self.check_unary_operation(&candidate, source, violations, scoped_type_map);
+                }
+                "update_expression" => {
+                    self.check_increment_decrement(&candidate, source, violations, scoped_type_map);
+                }
+                "call_expression" => {
+                    self.check_function_call(&candidate, source, violations);
+                }
+                _ => {}
             }
         }
+    }
+
+    /// Walk up from `node` to the nearest enclosing `function_definition`, if
+    /// any. Used to pick the correctly-scoped type map for a candidate node
+    /// found by a flat, whole-subtree descendant search (mirrors the scoping
+    /// the original recursive walk achieved by re-deriving `type_map` each
+    /// time it stepped into a `function_definition` child).
+    fn enclosing_function_definition<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+        let mut current = node.parent();
+        while let Some(parent) = current {
+            if parent.kind() == "function_definition" {
+                return Some(parent);
+            }
+            current = parent.parent();
+        }
+        None
     }
 
     /// Check if this node is inside a compile-time context where overflow cannot occur at runtime.
@@ -1469,22 +1504,16 @@ impl Int32C {
     fn collect_variable_types(&self, node: &Node, source: &str) -> HashMap<String, String> {
         let mut type_map = HashMap::new();
 
-        if node.kind() == "function_definition" {
+        // Root included, so a `node` that is itself a function_definition is
+        // covered alongside any nested function_definitions.
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
             // Collect from function parameters
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+            if let Some(declarator) = func.child_by_field_name("declarator") {
                 self.collect_params_from_declarator(&declarator, source, &mut type_map);
             }
             // Collect from local declarations in the function body
-            if let Some(body) = node.child_by_field_name("body") {
+            if let Some(body) = func.child_by_field_name("body") {
                 self.collect_local_declarations(&body, source, &mut type_map);
-            }
-        }
-
-        // Recurse into children to find nested function_definitions
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let child_map = self.collect_variable_types(&child, source);
-                type_map.extend(child_map);
             }
         }
 
@@ -1497,8 +1526,10 @@ impl Int32C {
         source: &str,
         type_map: &mut HashMap<String, String>,
     ) {
-        if node.kind() == "function_declarator" {
-            if let Some(params) = node.child_by_field_name("parameters") {
+        // Root included, so a `node` that is itself a function_declarator is
+        // covered alongside any nested ones (e.g. pointer declarators).
+        for declarator in query::find_descendants_of_kind(*node, "function_declarator") {
+            if let Some(params) = declarator.child_by_field_name("parameters") {
                 for i in 0..params.child_count() {
                     if let Some(param) = params.child(i) {
                         if param.kind() == "parameter_declaration" {
@@ -1506,12 +1537,6 @@ impl Int32C {
                         }
                     }
                 }
-            }
-        }
-        // Recurse to find nested function_declarator (e.g. pointer declarators)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_params_from_declarator(&child, source, type_map);
             }
         }
     }
@@ -1522,13 +1547,8 @@ impl Int32C {
         source: &str,
         type_map: &mut HashMap<String, String>,
     ) {
-        if node.kind() == "declaration" {
-            self.extract_type_and_name(node, source, type_map);
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_local_declarations(&child, source, type_map);
-            }
+        for decl in query::find_descendants_of_kind(*node, "declaration") {
+            self.extract_type_and_name(&decl, source, type_map);
         }
     }
 
@@ -1894,15 +1914,10 @@ impl Int32C {
     }
 
     fn collect_identifiers(node: &Node, source: &str, names: &mut Vec<String>) {
-        if node.kind() == "identifier" {
-            let name = get_node_text(node, source).to_string();
+        for identifier in query::find_descendants_of_kind(*node, "identifier") {
+            let name = get_node_text(&identifier, source).to_string();
             if !names.contains(&name) {
                 names.push(name);
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::collect_identifiers(&child, source, names);
             }
         }
     }

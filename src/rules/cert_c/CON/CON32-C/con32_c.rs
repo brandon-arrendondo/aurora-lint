@@ -68,6 +68,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -125,24 +126,17 @@ impl Con32C {
         source: &str,
         bitfield_structs: &mut HashMap<String, HashSet<String>>,
     ) {
-        if node.kind() == "struct_specifier" {
-            if let Some(name_node) = node.child_by_field_name("name") {
+        for struct_node in query::find_descendants_of_kind(*node, "struct_specifier") {
+            if let Some(name_node) = struct_node.child_by_field_name("name") {
                 let struct_name = get_node_text(&name_node, source).to_string();
 
                 // Check if this struct has bit-fields
-                if let Some(body) = node.child_by_field_name("body") {
+                if let Some(body) = struct_node.child_by_field_name("body") {
                     let bitfield_members = self.find_bitfield_members(&body, source);
                     if !bitfield_members.is_empty() {
                         bitfield_structs.insert(struct_name, bitfield_members);
                     }
                 }
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_bitfield_structs(&child, source, bitfield_structs);
             }
         }
     }
@@ -226,15 +220,13 @@ impl Con32C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for function definitions that might be thread functions
-        if node.kind() == "function_definition" {
-            self.check_function_for_bitfield_access(node, source, bitfield_structs, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, bitfield_structs, violations);
-            }
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function_for_bitfield_access(
+                &func_node,
+                source,
+                bitfield_structs,
+                violations,
+            );
         }
     }
 
@@ -336,27 +328,20 @@ impl Con32C {
     }
 
     fn uses_mutex_lock(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if matches!(
-                    func_name,
-                    "mtx_lock" | "mtx_unlock" | "pthread_mutex_lock" | "pthread_mutex_unlock"
-                ) {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.uses_mutex_lock(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            let Some(func) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&func, source);
+            matches!(
+                func_name,
+                "mtx_lock" | "mtx_unlock" | "pthread_mutex_lock" | "pthread_mutex_unlock"
+            )
+        })
+        .is_some()
     }
 
     fn find_bitfield_accesses(
@@ -378,19 +363,19 @@ impl Con32C {
         accesses: &mut Vec<(String, String, usize)>,
     ) {
         // Look for field_expression (e.g., flags.flag1)
-        if node.kind() == "field_expression" {
-            if let Some(field_node) = node.child_by_field_name("field") {
+        for field_expr in query::find_descendants_of_kind(*node, "field_expression") {
+            if let Some(field_node) = field_expr.child_by_field_name("field") {
                 let field_name = get_node_text(&field_node, source).to_string();
 
                 // Try to determine the struct type
-                if let Some(object) = node.child_by_field_name("argument") {
+                if let Some(object) = field_expr.child_by_field_name("argument") {
                     let object_text = get_node_text(&object, source);
 
                     // Check if this field belongs to a bit-field struct
                     for (struct_name, members) in bitfield_structs {
                         if members.contains(&field_name) {
                             // Found a bit-field access
-                            let line = node.start_position().row + 1;
+                            let line = field_expr.start_position().row + 1;
                             accesses.push((struct_name.clone(), field_name.clone(), line));
                             break;
                         }
@@ -401,19 +386,13 @@ impl Con32C {
                         // This is a nested field access
                         for (struct_name, members) in bitfield_structs {
                             if members.contains(&field_name) {
-                                let line = node.start_position().row + 1;
+                                let line = field_expr.start_position().row + 1;
                                 accesses.push((struct_name.clone(), field_name.clone(), line));
                                 break;
                             }
                         }
                     }
                 }
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_bitfield_accesses(&child, source, bitfield_structs, accesses);
             }
         }
     }

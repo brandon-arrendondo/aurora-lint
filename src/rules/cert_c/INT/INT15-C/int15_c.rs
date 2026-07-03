@@ -14,6 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -78,43 +79,36 @@ impl Int15C {
         typedef_names: &mut HashSet<String>,
         var_types: &mut HashMap<String, String>,
     ) {
-        // Collect typedef names
-        if node.kind() == "type_definition" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "type_identifier" {
-                        let name = get_node_text(&child, source).to_string();
-                        typedef_names.insert(name);
+        for n in query::find_descendants_of_kinds(*node, &["type_definition", "declaration"]) {
+            if n.kind() == "type_definition" {
+                // Collect typedef names
+                for i in 0..n.child_count() {
+                    if let Some(child) = n.child(i) {
+                        if child.kind() == "type_identifier" {
+                            let name = get_node_text(&child, source).to_string();
+                            typedef_names.insert(name);
+                        }
                     }
                 }
-            }
-        }
-
-        // Collect variable declarations with typedef types
-        if node.kind() == "declaration" {
-            if let Some(type_node) = node.child_by_field_name("type") {
-                let type_text = get_node_text(&type_node, source).to_string();
-                // Look for declarators
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "identifier" {
-                            let var_name = get_node_text(&child, source).to_string();
-                            var_types.insert(var_name, type_text.clone());
-                        } else if child.kind() == "init_declarator" {
-                            if let Some(decl) = child.child_by_field_name("declarator") {
-                                let var_name = get_node_text(&decl, source).to_string();
+            } else {
+                // Collect variable declarations with typedef types
+                if let Some(type_node) = n.child_by_field_name("type") {
+                    let type_text = get_node_text(&type_node, source).to_string();
+                    // Look for declarators
+                    for i in 0..n.child_count() {
+                        if let Some(child) = n.child(i) {
+                            if child.kind() == "identifier" {
+                                let var_name = get_node_text(&child, source).to_string();
                                 var_types.insert(var_name, type_text.clone());
+                            } else if child.kind() == "init_declarator" {
+                                if let Some(decl) = child.child_by_field_name("declarator") {
+                                    let var_name = get_node_text(&decl, source).to_string();
+                                    var_types.insert(var_name, type_text.clone());
+                                }
                             }
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_info(&child, source, typedef_names, var_types);
             }
         }
     }
@@ -127,21 +121,14 @@ impl Int15C {
         typedef_names: &HashSet<String>,
         var_types: &HashMap<String, String>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
                 if PRINTF_FUNCTIONS.contains(&func_name) {
-                    self.check_printf_call(node, source, violations, typedef_names);
+                    self.check_printf_call(&n, source, violations, typedef_names);
                 } else if SCANF_FUNCTIONS.contains(&func_name) {
-                    self.check_scanf_call(node, source, violations, typedef_names, var_types);
+                    self.check_scanf_call(&n, source, violations, typedef_names, var_types);
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_violations(&child, source, violations, typedef_names, var_types);
             }
         }
     }

@@ -28,6 +28,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -118,17 +119,17 @@ impl Con04C {
         joined_or_detached: &mut HashSet<String>,
         detach_current_found: &mut bool,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call_node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 // Check for thread creation
                 if self.is_thread_create_function(func_name) {
-                    if let Some(thread_var) = self.extract_thread_variable(node, source) {
+                    if let Some(thread_var) = self.extract_thread_variable(&call_node, source) {
                         let creation = ThreadCreation {
                             variable_name: thread_var.clone(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
+                            line: call_node.start_position().row + 1,
+                            column: call_node.start_position().column + 1,
                         };
                         creations.entry(thread_var).or_default().push(creation);
                     }
@@ -136,14 +137,14 @@ impl Con04C {
 
                 // Check for thread join
                 if self.is_thread_join_function(func_name) {
-                    if let Some(thread_var) = self.extract_thread_argument(node, source) {
+                    if let Some(thread_var) = self.extract_thread_argument(&call_node, source) {
                         joined_or_detached.insert(thread_var);
                     }
                 }
 
                 // Check for thread detach
                 if self.is_thread_detach_function(func_name) {
-                    if let Some(arg) = self.extract_thread_argument(node, source) {
+                    if let Some(arg) = self.extract_thread_argument(&call_node, source) {
                         if arg == "thrd_current()" || arg.contains("thrd_current") {
                             // Thread detaches itself - this is valid pattern
                             *detach_current_found = true;
@@ -155,26 +156,13 @@ impl Con04C {
 
                 // Check for pthread_detach(pthread_self())
                 if func_name == "pthread_detach" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call_node.child_by_field_name("arguments") {
                         let args_text = get_node_text(&args, source);
                         if args_text.contains("pthread_self") {
                             *detach_current_found = true;
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_thread_operations(
-                    &child,
-                    source,
-                    creations,
-                    joined_or_detached,
-                    detach_current_found,
-                );
             }
         }
     }

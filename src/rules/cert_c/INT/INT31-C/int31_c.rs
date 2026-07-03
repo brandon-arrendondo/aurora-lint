@@ -17,6 +17,7 @@ use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, is_function_parameter};
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -213,58 +214,31 @@ fn body_has_tainted_call_assignment_to(
     summaries: &HashMap<String, FunctionSummary>,
     source: &str,
 ) -> bool {
-    let mut found = false;
-    walk_for_tainted_assignment(body, var_name, summaries, source, &mut found);
-    found
-}
-
-fn walk_for_tainted_assignment(
-    node: &Node,
-    var_name: &str,
-    summaries: &HashMap<String, FunctionSummary>,
-    source: &str,
-    found: &mut bool,
-) {
-    if *found {
-        return;
-    }
-    match node.kind() {
+    query::find_first_descendant(*body, |node| match node.kind() {
         "assignment_expression" => {
             if let Some(lhs) = node.child_by_field_name("left") {
                 let lhs_text = get_node_text(&lhs, source).trim();
                 if lhs_text == var_name {
                     if let Some(rhs) = node.child_by_field_name("right") {
-                        if call_rhs_has_taint_source(&rhs, summaries, source) {
-                            *found = true;
-                            return;
-                        }
+                        return call_rhs_has_taint_source(&rhs, summaries, source);
                     }
                 }
             }
+            false
         }
         "init_declarator" => {
             if let Some(decl) = node.child_by_field_name("declarator") {
                 if declarator_name_matches(&decl, var_name, source) {
                     if let Some(value) = node.child_by_field_name("value") {
-                        if call_rhs_has_taint_source(&value, summaries, source) {
-                            *found = true;
-                            return;
-                        }
+                        return call_rhs_has_taint_source(&value, summaries, source);
                     }
                 }
             }
+            false
         }
-        _ => {}
-    }
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            walk_for_tainted_assignment(&child, var_name, summaries, source, found);
-            if *found {
-                return;
-            }
-        }
-    }
+        _ => false,
+    })
+    .is_some()
 }
 
 /// Returns true when the identifier embedded in a declarator (handling
@@ -304,50 +278,30 @@ fn declarator_name_matches(decl: &Node, var_name: &str, source: &str) -> bool {
 /// call-expression result into `var_name`. Returns true if at least one
 /// such `var = fn(...)` exists, regardless of the callee's taint status.
 fn body_has_any_call_assignment_to(body: &Node, var_name: &str, source: &str) -> bool {
-    let mut found = false;
-    walk_for_any_call_assignment(body, var_name, source, &mut found);
-    found
-}
-
-fn walk_for_any_call_assignment(node: &Node, var_name: &str, source: &str, found: &mut bool) {
-    if *found {
-        return;
-    }
-    match node.kind() {
+    query::find_first_descendant(*body, |node| match node.kind() {
         "assignment_expression" => {
             if let Some(lhs) = node.child_by_field_name("left") {
                 if get_node_text(&lhs, source).trim() == var_name {
                     if let Some(rhs) = node.child_by_field_name("right") {
-                        if unwrap_to_call(rhs).kind() == "call_expression" {
-                            *found = true;
-                            return;
-                        }
+                        return unwrap_to_call(rhs).kind() == "call_expression";
                     }
                 }
             }
+            false
         }
         "init_declarator" => {
             if let Some(decl) = node.child_by_field_name("declarator") {
                 if declarator_name_matches(&decl, var_name, source) {
                     if let Some(value) = node.child_by_field_name("value") {
-                        if unwrap_to_call(value).kind() == "call_expression" {
-                            *found = true;
-                            return;
-                        }
+                        return unwrap_to_call(value).kind() == "call_expression";
                     }
                 }
             }
+            false
         }
-        _ => {}
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            walk_for_any_call_assignment(&child, var_name, source, found);
-            if *found {
-                return;
-            }
-        }
-    }
+        _ => false,
+    })
+    .is_some()
 }
 
 /// Returns true if `rhs` is (or contains at the top level) a call whose
@@ -688,14 +642,14 @@ impl CertRule for Int31C {
 impl Int31C {
     fn check_function(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for function definitions and analyze their bodies
-        if node.kind() == "function_definition" {
-            if let Some(body) = node.child_by_field_name("body") {
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(body) = func_node.child_by_field_name("body") {
                 // Track variable types and validated variables
                 let mut var_types: HashMap<String, String> = HashMap::new();
                 let mut validated_vars: HashSet<String> = HashSet::new();
 
                 // First: collect parameter types from function declarator
-                if let Some(declarator) = node.child_by_field_name("declarator") {
+                if let Some(declarator) = func_node.child_by_field_name("declarator") {
                     self.collect_var_types(&declarator, source, &mut var_types);
                 }
 
@@ -713,13 +667,6 @@ impl Int31C {
                 );
             }
         }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_function(&child, source, violations);
-            }
-        }
     }
 
     fn collect_var_types(
@@ -728,47 +675,43 @@ impl Int31C {
         source: &str,
         var_types: &mut HashMap<String, String>,
     ) {
-        // Collect from declarations
-        if node.kind() == "declaration" {
-            // Extract type from declaration
-            if let Some(type_text) = self.find_type_specifier_text(node, source) {
-                // Find declarators
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "init_declarator" {
-                            if let Some(declarator) = child.child_by_field_name("declarator") {
-                                let var_name = Self::extract_var_name(&declarator, source);
-                                if !var_name.is_empty() {
-                                    var_types.insert(var_name, type_text.clone());
+        for n in query::find_descendants_of_kinds(*node, &["declaration", "parameter_declaration"])
+        {
+            // Collect from declarations
+            if n.kind() == "declaration" {
+                // Extract type from declaration
+                if let Some(type_text) = self.find_type_specifier_text(&n, source) {
+                    // Find declarators
+                    for i in 0..n.child_count() {
+                        if let Some(child) = n.child(i) {
+                            if child.kind() == "init_declarator" {
+                                if let Some(declarator) = child.child_by_field_name("declarator") {
+                                    let var_name = Self::extract_var_name(&declarator, source);
+                                    if !var_name.is_empty() {
+                                        var_types.insert(var_name, type_text.clone());
+                                    }
                                 }
+                            } else if child.kind() == "identifier" {
+                                let var_name = get_node_text(&child, source).to_string();
+                                var_types.insert(var_name, type_text.clone());
                             }
-                        } else if child.kind() == "identifier" {
-                            let var_name = get_node_text(&child, source).to_string();
-                            var_types.insert(var_name, type_text.clone());
                         }
                     }
                 }
             }
-        }
 
-        // Also track from parameter_declarations (function parameters)
-        if node.kind() == "parameter_declaration" {
-            // For parameters, extract the full type including modifiers
-            let type_text = self.extract_parameter_type(node, source);
-            if !type_text.is_empty() {
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    let var_name = Self::extract_var_name(&declarator, source);
-                    if !var_name.is_empty() {
-                        var_types.insert(var_name, type_text);
+            // Also track from parameter_declarations (function parameters)
+            if n.kind() == "parameter_declaration" {
+                // For parameters, extract the full type including modifiers
+                let type_text = self.extract_parameter_type(&n, source);
+                if !type_text.is_empty() {
+                    if let Some(declarator) = n.child_by_field_name("declarator") {
+                        let var_name = Self::extract_var_name(&declarator, source);
+                        if !var_name.is_empty() {
+                            var_types.insert(var_name, type_text);
+                        }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_var_types(&child, source, var_types);
             }
         }
     }
@@ -851,107 +794,107 @@ impl Int31C {
         validated_vars: &mut HashSet<String>,
         var_types: &HashMap<String, String>,
     ) {
-        // Look for if statements that validate bounds
-        if node.kind() == "if_statement" {
-            if let Some(condition) = node.child_by_field_name("condition") {
-                let cond_text = get_node_text(&condition, source);
+        for node in &query::find_descendants_of_kinds(
+            *node,
+            &["if_statement", "expression_statement", "init_declarator"],
+        ) {
+            // Look for if statements that validate bounds
+            if node.kind() == "if_statement" {
+                if let Some(condition) = node.child_by_field_name("condition") {
+                    let cond_text = get_node_text(&condition, source);
 
-                // Check for validations of each tracked variable
-                for (var, _var_type) in var_types.iter() {
-                    if cond_text.contains(var) {
-                        // Check for common validation patterns:
-                        // - < 0 (negative check for signed to unsigned)
-                        // - > MAX / <= MAX (upper bound for unsigned to signed or narrowing)
-                        // - < MIN / >= MIN (lower bound for signed narrowing)
-                        let has_bounds_check = (cond_text.contains('<')
-                            || cond_text.contains('>')
-                            || cond_text.contains("<=")
-                            || cond_text.contains(">="))
-                            && (cond_text.contains("0")
-                                || cond_text.contains("MAX")
-                                || cond_text.contains("MIN")
-                                || cond_text.contains("_MAX")
-                                || cond_text.contains("_MIN"));
+                    // Check for validations of each tracked variable
+                    for (var, _var_type) in var_types.iter() {
+                        if cond_text.contains(var) {
+                            // Check for common validation patterns:
+                            // - < 0 (negative check for signed to unsigned)
+                            // - > MAX / <= MAX (upper bound for unsigned to signed or narrowing)
+                            // - < MIN / >= MIN (lower bound for signed narrowing)
+                            let has_bounds_check = (cond_text.contains('<')
+                                || cond_text.contains('>')
+                                || cond_text.contains("<=")
+                                || cond_text.contains(">="))
+                                && (cond_text.contains("0")
+                                    || cond_text.contains("MAX")
+                                    || cond_text.contains("MIN")
+                                    || cond_text.contains("_MAX")
+                                    || cond_text.contains("_MIN"));
 
-                        if has_bounds_check {
-                            // The variable is validated if:
-                            // 1. There's error handling in consequence (then block) - else block is safe
-                            // 2. The conversion happens in the consequence when bounds are validated
-                            // 3. There's an alternative (else) that handles errors
+                            if has_bounds_check {
+                                // The variable is validated if:
+                                // 1. There's error handling in consequence (then block) - else block is safe
+                                // 2. The conversion happens in the consequence when bounds are validated
+                                // 3. There's an alternative (else) that handles errors
 
-                            if let Some(consequence) = node.child_by_field_name("consequence") {
-                                let cons_text = get_node_text(&consequence, source);
-                                // If error handling in consequence, the else branch is safe
-                                if cons_text.contains("return")
-                                    || cons_text.contains("Handle error")
-                                    || cons_text.contains("error")
-                                {
-                                    validated_vars.insert(var.clone());
+                                if let Some(consequence) = node.child_by_field_name("consequence") {
+                                    let cons_text = get_node_text(&consequence, source);
+                                    // If error handling in consequence, the else branch is safe
+                                    if cons_text.contains("return")
+                                        || cons_text.contains("Handle error")
+                                        || cons_text.contains("error")
+                                    {
+                                        validated_vars.insert(var.clone());
+                                    }
+                                    // If the conversion/assignment to var is in consequence after bounds check
+                                    // (like `if (u_a <= SCHAR_MAX) { sc = (signed char)u_a; }`)
+                                    // The variable being converted (u_a) is validated for that use
+                                    if cons_text.contains(var) {
+                                        validated_vars.insert(var.clone());
+                                    }
                                 }
-                                // If the conversion/assignment to var is in consequence after bounds check
-                                // (like `if (u_a <= SCHAR_MAX) { sc = (signed char)u_a; }`)
-                                // The variable being converted (u_a) is validated for that use
-                                if cons_text.contains(var) {
-                                    validated_vars.insert(var.clone());
-                                }
-                            }
-                            if let Some(alternative) = node.child_by_field_name("alternative") {
-                                let alt_text = get_node_text(&alternative, source);
-                                // If assignment is in alternative (else), var is validated
-                                if alt_text.contains(var) {
-                                    validated_vars.insert(var.clone());
-                                }
-                                // If else has error handling, then branch is safe
-                                if alt_text.contains("Handle error") || alt_text.contains("error") {
-                                    validated_vars.insert(var.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Detect bounded constant assignments: data = CHAR_MAX - 5;
-        // If a tracked variable is assigned a value referencing a type-limit macro,
-        // the programmer is aware of type bounds and subsequent casts are intentional.
-        if node.kind() == "expression_statement" {
-            if let Some(expr) = node.child(0) {
-                if expr.kind() == "assignment_expression" {
-                    if let Some(left) = expr.child_by_field_name("left") {
-                        let lhs = get_node_text(&left, source).trim().to_string();
-                        if var_types.contains_key(&lhs) {
-                            if let Some(right) = expr.child_by_field_name("right") {
-                                let rhs = get_node_text(&right, source);
-                                if Self::rhs_has_narrow_limit_macro(rhs) {
-                                    validated_vars.insert(lhs);
+                                if let Some(alternative) = node.child_by_field_name("alternative") {
+                                    let alt_text = get_node_text(&alternative, source);
+                                    // If assignment is in alternative (else), var is validated
+                                    if alt_text.contains(var) {
+                                        validated_vars.insert(var.clone());
+                                    }
+                                    // If else has error handling, then branch is safe
+                                    if alt_text.contains("Handle error")
+                                        || alt_text.contains("error")
+                                    {
+                                        validated_vars.insert(var.clone());
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Also check init_declarator: int data = CHAR_MAX - 5;
-        if node.kind() == "init_declarator" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                let var_name = Self::extract_var_name(&declarator, source);
-                if !var_name.is_empty() {
-                    if let Some(value) = node.child_by_field_name("value") {
-                        let rhs = get_node_text(&value, source);
-                        if Self::rhs_has_narrow_limit_macro(rhs) {
-                            validated_vars.insert(var_name);
+            // Detect bounded constant assignments: data = CHAR_MAX - 5;
+            // If a tracked variable is assigned a value referencing a type-limit macro,
+            // the programmer is aware of type bounds and subsequent casts are intentional.
+            if node.kind() == "expression_statement" {
+                if let Some(expr) = node.child(0) {
+                    if expr.kind() == "assignment_expression" {
+                        if let Some(left) = expr.child_by_field_name("left") {
+                            let lhs = get_node_text(&left, source).trim().to_string();
+                            if var_types.contains_key(&lhs) {
+                                if let Some(right) = expr.child_by_field_name("right") {
+                                    let rhs = get_node_text(&right, source);
+                                    if Self::rhs_has_narrow_limit_macro(rhs) {
+                                        validated_vars.insert(lhs);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::collect_validations(&child, source, validated_vars, var_types);
+            // Also check init_declarator: int data = CHAR_MAX - 5;
+            if node.kind() == "init_declarator" {
+                if let Some(declarator) = node.child_by_field_name("declarator") {
+                    let var_name = Self::extract_var_name(&declarator, source);
+                    if !var_name.is_empty() {
+                        if let Some(value) = node.child_by_field_name("value") {
+                            let rhs = get_node_text(&value, source);
+                            if Self::rhs_has_narrow_limit_macro(rhs) {
+                                validated_vars.insert(var_name);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -983,45 +926,49 @@ impl Int31C {
         var_types: &HashMap<String, String>,
         validated_vars: &HashSet<String>,
     ) {
-        // Check for memset with value > UCHAR_MAX and signed→size_t in call args
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if func_name == "memset" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        self.check_memset_value(&args, node, source, violations);
+        for node in &query::find_descendants_of_kinds(
+            *node,
+            &[
+                "call_expression",
+                "binary_expression",
+                "cast_expression",
+                "assignment_expression",
+                "init_declarator",
+            ],
+        ) {
+            // Check for memset with value > UCHAR_MAX and signed→size_t in call args
+            if node.kind() == "call_expression" {
+                if let Some(func) = node.child_by_field_name("function") {
+                    let func_name = get_node_text(&func, source);
+                    if func_name == "memset" {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            self.check_memset_value(&args, node, source, violations);
+                        }
                     }
                 }
+                self.check_call_argument_conversion(
+                    node,
+                    source,
+                    violations,
+                    var_types,
+                    validated_vars,
+                );
             }
-            self.check_call_argument_conversion(
-                node,
-                source,
-                violations,
-                var_types,
-                validated_vars,
-            );
-        }
 
-        // Check for time_t comparison with uncast -1
-        if node.kind() == "binary_expression" {
-            self.check_time_t_comparison(node, source, violations, var_types);
-        }
+            // Check for time_t comparison with uncast -1
+            if node.kind() == "binary_expression" {
+                self.check_time_t_comparison(node, source, violations, var_types);
+            }
 
-        // Check for cast expressions with potential loss of data
-        if node.kind() == "cast_expression" {
-            self.check_cast_conversion(node, source, violations, var_types, validated_vars);
-        }
+            // Check for cast expressions with potential loss of data
+            if node.kind() == "cast_expression" {
+                self.check_cast_conversion(node, source, violations, var_types, validated_vars);
+            }
 
-        // Check for implicit conversion in assignments
-        if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
-            self.check_assignment_conversion(node, source, violations, var_types, validated_vars);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_unsafe_conversions(
-                    &child,
+            // Check for implicit conversion in assignments
+            if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
+                self.check_assignment_conversion(
+                    node,
                     source,
                     violations,
                     var_types,

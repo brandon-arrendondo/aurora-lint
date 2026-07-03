@@ -28,6 +28,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -68,15 +69,8 @@ impl Int09C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "enum_specifier" {
-            self.analyze_enum(node, source, violations);
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_enum_duplicates(&child, source, violations);
-            }
+        for n in query::find_descendants_of_kind(*node, "enum_specifier") {
+            self.analyze_enum(&n, source, violations);
         }
     }
 

@@ -28,6 +28,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -56,26 +57,14 @@ impl CertRule for Con06C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
+            self.analyze_function(&func_node, source, &mut violations);
+        }
         violations
     }
 }
 
 impl Con06C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for function definitions
-        if node.kind() == "function_definition" {
-            self.analyze_function(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     fn analyze_function(
         &self,
         function_node: &Node,
@@ -179,30 +168,23 @@ impl Con06C {
         local_mutexes: &mut HashMap<String, Node<'a>>,
         static_mutexes: &mut HashSet<String>,
     ) {
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
+        for decl_node in query::find_descendants_of_kind(*node, "declaration") {
+            let decl_text = get_node_text(&decl_node, source);
             let is_static = decl_text.starts_with("static ");
 
             // Check if this is a mutex declaration (mtx_t or pthread_mutex_t)
             if decl_text.contains("mtx_t") || decl_text.contains("pthread_mutex_t") {
                 // Extract variable name
-                if let Some(declarator) = node.child_by_field_name("declarator") {
+                if let Some(declarator) = decl_node.child_by_field_name("declarator") {
                     let var_name = self.extract_identifier(&declarator, source);
                     if !var_name.is_empty() {
                         if is_static {
                             static_mutexes.insert(var_name);
                         } else {
-                            local_mutexes.insert(var_name, *node);
+                            local_mutexes.insert(var_name, decl_node);
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_declarations(&child, source, local_mutexes, static_mutexes);
             }
         }
     }
@@ -215,37 +197,39 @@ impl Con06C {
         free_calls: &mut Vec<(String, Node<'a>)>,
     ) {
         // Look for assignment expressions with malloc/calloc/realloc
-        if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
-            let node_text = get_node_text(node, source);
+        for op_node in
+            query::find_descendants_of_kinds(*node, &["assignment_expression", "init_declarator"])
+        {
+            let node_text = get_node_text(&op_node, source);
             if node_text.contains("malloc(")
                 || node_text.contains("calloc(")
                 || node_text.contains("realloc(")
             {
                 // Extract the variable being assigned
-                if let Some(left) = node.child_by_field_name("left") {
+                if let Some(left) = op_node.child_by_field_name("left") {
                     let var_name = get_node_text(&left, source).to_string();
-                    heap_allocations.insert(var_name, *node);
-                } else if let Some(declarator) = node.child_by_field_name("declarator") {
+                    heap_allocations.insert(var_name, op_node);
+                } else if let Some(declarator) = op_node.child_by_field_name("declarator") {
                     let var_name = self.extract_identifier(&declarator, source);
                     if !var_name.is_empty() {
-                        heap_allocations.insert(var_name, *node);
+                        heap_allocations.insert(var_name, op_node);
                     }
                 }
             }
         }
 
         // Look for free() calls
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call_node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 if func_name == "free" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call_node.child_by_field_name("arguments") {
                         // Get first argument
                         for i in 0..args.child_count() {
                             if let Some(arg) = args.child(i) {
                                 if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
                                     let var_name = get_node_text(&arg, source).to_string();
-                                    free_calls.push((var_name, *node));
+                                    free_calls.push((var_name, call_node));
                                     break;
                                 }
                             }
@@ -254,27 +238,19 @@ impl Con06C {
                 }
             }
         }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_heap_ops(&child, source, heap_allocations, free_calls);
-            }
-        }
     }
 
-    #[allow(clippy::only_used_in_recursion)]
     fn collect_mutex_destroys<'a>(
         &self,
         node: &Node<'a>,
         source: &str,
         mutex_destroys: &mut Vec<(String, Node<'a>)>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call_node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 if func_name == "mtx_destroy" || func_name == "pthread_mutex_destroy" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call_node.child_by_field_name("arguments") {
                         // Get first argument (mutex pointer)
                         for i in 0..args.child_count() {
                             if let Some(arg) = args.child(i) {
@@ -283,20 +259,13 @@ impl Con06C {
                                     // Remove leading & for address-of operator
                                     let var_name =
                                         arg_text.strip_prefix('&').unwrap_or(arg_text).to_string();
-                                    mutex_destroys.push((var_name, *node));
+                                    mutex_destroys.push((var_name, call_node));
                                     break;
                                 }
                             }
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_mutex_destroys(&child, source, mutex_destroys);
             }
         }
     }

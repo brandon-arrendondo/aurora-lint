@@ -27,6 +27,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -125,22 +126,22 @@ impl Con30C {
         tss_set_calls: &mut HashSet<String>,
         tss_get_freed: &mut HashSet<String>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 // Check for tss_create
                 if func_name == "tss_create" {
                     if let Some((key_name, has_destructor)) =
-                        self.extract_tss_create_info(node, source)
+                        self.extract_tss_create_info(&call, source)
                     {
                         tss_keys.insert(
                             key_name.clone(),
                             TssKeyInfo {
                                 key_name,
                                 has_destructor,
-                                create_line: node.start_position().row + 1,
-                                create_column: node.start_position().column + 1,
+                                create_line: call.start_position().row + 1,
+                                create_column: call.start_position().column + 1,
                             },
                         );
                     }
@@ -148,24 +149,17 @@ impl Con30C {
 
                 // Check for tss_set
                 if func_name == "tss_set" {
-                    if let Some(key_name) = self.extract_tss_key_name(node, source) {
+                    if let Some(key_name) = self.extract_tss_key_name(&call, source) {
                         tss_set_calls.insert(key_name);
                     }
                 }
 
                 // Check for free(tss_get(key))
                 if func_name == "free" {
-                    if let Some(key_name) = self.check_tss_get_in_free(node, source) {
+                    if let Some(key_name) = self.check_tss_get_in_free(&call, source) {
                         tss_get_freed.insert(key_name);
                     }
                 }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_tss_operations(&child, source, tss_keys, tss_set_calls, tss_get_freed);
             }
         }
     }
@@ -222,27 +216,18 @@ impl Con30C {
         None
     }
 
-    /// Recursively find tss_get call and return the key name
+    /// Find tss_get call and return the key name
     fn find_tss_get_key(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                if func_name == "tss_get" {
-                    return self.extract_tss_key_name(node, source);
-                }
+        let call = query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
+            n.child_by_field_name("function")
+                .map(|f| get_node_text(&f, source) == "tss_get")
+                .unwrap_or(false)
+        })?;
 
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(key) = self.find_tss_get_key(&child, source) {
-                    return Some(key);
-                }
-            }
-        }
-
-        None
+        self.extract_tss_key_name(&call, source)
     }
 
     /// Get argument strings from an argument_list node

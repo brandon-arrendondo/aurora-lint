@@ -22,6 +22,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -72,50 +73,27 @@ impl Int07C {
         source: &str,
         plain_char_vars: &mut HashMap<String, (usize, usize)>,
     ) {
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
+        for n in query::find_descendants_of_kinds(*node, &["declaration", "parameter_declaration"])
+        {
+            let decl_text = get_node_text(&n, source);
 
             // Check if this is a char declaration (not signed char or unsigned char)
             // Skip char* pointers and char[] arrays — INT07-C is about char VALUE signedness,
             // not pointer arithmetic on char*.
             if self.is_plain_char_declaration(&decl_text)
-                && !self.is_pointer_or_array_declaration(node)
+                && !self.is_pointer_or_array_declaration(&n)
             {
-                if let Some(var_name) = self.extract_var_name(node, source) {
+                let var_name = if n.kind() == "declaration" {
+                    self.extract_var_name(&n, source)
+                } else {
+                    self.extract_param_name(&n, source)
+                };
+                if let Some(var_name) = var_name {
                     plain_char_vars.insert(
                         var_name,
-                        (
-                            node.start_position().row + 1,
-                            node.start_position().column + 1,
-                        ),
+                        (n.start_position().row + 1, n.start_position().column + 1),
                     );
                 }
-            }
-        }
-
-        // Check function parameters
-        if node.kind() == "parameter_declaration" {
-            let param_text = get_node_text(node, source);
-
-            if self.is_plain_char_declaration(&param_text)
-                && !self.is_pointer_or_array_declaration(node)
-            {
-                if let Some(var_name) = self.extract_param_name(node, source) {
-                    plain_char_vars.insert(
-                        var_name,
-                        (
-                            node.start_position().row + 1,
-                            node.start_position().column + 1,
-                        ),
-                    );
-                }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_plain_char_vars(&child, source, plain_char_vars);
             }
         }
     }
@@ -180,67 +158,71 @@ impl Int07C {
         plain_char_vars: &HashMap<String, (usize, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check binary expressions (arithmetic and comparison)
-        if node.kind() == "binary_expression" {
-            if let Some(operator) = node.child_by_field_name("operator") {
-                let op_text = get_node_text(&operator, source);
+        for n in query::find_descendants_of_kinds(
+            *node,
+            &[
+                "binary_expression",
+                "assignment_expression",
+                "unary_expression",
+                "update_expression",
+            ],
+        ) {
+            // Check binary expressions (arithmetic and comparison)
+            if n.kind() == "binary_expression" {
+                if let Some(operator) = n.child_by_field_name("operator") {
+                    let op_text = get_node_text(&operator, source);
 
-                // Arithmetic operators only: +, -, *, /, %
-                // Comparisons (<, <=, >, >=, ==, !=) are intentionally excluded:
-                // patterns like `data < CHAR_MAX` are the CORRECT safe-coding pattern
-                // for range-checking plain char variables before arithmetic.
-                let is_numeric_op = matches!(op_text, "+" | "-" | "*" | "/" | "%");
+                    // Arithmetic operators only: +, -, *, /, %
+                    // Comparisons (<, <=, >, >=, ==, !=) are intentionally excluded:
+                    // patterns like `data < CHAR_MAX` are the CORRECT safe-coding pattern
+                    // for range-checking plain char variables before arithmetic.
+                    let is_numeric_op = matches!(op_text, "+" | "-" | "*" | "/" | "%");
 
-                if is_numeric_op {
-                    // Check left and right operands
-                    if let Some(left) = node.child_by_field_name("left") {
-                        self.check_operand_for_violation(
-                            &left,
-                            source,
-                            plain_char_vars,
-                            violations,
-                        );
-                    }
-                    if let Some(right) = node.child_by_field_name("right") {
-                        self.check_operand_for_violation(
-                            &right,
-                            source,
-                            plain_char_vars,
-                            violations,
-                        );
-                    }
-                }
-            }
-        }
-
-        // Check assignment expressions with numeric values
-        if node.kind() == "assignment_expression" {
-            if let Some(right) = node.child_by_field_name("right") {
-                // If right side is a numeric literal, check left side
-                if self.is_numeric_literal(&right, source) {
-                    if let Some(left) = node.child_by_field_name("left") {
-                        self.check_operand_for_violation(
-                            &left,
-                            source,
-                            plain_char_vars,
-                            violations,
-                        );
+                    if is_numeric_op {
+                        // Check left and right operands
+                        if let Some(left) = n.child_by_field_name("left") {
+                            self.check_operand_for_violation(
+                                &left,
+                                source,
+                                plain_char_vars,
+                                violations,
+                            );
+                        }
+                        if let Some(right) = n.child_by_field_name("right") {
+                            self.check_operand_for_violation(
+                                &right,
+                                source,
+                                plain_char_vars,
+                                violations,
+                            );
+                        }
                     }
                 }
-            }
-        }
-
-        // Check unary operations (++, --, unary -, unary +)
-        if node.kind() == "unary_expression" || node.kind() == "update_expression" {
-            if let Some(argument) = node.child_by_field_name("argument") {
-                self.check_operand_for_violation(&argument, source, plain_char_vars, violations);
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_numeric_uses(&child, source, plain_char_vars, violations);
+            } else if n.kind() == "assignment_expression" {
+                // Check assignment expressions with numeric values
+                if let Some(right) = n.child_by_field_name("right") {
+                    // If right side is a numeric literal, check left side
+                    if self.is_numeric_literal(&right, source) {
+                        if let Some(left) = n.child_by_field_name("left") {
+                            self.check_operand_for_violation(
+                                &left,
+                                source,
+                                plain_char_vars,
+                                violations,
+                            );
+                        }
+                    }
+                }
+            } else {
+                // Check unary operations (++, --, unary -, unary +)
+                if let Some(argument) = n.child_by_field_name("argument") {
+                    self.check_operand_for_violation(
+                        &argument,
+                        source,
+                        plain_char_vars,
+                        violations,
+                    );
+                }
             }
         }
     }

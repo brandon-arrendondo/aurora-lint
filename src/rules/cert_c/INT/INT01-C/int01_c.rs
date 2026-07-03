@@ -24,6 +24,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -80,32 +81,19 @@ impl CertRule for Int01C {
 impl Int01C {
     /// Find size_t/rsize_t variables (parameters and declarations)
     fn find_size_t_vars(&self, node: &Node, source: &str, size_t_vars: &mut HashSet<String>) {
-        // Check function parameters
-        if node.kind() == "parameter_declaration" {
-            let decl_text = get_node_text(node, source);
+        for n in query::find_descendants_of_kinds(*node, &["parameter_declaration", "declaration"])
+        {
+            let decl_text = get_node_text(&n, source);
             // Check for size_t or rsize_t
             if decl_text.contains("size_t") || decl_text.contains("rsize_t") {
-                if let Some(var_name) = self.extract_param_name(node, source) {
+                let var_name = if n.kind() == "parameter_declaration" {
+                    self.extract_param_name(&n, source)
+                } else {
+                    self.extract_var_name(&n, source)
+                };
+                if let Some(var_name) = var_name {
                     size_t_vars.insert(var_name);
                 }
-            }
-        }
-
-        // Check variable declarations
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
-            // Check for size_t or rsize_t
-            if decl_text.contains("size_t") || decl_text.contains("rsize_t") {
-                if let Some(var_name) = self.extract_var_name(node, source) {
-                    size_t_vars.insert(var_name);
-                }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_size_t_vars(&child, source, size_t_vars);
             }
         }
     }
@@ -117,8 +105,8 @@ impl Int01C {
         source: &str,
         int_vars: &mut HashMap<String, (usize, usize)>,
     ) {
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
+        for n in query::find_descendants_of_kind(*node, "declaration") {
+            let decl_text = get_node_text(&n, source);
             // Check for int but not unsigned int, not size_t, not uint*
             if decl_text.trim().starts_with("int ")
                 || decl_text.contains(" int ")
@@ -128,23 +116,13 @@ impl Int01C {
                     && !decl_text.contains("size_t")
                     && !decl_text.contains("uint")
                 {
-                    if let Some(var_name) = self.extract_var_name(node, source) {
+                    if let Some(var_name) = self.extract_var_name(&n, source) {
                         int_vars.insert(
                             var_name,
-                            (
-                                node.start_position().row + 1,
-                                node.start_position().column + 1,
-                            ),
+                            (n.start_position().row + 1, n.start_position().column + 1),
                         );
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_int_vars(&child, source, int_vars);
             }
         }
     }
@@ -158,14 +136,14 @@ impl Int01C {
         int_vars: &HashMap<String, (usize, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "binary_expression" {
-            if let Some(operator) = node.child_by_field_name("operator") {
+        for n in query::find_descendants_of_kind(*node, "binary_expression") {
+            if let Some(operator) = n.child_by_field_name("operator") {
                 let op_text = get_node_text(&operator, source);
                 // Check comparison operators
                 if op_text == "<" || op_text == "<=" || op_text == ">" || op_text == ">=" {
                     if let (Some(left), Some(right)) = (
-                        node.child_by_field_name("left"),
-                        node.child_by_field_name("right"),
+                        n.child_by_field_name("left"),
+                        n.child_by_field_name("right"),
                     ) {
                         let left_text = get_node_text(&left, source);
                         let right_text = get_node_text(&right, source);
@@ -188,8 +166,8 @@ impl Int01C {
                                     int_var
                                 ),
                                 severity: self.severity(),
-                                line: node.start_position().row + 1,
-                                column: node.start_position().column + 1,
+                                line: n.start_position().row + 1,
+                                column: n.start_position().column + 1,
                                 file_path: String::new(),
                                 suggestion: Some(format!(
                                     "Change declaration of '{}' from int to size_t",
@@ -200,13 +178,6 @@ impl Int01C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_int_size_t_comparisons(&child, source, size_t_vars, int_vars, violations);
             }
         }
     }
@@ -252,33 +223,12 @@ impl Int01C {
 
     /// Check for function parameters representing sizes that don't use size_t
     fn check_size_params(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for function declarations with size-related parameter names
-        if node.kind() == "function_definition" || node.kind() == "function_declarator" {
-            // Find parameter_list
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "function_declarator" {
-                        self.check_size_params(&child, source, violations);
-                    } else if child.kind() == "parameter_list" {
-                        self.check_param_list(&child, source, violations);
-                    }
-                }
-            }
-        }
-
-        // Recurse — skip function_declarator children of function_definition
-        // to avoid double-visiting (already handled above)
-        let dominated =
-            node.kind() == "function_definition" || node.kind() == "function_declarator";
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if dominated
-                    && (child.kind() == "function_declarator" || child.kind() == "parameter_list")
-                {
-                    continue;
-                }
-                self.check_size_params(&child, source, violations);
-            }
+        // Every parameter_list in the C grammar is reachable only through a
+        // function_declarator, so a flat kind-based search finds exactly the
+        // same set of parameter lists the original nested/dominated recursive
+        // walk did, just without the double-visit bookkeeping.
+        for param_list in query::find_descendants_of_kind(*node, "parameter_list") {
+            self.check_param_list(&param_list, source, violations);
         }
     }
 
@@ -354,8 +304,8 @@ impl Int01C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for call expressions to allocation functions
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 // Check if this is an allocation function
@@ -365,17 +315,10 @@ impl Int01C {
                     .any(|&f| func_name == f || func_name.ends_with("alloc"))
                 {
                     // Check arguments for non-size_t size expressions
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call.child_by_field_name("arguments") {
                         self.check_alloc_args(&args, source, size_t_vars, violations);
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_size_variable_usage(&child, source, size_t_vars, violations);
             }
         }
     }

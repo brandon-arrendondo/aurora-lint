@@ -6,6 +6,7 @@ use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::float_typing;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -169,27 +170,17 @@ impl Int33C {
     /// Find variables initialized to zero
     fn find_zero_initialized_vars(&self, node: &Node, source: &str) -> HashSet<String> {
         let mut zero_vars = HashSet::new();
-        self.collect_zero_vars(node, source, &mut zero_vars);
-        zero_vars
-    }
-
-    fn collect_zero_vars(&self, node: &Node, source: &str, zero_vars: &mut HashSet<String>) {
-        if node.kind() == "declaration" || node.kind() == "init_declarator" {
+        for decl in query::find_descendants_of_kinds(*node, &["declaration", "init_declarator"]) {
             // Look for pattern: type var = 0
-            let decl_text = ast_utils::get_node_text(node, source);
+            let decl_text = ast_utils::get_node_text(&decl, source);
             if decl_text.contains("= 0") || decl_text.ends_with("= 0;") {
                 // Extract variable name
-                if let Some(name) = self.extract_declared_var_name(node, source) {
+                if let Some(name) = self.extract_declared_var_name(&decl, source) {
                     zero_vars.insert(name);
                 }
             }
         }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_zero_vars(&child, source, zero_vars);
-            }
-        }
+        zero_vars
     }
 
     fn extract_declared_var_name(&self, node: &Node, source: &str) -> Option<String> {
@@ -671,18 +662,20 @@ impl Int33C {
             return true;
         }
 
-        // Also check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "return_statement"
-                    || child.kind() == "break_statement"
-                    || child.kind() == "continue_statement"
-                {
-                    return true;
-                }
-                if Self::has_return_or_exit(&child, source) {
-                    return true;
-                }
+        // Also check child nodes (and their descendants) for a return/break/
+        // continue statement. Note: this deliberately does NOT check `node`
+        // itself against these kinds (only its children and below), matching
+        // the original recursive walk's behavior.
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if query::find_first_descendant(child, |n| {
+                n.kind() == "return_statement"
+                    || n.kind() == "break_statement"
+                    || n.kind() == "continue_statement"
+            })
+            .is_some()
+            {
+                return true;
             }
         }
 
@@ -1136,19 +1129,19 @@ impl Int33C {
     /// Check if `node` contains an update expression (++, --, +=, -=, etc.)
     /// that modifies `var_name`. Returns true if found.
     fn is_variable_modified_by_update(node: &Node, var_name: &str, source: &str) -> bool {
-        match node.kind() {
+        query::find_first_descendant(*node, |n| match n.kind() {
             "update_expression" => {
                 // i++, i--, ++i, --i
-                let text = ast_utils::get_node_text(node, source);
+                let text = ast_utils::get_node_text(&n, source);
                 text.contains(var_name)
             }
             "assignment_expression" => {
                 // Check for compound assignments (+=, -=, *=, /=, etc.)
-                if let Some(lhs) = node.child_by_field_name("left") {
+                if let Some(lhs) = n.child_by_field_name("left") {
                     if lhs.kind() == "identifier"
                         && ast_utils::get_node_text(&lhs, source) == var_name
                     {
-                        let full_text = ast_utils::get_node_text(node, source);
+                        let full_text = ast_utils::get_node_text(&n, source);
                         if full_text.contains("+=")
                             || full_text.contains("-=")
                             || full_text.contains("*=")
@@ -1161,17 +1154,9 @@ impl Int33C {
                 }
                 false
             }
-            _ => {
-                for i in 0..node.named_child_count() {
-                    if let Some(child) = node.named_child(i) {
-                        if Self::is_variable_modified_by_update(&child, var_name, source) {
-                            return true;
-                        }
-                    }
-                }
-                false
-            }
-        }
+            _ => false,
+        })
+        .is_some()
     }
 
     /// Check if `node` evaluates to a provably non-zero constant.

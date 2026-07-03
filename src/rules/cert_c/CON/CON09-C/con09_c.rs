@@ -47,6 +47,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Con09C;
@@ -76,26 +77,15 @@ impl CertRule for Con09C {
         let mut violations = Vec::new();
 
         // Find all function definitions
-        self.check_node(node, source, &mut violations);
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function(&func_node, source, &mut violations);
+        }
 
         violations
     }
 }
 
 impl Con09C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "function_definition" {
-            self.check_function(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     fn check_function(&self, func_node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Get function body
         let body = if let Some(body_node) = func_node.child_by_field_name("body") {
@@ -113,25 +103,17 @@ impl Con09C {
 
     fn has_mutex_lock(&self, node: &Node, source: &str) -> bool {
         // Look for mutex lock function calls
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func_node, source);
-                if self.is_lock_function(&func_name) {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.has_mutex_lock(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            let Some(func_node) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&func_node, source);
+            self.is_lock_function(&func_name)
+        })
+        .is_some()
     }
 
     fn find_and_check_cas_operations(
@@ -142,36 +124,27 @@ impl Con09C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for compare-exchange function calls
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = call_node.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source);
-                if self.is_cas_function(&func_name) {
-                    if !has_mutex_lock {
-                        let start_point = node.start_position();
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: Severity::Medium,
-                            message: format!(
-                                "Atomic compare-and-swap operation '{}' used without mutex protection, which may lead to ABA problem",
-                                func_name
-                            ),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some(
-                                "Protect compare-and-swap operations with a mutex, or use hazard pointers to prevent the ABA problem".to_string()
-                            ),
-                            ..Default::default()
-                        });
-                    }
+                if self.is_cas_function(&func_name) && !has_mutex_lock {
+                    let start_point = call_node.start_position();
+                    violations.push(RuleViolation {
+                        rule_id: self.rule_id().to_string(),
+                        severity: Severity::Medium,
+                        message: format!(
+                            "Atomic compare-and-swap operation '{}' used without mutex protection, which may lead to ABA problem",
+                            func_name
+                        ),
+                        file_path: String::new(),
+                        line: start_point.row + 1,
+                        column: start_point.column + 1,
+                        suggestion: Some(
+                            "Protect compare-and-swap operations with a mutex, or use hazard pointers to prevent the ABA problem".to_string()
+                        ),
+                        ..Default::default()
+                    });
                 }
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_and_check_cas_operations(&child, source, has_mutex_lock, violations);
             }
         }
     }

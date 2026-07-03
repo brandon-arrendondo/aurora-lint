@@ -9,6 +9,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::std_functions;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -225,26 +226,30 @@ impl Int30C {
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
     ) {
-        match node.kind() {
-            "binary_expression" => {
-                self.check_binary_operation(node, source, violations, type_map);
-            }
-            "assignment_expression" => {
-                self.check_assignment_operation(node, source, violations, type_map);
-            }
-            "call_expression" => {
-                self.check_function_call(node, source, violations);
-            }
-            "update_expression" => {
-                self.check_increment_decrement(node, source, violations, type_map);
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, type_map);
+        let matches = query::find_descendants_of_kinds(
+            *node,
+            &[
+                "binary_expression",
+                "assignment_expression",
+                "call_expression",
+                "update_expression",
+            ],
+        );
+        for matched in matches {
+            match matched.kind() {
+                "binary_expression" => {
+                    self.check_binary_operation(&matched, source, violations, type_map);
+                }
+                "assignment_expression" => {
+                    self.check_assignment_operation(&matched, source, violations, type_map);
+                }
+                "call_expression" => {
+                    self.check_function_call(&matched, source, violations);
+                }
+                "update_expression" => {
+                    self.check_increment_decrement(&matched, source, violations, type_map);
+                }
+                _ => {}
             }
         }
     }
@@ -1231,22 +1236,14 @@ impl Int30C {
     fn collect_variable_types(&self, node: &Node, source: &str) -> HashMap<String, String> {
         let mut type_map = HashMap::new();
 
-        if node.kind() == "function_definition" {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
             // Collect from function parameters
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+            if let Some(declarator) = func.child_by_field_name("declarator") {
                 self.collect_params_from_declarator(&declarator, source, &mut type_map);
             }
             // Collect from local declarations in the function body
-            if let Some(body) = node.child_by_field_name("body") {
+            if let Some(body) = func.child_by_field_name("body") {
                 self.collect_local_declarations(&body, source, &mut type_map);
-            }
-        }
-
-        // Recurse into children to find nested function_definitions
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let child_map = self.collect_variable_types(&child, source);
-                type_map.extend(child_map);
             }
         }
 
@@ -1259,8 +1256,8 @@ impl Int30C {
         source: &str,
         type_map: &mut HashMap<String, String>,
     ) {
-        if node.kind() == "function_declarator" {
-            if let Some(params) = node.child_by_field_name("parameters") {
+        for declarator in query::find_descendants_of_kind(*node, "function_declarator") {
+            if let Some(params) = declarator.child_by_field_name("parameters") {
                 for i in 0..params.child_count() {
                     if let Some(param) = params.child(i) {
                         if param.kind() == "parameter_declaration" {
@@ -1268,12 +1265,6 @@ impl Int30C {
                         }
                     }
                 }
-            }
-        }
-        // Recurse to find nested function_declarator (e.g. pointer declarators)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_params_from_declarator(&child, source, type_map);
             }
         }
     }
@@ -1284,13 +1275,8 @@ impl Int30C {
         source: &str,
         type_map: &mut HashMap<String, String>,
     ) {
-        if node.kind() == "declaration" {
-            self.extract_type_and_name(node, source, type_map);
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_local_declarations(&child, source, type_map);
-            }
+        for decl in query::find_descendants_of_kind(*node, "declaration") {
+            self.extract_type_and_name(&decl, source, type_map);
         }
     }
 
@@ -2084,15 +2070,10 @@ impl Int30C {
     }
 
     fn collect_identifiers(node: &Node, source: &str, names: &mut Vec<String>) {
-        if node.kind() == "identifier" {
-            let name = get_node_text(node, source).to_string();
+        for ident in query::find_descendants_of_kind(*node, "identifier") {
+            let name = get_node_text(&ident, source).to_string();
             if !names.contains(&name) {
                 names.push(name);
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::collect_identifiers(&child, source, names);
             }
         }
     }

@@ -35,6 +35,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -88,44 +89,23 @@ impl Int16C {
         source: &str,
         signed_int_vars: &mut HashMap<String, (usize, usize)>,
     ) {
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
+        for n in query::find_descendants_of_kinds(*node, &["declaration", "parameter_declaration"])
+        {
+            let decl_text = get_node_text(&n, source);
 
             // Check if this is a signed integer declaration
             if self.is_signed_int_declaration(&decl_text) {
-                if let Some(var_name) = self.extract_var_name(node, source) {
+                let var_name = if n.kind() == "declaration" {
+                    self.extract_var_name(&n, source)
+                } else {
+                    self.extract_param_name(&n, source)
+                };
+                if let Some(var_name) = var_name {
                     signed_int_vars.insert(
                         var_name,
-                        (
-                            node.start_position().row + 1,
-                            node.start_position().column + 1,
-                        ),
+                        (n.start_position().row + 1, n.start_position().column + 1),
                     );
                 }
-            }
-        }
-
-        // Check function parameters
-        if node.kind() == "parameter_declaration" {
-            let param_text = get_node_text(node, source);
-
-            if self.is_signed_int_declaration(&param_text) {
-                if let Some(var_name) = self.extract_param_name(node, source) {
-                    signed_int_vars.insert(
-                        var_name,
-                        (
-                            node.start_position().row + 1,
-                            node.start_position().column + 1,
-                        ),
-                    );
-                }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_signed_int_vars(&child, source, signed_int_vars);
             }
         }
     }
@@ -166,62 +146,56 @@ impl Int16C {
         signed_int_vars: &HashMap<String, (usize, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check binary bitwise operations: &, |, ^, <<, >>
-        if node.kind() == "binary_expression" {
-            if let Some(operator) = node.child_by_field_name("operator") {
-                let op_text = get_node_text(&operator, source);
+        for n in query::find_descendants_of_kinds(*node, &["binary_expression", "unary_expression"])
+        {
+            // Check binary bitwise operations: &, |, ^, <<, >>
+            if n.kind() == "binary_expression" {
+                if let Some(operator) = n.child_by_field_name("operator") {
+                    let op_text = get_node_text(&operator, source);
 
-                // Bitwise operators
-                let is_bitwise_op =
-                    matches!(op_text, "&" | "|" | "^" | "<<" | ">>" | "&=" | "|=" | "^=");
+                    // Bitwise operators
+                    let is_bitwise_op =
+                        matches!(op_text, "&" | "|" | "^" | "<<" | ">>" | "&=" | "|=" | "^=");
 
-                if is_bitwise_op {
-                    // Check left and right operands
-                    if let Some(left) = node.child_by_field_name("left") {
-                        self.check_operand_for_violation(
-                            &left,
-                            source,
-                            signed_int_vars,
-                            violations,
-                            op_text,
-                        );
-                    }
-                    if let Some(right) = node.child_by_field_name("right") {
-                        self.check_operand_for_violation(
-                            &right,
-                            source,
-                            signed_int_vars,
-                            violations,
-                            op_text,
-                        );
-                    }
-                }
-            }
-        }
-
-        // Check unary bitwise NOT operation: ~
-        if node.kind() == "unary_expression" {
-            if let Some(operator) = node.child_by_field_name("operator") {
-                let op_text = get_node_text(&operator, source);
-
-                if op_text == "~" {
-                    if let Some(argument) = node.child_by_field_name("argument") {
-                        self.check_operand_for_violation(
-                            &argument,
-                            source,
-                            signed_int_vars,
-                            violations,
-                            "~",
-                        );
+                    if is_bitwise_op {
+                        // Check left and right operands
+                        if let Some(left) = n.child_by_field_name("left") {
+                            self.check_operand_for_violation(
+                                &left,
+                                source,
+                                signed_int_vars,
+                                violations,
+                                op_text,
+                            );
+                        }
+                        if let Some(right) = n.child_by_field_name("right") {
+                            self.check_operand_for_violation(
+                                &right,
+                                source,
+                                signed_int_vars,
+                                violations,
+                                op_text,
+                            );
+                        }
                     }
                 }
-            }
-        }
+            } else {
+                // Check unary bitwise NOT operation: ~
+                if let Some(operator) = n.child_by_field_name("operator") {
+                    let op_text = get_node_text(&operator, source);
 
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_bitwise_operations(&child, source, signed_int_vars, violations);
+                    if op_text == "~" {
+                        if let Some(argument) = n.child_by_field_name("argument") {
+                            self.check_operand_for_violation(
+                                &argument,
+                                source,
+                                signed_int_vars,
+                                violations,
+                                "~",
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -343,34 +317,36 @@ impl Int16C {
         signed_int_vars: &HashMap<String, (usize, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check function definitions for unsigned return type + signed return value
-        if node.kind() == "function_definition" {
-            if self.has_unsigned_return_type(node, source) {
-                if let Some(body) = node.child_by_field_name("body") {
-                    self.check_unsigned_return_signed(&body, source, signed_int_vars, violations);
+        for n in query::find_descendants_of_kinds(
+            *node,
+            &[
+                "function_definition",
+                "declaration",
+                "assignment_expression",
+            ],
+        ) {
+            match n.kind() {
+                "function_definition" => {
+                    // Check function definitions for unsigned return type + signed return value
+                    if self.has_unsigned_return_type(&n, source) {
+                        if let Some(body) = n.child_by_field_name("body") {
+                            self.check_unsigned_return_signed(
+                                &body,
+                                source,
+                                signed_int_vars,
+                                violations,
+                            );
+                        }
+                    }
                 }
-            }
-        }
-
-        // Check declarations: unsigned var = signed_var
-        if node.kind() == "declaration" {
-            self.check_unsigned_init_from_signed(node, source, signed_int_vars, violations);
-        }
-
-        // Check assignments: unsigned_var = signed_var
-        if node.kind() == "assignment_expression" {
-            self.check_unsigned_assign_from_signed(node, source, signed_int_vars, violations);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_signed_to_unsigned_conversions(
-                    &child,
-                    source,
-                    signed_int_vars,
-                    violations,
-                );
+                "declaration" => {
+                    // Check declarations: unsigned var = signed_var
+                    self.check_unsigned_init_from_signed(&n, source, signed_int_vars, violations);
+                }
+                _ => {
+                    // Check assignments: unsigned_var = signed_var
+                    self.check_unsigned_assign_from_signed(&n, source, signed_int_vars, violations);
+                }
             }
         }
     }
@@ -412,14 +388,14 @@ impl Int16C {
         signed_int_vars: &HashMap<String, (usize, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "return_statement" {
+        for ret in query::find_descendants_of_kind(*node, "return_statement") {
             // Get the returned expression (skip "return" keyword)
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
+            for i in 0..ret.child_count() {
+                if let Some(child) = ret.child(i) {
                     if child.kind() == "identifier" {
                         let name = get_node_text(&child, source).to_string();
                         if signed_int_vars.contains_key(&name) {
-                            if !self.has_non_negative_guard(node, &name, source) {
+                            if !self.has_non_negative_guard(&ret, &name, source) {
                                 violations.push(RuleViolation {
                                     rule_id: self.rule_id().to_string(),
                                     message: format!(
@@ -427,8 +403,8 @@ impl Int16C {
                                         name
                                     ),
                                     severity: self.severity(),
-                                    line: node.start_position().row + 1,
-                                    column: node.start_position().column + 1,
+                                    line: ret.start_position().row + 1,
+                                    column: ret.start_position().column + 1,
                                     file_path: String::new(),
                                     suggestion: Some(format!(
                                         "Add a range check: if ({} >= 0) before returning as unsigned",
@@ -440,13 +416,6 @@ impl Int16C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_unsigned_return_signed(&child, source, signed_int_vars, violations);
             }
         }
     }

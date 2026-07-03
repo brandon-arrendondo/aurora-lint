@@ -28,6 +28,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Int17C;
@@ -61,11 +62,10 @@ impl CertRule for Int17C {
 }
 
 impl Int17C {
-    /// Recursively traverse the AST looking for implementation-dependent hex constants
+    /// Traverse the AST looking for implementation-dependent hex constants
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check if this is a number literal
-        if node.kind() == "number_literal" {
-            let literal_text = get_node_text(node, source);
+        for n in query::find_descendants_of_kind(*node, "number_literal") {
+            let literal_text = get_node_text(&n, source);
 
             // Check if it's a problematic hex constant
             if self.is_implementation_dependent_constant(literal_text) {
@@ -77,8 +77,8 @@ impl Int17C {
                         literal_text
                     ),
                     severity: self.severity(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
+                    line: n.start_position().row + 1,
+                    column: n.start_position().column + 1,
                     file_path: String::new(),
                     suggestion: Some(
                         "Use -1 for all bits set (unsigned), or macros from <limits.h> for portable values"
@@ -86,13 +86,6 @@ impl Int17C {
                     ),
                     requires_manual_review: None,
                 });
-            }
-        }
-
-        // Recurse through all children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.traverse(&child, source, violations);
             }
         }
     }

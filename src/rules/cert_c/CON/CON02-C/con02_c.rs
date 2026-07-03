@@ -42,6 +42,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Con02C;
@@ -71,26 +72,15 @@ impl CertRule for Con02C {
         let mut violations = Vec::new();
 
         // Check for volatile declarations
-        self.check_node(node, source, &mut violations);
+        for decl_node in query::find_descendants_of_kind(*node, "declaration") {
+            self.check_declaration(&decl_node, source, &mut violations);
+        }
 
         violations
     }
 }
 
 impl Con02C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "declaration" {
-            self.check_declaration(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     fn check_declaration(
         &self,
         decl_node: &Node,
@@ -161,23 +151,10 @@ impl Con02C {
     }
 
     fn check_volatile_in_node(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "type_qualifier" {
-            let text = get_node_text(node, source);
-            if text.trim() == "volatile" {
-                return true;
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.check_volatile_in_node(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "type_qualifier" && get_node_text(&n, source).trim() == "volatile"
+        })
+        .is_some()
     }
 
     fn get_variable_info(&self, decl_node: &Node, source: &str) -> Option<VarInfo> {

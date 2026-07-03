@@ -77,6 +77,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -144,62 +145,55 @@ impl Con03C {
         source: &str,
         shared_vars: &mut HashMap<String, (usize, usize, bool, bool)>,
     ) {
-        if node.kind() == "declaration" {
+        for decl_node in query::find_descendants_of_kind(*node, "declaration") {
             // Check if this is a global or static declaration
-            let is_static = self.has_storage_class(node, source, "static");
-            let is_global = self.is_global_scope(node);
+            let is_static = self.has_storage_class(&decl_node, source, "static");
+            let is_global = self.is_global_scope(&decl_node);
 
-            if is_static || is_global {
-                // const-qualified variables are read-only — no data races possible
-                if self.has_type_qualifier(node, source, "const") {
-                    return;
-                }
+            if !(is_static || is_global) {
+                continue;
+            }
 
-                // Synchronization primitives ARE the synchronization — don't flag them
-                let decl_text = get_node_text(node, source);
-                if self.is_synchronization_type(&decl_text) {
-                    return;
-                }
+            // const-qualified variables are read-only — no data races possible
+            if self.has_type_qualifier(&decl_node, source, "const") {
+                continue;
+            }
 
-                let is_volatile = self.has_type_qualifier(node, source, "volatile");
-                let is_atomic = self.has_atomic_type(node, source);
+            // Synchronization primitives ARE the synchronization — don't flag them
+            let decl_text = get_node_text(&decl_node, source);
+            if self.is_synchronization_type(&decl_text) {
+                continue;
+            }
 
-                let line = node.start_position().row + 1;
-                let column = node.start_position().column + 1;
+            let is_volatile = self.has_type_qualifier(&decl_node, source, "volatile");
+            let is_atomic = self.has_atomic_type(&decl_node, source);
 
-                // Extract variable names from this declaration
-                if let Some(declarator_list) = self.find_child_by_kind(node, "init_declarator") {
-                    if let Some(declarator) = declarator_list.child_by_field_name("declarator") {
-                        let var_name = self.extract_variable_name(&declarator, source);
-                        if !var_name.is_empty() {
-                            shared_vars.insert(var_name, (line, column, is_volatile, is_atomic));
-                        }
+            let line = decl_node.start_position().row + 1;
+            let column = decl_node.start_position().column + 1;
+
+            // Extract variable names from this declaration
+            if let Some(declarator_list) = self.find_child_by_kind(&decl_node, "init_declarator") {
+                if let Some(declarator) = declarator_list.child_by_field_name("declarator") {
+                    let var_name = self.extract_variable_name(&declarator, source);
+                    if !var_name.is_empty() {
+                        shared_vars.insert(var_name, (line, column, is_volatile, is_atomic));
                     }
-                } else {
-                    // Try direct declarator
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            if child.kind() == "init_declarator" {
-                                if let Some(declarator) = child.child_by_field_name("declarator") {
-                                    let var_name = self.extract_variable_name(&declarator, source);
-                                    if !var_name.is_empty() {
-                                        shared_vars.insert(
-                                            var_name,
-                                            (line, column, is_volatile, is_atomic),
-                                        );
-                                    }
+                }
+            } else {
+                // Try direct declarator
+                for i in 0..decl_node.child_count() {
+                    if let Some(child) = decl_node.child(i) {
+                        if child.kind() == "init_declarator" {
+                            if let Some(declarator) = child.child_by_field_name("declarator") {
+                                let var_name = self.extract_variable_name(&declarator, source);
+                                if !var_name.is_empty() {
+                                    shared_vars
+                                        .insert(var_name, (line, column, is_volatile, is_atomic));
                                 }
                             }
                         }
                     }
                 }
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_shared_variables(&child, source, shared_vars);
             }
         }
     }

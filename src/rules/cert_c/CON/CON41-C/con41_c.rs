@@ -40,6 +40,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Con41C;
@@ -75,8 +76,8 @@ impl CertRule for Con41C {
 impl Con41C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for call expressions
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
 
                 // Check if this is an atomic compare-exchange weak function
@@ -85,8 +86,8 @@ impl Con41C {
                     "atomic_compare_exchange_weak" | "atomic_compare_exchange_weak_explicit"
                 ) {
                     // Check if the call is within a loop
-                    if !self.is_in_loop(node) {
-                        let line = node.start_position().row + 1;
+                    if !self.is_in_loop(&call) {
+                        let line = call.start_position().row + 1;
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             severity: Severity::Medium,
@@ -104,13 +105,6 @@ impl Con41C {
                         });
                     }
                 }
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }

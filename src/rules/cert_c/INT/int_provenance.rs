@@ -17,6 +17,7 @@
 use crate::analyze::function_summary::FunctionSummary;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::std_functions;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -127,63 +128,61 @@ fn collect_risky_vars_walk(
     source: &str,
     set: &mut HashSet<String>,
 ) {
-    match node.kind() {
-        // var = riskyCall(...)
-        "assignment_expression" => {
-            if let (Some(lhs), Some(rhs)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                if lhs.kind() == "identifier" && rhs_is_risky_call(&rhs, summaries, source) {
-                    set.insert(get_node_text(&lhs, source).trim().to_string());
-                }
-            }
-        }
-        // T var = riskyCall(...)
-        "init_declarator" => {
-            if let (Some(decl), Some(value)) = (
-                node.child_by_field_name("declarator"),
-                node.child_by_field_name("value"),
-            ) {
-                if rhs_is_risky_call(&value, summaries, source) {
-                    if let Some(name) = init_declarator_name(&decl, source) {
-                        set.insert(name);
+    let candidates = query::find_descendants_of_kinds(
+        *node,
+        &[
+            "assignment_expression",
+            "init_declarator",
+            "call_expression",
+        ],
+    );
+    for node in candidates {
+        match node.kind() {
+            // var = riskyCall(...)
+            "assignment_expression" => {
+                if let (Some(lhs), Some(rhs)) = (
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ) {
+                    if lhs.kind() == "identifier" && rhs_is_risky_call(&rhs, summaries, source) {
+                        set.insert(get_node_text(&lhs, source).trim().to_string());
                     }
                 }
             }
-        }
-        // riskySource(..., &var, ...) — fill by reference: any identifier
-        // appearing in the argument list of a risky call is conservatively
-        // treated as fed (covers scanf-into-&var and recv-into-buf).
-        "call_expression" => {
-            if let Some(f) = node.child_by_field_name("function") {
-                if callee_is_risky_source(&get_node_text(&f, source), summaries) {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        collect_arg_identifiers(&args, source, set);
+            // T var = riskyCall(...)
+            "init_declarator" => {
+                if let (Some(decl), Some(value)) = (
+                    node.child_by_field_name("declarator"),
+                    node.child_by_field_name("value"),
+                ) {
+                    if rhs_is_risky_call(&value, summaries, source) {
+                        if let Some(name) = init_declarator_name(&decl, source) {
+                            set.insert(name);
+                        }
                     }
                 }
             }
-        }
-        _ => {}
-    }
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_risky_vars_walk(&child, summaries, source, set);
+            // riskySource(..., &var, ...) — fill by reference: any identifier
+            // appearing in the argument list of a risky call is conservatively
+            // treated as fed (covers scanf-into-&var and recv-into-buf).
+            "call_expression" => {
+                if let Some(f) = node.child_by_field_name("function") {
+                    if callee_is_risky_source(&get_node_text(&f, source), summaries) {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            collect_arg_identifiers(&args, source, set);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
 
 /// Insert every identifier appearing in `args` into `set`.
 fn collect_arg_identifiers(args: &Node, source: &str, set: &mut HashSet<String>) {
-    if args.kind() == "identifier" {
-        set.insert(get_node_text(args, source).trim().to_string());
-        return;
-    }
-    for i in 0..args.child_count() {
-        if let Some(child) = args.child(i) {
-            collect_arg_identifiers(&child, source, set);
-        }
+    for ident in query::find_descendants_of_kind(*args, "identifier") {
+        set.insert(get_node_text(&ident, source).trim().to_string());
     }
 }
 
