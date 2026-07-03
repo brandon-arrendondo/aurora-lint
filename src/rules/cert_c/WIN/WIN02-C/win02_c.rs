@@ -18,6 +18,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Win02C;
@@ -52,8 +53,8 @@ impl CertRule for Win02C {
 
 impl Win02C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 if func_name == "CreateProcess" {
@@ -62,21 +63,14 @@ impl Win02C {
                         severity: Severity::High,
                         message: "CreateProcess() called - spawns child with inherited privileges".to_string(),
                         file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
+                        line: call.start_position().row + 1,
+                        column: call.start_position().column + 1,
                         suggestion: Some(
                             "Use CreateProcessAsUser() with appropriate token to explicitly control child process privileges".to_string()
                         ),
                         ..Default::default()
                     });
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }

@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -47,26 +48,10 @@ impl Arr36C {
         file_scope.collect_file_scope(node, source);
 
         // Second pass: per-function analysis with file-scope as base
-        self.visit_functions_inner(node, source, &file_scope, violations);
-    }
-
-    fn visit_functions_inner(
-        &self,
-        node: &Node,
-        source: &str,
-        file_scope: &PointerAnalyzer,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        if node.kind() == "function_definition" {
-            let mut analyzer = PointerAnalyzer::from(file_scope);
-            analyzer.collect_declarations(node, source);
-            self.check_node(node, source, &analyzer, violations);
-            return;
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.visit_functions_inner(&child, source, file_scope, violations);
-            }
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            let mut analyzer = PointerAnalyzer::from(&file_scope);
+            analyzer.collect_declarations(&func, source);
+            self.check_node(&func, source, &analyzer, violations);
         }
     }
 
@@ -77,15 +62,8 @@ impl Arr36C {
         analyzer: &PointerAnalyzer,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "binary_expression" {
-            self.check_binary_expression(node, source, analyzer, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, analyzer, violations);
-            }
+        for binary_expr in query::find_descendants_of_kind(*node, "binary_expression") {
+            self.check_binary_expression(&binary_expr, source, analyzer, violations);
         }
     }
 
@@ -223,23 +201,26 @@ impl PointerAnalyzer {
     }
 
     fn collect_declarations(&mut self, node: &Node, source: &str) {
-        match node.kind() {
-            "declaration" => {
-                self.process_declaration(node, source);
-            }
-            "parameter_declaration" => {
-                self.process_parameter(node, source);
-            }
-            "expression_statement" => {
-                self.process_assignment(node, source);
-            }
-            _ => {}
-        }
-
-        // Recursively process child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_declarations(&child, source);
+        let matches = query::find_descendants_of_kinds(
+            *node,
+            &[
+                "declaration",
+                "parameter_declaration",
+                "expression_statement",
+            ],
+        );
+        for n in matches {
+            match n.kind() {
+                "declaration" => {
+                    self.process_declaration(&n, source);
+                }
+                "parameter_declaration" => {
+                    self.process_parameter(&n, source);
+                }
+                "expression_statement" => {
+                    self.process_assignment(&n, source);
+                }
+                _ => {}
             }
         }
     }

@@ -28,6 +28,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Win03C;
@@ -250,13 +251,8 @@ impl CertRule for Win03C {
 impl Win03C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for unsafe handle inheritance patterns
-        self.check_function_call(node, source, violations);
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            self.check_function_call(&call, source, violations);
         }
     }
 }

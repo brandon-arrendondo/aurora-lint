@@ -26,6 +26,7 @@ use crate::utility::cert_c::variable_analysis::{
     has_bounds_validation, has_validation_before_loop, is_uninitialized_variable,
     is_user_input_variable,
 };
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Arr00C;
@@ -58,11 +59,23 @@ impl CertRule for Arr00C {
         // (e.g. `arr[2*SPLINE_SEGMENT_DIVISIONS + 2]`). Built once per file.
         let macros = collect_macro_constants(node, source);
 
-        // Iterative pre-order traversal: deeply nested ASTs (e.g. files with
-        // thousands of chained `else if` branches) overflow the stack if each
-        // node level adds a call frame.
-        let mut stack = vec![*node];
-        while let Some(current) = stack.pop() {
+        // Iterative pre-order traversal (via substrate::query): deeply nested
+        // ASTs (e.g. files with thousands of chained `else if` branches)
+        // overflow the stack if each node level adds a call frame.
+        let candidates = query::find_descendants_of_kinds(
+            *node,
+            &[
+                "assignment_expression",
+                "sizeof_expression",
+                "binary_expression",
+                "declaration",
+                "call_expression",
+                "for_statement",
+                "return_statement",
+                "subscript_expression",
+            ],
+        );
+        for current in candidates {
             let node = &current;
             match node.kind() {
                 "assignment_expression" => {
@@ -162,13 +175,6 @@ impl CertRule for Arr00C {
                     }
                 }
                 _ => {}
-            }
-
-            // Push children in reverse so they are visited in source order
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i) {
-                    stack.push(child);
-                }
             }
         }
 

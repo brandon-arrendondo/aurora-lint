@@ -24,6 +24,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Err00C;
@@ -59,47 +60,50 @@ impl CertRule for Err00C {
 impl Err00C {
     /// Check for unchecked error returns
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "init_declarator" => {
-                // Check variable initialization with error-prone functions
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    if let Some(value) = node.child_by_field_name("value") {
-                        if value.kind() == "call_expression" {
-                            self.check_unchecked_assignment(
-                                &declarator,
-                                &value,
-                                source,
-                                violations,
-                            );
+        let matches = query::find_descendants_of_kinds(
+            *node,
+            &[
+                "init_declarator",
+                "assignment_expression",
+                "expression_statement",
+            ],
+        );
+        for n in matches {
+            match n.kind() {
+                "init_declarator" => {
+                    // Check variable initialization with error-prone functions
+                    if let Some(declarator) = n.child_by_field_name("declarator") {
+                        if let Some(value) = n.child_by_field_name("value") {
+                            if value.kind() == "call_expression" {
+                                self.check_unchecked_assignment(
+                                    &declarator,
+                                    &value,
+                                    source,
+                                    violations,
+                                );
+                            }
                         }
                     }
                 }
-            }
-            "assignment_expression" => {
-                // Check assignments with error-prone functions
-                if let Some(left) = node.child_by_field_name("left") {
-                    if let Some(right) = node.child_by_field_name("right") {
-                        if right.kind() == "call_expression" {
-                            self.check_unchecked_assignment(&left, &right, source, violations);
+                "assignment_expression" => {
+                    // Check assignments with error-prone functions
+                    if let Some(left) = n.child_by_field_name("left") {
+                        if let Some(right) = n.child_by_field_name("right") {
+                            if right.kind() == "call_expression" {
+                                self.check_unchecked_assignment(&left, &right, source, violations);
+                            }
                         }
                     }
                 }
-            }
-            "expression_statement" => {
-                // Check standalone function calls that ignore return values
-                if let Some(child) = node.child(0) {
-                    if child.kind() == "call_expression" {
-                        self.check_ignored_return(&child, source, violations);
+                "expression_statement" => {
+                    // Check standalone function calls that ignore return values
+                    if let Some(child) = n.child(0) {
+                        if child.kind() == "call_expression" {
+                            self.check_ignored_return(&child, source, violations);
+                        }
                     }
                 }
-            }
-            _ => {}
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+                _ => {}
             }
         }
     }

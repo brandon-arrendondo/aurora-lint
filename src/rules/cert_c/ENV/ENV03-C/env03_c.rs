@@ -24,6 +24,7 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::{get_node_text, is_function_parameter};
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -189,7 +190,9 @@ impl Env03C {
     /// Find all system()/popen() calls and check if their containing scope
     /// has environment sanitization.
     fn check_all_calls(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "call_expression" {
+        let calls = query::find_descendants_of_kind(*node, "call_expression");
+        for node in calls {
+            let node = &node;
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 let resolved = self.resolve_name(&func_name);
@@ -231,13 +234,6 @@ impl Env03C {
                 }
             }
         }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_all_calls(&child, source, violations);
-            }
-        }
     }
 
     /// Find the containing function_definition, or the translation_unit root.
@@ -260,7 +256,8 @@ impl Env03C {
             return; // Already found
         }
 
-        if node.kind() == "call_expression" {
+        let calls = query::find_descendants_of_kind(*node, "call_expression");
+        for node in &calls {
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
@@ -307,13 +304,6 @@ impl Env03C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_for_sanitization(&child, source, has_sanitization);
             }
         }
     }
@@ -458,30 +448,25 @@ fn walk_for_taint(node: &Node, source: &str, found: &mut bool) {
     if *found {
         return;
     }
-    if node.kind() == "call_expression" {
-        if let Some(function) = node.child_by_field_name("function") {
-            let name = get_node_text(&function, source);
-            let ident = trailing_identifier(name);
-            // Check exact match first, then case-insensitive for UPPERCASE macro
-            // aliases (e.g. Juliet's `#define GETENV getenv`).
-            if TAINT_SOURCES.contains(&ident) {
-                *found = true;
-                return;
-            }
-            let lower = ident.to_lowercase();
-            if lower != ident && TAINT_SOURCES.contains(&lower.as_str()) {
-                *found = true;
-                return;
-            }
+    let call = query::find_first_descendant(*node, |n| {
+        if n.kind() != "call_expression" {
+            return false;
         }
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            walk_for_taint(&child, source, found);
-            if *found {
-                return;
-            }
+        let Some(function) = n.child_by_field_name("function") else {
+            return false;
+        };
+        let name = get_node_text(&function, source);
+        let ident = trailing_identifier(name);
+        // Check exact match first, then case-insensitive for UPPERCASE macro
+        // aliases (e.g. Juliet's `#define GETENV getenv`).
+        if TAINT_SOURCES.contains(&ident) {
+            return true;
         }
+        let lower = ident.to_lowercase();
+        lower != ident && TAINT_SOURCES.contains(&lower.as_str())
+    });
+    if call.is_some() {
+        *found = true;
     }
 }
 
@@ -604,37 +589,36 @@ fn collect_variable_writes<'a>(
     source: &str,
     writes: &mut HashMap<String, Vec<Node<'a>>>,
 ) {
-    match node.kind() {
-        "init_declarator" => {
-            if let Some(decl) = node.child_by_field_name("declarator") {
-                if let Some(name) = extract_declarator_name(&decl, source) {
-                    if let Some(value) = node.child_by_field_name("value") {
-                        writes.entry(name).or_default().push(value);
-                    }
-                }
-            }
-        }
-        "assignment_expression" => {
-            if let Some(lhs) = node.child_by_field_name("left") {
-                let lhs = strip_casts_and_parens(lhs);
-                if lhs.kind() == "identifier" {
-                    let op_is_plain = node_operator(node, source)
-                        .map(|op| op == "=")
-                        .unwrap_or(true);
-                    if op_is_plain {
-                        if let Some(rhs) = node.child_by_field_name("right") {
-                            let name = get_node_text(&lhs, source).to_string();
-                            writes.entry(name).or_default().push(rhs);
+    let candidates =
+        query::find_descendants_of_kinds(*node, &["init_declarator", "assignment_expression"]);
+    for node in &candidates {
+        match node.kind() {
+            "init_declarator" => {
+                if let Some(decl) = node.child_by_field_name("declarator") {
+                    if let Some(name) = extract_declarator_name(&decl, source) {
+                        if let Some(value) = node.child_by_field_name("value") {
+                            writes.entry(name).or_default().push(value);
                         }
                     }
                 }
             }
-        }
-        _ => {}
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_variable_writes(&child, source, writes);
+            "assignment_expression" => {
+                if let Some(lhs) = node.child_by_field_name("left") {
+                    let lhs = strip_casts_and_parens(lhs);
+                    if lhs.kind() == "identifier" {
+                        let op_is_plain = node_operator(node, source)
+                            .map(|op| op == "=")
+                            .unwrap_or(true);
+                        if op_is_plain {
+                            if let Some(rhs) = node.child_by_field_name("right") {
+                                let name = get_node_text(&lhs, source).to_string();
+                                writes.entry(name).or_default().push(rhs);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -743,7 +727,8 @@ fn collect_local_literal_buffers(
 }
 
 fn walk_buffer_decls(node: &Node, source: &str, out: &mut HashSet<String>) {
-    if node.kind() == "declaration" {
+    let decls = query::find_descendants_of_kind(*node, "declaration");
+    for node in &decls {
         for i in 0..node.child_count() {
             let Some(child) = node.child(i) else { continue };
             let (decl_node, init_node) = match child.kind() {
@@ -767,11 +752,6 @@ fn walk_buffer_decls(node: &Node, source: &str, out: &mut HashSet<String>) {
             }
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            walk_buffer_decls(&child, source, out);
-        }
-    }
 }
 
 fn walk_pointer_aliases(
@@ -780,59 +760,58 @@ fn walk_pointer_aliases(
     summaries: &HashMap<String, FunctionSummary>,
     out: &mut HashSet<String>,
 ) {
-    match node.kind() {
-        "declaration" => {
-            for i in 0..node.child_count() {
-                let Some(child) = node.child(i) else { continue };
-                if child.kind() != "init_declarator" {
-                    continue;
-                }
-                let Some(decl) = child.child_by_field_name("declarator") else {
-                    continue;
-                };
-                if decl.kind() != "pointer_declarator" {
-                    continue;
-                }
-                let Some(value) = child.child_by_field_name("value") else {
-                    continue;
-                };
-                if rhs_is_safe(Some(&value), out, source, summaries) {
-                    if let Some(name) = extract_declarator_name(&decl, source) {
-                        out.insert(name);
+    let candidates =
+        query::find_descendants_of_kinds(*node, &["declaration", "assignment_expression"]);
+    for node in &candidates {
+        match node.kind() {
+            "declaration" => {
+                for i in 0..node.child_count() {
+                    let Some(child) = node.child(i) else { continue };
+                    if child.kind() != "init_declarator" {
+                        continue;
                     }
-                }
-            }
-        }
-        "assignment_expression" => {
-            if let Some(lhs) = node.child_by_field_name("left") {
-                let lhs = strip_casts_and_parens(lhs);
-                let op_is_plain = node_operator(node, source)
-                    .map(|op| op == "=")
-                    .unwrap_or(true);
-                if lhs.kind() == "identifier" && op_is_plain {
-                    let rhs = node.child_by_field_name("right");
-                    if rhs_is_safe(rhs.as_ref(), out, source, summaries) {
-                        out.insert(get_node_text(&lhs, source).to_string());
+                    let Some(decl) = child.child_by_field_name("declarator") else {
+                        continue;
+                    };
+                    if decl.kind() != "pointer_declarator" {
+                        continue;
                     }
-                } else if lhs.kind() == "field_expression" && op_is_plain {
-                    // union_var.member = safe_value → mark the aggregate variable
-                    // as a safe source. Only `.` access (local aggregate), not `->`
-                    // (pointer dereference). Handles Juliet v34: union data flow
-                    // where the same slot is read back through the other member alias.
-                    if let Some(base) = field_expr_dot_base(&lhs, source) {
-                        let rhs = node.child_by_field_name("right");
-                        if rhs_is_safe(rhs.as_ref(), out, source, summaries) {
-                            out.insert(base);
+                    let Some(value) = child.child_by_field_name("value") else {
+                        continue;
+                    };
+                    if rhs_is_safe(Some(&value), out, source, summaries) {
+                        if let Some(name) = extract_declarator_name(&decl, source) {
+                            out.insert(name);
                         }
                     }
                 }
             }
-        }
-        _ => {}
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            walk_pointer_aliases(&child, source, summaries, out);
+            "assignment_expression" => {
+                if let Some(lhs) = node.child_by_field_name("left") {
+                    let lhs = strip_casts_and_parens(lhs);
+                    let op_is_plain = node_operator(node, source)
+                        .map(|op| op == "=")
+                        .unwrap_or(true);
+                    if lhs.kind() == "identifier" && op_is_plain {
+                        let rhs = node.child_by_field_name("right");
+                        if rhs_is_safe(rhs.as_ref(), out, source, summaries) {
+                            out.insert(get_node_text(&lhs, source).to_string());
+                        }
+                    } else if lhs.kind() == "field_expression" && op_is_plain {
+                        // union_var.member = safe_value → mark the aggregate variable
+                        // as a safe source. Only `.` access (local aggregate), not `->`
+                        // (pointer dereference). Handles Juliet v34: union data flow
+                        // where the same slot is read back through the other member alias.
+                        if let Some(base) = field_expr_dot_base(&lhs, source) {
+                            let rhs = node.child_by_field_name("right");
+                            if rhs_is_safe(rhs.as_ref(), out, source, summaries) {
+                                out.insert(base);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -891,41 +870,29 @@ fn check_writes(
     string_macros: &HashMap<String, String>,
     all_safe: &mut bool,
 ) {
-    if !*all_safe {
-        return;
-    }
-
-    match node.kind() {
-        "init_declarator" => {
-            check_init_declarator_write(node, var, safe_sources, source, summaries, all_safe);
+    let candidates = query::find_descendants_of_kinds(
+        *node,
+        &[
+            "init_declarator",
+            "assignment_expression",
+            "call_expression",
+        ],
+    );
+    for node in &candidates {
+        if !*all_safe {
+            return;
         }
-        "assignment_expression" => {
-            check_assignment_write(node, var, safe_sources, source, summaries, all_safe);
-        }
-        "call_expression" => {
-            check_str_append_write(node, var, safe_sources, source, string_macros, all_safe);
-        }
-        _ => {}
-    }
-
-    if !*all_safe {
-        return;
-    }
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            check_writes(
-                &child,
-                var,
-                safe_sources,
-                source,
-                summaries,
-                string_macros,
-                all_safe,
-            );
-            if !*all_safe {
-                return;
+        match node.kind() {
+            "init_declarator" => {
+                check_init_declarator_write(node, var, safe_sources, source, summaries, all_safe);
             }
+            "assignment_expression" => {
+                check_assignment_write(node, var, safe_sources, source, summaries, all_safe);
+            }
+            "call_expression" => {
+                check_str_append_write(node, var, safe_sources, source, string_macros, all_safe);
+            }
+            _ => {}
         }
     }
 }

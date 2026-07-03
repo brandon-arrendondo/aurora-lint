@@ -41,6 +41,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Err04C;
@@ -76,25 +77,18 @@ impl CertRule for Err04C {
 impl Err04C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for call expressions that might be abort() or _Exit()
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(func_node) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&func_node, source);
 
                 if self.is_unsafe_termination(&func_name) {
                     // Check if there are file I/O operations in the same function
-                    if let Some(function_def) = self.find_containing_function(node) {
+                    if let Some(function_def) = self.find_containing_function(&call) {
                         if self.has_file_io_operations(&function_def, source) {
-                            self.report_violation(node, &func_name, source, violations);
+                            self.report_violation(&call, &func_name, source, violations);
                         }
                     }
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }
@@ -122,26 +116,17 @@ impl Err04C {
     }
 
     fn contains_file_io_call(&self, node: &Node, source: &str) -> bool {
-        // Check if this node is a call to a file I/O function
-        if node.kind() == "call_expression" {
-            if let Some(func_node) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func_node, source);
-                if self.is_file_io_function(&func_name) {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_file_io_call(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            let Some(func_node) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&func_node, source);
+            self.is_file_io_function(&func_name)
+        })
+        .is_some()
     }
 
     fn is_file_io_function(&self, name: &str) -> bool {

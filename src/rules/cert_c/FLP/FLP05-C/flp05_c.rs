@@ -18,6 +18,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -65,25 +66,23 @@ impl Flp05C {
         violations: &mut Vec<RuleViolation>,
         var_types: &mut HashMap<String, String>,
     ) {
-        // Track variable declarations to know their types
-        if node.kind() == "declaration" {
-            self.process_declaration(node, source, var_types);
-        }
-
-        // Look for binary expressions involving potential denormalized values
-        if node.kind() == "binary_expression" {
-            self.check_binary_expression(node, source, violations, var_types);
-        }
-
-        // Look for assignments of denormalized values to float
-        if node.kind() == "init_declarator" {
-            self.check_init_declarator(node, source, violations);
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, var_types);
+        // Visit declarations, binary expressions, and init declarators in
+        // document pre-order (same order the original recursive walk visited
+        // them in), since var_types is built incrementally as we go.
+        for n in query::find_descendants_of_kinds(
+            *node,
+            &["declaration", "binary_expression", "init_declarator"],
+        ) {
+            match n.kind() {
+                // Track variable declarations to know their types
+                "declaration" => self.process_declaration(&n, source, var_types),
+                // Look for binary expressions involving potential denormalized values
+                "binary_expression" => {
+                    self.check_binary_expression(&n, source, violations, var_types)
+                }
+                // Look for assignments of denormalized values to float
+                "init_declarator" => self.check_init_declarator(&n, source, violations),
+                _ => unreachable!(),
             }
         }
     }

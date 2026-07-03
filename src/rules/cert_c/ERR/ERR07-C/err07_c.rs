@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Err07C;
@@ -39,22 +40,15 @@ impl CertRule for Err07C {
     }
 }
 
-/// Recursively check all function calls for unsafe functions
+/// Check all function calls for unsafe functions
 fn check_function_calls(
     node: &Node,
     source: &str,
     violations: &mut Vec<RuleViolation>,
     rule_id: &str,
 ) {
-    if node.kind() == "call_expression" {
-        check_call_expression(node, source, violations, rule_id);
-    }
-
-    // Recursively check children
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            check_function_calls(&child, source, violations, rule_id);
-        }
+    for call in query::find_descendants_of_kind(*node, "call_expression") {
+        check_call_expression(&call, source, violations, rule_id);
     }
 }
 
@@ -108,14 +102,9 @@ const LIBRARY_LOAD_SINKS: &[&str] = &[
 ];
 
 fn check_tainted_library_loads(node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-    if node.kind() == "function_definition" {
-        if let Some(body) = node.child_by_field_name("body") {
+    for func in query::find_descendants_of_kind(*node, "function_definition") {
+        if let Some(body) = func.child_by_field_name("body") {
             check_function_for_taint_to_library(&body, source, violations);
-        }
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            check_tainted_library_loads(&child, source, violations);
         }
     }
 }
@@ -157,8 +146,8 @@ fn scan_taint_and_loads(
     has_taint: &mut bool,
     load_positions: &mut Vec<(String, usize, usize)>,
 ) {
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
+    for call in query::find_descendants_of_kind(*node, "call_expression") {
+        if let Some(func) = call.child_by_field_name("function") {
             let name = ast_utils::get_node_text(&func, source).trim().to_string();
             if TAINT_SOURCES.contains(&name.as_str()) {
                 *has_taint = true;
@@ -166,15 +155,10 @@ fn scan_taint_and_loads(
             if LIBRARY_LOAD_SINKS.contains(&name.as_str()) {
                 load_positions.push((
                     name,
-                    node.start_position().row + 1,
-                    node.start_position().column + 1,
+                    call.start_position().row + 1,
+                    call.start_position().column + 1,
                 ));
             }
-        }
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            scan_taint_and_loads(&child, source, has_taint, load_positions);
         }
     }
 }

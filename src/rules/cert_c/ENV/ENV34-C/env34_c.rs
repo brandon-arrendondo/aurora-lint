@@ -52,6 +52,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Env34C;
@@ -85,19 +86,16 @@ impl CertRule for Env34C {
 }
 
 impl Env34C {
-    /// Recursively check nodes for dangerous pointer storage
+    /// Check nodes for dangerous pointer storage
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for assignments or declarations that store pointers from affected functions
-        if node.kind() == "assignment_expression" {
-            self.check_assignment(node, source, violations);
-        } else if node.kind() == "init_declarator" {
-            self.check_init_declarator(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+        for n in
+            query::find_descendants_of_kinds(*node, &["assignment_expression", "init_declarator"])
+        {
+            if n.kind() == "assignment_expression" {
+                self.check_assignment(&n, source, violations);
+            } else if n.kind() == "init_declarator" {
+                self.check_init_declarator(&n, source, violations);
             }
         }
     }

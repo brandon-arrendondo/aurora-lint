@@ -25,6 +25,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Err30C;
@@ -59,22 +60,17 @@ impl CertRule for Err30C {
 
 impl Err30C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            // Check for errno usage in if conditions
-            "if_statement" => {
-                self.check_errno_in_if(node, source, violations);
-            }
-            // Check for in-band function calls without errno initialization
-            "call_expression" => {
-                self.check_inband_function_call(node, source, violations);
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+        for n in query::find_descendants_of_kinds(*node, &["if_statement", "call_expression"]) {
+            match n.kind() {
+                // Check for errno usage in if conditions
+                "if_statement" => {
+                    self.check_errno_in_if(&n, source, violations);
+                }
+                // Check for in-band function calls without errno initialization
+                "call_expression" => {
+                    self.check_inband_function_call(&n, source, violations);
+                }
+                _ => {}
             }
         }
     }
@@ -183,30 +179,21 @@ impl Err30C {
 
     /// Check if a node contains errno = 0 assignment
     fn contains_errno_reset(&self, node: &Node, source: &str) -> bool {
-        // Check if this node is an assignment to errno
-        if node.kind() == "assignment_expression" {
-            if let (Some(left), Some(right)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                let left_text = get_node_text(&left, source);
-                let right_text = get_node_text(&right, source);
-
-                if left_text == "errno" && right_text == "0" {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "assignment_expression" {
+                return false;
             }
-        }
-
-        // Recursively search children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_errno_reset(&child, source) {
-                    return true;
-                }
-            }
-        }
-        false
+            let (Some(left), Some(right)) = (
+                n.child_by_field_name("left"),
+                n.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            let left_text = get_node_text(&left, source);
+            let right_text = get_node_text(&right, source);
+            left_text == "errno" && right_text == "0"
+        })
+        .is_some()
     }
 
     /// Find the most recent out-of-band function call before the given node
@@ -237,26 +224,18 @@ impl Err30C {
         None
     }
 
-    /// Recursively find an out-of-band function call in a node
+    /// Find an out-of-band function call in a node
     fn find_outofband_call_in_node<'a>(&self, node: &Node<'a>, source: &str) -> Option<Node<'a>> {
-        if node.kind() == "call_expression" {
-            if let Some(function_node) = node.child_by_field_name("function") {
-                let function_name = get_node_text(&function_node, source);
-                if self.is_outofband_function(&function_name) {
-                    return Some(*node);
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        // Search children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(call) = self.find_outofband_call_in_node(&child, source) {
-                    return Some(call);
-                }
-            }
-        }
-        None
+            let Some(function_node) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let function_name = get_node_text(&function_node, source);
+            self.is_outofband_function(&function_name)
+        })
     }
 
     /// Check if the return value of a function was checked before errno was examined

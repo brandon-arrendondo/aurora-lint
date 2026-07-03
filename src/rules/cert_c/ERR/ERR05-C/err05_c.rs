@@ -60,6 +60,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Err05C;
@@ -93,19 +94,12 @@ impl CertRule for Err05C {
 }
 
 impl Err05C {
-    /// Recursively check nodes for abort/exit calls
+    /// Check nodes for abort/exit calls
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check if this is a function definition (not main)
-        if node.kind() == "function_definition" {
-            if !self.is_main_function(node, source) {
-                self.check_function_for_termination_calls(node, source, violations);
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+        // Check function definitions (not main)
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            if !self.is_main_function(&func, source) {
+                self.check_function_for_termination_calls(&func, source, violations);
             }
         }
     }
@@ -167,7 +161,7 @@ impl Err05C {
         }
     }
 
-    /// Recursively scan for termination function calls
+    /// Scan for termination function calls
     fn scan_for_termination_calls(
         &self,
         node: &Node,
@@ -175,8 +169,8 @@ impl Err05C {
         func_name: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let called_func = get_node_text(&function, source);
 
                 if self.is_termination_function(&called_func) {
@@ -190,8 +184,8 @@ impl Err05C {
                             func_name, called_func
                         ),
                         severity: self.severity(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
+                        line: call.start_position().row + 1,
+                        column: call.start_position().column + 1,
                         file_path: String::new(),
                         suggestion: Some(format!(
                             "Replace '{}' with error reporting via return value (e.g., 'return ERROR_CODE;'), \
@@ -201,13 +195,6 @@ impl Err05C {
                         requires_manual_review: None,
                     });
                 }
-            }
-        }
-
-        // Recursively scan children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.scan_for_termination_calls(&child, source, func_name, violations);
             }
         }
     }

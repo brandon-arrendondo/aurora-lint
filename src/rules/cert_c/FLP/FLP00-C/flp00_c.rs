@@ -41,6 +41,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Flp00C;
@@ -81,7 +82,7 @@ impl Flp00C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "binary_expression" {
+        for node in query::find_descendants_of_kind(*node, "binary_expression") {
             // Check for == or != operators
             if let Some(operator) = node.child_by_field_name("operator") {
                 let op_text = get_node_text(&operator, source);
@@ -126,13 +127,6 @@ impl Flp00C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_fp_equality_comparisons(&child, source, violations);
             }
         }
     }

@@ -26,6 +26,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Env31C;
@@ -64,26 +65,21 @@ impl CertRule for Env31C {
 impl Env31C {
     /// Find main function definitions and analyze envp usage
     fn find_main_functions(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+        let function_definitions = query::find_descendants_of_kind(*node, "function_definition");
+
+        for func_def in function_definitions {
+            if let Some(declarator) = func_def.child_by_field_name("declarator") {
                 let func_name = self.get_function_name(&declarator, source);
 
                 if func_name == "main" {
                     // Check if main has envp parameter
                     if let Some(envp_param) = self.find_envp_parameter(&declarator, source) {
                         // Analyze function body for environment modifications followed by envp usage
-                        if let Some(body) = node.child_by_field_name("body") {
+                        if let Some(body) = func_def.child_by_field_name("body") {
                             self.analyze_main_body(&body, source, &envp_param, violations);
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_main_functions(&child, source, violations);
             }
         }
     }
@@ -219,25 +215,21 @@ impl Env31C {
         mod_line: &mut Option<usize>,
         mod_func: &mut String,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-
-                if self.is_env_modifying_function(&func_name) {
-                    let line = node.start_position().row + 1;
-                    // Only record the first modification
-                    if mod_line.is_none() {
-                        *mod_line = Some(line);
-                        *mod_func = func_name.to_string();
-                    }
-                }
+        let found = query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
+            n.child_by_field_name("function").is_some_and(|function| {
+                self.is_env_modifying_function(get_node_text(&function, source))
+            })
+        });
 
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_env_modification(&child, source, mod_line, mod_func);
+        if let Some(call) = found {
+            if let Some(function) = call.child_by_field_name("function") {
+                let func_name = get_node_text(&function, source);
+                let line = call.start_position().row + 1;
+                *mod_line = Some(line);
+                *mod_func = func_name.to_string();
             }
         }
     }
@@ -252,42 +244,33 @@ impl Env31C {
         mod_func: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check for envp identifier usage
-        if node.kind() == "identifier" {
-            let ident = get_node_text(node, source);
-            if ident == envp_name {
-                let usage_line = node.start_position().row + 1;
-                if usage_line > mod_line {
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        message: format!(
-                            "Using '{}' after call to '{}' on line {}. The environment pointer \
-                             may be invalidated after environment-modifying functions. \
-                             Use 'environ' global variable instead.",
-                            envp_name, mod_func, mod_line
-                        ),
-                        severity: self.severity(),
-                        line: usage_line,
-                        column: node.start_position().column + 1,
-                        file_path: String::new(),
-                        suggestion: Some(format!(
-                            "Replace '{}' with 'extern char **environ' and use 'environ' instead",
-                            envp_name
-                        )),
-                        requires_manual_review: None,
-                    });
-                    return; // Only report first usage after modification
-                }
+        let matches = query::find_descendants(*node, |n| {
+            if n.kind() != "identifier" {
+                return false;
             }
-        }
+            get_node_text(&n, source) == envp_name && n.start_position().row + 1 > mod_line
+        });
 
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_envp_usage_after(
-                    &child, source, envp_name, mod_line, mod_func, violations,
-                );
-            }
+        for usage in matches {
+            let usage_line = usage.start_position().row + 1;
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                message: format!(
+                    "Using '{}' after call to '{}' on line {}. The environment pointer \
+                     may be invalidated after environment-modifying functions. \
+                     Use 'environ' global variable instead.",
+                    envp_name, mod_func, mod_line
+                ),
+                severity: self.severity(),
+                line: usage_line,
+                column: usage.start_position().column + 1,
+                file_path: String::new(),
+                suggestion: Some(format!(
+                    "Replace '{}' with 'extern char **environ' and use 'environ' instead",
+                    envp_name
+                )),
+                requires_manual_review: None,
+            });
         }
     }
 

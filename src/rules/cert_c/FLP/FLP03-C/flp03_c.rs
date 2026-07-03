@@ -49,6 +49,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -68,8 +69,8 @@ impl FpAnalyzer {
 
     /// Collect all floating-point variable declarations from the AST
     fn collect_float_vars(&mut self, node: &Node, source: &str) {
-        if node.kind() == "declaration" {
-            let decl_text = get_node_text(node, source);
+        for decl in query::find_descendants_of_kind(*node, "declaration") {
+            let decl_text = get_node_text(&decl, source);
             // Check if this is a float/double declaration
             if decl_text.starts_with("float")
                 || decl_text.starts_with("double")
@@ -77,39 +78,25 @@ impl FpAnalyzer {
                 || decl_text.contains(" double ")
             {
                 // Extract all identifiers from this declaration
-                self.extract_identifiers_from_declaration(node, source);
-            }
-        }
-
-        // Recursively process children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_float_vars(&child, source);
+                self.extract_identifiers_from_declaration(&decl, source);
             }
         }
     }
 
     fn extract_identifiers_from_declaration(&mut self, node: &Node, source: &str) {
         // Look for init_declarator or declarator nodes containing identifiers
-        if node.kind() == "identifier" {
+        for id_node in query::find_descendants_of_kind(*node, "identifier") {
             // Verify parent is a declarator-type node (not type specifier)
-            if let Some(parent) = node.parent() {
+            if let Some(parent) = id_node.parent() {
                 let parent_kind = parent.kind();
                 if parent_kind == "init_declarator"
                     || parent_kind == "declarator"
                     || parent_kind == "pointer_declarator"
                     || parent_kind == "array_declarator"
                 {
-                    let var_name = get_node_text(node, source).to_string();
+                    let var_name = get_node_text(&id_node, source).to_string();
                     self.float_vars.insert(var_name);
                 }
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.extract_identifiers_from_declaration(&child, source);
             }
         }
     }
@@ -148,23 +135,10 @@ impl FpAnalyzer {
     }
 
     fn contains_float_identifier(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "identifier" {
-            let name = get_node_text(node, source);
-            if self.float_vars.contains(name) {
-                return true;
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_float_identifier(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "identifier" && self.float_vars.contains(get_node_text(&n, source))
+        })
+        .is_some()
     }
 }
 
@@ -194,42 +168,36 @@ impl Flp03C {
 
     /// Check if a node contains floating-point error checking calls
     fn contains_fp_error_checking(&self, node: &Node, source: &str) -> bool {
-        // Check this node
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                if self.is_fp_error_check_function(func_name) {
-                    return true;
+        query::find_first_descendant(*node, |n| {
+            // Check this node
+            if n.kind() == "call_expression" {
+                if let Some(function) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&function, source);
+                    if self.is_fp_error_check_function(func_name) {
+                        return true;
+                    }
                 }
             }
-        }
 
-        // Check for Windows SEH exception handling (_try/_except or __try/__except)
-        // These are typically parsed as identifier nodes with the text "_try", "__try", etc.
-        let node_text = get_node_text(node, source);
-        if node_text.contains("_try")
-            || node_text.contains("__try")
-            || node_text.contains("_except")
-            || node_text.contains("__except")
-        {
-            return true;
-        }
-
-        // Also check for _fpieee_flt which is Windows FP exception handling
-        if node_text.contains("_fpieee_flt") || node_text.contains("unmask_fpsr") {
-            return true;
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_fp_error_checking(&child, source) {
-                    return true;
-                }
+            // Check for Windows SEH exception handling (_try/_except or __try/__except)
+            // These are typically parsed as identifier nodes with the text "_try", "__try", etc.
+            let node_text = get_node_text(&n, source);
+            if node_text.contains("_try")
+                || node_text.contains("__try")
+                || node_text.contains("_except")
+                || node_text.contains("__except")
+            {
+                return true;
             }
-        }
 
-        false
+            // Also check for _fpieee_flt which is Windows FP exception handling
+            if node_text.contains("_fpieee_flt") || node_text.contains("unmask_fpsr") {
+                return true;
+            }
+
+            false
+        })
+        .is_some()
     }
 
     /// Check for floating-point division operations
@@ -666,15 +634,8 @@ impl Flp03C {
         analyzer: &FpAnalyzer,
     ) {
         // Check for floating-point division without error checking
-        if node.kind() == "binary_expression" {
-            self.check_fp_division(node, source, violations, analyzer);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, analyzer);
-            }
+        for binary_expr in query::find_descendants_of_kind(*node, "binary_expression") {
+            self.check_fp_division(&binary_expr, source, violations, analyzer);
         }
     }
 }

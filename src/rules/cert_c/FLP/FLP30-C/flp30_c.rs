@@ -24,6 +24,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Flp30C;
@@ -64,7 +65,7 @@ impl Flp30C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "for_statement" {
+        for node in query::find_descendants_of_kind(*node, "for_statement") {
             // Check the initialization part of the for loop
             if let Some(init) = node.child_by_field_name("initializer") {
                 if let Some(fp_var) = self.has_floating_point_init(&init, source) {
@@ -86,13 +87,6 @@ impl Flp30C {
                         requires_manual_review: None,
                     });
                 }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_floating_point_loops(&child, source, violations);
             }
         }
     }
@@ -151,18 +145,7 @@ impl Flp30C {
 
     /// Find identifier in node tree
     fn find_identifier(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "identifier" {
-            return Some(get_node_text(node, source).to_string());
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(name) = self.find_identifier(&child, source) {
-                    return Some(name);
-                }
-            }
-        }
-
-        None
+        query::find_first_descendant(*node, |n| n.kind() == "identifier")
+            .map(|n| get_node_text(&n, source).to_string())
     }
 }

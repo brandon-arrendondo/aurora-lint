@@ -27,6 +27,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -76,13 +77,13 @@ impl Sig30C {
 
     fn collect_handlers(&self, node: &Node, source: &str, handlers: &mut HashSet<String>) {
         // Look for signal(SIGXXX, handler_func) calls
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 if func_name == "signal" || func_name == "sigaction" {
                     // Get the handler function name (second argument for signal())
-                    if let Some(args) = node.child_by_field_name("arguments") {
+                    if let Some(args) = call.child_by_field_name("arguments") {
                         let arg_list = self.get_arguments(&args, source);
 
                         // For signal(sig, handler), handler is second arg
@@ -109,13 +110,6 @@ impl Sig30C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_handlers(&child, source, handlers);
             }
         }
     }
@@ -145,25 +139,18 @@ impl Sig30C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check if this is a function definition that's a signal handler
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(declarator) = func.child_by_field_name("declarator") {
                 if let Some(func_name) = self.get_function_name_text(&declarator, source) {
                     if handlers.contains(&func_name) {
                         // This is a signal handler - check for unsafe calls
-                        if let Some(body) = node.child_by_field_name("body") {
+                        if let Some(body) = func.child_by_field_name("body") {
                             self.check_handler_body(
                                 &body, source, &func_name, handlers, violations,
                             );
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, handlers, violations);
             }
         }
     }
@@ -212,8 +199,8 @@ impl Sig30C {
         all_handlers: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 if self.is_unsafe_function(func_name, handler_name, all_handlers) {
@@ -225,8 +212,8 @@ impl Sig30C {
                             handler_name, func_name
                         ),
                         file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
+                        line: call.start_position().row + 1,
+                        column: call.start_position().column + 1,
                         suggestion: Some(format!(
                             "Use only async-safe functions in signal handlers. Consider setting a volatile sig_atomic_t flag instead and performing '{}()' outside the handler.",
                             func_name
@@ -234,13 +221,6 @@ impl Sig30C {
                         ..Default::default()
                     });
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_calls_in_handler(&child, source, handler_name, all_handlers, violations);
             }
         }
     }

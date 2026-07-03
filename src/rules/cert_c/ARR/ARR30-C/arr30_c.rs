@@ -47,6 +47,7 @@ use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -2429,34 +2430,33 @@ impl Arr30C {
     }
 
     fn walk_collect_blob_taint(node: &Node, source: &str, tainted: &mut HashSet<String>) {
-        if node.kind() == "init_declarator" {
-            if let (Some(decl), Some(value)) = (
-                node.child_by_field_name("declarator"),
-                node.child_by_field_name("value"),
-            ) {
-                let rhs = &source[value.start_byte()..value.end_byte()];
-                if Self::text_calls_blob_accessor(rhs) {
-                    if let Some(name) = find_identifier_in_declarator(&decl, source) {
-                        tainted.insert(name);
-                    }
-                }
-            }
-        } else if node.kind() == "assignment_expression" {
-            if let (Some(left), Some(right)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                if left.kind() == "identifier" {
-                    let rhs = &source[right.start_byte()..right.end_byte()];
+        for node in
+            query::find_descendants_of_kinds(*node, &["init_declarator", "assignment_expression"])
+        {
+            if node.kind() == "init_declarator" {
+                if let (Some(decl), Some(value)) = (
+                    node.child_by_field_name("declarator"),
+                    node.child_by_field_name("value"),
+                ) {
+                    let rhs = &source[value.start_byte()..value.end_byte()];
                     if Self::text_calls_blob_accessor(rhs) {
-                        tainted.insert(source[left.start_byte()..left.end_byte()].to_string());
+                        if let Some(name) = find_identifier_in_declarator(&decl, source) {
+                            tainted.insert(name);
+                        }
                     }
                 }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::walk_collect_blob_taint(&child, source, tainted);
+            } else if node.kind() == "assignment_expression" {
+                if let (Some(left), Some(right)) = (
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ) {
+                    if left.kind() == "identifier" {
+                        let rhs = &source[right.start_byte()..right.end_byte()];
+                        if Self::text_calls_blob_accessor(rhs) {
+                            tainted.insert(source[left.start_byte()..left.end_byte()].to_string());
+                        }
+                    }
+                }
             }
         }
     }
@@ -2477,29 +2477,28 @@ impl Arr30C {
                     }
                 }
             };
-        if node.kind() == "init_declarator" {
-            if let (Some(decl), Some(value)) = (
-                node.child_by_field_name("declarator"),
-                node.child_by_field_name("value"),
-            ) {
-                if let Some(name) = find_identifier_in_declarator(&decl, source) {
-                    propagate(&name, &value, tainted, changed);
+        for node in
+            query::find_descendants_of_kinds(*node, &["init_declarator", "assignment_expression"])
+        {
+            if node.kind() == "init_declarator" {
+                if let (Some(decl), Some(value)) = (
+                    node.child_by_field_name("declarator"),
+                    node.child_by_field_name("value"),
+                ) {
+                    if let Some(name) = find_identifier_in_declarator(&decl, source) {
+                        propagate(&name, &value, tainted, changed);
+                    }
                 }
-            }
-        } else if node.kind() == "assignment_expression" {
-            if let (Some(left), Some(right)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                if left.kind() == "identifier" {
-                    let lhs = source[left.start_byte()..left.end_byte()].to_string();
-                    propagate(&lhs, &right, tainted, changed);
+            } else if node.kind() == "assignment_expression" {
+                if let (Some(left), Some(right)) = (
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ) {
+                    if left.kind() == "identifier" {
+                        let lhs = source[left.start_byte()..left.end_byte()].to_string();
+                        propagate(&lhs, &right, tainted, changed);
+                    }
                 }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::walk_propagate_alias_taint(&child, source, tainted, changed);
             }
         }
     }
@@ -2867,7 +2866,7 @@ impl Arr30C {
         bufs: &mut HashSet<String>,
         changed: &mut bool,
     ) {
-        if node.kind() == "init_declarator" {
+        for node in query::find_descendants_of_kind(*node, "init_declarator") {
             if let (Some(decl), Some(value)) = (
                 node.child_by_field_name("declarator"),
                 node.child_by_field_name("value"),
@@ -2882,11 +2881,6 @@ impl Arr30C {
                         }
                     }
                 }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::walk_collect_cast_aliases(&child, source, bufs, changed);
             }
         }
     }
@@ -2925,7 +2919,7 @@ impl Arr30C {
         loop_node: &Node,
         out: &mut Vec<(String, String, tree_sitter::Point)>,
     ) {
-        if node.kind() == "subscript_expression" {
+        for node in query::find_descendants_of_kind(*node, "subscript_expression") {
             if let (Some(arg), Some(index)) = (
                 node.child_by_field_name("argument"),
                 node.child_by_field_name("index"),
@@ -2935,7 +2929,7 @@ impl Arr30C {
                     if bufs.contains(&buf) && index.kind() == "update_expression" {
                         if let Some(operand) = index.child_by_field_name("argument") {
                             if operand.kind() == "identifier"
-                                && Self::innermost_loop_of(node)
+                                && Self::innermost_loop_of(&node)
                                     .map(|l| l.start_byte() == loop_node.start_byte())
                                     .unwrap_or(false)
                             {
@@ -2946,11 +2940,6 @@ impl Arr30C {
                         }
                     }
                 }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::collect_embedded_increment_subscripts(&child, source, bufs, loop_node, out);
             }
         }
     }
@@ -3100,7 +3089,7 @@ impl Arr30C {
         func_text: &str,
         overread: &mut HashSet<String>,
     ) {
-        if node.kind() == "subscript_expression" {
+        for node in query::find_descendants_of_kind(*node, "subscript_expression") {
             if let (Some(arg), Some(index)) = (
                 node.child_by_field_name("argument"),
                 node.child_by_field_name("index"),
@@ -3109,7 +3098,7 @@ impl Arr30C {
                     let buf = source[arg.start_byte()..arg.end_byte()].to_string();
                     if cand_names.contains(&buf)
                         && index.kind() == "update_expression"
-                        && Self::innermost_loop_of(node).is_some()
+                        && Self::innermost_loop_of(&node).is_some()
                     {
                         if let Some(operand) = index.child_by_field_name("argument") {
                             if operand.kind() == "identifier" {
@@ -3122,11 +3111,6 @@ impl Arr30C {
                         }
                     }
                 }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::walk_param_overread(&child, source, cand_names, func_text, overread);
             }
         }
     }

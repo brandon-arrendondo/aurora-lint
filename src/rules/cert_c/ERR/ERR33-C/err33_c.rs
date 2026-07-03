@@ -29,6 +29,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     find_containing_if_statement, get_identifier_from_declarator, get_node_text,
 };
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -104,31 +105,35 @@ impl CertRule for Err33C {
 
 impl Err33C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "call_expression" => {
-                self.check_function_call(node, source, violations);
-            }
-            "expression_statement" => {
-                // Check if this is a standalone function call that ignores return value
-                if let Some(child) = node.child(0) {
-                    if child.kind() == "call_expression" {
-                        self.check_ignored_return_value(node, &child, source, violations);
+        let matches = query::find_descendants_of_kinds(
+            *node,
+            &[
+                "call_expression",
+                "expression_statement",
+                "assignment_expression",
+                "init_declarator",
+            ],
+        );
+        for n in matches {
+            match n.kind() {
+                "call_expression" => {
+                    self.check_function_call(&n, source, violations);
+                }
+                "expression_statement" => {
+                    // Check if this is a standalone function call that ignores return value
+                    if let Some(child) = n.child(0) {
+                        if child.kind() == "call_expression" {
+                            self.check_ignored_return_value(&n, &child, source, violations);
+                        }
                     }
                 }
-            }
-            "assignment_expression" => {
-                self.check_assignment(node, source, violations);
-            }
-            "init_declarator" => {
-                self.check_init_declarator(node, source, violations);
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+                "assignment_expression" => {
+                    self.check_assignment(&n, source, violations);
+                }
+                "init_declarator" => {
+                    self.check_init_declarator(&n, source, violations);
+                }
+                _ => {}
             }
         }
     }
@@ -1255,42 +1260,35 @@ impl Err33C {
     /// Check if a node contains a NULL check for a specific variable using AST analysis.
     /// This is more precise than string matching as it verifies the actual variable name in the comparison.
     fn contains_null_check_for_variable(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        // Recursively search for binary_expression nodes that compare the variable to NULL
-        if node.kind() == "binary_expression" {
-            if let Some(operator) = node.child_by_field_name("operator") {
-                let op_text = get_node_text(&operator, source);
-
-                // Check if this is a NULL comparison operator
-                if matches!(op_text, "==" | "!=") {
-                    if let (Some(left), Some(right)) = (
-                        node.child_by_field_name("left"),
-                        node.child_by_field_name("right"),
-                    ) {
-                        let left_text = get_node_text(&left, source);
-                        let right_text = get_node_text(&right, source);
-
-                        // Check if one side is our variable and the other is NULL/0
-                        let is_null = |s: &str| s == "NULL" || s == "0" || s == "((void *)0)";
-                        if (left_text == var_name && is_null(right_text))
-                            || (right_text == var_name && is_null(left_text))
-                        {
-                            return true;
-                        }
-                    }
-                }
+        // Search for binary_expression nodes that compare the variable to NULL
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "binary_expression" {
+                return false;
             }
-        }
+            let Some(operator) = n.child_by_field_name("operator") else {
+                return false;
+            };
+            let op_text = get_node_text(&operator, source);
 
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_null_check_for_variable(&child, var_name, source) {
-                    return true;
-                }
+            // Check if this is a NULL comparison operator
+            if !matches!(op_text, "==" | "!=") {
+                return false;
             }
-        }
+            let (Some(left), Some(right)) = (
+                n.child_by_field_name("left"),
+                n.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            let left_text = get_node_text(&left, source);
+            let right_text = get_node_text(&right, source);
 
-        false
+            // Check if one side is our variable and the other is NULL/0
+            let is_null = |s: &str| s == "NULL" || s == "0" || s == "((void *)0)";
+            (left_text == var_name && is_null(right_text))
+                || (right_text == var_name && is_null(left_text))
+        })
+        .is_some()
     }
 
     fn contains_error_check(&self, node: &Node, var_name: &str, source: &str) -> bool {

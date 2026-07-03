@@ -14,6 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Win04C;
@@ -54,15 +55,8 @@ impl CertRule for Win04C {
 impl Win04C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check declarations with function pointer types
-        if node.kind() == "declaration" {
-            self.check_declaration(node, source, violations);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for decl in query::find_descendants_of_kind(*node, "declaration") {
+            self.check_declaration(&decl, source, violations);
         }
     }
 
@@ -174,26 +168,19 @@ impl Win04C {
     }
 
     fn uses_encode_function(&self, node: &Node, source: &str) -> bool {
-        // Check if this node or any child is a call to an encode/decode function
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                // Both encode (for storage) and decode (for use) are acceptable
-                if ENCODE_FUNCS.contains(&func_name) || DECODE_FUNCS.contains(&func_name) {
-                    return true;
-                }
+        // Check if this node or any descendant is a call to an encode/decode function
+        // (handles casts wrapping function calls too, since the whole subtree is searched)
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        // Recurse into children (handle casts wrapping function calls)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.uses_encode_function(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            let Some(func) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&func, source);
+            // Both encode (for storage) and decode (for use) are acceptable
+            ENCODE_FUNCS.contains(&func_name) || DECODE_FUNCS.contains(&func_name)
+        })
+        .is_some()
     }
 }

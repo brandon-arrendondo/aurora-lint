@@ -25,6 +25,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Err06C;
@@ -68,31 +69,23 @@ impl CertRule for Err06C {
 impl Err06C {
     /// Check if atexit() or at_quick_exit() is called anywhere in the tree
     fn find_atexit_calls(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                if func_name == "atexit" || func_name == "at_quick_exit" {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.find_atexit_calls(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            let Some(function) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&function, source);
+            func_name == "atexit" || func_name == "at_quick_exit"
+        })
+        .is_some()
     }
 
     /// Find all assert() calls and create violations
     fn find_assert_calls(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 if func_name == "assert" {
                     violations.push(RuleViolation {
@@ -101,8 +94,8 @@ impl Err06C {
                                  assert() calls abort() which bypasses atexit cleanup."
                             .to_string(),
                         severity: self.severity(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
+                        line: call.start_position().row + 1,
+                        column: call.start_position().column + 1,
                         file_path: String::new(),
                         suggestion: Some(
                             "Replace assert() with explicit error checking: \
@@ -112,13 +105,6 @@ impl Err06C {
                         requires_manual_review: None,
                     });
                 }
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_assert_calls(&child, source, violations);
             }
         }
     }

@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -49,33 +50,38 @@ impl Arr37C {
         analyzer: &NonArrayPointerAnalyzer,
         violations: &mut Vec<RuleViolation>,
     ) {
-        let node_text = &source[node.start_byte()..node.end_byte()];
+        let matches = query::find_descendants_of_kinds(
+            *node,
+            &[
+                "binary_expression",
+                "update_expression",
+                "assignment_expression",
+                "subscript_expression",
+                "for_statement",
+            ],
+        );
+        for n in matches {
+            let node_text = &source[n.start_byte()..n.end_byte()];
 
-        match node.kind() {
-            "binary_expression" => {
-                self.check_pointer_arithmetic(node, source, analyzer, violations);
-            }
-            "update_expression" => {
-                self.check_pointer_increment_decrement(node, source, analyzer, violations);
-            }
-            "assignment_expression"
-                // Check if this is a compound assignment (+=, -=)
-                if (node_text.contains("+=") || node_text.contains("-=")) => {
-                    self.check_compound_assignment(node, source, analyzer, violations);
+            match n.kind() {
+                "binary_expression" => {
+                    self.check_pointer_arithmetic(&n, source, analyzer, violations);
                 }
-            "subscript_expression" => {
-                self.check_subscript_on_non_array(node, source, analyzer, violations);
-            }
-            "for_statement" => {
-                self.check_for_loop_pointer_arithmetic(node, source, analyzer, violations);
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, analyzer, violations);
+                "update_expression" => {
+                    self.check_pointer_increment_decrement(&n, source, analyzer, violations);
+                }
+                "assignment_expression"
+                    // Check if this is a compound assignment (+=, -=)
+                    if (node_text.contains("+=") || node_text.contains("-=")) => {
+                        self.check_compound_assignment(&n, source, analyzer, violations);
+                    }
+                "subscript_expression" => {
+                    self.check_subscript_on_non_array(&n, source, analyzer, violations);
+                }
+                "for_statement" => {
+                    self.check_for_loop_pointer_arithmetic(&n, source, analyzer, violations);
+                }
+                _ => {}
             }
         }
     }
@@ -395,23 +401,26 @@ impl NonArrayPointerAnalyzer {
     }
 
     fn collect_variable_info(&mut self, node: &Node, source: &str) {
-        match node.kind() {
-            "declaration" => {
-                self.process_declaration(node, source);
-            }
-            "assignment_expression" => {
-                self.process_assignment(node, source);
-            }
-            "function_definition" => {
-                self.process_function_definition(node, source);
-            }
-            _ => {}
-        }
-
-        // Recursively process child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_variable_info(&child, source);
+        let matches = query::find_descendants_of_kinds(
+            *node,
+            &[
+                "declaration",
+                "assignment_expression",
+                "function_definition",
+            ],
+        );
+        for n in matches {
+            match n.kind() {
+                "declaration" => {
+                    self.process_declaration(&n, source);
+                }
+                "assignment_expression" => {
+                    self.process_assignment(&n, source);
+                }
+                "function_definition" => {
+                    self.process_function_definition(&n, source);
+                }
+                _ => {}
             }
         }
     }

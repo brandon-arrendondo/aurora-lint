@@ -14,6 +14,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Flp36C;
@@ -40,23 +41,11 @@ impl CertRule for Flp36C {
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-
-        // Check for assignments that might lose precision
-        if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
-            if let Some(violation) = self.check_int_to_float_conversion(node, source) {
-                violations.push(violation);
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
-            }
-        }
-
-        violations
+        // Check for assignments/declarations that might lose precision
+        query::find_descendants_of_kinds(*node, &["assignment_expression", "init_declarator"])
+            .into_iter()
+            .filter_map(|n| self.check_int_to_float_conversion(&n, source))
+            .collect()
     }
 }
 

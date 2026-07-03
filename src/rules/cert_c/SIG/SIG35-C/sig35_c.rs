@@ -26,6 +26,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -84,86 +85,85 @@ impl Sig35C {
         source: &str,
         handlers: &mut HashMap<String, String>,
     ) {
-        // Look for signal(SIGXXX, handler_func) calls
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
+        for n in
+            query::find_descendants_of_kinds(*node, &["call_expression", "assignment_expression"])
+        {
+            // Look for signal(SIGXXX, handler_func) calls
+            if n.kind() == "call_expression" {
+                if let Some(function) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&function, source);
 
-                if func_name == "signal" {
-                    // Get the signal type and handler function name
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        let arg_list = self.get_arguments(&args, source);
+                    if func_name == "signal" {
+                        // Get the signal type and handler function name
+                        if let Some(args) = n.child_by_field_name("arguments") {
+                            let arg_list = self.get_arguments(&args, source);
 
-                        // For signal(sig, handler), check if sig is computational exception
-                        if arg_list.len() >= 2 {
-                            let signal_name = arg_list[0].trim();
-                            let handler_name = arg_list[1].trim();
+                            // For signal(sig, handler), check if sig is computational exception
+                            if arg_list.len() >= 2 {
+                                let signal_name = arg_list[0].trim();
+                                let handler_name = arg_list[1].trim();
 
-                            if self.is_computational_exception_signal(signal_name) {
-                                // Skip SIG_IGN, SIG_DFL, SIG_ERR, NULL
-                                if !handler_name.starts_with("SIG_")
-                                    && handler_name != "NULL"
-                                    && handler_name != "0"
-                                    && !handler_name.is_empty()
-                                {
-                                    // Map handler name to signal name
-                                    handlers
-                                        .insert(handler_name.to_string(), signal_name.to_string());
+                                if self.is_computational_exception_signal(signal_name) {
+                                    // Skip SIG_IGN, SIG_DFL, SIG_ERR, NULL
+                                    if !handler_name.starts_with("SIG_")
+                                        && handler_name != "NULL"
+                                        && handler_name != "0"
+                                        && !handler_name.is_empty()
+                                    {
+                                        // Map handler name to signal name
+                                        handlers.insert(
+                                            handler_name.to_string(),
+                                            signal_name.to_string(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if func_name == "sigaction" {
+                        // For sigaction(signal, &sa, NULL), track the signal and struct
+                        if let Some(args) = n.child_by_field_name("arguments") {
+                            let arg_list = self.get_arguments(&args, source);
+
+                            if arg_list.len() >= 2 {
+                                let signal_name = arg_list[0].trim();
+                                if self.is_computational_exception_signal(signal_name) {
+                                    // Try to find sa_handler or sa_sigaction assignments
+                                    // Look backwards for struct assignments
+                                    self.collect_sigaction_handlers(
+                                        &n,
+                                        source,
+                                        signal_name,
+                                        handlers,
+                                    );
                                 }
                             }
                         }
                     }
                 }
+            }
 
-                if func_name == "sigaction" {
-                    // For sigaction(signal, &sa, NULL), track the signal and struct
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        let arg_list = self.get_arguments(&args, source);
-
-                        if arg_list.len() >= 2 {
-                            let signal_name = arg_list[0].trim();
-                            if self.is_computational_exception_signal(signal_name) {
-                                // Try to find sa_handler or sa_sigaction assignments
-                                // Look backwards for struct assignments
-                                self.collect_sigaction_handlers(
-                                    node,
-                                    source,
-                                    signal_name,
-                                    handlers,
-                                );
-                            }
+            // Look for struct field assignments like sa.sa_sigaction = handler
+            if n.kind() == "assignment_expression" {
+                if let (Some(left), Some(right)) = (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) {
+                    let left_text = get_node_text(&left, source);
+                    if left_text.ends_with(".sa_handler") || left_text.ends_with(".sa_sigaction") {
+                        let handler_name = get_node_text(&right, source);
+                        if !handler_name.starts_with("SIG_")
+                            && handler_name != "NULL"
+                            && !handler_name.is_empty()
+                        {
+                            // We'll associate this later when we see sigaction() call
+                            // For now, just note it might be a handler
+                            // This is tricky without full data flow analysis
+                            // For a simple approach, we'll mark any function assigned to sa_* as suspicious
                         }
                     }
                 }
-            }
-        }
-
-        // Look for struct field assignments like sa.sa_sigaction = handler
-        if node.kind() == "assignment_expression" {
-            if let (Some(left), Some(right)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                let left_text = get_node_text(&left, source);
-                if left_text.ends_with(".sa_handler") || left_text.ends_with(".sa_sigaction") {
-                    let handler_name = get_node_text(&right, source);
-                    if !handler_name.starts_with("SIG_")
-                        && handler_name != "NULL"
-                        && !handler_name.is_empty()
-                    {
-                        // We'll associate this later when we see sigaction() call
-                        // For now, just note it might be a handler
-                        // This is tricky without full data flow analysis
-                        // For a simple approach, we'll mark any function assigned to sa_* as suspicious
-                    }
-                }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_computational_handlers(&child, source, handlers);
             }
         }
     }
@@ -194,10 +194,10 @@ impl Sig35C {
         signal_name: &str,
         handlers: &mut HashMap<String, String>,
     ) {
-        if scope.kind() == "assignment_expression" {
+        for assign in query::find_descendants_of_kind(*scope, "assignment_expression") {
             if let (Some(left), Some(right)) = (
-                scope.child_by_field_name("left"),
-                scope.child_by_field_name("right"),
+                assign.child_by_field_name("left"),
+                assign.child_by_field_name("right"),
             ) {
                 let left_text = get_node_text(&left, source);
                 if left_text.ends_with(".sa_handler") || left_text.ends_with(".sa_sigaction") {
@@ -209,12 +209,6 @@ impl Sig35C {
                         handlers.insert(handler_name, signal_name.to_string());
                     }
                 }
-            }
-        }
-
-        for i in 0..scope.child_count() {
-            if let Some(child) = scope.child(i) {
-                self.find_handler_assignments(&child, source, signal_name, handlers);
             }
         }
     }
@@ -251,12 +245,12 @@ impl Sig35C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check if this is a function definition that's a computational exception handler
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(declarator) = func.child_by_field_name("declarator") {
                 if let Some(func_name) = self.get_function_name_text(&declarator, source) {
                     if let Some(signal_name) = handlers.get(&func_name) {
                         // This is a computational exception handler - check for returns
-                        if let Some(body) = node.child_by_field_name("body") {
+                        if let Some(body) = func.child_by_field_name("body") {
                             self.check_handler_for_return(
                                 &body,
                                 source,
@@ -267,13 +261,6 @@ impl Sig35C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, handlers, violations);
             }
         }
     }
@@ -360,45 +347,25 @@ impl Sig35C {
 
     /// Check if the handler contains any termination calls (abort, _Exit, quick_exit, exit)
     fn contains_termination_call(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
-                if func_name == "abort"
-                    || func_name == "_Exit"
-                    || func_name == "quick_exit"
-                    || func_name == "exit"
-                {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_termination_call(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            let Some(function) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&function, source);
+            func_name == "abort"
+                || func_name == "_Exit"
+                || func_name == "quick_exit"
+                || func_name == "exit"
+        })
+        .is_some()
     }
 
     /// Check if there are any explicit return statements
     fn has_return_statement(&self, node: &Node, _source: &str) -> bool {
-        if node.kind() == "return_statement" {
-            return true;
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.has_return_statement(&child, _source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| n.kind() == "return_statement").is_some()
     }
 
     /// Check if ALL code paths are guaranteed to call a termination function

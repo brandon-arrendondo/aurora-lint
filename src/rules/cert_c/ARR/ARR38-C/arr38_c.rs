@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{find_containing_function, get_node_text};
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -107,26 +108,27 @@ impl Arr38C {
         size_vars: &mut HashMap<String, String>,
         pointer_offsets: &mut HashMap<String, PointerOffsetInfo>,
     ) {
-        match node.kind() {
-            "declaration" => {
-                self.extract_declaration_info(
-                    node,
-                    source,
-                    buffer_info,
-                    size_vars,
-                    pointer_offsets,
-                );
-            }
-            "expression_statement" => {
-                self.extract_assignment_info(node, source, buffer_info, size_vars, pointer_offsets);
-            }
-            _ => {}
-        }
-
-        // Recursively process child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_buffer_info(&child, source, buffer_info, size_vars, pointer_offsets);
+        for n in query::find_descendants_of_kinds(*node, &["declaration", "expression_statement"]) {
+            match n.kind() {
+                "declaration" => {
+                    self.extract_declaration_info(
+                        &n,
+                        source,
+                        buffer_info,
+                        size_vars,
+                        pointer_offsets,
+                    );
+                }
+                "expression_statement" => {
+                    self.extract_assignment_info(
+                        &n,
+                        source,
+                        buffer_info,
+                        size_vars,
+                        pointer_offsets,
+                    );
+                }
+                _ => {}
             }
         }
     }
@@ -429,29 +431,15 @@ impl Arr38C {
         size_vars: &HashMap<String, String>,
         pointer_offsets: &HashMap<String, PointerOffsetInfo>,
     ) {
-        if node.kind() == "call_expression" {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
             self.check_library_function_call(
-                node,
+                &call_node,
                 source,
                 violations,
                 buffer_info,
                 size_vars,
                 pointer_offsets,
             );
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(
-                    &child,
-                    source,
-                    violations,
-                    buffer_info,
-                    size_vars,
-                    pointer_offsets,
-                );
-            }
         }
     }
 
@@ -2762,19 +2750,9 @@ impl Arr38C {
 
     fn collect_pointer_aliases(&self, node: &Node, source: &str) -> Vec<(String, String)> {
         let mut aliases = Vec::new();
-        self.collect_pointer_aliases_recursive(node, source, &mut aliases);
-        aliases
-    }
-
-    fn collect_pointer_aliases_recursive(
-        &self,
-        node: &Node,
-        source: &str,
-        aliases: &mut Vec<(String, String)>,
-    ) {
-        // Look for expression_statement containing assignment_expression
-        if node.kind() == "expression_statement" {
-            let text = get_node_text(node, source);
+        for n in query::find_descendants_of_kind(*node, "expression_statement") {
+            // Look for expression_statement containing assignment_expression
+            let text = get_node_text(&n, source);
             let text = text.trim().trim_end_matches(';').trim();
             // Simple assignment: "data = dataBuffer" (no operators, no function calls)
             if let Some(eq_pos) = text.find('=') {
@@ -2795,12 +2773,7 @@ impl Arr38C {
                 }
             }
         }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_pointer_aliases_recursive(&child, source, aliases);
-            }
-        }
+        aliases
     }
 
     /// Check if a string is a simple C identifier

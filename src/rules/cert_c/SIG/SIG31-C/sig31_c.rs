@@ -25,6 +25,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -96,42 +97,19 @@ impl Sig31C {
     }
 
     fn collect_handlers(&self, node: &Node, source: &str, handlers: &mut HashSet<String>) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
+        for n in
+            query::find_descendants_of_kinds(*node, &["call_expression", "assignment_expression"])
+        {
+            if n.kind() == "call_expression" {
+                if let Some(function) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&function, source);
 
-                if func_name == "signal" || func_name == "sigaction" {
-                    if let Some(args) = node.child_by_field_name("arguments") {
-                        let arg_list = self.get_arguments(&args, source);
+                    if func_name == "signal" || func_name == "sigaction" {
+                        if let Some(args) = n.child_by_field_name("arguments") {
+                            let arg_list = self.get_arguments(&args, source);
 
-                        if func_name == "signal" && arg_list.len() >= 2 {
-                            let handler_name = arg_list[1].trim();
-                            if !handler_name.starts_with("SIG_")
-                                && handler_name != "NULL"
-                                && handler_name != "0"
-                                && !handler_name.is_empty()
-                            {
-                                handlers.insert(handler_name.to_string());
-                            }
-                        }
-                        // For sigaction, need to look for struct sigaction with .sa_handler assignment
-                        // The handler is typically assigned via: sa.sa_handler = handler_func;
-                        // We'll detect handlers from sigaction struct initialization elsewhere
-                    }
-                }
-            }
-        }
-
-        // Also detect signal handlers from struct sigaction assignment
-        // Pattern: sa.sa_handler = unsafe_handler;
-        if node.kind() == "assignment_expression" {
-            if let Some(left) = node.child_by_field_name("left") {
-                if left.kind() == "field_expression" {
-                    if let Some(field) = left.child_by_field_name("field") {
-                        let field_name = get_node_text(&field, source);
-                        if field_name == "sa_handler" {
-                            if let Some(right) = node.child_by_field_name("right") {
-                                let handler_name = get_node_text(&right, source);
+                            if func_name == "signal" && arg_list.len() >= 2 {
+                                let handler_name = arg_list[1].trim();
                                 if !handler_name.starts_with("SIG_")
                                     && handler_name != "NULL"
                                     && handler_name != "0"
@@ -140,15 +118,36 @@ impl Sig31C {
                                     handlers.insert(handler_name.to_string());
                                 }
                             }
+                            // For sigaction, need to look for struct sigaction with .sa_handler assignment
+                            // The handler is typically assigned via: sa.sa_handler = handler_func;
+                            // We'll detect handlers from sigaction struct initialization elsewhere
                         }
                     }
                 }
             }
-        }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_handlers(&child, source, handlers);
+            // Also detect signal handlers from struct sigaction assignment
+            // Pattern: sa.sa_handler = unsafe_handler;
+            if n.kind() == "assignment_expression" {
+                if let Some(left) = n.child_by_field_name("left") {
+                    if left.kind() == "field_expression" {
+                        if let Some(field) = left.child_by_field_name("field") {
+                            let field_name = get_node_text(&field, source);
+                            if field_name == "sa_handler" {
+                                if let Some(right) = n.child_by_field_name("right") {
+                                    let handler_name = get_node_text(&right, source);
+                                    if !handler_name.starts_with("SIG_")
+                                        && handler_name != "NULL"
+                                        && handler_name != "0"
+                                        && !handler_name.is_empty()
+                                    {
+                                        handlers.insert(handler_name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -252,11 +251,11 @@ impl Sig31C {
         global_vars: &HashMap<String, bool>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "function_definition" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            if let Some(declarator) = func.child_by_field_name("declarator") {
                 if let Some(func_name) = self.get_function_name_text(&declarator, source) {
                     if handlers.contains(&func_name) {
-                        if let Some(body) = node.child_by_field_name("body") {
+                        if let Some(body) = func.child_by_field_name("body") {
                             self.check_handler_body(
                                 &body,
                                 source,
@@ -267,12 +266,6 @@ impl Sig31C {
                         }
                     }
                 }
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, handlers, global_vars, violations);
             }
         }
     }
@@ -322,16 +315,9 @@ impl Sig31C {
     }
 
     fn collect_local_vars(&self, node: &Node, source: &str, locals: &mut HashSet<String>) {
-        if node.kind() == "declaration" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+        for decl in query::find_descendants_of_kind(*node, "declaration") {
+            if let Some(declarator) = decl.child_by_field_name("declarator") {
                 self.extract_local_var_names(&declarator, source, locals);
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_local_vars(&child, source, locals);
             }
         }
     }
@@ -382,70 +368,32 @@ impl Sig31C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check for identifier references AND field_expression (for struct member access)
-        if node.kind() == "identifier" {
-            let id_name = get_node_text(&node, source);
-
-            // Skip if it's a local variable
-            if local_vars.contains(id_name) {
-                return; // Don't recurse into this identifier
-            }
-
-            // Skip if this identifier is used as an argument to an async-signal-safe function
-            if self.is_used_in_async_safe_call(node, source) {
-                return;
-            }
-
-            if let Some(&is_safe) = global_vars.get(id_name) {
-                if !is_safe {
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: Severity::High,
-                        message: format!(
-                            "Signal handler '{}' accesses shared object '{}' which is not 'volatile sig_atomic_t'",
-                            handler_name, id_name
-                        ),
-                        file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        suggestion: Some(
-                            "Change variable to 'volatile sig_atomic_t' or use a flag-based approach where the handler only sets a volatile sig_atomic_t flag".to_string()
-                        ),
-                        ..Default::default()
-                    });
-                }
-            }
-        } else if node.kind() == "field_expression" {
-            // For struct member access like global_signal_state.signal_history[0]
-            // Check if the base object is a global variable
-            if let Some(argument) = node.child_by_field_name("argument") {
-                let base_text = get_node_text(&argument, source);
-
-                // Extract just the identifier (handle cases like "(*ptr)" or just "var")
-                let base_id = if base_text.starts_with('(') && base_text.ends_with(')') {
-                    &base_text[1..base_text.len() - 1]
-                        .trim_start_matches('*')
-                        .trim()
-                } else {
-                    base_text.trim_start_matches('*').trim()
-                };
+        for n in query::find_descendants_of_kinds(*node, &["identifier", "field_expression"]) {
+            if n.kind() == "identifier" {
+                let id_name = get_node_text(&n, source);
 
                 // Skip if it's a local variable
-                if local_vars.contains(base_id) {
-                    return;
+                if local_vars.contains(id_name) {
+                    continue; // Don't treat this identifier as a global access
                 }
 
-                if let Some(&is_safe) = global_vars.get(base_id) {
+                // Skip if this identifier is used as an argument to an async-signal-safe function
+                if self.is_used_in_async_safe_call(&n, source) {
+                    continue;
+                }
+
+                if let Some(&is_safe) = global_vars.get(id_name) {
                     if !is_safe {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             severity: Severity::High,
                             message: format!(
                                 "Signal handler '{}' accesses shared object '{}' which is not 'volatile sig_atomic_t'",
-                                handler_name, base_id
+                                handler_name, id_name
                             ),
                             file_path: String::new(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
+                            line: n.start_position().row + 1,
+                            column: n.start_position().column + 1,
                             suggestion: Some(
                                 "Change variable to 'volatile sig_atomic_t' or use a flag-based approach where the handler only sets a volatile sig_atomic_t flag".to_string()
                             ),
@@ -453,20 +401,46 @@ impl Sig31C {
                         });
                     }
                 }
-            }
-        }
+            } else if n.kind() == "field_expression" {
+                // For struct member access like global_signal_state.signal_history[0]
+                // Check if the base object is a global variable
+                if let Some(argument) = n.child_by_field_name("argument") {
+                    let base_text = get_node_text(&argument, source);
 
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_for_global_access(
-                    &child,
-                    source,
-                    handler_name,
-                    global_vars,
-                    local_vars,
-                    violations,
-                );
+                    // Extract just the identifier (handle cases like "(*ptr)" or just "var")
+                    let base_id = if base_text.starts_with('(') && base_text.ends_with(')') {
+                        &base_text[1..base_text.len() - 1]
+                            .trim_start_matches('*')
+                            .trim()
+                    } else {
+                        base_text.trim_start_matches('*').trim()
+                    };
+
+                    // Skip if it's a local variable
+                    if local_vars.contains(base_id) {
+                        continue;
+                    }
+
+                    if let Some(&is_safe) = global_vars.get(base_id) {
+                        if !is_safe {
+                            violations.push(RuleViolation {
+                                rule_id: self.rule_id().to_string(),
+                                severity: Severity::High,
+                                message: format!(
+                                    "Signal handler '{}' accesses shared object '{}' which is not 'volatile sig_atomic_t'",
+                                    handler_name, base_id
+                                ),
+                                file_path: String::new(),
+                                line: n.start_position().row + 1,
+                                column: n.start_position().column + 1,
+                                suggestion: Some(
+                                    "Change variable to 'volatile sig_atomic_t' or use a flag-based approach where the handler only sets a volatile sig_atomic_t flag".to_string()
+                                ),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
             }
         }
     }

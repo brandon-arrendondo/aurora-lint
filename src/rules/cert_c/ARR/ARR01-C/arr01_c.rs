@@ -36,6 +36,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{find_containing_function, get_node_text};
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -97,10 +98,10 @@ impl Arr01C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "function_definition" {
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
             // Collect parameters for this specific function
             let mut function_params = HashMap::new();
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+            if let Some(declarator) = func_node.child_by_field_name("declarator") {
                 self.extract_array_params_from_declarator(
                     &declarator,
                     source,
@@ -109,15 +110,8 @@ impl Arr01C {
             }
 
             // Check sizeof expressions within this function's body
-            if let Some(body) = node.child_by_field_name("body") {
+            if let Some(body) = func_node.child_by_field_name("body") {
                 self.check_sizeof_expressions(&body, source, &function_params, violations);
-            }
-        }
-
-        // Recursively process child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_function_definitions(&child, source, violations);
             }
         }
     }
@@ -202,17 +196,10 @@ impl Arr01C {
         array_params: &mut HashMap<String, usize>,
     ) {
         // Look for function definitions
-        if node.kind() == "function_definition" {
+        for func_node in query::find_descendants_of_kind(*node, "function_definition") {
             // Get the function declarator
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+            if let Some(declarator) = func_node.child_by_field_name("declarator") {
                 self.extract_array_params_from_declarator(&declarator, source, array_params);
-            }
-        }
-
-        // Recursively process child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_array_params_recursive(&child, source, array_params);
             }
         }
     }
@@ -373,21 +360,16 @@ impl Arr01C {
         array_params: &HashMap<String, usize>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Look for sizeof_expression nodes
-        if node.kind() == "sizeof_expression" {
-            self.check_sizeof_operand(node, source, array_params, violations);
-        }
-
-        // Look for va_arg assignments that extract pointers
-        // Pattern: int *arr = va_arg(args, int*); sizeof(arr);
-        if node.kind() == "init_declarator" {
-            self.check_va_arg_assignment(node, source);
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_sizeof_expressions(&child, source, array_params, violations);
+        // Look for sizeof_expression nodes, and va_arg assignments that extract
+        // pointers (pattern: int *arr = va_arg(args, int*); sizeof(arr);)
+        for n in query::find_descendants_of_kinds(*node, &["sizeof_expression", "init_declarator"])
+        {
+            match n.kind() {
+                "sizeof_expression" => {
+                    self.check_sizeof_operand(&n, source, array_params, violations)
+                }
+                "init_declarator" => self.check_va_arg_assignment(&n, source),
+                _ => {}
             }
         }
     }
@@ -507,24 +489,14 @@ impl Arr01C {
 
     fn find_va_arg_declaration(&self, node: &Node, var_name: &str, source: &str) -> bool {
         // Look for: int *arr = va_arg(...)
-        if node.kind() == "declaration" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if self.is_init_declarator_with_va_arg(&declarator, var_name, source) {
-                    return true;
-                }
-            }
-        }
-
-        // Recursively search children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.find_va_arg_declaration(&child, var_name, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "declaration"
+                && n.child_by_field_name("declarator")
+                    .is_some_and(|declarator| {
+                        self.is_init_declarator_with_va_arg(&declarator, var_name, source)
+                    })
+        })
+        .is_some()
     }
 
     fn is_init_declarator_with_va_arg(

@@ -1,5 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Arr32C;
@@ -28,77 +29,77 @@ impl CertRule for Arr32C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Look for variable length array declarations (LOCAL declarations, not function parameters)
-        if node.kind() == "array_declarator" {
-            // Skip if this is a function parameter (handled separately below)
-            if is_function_parameter(node) {
-                // Don't check function parameters here - they're handled in the parameter_declaration check
-            } else if let Some(size_node) = node.child_by_field_name("size") {
-                let start_point = node.start_position();
+        for n in
+            query::find_descendants_of_kinds(*node, &["array_declarator", "parameter_declaration"])
+        {
+            match n.kind() {
+                // Look for variable length array declarations (LOCAL declarations, not function parameters)
+                "array_declarator" => {
+                    // Skip if this is a function parameter (handled separately below)
+                    if is_function_parameter(&n) {
+                        // Don't check function parameters here - they're handled in the parameter_declaration check
+                    } else if let Some(size_node) = n.child_by_field_name("size") {
+                        let start_point = n.start_position();
 
-                // Check if this is a VLA (size is not a constant)
-                if is_variable_length_array(&size_node, source) {
-                    let size_text = &source[size_node.start_byte()..size_node.end_byte()];
+                        // Check if this is a VLA (size is not a constant)
+                        if is_variable_length_array(&size_node, source) {
+                            let size_text = &source[size_node.start_byte()..size_node.end_byte()];
 
-                    // Check for obvious violations
-                    if is_problematic_vla_size(&size_node, source) {
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: Severity::High,
-                            message: format!(
-                                "Variable length array with potentially unsafe size '{}'. Ensure size is validated to be positive and within reasonable bounds.",
-                                size_text
-                            ),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some("Add bounds checking: if (size == 0 || size > MAX_ARRAY) { /* handle error */ }".to_string()),
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-        }
-
-        // Look for function parameters that might be used as VLA sizes
-        // Note: VLA parameters are safe if the caller validates the size.
-        // We only flag VLA parameters that have suspicious patterns (like expressions).
-        // We DON'T flag simple VLA parameters like array[n] or matrix[rows][cols]
-        // because these are considered acceptable if the caller validates before calling.
-        if node.kind() == "parameter_declaration" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if declarator.kind() == "array_declarator" {
-                    if let Some(size_node) = declarator.child_by_field_name("size") {
-                        let size_text = &source[size_node.start_byte()..size_node.end_byte()];
-
-                        // Only flag if the size is a complex expression (not just a simple parameter)
-                        // Simple parameters like array[n] are acceptable VLA parameters
-                        // if the caller validates n before calling
-                        if is_problematic_vla_parameter(&size_node, source) {
-                            let start_point = node.start_position();
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                severity: Severity::Medium,
-                                message: format!(
-                                    "Function parameter VLA size '{}' uses complex expression. Ensure callers validate the size.",
-                                    size_text
-                                ),
-                                file_path: String::new(),
-                                line: start_point.row + 1,
-                                column: start_point.column + 1,
-                                suggestion: Some("Validate the size parameter before using it for VLA declaration".to_string()),
-                                ..Default::default()
-                            });
+                            // Check for obvious violations
+                            if is_problematic_vla_size(&size_node, source) {
+                                violations.push(RuleViolation {
+                                    rule_id: self.rule_id().to_string(),
+                                    severity: Severity::High,
+                                    message: format!(
+                                        "Variable length array with potentially unsafe size '{}'. Ensure size is validated to be positive and within reasonable bounds.",
+                                        size_text
+                                    ),
+                                    file_path: String::new(),
+                                    line: start_point.row + 1,
+                                    column: start_point.column + 1,
+                                    suggestion: Some("Add bounds checking: if (size == 0 || size > MAX_ARRAY) { /* handle error */ }".to_string()),
+                                    ..Default::default()
+                                });
+                            }
                         }
                     }
                 }
-            }
-        }
+                // Look for function parameters that might be used as VLA sizes
+                // Note: VLA parameters are safe if the caller validates the size.
+                // We only flag VLA parameters that have suspicious patterns (like expressions).
+                // We DON'T flag simple VLA parameters like array[n] or matrix[rows][cols]
+                // because these are considered acceptable if the caller validates before calling.
+                "parameter_declaration" => {
+                    if let Some(declarator) = n.child_by_field_name("declarator") {
+                        if declarator.kind() == "array_declarator" {
+                            if let Some(size_node) = declarator.child_by_field_name("size") {
+                                let size_text =
+                                    &source[size_node.start_byte()..size_node.end_byte()];
 
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+                                // Only flag if the size is a complex expression (not just a simple parameter)
+                                // Simple parameters like array[n] are acceptable VLA parameters
+                                // if the caller validates n before calling
+                                if is_problematic_vla_parameter(&size_node, source) {
+                                    let start_point = n.start_position();
+                                    violations.push(RuleViolation {
+                                        rule_id: self.rule_id().to_string(),
+                                        severity: Severity::Medium,
+                                        message: format!(
+                                            "Function parameter VLA size '{}' uses complex expression. Ensure callers validate the size.",
+                                            size_text
+                                        ),
+                                        file_path: String::new(),
+                                        line: start_point.row + 1,
+                                        column: start_point.column + 1,
+                                        suggestion: Some("Validate the size parameter before using it for VLA declaration".to_string()),
+                                        ..Default::default()
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 

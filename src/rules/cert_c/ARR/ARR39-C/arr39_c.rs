@@ -1,5 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Arr39C;
@@ -36,30 +37,37 @@ impl CertRule for Arr39C {
 
 impl Arr39C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "binary_expression" => {
-                self.check_pointer_arithmetic(node, source, violations);
-            }
-            "assignment_expression" => {
-                self.check_assignment_arithmetic(node, source, violations);
-            }
-            "call_expression" => {
-                self.check_function_call_scaling(node, source, violations);
-            }
-            "while_statement" | "for_statement" => {
-                self.check_loop_pointer_arithmetic(node, source, violations);
-            }
-            "subscript_expression" => {
-                // Check for violations in array subscript like ptr[scaled_value]
-                self.check_subscript_scaling(node, source, violations);
-            }
-            _ => {}
-        }
+        let matches = query::find_descendants_of_kinds(
+            *node,
+            &[
+                "binary_expression",
+                "assignment_expression",
+                "call_expression",
+                "while_statement",
+                "for_statement",
+                "subscript_expression",
+            ],
+        );
 
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+        for matched in matches {
+            match matched.kind() {
+                "binary_expression" => {
+                    self.check_pointer_arithmetic(&matched, source, violations);
+                }
+                "assignment_expression" => {
+                    self.check_assignment_arithmetic(&matched, source, violations);
+                }
+                "call_expression" => {
+                    self.check_function_call_scaling(&matched, source, violations);
+                }
+                "while_statement" | "for_statement" => {
+                    self.check_loop_pointer_arithmetic(&matched, source, violations);
+                }
+                "subscript_expression" => {
+                    // Check for violations in array subscript like ptr[scaled_value]
+                    self.check_subscript_scaling(&matched, source, violations);
+                }
+                _ => {}
             }
         }
     }
@@ -283,10 +291,10 @@ impl Arr39C {
 
     fn has_pointer_operations_in_loop(&self, body: &Node, source: &str) -> bool {
         // Check for pointer arithmetic (ptr + i, ptr - i) or subscripting (ptr[i])
-        self.check_node_for_pointer_ops(body, source)
+        query::find_first_descendant(*body, |node| self.node_is_pointer_op(&node, source)).is_some()
     }
 
-    fn check_node_for_pointer_ops(&self, node: &Node, source: &str) -> bool {
+    fn node_is_pointer_op(&self, node: &Node, source: &str) -> bool {
         match node.kind() {
             "subscript_expression" => {
                 // Found ptr[i] pattern
@@ -332,15 +340,6 @@ impl Arr39C {
                 }
             }
             _ => {}
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.check_node_for_pointer_ops(&child, source) {
-                    return true;
-                }
-            }
         }
 
         false

@@ -31,6 +31,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Win30C;
@@ -41,51 +42,40 @@ impl Win30C {
     }
 
     fn contains_format_message_alloc(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function_node) = node.child_by_field_name("function") {
-                let function_name = get_node_text(&function_node, source);
-                if function_name == "FormatMessage" {
-                    if let Some(args_node) = node.child_by_field_name("arguments") {
-                        if let Some(first_arg) = self.get_first_argument(&args_node) {
-                            let arg_text = get_node_text(&first_arg, source);
-                            if arg_text.contains("FORMAT_MESSAGE_ALLOCATE_BUFFER") {
-                                return true;
-                            }
-                        }
-                    }
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_format_message_alloc(&child, source) {
-                    return true;
-                }
+            let Some(function_node) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let function_name = get_node_text(&function_node, source);
+            if function_name != "FormatMessage" {
+                return false;
             }
-        }
-        false
+            let Some(args_node) = n.child_by_field_name("arguments") else {
+                return false;
+            };
+            let Some(first_arg) = self.get_first_argument(&args_node) else {
+                return false;
+            };
+            let arg_text = get_node_text(&first_arg, source);
+            arg_text.contains("FORMAT_MESSAGE_ALLOCATE_BUFFER")
+        })
+        .is_some()
     }
 
-    #[allow(clippy::only_used_in_recursion)]
     fn contains_global_free(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function_node) = node.child_by_field_name("function") {
-                let function_name = get_node_text(&function_node, source);
-                if function_name == "GlobalFree" {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_global_free(&child, source) {
-                    return true;
-                }
-            }
-        }
-        false
+            let Some(function_node) = n.child_by_field_name("function") else {
+                return false;
+            };
+            get_node_text(&function_node, source) == "GlobalFree"
+        })
+        .is_some()
     }
 
     fn report_global_free_violation(
@@ -94,8 +84,8 @@ impl Win30C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            if let Some(function_node) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function_node) = call.child_by_field_name("function") {
                 let function_name = get_node_text(&function_node, source);
                 if function_name == "GlobalFree" {
                     violations.push(RuleViolation {
@@ -103,21 +93,14 @@ impl Win30C {
                         severity: self.severity(),
                         message: "Using GlobalFree() for buffer allocated by FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER). Use LocalFree() instead.".to_string(),
                         file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
+                        line: call.start_position().row + 1,
+                        column: call.start_position().column + 1,
                         suggestion: Some(
                             "Change GlobalFree() to LocalFree(). Per Microsoft documentation, buffers allocated by FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER) must be freed with LocalFree().".to_string()
                         ),
                         ..Default::default()
                     });
-                    return;
                 }
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.report_global_free_violation(&child, source, violations);
             }
         }
     }

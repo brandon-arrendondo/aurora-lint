@@ -48,6 +48,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -150,10 +151,10 @@ impl Env33C {
         }
     }
 
-    /// Recursively check nodes for dangerous function calls
+    /// Check nodes for dangerous function calls
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
                 let resolved = self.resolve_name(&func_name);
 
@@ -162,7 +163,7 @@ impl Env33C {
                     // 1. Direct string literal argument → safe (no injection possible)
                     // 2. Local variable in a function with no tainted input sources → safe
                     // 3. Function parameter → keep flagging (caller may pass tainted data)
-                    if self.is_safe_command_call(node, source) {
+                    if self.is_safe_command_call(&call, source) {
                         // Skip — command is built from constants with no external input
                     } else {
                         let suggestion = match resolved.as_str() {
@@ -187,21 +188,14 @@ impl Env33C {
                                 display_name
                             ),
                             severity: self.severity(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
+                            line: call.start_position().row + 1,
+                            column: call.start_position().column + 1,
                             file_path: String::new(),
                             suggestion: Some(suggestion.to_string()),
                             requires_manual_review: None,
                         });
                     }
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }
@@ -326,28 +320,24 @@ impl Env33C {
     }
 
     fn find_pointer_params_in_subtree(node: &Node, source: &str) -> bool {
-        if node.kind() == "parameter_list" {
-            for i in 0..node.child_count() {
-                if let Some(param) = node.child(i) {
-                    if param.kind() == "parameter_declaration" {
-                        let param_text = get_node_text(&param, source);
-                        // Skip (void) parameter
-                        if param_text.trim() == "void" {
-                            continue;
-                        }
-                        // Check if parameter type contains pointer/array indicators
-                        if param_text.contains('*') || param_text.contains('[') {
-                            return true;
-                        }
-                    }
-                }
-            }
+        let Some(param_list) =
+            query::find_first_descendant(*node, |n| n.kind() == "parameter_list")
+        else {
             return false;
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if Self::find_pointer_params_in_subtree(&child, source) {
-                    return true;
+        };
+
+        for i in 0..param_list.child_count() {
+            if let Some(param) = param_list.child(i) {
+                if param.kind() == "parameter_declaration" {
+                    let param_text = get_node_text(&param, source);
+                    // Skip (void) parameter
+                    if param_text.trim() == "void" {
+                        continue;
+                    }
+                    // Check if parameter type contains pointer/array indicators
+                    if param_text.contains('*') || param_text.contains('[') {
+                        return true;
+                    }
                 }
             }
         }
@@ -360,28 +350,23 @@ impl Env33C {
     }
 
     fn scan_for_tainted_calls(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let name = get_node_text(&function, source);
-                // Resolve through macro aliases (e.g., GETENV → getenv)
-                let resolved = self.resolve_name(&name);
-                if TAINTED_SOURCE_FUNCTIONS.contains(&resolved.as_str()) {
-                    return true;
-                }
-                // Also check the original name (in case alias resolution fails)
-                if TAINTED_SOURCE_FUNCTIONS.contains(&name) {
-                    return true;
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
             }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.scan_for_tainted_calls(&child, source) {
-                    return true;
-                }
+            let Some(function) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let name = get_node_text(&function, source);
+            // Resolve through macro aliases (e.g., GETENV → getenv)
+            let resolved = self.resolve_name(&name);
+            if TAINTED_SOURCE_FUNCTIONS.contains(&resolved.as_str()) {
+                return true;
             }
-        }
-        false
+            // Also check the original name (in case alias resolution fails)
+            TAINTED_SOURCE_FUNCTIONS.contains(&name)
+        })
+        .is_some()
     }
 
     /// Check if function is a dangerous command processor invocation

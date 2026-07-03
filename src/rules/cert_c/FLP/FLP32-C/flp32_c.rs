@@ -36,6 +36,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Flp32C;
@@ -138,14 +139,14 @@ impl Flp32C {
 
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for call expressions
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(func) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
 
                 // Check if it's a math function
                 if Self::MATH_FUNCTIONS.contains(&func_name) {
                     // Check if there's error checking nearby
-                    if !self.has_error_checking(node, source) {
+                    if !self.has_error_checking(&node, source) {
                         let line = node.start_position().row + 1;
 
                         violations.push(RuleViolation {
@@ -166,13 +167,6 @@ impl Flp32C {
                         });
                     }
                 }
-            }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }
@@ -264,46 +258,41 @@ impl Flp32C {
 
     /// Recursively check if a node contains errno usage or error-checking function calls
     fn node_contains_errno_or_error_check(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "identifier" {
-            let text = get_node_text(node, source);
-            if text == "errno" {
-                return true;
-            }
-        }
-
-        if node.kind() == "call_expression" {
-            if let Some(func) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&func, source);
-                if matches!(
-                    func_name,
-                    "isnan"
-                        | "isinf"
-                        | "isfinite"
-                        | "fpclassify"
-                        | "isnormal"
-                        | "signbit"
-                        | "fetestexcept"
-                        | "feclearexcept"
-                        | "isless"
-                        | "islessequal"
-                        | "isgreater"
-                        | "isgreaterequal"
-                        | "islessgreater"
-                        | "isunordered"
-                ) {
+        query::find_first_descendant(*node, |n| {
+            if n.kind() == "identifier" {
+                let text = get_node_text(&n, source);
+                if text == "errno" {
                     return true;
                 }
             }
-        }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.node_contains_errno_or_error_check(&child, source) {
-                    return true;
+            if n.kind() == "call_expression" {
+                if let Some(func) = n.child_by_field_name("function") {
+                    let func_name = get_node_text(&func, source);
+                    if matches!(
+                        func_name,
+                        "isnan"
+                            | "isinf"
+                            | "isfinite"
+                            | "fpclassify"
+                            | "isnormal"
+                            | "signbit"
+                            | "fetestexcept"
+                            | "feclearexcept"
+                            | "isless"
+                            | "islessequal"
+                            | "isgreater"
+                            | "isgreaterequal"
+                            | "islessgreater"
+                            | "isunordered"
+                    ) {
+                        return true;
+                    }
                 }
             }
-        }
 
-        false
+            false
+        })
+        .is_some()
     }
 }

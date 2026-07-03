@@ -15,6 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -50,24 +51,20 @@ impl CertRule for Flp34C {
 
 impl Flp34C {
     fn check_recursive(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // When we enter a function definition, collect variable types and check within it
-        if node.kind() == "function_definition" {
-            let type_map = self.collect_variable_types(node, source);
-            self.check_function_body(node, source, &type_map, violations);
-            return; // Don't recurse further; check_function_body handles children
+        // For each function definition, collect variable types and check within it
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            let type_map = self.collect_variable_types(&func, source);
+            self.check_function_body(&func, source, &type_map, violations);
         }
 
-        // For cast expressions at file scope (unlikely but possible), still check
-        if node.kind() == "cast_expression" {
-            if let Some(violation) = self.check_cast_expression(node, source) {
-                violations.push(violation);
-            }
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_recursive(&child, source, violations);
+        // For cast expressions at file scope (unlikely but possible), still check.
+        // Skip casts inside a function_definition; those are handled above via
+        // check_function_body.
+        for cast in query::find_descendants_of_kind(*node, "cast_expression") {
+            if query::nearest_ancestor_of_kind(cast, "function_definition").is_none() {
+                if let Some(violation) = self.check_cast_expression(&cast, source) {
+                    violations.push(violation);
+                }
             }
         }
     }
@@ -80,21 +77,22 @@ impl Flp34C {
         type_map: &HashMap<String, String>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "cast_expression" {
-            if let Some(violation) = self.check_cast_expression(node, source) {
-                violations.push(violation);
-            }
-        }
-
-        if node.kind() == "assignment_expression" {
-            if let Some(violation) = self.check_assignment_conversion(node, source, type_map) {
-                violations.push(violation);
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_function_body(&child, source, type_map, violations);
+        for n in
+            query::find_descendants_of_kinds(*node, &["cast_expression", "assignment_expression"])
+        {
+            match n.kind() {
+                "cast_expression" => {
+                    if let Some(violation) = self.check_cast_expression(&n, source) {
+                        violations.push(violation);
+                    }
+                }
+                "assignment_expression" => {
+                    if let Some(violation) = self.check_assignment_conversion(&n, source, type_map)
+                    {
+                        violations.push(violation);
+                    }
+                }
+                _ => unreachable!(),
             }
         }
     }
@@ -128,8 +126,9 @@ impl Flp34C {
         source: &str,
         type_map: &mut HashMap<String, String>,
     ) {
-        if node.kind() == "function_declarator" {
-            if let Some(params) = node.child_by_field_name("parameters") {
+        // Find this declarator and any nested function_declarator (e.g. pointer declarators)
+        for func_declarator in query::find_descendants_of_kind(*node, "function_declarator") {
+            if let Some(params) = func_declarator.child_by_field_name("parameters") {
                 for i in 0..params.child_count() {
                     if let Some(param) = params.child(i) {
                         if param.kind() == "parameter_declaration" {
@@ -137,12 +136,6 @@ impl Flp34C {
                         }
                     }
                 }
-            }
-        }
-        // Recurse to find nested function_declarator (e.g. pointer declarators)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_params_from_declarator(&child, source, type_map);
             }
         }
     }
@@ -154,14 +147,8 @@ impl Flp34C {
         source: &str,
         type_map: &mut HashMap<String, String>,
     ) {
-        if node.kind() == "declaration" {
-            self.extract_type_and_name(node, source, type_map);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_local_declarations(&child, source, type_map);
-            }
+        for decl in query::find_descendants_of_kind(*node, "declaration") {
+            self.extract_type_and_name(&decl, source, type_map);
         }
     }
 
