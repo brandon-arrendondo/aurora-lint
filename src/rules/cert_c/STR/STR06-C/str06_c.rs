@@ -28,6 +28,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -117,37 +118,33 @@ impl Str06C {
     }
 
     fn collect_getenv_vars_recursive(&self, node: &Node, source: &str, vars: &mut HashSet<String>) {
-        // Check for declarations: char *path = getenv("PATH");
-        if node.kind() == "declaration" {
-            if let Some(init_decl) = node.child_by_field_name("declarator") {
-                self.check_declarator_for_getenv(&init_decl, source, vars);
-            }
-            // Also check init_declarator children
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "init_declarator" {
-                        self.check_declarator_for_getenv(&child, source, vars);
+        for node in query::find_descendants(*node, |_| true) {
+            let node = &node;
+            // Check for declarations: char *path = getenv("PATH");
+            if node.kind() == "declaration" {
+                if let Some(init_decl) = node.child_by_field_name("declarator") {
+                    self.check_declarator_for_getenv(&init_decl, source, vars);
+                }
+                // Also check init_declarator children
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if child.kind() == "init_declarator" {
+                            self.check_declarator_for_getenv(&child, source, vars);
+                        }
                     }
                 }
             }
-        }
 
-        // Check for assignments: path = getenv("PATH");
-        if node.kind() == "assignment_expression" {
-            if let Some(left) = node.child_by_field_name("left") {
-                if let Some(right) = node.child_by_field_name("right") {
-                    if self.is_getenv_call(&right, source) {
-                        let var_name = get_node_text(&left, source);
-                        vars.insert(var_name.to_string());
+            // Check for assignments: path = getenv("PATH");
+            if node.kind() == "assignment_expression" {
+                if let Some(left) = node.child_by_field_name("left") {
+                    if let Some(right) = node.child_by_field_name("right") {
+                        if self.is_getenv_call(&right, source) {
+                            let var_name = get_node_text(&left, source);
+                            vars.insert(var_name.to_string());
+                        }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_getenv_vars_recursive(&child, source, vars);
             }
         }
     }
@@ -200,14 +197,8 @@ impl Str06C {
         violations: &mut Vec<RuleViolation>,
         getenv_vars: &HashSet<String>,
     ) {
-        // Check for strtok() calls
-        self.check_strtok_call_with_vars(node, source, violations, getenv_vars);
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_strtok_calls_recursive(&child, source, violations, getenv_vars);
-            }
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            self.check_strtok_call_with_vars(&n, source, violations, getenv_vars);
         }
     }
 

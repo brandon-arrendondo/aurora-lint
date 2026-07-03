@@ -48,6 +48,7 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::null_state::NullState;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{get_function_parameters, get_node_text, is_pointer_type};
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -91,26 +92,14 @@ impl CertRule for Api00C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function_parameter_validation(&func, source, &mut violations);
+        }
         violations
     }
 }
 
 impl Api00C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for function definitions
-        if node.kind() == "function_definition" {
-            self.check_function_parameter_validation(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     fn check_function_parameter_validation(
         &self,
         function_node: &Node,
@@ -830,44 +819,33 @@ impl Api00C {
         relay_callees: &mut Vec<(String, usize)>,
         found_direct_use: &mut bool,
     ) {
-        if node.kind() == "identifier" {
-            let text = get_node_text(node, source);
-            if text == param_name {
-                if let Some(parent) = node.parent() {
-                    // Check: is this inside a call_expression's argument list?
-                    if parent.kind() == "argument_list" {
-                        if let Some(call_expr) = parent.parent() {
-                            if call_expr.kind() == "call_expression" {
-                                if let Some(func) = call_expr.child_by_field_name("function") {
-                                    let callee = get_node_text(&func, source);
-                                    // Determine which positional arg this is
-                                    let arg_idx = self.get_arg_index(node, &parent);
-                                    relay_callees.push((callee.to_string(), arg_idx));
-                                    return;
-                                }
+        for ident in query::find_descendants_of_kind(*node, "identifier") {
+            let text = get_node_text(&ident, source);
+            if text != param_name {
+                continue;
+            }
+            if let Some(parent) = ident.parent() {
+                // Check: is this inside a call_expression's argument list?
+                if parent.kind() == "argument_list" {
+                    if let Some(call_expr) = parent.parent() {
+                        if call_expr.kind() == "call_expression" {
+                            if let Some(func) = call_expr.child_by_field_name("function") {
+                                let callee = get_node_text(&func, source);
+                                // Determine which positional arg this is
+                                let arg_idx = self.get_arg_index(&ident, &parent);
+                                relay_callees.push((callee.to_string(), arg_idx));
+                                continue;
                             }
                         }
-                        *found_direct_use = true;
-                        return;
                     }
-                    if self.is_in_validation_context(node) || self.is_in_void_cast(node, source) {
-                        return;
-                    }
+                    *found_direct_use = true;
+                    continue;
                 }
-                *found_direct_use = true;
+                if self.is_in_validation_context(&ident) || self.is_in_void_cast(&ident, source) {
+                    continue;
+                }
             }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.classify_param_uses(
-                    &child,
-                    param_name,
-                    source,
-                    relay_callees,
-                    found_direct_use,
-                );
-            }
+            *found_direct_use = true;
         }
     }
 
@@ -947,84 +925,73 @@ impl Api00C {
         safe: &mut bool,
         saw_any_use: &mut bool,
     ) {
-        if !*safe {
-            return;
-        }
-        if node.kind() == "identifier" {
-            let text = get_node_text(node, source);
-            if text == param_name {
-                *saw_any_use = true;
-                if let Some(parent) = node.parent() {
-                    // Skip identifiers that are used as a struct field name or
-                    // subscript index rather than as the dereference target —
-                    // those are unrelated uses of the same identifier text.
-                    let is_self_as_target = |field: &str| {
-                        parent
-                            .child_by_field_name(field)
-                            .map(|t| t.id() == node.id())
-                            .unwrap_or(false)
-                    };
-                    match parent.kind() {
-                        "pointer_expression" => {
-                            // Could be `*item` (deref) or `&item` (address-of).
-                            // Address-of a pointer itself doesn't deref it, but
-                            // the resulting `void **` is highly atypical and we
-                            // treat it as unsafe conservatively.
-                            *safe = false;
-                            return;
-                        }
-                        "field_expression" if is_self_as_target("argument") => {
-                            *safe = false;
-                            return;
-                        }
-                        "subscript_expression" if is_self_as_target("argument") => {
-                            *safe = false;
-                            return;
-                        }
-                        "argument_list" => {
-                            if let Some(call_expr) = parent.parent() {
-                                if call_expr.kind() == "call_expression" {
-                                    if let Some(func) = call_expr.child_by_field_name("function") {
-                                        let callee = get_node_text(&func, source);
-                                        let arg_idx = self.get_arg_index(node, &parent);
-                                        if Self::is_null_accepting_stdlib(callee, arg_idx) {
-                                            // ok
-                                        } else if let Some(s) = summaries.get(callee) {
-                                            if !s.checks_null_params.contains(&arg_idx) {
-                                                *safe = false;
-                                                return;
-                                            }
-                                        } else {
+        for ident in query::find_descendants_of_kind(*node, "identifier") {
+            if !*safe {
+                break;
+            }
+            let text = get_node_text(&ident, source);
+            if text != param_name {
+                continue;
+            }
+            *saw_any_use = true;
+            if let Some(parent) = ident.parent() {
+                // Skip identifiers that are used as a struct field name or
+                // subscript index rather than as the dereference target —
+                // those are unrelated uses of the same identifier text.
+                let is_self_as_target = |field: &str| {
+                    parent
+                        .child_by_field_name(field)
+                        .map(|t| t.id() == ident.id())
+                        .unwrap_or(false)
+                };
+                match parent.kind() {
+                    "pointer_expression" => {
+                        // Could be `*item` (deref) or `&item` (address-of).
+                        // Address-of a pointer itself doesn't deref it, but
+                        // the resulting `void **` is highly atypical and we
+                        // treat it as unsafe conservatively.
+                        *safe = false;
+                        continue;
+                    }
+                    "field_expression" if is_self_as_target("argument") => {
+                        *safe = false;
+                        continue;
+                    }
+                    "subscript_expression" if is_self_as_target("argument") => {
+                        *safe = false;
+                        continue;
+                    }
+                    "argument_list" => {
+                        if let Some(call_expr) = parent.parent() {
+                            if call_expr.kind() == "call_expression" {
+                                if let Some(func) = call_expr.child_by_field_name("function") {
+                                    let callee = get_node_text(&func, source);
+                                    let arg_idx = self.get_arg_index(&ident, &parent);
+                                    if Self::is_null_accepting_stdlib(callee, arg_idx) {
+                                        // ok
+                                    } else if let Some(s) = summaries.get(callee) {
+                                        if !s.checks_null_params.contains(&arg_idx) {
                                             *safe = false;
-                                            return;
+                                            continue;
                                         }
+                                    } else {
+                                        *safe = false;
+                                        continue;
                                     }
                                 }
                             }
                         }
-                        "cast_expression" => {
-                            // `(void *)item` or `(T *)item` — a cast is still just a
-                            // value read, treat it as storage-like and keep walking.
-                        }
-                        _ => {
-                            // Other parents: assignment RHS, initializer in a
-                            // declaration, return expression, comparison, etc.
-                            // All safe for a NULL value.
-                        }
+                    }
+                    "cast_expression" => {
+                        // `(void *)item` or `(T *)item` — a cast is still just a
+                        // value read, treat it as storage-like and keep walking.
+                    }
+                    _ => {
+                        // Other parents: assignment RHS, initializer in a
+                        // declaration, return expression, comparison, etc.
+                        // All safe for a NULL value.
                     }
                 }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.void_ptr_storage_walk(
-                    &child,
-                    param_name,
-                    source,
-                    summaries,
-                    safe,
-                    saw_any_use,
-                );
             }
         }
     }
@@ -1046,46 +1013,37 @@ impl Api00C {
     }
 
     fn is_parameter_used(&self, body: &Node, param_name: &str, source: &str) -> bool {
-        self.check_parameter_usage(body, param_name, source)
-    }
-
-    fn check_parameter_usage(&self, node: &Node, param_name: &str, source: &str) -> bool {
-        // Check if this node is an identifier matching the parameter name
-        if node.kind() == "identifier" {
-            let text = get_node_text(node, source);
-            if text == param_name {
-                // Skip (void)param / UNUSED(param) patterns — these explicitly mark
-                // a parameter as intentionally unused (e.g., callback signature match)
-                if self.is_in_void_cast(node, source) {
-                    return false;
-                }
-                // Check if it's actually being used (not just in a validation check)
-                if let Some(parent) = node.parent() {
-                    // Skip if this is part of a validation check condition
-                    if !self.is_in_validation_context(node) {
-                        return true;
-                    }
-                    // Still count dereference as usage even in validation context
-                    if parent.kind() == "pointer_expression"
-                        || parent.kind() == "field_expression"
-                        || parent.kind() == "subscript_expression"
-                    {
-                        return true;
-                    }
-                }
+        query::find_first_descendant(*body, |node| {
+            // Check if this node is an identifier matching the parameter name
+            if node.kind() != "identifier" {
+                return false;
             }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.check_parameter_usage(&child, param_name, source) {
+            let text = get_node_text(&node, source);
+            if text != param_name {
+                return false;
+            }
+            // Skip (void)param / UNUSED(param) patterns — these explicitly mark
+            // a parameter as intentionally unused (e.g., callback signature match)
+            if self.is_in_void_cast(&node, source) {
+                return false;
+            }
+            // Check if it's actually being used (not just in a validation check)
+            if let Some(parent) = node.parent() {
+                // Skip if this is part of a validation check condition
+                if !self.is_in_validation_context(&node) {
+                    return true;
+                }
+                // Still count dereference as usage even in validation context
+                if parent.kind() == "pointer_expression"
+                    || parent.kind() == "field_expression"
+                    || parent.kind() == "subscript_expression"
+                {
                     return true;
                 }
             }
-        }
-
-        false
+            false
+        })
+        .is_some()
     }
 
     /// Check if a node is part of a validation context (if condition checking for NULL)
@@ -1279,19 +1237,8 @@ impl Api00C {
     }
 
     fn find_identifier(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "identifier" {
-            return Some(get_node_text(node, source).to_string());
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(id) = self.find_identifier(&child, source) {
-                    return Some(id);
-                }
-            }
-        }
-
-        None
+        query::find_first_descendant(*node, |n| n.kind() == "identifier")
+            .map(|n| get_node_text(&n, source).to_string())
     }
 
     /// Extract function parameters, handling nested declarators for pointer-returning functions
@@ -1326,21 +1273,9 @@ impl Api00C {
         node: &Node,
         source: &str,
     ) -> Option<Vec<(String, String)>> {
-        if node.kind() == "function_declarator" {
-            // Found it, extract parameters
-            return self.extract_params_from_declarator(node, source);
-        }
-
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(params) = self.find_params_in_declarator(&child, source) {
-                    return Some(params);
-                }
-            }
-        }
-
-        None
+        let declarator =
+            query::find_first_descendant(*node, |n| n.kind() == "function_declarator")?;
+        self.extract_params_from_declarator(&declarator, source)
     }
 
     fn extract_params_from_declarator(

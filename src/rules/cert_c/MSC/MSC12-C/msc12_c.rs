@@ -12,6 +12,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Msc12C;
@@ -22,41 +23,37 @@ impl Msc12C {
     }
 
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "expression_statement" => {
-                self.check_no_effect_expression(node, source, violations);
+        for n in query::find_descendants(*node, |_| true) {
+            match n.kind() {
+                "expression_statement" => {
+                    self.check_no_effect_expression(&n, source, violations);
+                }
+                "if_statement" => {
+                    self.check_duplicate_conditions(&n, source, violations);
+                    self.check_empty_control_flow(&n, source, violations);
+                }
+                "for_statement" | "while_statement" | "do_statement" => {
+                    self.check_meaningless_continue(&n, source, violations);
+                    self.check_empty_control_flow(&n, source, violations);
+                }
+                "function_definition" => {
+                    self.check_empty_function(&n, source, violations);
+                }
+                "compound_statement" => {
+                    self.check_empty_standalone_block(&n, source, violations);
+                }
+                "switch_statement" => {
+                    self.check_empty_switch_case(&n, source, violations);
+                }
+                "assignment_expression" => {
+                    self.check_self_assignment(&n, source, violations);
+                }
+                _ => {}
             }
-            "if_statement" => {
-                self.check_duplicate_conditions(node, source, violations);
-                self.check_empty_control_flow(node, source, violations);
-            }
-            "for_statement" | "while_statement" | "do_statement" => {
-                self.check_meaningless_continue(node, source, violations);
-                self.check_empty_control_flow(node, source, violations);
-            }
-            "function_definition" => {
-                self.check_empty_function(node, source, violations);
-            }
-            "compound_statement" => {
-                self.check_empty_standalone_block(node, source, violations);
-            }
-            "switch_statement" => {
-                self.check_empty_switch_case(node, source, violations);
-            }
-            "assignment_expression" => {
-                self.check_self_assignment(node, source, violations);
-            }
-            _ => {}
-        }
 
-        // Check for redundant logical sub-expressions in various contexts
-        if node.kind() == "binary_expression" {
-            self.check_redundant_logical(node, source, violations);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+            // Check for redundant logical sub-expressions in various contexts
+            if n.kind() == "binary_expression" {
+                self.check_redundant_logical(&n, source, violations);
             }
         }
     }
@@ -696,17 +693,7 @@ impl Msc12C {
 
     /// Returns true if the node or any descendant is a call_expression.
     fn contains_call(&self, node: &Node) -> bool {
-        if node.kind() == "call_expression" {
-            return true;
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_call(&child) {
-                    return true;
-                }
-            }
-        }
-        false
+        query::find_first_descendant(*node, |n| n.kind() == "call_expression").is_some()
     }
 }
 

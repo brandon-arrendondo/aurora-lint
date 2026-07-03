@@ -1,5 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -43,23 +44,29 @@ impl CertRule for Pre32C {
 
 impl Pre32C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "call_expression" => {
-                self.check_function_call(node, source, violations);
-            }
-            // Check for preprocessor directives that contain call expressions
-            // This catches cases where tree-sitter parses the #ifdef as a wrapper
-            "preproc_ifdef" | "preproc_if" | "preproc_ifndef" | "preproc_else" | "preproc_elif"
-            | "preproc_call" | "preproc_def" | "preproc_include" => {
-                self.check_preproc_for_macro_calls(node, source, violations);
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+        const KINDS: &[&str] = &[
+            "call_expression",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_ifndef",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_call",
+            "preproc_def",
+            "preproc_include",
+        ];
+        for n in query::find_descendants_of_kinds(*node, KINDS) {
+            match n.kind() {
+                "call_expression" => {
+                    self.check_function_call(&n, source, violations);
+                }
+                // Check for preprocessor directives that contain call expressions
+                // This catches cases where tree-sitter parses the #ifdef as a wrapper
+                "preproc_ifdef" | "preproc_if" | "preproc_ifndef" | "preproc_else"
+                | "preproc_elif" | "preproc_call" | "preproc_def" | "preproc_include" => {
+                    self.check_preproc_for_macro_calls(&n, source, violations);
+                }
+                _ => {}
             }
         }
     }

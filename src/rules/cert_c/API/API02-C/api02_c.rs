@@ -31,6 +31,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::declarator_utils::is_pointer_declarator;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Api02C;
@@ -58,45 +59,20 @@ impl CertRule for Api02C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
+        for decl in query::find_descendants_of_kind(*node, "declaration") {
+            if let Some(declarator) = decl.child_by_field_name("declarator") {
+                if self.is_function_declarator(&declarator) {
+                    self.check_function_parameters(&declarator, &decl, source, &mut violations);
+                }
+            }
+        }
         violations
     }
 }
 
 impl Api02C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for function declarations
-        if node.kind() == "declaration" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                if self.is_function_declarator(&declarator) {
-                    self.check_function_parameters(&declarator, node, source, violations);
-                }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     fn is_function_declarator(&self, node: &Node) -> bool {
-        if node.kind() == "function_declarator" {
-            return true;
-        }
-
-        // Check children (might be wrapped in pointer_declarator)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.is_function_declarator(&child) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        query::find_first_descendant(*node, |n| n.kind() == "function_declarator").is_some()
     }
 
     fn check_function_parameters(

@@ -76,6 +76,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Msc39C;
@@ -132,37 +133,33 @@ impl Msc39C {
 
     /// Check if function body contains va_arg calls on a specific parameter
     fn has_va_arg_on_param(&self, body: &Node, param_name: &str, source: &str) -> bool {
-        if body.kind() == "call_expression" {
-            if let Some(function_node) = body.child_by_field_name("function") {
-                let function_name = get_node_text(&function_node, source).trim();
-                if function_name == "va_arg" {
-                    // Check if the first argument is the parameter
-                    if let Some(arguments) = body.child_by_field_name("arguments") {
-                        for i in 0..arguments.child_count() {
-                            if let Some(arg) = arguments.child(i) {
-                                if arg.kind() == "identifier" {
-                                    let arg_text = get_node_text(&arg, source).trim();
-                                    if arg_text == param_name {
-                                        return true;
-                                    }
-                                    break; // Only check first argument
-                                }
-                            }
-                        }
+        query::find_first_descendant(*body, |node| {
+            if node.kind() != "call_expression" {
+                return false;
+            }
+            let Some(function_node) = node.child_by_field_name("function") else {
+                return false;
+            };
+            let function_name = get_node_text(&function_node, source).trim().to_string();
+            if function_name != "va_arg" {
+                return false;
+            }
+            // Check if the first argument is the parameter
+            let Some(arguments) = node.child_by_field_name("arguments") else {
+                return false;
+            };
+            for i in 0..arguments.child_count() {
+                if let Some(arg) = arguments.child(i) {
+                    if arg.kind() == "identifier" {
+                        // Only check first argument
+                        let arg_text = get_node_text(&arg, source).trim();
+                        return arg_text == param_name;
                     }
                 }
             }
-        }
-
-        // Recursively check children
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if self.has_va_arg_on_param(&child, param_name, source) {
-                    return true;
-                }
-            }
-        }
-        false
+            false
+        })
+        .is_some()
     }
 
     /// Check function definitions for va_list parameters that are used with va_arg
@@ -278,13 +275,8 @@ impl CertRule for Msc39C {
 impl Msc39C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check function definitions
-        self.check_function_definition(node, source, violations);
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function_definition(&func, source, violations);
         }
     }
 }

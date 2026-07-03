@@ -52,6 +52,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Api09C;
@@ -79,26 +80,14 @@ impl CertRule for Api09C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function_type_compatibility(&func, source, &mut violations);
+        }
         violations
     }
 }
 
 impl Api09C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for function definitions
-        if node.kind() == "function_definition" {
-            self.check_function_type_compatibility(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     /// Check for signed return types when function accumulates/returns sizes
     fn check_function_type_compatibility(
         &self,
@@ -193,19 +182,8 @@ impl Api09C {
     }
 
     fn find_identifier(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "identifier" {
-            return Some(get_node_text(node, source).to_string());
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(id) = self.find_identifier(&child, source) {
-                    return Some(id);
-                }
-            }
-        }
-
-        None
+        query::find_first_descendant(*node, |n| n.kind() == "identifier")
+            .map(|n| get_node_text(&n, source).to_string())
     }
 
     /// Check if a type is a signed size type (ssize_t, etc.)
@@ -221,47 +199,41 @@ impl Api09C {
 
     /// Look for patterns like: pos += res; or count += len; in loops
     fn find_size_accumulator_pattern(&self, node: &Node, source: &str) -> bool {
-        // Look for while loops or for loops
-        if matches!(node.kind(), "while_statement" | "for_statement") {
-            // Check if loop body contains += operations with size-like variable names
-            if let Some(body) = self.get_loop_body(node) {
-                if self.contains_accumulator_assignment(&body, source) {
-                    return true;
+        query::find_first_descendant(*node, |n| {
+            // Look for while loops or for loops
+            if matches!(n.kind(), "while_statement" | "for_statement") {
+                // Check if loop body contains += operations with size-like variable names
+                if let Some(body) = self.get_loop_body(&n) {
+                    if self.contains_accumulator_assignment(&body, source) {
+                        return true;
+                    }
                 }
             }
-        }
 
-        // Check for return statements returning accumulated values
-        if node.kind() == "return_statement" {
-            if let Some(value) = node.child_by_field_name("") {
-                let text = get_node_text(&value, source);
-                if matches!(text, "pos" | "count" | "total" | "bytes" | "size") {
-                    return true;
+            // Check for return statements returning accumulated values
+            if n.kind() == "return_statement" {
+                if let Some(value) = n.child_by_field_name("") {
+                    let text = get_node_text(&value, source);
+                    if matches!(text, "pos" | "count" | "total" | "bytes" | "size") {
+                        return true;
+                    }
                 }
-            }
-            // Alternative: check return value directly
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "identifier" {
-                        let text = get_node_text(&child, source);
-                        if matches!(text, "pos" | "count" | "total" | "bytes" | "size") {
-                            return true;
+                // Alternative: check return value directly
+                for i in 0..n.child_count() {
+                    if let Some(child) = n.child(i) {
+                        if child.kind() == "identifier" {
+                            let text = get_node_text(&child, source);
+                            if matches!(text, "pos" | "count" | "total" | "bytes" | "size") {
+                                return true;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.find_size_accumulator_pattern(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            false
+        })
+        .is_some()
     }
 
     fn get_loop_body<'a>(&self, loop_node: &'a Node) -> Option<Node<'a>> {
@@ -269,9 +241,12 @@ impl Api09C {
     }
 
     fn contains_accumulator_assignment(&self, node: &Node, source: &str) -> bool {
-        if node.kind() == "expression_statement" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "expression_statement" {
+                return false;
+            }
+            for i in 0..n.child_count() {
+                if let Some(child) = n.child(i) {
                     if child.kind() == "assignment_expression" {
                         if let Some(operator) = child.child_by_field_name("operator") {
                             let op_text = get_node_text(&operator, source);
@@ -291,18 +266,9 @@ impl Api09C {
                     }
                 }
             }
-        }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_accumulator_assignment(&child, source) {
-                    return true;
-                }
-            }
-        }
-
-        false
+            false
+        })
+        .is_some()
     }
 
     /// Check for signed local variables used as size accumulators
@@ -312,16 +278,7 @@ impl Api09C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        self.find_signed_size_declarations(body, source, violations);
-    }
-
-    fn find_signed_size_declarations(
-        &self,
-        node: &Node,
-        source: &str,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        if node.kind() == "declaration" {
+        for node in query::find_descendants_of_kind(*body, "declaration") {
             // Get the type specifier
             let mut type_name = String::new();
             let mut declarators = Vec::new();
@@ -373,29 +330,10 @@ impl Api09C {
                 }
             }
         }
-
-        // Recursively check children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_signed_size_declarations(&child, source, violations);
-            }
-        }
     }
 
     fn get_declarator_name(&self, declarator_node: &Node, source: &str) -> Option<String> {
-        if declarator_node.kind() == "identifier" {
-            return Some(get_node_text(declarator_node, source).to_string());
-        }
-
-        // Handle complex declarators
-        for i in 0..declarator_node.child_count() {
-            if let Some(child) = declarator_node.child(i) {
-                if let Some(name) = self.get_declarator_name(&child, source) {
-                    return Some(name);
-                }
-            }
-        }
-
-        None
+        query::find_first_descendant(*declarator_node, |n| n.kind() == "identifier")
+            .map(|n| get_node_text(&n, source).to_string())
     }
 }

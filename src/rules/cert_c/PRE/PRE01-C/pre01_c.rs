@@ -34,6 +34,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pre01C;
@@ -233,21 +234,9 @@ impl CertRule for Pre01C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
-        violations
-    }
-}
-
-impl Pre01C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for unparenthesized parameters in function-like macros
-        self.check_function_macro(node, source, violations);
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for macro_node in query::find_descendants_of_kind(*node, "preproc_function_def") {
+            self.check_function_macro(&macro_node, source, &mut violations);
         }
+        violations
     }
 }

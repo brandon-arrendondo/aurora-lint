@@ -59,6 +59,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Msc38C;
@@ -288,15 +289,10 @@ impl CertRule for Msc38C {
 impl Msc38C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for various violation patterns
-        self.check_preproc_undef(node, source, violations);
-        self.check_parenthesized_identifier(node, source, violations);
-        self.check_manual_declaration(node, source, violations);
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for n in query::find_descendants(*node, |_| true) {
+            self.check_preproc_undef(&n, source, violations);
+            self.check_parenthesized_identifier(&n, source, violations);
+            self.check_manual_declaration(&n, source, violations);
         }
     }
 }

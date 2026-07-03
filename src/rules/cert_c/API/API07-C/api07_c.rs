@@ -10,6 +10,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -38,30 +39,20 @@ impl CertRule for Api07C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            self.check_strncpy_call(&call, source, &mut violations);
+        }
+
+        // Check each function for free-not-at-start and type confusion patterns
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_free_not_at_start(&func, source, &mut violations);
+            self.check_type_confusion(&func, source, &mut violations);
+        }
         violations
     }
 }
 
 impl Api07C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "call_expression" {
-            self.check_strncpy_call(node, source, violations);
-        }
-
-        // Check each function for free-not-at-start and type confusion patterns
-        if node.kind() == "function_definition" {
-            self.check_free_not_at_start(node, source, violations);
-            self.check_type_confusion(node, source, violations);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     fn check_strncpy_call(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if let Some(function_node) = node.child_by_field_name("function") {
             let function_name = get_node_text(&function_node, source);

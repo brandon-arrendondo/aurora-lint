@@ -8,6 +8,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Msc07C;
@@ -18,14 +19,8 @@ impl Msc07C {
     }
 
     fn walk_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "compound_statement" {
-            self.check_unreachable_after_terminal(node, source, violations);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.walk_node(&child, source, violations);
-            }
+        for compound in query::find_descendants_of_kind(*node, "compound_statement") {
+            self.check_unreachable_after_terminal(&compound, source, violations);
         }
     }
 

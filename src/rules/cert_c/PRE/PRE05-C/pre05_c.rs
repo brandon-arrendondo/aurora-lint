@@ -42,6 +42,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pre05C;
@@ -82,15 +83,9 @@ impl CertRule for Pre05C {
 impl Pre05C {
     fn find_called_macros(&self, node: &Node, source: &str) -> Vec<String> {
         let mut called = Vec::new();
-        self.collect_called_macros(node, source, &mut called);
-        called
-    }
-
-    fn collect_called_macros(&self, node: &Node, source: &str, called: &mut Vec<String>) {
-        // Look for preproc_function_def nodes to find macro bodies
-        if node.kind() == "preproc_function_def" {
+        for macro_node in query::find_descendants_of_kind(*node, "preproc_function_def") {
             // Get the macro body (value field)
-            if let Some(value_node) = node.child_by_field_name("value") {
+            if let Some(value_node) = macro_node.child_by_field_name("value") {
                 let value_text = &source[value_node.start_byte()..value_node.end_byte()];
                 // Look for potential macro calls (identifier followed by parentheses)
                 // This is a simple heuristic: find words that look like function calls
@@ -101,13 +96,7 @@ impl Pre05C {
                 }
             }
         }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_called_macros(&child, source, called);
-            }
-        }
+        called
     }
 
     fn check_node(
@@ -118,15 +107,8 @@ impl Pre05C {
         called_macros: &[String],
     ) {
         // Look for preprocessor function definitions (macros with parameters)
-        if node.kind() == "preproc_function_def" {
-            self.check_macro_definition(node, source, violations, called_macros);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, called_macros);
-            }
+        for macro_node in query::find_descendants_of_kind(*node, "preproc_function_def") {
+            self.check_macro_definition(&macro_node, source, violations, called_macros);
         }
     }
 

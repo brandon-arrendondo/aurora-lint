@@ -15,6 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -59,7 +60,7 @@ impl CertRule for Str09C {
 
 impl Str09C {
     fn collect_char_vars(&self, node: &Node, source: &str, char_vars: &mut HashMap<String, bool>) {
-        if node.kind() == "declaration" {
+        for node in query::find_descendants_of_kind(*node, "declaration") {
             // Check if this is a char declaration
             let mut is_char = false;
             for i in 0..node.child_count() {
@@ -81,13 +82,6 @@ impl Str09C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_char_vars(&child, source, char_vars);
             }
         }
     }
@@ -117,15 +111,8 @@ impl Str09C {
         char_vars: &HashMap<String, bool>,
     ) {
         // Check binary expressions for ordering comparisons
-        if node.kind() == "binary_expression" {
-            self.check_binary_expr(node, source, violations, char_vars);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, char_vars);
-            }
+        for n in query::find_descendants_of_kind(*node, "binary_expression") {
+            self.check_binary_expr(&n, source, violations, char_vars);
         }
     }
 

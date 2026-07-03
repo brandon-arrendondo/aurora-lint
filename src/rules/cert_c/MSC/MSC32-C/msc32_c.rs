@@ -28,6 +28,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Msc32C;
@@ -63,15 +64,8 @@ impl CertRule for Msc32C {
 impl Msc32C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check function definitions
-        if node.kind() == "function_definition" {
-            self.check_function(node, source, violations);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function(&func, source, violations);
         }
     }
 
@@ -103,21 +97,14 @@ impl Msc32C {
     }
 
     fn collect_calls(&self, node: &Node, source: &str, calls: &mut Vec<FunctionCall>) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call_node in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call_node.child_by_field_name("function") {
                 let func_name = &source[function.start_byte()..function.end_byte()];
                 calls.push(FunctionCall {
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
+                    line: call_node.start_position().row + 1,
+                    column: call_node.start_position().column + 1,
                     func_name: func_name.to_string(),
                 });
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_calls(&child, source, calls);
             }
         }
     }

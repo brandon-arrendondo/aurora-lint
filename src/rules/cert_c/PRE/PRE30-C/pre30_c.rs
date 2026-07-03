@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pre30C;
@@ -41,20 +42,17 @@ impl CertRule for Pre30C {
 
 impl Pre30C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "preproc_function_def" => {
-                self.check_macro_definition(node, source, violations);
-            }
-            "call_expression" => {
-                self.check_macro_invocation(node, source, violations);
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
+        for n in
+            query::find_descendants_of_kinds(*node, &["preproc_function_def", "call_expression"])
+        {
+            match n.kind() {
+                "preproc_function_def" => {
+                    self.check_macro_definition(&n, source, violations);
+                }
+                "call_expression" => {
+                    self.check_macro_invocation(&n, source, violations);
+                }
+                _ => {}
             }
         }
     }

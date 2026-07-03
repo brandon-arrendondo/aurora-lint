@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Str10C;
@@ -29,24 +30,20 @@ impl CertRule for Str10C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Check for string concatenation (adjacent string literals)
-        if node.kind() == "concatenated_string" {
-            self.check_string_literal_types(node, source, &mut violations);
-        }
-
-        // Also check init_declarator which might have concatenated strings
-        if node.kind() == "init_declarator" {
-            if let Some(value) = node.child_by_field_name("value") {
-                if value.kind() == "concatenated_string" {
-                    self.check_string_literal_types(&value, source, &mut violations);
-                }
+        for node in query::find_descendants(*node, |_| true) {
+            let node = &node;
+            // Check for string concatenation (adjacent string literals)
+            if node.kind() == "concatenated_string" {
+                self.check_string_literal_types(node, source, &mut violations);
             }
-        }
 
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+            // Also check init_declarator which might have concatenated strings
+            if node.kind() == "init_declarator" {
+                if let Some(value) = node.child_by_field_name("value") {
+                    if value.kind() == "concatenated_string" {
+                        self.check_string_literal_types(&value, source, &mut violations);
+                    }
+                }
             }
         }
 

@@ -40,6 +40,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::declarator_utils::{is_array_declarator, is_pointer_declarator};
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Api01C;
@@ -67,26 +68,14 @@ impl CertRule for Api01C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
+        for struct_node in query::find_descendants_of_kind(*node, "struct_specifier") {
+            self.check_struct_layout(&struct_node, source, &mut violations);
+        }
         violations
     }
 }
 
 impl Api01C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for struct declarations
-        if node.kind() == "struct_specifier" {
-            self.check_struct_layout(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     fn check_struct_layout(
         &self,
         struct_node: &Node,

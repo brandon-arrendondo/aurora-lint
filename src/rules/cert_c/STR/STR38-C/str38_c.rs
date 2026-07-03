@@ -20,6 +20,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -61,27 +62,22 @@ impl CertRule for Str38C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        if node.kind() == "function_definition" || node.kind() == "translation_unit" {
-            let scope = if node.kind() == "function_definition" {
-                node.child_by_field_name("body")
-            } else {
-                Some(*node)
-            };
+        for node in query::find_descendants(*node, |_| true) {
+            if node.kind() == "function_definition" || node.kind() == "translation_unit" {
+                let scope = if node.kind() == "function_definition" {
+                    node.child_by_field_name("body")
+                } else {
+                    Some(node)
+                };
 
-            if let Some(scope_node) = scope {
-                // Track variable types
-                let mut var_types: HashMap<String, VarType> = HashMap::new();
-                self.collect_var_types(&scope_node, source, &mut var_types);
+                if let Some(scope_node) = scope {
+                    // Track variable types
+                    let mut var_types: HashMap<String, VarType> = HashMap::new();
+                    self.collect_var_types(&scope_node, source, &mut var_types);
 
-                // Check function calls
-                self.check_calls(&scope_node, source, &var_types, &mut violations);
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                violations.extend(self.check(&child, source));
+                    // Check function calls
+                    self.check_calls(&scope_node, source, &var_types, &mut violations);
+                }
             }
         }
 
@@ -97,9 +93,10 @@ enum VarType {
 
 impl Str38C {
     fn collect_var_types(&self, node: &Node, source: &str, types: &mut HashMap<String, VarType>) {
-        if node.kind() == "declaration" {
+        for node in query::find_descendants_of_kind(*node, "declaration") {
+            let node = &node;
             // Look for wchar_t or char declarations
-            let decl_text = get_node_text(&node, source);
+            let decl_text = get_node_text(node, source);
 
             if decl_text.contains("wchar_t") {
                 // Extract variable names
@@ -110,13 +107,6 @@ impl Str38C {
                 if let Some(var_name) = self.extract_var_name(node, source) {
                     types.insert(var_name, VarType::Narrow);
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_var_types(&child, source, types);
             }
         }
     }
@@ -165,7 +155,8 @@ impl Str38C {
         types: &HashMap<String, VarType>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
+        for node in query::find_descendants_of_kind(*node, "call_expression") {
+            let node = &node;
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
@@ -222,13 +213,6 @@ impl Str38C {
                         }
                     }
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_calls(&child, source, types, violations);
             }
         }
     }

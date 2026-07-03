@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -60,33 +61,29 @@ impl StringLiteralAnalyzer {
     }
 
     fn analyze_node(&mut self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "function_definition" => {
-                // Extract const char* parameters from function signature
-                self.extract_const_params(node, source);
-            }
-            "declaration" => {
-                self.process_declaration(node, source, violations);
-            }
-            "assignment_expression" => {
-                self.process_assignment(node, source, violations);
-            }
-            "call_expression" => {
-                self.check_function_call(node, source, violations);
-            }
-            "subscript_expression" => {
-                self.check_array_modification(node, source, violations);
-            }
-            "pointer_expression" => {
-                self.check_pointer_modification(node, source, violations);
-            }
-            _ => {}
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_node(&child, source, violations);
+        for node in query::find_descendants(*node, |_| true) {
+            let node = &node;
+            match node.kind() {
+                "function_definition" => {
+                    // Extract const char* parameters from function signature
+                    self.extract_const_params(node, source);
+                }
+                "declaration" => {
+                    self.process_declaration(node, source, violations);
+                }
+                "assignment_expression" => {
+                    self.process_assignment(node, source, violations);
+                }
+                "call_expression" => {
+                    self.check_function_call(node, source, violations);
+                }
+                "subscript_expression" => {
+                    self.check_array_modification(node, source, violations);
+                }
+                "pointer_expression" => {
+                    self.check_pointer_modification(node, source, violations);
+                }
+                _ => {}
             }
         }
     }

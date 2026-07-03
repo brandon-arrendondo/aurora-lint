@@ -18,6 +18,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -76,7 +77,7 @@ impl Str00C {
         source: &str,
         char_vars: &mut HashMap<String, usize>,
     ) {
-        if node.kind() == "declaration" {
+        for node in query::find_descendants_of_kind(*node, "declaration") {
             if let Some(type_node) = node.child_by_field_name("type") {
                 let type_text = get_node_text(&type_node, source);
 
@@ -99,13 +100,6 @@ impl Str00C {
                 }
             }
         }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_char_variables(&child, source, char_vars);
-            }
-        }
     }
 
     /// Collect all variables declared as wchar_t type
@@ -115,7 +109,7 @@ impl Str00C {
         source: &str,
         wchar_vars: &mut HashMap<String, usize>,
     ) {
-        if node.kind() == "declaration" {
+        for node in query::find_descendants_of_kind(*node, "declaration") {
             if let Some(type_node) = node.child_by_field_name("type") {
                 let type_text = get_node_text(&type_node, source);
 
@@ -145,12 +139,6 @@ impl Str00C {
                 }
             }
         }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_wchar_variables(&child, source, wchar_vars);
-            }
-        }
     }
 
     /// Collect all variables declared as int type
@@ -160,7 +148,7 @@ impl Str00C {
         source: &str,
         int_vars: &mut HashMap<String, usize>,
     ) {
-        if node.kind() == "declaration" {
+        for node in query::find_descendants_of_kind(*node, "declaration") {
             if let Some(type_node) = node.child_by_field_name("type") {
                 let type_text = get_node_text(&type_node, source);
 
@@ -184,12 +172,6 @@ impl Str00C {
                         }
                     }
                 }
-            }
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_int_variables(&child, source, int_vars);
             }
         }
     }
@@ -227,71 +209,67 @@ impl Str00C {
         int_vars: &HashMap<String, usize>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check for assignments from EOF-related functions to char variables
-        if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
-            self.check_eof_function_assignment(node, source, char_vars, violations);
-        }
+        for node in query::find_descendants(*node, |_| true) {
+            let node = &node;
+            // Check for assignments from EOF-related functions to char variables
+            if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
+                self.check_eof_function_assignment(node, source, char_vars, violations);
+            }
 
-        // Check for calls to character classification functions
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let func_name = get_node_text(&function, source);
+            // Check for calls to character classification functions
+            if node.kind() == "call_expression" {
+                if let Some(function) = node.child_by_field_name("function") {
+                    let func_name = get_node_text(&function, source);
 
-                if self.is_char_classification_function(func_name) {
-                    self.check_char_classification_call(node, source, char_vars, violations);
+                    if self.is_char_classification_function(func_name) {
+                        self.check_char_classification_call(node, source, char_vars, violations);
+                    }
                 }
             }
-        }
 
-        // Check for EOF comparisons with char variables
-        if node.kind() == "binary_expression" {
-            self.check_eof_comparison(node, source, char_vars, violations);
-        }
+            // Check for EOF comparisons with char variables
+            if node.kind() == "binary_expression" {
+                self.check_eof_comparison(node, source, char_vars, violations);
+            }
 
-        // Check for char used with bit operations
-        if node.kind() == "binary_expression" {
-            self.check_bit_operations(node, source, char_vars, violations);
-        }
+            // Check for char used with bit operations
+            if node.kind() == "binary_expression" {
+                self.check_bit_operations(node, source, char_vars, violations);
+            }
 
-        // Check for char literals > 127 assigned to plain char
-        if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
-            self.check_high_value_assignment(node, source, char_vars, violations);
-        }
+            // Check for char literals > 127 assigned to plain char
+            if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
+                self.check_high_value_assignment(node, source, char_vars, violations);
+            }
 
-        // Check for char used as array index
-        if node.kind() == "subscript_expression" {
-            self.check_char_array_index(node, source, char_vars, violations);
-        }
+            // Check for char used as array index
+            if node.kind() == "subscript_expression" {
+                self.check_char_array_index(node, source, char_vars, violations);
+            }
 
-        // Check for signed/unsigned char with character constants
-        if node.kind() == "declaration" {
-            self.check_signed_unsigned_char_constants(node, source, violations);
-        }
+            // Check for signed/unsigned char with character constants
+            if node.kind() == "declaration" {
+                self.check_signed_unsigned_char_constants(node, source, violations);
+            }
 
-        // Check for signed/unsigned char function parameters
-        if node.kind() == "parameter_declaration" {
-            self.check_function_parameter_types(node, source, violations);
-        }
+            // Check for signed/unsigned char function parameters
+            if node.kind() == "parameter_declaration" {
+                self.check_function_parameter_types(node, source, violations);
+            }
 
-        // Check for signed/unsigned char struct members
-        if node.kind() == "field_declaration" {
-            self.check_struct_field_types(node, source, violations);
-        }
+            // Check for signed/unsigned char struct members
+            if node.kind() == "field_declaration" {
+                self.check_struct_field_types(node, source, violations);
+            }
 
-        // Check for narrow char constants assigned to wchar_t
-        if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
-            self.check_wchar_narrow_char(node, source, wchar_vars, violations);
-        }
+            // Check for narrow char constants assigned to wchar_t
+            if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
+                self.check_wchar_narrow_char(node, source, wchar_vars, violations);
+            }
 
-        // Check for character constants assigned to int
-        if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
-            self.check_int_char_constants(node, source, int_vars, violations);
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, char_vars, wchar_vars, int_vars, violations);
+            // Check for character constants assigned to int
+            if node.kind() == "assignment_expression" || node.kind() == "init_declarator" {
+                self.check_int_char_constants(node, source, int_vars, violations);
             }
         }
     }
@@ -359,19 +337,7 @@ impl Str00C {
     }
 
     fn find_call_expression<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
-        if node.kind() == "call_expression" {
-            return Some(node);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(found) = self.find_call_expression(child) {
-                    return Some(found);
-                }
-            }
-        }
-
-        None
+        query::find_first_descendant(node, |n| n.kind() == "call_expression")
     }
 
     /// Check if the right side has an explicit cast to char

@@ -16,6 +16,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Api10C;
@@ -43,26 +44,15 @@ impl CertRule for Api10C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
+        // Check for insecure-by-default #define patterns
+        for def in query::find_descendants_of_kind(*node, "preproc_def") {
+            self.check_define(&def, source, &mut violations);
+        }
         violations
     }
 }
 
 impl Api10C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for insecure-by-default #define patterns
-        if node.kind() == "preproc_def" {
-            self.check_define(node, source, violations);
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     fn check_define(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Get the macro name
         if let Some(name_node) = node.child_by_field_name("name") {

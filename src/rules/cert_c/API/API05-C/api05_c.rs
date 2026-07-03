@@ -36,6 +36,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
 
@@ -64,28 +65,17 @@ impl CertRule for Api05C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
+        for decl in query::find_descendants_of_kinds(*node, &["function_definition", "declaration"])
+        {
+            if let Some(declarator) = decl.child_by_field_name("declarator") {
+                self.check_function_declarator(&declarator, source, &mut violations);
+            }
+        }
         violations
     }
 }
 
 impl Api05C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check function definitions and declarations
-        if node.kind() == "function_definition" || node.kind() == "declaration" {
-            if let Some(declarator) = node.child_by_field_name("declarator") {
-                self.check_function_declarator(&declarator, source, violations);
-            }
-        }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
-    }
-
     fn check_function_declarator(
         &self,
         declarator: &Node,
@@ -236,19 +226,11 @@ impl Api05C {
         false
     }
 
-    #[allow(clippy::only_used_in_recursion)]
     fn has_nested_array_or_function(&self, node: &Node) -> bool {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "array_declarator" || child.kind() == "function_declarator" {
-                    return true;
-                }
-                if self.has_nested_array_or_function(&child) {
-                    return true;
-                }
-            }
-        }
-        false
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "array_declarator" || n.kind() == "function_declarator"
+        })
+        .is_some()
     }
 
     fn check_declarator_conformance(

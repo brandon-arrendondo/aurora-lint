@@ -54,6 +54,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Msc37C;
@@ -114,18 +115,7 @@ impl Msc37C {
 
     /// Check if function body contains any return statement
     fn has_return_statement(&self, node: &Node) -> bool {
-        if node.kind() == "return_statement" {
-            return true;
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.has_return_statement(&child) {
-                    return true;
-                }
-            }
-        }
-        false
+        query::find_first_descendant(*node, |n| n.kind() == "return_statement").is_some()
     }
 
     /// Check if the last statement in a compound statement is a return
@@ -323,13 +313,8 @@ impl CertRule for Msc37C {
 impl Msc37C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check function definitions
-        self.check_function_definition(node, source, violations);
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function_definition(&func, source, violations);
         }
     }
 }

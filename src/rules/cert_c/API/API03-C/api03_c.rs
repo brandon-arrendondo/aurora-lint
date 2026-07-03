@@ -35,6 +35,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -66,7 +67,11 @@ impl CertRule for Api03C {
 
         // Collect all function declarations
         let mut func_declarations = Vec::new();
-        self.collect_function_declarations(node, source, &mut func_declarations);
+        for decl in query::find_descendants_of_kind(*node, "declaration") {
+            if let Some(func_info) = self.extract_function_info(&decl, source) {
+                func_declarations.push(func_info);
+            }
+        }
 
         // Check for inconsistent parameter ordering between related functions
         self.check_related_functions(&func_declarations, source, &mut violations);
@@ -79,27 +84,6 @@ impl CertRule for Api03C {
 }
 
 impl Api03C {
-    fn collect_function_declarations(
-        &self,
-        node: &Node,
-        source: &str,
-        declarations: &mut Vec<FunctionInfo>,
-    ) {
-        if node.kind() == "declaration" {
-            // Check if this is a function declaration (has function_declarator child)
-            if let Some(func_info) = self.extract_function_info(node, source) {
-                declarations.push(func_info);
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_function_declarations(&child, source, declarations);
-            }
-        }
-    }
-
     #[allow(dead_code)]
     fn is_function_declaration(&self, decl_node: &Node) -> bool {
         // Look for function_declarator in the declaration
@@ -306,15 +290,8 @@ impl Api03C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "preproc_function_def" {
-            self.check_macro_def(node, source, violations);
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_macro_reversals(&child, source, violations);
-            }
+        for macro_node in query::find_descendants_of_kind(*node, "preproc_function_def") {
+            self.check_macro_def(&macro_node, source, violations);
         }
     }
 

@@ -26,6 +26,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pre04C {
@@ -151,21 +152,9 @@ impl CertRule for Pre04C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
-        violations
-    }
-}
-
-impl Pre04C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Check for standard header name reuse
-        self.check_include_directive(node, source, violations);
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
+        for include_node in query::find_descendants_of_kind(*node, "preproc_include") {
+            self.check_include_directive(&include_node, source, &mut violations);
         }
+        violations
     }
 }

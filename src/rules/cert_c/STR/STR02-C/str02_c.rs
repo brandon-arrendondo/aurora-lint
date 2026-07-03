@@ -31,6 +31,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{get_node_text, is_function_parameter};
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -137,7 +138,7 @@ impl Str02C {
     }
 
     fn find_param_names(&self, node: &Node, source: &str, tainted: &mut HashSet<String>) {
-        if node.kind() == "parameter_declaration" {
+        for node in query::find_descendants_of_kind(*node, "parameter_declaration") {
             // Get the declarator child which has the parameter name
             if let Some(decl) = node.child_by_field_name("declarator") {
                 let name = get_node_text(&decl, source);
@@ -146,25 +147,13 @@ impl Str02C {
                     tainted.insert(base);
                 }
             }
-            return;
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.find_param_names(&child, source, tainted);
-            }
         }
     }
 
     /// Walk a function body to find variables tainted by external input.
     fn collect_tainted_vars(&self, node: &Node, source: &str, tainted: &mut HashSet<String>) {
-        if node.kind() == "call_expression" {
-            self.check_taint_from_call(node, source, tainted);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_tainted_vars(&child, source, tainted);
-            }
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            self.check_taint_from_call(&n, source, tainted);
         }
     }
 
@@ -278,14 +267,8 @@ impl Str02C {
         func_scope: &Node,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "call_expression" {
-            self.check_dangerous_function_call(node, source, tainted, func_scope, violations);
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_sinks(&child, source, tainted, func_scope, violations);
-            }
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            self.check_dangerous_function_call(&n, source, tainted, func_scope, violations);
         }
     }
 
@@ -549,34 +532,19 @@ impl Str02C {
     /// True if any call_expression under `scope` targets a known taint source.
     /// Resolves macro aliases before matching.
     fn scope_has_taint_source(&self, scope: &Node, source: &str) -> bool {
-        let mut found = false;
-        self.walk_for_taint(scope, source, &mut found);
-        found
-    }
-
-    fn walk_for_taint(&self, node: &Node, source: &str, found: &mut bool) {
-        if *found {
-            return;
-        }
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
-                let raw = get_node_text(&function, source);
-                let ident = trailing_identifier(raw);
-                let resolved = self.resolve_name(ident);
-                if TAINT_SOURCES.contains(&resolved.as_str()) || TAINT_SOURCES.contains(&ident) {
-                    *found = true;
-                    return;
-                }
+        query::find_first_descendant(*scope, |node| {
+            if node.kind() != "call_expression" {
+                return false;
             }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.walk_for_taint(&child, source, found);
-                if *found {
-                    return;
-                }
-            }
-        }
+            let Some(function) = node.child_by_field_name("function") else {
+                return false;
+            };
+            let raw = get_node_text(&function, source);
+            let ident = trailing_identifier(raw);
+            let resolved = self.resolve_name(ident);
+            TAINT_SOURCES.contains(&resolved.as_str()) || TAINT_SOURCES.contains(&ident)
+        })
+        .is_some()
     }
 
     /// BFS over the reverse call graph: returns true when every transitive

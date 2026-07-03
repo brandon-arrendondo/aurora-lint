@@ -28,6 +28,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -160,28 +161,21 @@ impl Pre08C {
         }
     }
 
-    /// Recursively collect all include directives
+    /// Collect all include directives
     fn collect_includes(
         &self,
         node: &Node,
         source: &str,
         includes: &mut HashMap<String, Vec<(String, usize)>>,
     ) {
-        if node.kind() == "preproc_include" {
-            if let Some(header) = self.extract_header_name(node, source) {
+        for include_node in query::find_descendants_of_kind(*node, "preproc_include") {
+            if let Some(header) = self.extract_header_name(&include_node, source) {
                 let significant = self.get_significant_name(&header);
-                let line = node.start_position().row + 1;
+                let line = include_node.start_position().row + 1;
                 includes
                     .entry(significant)
                     .or_default()
                     .push((header, line));
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_includes(&child, source, includes);
             }
         }
     }

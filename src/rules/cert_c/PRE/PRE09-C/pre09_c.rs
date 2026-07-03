@@ -20,6 +20,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Pre09C;
@@ -67,8 +68,8 @@ impl CertRule for Pre09C {
 impl Pre09C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Look for #define directives
-        if node.kind() == "preproc_function_def" {
-            if let Some(name_node) = node.child_by_field_name("name") {
+        for macro_node in query::find_descendants_of_kind(*node, "preproc_function_def") {
+            if let Some(name_node) = macro_node.child_by_field_name("name") {
                 let macro_name = get_node_text(&name_node, source);
 
                 // Check if it's replacing a secure function
@@ -81,21 +82,14 @@ impl Pre09C {
                             macro_name
                         ),
                         file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
+                        line: macro_node.start_position().row + 1,
+                        column: macro_node.start_position().column + 1,
                         suggestion: Some(
                             "Use conditional compilation (#ifndef) or wrapper functions instead of macro replacement".to_string()
                         ),
                         ..Default::default()
                     });
                 }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
             }
         }
     }

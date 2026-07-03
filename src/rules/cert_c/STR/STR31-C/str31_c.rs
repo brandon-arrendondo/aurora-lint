@@ -3,6 +3,7 @@ use crate::analyze::buffer_size;
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -1748,9 +1749,11 @@ impl CertRule for Str31C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         // node is always the translation_unit root when called by the framework.
-        // Pass it down to avoid re-finding root on every recursive call.
+        // Pass it down to avoid re-finding root on every call.
         let mut violations = Vec::new();
-        self.check_node(node, source, node, &mut violations);
+        for n in query::find_descendants(*node, |_| true) {
+            self.check_node(&n, source, node, &mut violations);
+        }
         violations
     }
 }
@@ -1852,13 +1855,6 @@ impl Str31C {
                         });
                     }
                 }
-            }
-        }
-
-        // Recursively check child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, root, violations);
             }
         }
     }

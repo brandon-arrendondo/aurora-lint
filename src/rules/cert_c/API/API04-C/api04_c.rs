@@ -26,6 +26,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 pub struct Api04C;
@@ -53,17 +54,10 @@ impl CertRule for Api04C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
-        violations
-    }
-}
-
-impl Api04C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Check for strlcpy() and strlcat() function calls
         // These functions have inconsistent error-checking mechanisms
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
                 if func_name == "strlcpy" || func_name == "strlcat" {
@@ -75,8 +69,8 @@ impl Api04C {
                             func_name
                         ),
                         file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
+                        line: call.start_position().row + 1,
+                        column: call.start_position().column + 1,
                         suggestion: Some(
                             "Consider using functions with clearer return values like strcpy_s() or strcpy_m() \
                             that return errno_t for consistent error checking"
@@ -87,12 +81,6 @@ impl Api04C {
                 }
             }
         }
-
-        // Recurse through children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations);
-            }
-        }
+        violations
     }
 }

@@ -12,6 +12,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -55,19 +56,14 @@ impl Msc04C {
 
     /// Collect all direct function calls in a subtree (identifiers in call_expression).
     fn collect_callees(&self, node: &Node, source: &str, callees: &mut HashSet<String>) {
-        if node.kind() == "call_expression" {
-            if let Some(function) = node.child_by_field_name("function") {
+        for call in query::find_descendants_of_kind(*node, "call_expression") {
+            if let Some(function) = call.child_by_field_name("function") {
                 if function.kind() == "identifier" {
                     let name = get_node_text(&function, source);
                     if !name.is_empty() {
                         callees.insert(name.to_string());
                     }
                 }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_callees(&child, source, callees);
             }
         }
     }
@@ -143,24 +139,15 @@ impl Msc04C {
             None => return params,
         };
         // function_declarator → parameters (parameter_list)
-        self.walk_for_params(&declarator, source, &mut params);
-        params
-    }
-
-    fn walk_for_params(&self, node: &Node, source: &str, params: &mut HashSet<String>) {
-        if node.kind() == "parameter_declaration" {
+        for param in query::find_descendants_of_kind(declarator, "parameter_declaration") {
             // The declarator child holds the parameter name
-            if let Some(decl) = node.child_by_field_name("declarator") {
+            if let Some(decl) = param.child_by_field_name("declarator") {
                 if let Some(name) = self.find_identifier_in_declarator(&decl, source) {
                     params.insert(name);
                 }
             }
         }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.walk_for_params(&child, source, params);
-            }
-        }
+        params
     }
 
     /// Search for an if_statement whose condition references a parameter and
@@ -171,59 +158,40 @@ impl Msc04C {
         source: &str,
         params: &HashSet<String>,
     ) -> bool {
-        if node.kind() == "if_statement" {
-            if let Some(cond) = node.child_by_field_name("condition") {
-                if self.references_any_param(&cond, source, params) {
-                    // Check consequence for return
-                    if let Some(consequence) = node.child_by_field_name("consequence") {
-                        if self.contains_return(&consequence) {
-                            return true;
-                        }
-                    }
-                }
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "if_statement" {
+                return false;
             }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.find_param_guarded_return(&child, source, params) {
-                    return true;
-                }
+            let Some(cond) = n.child_by_field_name("condition") else {
+                return false;
+            };
+            if !self.references_any_param(&cond, source, params) {
+                return false;
             }
-        }
-        false
+            // Check consequence for return
+            let Some(consequence) = n.child_by_field_name("consequence") else {
+                return false;
+            };
+            self.contains_return(&consequence)
+        })
+        .is_some()
     }
 
     /// Check if a node or its descendants reference any of the given parameter names.
     fn references_any_param(&self, node: &Node, source: &str, params: &HashSet<String>) -> bool {
-        if node.kind() == "identifier" {
-            let name = get_node_text(node, source);
-            if params.contains(name.trim()) {
-                return true;
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "identifier" {
+                return false;
             }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.references_any_param(&child, source, params) {
-                    return true;
-                }
-            }
-        }
-        false
+            let name = get_node_text(&n, source);
+            params.contains(name.trim())
+        })
+        .is_some()
     }
 
     /// Check if a node or its descendants contain a return_statement.
     fn contains_return(&self, node: &Node) -> bool {
-        if node.kind() == "return_statement" {
-            return true;
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if self.contains_return(&child) {
-                    return true;
-                }
-            }
-        }
-        false
+        query::find_first_descendant(*node, |n| n.kind() == "return_statement").is_some()
     }
 
     fn check_function(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
@@ -292,17 +260,8 @@ impl Msc04C {
     }
 
     fn walk_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        match node.kind() {
-            "function_definition" => {
-                self.check_function(node, source, violations);
-            }
-            _ => {
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.walk_node(&child, source, violations);
-                    }
-                }
-            }
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            self.check_function(&func, source, violations);
         }
     }
 }
