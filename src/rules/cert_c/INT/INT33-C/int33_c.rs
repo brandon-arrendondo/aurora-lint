@@ -548,6 +548,36 @@ impl Int33C {
             return true;
         }
 
+        // Guarded-difference divisor: `(A - B)` guarded by a relational check
+        // between the two operands (e.g. `if (high > low) { ... / (high - low) }`
+        // or an early-return `if (high <= low) return;`). This is distinct from
+        // divisor_provably_nonzero's range analysis, which only bounds a single
+        // variable against a constant/macro — here neither operand needs to be
+        // a compile-time constant, only relatively ordered.
+        if let Some((a, b)) = Self::extract_diff_operands(divisor, source) {
+            if let Some(func) = ast_utils::find_containing_function(div_node) {
+                if let Some(body) = func.child_by_field_name("body") {
+                    if Self::has_early_return_for_unordered_diff(&body, &a, &b, source, div_node) {
+                        return true;
+                    }
+                }
+            }
+
+            let mut current = div_node.parent();
+            while let Some(node) = current {
+                if node.kind() == "if_statement" {
+                    if let Some(condition) = node.child_by_field_name("condition") {
+                        if Self::is_relational_diff_guard(&condition, &a, &b, source)
+                            && self.is_in_safe_branch(&node, div_node)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                current = node.parent();
+            }
+        }
+
         // Check if ALL assignments to the divisor variable in the containing
         // function are provably non-zero constants.  This catches the common
         // Juliet "goodG2B" pattern: `data = -1; data = 7; 100 / data;`
@@ -753,6 +783,165 @@ impl Int33C {
         }
 
         false
+    }
+
+    /// If `divisor` is (optionally parenthesized) a subtraction `A - B`,
+    /// return the two operands' source text. Used to recognize the common
+    /// "difference of two bounds" divisor idiom (e.g. `high - low`) so a
+    /// relational guard between the operands (rather than a zero-check on
+    /// the whole expression) can prove it non-zero.
+    fn extract_diff_operands(divisor: &Node, source: &str) -> Option<(String, String)> {
+        let inner = if divisor.kind() == "parenthesized_expression" {
+            divisor.named_child(0)?
+        } else {
+            *divisor
+        };
+        if inner.kind() != "binary_expression" {
+            return None;
+        }
+        if ast_utils::get_binary_operator(&inner, source)? != "-" {
+            return None;
+        }
+        let left = inner.child_by_field_name("left")?;
+        let right = inner.child_by_field_name("right")?;
+        Some((
+            ast_utils::get_node_text(&left, source).to_string(),
+            ast_utils::get_node_text(&right, source).to_string(),
+        ))
+    }
+
+    /// Check whether `condition` establishes `a > b` (equivalently `b < a`),
+    /// which proves `a - b` is strictly positive. Recurses through `&&`
+    /// conjunctions, matching `extract_comparison_bounds`'s traversal style.
+    fn is_relational_diff_guard(condition: &Node, a: &str, b: &str, source: &str) -> bool {
+        let cond = if condition.kind() == "parenthesized_expression" {
+            match condition.named_child(0) {
+                Some(c) => c,
+                None => return false,
+            }
+        } else {
+            *condition
+        };
+
+        if cond.kind() != "binary_expression" {
+            return false;
+        }
+        let op = ast_utils::get_binary_operator(&cond, source).unwrap_or_default();
+
+        if op == "&&" {
+            if let (Some(left), Some(right)) = (
+                cond.child_by_field_name("left"),
+                cond.child_by_field_name("right"),
+            ) {
+                return Self::is_relational_diff_guard(&left, a, b, source)
+                    || Self::is_relational_diff_guard(&right, a, b, source);
+            }
+            return false;
+        }
+
+        let (left, right) = match (
+            cond.child_by_field_name("left"),
+            cond.child_by_field_name("right"),
+        ) {
+            (Some(l), Some(r)) => (l, r),
+            _ => return false,
+        };
+        let left_text = ast_utils::get_node_text(&left, source);
+        let right_text = ast_utils::get_node_text(&right, source);
+
+        match op {
+            ">" => left_text == a && right_text == b,
+            "<" => left_text == b && right_text == a,
+            _ => false,
+        }
+    }
+
+    /// Check for an early-return guard of the form `if (a <= b) { return/exit; }`
+    /// (or `b >= a`) preceding the division, which implies the safe path has
+    /// `a > b`. Mirrors `has_early_return_for_zero`'s recursive block walk.
+    fn has_early_return_for_unordered_diff(
+        scope: &Node,
+        a: &str,
+        b: &str,
+        source: &str,
+        div_node: &Node,
+    ) -> bool {
+        let div_line = div_node.start_position().row;
+
+        for i in 0..scope.named_child_count() {
+            let child = match scope.named_child(i) {
+                Some(c) => c,
+                None => continue,
+            };
+            let child_line = child.start_position().row;
+            if child_line >= div_line {
+                break;
+            }
+
+            if child.kind() == "if_statement" {
+                if let Some(condition) = child.child_by_field_name("condition") {
+                    if Self::is_unordered_diff_guard(&condition, a, b, source) {
+                        if let Some(consequence) = child.child_by_field_name("consequence") {
+                            if Self::has_return_or_exit(&consequence, source) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                if let Some(consequence) = child.child_by_field_name("consequence") {
+                    if Self::has_early_return_for_unordered_diff(
+                        &consequence,
+                        a,
+                        b,
+                        source,
+                        div_node,
+                    ) {
+                        return true;
+                    }
+                }
+            }
+
+            if child.kind() == "compound_statement"
+                && Self::has_early_return_for_unordered_diff(&child, a, b, source, div_node)
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check whether `condition` establishes `a <= b` (equivalently `b >= a`),
+    /// i.e. the *unsafe* ordering — used to recognize early-return guards that
+    /// bail out before an unguarded `a - b` division.
+    fn is_unordered_diff_guard(condition: &Node, a: &str, b: &str, source: &str) -> bool {
+        let cond = if condition.kind() == "parenthesized_expression" {
+            match condition.named_child(0) {
+                Some(c) => c,
+                None => return false,
+            }
+        } else {
+            *condition
+        };
+        if cond.kind() != "binary_expression" {
+            return false;
+        }
+        let op = ast_utils::get_binary_operator(&cond, source).unwrap_or_default();
+        let (left, right) = match (
+            cond.child_by_field_name("left"),
+            cond.child_by_field_name("right"),
+        ) {
+            (Some(l), Some(r)) => (l, r),
+            _ => return false,
+        };
+        let left_text = ast_utils::get_node_text(&left, source);
+        let right_text = ast_utils::get_node_text(&right, source);
+
+        match op {
+            "<=" => left_text == a && right_text == b,
+            ">=" => left_text == b && right_text == a,
+            _ => false,
+        }
     }
 
     /// Use value-range analysis to prove a divisor is provably non-zero.

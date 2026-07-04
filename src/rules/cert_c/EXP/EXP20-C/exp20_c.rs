@@ -102,6 +102,16 @@ impl Exp20C {
                                 let func_text = get_node_text(&argument, source);
                                 // Only flag if it looks like a validation/checking function
                                 if self.is_validation_function(&func_text) {
+                                    // `!strcmp()`/`!strncmp()`/`!memcmp()` (and wide variants) are
+                                    // a near-universal C idiom for string/buffer equality — CERT
+                                    // adversarial review found this is a much weaker signal for
+                                    // EXP20-C than genuine validate/check/verify functions (letter
+                                    // of the rule concerns relational/equality *operators*, not
+                                    // logical-NOT of a comparison call). Surface it but flag for
+                                    // manual review instead of full-confidence, rather than
+                                    // suppressing it outright (some are real TPs on untrusted
+                                    // input; see data/precision_audit/mosquitto/adversarial_verification.md).
+                                    let is_cmp_idiom = Self::is_comparison_function(&func_text);
                                     violations.push(RuleViolation {
                                         rule_id: self.rule_id().to_string(),
                                         message: format!(
@@ -116,7 +126,11 @@ impl Exp20C {
                                             "Use explicit test: {} == 0 or {} != 0 depending on success convention",
                                             func_text, func_text
                                         )),
-                                        requires_manual_review: None,
+                                        requires_manual_review: if is_cmp_idiom {
+                                            Some(true)
+                                        } else {
+                                            None
+                                        },
                                     });
                                 }
                             }
@@ -135,8 +149,17 @@ impl Exp20C {
             || func_text.contains("Check")
             || func_text.contains("verify")
             || func_text.contains("Verify")
-            // String comparison functions - !strcmp() is an implicit boolean test
-            || func_text.contains("strcmp")
+            || Self::is_comparison_function(func_text)
+    }
+
+    /// True for the `strcmp`/`strncmp`/`memcmp`/`wcscmp`/`wcsncmp` family —
+    /// `!func()` on these is a widely-used equality idiom, not the ambiguous
+    /// truthiness test EXP20-C targets. Findings on this idiom are gated to
+    /// `requires_manual_review` rather than dropped, since some are real bugs
+    /// (see adversarial_verification.md), but it's a weaker signal than an
+    /// actual validate/check/verify function.
+    fn is_comparison_function(func_text: &str) -> bool {
+        func_text.contains("strcmp")
             || func_text.contains("strncmp")
             || func_text.contains("memcmp")
             || func_text.contains("wcscmp")
