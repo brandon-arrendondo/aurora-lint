@@ -2,12 +2,10 @@
 # Install: pre-commit install
 # Run manually: pre-commit run --all-files
 #
-# Prerequisites:
-#   cargo install cargo-llvm-cov
-#
-# Coverage output:
-#   The cargo-llvm-cov hook produces lcov.info in the project root.
-#   CI pipelines can publish this artifact directly — no separate coverage step needed.
+# Coverage gate (75% line coverage, cargo-llvm-cov) runs in CI only
+# (.github/workflows/ci.yml) — it was removed from pre-commit because the
+# instrumented build + full test run dominated commit wall-clock time.
+# Run it manually before any tag push: scripts/coverage-gate.sh 75
 
 repos:
   # Local hooks for Rust
@@ -42,14 +40,6 @@ repos:
         language: system
         pass_filenames: false
         types: [rust]
-        verbose: true
-
-      - id: cargo-llvm-cov
-        name: cargo llvm-cov (tests + 75% coverage gate)
-        description: Run tests with coverage — fail if line coverage < 75%. Produces lcov.info.
-        entry: bash -c 'scripts/coverage-gate.sh 75 2>&1'
-        language: system
-        pass_filenames: false
         verbose: true
 
   # knots complexity gate. The default `knots` hook ships args
