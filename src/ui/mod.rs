@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use tree_sitter::Node;
 
 use crate::analyze::suppression::SuppressionManager;
 use crate::manifest::{RuleCategory, RuleConfig, RuleManifest, Severity};
@@ -835,286 +836,11 @@ impl TerminalUI {
         let violations: Vec<ListItem> = self
             .flat_display_items
             .iter()
-            .map(|item| {
-                match item {
-                    GroupItem::Group {
-                        name,
-                        expanded,
-                        level,
-                        ..
-                    } => {
-                        let indent = "  ".repeat(*level);
-                        let expand_indicator = if *expanded { "▼ " } else { "▶ " };
-                        ListItem::new(vec![Line::from(vec![
-                            Span::raw(indent),
-                            Span::styled(expand_indicator, Style::default().fg(Color::Yellow)),
-                            Span::styled(
-                                name,
-                                Style::default()
-                                    .fg(Color::Yellow)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ])])
-                    }
-                    GroupItem::Violation {
-                        original_index,
-                        violation,
-                        level,
-                    } => {
-                        let is_suppressed =
-                            self.show_suppressed && self.is_violation_suppressed(violation);
-
-                        let severity_color = match violation.severity {
-                            crate::manifest::Severity::Critical => Color::Red,
-                            crate::manifest::Severity::High => Color::LightRed,
-                            crate::manifest::Severity::Medium => Color::Yellow,
-                            crate::manifest::Severity::Low => Color::Blue,
-                        };
-
-                        let checkbox = if self.checked_violations.contains(original_index) {
-                            "[✓] "
-                        } else {
-                            "[ ] "
-                        };
-
-                        // Get relative path and filename
-                        let relative_path = self.get_relative_path(&violation.file_path);
-                        let filename = std::path::Path::new(&violation.file_path)
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy();
-
-                        let indent = "  ".repeat(*level);
-
-                        let mut spans = vec![
-                            Span::raw(indent),
-                            Span::styled(checkbox, Style::default().fg(Color::Green)),
-                        ];
-
-                        if is_suppressed {
-                            // Add suppression indicator
-                            spans.push(Span::styled("[S] ", Style::default().fg(Color::DarkGray)));
-                            // Use dimmed colors for suppressed violations
-                            spans.push(Span::styled(
-                                &violation.rule_id,
-                                Style::default()
-                                    .fg(Color::DarkGray)
-                                    .add_modifier(Modifier::DIM),
-                            ));
-                        } else {
-                            spans.push(Span::styled(
-                                &violation.rule_id,
-                                Style::default()
-                                    .fg(severity_color)
-                                    .add_modifier(Modifier::BOLD),
-                            ));
-                        }
-
-                        spans.extend(vec![
-                            Span::raw(" - "),
-                            Span::styled(
-                                filename,
-                                if is_suppressed {
-                                    Style::default().fg(Color::DarkGray)
-                                } else {
-                                    Style::default().fg(Color::White)
-                                },
-                            ),
-                            Span::raw(" ("),
-                            Span::styled(relative_path, Style::default().fg(Color::Gray)),
-                            Span::raw(":"),
-                            Span::styled(
-                                format!("{}:{}", violation.line, violation.column),
-                                Style::default().fg(Color::Cyan),
-                            ),
-                            Span::raw(")"),
-                        ]);
-
-                        if is_suppressed {
-                            spans.push(Span::styled(
-                                " [SUPPRESSED]",
-                                Style::default()
-                                    .fg(Color::DarkGray)
-                                    .add_modifier(Modifier::ITALIC),
-                            ));
-                        }
-
-                        ListItem::new(vec![Line::from(spans)])
-                    }
-                    GroupItem::CleanFile { file_path, level } => {
-                        // Get relative path and filename
-                        let relative_path = self.get_relative_path(file_path);
-                        let filename = std::path::Path::new(file_path)
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy();
-
-                        let indent = "  ".repeat(*level);
-
-                        let spans = vec![
-                            Span::raw(indent),
-                            Span::styled("[✓] ", Style::default().fg(Color::Green)),
-                            Span::styled(
-                                "CLEAN",
-                                Style::default()
-                                    .fg(Color::Green)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::raw(" - "),
-                            Span::styled(filename, Style::default().fg(Color::White)),
-                            Span::raw(" ("),
-                            Span::styled(relative_path, Style::default().fg(Color::Gray)),
-                            Span::raw(") "),
-                            Span::styled(
-                                "[NO VIOLATIONS]",
-                                Style::default()
-                                    .fg(Color::Green)
-                                    .add_modifier(Modifier::ITALIC),
-                            ),
-                        ];
-
-                        ListItem::new(vec![Line::from(spans)])
-                    }
-                }
-            })
+            .map(|item| self.build_display_item_list_entry(item))
             .collect();
 
         // Create dynamic violations title with current violation details
-        let violations_title = if let Some(selected_index) = self.selected_violation.selected() {
-            if let Some(GroupItem::Violation { violation, .. }) =
-                self.flat_display_items.get(selected_index)
-            {
-                let focus_indicator = if !self.preview_focused || !self.show_file_preview {
-                    "[FOCUSED] "
-                } else {
-                    ""
-                };
-
-                let relative_path = self.get_relative_path(&violation.file_path);
-                let filename = std::path::Path::new(&violation.file_path)
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy();
-
-                // Get rule description
-                let rule_description =
-                    if let Some(rule) = self.registry.get_rule(&violation.rule_id) {
-                        rule.description()
-                    } else {
-                        "Unknown rule"
-                    };
-
-                let sort_info = if self.sort_mode != SortMode::Default {
-                    format!(
-                        " [Sort: {} {}]",
-                        self.sort_mode.name(),
-                        if self.sort_ascending { "A-Z" } else { "Z-A" }
-                    )
-                } else {
-                    String::new()
-                };
-
-                let hidden_info = if self.show_suppressed || self.show_clean_files {
-                    let mut items = Vec::new();
-                    if self.show_suppressed && !self.suppressed_violations.is_empty() {
-                        items.push(format!("{} suppressed", self.suppressed_violations.len()));
-                    }
-                    if self.show_clean_files && !self.clean_files.is_empty() {
-                        items.push(format!("{} clean", self.clean_files.len()));
-                    }
-                    if !items.is_empty() {
-                        format!(" [Hidden: {}]", items.join(", "))
-                    } else {
-                        String::new()
-                    }
-                } else {
-                    String::new()
-                };
-
-                format!(
-                    "Repository: {} | {}Violations{}{} - {}: {} - {}:{} ({})",
-                    self.repo_path,
-                    focus_indicator,
-                    sort_info,
-                    hidden_info,
-                    violation.rule_id,
-                    rule_description,
-                    filename,
-                    violation.line,
-                    relative_path
-                )
-            } else {
-                let focus_indicator = if !self.preview_focused || !self.show_file_preview {
-                    "[FOCUSED] "
-                } else {
-                    ""
-                };
-                let sort_info = if self.sort_mode != SortMode::Default {
-                    format!(
-                        " [Sort: {} {}]",
-                        self.sort_mode.name(),
-                        if self.sort_ascending { "A-Z" } else { "Z-A" }
-                    )
-                } else {
-                    String::new()
-                };
-                let hidden_info = if self.show_suppressed || self.show_clean_files {
-                    let mut items = Vec::new();
-                    if self.show_suppressed && !self.suppressed_violations.is_empty() {
-                        items.push(format!("{} suppressed", self.suppressed_violations.len()));
-                    }
-                    if self.show_clean_files && !self.clean_files.is_empty() {
-                        items.push(format!("{} clean", self.clean_files.len()));
-                    }
-                    if !items.is_empty() {
-                        format!(" [Hidden: {}]", items.join(", "))
-                    } else {
-                        String::new()
-                    }
-                } else {
-                    String::new()
-                };
-                format!(
-                    "Repository: {} | {}Violations{}{}",
-                    self.repo_path, focus_indicator, sort_info, hidden_info
-                )
-            }
-        } else {
-            let focus_indicator = if !self.preview_focused || !self.show_file_preview {
-                "[FOCUSED] "
-            } else {
-                ""
-            };
-            let sort_info = if self.sort_mode != SortMode::Default {
-                format!(
-                    " [Sort: {} {}]",
-                    self.sort_mode.name(),
-                    if self.sort_ascending { "A-Z" } else { "Z-A" }
-                )
-            } else {
-                String::new()
-            };
-            let hidden_info = if self.show_suppressed || self.show_clean_files {
-                let mut items = Vec::new();
-                if self.show_suppressed && !self.suppressed_violations.is_empty() {
-                    items.push(format!("{} suppressed", self.suppressed_violations.len()));
-                }
-                if self.show_clean_files && !self.clean_files.is_empty() {
-                    items.push(format!("{} clean", self.clean_files.len()));
-                }
-                if !items.is_empty() {
-                    format!(" [Hidden: {}]", items.join(", "))
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
-            format!(
-                "Repository: {} | {}Violations{}{}",
-                self.repo_path, focus_indicator, sort_info, hidden_info
-            )
-        };
+        let violations_title = self.build_violations_title();
 
         let violations_block = if !self.preview_focused || !self.show_file_preview {
             Block::default()
@@ -1194,6 +920,254 @@ impl TerminalUI {
 
         let footer_index = if self.show_file_preview { 2 } else { 1 };
         f.render_widget(footer, chunks[footer_index]);
+    }
+
+    /// Build a single `ListItem` for the violations list from a display item
+    /// (group header, violation row, or clean-file row).
+    fn build_display_item_list_entry(&self, item: &GroupItem) -> ListItem<'static> {
+        match item {
+            GroupItem::Group {
+                name,
+                expanded,
+                level,
+                ..
+            } => {
+                let indent = "  ".repeat(*level);
+                let expand_indicator = if *expanded { "▼ " } else { "▶ " };
+                ListItem::new(vec![Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled(
+                        expand_indicator.to_string(),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::styled(
+                        name.clone(),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])])
+            }
+            GroupItem::Violation {
+                original_index,
+                violation,
+                level,
+            } => self.build_violation_list_entry(*original_index, violation, *level),
+            GroupItem::CleanFile { file_path, level } => {
+                // Get relative path and filename
+                let relative_path = self.get_relative_path(file_path);
+                let filename = std::path::Path::new(file_path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+
+                let indent = "  ".repeat(*level);
+
+                let spans = vec![
+                    Span::raw(indent),
+                    Span::styled("[✓] ", Style::default().fg(Color::Green)),
+                    Span::styled(
+                        "CLEAN",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" - "),
+                    Span::styled(filename, Style::default().fg(Color::White)),
+                    Span::raw(" ("),
+                    Span::styled(relative_path, Style::default().fg(Color::Gray)),
+                    Span::raw(") "),
+                    Span::styled(
+                        "[NO VIOLATIONS]",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                ];
+
+                ListItem::new(vec![Line::from(spans)])
+            }
+        }
+    }
+
+    /// Build the `ListItem` for a single violation row, including the
+    /// suppressed-dimming styling.
+    fn build_violation_list_entry(
+        &self,
+        original_index: usize,
+        violation: &RuleViolation,
+        level: usize,
+    ) -> ListItem<'static> {
+        let is_suppressed = self.show_suppressed && self.is_violation_suppressed(violation);
+
+        let severity_color = match violation.severity {
+            crate::manifest::Severity::Critical => Color::Red,
+            crate::manifest::Severity::High => Color::LightRed,
+            crate::manifest::Severity::Medium => Color::Yellow,
+            crate::manifest::Severity::Low => Color::Blue,
+        };
+
+        let checkbox = if self.checked_violations.contains(&original_index) {
+            "[✓] "
+        } else {
+            "[ ] "
+        };
+
+        // Get relative path and filename
+        let relative_path = self.get_relative_path(&violation.file_path);
+        let filename = std::path::Path::new(&violation.file_path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        let indent = "  ".repeat(level);
+
+        let mut spans = vec![
+            Span::raw(indent),
+            Span::styled(checkbox, Style::default().fg(Color::Green)),
+        ];
+
+        if is_suppressed {
+            // Add suppression indicator
+            spans.push(Span::styled("[S] ", Style::default().fg(Color::DarkGray)));
+            // Use dimmed colors for suppressed violations
+            spans.push(Span::styled(
+                violation.rule_id.clone(),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            ));
+        } else {
+            spans.push(Span::styled(
+                violation.rule_id.clone(),
+                Style::default()
+                    .fg(severity_color)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        spans.extend(vec![
+            Span::raw(" - "),
+            Span::styled(
+                filename,
+                if is_suppressed {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default().fg(Color::White)
+                },
+            ),
+            Span::raw(" ("),
+            Span::styled(relative_path, Style::default().fg(Color::Gray)),
+            Span::raw(":"),
+            Span::styled(
+                format!("{}:{}", violation.line, violation.column),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::raw(")"),
+        ]);
+
+        if is_suppressed {
+            spans.push(Span::styled(
+                " [SUPPRESSED]",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ));
+        }
+
+        ListItem::new(vec![Line::from(spans)])
+    }
+
+    /// "[FOCUSED] " when the violations list (rather than the file preview)
+    /// has keyboard focus, else empty.
+    fn focus_indicator_text(&self) -> &'static str {
+        if !self.preview_focused || !self.show_file_preview {
+            "[FOCUSED] "
+        } else {
+            ""
+        }
+    }
+
+    /// " [Sort: NAME A-Z/Z-A]" when a non-default sort is active, else empty.
+    fn sort_info_text(&self) -> String {
+        if self.sort_mode != SortMode::Default {
+            format!(
+                " [Sort: {} {}]",
+                self.sort_mode.name(),
+                if self.sort_ascending { "A-Z" } else { "Z-A" }
+            )
+        } else {
+            String::new()
+        }
+    }
+
+    /// " [Hidden: N suppressed, M clean]" summarizing hidden rows, else empty.
+    fn hidden_info_text(&self) -> String {
+        if !self.show_suppressed && !self.show_clean_files {
+            return String::new();
+        }
+        let mut items = Vec::new();
+        if self.show_suppressed && !self.suppressed_violations.is_empty() {
+            items.push(format!("{} suppressed", self.suppressed_violations.len()));
+        }
+        if self.show_clean_files && !self.clean_files.is_empty() {
+            items.push(format!("{} clean", self.clean_files.len()));
+        }
+        if items.is_empty() {
+            String::new()
+        } else {
+            format!(" [Hidden: {}]", items.join(", "))
+        }
+    }
+
+    /// Build the violations panel title, appending the currently-selected
+    /// violation's rule/location detail when one is selected.
+    fn build_violations_title(&self) -> String {
+        let focus_indicator = self.focus_indicator_text();
+        let sort_info = self.sort_info_text();
+        let hidden_info = self.hidden_info_text();
+
+        let selected_violation = self
+            .selected_violation
+            .selected()
+            .and_then(|idx| self.flat_display_items.get(idx))
+            .and_then(|item| match item {
+                GroupItem::Violation { violation, .. } => Some(violation),
+                _ => None,
+            });
+
+        let Some(violation) = selected_violation else {
+            return format!(
+                "Repository: {} | {}Violations{}{}",
+                self.repo_path, focus_indicator, sort_info, hidden_info
+            );
+        };
+
+        let relative_path = self.get_relative_path(&violation.file_path);
+        let filename = std::path::Path::new(&violation.file_path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let rule_description = self
+            .registry
+            .get_rule(&violation.rule_id)
+            .map(|rule| rule.description())
+            .unwrap_or("Unknown rule");
+
+        format!(
+            "Repository: {} | {}Violations{}{} - {}: {} - {}:{} ({})",
+            self.repo_path,
+            focus_indicator,
+            sort_info,
+            hidden_info,
+            violation.rule_id,
+            rule_description,
+            filename,
+            violation.line,
+            relative_path
+        )
     }
 
     fn render_save_dialog(&mut self, f: &mut Frame) {
@@ -2147,7 +2121,6 @@ impl TerminalUI {
         use crate::analyze::prescan;
         use crate::files::ProjectSource;
         use crate::parser::CParser;
-        use std::time::Duration;
 
         // Reset cancellation flag
         self.scan_cancellation.store(false, Ordering::Relaxed);
@@ -2200,89 +2173,12 @@ impl TerminalUI {
             terminal.draw(|f| self.ui(f))?;
 
             // Poll for ESC key press with very short timeout
-            if event::poll(Duration::from_millis(1))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.code == KeyCode::Esc {
-                        self.scan_cancellation.store(true, Ordering::Relaxed);
-                        break;
-                    }
-                }
+            if self.poll_esc_cancellation()? {
+                break;
             }
 
             if let Ok((tree, source)) = parser.parse_file(file_path) {
-                let root_node = tree.root_node();
-
-                // Extract suppressions from this file
-                let mut suppression_manager = SuppressionManager::new();
-                suppression_manager.extract_from_source(file_path, &source);
-
-                let mut file_has_violations = false;
-
-                // Collect enabled rules to avoid borrow checker issues with terminal.draw
-                let enabled_rules: Vec<(String, RuleConfig)> = self
-                    .manifest
-                    .enabled_rules()
-                    .map(|(id, config)| (id.clone(), config.clone()))
-                    .collect();
-
-                for (rule_id, rule_config) in &enabled_rules {
-                    // Check for cancellation between rules
-                    if self.scan_cancellation.load(Ordering::Relaxed) {
-                        break;
-                    }
-
-                    // Update current rule being checked
-                    self.progress_rule_id = rule_id.to_string();
-
-                    // Redraw UI and poll for ESC key during rule checking for better responsiveness
-                    terminal.draw(|f| self.ui(f))?;
-                    if event::poll(Duration::from_millis(1))? {
-                        if let Event::Key(key) = event::read()? {
-                            if key.code == KeyCode::Esc {
-                                self.scan_cancellation.store(true, Ordering::Relaxed);
-                                break;
-                            }
-                        }
-                    }
-
-                    if let Some(rule) = self.registry.get_rule(rule_id) {
-                        let mut file_violations = rule.check(&root_node, &source);
-                        for violation in &mut file_violations {
-                            violation.file_path = file_path.clone();
-                            // Use config severity if specified, otherwise use rule's default severity
-                            violation.severity = rule_config
-                                .severity
-                                .clone()
-                                .unwrap_or_else(|| rule.severity());
-                        }
-
-                        // Separate suppressed and active violations
-                        for violation in file_violations {
-                            file_has_violations = true;
-                            if suppression_manager
-                                .should_suppress(
-                                    file_path,
-                                    rule_id,
-                                    violation.line,
-                                    &source,
-                                    &violation.message,
-                                )
-                                .is_some()
-                            {
-                                // This violation is suppressed
-                                self.suppressed_violations.push(violation);
-                            } else {
-                                // This violation is active
-                                self.violations.push(violation);
-                            }
-                        }
-                    }
-                }
-
-                // If the file had no violations, add it to clean files
-                if !file_has_violations {
-                    self.clean_files.push(file_path.clone());
-                }
+                self.scan_parsed_file(terminal, file_path, &tree.root_node(), &source)?;
             }
         }
 
@@ -2302,6 +2198,122 @@ impl TerminalUI {
         self.update_sort();
 
         Ok(())
+    }
+
+    /// Poll for an ESC keypress with a very short timeout, and if seen,
+    /// set the cancellation flag. Returns whether cancellation was requested.
+    fn poll_esc_cancellation(&self) -> Result<bool> {
+        use std::time::Duration;
+        if event::poll(Duration::from_millis(1))? {
+            if let Event::Key(key) = event::read()? {
+                if key.code == KeyCode::Esc {
+                    self.scan_cancellation.store(true, Ordering::Relaxed);
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Run all enabled rules against one already-parsed file, splitting
+    /// results into active/suppressed violations, and record it as clean
+    /// if no rule fired.
+    fn scan_parsed_file<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        file_path: &str,
+        root_node: &Node,
+        source: &str,
+    ) -> Result<()> {
+        // Extract suppressions from this file
+        let mut suppression_manager = SuppressionManager::new();
+        suppression_manager.extract_from_source(file_path, source);
+
+        // Collect enabled rules to avoid borrow checker issues with terminal.draw
+        let enabled_rules: Vec<(String, RuleConfig)> = self
+            .manifest
+            .enabled_rules()
+            .map(|(id, config)| (id.clone(), config.clone()))
+            .collect();
+
+        let mut file_has_violations = false;
+        for (rule_id, rule_config) in &enabled_rules {
+            // Check for cancellation between rules
+            if self.scan_cancellation.load(Ordering::Relaxed) {
+                break;
+            }
+
+            // Update current rule being checked
+            self.progress_rule_id = rule_id.to_string();
+
+            // Redraw UI and poll for ESC key during rule checking for better responsiveness
+            terminal.draw(|f| self.ui(f))?;
+            if self.poll_esc_cancellation()? {
+                break;
+            }
+
+            file_has_violations |= self.apply_rule_to_file(
+                rule_id,
+                rule_config,
+                root_node,
+                source,
+                file_path,
+                &suppression_manager,
+            );
+        }
+
+        // If the file had no violations, add it to clean files
+        if !file_has_violations {
+            self.clean_files.push(file_path.to_string());
+        }
+        Ok(())
+    }
+
+    /// Run a single rule against a parsed file, sorting its violations into
+    /// `self.violations` / `self.suppressed_violations`. Returns whether the
+    /// rule produced any violations at all (suppressed or not).
+    fn apply_rule_to_file(
+        &mut self,
+        rule_id: &str,
+        rule_config: &RuleConfig,
+        root_node: &Node,
+        source: &str,
+        file_path: &str,
+        suppression_manager: &SuppressionManager,
+    ) -> bool {
+        let Some(rule) = self.registry.get_rule(rule_id) else {
+            return false;
+        };
+        let mut file_violations = rule.check(root_node, source);
+        for violation in &mut file_violations {
+            violation.file_path = file_path.to_string();
+            // Use config severity if specified, otherwise use rule's default severity
+            violation.severity = rule_config
+                .severity
+                .clone()
+                .unwrap_or_else(|| rule.severity());
+        }
+
+        let has_violations = !file_violations.is_empty();
+        for violation in file_violations {
+            if suppression_manager
+                .should_suppress(
+                    file_path,
+                    rule_id,
+                    violation.line,
+                    source,
+                    &violation.message,
+                )
+                .is_some()
+            {
+                // This violation is suppressed
+                self.suppressed_violations.push(violation);
+            } else {
+                // This violation is active
+                self.violations.push(violation);
+            }
+        }
+        has_violations
     }
 
     fn export_violations(&self, path: &PathBuf) -> Result<()> {

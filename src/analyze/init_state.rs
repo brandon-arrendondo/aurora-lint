@@ -711,116 +711,7 @@ fn process_expression(
 ) {
     match node.kind() {
         "assignment_expression" => {
-            // First, process the RHS for side effects (e.g., function calls
-            // that initialize other variables via &output_param)
-            if let Some(right) = node.child_by_field_name("right") {
-                find_and_process_init_expressions(&right, source, state, tracked_vars, config);
-            }
-
-            // Then process the LHS assignment
-            if let Some(left) = node.child_by_field_name("left") {
-                let (var_name, has_subscript_in_chain) = if left.kind() == "identifier" {
-                    (
-                        left.utf8_text(source.as_bytes()).unwrap_or("").to_string(),
-                        false,
-                    )
-                } else if left.kind() == "pointer_expression" {
-                    (extract_deref_target(&left, source), false)
-                } else if left.kind() == "subscript_expression" {
-                    (extract_subscript_base(&left, source), true)
-                } else if left.kind() == "field_expression" {
-                    let (name, has_sub) = extract_nested_base_ex(&left, source);
-                    (name, has_sub)
-                } else {
-                    (String::new(), false)
-                };
-
-                if !var_name.is_empty() {
-                    // Pre-read: check if RHS is an uninitialized array identifier
-                    // (array-to-pointer decay: ptr = arr; where arr is uninit array).
-                    // Must read before the mutable borrow of var_name below.
-                    let array_decay = if left.kind() == "identifier" {
-                        if let Some(right) = node.child_by_field_name("right") {
-                            if right.kind() == "identifier" {
-                                let rhs_name = right.utf8_text(source.as_bytes()).unwrap_or("");
-                                state.get(rhs_name).and_then(|rhs| {
-                                    // Only apply to non-char arrays (int/double/struct).
-                                    // Char arrays (CWE-665: strcat pattern) are flagged
-                                    // at the assignment itself as the detection point.
-                                    if rhs.is_array && rhs.state.is_unsafe() && !rhs.is_char_type {
-                                        Some(rhs.allocation_count)
-                                    } else {
-                                        None
-                                    }
-                                })
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    if let Some(info) = state.get_mut(&var_name) {
-                        if left.kind() == "identifier" {
-                            if let Some(array_alloc) = array_decay {
-                                // Array-to-pointer decay: ptr = uninit_array
-                                // The pointer now points to uninitialized content.
-                                info.state = InitState::MallocUninitialized;
-                                info.allocation_count = array_alloc;
-                            } else if let Some(right) = node.child_by_field_name("right") {
-                                info.state = classify_initializer(&right, source, config);
-                                if matches!(info.state, InitState::MallocUninitialized) {
-                                    info.allocation_count =
-                                        extract_allocation_count(&right, source);
-                                } else {
-                                    info.allocation_count = None;
-                                }
-                            } else {
-                                info.state = InitState::Initialized;
-                                info.allocation_count = None;
-                            }
-                        } else {
-                            match info.state {
-                                InitState::MallocUninitialized
-                                    // Field writes (ptr->field = val) don't fully
-                                    // initialize malloc'd memory — other fields/flexible
-                                    // array members may remain uninitialized. Only
-                                    // subscript/deref writes upgrade content state.
-                                    // But arr[0].field = val (subscript in chain)
-                                    // should upgrade — it's writing content.
-                                    if (left.kind() != "field_expression" || has_subscript_in_chain) => {
-                                        // Check for partial initialization: if inside a
-                                        // for-loop whose bound < allocation_count, the
-                                        // loop only initializes a fraction of elements.
-                                        if let Some(alloc_count) = info.allocation_count {
-                                            if is_partial_init_write(alloc_count, node, source) {
-                                                // Keep MallocUninitialized — partial init
-                                            } else {
-                                                info.state = InitState::MallocInitialized;
-                                            }
-                                        } else {
-                                            info.state = InitState::MallocInitialized;
-                                        }
-                                    }
-                                InitState::Uninitialized => {
-                                    if left.kind() == "field_expression" && !has_subscript_in_chain
-                                    {
-                                        // Simple field write: s.field = val → initialized
-                                        info.state = InitState::Initialized;
-                                    }
-                                    if left.kind() == "subscript_expression" {
-                                        info.state = InitState::Initialized;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
+            process_assignment_init(node, source, state, tracked_vars, config)
         }
         "update_expression" => {
             // i++ or ++i — the variable is being read AND written
@@ -856,6 +747,161 @@ fn process_expression(
         }
         "gnu_asm_expression" => {
             process_gnu_asm(node, source, state);
+        }
+        _ => {}
+    }
+}
+
+/// `"assignment_expression"` case of [`process_expression`]: process the RHS
+/// for side effects first, then resolve the LHS target and update its
+/// tracked init-state.
+fn process_assignment_init(
+    node: &Node,
+    source: &str,
+    state: &mut InitStateMap,
+    tracked_vars: &mut HashSet<String>,
+    config: &InitAnalysisConfig,
+) {
+    // First, process the RHS for side effects (e.g., function calls
+    // that initialize other variables via &output_param)
+    if let Some(right) = node.child_by_field_name("right") {
+        find_and_process_init_expressions(&right, source, state, tracked_vars, config);
+    }
+
+    // Then process the LHS assignment
+    let Some(left) = node.child_by_field_name("left") else {
+        return;
+    };
+    let (var_name, has_subscript_in_chain) = extract_assignment_target(&left, source);
+    if var_name.is_empty() {
+        return;
+    }
+
+    // Pre-read: check if RHS is an uninitialized array identifier
+    // (array-to-pointer decay: ptr = arr; where arr is uninit array).
+    // Must read before the mutable borrow of var_name below.
+    let array_decay = resolve_array_decay(&left, node, source, state);
+
+    let Some(info) = state.get_mut(&var_name) else {
+        return;
+    };
+    if left.kind() == "identifier" {
+        apply_identifier_assignment_state(info, array_decay, node, source, config);
+    } else {
+        apply_lvalue_assignment_state(info, &left, has_subscript_in_chain, node, source);
+    }
+}
+
+/// Resolve the assignment LHS to a tracked variable name plus whether the
+/// access chain includes a subscript (which counts as a content write, even
+/// through a field expression like `arr[0].field = val`).
+fn extract_assignment_target(left: &Node, source: &str) -> (String, bool) {
+    match left.kind() {
+        "identifier" => (
+            left.utf8_text(source.as_bytes()).unwrap_or("").to_string(),
+            false,
+        ),
+        "pointer_expression" => (extract_deref_target(left, source), false),
+        "subscript_expression" => (extract_subscript_base(left, source), true),
+        "field_expression" => extract_nested_base_ex(left, source),
+        _ => (String::new(), false),
+    }
+}
+
+/// For a plain-identifier LHS whose RHS is itself an identifier, check
+/// whether the RHS is an uninitialized non-char array (array-to-pointer
+/// decay: `ptr = arr;`). Returns the RHS array's allocation count when so.
+fn resolve_array_decay(
+    left: &Node,
+    node: &Node,
+    source: &str,
+    state: &InitStateMap,
+) -> Option<Option<usize>> {
+    if left.kind() != "identifier" {
+        return None;
+    }
+    let right = node.child_by_field_name("right")?;
+    if right.kind() != "identifier" {
+        return None;
+    }
+    let rhs_name = right.utf8_text(source.as_bytes()).unwrap_or("");
+    state.get(rhs_name).and_then(|rhs| {
+        // Only apply to non-char arrays (int/double/struct).
+        // Char arrays (CWE-665: strcat pattern) are flagged
+        // at the assignment itself as the detection point.
+        if rhs.is_array && rhs.state.is_unsafe() && !rhs.is_char_type {
+            Some(rhs.allocation_count)
+        } else {
+            None
+        }
+    })
+}
+
+/// Apply an assignment `var = expr` to a plain-identifier target's tracked state.
+fn apply_identifier_assignment_state(
+    info: &mut VarInfo,
+    array_decay: Option<Option<usize>>,
+    node: &Node,
+    source: &str,
+    config: &InitAnalysisConfig,
+) {
+    if let Some(array_alloc) = array_decay {
+        // Array-to-pointer decay: ptr = uninit_array
+        // The pointer now points to uninitialized content.
+        info.state = InitState::MallocUninitialized;
+        info.allocation_count = array_alloc;
+        return;
+    }
+    let Some(right) = node.child_by_field_name("right") else {
+        info.state = InitState::Initialized;
+        info.allocation_count = None;
+        return;
+    };
+    info.state = classify_initializer(&right, source, config);
+    info.allocation_count = if matches!(info.state, InitState::MallocUninitialized) {
+        extract_allocation_count(&right, source)
+    } else {
+        None
+    };
+}
+
+/// Apply an assignment through a deref/subscript/field LHS (`*p = expr`,
+/// `arr[i] = expr`, `s.field = expr`) to the target's tracked state.
+fn apply_lvalue_assignment_state(
+    info: &mut VarInfo,
+    left: &Node,
+    has_subscript_in_chain: bool,
+    node: &Node,
+    source: &str,
+) {
+    match info.state {
+        InitState::MallocUninitialized
+            // Field writes (ptr->field = val) don't fully initialize
+            // malloc'd memory — other fields/flexible array members may
+            // remain uninitialized. Only subscript/deref writes upgrade
+            // content state. But arr[0].field = val (subscript in chain)
+            // should upgrade — it's writing content.
+            if (left.kind() != "field_expression" || has_subscript_in_chain) =>
+        {
+            // Check for partial initialization: if inside a for-loop whose
+            // bound < allocation_count, the loop only initializes a
+            // fraction of elements.
+            let stays_partial = info
+                .allocation_count
+                .is_some_and(|alloc_count| is_partial_init_write(alloc_count, node, source));
+            if !stays_partial {
+                info.state = InitState::MallocInitialized;
+            }
+            // else: keep MallocUninitialized — partial init
+        }
+        InitState::Uninitialized => {
+            if left.kind() == "field_expression" && !has_subscript_in_chain {
+                // Simple field write: s.field = val → initialized
+                info.state = InitState::Initialized;
+            }
+            if left.kind() == "subscript_expression" {
+                info.state = InitState::Initialized;
+            }
         }
         _ => {}
     }
@@ -981,32 +1027,13 @@ fn process_call_expression(
     _tracked_vars: &mut HashSet<String>,
     config: &InitAnalysisConfig,
 ) {
-    let func = match node.child_by_field_name("function") {
-        Some(f) => f,
-        None => return,
+    let Some(func) = node.child_by_field_name("function") else {
+        return;
     };
     let func_name = func.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     let func_name_lower = func_name.to_lowercase();
 
-    // Misparsed asm output operand: `"=r"(var)` or `"+r"(var)`.
-    // tree-sitter-c sees the constraint string as the callee function.
-    // Mark the identifier argument as initialized — it is written by the asm.
-    if func.kind() == "string_literal" && func_name.contains('=') {
-        if let Some(args) = node.child_by_field_name("arguments") {
-            for i in 0..args.child_count() {
-                if let Some(arg) = args.child(i) {
-                    if arg.kind() == "identifier" {
-                        let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-                        if !name.is_empty() {
-                            if let Some(info) = state.get_mut(name) {
-                                info.state = InitState::Initialized;
-                                info.allocation_count = None;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    if try_process_misparsed_asm_output_operand(&func, &func_name, node, source, state) {
         return;
     }
 
@@ -1020,93 +1047,16 @@ fn process_call_expression(
         return;
     }
 
-    // va_start initializes its first argument (the va_list variable)
-    if func_name == "va_start" || func_name == "va_copy" {
-        if let Some(args) = node.child_by_field_name("arguments") {
-            for i in 0..args.child_count() {
-                if let Some(arg) = args.child(i) {
-                    if arg.kind() == "identifier" {
-                        let var_name = arg.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                        if let Some(info) = state.get_mut(&var_name) {
-                            info.state = InitState::Initialized;
-                        }
-                        break; // Only first arg
-                    }
-                }
-            }
-        }
+    if try_process_va_start(&func_name, node, source, state) {
         return;
     }
-
-    // Iterator/find/output macros (utlist/uthash/BSD-queue): the macro writes
-    // its iterator/temp/out positional args. Mark each as initialized. See
-    // `macro_semantics` (Phase 1 of docs/design/macro-expansion.md) — this
-    // replaces the old first-arg-only FOR_EACH_MACROS heuristic, which was wrong
-    // for utlist/uthash where the head is the input at arg 0.
-    if crate::analyze::macro_semantics::is_registered(&func_name) {
-        for (var_name, _role) in crate::analyze::macro_semantics::output_var_args(node, source) {
-            if let Some(info) = state.get_mut(&var_name) {
-                info.state = InitState::Initialized;
-            }
-        }
+    if try_process_registered_macro(&func_name, node, source, state) {
         return;
     }
-
-    // Function-like macros whose body assigns one of their parameters (e.g.
-    // curl's `CF_DATA_SAVE(save, cf, data)` → `(save) = …`). The expander
-    // (`macro_expand::macro_output_param_indices`) precomputes which positional
-    // args are *written*; mark each bare-identifier output arg as initialized so
-    // downstream reads of it are not "used uninitialized" FPs. Phase 2c-ii of
-    // docs/design/macro-expansion.md.
-    if let Some(out_indices) = config.macro_output_params.get(&func_name) {
-        let args = crate::analyze::macro_semantics::positional_args(node);
-        for &idx in out_indices {
-            if let Some(arg) = args.get(idx) {
-                if arg.kind() == "identifier" {
-                    let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-                    if let Some(info) = state.get_mut(name) {
-                        info.state = InitState::Initialized;
-                        info.allocation_count = None;
-                    }
-                }
-            }
-        }
+    if try_process_macro_output_params(&func_name, node, source, state, config) {
         return;
     }
-
-    // Known initializing functions (exact or suffix match): mark output args as initialized
-    if let Some(base_name) = match_initializing_function(&func_name) {
-        let output_indices = get_output_arg_indices(base_name);
-        if let Some(args) = node.child_by_field_name("arguments") {
-            let mut arg_idx = 0;
-            for i in 0..args.child_count() {
-                if let Some(arg) = args.child(i) {
-                    if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
-                        continue;
-                    }
-                    if output_indices.contains(&arg_idx) {
-                        let var_name = extract_var_from_arg(&arg, source);
-                        if !var_name.is_empty() {
-                            if let Some(info) = state.get_mut(&var_name) {
-                                // memset on a malloc'd pointer → MallocInitialized
-                                if base_name == "memset"
-                                    && matches!(
-                                        info.state,
-                                        InitState::MallocUninitialized
-                                            | InitState::MallocInitialized
-                                    )
-                                {
-                                    info.state = InitState::MallocInitialized;
-                                } else {
-                                    info.state = InitState::Initialized;
-                                }
-                            }
-                        }
-                    }
-                    arg_idx += 1;
-                }
-            }
-        }
+    if try_process_known_initializing_function(&func_name, node, source, state) {
         return;
     }
 
@@ -1115,47 +1065,209 @@ fn process_call_expression(
         return;
     }
 
-    // Unknown function: assume &var initializes (conservative — most functions
-    // that take pointer params write to them), UNLESS the specific parameter is
-    // known to be only conditionally initialized or read-only dereferenced.
-    let cond_param_indices = config.conditionally_init_fns.get(&func_name);
-    let read_only_indices = config.read_only_deref_fns.get(&func_name);
+    process_unknown_function_call(&func_name, node, source, state, config);
+}
 
+/// Misparsed asm output operand: `"=r"(var)` or `"+r"(var)`. tree-sitter-c
+/// sees the constraint string as the callee function. Mark the identifier
+/// argument as initialized — it is written by the asm.
+fn try_process_misparsed_asm_output_operand(
+    func: &Node,
+    func_name: &str,
+    node: &Node,
+    source: &str,
+    state: &mut InitStateMap,
+) -> bool {
+    if func.kind() != "string_literal" || !func_name.contains('=') {
+        return false;
+    }
     if let Some(args) = node.child_by_field_name("arguments") {
-        let mut arg_idx: usize = 0;
         for i in 0..args.child_count() {
-            if let Some(arg) = args.child(i) {
-                if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
-                    continue;
+            let Some(arg) = args.child(i) else { continue };
+            if arg.kind() != "identifier" {
+                continue;
+            }
+            let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(info) = state.get_mut(name) {
+                info.state = InitState::Initialized;
+                info.allocation_count = None;
+            }
+        }
+    }
+    true
+}
+
+/// `va_start`/`va_copy` initializes its first argument (the va_list variable).
+fn try_process_va_start(
+    func_name: &str,
+    node: &Node,
+    source: &str,
+    state: &mut InitStateMap,
+) -> bool {
+    if func_name != "va_start" && func_name != "va_copy" {
+        return false;
+    }
+    if let Some(args) = node.child_by_field_name("arguments") {
+        for i in 0..args.child_count() {
+            let Some(arg) = args.child(i) else { continue };
+            if arg.kind() == "identifier" {
+                let var_name = arg.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                if let Some(info) = state.get_mut(&var_name) {
+                    info.state = InitState::Initialized;
                 }
-                let skip_this_arg = cond_param_indices
-                    .is_some_and(|indices| indices.contains(&arg_idx))
-                    || read_only_indices.is_some_and(|indices| indices.contains(&arg_idx));
-                // &var pattern — assume function writes to it (unless this param is conditionally-init)
-                if !skip_this_arg && arg.kind() == "pointer_expression" {
-                    let arg_text = arg.utf8_text(source.as_bytes()).unwrap_or("");
-                    if arg_text.starts_with('&') {
-                        let var_name = extract_var_from_arg(&arg, source);
-                        if !var_name.is_empty() {
-                            if let Some(info) = state.get_mut(&var_name) {
-                                info.state = InitState::Initialized;
-                            }
-                        }
-                    }
+                break; // Only first arg
+            }
+        }
+    }
+    true
+}
+
+/// Iterator/find/output macros (utlist/uthash/BSD-queue): the macro writes
+/// its iterator/temp/out positional args. Mark each as initialized. See
+/// `macro_semantics` (Phase 1 of docs/design/macro-expansion.md) — this
+/// replaces the old first-arg-only FOR_EACH_MACROS heuristic, which was wrong
+/// for utlist/uthash where the head is the input at arg 0.
+fn try_process_registered_macro(
+    func_name: &str,
+    node: &Node,
+    source: &str,
+    state: &mut InitStateMap,
+) -> bool {
+    if !crate::analyze::macro_semantics::is_registered(func_name) {
+        return false;
+    }
+    for (var_name, _role) in crate::analyze::macro_semantics::output_var_args(node, source) {
+        if let Some(info) = state.get_mut(&var_name) {
+            info.state = InitState::Initialized;
+        }
+    }
+    true
+}
+
+/// Function-like macros whose body assigns one of their parameters (e.g.
+/// curl's `CF_DATA_SAVE(save, cf, data)` → `(save) = …`). The expander
+/// (`macro_expand::macro_output_param_indices`) precomputes which positional
+/// args are *written*; mark each bare-identifier output arg as initialized so
+/// downstream reads of it are not "used uninitialized" FPs. Phase 2c-ii of
+/// docs/design/macro-expansion.md.
+fn try_process_macro_output_params(
+    func_name: &str,
+    node: &Node,
+    source: &str,
+    state: &mut InitStateMap,
+    config: &InitAnalysisConfig,
+) -> bool {
+    let Some(out_indices) = config.macro_output_params.get(func_name) else {
+        return false;
+    };
+    let args = crate::analyze::macro_semantics::positional_args(node);
+    for &idx in out_indices {
+        if let Some(arg) = args.get(idx) {
+            if arg.kind() == "identifier" {
+                let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+                if let Some(info) = state.get_mut(name) {
+                    info.state = InitState::Initialized;
+                    info.allocation_count = None;
                 }
-                // Array passed by name — assume function writes to it
-                if !skip_this_arg && arg.kind() == "identifier" {
-                    let var_name = arg.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                    if let Some(info) = state.get(&var_name) {
-                        if info.is_array {
-                            let info = state.get_mut(&var_name).unwrap();
+            }
+        }
+    }
+    true
+}
+
+/// Known initializing functions (exact or suffix match): mark output args as initialized.
+fn try_process_known_initializing_function(
+    func_name: &str,
+    node: &Node,
+    source: &str,
+    state: &mut InitStateMap,
+) -> bool {
+    let Some(base_name) = match_initializing_function(func_name) else {
+        return false;
+    };
+    let output_indices = get_output_arg_indices(base_name);
+    if let Some(args) = node.child_by_field_name("arguments") {
+        let mut arg_idx = 0;
+        for i in 0..args.child_count() {
+            let Some(arg) = args.child(i) else { continue };
+            if matches!(arg.kind(), "," | "(" | ")") {
+                continue;
+            }
+            if output_indices.contains(&arg_idx) {
+                let var_name = extract_var_from_arg(&arg, source);
+                if !var_name.is_empty() {
+                    if let Some(info) = state.get_mut(&var_name) {
+                        // memset on a malloc'd pointer → MallocInitialized
+                        if base_name == "memset"
+                            && matches!(
+                                info.state,
+                                InitState::MallocUninitialized | InitState::MallocInitialized
+                            )
+                        {
+                            info.state = InitState::MallocInitialized;
+                        } else {
                             info.state = InitState::Initialized;
                         }
                     }
                 }
-                arg_idx += 1;
+            }
+            arg_idx += 1;
+        }
+    }
+    true
+}
+
+/// Unknown function: assume `&var` initializes (conservative — most
+/// functions that take pointer params write to them), UNLESS the specific
+/// parameter is known to be only conditionally initialized or read-only
+/// dereferenced. Also handles arrays passed by name.
+fn process_unknown_function_call(
+    func_name: &str,
+    node: &Node,
+    source: &str,
+    state: &mut InitStateMap,
+    config: &InitAnalysisConfig,
+) {
+    let cond_param_indices = config.conditionally_init_fns.get(func_name);
+    let read_only_indices = config.read_only_deref_fns.get(func_name);
+
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut arg_idx: usize = 0;
+    for i in 0..args.child_count() {
+        let Some(arg) = args.child(i) else { continue };
+        if matches!(arg.kind(), "," | "(" | ")") {
+            continue;
+        }
+        let skip_this_arg = cond_param_indices.is_some_and(|indices| indices.contains(&arg_idx))
+            || read_only_indices.is_some_and(|indices| indices.contains(&arg_idx));
+        // &var pattern — assume function writes to it (unless this param is conditionally-init)
+        if !skip_this_arg && arg.kind() == "pointer_expression" {
+            let arg_text = arg.utf8_text(source.as_bytes()).unwrap_or("");
+            if arg_text.starts_with('&') {
+                let var_name = extract_var_from_arg(&arg, source);
+                if !var_name.is_empty() {
+                    if let Some(info) = state.get_mut(&var_name) {
+                        info.state = InitState::Initialized;
+                    }
+                }
             }
         }
+        // Array passed by name — assume function writes to it
+        if !skip_this_arg && arg.kind() == "identifier" {
+            let var_name = arg.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+            if let Some(info) = state.get(&var_name) {
+                if info.is_array {
+                    let info = state.get_mut(&var_name).unwrap();
+                    info.state = InitState::Initialized;
+                }
+            }
+        }
+        arg_idx += 1;
     }
 }
 

@@ -1642,132 +1642,28 @@ impl Int32C {
         // contain "int" as a substring, causing false signed classification.
         if node.kind() == "identifier" {
             if let Some(declared_type) = type_map.get(text) {
-                if self.is_unsigned_type(declared_type) {
-                    return "unsigned".to_string();
-                }
-                // Narrow signed types are tracked distinctly so VRA checks use
-                // their actual bit width. Exact-width typedefs are checked
-                // before the generic contains("int") test. For plain short we
-                // use the standard-guaranteed minimum width (16 bits).
-                if declared_type == "int8_t" {
-                    return "char".to_string();
-                }
-                if declared_type == "int16_t" || declared_type.contains("short") {
-                    return "short".to_string();
-                }
-                // Only return signed if the type is clearly an integer type
-                if declared_type.contains("int")
-                    || declared_type.contains("long")
-                    || declared_type == "signed"
-                {
-                    return "signed".to_string();
-                }
-                // char is a signed integer type (on most platforms); track it distinctly
-                // so we can apply 8-bit VRA checking rather than 32-bit
-                if declared_type == "char" || declared_type == "signed char" {
-                    return "char".to_string();
-                }
-                // Non-integer types (float, double, pointers, structs) — not applicable to INT32-C
-                return "not_applicable".to_string();
+                return self.classify_declared_type(declared_type);
             }
         }
 
-        // Look for explicit unsigned type indicators
-        if text.contains("unsigned") || text.contains("size_t") || text.contains("uint") {
-            return "unsigned".to_string();
-        }
-
-        // Look for unsigned literals
-        if text.ends_with("u") || text.ends_with("U") {
-            return "unsigned".to_string();
-        }
-
-        // Look for unsigned constants
-        if text.contains("UINT_MAX") || text.contains("SIZE_MAX") {
-            return "unsigned".to_string();
+        if let Some(t) = Self::infer_type_from_unsigned_literal_text(text) {
+            return t;
         }
 
         // Field expressions (e.g., s->count): try to resolve via struct field type database
         if node.kind() == "field_expression" {
-            let sft = self.struct_field_types.borrow();
-            if let Some(field_type) =
-                crate::utility::cert_c::ast_utils::resolve_field_expression_type(
-                    node, source, type_map, &sft,
-                )
-            {
-                if self.is_unsigned_type(&field_type) {
-                    return "unsigned".to_string();
-                }
-                if field_type == "int8_t" {
-                    return "char".to_string();
-                }
-                if field_type == "int16_t" || field_type.contains("short") {
-                    return "short".to_string();
-                }
-                if field_type.contains("int")
-                    || field_type.contains("long")
-                    || field_type == "signed"
-                {
-                    return "signed".to_string();
-                }
-                if field_type == "char" || field_type == "signed char" {
-                    return "char".to_string();
-                }
-                return "not_applicable".to_string();
-            }
-            return "not_applicable".to_string();
+            return self.infer_field_expression_type(node, source, type_map);
         }
 
         // Binary expressions: propagate unsigned/not_applicable from sub-operands.
-        // If any operand in the chain is unsigned, the whole expression should be
-        // treated as unsigned (matching C integer promotion rules for unsigned types).
         if node.kind() == "binary_expression" {
-            if let (Some(left), Some(right)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                let lt = self.infer_type(&left, source, type_map);
-                let rt = self.infer_type(&right, source, type_map);
-                if lt == "unsigned" || rt == "unsigned" {
-                    return "unsigned".to_string();
-                }
-                if lt == "not_applicable" || rt == "not_applicable" {
-                    return "not_applicable".to_string();
-                }
-                if lt == "signed" || rt == "signed" {
-                    return "signed".to_string();
-                }
-                // Narrow operands promote to int, but we keep the narrow-type
-                // annotation so callers can use 16-bit/8-bit VRA checking
-                if lt == "short" || rt == "short" {
-                    return "short".to_string();
-                }
-                if lt == "char" || rt == "char" {
-                    return "char".to_string();
-                }
-                return "unknown".to_string();
+            if let Some(t) = self.infer_binary_expression_type(node, source, type_map) {
+                return t;
             }
         }
 
-        // Look for explicit signed type indicators (only for non-identifier nodes
-        // like type specifiers in casts/declarations — identifiers checked above)
-        if node.kind() != "identifier" && text.contains("short") {
-            return "short".to_string();
-        }
-        if node.kind() != "identifier"
-            && (text.contains("signed") || text.contains("int") || text.contains("long"))
-        {
-            return "signed".to_string();
-        }
-
-        // Look for signed integer constants
-        if text.contains("INT_MAX") || text.contains("INT_MIN") {
-            return "signed".to_string();
-        }
-
-        // Plain numbers without unsigned suffix are typically signed
-        if text.chars().all(|c| c.is_ascii_digit() || c == '-') {
-            return "signed".to_string();
+        if let Some(t) = Self::infer_type_from_keyword_text(node, text) {
+            return t;
         }
 
         // Fall back to old heuristic for variable names not in the type map
@@ -1777,6 +1673,145 @@ impl Int32C {
             }
         }
 
+        if let Some(t) = Self::infer_type_from_identifier_name(text) {
+            return t;
+        }
+
+        // For variables NOT in the type map, default to unknown instead of signed
+        // This prevents false positives on variables whose type we can't determine
+        "unknown".to_string()
+    }
+
+    /// Classify a resolved declared-type string (from the type map or a
+    /// struct field database) into INT32-C's signedness/width bucket.
+    /// Narrow signed types are tracked distinctly (`char`/`short`) so VRA
+    /// checks use their actual bit width; non-integer types are
+    /// `not_applicable`.
+    fn classify_declared_type(&self, declared_type: &str) -> String {
+        if self.is_unsigned_type(declared_type) {
+            return "unsigned".to_string();
+        }
+        if declared_type == "int8_t" {
+            return "char".to_string();
+        }
+        if declared_type == "int16_t" || declared_type.contains("short") {
+            return "short".to_string();
+        }
+        // Only return signed if the type is clearly an integer type
+        if declared_type.contains("int")
+            || declared_type.contains("long")
+            || declared_type == "signed"
+        {
+            return "signed".to_string();
+        }
+        // char is a signed integer type (on most platforms); track it distinctly
+        // so we can apply 8-bit VRA checking rather than 32-bit
+        if declared_type == "char" || declared_type == "signed char" {
+            return "char".to_string();
+        }
+        // Non-integer types (float, double, pointers, structs) — not applicable to INT32-C
+        "not_applicable".to_string()
+    }
+
+    /// Explicit unsigned-type/literal text markers, applicable regardless of node kind.
+    fn infer_type_from_unsigned_literal_text(text: &str) -> Option<String> {
+        // Look for explicit unsigned type indicators
+        if text.contains("unsigned") || text.contains("size_t") || text.contains("uint") {
+            return Some("unsigned".to_string());
+        }
+        // Look for unsigned literals
+        if text.ends_with('u') || text.ends_with('U') {
+            return Some("unsigned".to_string());
+        }
+        // Look for unsigned constants
+        if text.contains("UINT_MAX") || text.contains("SIZE_MAX") {
+            return Some("unsigned".to_string());
+        }
+        None
+    }
+
+    /// `field_expression` case (e.g., `s->count`): resolve via the struct
+    /// field type database, else `not_applicable`.
+    fn infer_field_expression_type(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> String {
+        let sft = self.struct_field_types.borrow();
+        match crate::utility::cert_c::ast_utils::resolve_field_expression_type(
+            node, source, type_map, &sft,
+        ) {
+            Some(field_type) => self.classify_declared_type(&field_type),
+            None => "not_applicable".to_string(),
+        }
+    }
+
+    /// `binary_expression` case: propagate unsigned/not_applicable from
+    /// sub-operands. If any operand in the chain is unsigned, the whole
+    /// expression should be treated as unsigned (matching C integer
+    /// promotion rules for unsigned types). Returns `None` if either
+    /// operand is missing (fall through to the generic text heuristics).
+    fn infer_binary_expression_type(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> Option<String> {
+        let (left, right) = (
+            node.child_by_field_name("left")?,
+            node.child_by_field_name("right")?,
+        );
+        let lt = self.infer_type(&left, source, type_map);
+        let rt = self.infer_type(&right, source, type_map);
+        if lt == "unsigned" || rt == "unsigned" {
+            return Some("unsigned".to_string());
+        }
+        if lt == "not_applicable" || rt == "not_applicable" {
+            return Some("not_applicable".to_string());
+        }
+        if lt == "signed" || rt == "signed" {
+            return Some("signed".to_string());
+        }
+        // Narrow operands promote to int, but we keep the narrow-type
+        // annotation so callers can use 16-bit/8-bit VRA checking
+        if lt == "short" || rt == "short" {
+            return Some("short".to_string());
+        }
+        if lt == "char" || rt == "char" {
+            return Some("char".to_string());
+        }
+        Some("unknown".to_string())
+    }
+
+    /// Explicit signed/short keyword and integer-literal text markers
+    /// (type specifiers in casts/declarations, and bare numeric literals —
+    /// identifiers are handled earlier via the type map).
+    fn infer_type_from_keyword_text(node: &Node, text: &str) -> Option<String> {
+        if node.kind() != "identifier" && text.contains("short") {
+            return Some("short".to_string());
+        }
+        if node.kind() != "identifier"
+            && (text.contains("signed") || text.contains("int") || text.contains("long"))
+        {
+            return Some("signed".to_string());
+        }
+        // Look for signed integer constants
+        if text.contains("INT_MAX") || text.contains("INT_MIN") {
+            return Some("signed".to_string());
+        }
+        // Plain numbers without unsigned suffix are typically signed
+        if text.chars().all(|c| c.is_ascii_digit() || c == '-') {
+            return Some("signed".to_string());
+        }
+        None
+    }
+
+    /// Naming-convention fallback for identifiers absent from the type map:
+    /// ALL_CAPS macros are unresolvable without expansion, and common
+    /// prefixes (`u`/`i`) or substrings (`size`/`len`/`count`/`index`) hint
+    /// at signedness.
+    fn infer_type_from_identifier_name(text: &str) -> Option<String> {
         // ALL_CAPS identifiers (including those with digits/underscores) are macros whose
         // type cannot be determined without macro expansion. Hardware register addresses
         // (e.g., AFE_INT_EN) look like signed integer literals to the type inference but
@@ -1786,26 +1821,21 @@ impl Int32C {
                 .chars()
                 .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
         {
-            return "not_applicable".to_string();
+            return Some("not_applicable".to_string());
         }
-
         // Variable names that suggest unsigned integers
-        if text.starts_with("u") || text.contains("size") || text.contains("len") {
-            return "unsigned".to_string();
+        if text.starts_with('u') || text.contains("size") || text.contains("len") {
+            return Some("unsigned".to_string());
         }
-
         // Variable names that suggest signed integers
-        if text.starts_with("i")
+        if text.starts_with('i')
             || text.contains("signed")
             || text.contains("count")
             || text.contains("index")
         {
-            return "signed".to_string();
+            return Some("signed".to_string());
         }
-
-        // For variables NOT in the type map, default to unknown instead of signed
-        // This prevents false positives on variables whose type we can't determine
-        "unknown".to_string()
+        None
     }
 
     fn find_variable_declaration(

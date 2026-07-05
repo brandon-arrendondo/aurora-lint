@@ -162,186 +162,268 @@ fn check_dereferences_cfg(
     ) {
         let node = &n;
         match node.kind() {
-            "pointer_expression" => {
-                // tree-sitter uses pointer_expression for both *ptr and &var.
-                // Only dereference (*) can be a null-ptr bug.
-                let is_deref = node
-                    .child_by_field_name("operator")
-                    .map(|op| ast_utils::get_node_text_owned(&op, source) == "*")
-                    .unwrap_or(false);
-
-                if is_deref {
-                    if let Some(argument) = node.child_by_field_name("argument") {
-                        let mut deref_text = ast_utils::get_node_text_owned(&argument, source);
-
-                        // Strip parentheses
-                        if argument.kind() == "parenthesized_expression" {
-                            if let Some(inner) = argument.child(1) {
-                                deref_text = ast_utils::get_node_text_owned(&inner, source);
-                            }
-                        }
-
-                        if argument.kind() == "identifier"
-                            || argument.kind() == "field_expression"
-                            || argument.kind() == "parenthesized_expression"
-                        {
-                            if !reported_vars.contains(&deref_text)
-                                && is_unsafe_at(
-                                    &deref_text,
-                                    node,
-                                    source,
-                                    analysis,
-                                    cfg,
-                                    body,
-                                    summaries,
-                                )
-                            {
-                                reported_vars.insert(deref_text.clone());
-                                let start_point = node.start_position();
-                                violations.push(RuleViolation {
-                                    rule_id: "EXP34-C".to_string(),
-                                    severity: Severity::High,
-                                    message: format!(
-                                        "Potential null pointer dereference of variable '{}'",
-                                        deref_text
-                                    ),
-                                    file_path: String::new(),
-                                    line: start_point.row + 1,
-                                    column: start_point.column + 1,
-                                    suggestion: Some(format!(
-                                        "Check if '{}' is not NULL before dereferencing",
-                                        deref_text
-                                    )),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            "subscript_expression" => {
-                if let Some(array) = node.child(0) {
-                    if array.kind() == "identifier" {
-                        let var_name = ast_utils::get_node_text_owned(&array, source);
-                        if !reported_vars.contains(&var_name)
-                            && is_unsafe_at(&var_name, node, source, analysis, cfg, body, summaries)
-                        {
-                            reported_vars.insert(var_name.clone());
-                            let start_point = node.start_position();
-                            violations.push(RuleViolation {
-                            rule_id: "EXP34-C".to_string(),
-                            severity: Severity::High,
-                            message: format!(
-                                "Potential null pointer dereference in array access of variable '{}'",
-                                var_name
-                            ),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some(format!(
-                                "Check if '{}' is not NULL before array access",
-                                var_name
-                            )),
-                            ..Default::default()
-                        });
-                        }
-                    }
-                }
-            }
-            "field_expression" => {
-                if let Some(argument) = node.child_by_field_name("argument") {
-                    if argument.kind() == "identifier" {
-                        let var_name = ast_utils::get_node_text_owned(&argument, source);
-                        if !reported_vars.contains(&var_name)
-                            && is_unsafe_at(&var_name, node, source, analysis, cfg, body, summaries)
-                        {
-                            reported_vars.insert(var_name.clone());
-                            let start_point = node.start_position();
-                            violations.push(RuleViolation {
-                            rule_id: "EXP34-C".to_string(),
-                            severity: Severity::High,
-                            message: format!(
-                                "Potential null pointer dereference in member access of variable '{}'",
-                                var_name
-                            ),
-                            file_path: String::new(),
-                            line: start_point.row + 1,
-                            column: start_point.column + 1,
-                            suggestion: Some(format!(
-                                "Check if '{}' is not NULL before member access",
-                                var_name
-                            )),
-                            ..Default::default()
-                        });
-                        }
-                    }
-                }
-            }
-            "call_expression" => {
-                if let Some(function) = node.child_by_field_name("function") {
-                    // Function pointer call
-                    if function.kind() == "identifier" {
-                        let func_name = ast_utils::get_node_text_owned(&function, source);
-                        if !reported_vars.contains(&func_name)
-                            && is_unsafe_at(
-                                &func_name, node, source, analysis, cfg, body, summaries,
-                            )
-                        {
-                            reported_vars.insert(func_name.clone());
-                            let start_point = function.start_position();
-                            violations.push(RuleViolation {
-                                rule_id: "EXP34-C".to_string(),
-                                severity: Severity::High,
-                                message: format!(
-                                    "Calling potentially null function pointer '{}'",
-                                    func_name
-                                ),
-                                file_path: String::new(),
-                                line: start_point.row + 1,
-                                column: start_point.column + 1,
-                                suggestion: Some(format!(
-                                    "Check if '{}' is not NULL before calling",
-                                    func_name
-                                )),
-                                ..Default::default()
-                            });
-                        }
-                    }
-
-                    // Check deref-function arguments. Skip when the callee is
-                    // known to accept NULL (free/fclose no-op on NULL per C standard).
-                    let func_name = ast_utils::get_node_text_owned(&function, source);
-                    if is_deref_function(&func_name) && !is_null_safe_function(&func_name) {
-                        if let Some(args) = node.child_by_field_name("arguments") {
-                            check_function_arguments_cfg(
-                                &args,
-                                source,
-                                analysis,
-                                cfg,
-                                body,
-                                summaries,
-                                violations,
-                                reported_vars,
-                            );
-                        }
-                    }
-
-                    // Call-site null propagation: flag DefinitelyNull args to callees
-                    // that don't null-check them. Only when callee has a summary
-                    // (guards against flagging unknown library functions).
-                    if !is_deref_function(&func_name) && !is_null_safe_function(&func_name) {
-                        if summaries.contains_key(&func_name) {
-                            if let Some(args_node) = node.child_by_field_name("arguments") {
-                                check_callsite_null_args(
-                                    &func_name, &args_node, source, analysis, cfg, body, summaries,
-                                    violations,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+            "pointer_expression" => check_pointer_deref_cfg(
+                node,
+                source,
+                analysis,
+                cfg,
+                body,
+                summaries,
+                violations,
+                reported_vars,
+            ),
+            "subscript_expression" => check_subscript_deref_cfg(
+                node,
+                source,
+                analysis,
+                cfg,
+                body,
+                summaries,
+                violations,
+                reported_vars,
+            ),
+            "field_expression" => check_field_deref_cfg(
+                node,
+                source,
+                analysis,
+                cfg,
+                body,
+                summaries,
+                violations,
+                reported_vars,
+            ),
+            "call_expression" => check_call_expression_cfg(
+                node,
+                source,
+                analysis,
+                cfg,
+                body,
+                summaries,
+                violations,
+                reported_vars,
+            ),
             _ => {}
+        }
+    }
+}
+
+/// `pointer_expression` case: `*ptr` where tree-sitter uses the same node
+/// kind for both dereference and address-of, so only the `*` operator is a
+/// candidate null-deref.
+fn check_pointer_deref_cfg(
+    node: &Node,
+    source: &str,
+    analysis: &NullAnalysisResult,
+    cfg: &FunctionCfg,
+    body: &Node,
+    summaries: &HashMap<String, FunctionSummary>,
+    violations: &mut Vec<RuleViolation>,
+    reported_vars: &mut HashSet<String>,
+) {
+    let is_deref = node
+        .child_by_field_name("operator")
+        .map(|op| ast_utils::get_node_text_owned(&op, source) == "*")
+        .unwrap_or(false);
+    if !is_deref {
+        return;
+    }
+    let Some(argument) = node.child_by_field_name("argument") else {
+        return;
+    };
+    let mut deref_text = ast_utils::get_node_text_owned(&argument, source);
+
+    // Strip parentheses
+    if argument.kind() == "parenthesized_expression" {
+        if let Some(inner) = argument.child(1) {
+            deref_text = ast_utils::get_node_text_owned(&inner, source);
+        }
+    }
+
+    if !matches!(
+        argument.kind(),
+        "identifier" | "field_expression" | "parenthesized_expression"
+    ) {
+        return;
+    }
+    if reported_vars.contains(&deref_text)
+        || !is_unsafe_at(&deref_text, node, source, analysis, cfg, body, summaries)
+    {
+        return;
+    }
+    reported_vars.insert(deref_text.clone());
+    let start_point = node.start_position();
+    violations.push(RuleViolation {
+        rule_id: "EXP34-C".to_string(),
+        severity: Severity::High,
+        message: format!(
+            "Potential null pointer dereference of variable '{}'",
+            deref_text
+        ),
+        file_path: String::new(),
+        line: start_point.row + 1,
+        column: start_point.column + 1,
+        suggestion: Some(format!(
+            "Check if '{}' is not NULL before dereferencing",
+            deref_text
+        )),
+        ..Default::default()
+    });
+}
+
+/// `subscript_expression` case: `arr[i]` where `arr` is a bare identifier.
+fn check_subscript_deref_cfg(
+    node: &Node,
+    source: &str,
+    analysis: &NullAnalysisResult,
+    cfg: &FunctionCfg,
+    body: &Node,
+    summaries: &HashMap<String, FunctionSummary>,
+    violations: &mut Vec<RuleViolation>,
+    reported_vars: &mut HashSet<String>,
+) {
+    let Some(array) = node.child(0) else { return };
+    if array.kind() != "identifier" {
+        return;
+    }
+    let var_name = ast_utils::get_node_text_owned(&array, source);
+    if reported_vars.contains(&var_name)
+        || !is_unsafe_at(&var_name, node, source, analysis, cfg, body, summaries)
+    {
+        return;
+    }
+    reported_vars.insert(var_name.clone());
+    let start_point = node.start_position();
+    violations.push(RuleViolation {
+        rule_id: "EXP34-C".to_string(),
+        severity: Severity::High,
+        message: format!(
+            "Potential null pointer dereference in array access of variable '{}'",
+            var_name
+        ),
+        file_path: String::new(),
+        line: start_point.row + 1,
+        column: start_point.column + 1,
+        suggestion: Some(format!(
+            "Check if '{}' is not NULL before array access",
+            var_name
+        )),
+        ..Default::default()
+    });
+}
+
+/// `field_expression` case: `s->field` / `s.field` where `s` is a bare identifier.
+fn check_field_deref_cfg(
+    node: &Node,
+    source: &str,
+    analysis: &NullAnalysisResult,
+    cfg: &FunctionCfg,
+    body: &Node,
+    summaries: &HashMap<String, FunctionSummary>,
+    violations: &mut Vec<RuleViolation>,
+    reported_vars: &mut HashSet<String>,
+) {
+    let Some(argument) = node.child_by_field_name("argument") else {
+        return;
+    };
+    if argument.kind() != "identifier" {
+        return;
+    }
+    let var_name = ast_utils::get_node_text_owned(&argument, source);
+    if reported_vars.contains(&var_name)
+        || !is_unsafe_at(&var_name, node, source, analysis, cfg, body, summaries)
+    {
+        return;
+    }
+    reported_vars.insert(var_name.clone());
+    let start_point = node.start_position();
+    violations.push(RuleViolation {
+        rule_id: "EXP34-C".to_string(),
+        severity: Severity::High,
+        message: format!(
+            "Potential null pointer dereference in member access of variable '{}'",
+            var_name
+        ),
+        file_path: String::new(),
+        line: start_point.row + 1,
+        column: start_point.column + 1,
+        suggestion: Some(format!(
+            "Check if '{}' is not NULL before member access",
+            var_name
+        )),
+        ..Default::default()
+    });
+}
+
+/// `call_expression` case: function-pointer-null calls, deref-function
+/// argument checks, and call-site null-argument propagation to callees.
+fn check_call_expression_cfg(
+    node: &Node,
+    source: &str,
+    analysis: &NullAnalysisResult,
+    cfg: &FunctionCfg,
+    body: &Node,
+    summaries: &HashMap<String, FunctionSummary>,
+    violations: &mut Vec<RuleViolation>,
+    reported_vars: &mut HashSet<String>,
+) {
+    let Some(function) = node.child_by_field_name("function") else {
+        return;
+    };
+
+    // Function pointer call
+    if function.kind() == "identifier" {
+        let func_name = ast_utils::get_node_text_owned(&function, source);
+        if !reported_vars.contains(&func_name)
+            && is_unsafe_at(&func_name, node, source, analysis, cfg, body, summaries)
+        {
+            reported_vars.insert(func_name.clone());
+            let start_point = function.start_position();
+            violations.push(RuleViolation {
+                rule_id: "EXP34-C".to_string(),
+                severity: Severity::High,
+                message: format!("Calling potentially null function pointer '{}'", func_name),
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some(format!(
+                    "Check if '{}' is not NULL before calling",
+                    func_name
+                )),
+                ..Default::default()
+            });
+        }
+    }
+
+    let func_name = ast_utils::get_node_text_owned(&function, source);
+
+    // Check deref-function arguments. Skip when the callee is known to
+    // accept NULL (free/fclose no-op on NULL per C standard).
+    if is_deref_function(&func_name) && !is_null_safe_function(&func_name) {
+        if let Some(args) = node.child_by_field_name("arguments") {
+            check_function_arguments_cfg(
+                &args,
+                source,
+                analysis,
+                cfg,
+                body,
+                summaries,
+                violations,
+                reported_vars,
+            );
+        }
+    }
+
+    // Call-site null propagation: flag DefinitelyNull args to callees that
+    // don't null-check them. Only when callee has a summary (guards against
+    // flagging unknown library functions).
+    if !is_deref_function(&func_name)
+        && !is_null_safe_function(&func_name)
+        && summaries.contains_key(&func_name)
+    {
+        if let Some(args_node) = node.child_by_field_name("arguments") {
+            check_callsite_null_args(
+                &func_name, &args_node, source, analysis, cfg, body, summaries, violations,
+            );
         }
     }
 }

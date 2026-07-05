@@ -1429,73 +1429,10 @@ fn check_stmt_for_var_assignment(
 ) -> Option<ValueRange> {
     match stmt.kind() {
         "expression_statement" => {
-            for i in 0..stmt.child_count() {
-                if let Some(child) = stmt.child(i) {
-                    if child.kind() == "assignment_expression" {
-                        if let (Some(left), Some(right)) = (
-                            child.child_by_field_name("left"),
-                            child.child_by_field_name("right"),
-                        ) {
-                            if left.kind() == "identifier" {
-                                let name = left.utf8_text(source.as_bytes()).unwrap_or("");
-                                if name == var_name {
-                                    if let Some(r) =
-                                        try_evaluate_range(&right, source, macros, loop_ranges)
-                                    {
-                                        return Some(r);
-                                    }
-                                    if right.kind() == "identifier" && depth < 3 {
-                                        let rhs_name =
-                                            right.utf8_text(source.as_bytes()).unwrap_or("");
-                                        return resolve_local_var_range_depth(
-                                            rhs_name,
-                                            stmt,
-                                            source,
-                                            macros,
-                                            loop_ranges,
-                                            depth + 1,
-                                        );
-                                    }
-                                    return None;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            check_assignment_expr_for_var(stmt, var_name, source, macros, loop_ranges, depth)
         }
         "declaration" => {
-            for i in 0..stmt.child_count() {
-                if let Some(child) = stmt.child(i) {
-                    if child.kind() == "init_declarator" {
-                        if let (Some(declarator), Some(value)) = (
-                            child.child_by_field_name("declarator"),
-                            child.child_by_field_name("value"),
-                        ) {
-                            let name = extract_leaf_identifier(&declarator, source);
-                            if name == var_name {
-                                if let Some(r) =
-                                    try_evaluate_range(&value, source, macros, loop_ranges)
-                                {
-                                    return Some(r);
-                                }
-                                if value.kind() == "identifier" && depth < 3 {
-                                    let rhs_name = value.utf8_text(source.as_bytes()).unwrap_or("");
-                                    return resolve_local_var_range_depth(
-                                        rhs_name,
-                                        stmt,
-                                        source,
-                                        macros,
-                                        loop_ranges,
-                                        depth + 1,
-                                    );
-                                }
-                                return None;
-                            }
-                        }
-                    }
-                }
-            }
+            check_init_declarator_for_var(stmt, var_name, source, macros, loop_ranges, depth)
         }
         // Control-flow wrappers: scan the compound body for evaluable assignments.
         // Returns the last evaluable assignment found, or None if the body contains
@@ -1505,35 +1442,135 @@ fn check_stmt_for_var_assignment(
         // stmt_modifies_var correctly recognizes the modification but the loop body
         // contains only a simple literal assignment.
         "for_statement" | "while_statement" | "do_statement" | "if_statement" => {
-            for i in 0..stmt.child_count() {
-                if let Some(child) = stmt.child(i) {
-                    if child.kind() == "compound_statement" {
-                        if compound_declares_var(&child, var_name, source) {
-                            return None; // inner-scope shadow — don't evaluate
-                        }
-                        let mut last_range: Option<ValueRange> = None;
-                        for j in 0..child.child_count() {
-                            if let Some(inner) = child.child(j) {
-                                if let Some(r) = check_stmt_for_var_assignment(
-                                    &inner,
-                                    var_name,
-                                    source,
-                                    macros,
-                                    loop_ranges,
-                                    depth,
-                                ) {
-                                    last_range = Some(r);
-                                } else if stmt_modifies_var(&inner, var_name, source) {
-                                    return None; // unevaluable modification in body
-                                }
-                            }
-                        }
-                        return last_range;
-                    }
-                }
+            check_control_flow_body_for_var(stmt, var_name, source, macros, loop_ranges, depth)
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a candidate RHS expression against a value-tracked variable:
+/// evaluate it directly, or (up to depth 3) recurse through a same-named
+/// identifier RHS to resolve *its* assigned range.
+fn resolve_var_rhs(
+    rhs: &Node,
+    stmt: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    loop_ranges: &VarRangeMap,
+    depth: u32,
+) -> Option<ValueRange> {
+    if let Some(r) = try_evaluate_range(rhs, source, macros, loop_ranges) {
+        return Some(r);
+    }
+    if rhs.kind() == "identifier" && depth < 3 {
+        let rhs_name = rhs.utf8_text(source.as_bytes()).unwrap_or("");
+        return resolve_local_var_range_depth(
+            rhs_name,
+            stmt,
+            source,
+            macros,
+            loop_ranges,
+            depth + 1,
+        );
+    }
+    None
+}
+
+/// `"expression_statement"` case of [`check_stmt_for_var_assignment`]: find
+/// an `assignment_expression` whose LHS is `var_name` and resolve its RHS.
+fn check_assignment_expr_for_var(
+    stmt: &Node,
+    var_name: &str,
+    source: &str,
+    macros: &MacroConstantMap,
+    loop_ranges: &VarRangeMap,
+    depth: u32,
+) -> Option<ValueRange> {
+    for i in 0..stmt.child_count() {
+        let child = stmt.child(i)?;
+        if child.kind() != "assignment_expression" {
+            continue;
+        }
+        let (Some(left), Some(right)) = (
+            child.child_by_field_name("left"),
+            child.child_by_field_name("right"),
+        ) else {
+            continue;
+        };
+        if left.kind() != "identifier" {
+            continue;
+        }
+        let name = left.utf8_text(source.as_bytes()).unwrap_or("");
+        if name == var_name {
+            return resolve_var_rhs(&right, stmt, source, macros, loop_ranges, depth);
+        }
+    }
+    None
+}
+
+/// `"declaration"` case of [`check_stmt_for_var_assignment`]: find an
+/// `init_declarator` declaring `var_name` and resolve its init value.
+fn check_init_declarator_for_var(
+    stmt: &Node,
+    var_name: &str,
+    source: &str,
+    macros: &MacroConstantMap,
+    loop_ranges: &VarRangeMap,
+    depth: u32,
+) -> Option<ValueRange> {
+    for i in 0..stmt.child_count() {
+        let child = stmt.child(i)?;
+        if child.kind() != "init_declarator" {
+            continue;
+        }
+        let (Some(declarator), Some(value)) = (
+            child.child_by_field_name("declarator"),
+            child.child_by_field_name("value"),
+        ) else {
+            continue;
+        };
+        let name = extract_leaf_identifier(&declarator, source);
+        if name == var_name {
+            return resolve_var_rhs(&value, stmt, source, macros, loop_ranges, depth);
+        }
+    }
+    None
+}
+
+/// Control-flow-wrapper case of [`check_stmt_for_var_assignment`]: scan a
+/// `for`/`while`/`do`/`if` statement's compound body for evaluable
+/// assignments to `var_name`, bailing to `None` on an inner-scope shadow or
+/// an unevaluable modification.
+fn check_control_flow_body_for_var(
+    stmt: &Node,
+    var_name: &str,
+    source: &str,
+    macros: &MacroConstantMap,
+    loop_ranges: &VarRangeMap,
+    depth: u32,
+) -> Option<ValueRange> {
+    for i in 0..stmt.child_count() {
+        let child = stmt.child(i)?;
+        if child.kind() != "compound_statement" {
+            continue;
+        }
+        if compound_declares_var(&child, var_name, source) {
+            return None; // inner-scope shadow — don't evaluate
+        }
+        let mut last_range: Option<ValueRange> = None;
+        for j in 0..child.child_count() {
+            let Some(inner) = child.child(j) else {
+                continue;
+            };
+            if let Some(r) =
+                check_stmt_for_var_assignment(&inner, var_name, source, macros, loop_ranges, depth)
+            {
+                last_range = Some(r);
+            } else if stmt_modifies_var(&inner, var_name, source) {
+                return None; // unevaluable modification in body
             }
         }
-        _ => {}
+        return last_range;
     }
     None
 }

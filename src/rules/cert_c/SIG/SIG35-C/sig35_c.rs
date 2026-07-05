@@ -85,86 +85,71 @@ impl Sig35C {
         source: &str,
         handlers: &mut HashMap<String, String>,
     ) {
-        for n in
-            query::find_descendants_of_kinds(*node, &["call_expression", "assignment_expression"])
+        // Look for signal(SIGXXX, handler_func) / sigaction(SIGXXX, &sa, ...) calls
+        for n in query::find_descendants_of_kind(*node, "call_expression") {
+            let Some(function) = n.child_by_field_name("function") else {
+                continue;
+            };
+            match get_node_text(&function, source) {
+                "signal" => self.collect_signal_call_handler(&n, source, handlers),
+                "sigaction" => self.collect_sigaction_call_handlers(&n, source, handlers),
+                _ => {}
+            }
+        }
+    }
+
+    /// `signal(SIGXXX, handler_func)` case of [`collect_computational_handlers`]:
+    /// map the handler function name to the signal it's registered for,
+    /// skipping `SIG_IGN`/`SIG_DFL`/`SIG_ERR`/`NULL`/`0`.
+    fn collect_signal_call_handler(
+        &self,
+        n: &Node,
+        source: &str,
+        handlers: &mut HashMap<String, String>,
+    ) {
+        let Some(args) = n.child_by_field_name("arguments") else {
+            return;
+        };
+        let arg_list = self.get_arguments(&args, source);
+        if arg_list.len() < 2 {
+            return;
+        }
+        let signal_name = arg_list[0].trim();
+        let handler_name = arg_list[1].trim();
+        if !self.is_computational_exception_signal(signal_name) {
+            return;
+        }
+        // Skip SIG_IGN, SIG_DFL, SIG_ERR, NULL
+        if handler_name.starts_with("SIG_")
+            || handler_name == "NULL"
+            || handler_name == "0"
+            || handler_name.is_empty()
         {
-            // Look for signal(SIGXXX, handler_func) calls
-            if n.kind() == "call_expression" {
-                if let Some(function) = n.child_by_field_name("function") {
-                    let func_name = get_node_text(&function, source);
+            return;
+        }
+        // Map handler name to signal name
+        handlers.insert(handler_name.to_string(), signal_name.to_string());
+    }
 
-                    if func_name == "signal" {
-                        // Get the signal type and handler function name
-                        if let Some(args) = n.child_by_field_name("arguments") {
-                            let arg_list = self.get_arguments(&args, source);
-
-                            // For signal(sig, handler), check if sig is computational exception
-                            if arg_list.len() >= 2 {
-                                let signal_name = arg_list[0].trim();
-                                let handler_name = arg_list[1].trim();
-
-                                if self.is_computational_exception_signal(signal_name) {
-                                    // Skip SIG_IGN, SIG_DFL, SIG_ERR, NULL
-                                    if !handler_name.starts_with("SIG_")
-                                        && handler_name != "NULL"
-                                        && handler_name != "0"
-                                        && !handler_name.is_empty()
-                                    {
-                                        // Map handler name to signal name
-                                        handlers.insert(
-                                            handler_name.to_string(),
-                                            signal_name.to_string(),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if func_name == "sigaction" {
-                        // For sigaction(signal, &sa, NULL), track the signal and struct
-                        if let Some(args) = n.child_by_field_name("arguments") {
-                            let arg_list = self.get_arguments(&args, source);
-
-                            if arg_list.len() >= 2 {
-                                let signal_name = arg_list[0].trim();
-                                if self.is_computational_exception_signal(signal_name) {
-                                    // Try to find sa_handler or sa_sigaction assignments
-                                    // Look backwards for struct assignments
-                                    self.collect_sigaction_handlers(
-                                        &n,
-                                        source,
-                                        signal_name,
-                                        handlers,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Look for struct field assignments like sa.sa_sigaction = handler
-            if n.kind() == "assignment_expression" {
-                if let (Some(left), Some(right)) = (
-                    n.child_by_field_name("left"),
-                    n.child_by_field_name("right"),
-                ) {
-                    let left_text = get_node_text(&left, source);
-                    if left_text.ends_with(".sa_handler") || left_text.ends_with(".sa_sigaction") {
-                        let handler_name = get_node_text(&right, source);
-                        if !handler_name.starts_with("SIG_")
-                            && handler_name != "NULL"
-                            && !handler_name.is_empty()
-                        {
-                            // We'll associate this later when we see sigaction() call
-                            // For now, just note it might be a handler
-                            // This is tricky without full data flow analysis
-                            // For a simple approach, we'll mark any function assigned to sa_* as suspicious
-                        }
-                    }
-                }
-            }
+    /// `sigaction(SIGXXX, &sa, NULL)` case of [`collect_computational_handlers`]:
+    /// find the `sa_handler`/`sa_sigaction` struct-field assignments in the
+    /// enclosing scope to resolve the actual handler function.
+    fn collect_sigaction_call_handlers(
+        &self,
+        n: &Node,
+        source: &str,
+        handlers: &mut HashMap<String, String>,
+    ) {
+        let Some(args) = n.child_by_field_name("arguments") else {
+            return;
+        };
+        let arg_list = self.get_arguments(&args, source);
+        if arg_list.len() < 2 {
+            return;
+        }
+        let signal_name = arg_list[0].trim();
+        if self.is_computational_exception_signal(signal_name) {
+            self.collect_sigaction_handlers(n, source, signal_name, handlers);
         }
     }
 

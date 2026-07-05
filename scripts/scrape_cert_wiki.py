@@ -220,27 +220,8 @@ class WikiScraper:
             wiki_url=item_url
         )
 
-        # Extract title from page
-        title_elem = soup.find('h1', id='title-text')
-        if title_elem:
-            title_text = title_elem.get_text(strip=True)
-            # Remove item ID prefix if present
-            item.title = re.sub(rf'^{item_id}\.?\s*', '', title_text)
-
-        # Extract last modified date from page footer/metadata
-        # Pattern: "last modified by [User] on [Month DD, YYYY]"
-        full_text = soup.get_text()
-        modified_match = re.search(r'last\s+modified\s+by\s+[^\n]+\s+on\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4})', full_text, re.IGNORECASE)
-        if modified_match:
-            item.last_modified = modified_match.group(1)
-        else:
-            # Try alternate format in metadata banner
-            page_meta = soup.find('div', id='page-metadata-banner') or soup.find('div', class_='page-metadata')
-            if page_meta:
-                meta_text = page_meta.get_text()
-                modified_match = re.search(r'(?:Last\s+Modified|Updated):\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})', meta_text, re.IGNORECASE)
-                if modified_match:
-                    item.last_modified = modified_match.group(1)
+        self._extract_title(soup, item_id, item)
+        self._extract_last_modified(soup, item)
 
         # cert_version will be added in the future once source is identified
         # For now, using baseline reference from main wiki page
@@ -251,7 +232,43 @@ class WikiScraper:
         if not content:
             return (item, [], [])
 
-        # Extract description (first paragraph or section before first heading)
+        self._extract_description(content, item)
+        self._extract_risk_assessment(content, item)
+        self._extract_cwe_refs(content, item)
+        self._extract_related_items(content, item_id, item)
+
+        # Extract code examples
+        non_compliant, compliant = extract_code_examples(content, item_id)
+
+        return (item, non_compliant, compliant)
+
+    def _extract_title(self, soup, item_id: str, item: ItemMetadata) -> None:
+        """Extract the page title, stripping the leading item-ID prefix."""
+        title_elem = soup.find('h1', id='title-text')
+        if title_elem:
+            title_text = title_elem.get_text(strip=True)
+            item.title = re.sub(rf'^{item_id}\.?\s*', '', title_text)
+
+    def _extract_last_modified(self, soup, item: ItemMetadata) -> None:
+        """Extract the last-modified date from the page footer or metadata banner."""
+        # Pattern: "last modified by [User] on [Month DD, YYYY]"
+        full_text = soup.get_text()
+        modified_match = re.search(r'last\s+modified\s+by\s+[^\n]+\s+on\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4})', full_text, re.IGNORECASE)
+        if modified_match:
+            item.last_modified = modified_match.group(1)
+            return
+
+        # Try alternate format in metadata banner
+        page_meta = soup.find('div', id='page-metadata-banner') or soup.find('div', class_='page-metadata')
+        if not page_meta:
+            return
+        meta_text = page_meta.get_text()
+        modified_match = re.search(r'(?:Last\s+Modified|Updated):\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})', meta_text, re.IGNORECASE)
+        if modified_match:
+            item.last_modified = modified_match.group(1)
+
+    def _extract_description(self, content, item: ItemMetadata) -> None:
+        """Extract the description from the first few top-level paragraphs/divs."""
         desc_parts = []
         for elem in content.find_all(['p', 'div'], recursive=False):
             text = elem.get_text(strip=True)
@@ -261,70 +278,77 @@ class WikiScraper:
                     break
         item.description = '\n\n'.join(desc_parts)
 
-        # Extract risk assessment table
+    def _extract_risk_assessment(self, content, item: ItemMetadata) -> None:
+        """Extract severity/likelihood/priority/level from the risk assessment table."""
         for table in content.find_all('table'):
             headers = [th.get_text(strip=True).lower() for th in table.find_all('th')]
-            if 'severity' in headers or 'likelihood' in headers:
-                rows = table.find_all('tr')
-                if len(rows) > 1:
-                    cells = rows[1].find_all(['td', 'th'])
-                    for i, header in enumerate(headers):
-                        if i < len(cells):
-                            value = cells[i].get_text(strip=True)
-                            if header == 'severity':
-                                item.severity = value
-                            elif header == 'likelihood':
-                                item.likelihood = value
-                            elif header == 'priority':
-                                item.priority = value
-                            elif header == 'level':
-                                item.level = value
+            if 'severity' not in headers and 'likelihood' not in headers:
+                continue
+            rows = table.find_all('tr')
+            if len(rows) <= 1:
+                continue
+            cells = rows[1].find_all(['td', 'th'])
+            for i, header in enumerate(headers):
+                if i >= len(cells):
+                    continue
+                value = cells[i].get_text(strip=True)
+                if header == 'severity':
+                    item.severity = value
+                elif header == 'likelihood':
+                    item.likelihood = value
+                elif header == 'priority':
+                    item.priority = value
+                elif header == 'level':
+                    item.level = value
 
-        # Extract CWE references
+    def _extract_cwe_refs(self, content, item: ItemMetadata) -> None:
+        """Extract referenced CWE IDs from the page content."""
         cwe_pattern = re.compile(r'CWE-(\d+)')
         for match in cwe_pattern.finditer(str(content)):
             cwe_id = f"CWE-{match.group(1)}"
             if cwe_id not in item.cwe:
                 item.cwe.append(cwe_id)
 
-        # Extract related rules and recommendations
+    def _extract_related_items(self, content, item_id: str, item: ItemMetadata) -> None:
+        """Extract related rule/recommendation IDs from the first 'Related' section."""
         rule_pattern = re.compile(r'\b([A-Z]{3}\d{2}-C)\b')
 
         # Look for "Related" section (check multiple possible headings)
         for heading in content.find_all(['h2', 'h3', 'h4']):
             heading_text = heading.get_text(strip=True)
-            if 'related' in heading_text.lower():
-                # Get the next section after this heading
-                next_section = heading.find_next_sibling()
-                if next_section:
-                    section_text = next_section.get_text()
+            if 'related' not in heading_text.lower():
+                continue
+            # Get the next section after this heading
+            next_section = heading.find_next_sibling()
+            if next_section:
+                self._collect_related_ids(next_section.get_text(), item_id, item, rule_pattern)
+            break  # Only process first "Related" section
 
-                    for match in rule_pattern.finditer(section_text):
-                        related_id = match.group(1)
-                        if related_id == item_id:
-                            continue
+    def _collect_related_ids(self, section_text: str, item_id: str, item: ItemMetadata,
+                             rule_pattern: re.Pattern) -> None:
+        """Classify each rule-ID match in a 'Related' section as a rule or
+        recommendation based on numbering convention and surrounding context.
+        """
+        for match in rule_pattern.finditer(section_text):
+            related_id = match.group(1)
+            if related_id == item_id:
+                continue
 
-                        # Try to determine if it's a rule or recommendation
-                        # Rules typically have higher numbers (30+), recommendations lower (00-29)
-                        related_num = int(related_id[3:5])
+            # Try to determine if it's a rule or recommendation
+            # Rules typically have higher numbers (30+), recommendations lower (00-29)
+            related_num = int(related_id[3:5])
 
-                        # Also check context around the match
-                        start = max(0, match.start() - 50)
-                        end = min(len(section_text), match.end() + 50)
-                        context = section_text[start:end].lower()
+            # Also check context around the match
+            start = max(0, match.start() - 50)
+            end = min(len(section_text), match.end() + 50)
+            context = section_text[start:end].lower()
 
-                        if 'recommendation' in context or related_num < 30:
-                            if related_id not in item.related_recommendations:
-                                item.related_recommendations.append(related_id)
-                        else:
-                            if related_id not in item.related_rules:
-                                item.related_rules.append(related_id)
-                break  # Only process first "Related" section
-
-        # Extract code examples
-        non_compliant, compliant = extract_code_examples(content, item_id)
-
-        return (item, non_compliant, compliant)
+            if 'recommendation' in context or related_num < 30:
+                if related_id not in item.related_recommendations:
+                    item.related_recommendations.append(related_id)
+            else:
+                if related_id not in item.related_rules:
+                    item.related_rules.append(related_id)
 
 
 def sanitize_code(code: str) -> str:

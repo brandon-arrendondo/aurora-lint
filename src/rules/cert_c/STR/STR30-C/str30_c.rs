@@ -132,75 +132,95 @@ impl StringLiteralAnalyzer {
         violations: &mut Vec<RuleViolation>,
     ) {
         for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(declarator) = child.child_by_field_name("declarator") {
-                        // Check if this is an array declaration vs a pointer
-                        let is_array = self.is_array_declarator(&declarator);
-                        let var_name = self.get_variable_name(&declarator, source);
+            let Some(child) = node.child(i) else { continue };
+            if child.kind() != "init_declarator" {
+                continue;
+            }
+            let Some(declarator) = child.child_by_field_name("declarator") else {
+                continue;
+            };
+            // Check if this is an array declaration vs a pointer
+            let is_array = self.is_array_declarator(&declarator);
+            let var_name = self.get_variable_name(&declarator, source);
 
-                        // Only track pointer variables pointing to string literals
-                        // Arrays initialized with string literals are modifiable copies
-                        if let Some(value) = child.child_by_field_name("value") {
-                            if self.is_string_literal(&value, source) && !is_array {
-                                // This is a pointer to a string literal
-                                self.string_literal_vars.insert(var_name.clone());
-                            }
-
-                            // Track results of string search functions on literals
-                            // e.g., char *ptr = strchr("Hello", 'W');
-                            if self.is_search_result_of_literal(&value, source) && !is_array {
-                                self.string_literal_vars.insert(var_name.clone());
-                            }
-
-                            // Track results of string search functions on const char* params
-                            // e.g., char *ptr = strrchr(pathname, '/');
-                            if self.is_search_result_of_const_param(&value, source) && !is_array {
-                                self.search_result_vars.insert(var_name.clone());
-                            }
-
-                            // Track casting away const from string literal
-                            // e.g., char *str = (char *)cstr; where cstr points to literal
-                            if self.is_cast_from_literal_var(&value, source) && !is_array {
-                                self.string_literal_vars.insert(var_name.clone());
-                            }
-
-                            // Track arrays of pointers initialized with string literals
-                            // e.g., char *strings[] = { "first", "second" };
-                            if self.is_array_of_literal_pointers(&declarator, &value, source) {
-                                self.string_literal_vars.insert(var_name.clone());
-                            }
-
-                            // Track double pointers to string literal vars
-                            // e.g., char **ptr = &str;
-                            if self.is_double_pointer_to_literal(&value, source) {
-                                self.double_pointer_vars.insert(var_name.clone());
-                            }
-
-                            // Track structs initialized with string literals
-                            // e.g., struct data d = { "literal" };
-                            if value.kind() == "initializer_list" {
-                                if self.initializer_contains_string_literal(&value, source) {
-                                    // Check if not a char array (which is a modifiable copy)
-                                    if !is_array {
-                                        self.string_literal_vars.insert(var_name.clone());
-                                    }
-                                }
-                            }
-
-                            // Track function call results that might return string literals
-                            if self.is_function_returning_literal(&value, source) && !is_array {
-                                self.string_literal_vars.insert(var_name.clone());
-                            }
-                        }
-                    }
-                }
+            if let Some(value) = child.child_by_field_name("value") {
+                self.classify_init_declarator_value(
+                    &declarator,
+                    &value,
+                    &var_name,
+                    is_array,
+                    source,
+                );
             }
         }
 
         // Also check for uninitialized declarations that might be assigned later
         // For tracking purposes in assignment expressions
         let _ = violations; // silence unused warning
+    }
+
+    /// Classify an `init_declarator`'s initializer value against the various
+    /// string-literal/search-result/double-pointer tracking heuristics, and
+    /// record `var_name` into the matching tracked-variable set(s). Only
+    /// pointer variables are tracked — arrays initialized with string
+    /// literals are modifiable copies.
+    fn classify_init_declarator_value(
+        &mut self,
+        declarator: &Node,
+        value: &Node,
+        var_name: &str,
+        is_array: bool,
+        source: &str,
+    ) {
+        // This is a pointer to a string literal
+        if self.is_string_literal(value, source) && !is_array {
+            self.string_literal_vars.insert(var_name.to_string());
+        }
+
+        // Track results of string search functions on literals
+        // e.g., char *ptr = strchr("Hello", 'W');
+        if self.is_search_result_of_literal(value, source) && !is_array {
+            self.string_literal_vars.insert(var_name.to_string());
+        }
+
+        // Track results of string search functions on const char* params
+        // e.g., char *ptr = strrchr(pathname, '/');
+        if self.is_search_result_of_const_param(value, source) && !is_array {
+            self.search_result_vars.insert(var_name.to_string());
+        }
+
+        // Track casting away const from string literal
+        // e.g., char *str = (char *)cstr; where cstr points to literal
+        if self.is_cast_from_literal_var(value, source) && !is_array {
+            self.string_literal_vars.insert(var_name.to_string());
+        }
+
+        // Track arrays of pointers initialized with string literals
+        // e.g., char *strings[] = { "first", "second" };
+        if self.is_array_of_literal_pointers(declarator, value, source) {
+            self.string_literal_vars.insert(var_name.to_string());
+        }
+
+        // Track double pointers to string literal vars
+        // e.g., char **ptr = &str;
+        if self.is_double_pointer_to_literal(value, source) {
+            self.double_pointer_vars.insert(var_name.to_string());
+        }
+
+        // Track structs initialized with string literals
+        // e.g., struct data d = { "literal" };
+        // Check if not a char array (which is a modifiable copy)
+        if value.kind() == "initializer_list"
+            && self.initializer_contains_string_literal(value, source)
+            && !is_array
+        {
+            self.string_literal_vars.insert(var_name.to_string());
+        }
+
+        // Track function call results that might return string literals
+        if self.is_function_returning_literal(value, source) && !is_array {
+            self.string_literal_vars.insert(var_name.to_string());
+        }
     }
 
     /// Check if declaration is an array of pointers initialized with string literals
@@ -478,78 +498,95 @@ impl StringLiteralAnalyzer {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        if let Some(function) = node.child_by_field_name("function") {
-            let func_name = ast_utils::get_node_text_owned(&function, source);
+        let Some(function) = node.child_by_field_name("function") else {
+            return;
+        };
+        let func_name = ast_utils::get_node_text_owned(&function, source);
 
-            // Check for functions that modify their arguments
-            if is_string_modifying_function(&func_name) {
-                if let Some(arguments) = node.child_by_field_name("arguments") {
-                    // Get the first argument (destination for most string functions)
-                    let mut arg_index = 0;
-                    for i in 0..arguments.child_count() {
-                        if let Some(arg) = arguments.child(i) {
-                            if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
-                                if arg_index == 0 {
-                                    // First argument is the destination
-                                    if self.is_string_literal(&arg, source) {
-                                        self.flag_violation(
-                                            node,
-                                            &format!(
-                                                "Passing string literal as destination to '{}'",
-                                                func_name
-                                            ),
-                                            violations,
-                                        );
-                                    } else if arg.kind() == "identifier" {
-                                        let var_name = ast_utils::get_node_text_owned(&arg, source);
-                                        if self.string_literal_vars.contains(&var_name) {
-                                            self.flag_violation(
-                                                node,
-                                                &format!("Passing pointer to string literal as destination to '{}'", func_name),
-                                                violations
-                                            );
-                                        }
-                                    }
-                                    break;
-                                }
-                                arg_index += 1;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Check for user-defined functions that might modify their char* argument
+        if is_string_modifying_function(&func_name) {
+            self.check_string_modifying_call_dest(node, &func_name, source, violations);
+        } else if !is_string_search_function(&func_name) && !is_safe_function(&func_name) {
+            // Check for user-defined functions that might modify their char* argument.
             // Heuristic: If passing a string literal to a non-const char* parameter
-            if !is_string_modifying_function(&func_name)
-                && !is_string_search_function(&func_name)
-                && !is_safe_function(&func_name)
-            {
-                if let Some(arguments) = node.child_by_field_name("arguments") {
-                    for i in 0..arguments.child_count() {
-                        if let Some(arg) = arguments.child(i) {
-                            if arg.kind() == "string_literal" {
-                                // Heuristic: passing literal to unknown function with char* parameter
-                                // Check if function name suggests modification
-                                let func_lower = func_name.to_lowercase();
-                                if func_lower.contains("modify")
-                                    || func_lower.contains("change")
-                                    || func_lower.contains("set")
-                                    || func_lower.contains("update")
-                                {
-                                    self.flag_violation(
-                                        node,
-                                        &format!(
-                                            "Passing string literal to function '{}' which may modify it",
-                                            func_name
-                                        ),
-                                        violations,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+            self.check_unknown_function_literal_arg(node, &func_name, source, violations);
+        }
+    }
+
+    /// A known string-modifying function's first argument is the
+    /// destination; flag it if it's a string literal or a variable known to
+    /// point at one.
+    fn check_string_modifying_call_dest(
+        &mut self,
+        node: &Node,
+        func_name: &str,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        // Get the first non-punctuation argument (destination for most string functions)
+        let Some(arg) = (0..arguments.child_count())
+            .filter_map(|i| arguments.child(i))
+            .find(|arg| !matches!(arg.kind(), "," | "(" | ")"))
+        else {
+            return;
+        };
+
+        if self.is_string_literal(&arg, source) {
+            self.flag_violation(
+                node,
+                &format!("Passing string literal as destination to '{}'", func_name),
+                violations,
+            );
+        } else if arg.kind() == "identifier" {
+            let var_name = ast_utils::get_node_text_owned(&arg, source);
+            if self.string_literal_vars.contains(&var_name) {
+                self.flag_violation(
+                    node,
+                    &format!(
+                        "Passing pointer to string literal as destination to '{}'",
+                        func_name
+                    ),
+                    violations,
+                );
+            }
+        }
+    }
+
+    /// Heuristic for unknown functions: a string literal passed to a
+    /// function whose name suggests mutation (`modify`/`change`/`set`/`update`).
+    fn check_unknown_function_literal_arg(
+        &mut self,
+        node: &Node,
+        func_name: &str,
+        _source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let func_lower = func_name.to_lowercase();
+        let suggests_modification = func_lower.contains("modify")
+            || func_lower.contains("change")
+            || func_lower.contains("set")
+            || func_lower.contains("update");
+        if !suggests_modification {
+            return;
+        }
+        for i in 0..arguments.child_count() {
+            let Some(arg) = arguments.child(i) else {
+                continue;
+            };
+            if arg.kind() == "string_literal" {
+                self.flag_violation(
+                    node,
+                    &format!(
+                        "Passing string literal to function '{}' which may modify it",
+                        func_name
+                    ),
+                    violations,
+                );
             }
         }
     }
@@ -561,100 +598,145 @@ impl StringLiteralAnalyzer {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check if this subscript expression is on the left side of an assignment
-        if let Some(parent) = node.parent() {
-            if parent.kind() == "assignment_expression" {
-                if let Some(left) = parent.child_by_field_name("left") {
-                    if left.byte_range() == node.byte_range() {
-                        // This subscript is being assigned to
-                        if let Some(array) = node.child(0) {
-                            if self.is_string_literal(&array, source) {
-                                self.flag_violation(
-                                    node,
-                                    "Attempting to modify a string literal through array subscript",
-                                    violations,
-                                );
-                            } else if array.kind() == "identifier" {
-                                let var_name = ast_utils::get_node_text_owned(&array, source);
-                                if self.string_literal_vars.contains(&var_name) {
-                                    self.flag_violation(
-                                        node,
-                                        &format!(
-                                            "Attempting to modify string literal through variable '{}'",
-                                            var_name
-                                        ),
-                                        violations,
-                                    );
-                                }
-                                // Also check search result vars
-                                if self.search_result_vars.contains(&var_name) {
-                                    self.flag_violation(
-                                        node,
-                                        &format!(
-                                            "Attempting to modify through '{}' which may point to a string literal",
-                                            var_name
-                                        ),
-                                        violations,
-                                    );
-                                }
-                            } else if array.kind() == "subscript_expression" {
-                                // Double subscript like strings[1][0] = ...
-                                // Check the base array
-                                if let Some(base) = array.child(0) {
-                                    if base.kind() == "identifier" {
-                                        let var_name =
-                                            ast_utils::get_node_text_owned(&base, source);
-                                        if self.string_literal_vars.contains(&var_name) {
-                                            self.flag_violation(
-                                                node,
-                                                &format!(
-                                                    "Attempting to modify string literal through array '{}'",
-                                                    var_name
-                                                ),
-                                                violations,
-                                            );
-                                        }
-                                    }
-                                }
-                            } else if array.kind() == "field_expression" {
-                                // Struct member access like d.name[0] = ...
-                                // Check the struct variable
-                                if let Some(argument) = array.child_by_field_name("argument") {
-                                    let struct_name =
-                                        ast_utils::get_node_text_owned(&argument, source);
-                                    // Check if this struct was initialized with string literals
-                                    if self.string_literal_vars.contains(&struct_name) {
-                                        self.flag_violation(
-                                            node,
-                                            &format!(
-                                                "Attempting to modify string literal through struct member in '{}'",
-                                                struct_name
-                                            ),
-                                            violations,
-                                        );
-                                    }
-                                }
-                            } else if array.kind() == "parenthesized_expression" {
-                                // Pattern: (*ptr)[n] = ... where ptr is a double pointer
-                                // The parenthesized_expression contains a pointer_expression
-                                if let Some(deref_var) =
-                                    self.extract_deref_var_from_paren(&array, source)
-                                {
-                                    if self.double_pointer_vars.contains(&deref_var) {
-                                        self.flag_violation(
-                                            node,
-                                            &format!(
-                                                "Attempting to modify string literal through double pointer '{}'",
-                                                deref_var
-                                            ),
-                                            violations,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        let Some(parent) = node.parent() else { return };
+        if parent.kind() != "assignment_expression" {
+            return;
+        }
+        let Some(left) = parent.child_by_field_name("left") else {
+            return;
+        };
+        if left.byte_range() != node.byte_range() {
+            return;
+        }
+        // This subscript is being assigned to
+        let Some(array) = node.child(0) else { return };
+
+        if self.is_string_literal(&array, source) {
+            self.flag_violation(
+                node,
+                "Attempting to modify a string literal through array subscript",
+                violations,
+            );
+            return;
+        }
+        match array.kind() {
+            "identifier" => self.check_array_mod_identifier(node, &array, source, violations),
+            "subscript_expression" => {
+                self.check_array_mod_nested_subscript(node, &array, source, violations)
             }
+            "field_expression" => {
+                self.check_array_mod_field_expression(node, &array, source, violations)
+            }
+            "parenthesized_expression" => {
+                self.check_array_mod_paren_deref(node, &array, source, violations)
+            }
+            _ => {}
+        }
+    }
+
+    /// `arr[i] = ...` where `arr` is a bare identifier: flag if it's a known
+    /// string-literal variable or a search-result variable that may point
+    /// at one.
+    fn check_array_mod_identifier(
+        &mut self,
+        node: &Node,
+        array: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let var_name = ast_utils::get_node_text_owned(array, source);
+        if self.string_literal_vars.contains(&var_name) {
+            self.flag_violation(
+                node,
+                &format!(
+                    "Attempting to modify string literal through variable '{}'",
+                    var_name
+                ),
+                violations,
+            );
+        }
+        if self.search_result_vars.contains(&var_name) {
+            self.flag_violation(
+                node,
+                &format!(
+                    "Attempting to modify through '{}' which may point to a string literal",
+                    var_name
+                ),
+                violations,
+            );
+        }
+    }
+
+    /// Double subscript like `strings[1][0] = ...`: check the base array.
+    fn check_array_mod_nested_subscript(
+        &mut self,
+        node: &Node,
+        array: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let Some(base) = array.child(0) else { return };
+        if base.kind() != "identifier" {
+            return;
+        }
+        let var_name = ast_utils::get_node_text_owned(&base, source);
+        if self.string_literal_vars.contains(&var_name) {
+            self.flag_violation(
+                node,
+                &format!(
+                    "Attempting to modify string literal through array '{}'",
+                    var_name
+                ),
+                violations,
+            );
+        }
+    }
+
+    /// Struct member access like `d.name[0] = ...`: check the struct variable.
+    fn check_array_mod_field_expression(
+        &mut self,
+        node: &Node,
+        array: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let Some(argument) = array.child_by_field_name("argument") else {
+            return;
+        };
+        let struct_name = ast_utils::get_node_text_owned(&argument, source);
+        // Check if this struct was initialized with string literals
+        if self.string_literal_vars.contains(&struct_name) {
+            self.flag_violation(
+                node,
+                &format!(
+                    "Attempting to modify string literal through struct member in '{}'",
+                    struct_name
+                ),
+                violations,
+            );
+        }
+    }
+
+    /// Pattern `(*ptr)[n] = ...` where `ptr` is a double pointer.
+    fn check_array_mod_paren_deref(
+        &mut self,
+        node: &Node,
+        array: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let Some(deref_var) = self.extract_deref_var_from_paren(array, source) else {
+            return;
+        };
+        if self.double_pointer_vars.contains(&deref_var) {
+            self.flag_violation(
+                node,
+                &format!(
+                    "Attempting to modify string literal through double pointer '{}'",
+                    deref_var
+                ),
+                violations,
+            );
         }
     }
 

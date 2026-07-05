@@ -2047,129 +2047,164 @@ fn collect_assignments_recursive(
     states: &mut HashMap<String, NullState>,
 ) {
     match node.kind() {
-        "expression_statement" => {
-            // Look for assignment expressions: var = expr
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "assignment_expression" {
-                        if let (Some(left), Some(right)) = (
-                            child.child_by_field_name("left"),
-                            child.child_by_field_name("right"),
-                        ) {
-                            if left.kind() == "identifier" {
-                                let var_name =
-                                    left.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                                if !var_name.is_empty() {
-                                    let state = infer_rhs_null_state(&right, source);
-                                    // An error/cleanup assignment to NULL whose statement is
-                                    // immediately followed by a divergent jump
-                                    // (`x = 0; goto err;`) never falls through to subsequent
-                                    // call sites. Recording it would let the flow-insensitive
-                                    // last-write poison a callee parameter that all reachable
-                                    // callers actually pass non-null (e.g. sqlite
-                                    // whereOmitNoopJoin / growOp3). The malloc-then-deref FN
-                                    // (`p = malloc(); sink(p);`) has no trailing jump, so it
-                                    // is unaffected.
-                                    let is_dead_end_null = matches!(
-                                        state,
-                                        NullState::DefinitelyNull | NullState::PossiblyNull
-                                    ) && stmt_diverges_after(node);
-                                    if state != NullState::Unknown && !is_dead_end_null {
-                                        states.insert(var_name, state);
-                                    }
-                                }
-                            } else if left.kind() == "field_expression" {
-                                // Track struct field assignments: myStruct.field = expr
-                                // Used for variant 67 cross-function struct field null propagation
-                                if let (Some(base), Some(field)) = (
-                                    left.child_by_field_name("argument"),
-                                    left.child_by_field_name("field"),
-                                ) {
-                                    if base.kind() == "identifier" {
-                                        let base_name =
-                                            base.utf8_text(source.as_bytes()).unwrap_or("");
-                                        let field_name =
-                                            field.utf8_text(source.as_bytes()).unwrap_or("");
-                                        if !base_name.is_empty() && !field_name.is_empty() {
-                                            let key = format!("{}.{}", base_name, field_name);
-                                            let state = infer_rhs_null_state(&right, source);
-                                            if state != NullState::Unknown {
-                                                states.insert(key, state);
-                                            } else if right.kind() == "identifier" {
-                                                // Relay: myStruct.field = data
-                                                let rhs_name = right
-                                                    .utf8_text(source.as_bytes())
-                                                    .unwrap_or("");
-                                                if let Some(&local_state) = states.get(rhs_name) {
-                                                    states.insert(key, local_state);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            } else if left.kind() == "subscript_expression" {
-                                // Track array element assignments: arr[idx] = expr
-                                // Used for variant 66 cross-function array element null propagation
-                                // Stored as "arr.idx" in local_states (reuses field dotted-key mechanism)
-                                if let (Some(arg), Some(idx)) = (
-                                    left.child_by_field_name("argument"),
-                                    left.child_by_field_name("index"),
-                                ) {
-                                    if arg.kind() == "identifier" && idx.kind() == "number_literal"
-                                    {
-                                        let arr_name =
-                                            arg.utf8_text(source.as_bytes()).unwrap_or("");
-                                        let idx_text =
-                                            idx.utf8_text(source.as_bytes()).unwrap_or("");
-                                        if !arr_name.is_empty() && !idx_text.is_empty() {
-                                            let key = format!("{}.{}", arr_name, idx_text);
-                                            let state = infer_rhs_null_state(&right, source);
-                                            if state != NullState::Unknown {
-                                                states.insert(key, state);
-                                            } else if right.kind() == "identifier" {
-                                                let rhs_name = right
-                                                    .utf8_text(source.as_bytes())
-                                                    .unwrap_or("");
-                                                if let Some(&local_state) = states.get(rhs_name) {
-                                                    states.insert(key, local_state);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        "declaration" => {
-            // Handle `type *var = expr;` init declarations
-            if let Some(decl) = node.child_by_field_name("declarator") {
-                extract_init_state(&decl, source, states);
-            }
-            // Also check for multiple declarators and array declarations
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "init_declarator" {
-                        extract_init_state(&child, source, states);
-                    }
-                    // Stack arrays can never be null — mark as NotNull
-                    if child.kind() == "array_declarator" {
-                        let var_name = extract_leaf_id(&child, source);
-                        if !var_name.is_empty() {
-                            states.insert(var_name, NullState::NotNull);
-                        }
-                    }
-                }
-            }
-        }
+        "expression_statement" => collect_assignment_statement(node, source, states),
+        "declaration" => collect_declaration_states(node, source, states),
         _ => {}
     }
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             collect_assignments_recursive(&child, source, states);
+        }
+    }
+}
+
+/// Handle an `expression_statement` wrapping an assignment: dispatches on the
+/// LHS shape (`var = expr`, `s.field = expr`, `arr[N] = expr`).
+fn collect_assignment_statement(
+    stmt: &Node,
+    source: &str,
+    states: &mut HashMap<String, NullState>,
+) {
+    for i in 0..stmt.child_count() {
+        let Some(child) = stmt.child(i) else { continue };
+        if child.kind() != "assignment_expression" {
+            continue;
+        }
+        let (Some(left), Some(right)) = (
+            child.child_by_field_name("left"),
+            child.child_by_field_name("right"),
+        ) else {
+            continue;
+        };
+        match left.kind() {
+            "identifier" => assign_identifier_state(&left, &right, stmt, source, states),
+            "field_expression" => assign_field_state(&left, &right, source, states),
+            "subscript_expression" => assign_subscript_state(&left, &right, source, states),
+            _ => {}
+        }
+    }
+}
+
+/// Track plain-variable assignments: `var = expr`.
+fn assign_identifier_state(
+    left: &Node,
+    right: &Node,
+    stmt: &Node,
+    source: &str,
+    states: &mut HashMap<String, NullState>,
+) {
+    let var_name = left.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    if var_name.is_empty() {
+        return;
+    }
+    let state = infer_rhs_null_state(right, source);
+    // An error/cleanup assignment to NULL whose statement is immediately
+    // followed by a divergent jump (`x = 0; goto err;`) never falls through
+    // to subsequent call sites. Recording it would let the flow-insensitive
+    // last-write poison a callee parameter that all reachable callers
+    // actually pass non-null (e.g. sqlite whereOmitNoopJoin / growOp3). The
+    // malloc-then-deref FN (`p = malloc(); sink(p);`) has no trailing jump,
+    // so it is unaffected.
+    let is_dead_end_null = matches!(state, NullState::DefinitelyNull | NullState::PossiblyNull)
+        && stmt_diverges_after(stmt);
+    if state != NullState::Unknown && !is_dead_end_null {
+        states.insert(var_name, state);
+    }
+}
+
+/// Track struct field assignments: `myStruct.field = expr` (variant 67
+/// cross-function struct field null propagation), including identifier
+/// relays (`myStruct.field = data`).
+fn assign_field_state(
+    left: &Node,
+    right: &Node,
+    source: &str,
+    states: &mut HashMap<String, NullState>,
+) {
+    let (Some(base), Some(field)) = (
+        left.child_by_field_name("argument"),
+        left.child_by_field_name("field"),
+    ) else {
+        return;
+    };
+    if base.kind() != "identifier" {
+        return;
+    }
+    let base_name = base.utf8_text(source.as_bytes()).unwrap_or("");
+    let field_name = field.utf8_text(source.as_bytes()).unwrap_or("");
+    if base_name.is_empty() || field_name.is_empty() {
+        return;
+    }
+    let key = format!("{}.{}", base_name, field_name);
+    insert_state_or_relay(&key, right, source, states);
+}
+
+/// Track array element assignments: `arr[idx] = expr` (variant 66
+/// cross-function array element null propagation). Stored as "arr.idx" in
+/// `states` (reuses the field dotted-key mechanism).
+fn assign_subscript_state(
+    left: &Node,
+    right: &Node,
+    source: &str,
+    states: &mut HashMap<String, NullState>,
+) {
+    let (Some(arg), Some(idx)) = (
+        left.child_by_field_name("argument"),
+        left.child_by_field_name("index"),
+    ) else {
+        return;
+    };
+    if arg.kind() != "identifier" || idx.kind() != "number_literal" {
+        return;
+    }
+    let arr_name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+    let idx_text = idx.utf8_text(source.as_bytes()).unwrap_or("");
+    if arr_name.is_empty() || idx_text.is_empty() {
+        return;
+    }
+    let key = format!("{}.{}", arr_name, idx_text);
+    insert_state_or_relay(&key, right, source, states);
+}
+
+/// Insert the RHS-inferred null state under `key`, or (if the RHS is itself
+/// an already-tracked identifier) relay that identifier's known state.
+fn insert_state_or_relay(
+    key: &str,
+    right: &Node,
+    source: &str,
+    states: &mut HashMap<String, NullState>,
+) {
+    let state = infer_rhs_null_state(right, source);
+    if state != NullState::Unknown {
+        states.insert(key.to_string(), state);
+    } else if right.kind() == "identifier" {
+        let rhs_name = right.utf8_text(source.as_bytes()).unwrap_or("");
+        if let Some(&local_state) = states.get(rhs_name) {
+            states.insert(key.to_string(), local_state);
+        }
+    }
+}
+
+/// Handle a `declaration` node: init declarators and stack-array
+/// declarations (which can never be null).
+fn collect_declaration_states(node: &Node, source: &str, states: &mut HashMap<String, NullState>) {
+    // Handle `type *var = expr;` init declarations
+    if let Some(decl) = node.child_by_field_name("declarator") {
+        extract_init_state(&decl, source, states);
+    }
+    // Also check for multiple declarators and array declarations
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        if child.kind() == "init_declarator" {
+            extract_init_state(&child, source, states);
+        }
+        // Stack arrays can never be null — mark as NotNull
+        if child.kind() == "array_declarator" {
+            let var_name = extract_leaf_id(&child, source);
+            if !var_name.is_empty() {
+                states.insert(var_name, NullState::NotNull);
+            }
         }
     }
 }
@@ -2251,83 +2286,14 @@ fn collect_calls_with_locals(
     callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
 ) {
     if node.kind() == "call_expression" {
-        if let Some(function) = node.child_by_field_name("function") {
-            if function.kind() == "identifier" {
-                let callee_name = function.utf8_text(source.as_bytes()).unwrap_or("");
-                if !callee_name.is_empty() {
-                    if let Some(args_node) = node.child_by_field_name("arguments") {
-                        let mut arg_states = Vec::new();
-                        let mut arg_field_states = Vec::new();
-                        let mut arg_pointee_states = Vec::new();
-                        let mut has_field_states = false;
-                        let mut has_pointee_states = false;
-                        for i in 0..args_node.child_count() {
-                            if let Some(arg) = args_node.child(i) {
-                                if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
-                                    continue;
-                                }
-                                // First try literal-level inference
-                                let state = function_summary::infer_arg_null_state(&arg, source);
-                                if state != NullState::Unknown {
-                                    arg_states.push(state);
-                                } else if arg.kind() == "identifier" {
-                                    // Look up in local variable states
-                                    let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-                                    if let Some(&local_state) = local_states.get(name) {
-                                        arg_states.push(local_state);
-                                    } else {
-                                        arg_states.push(NullState::Unknown);
-                                    }
-                                } else {
-                                    arg_states.push(NullState::Unknown);
-                                }
-
-                                // Collect struct field null states for this argument
-                                let mut fields = HashMap::new();
-                                if arg.kind() == "identifier" {
-                                    let arg_name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-                                    let prefix = format!("{}.", arg_name);
-                                    for (key, &st) in local_states {
-                                        if let Some(field_name) = key.strip_prefix(&prefix) {
-                                            fields.insert(field_name.to_string(), st);
-                                            has_field_states = true;
-                                        }
-                                    }
-                                }
-                                arg_field_states.push(fields);
-
-                                // Track pointee null state for &var arguments (variant 63).
-                                // When caller passes &data where data=NULL, the pointee is NULL.
-                                let pointee =
-                                    extract_address_of_pointee_state(&arg, source, local_states);
-                                if pointee != NullState::Unknown {
-                                    has_pointee_states = true;
-                                }
-                                arg_pointee_states.push(pointee);
-                            }
-                        }
-                        if !arg_states.is_empty() {
-                            callsite_args
-                                .entry(callee_name.to_string())
-                                .or_default()
-                                .push(arg_states);
-                        }
-                        if has_field_states {
-                            callsite_field_args
-                                .entry(callee_name.to_string())
-                                .or_default()
-                                .push(arg_field_states);
-                        }
-                        if has_pointee_states {
-                            callsite_pointee_args
-                                .entry(callee_name.to_string())
-                                .or_default()
-                                .push(arg_pointee_states);
-                        }
-                    }
-                }
-            }
-        }
+        collect_call_expression_locals(
+            node,
+            source,
+            local_states,
+            callsite_args,
+            callsite_field_args,
+            callsite_pointee_args,
+        );
     }
 
     for i in 0..node.child_count() {
@@ -2342,6 +2308,116 @@ fn collect_calls_with_locals(
             );
         }
     }
+}
+
+/// Record per-argument null/field/pointee states for a single call site,
+/// keyed by callee name.
+fn collect_call_expression_locals(
+    call: &Node,
+    source: &str,
+    local_states: &HashMap<String, NullState>,
+    callsite_args: &mut HashMap<String, Vec<Vec<NullState>>>,
+    callsite_field_args: &mut HashMap<String, Vec<Vec<HashMap<String, NullState>>>>,
+    callsite_pointee_args: &mut HashMap<String, Vec<Vec<NullState>>>,
+) {
+    let Some(function) = call.child_by_field_name("function") else {
+        return;
+    };
+    if function.kind() != "identifier" {
+        return;
+    }
+    let callee_name = function.utf8_text(source.as_bytes()).unwrap_or("");
+    if callee_name.is_empty() {
+        return;
+    }
+    let Some(args_node) = call.child_by_field_name("arguments") else {
+        return;
+    };
+
+    let mut arg_states = Vec::new();
+    let mut arg_field_states = Vec::new();
+    let mut arg_pointee_states = Vec::new();
+    let mut has_field_states = false;
+    let mut has_pointee_states = false;
+    for i in 0..args_node.child_count() {
+        let Some(arg) = args_node.child(i) else {
+            continue;
+        };
+        if matches!(arg.kind(), "," | "(" | ")") {
+            continue;
+        }
+        arg_states.push(infer_call_arg_state(&arg, source, local_states));
+
+        // Collect struct field null states for this argument
+        let fields = collect_arg_field_states(&arg, source, local_states);
+        has_field_states |= !fields.is_empty();
+        arg_field_states.push(fields);
+
+        // Track pointee null state for &var arguments (variant 63).
+        // When caller passes &data where data=NULL, the pointee is NULL.
+        let pointee = extract_address_of_pointee_state(&arg, source, local_states);
+        has_pointee_states |= pointee != NullState::Unknown;
+        arg_pointee_states.push(pointee);
+    }
+    if !arg_states.is_empty() {
+        callsite_args
+            .entry(callee_name.to_string())
+            .or_default()
+            .push(arg_states);
+    }
+    if has_field_states {
+        callsite_field_args
+            .entry(callee_name.to_string())
+            .or_default()
+            .push(arg_field_states);
+    }
+    if has_pointee_states {
+        callsite_pointee_args
+            .entry(callee_name.to_string())
+            .or_default()
+            .push(arg_pointee_states);
+    }
+}
+
+/// Infer a call argument's null state: literal-level inference first, then
+/// fall back to the local-variable state table for plain identifiers.
+fn infer_call_arg_state(
+    arg: &Node,
+    source: &str,
+    local_states: &HashMap<String, NullState>,
+) -> NullState {
+    let state = function_summary::infer_arg_null_state(arg, source);
+    if state != NullState::Unknown {
+        return state;
+    }
+    if arg.kind() == "identifier" {
+        let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+        return local_states
+            .get(name)
+            .copied()
+            .unwrap_or(NullState::Unknown);
+    }
+    NullState::Unknown
+}
+
+/// Collect known struct-field null states (`arg.field`) for an identifier
+/// argument, keyed by bare field name.
+fn collect_arg_field_states(
+    arg: &Node,
+    source: &str,
+    local_states: &HashMap<String, NullState>,
+) -> HashMap<String, NullState> {
+    let mut fields = HashMap::new();
+    if arg.kind() == "identifier" {
+        let arg_name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+        let prefix = format!("{}.", arg_name);
+        for (key, &st) in local_states {
+            if let Some(field_name) = key.strip_prefix(&prefix) {
+                fields.insert(field_name.to_string(), st);
+            }
+        }
+    }
+    fields
 }
 
 /// Extract pointee null state from an address-of argument.

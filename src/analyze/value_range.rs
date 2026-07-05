@@ -579,135 +579,193 @@ fn process_expression_range(
 ) {
     match node.kind() {
         "assignment_expression" => {
-            if let (Some(left), Some(right)) = (
-                node.child_by_field_name("left"),
-                node.child_by_field_name("right"),
-            ) {
-                if left.kind() == "identifier" {
-                    let var_name = get_text(&left, source);
-                    let op = get_assignment_operator(node, source);
-                    let var_ranges = extract_var_ranges_from_state(state);
-
-                    match op.as_str() {
-                        "=" => {
-                            if let Some(raw_range) =
-                                const_eval::try_evaluate_range(&right, source, macros, &var_ranges)
-                            {
-                                let var_type =
-                                    state.get(&var_name).and_then(|t| t.var_type.clone());
-                                let range = if let Some(vt) = &var_type {
-                                    apply_unsigned_wrapping(raw_range, vt)
-                                } else {
-                                    raw_range
-                                };
-                                state.insert(var_name, TypedRange { range, var_type });
-                            } else if let Some(range) =
-                                resolve_call_return_range(&right, source, summaries)
-                            {
-                                let var_type =
-                                    state.get(&var_name).and_then(|t| t.var_type.clone());
-                                state.insert(var_name, TypedRange { range, var_type });
-                            } else {
-                                // Can't evaluate RHS — widen to type range.
-                                // Look up type from existing state first, then fall back
-                                // to local_types (for `int data;` without init).
-                                let existing = state.get(&var_name);
-                                let var_type = existing
-                                    .and_then(|e| e.var_type.clone())
-                                    .or_else(|| local_types.get(&var_name).cloned());
-                                let type_range = var_type
-                                    .as_ref()
-                                    .map(|t| t.full_range())
-                                    .unwrap_or(ValueRange::new(i64::MIN, i64::MAX));
-                                state.insert(
-                                    var_name,
-                                    TypedRange {
-                                        range: type_range,
-                                        var_type,
-                                    },
-                                );
-                            }
-                        }
-                        "+=" | "-=" | "*=" | "<<=" | ">>=" => {
-                            if let Some(cur) = state.get(&var_name) {
-                                if let Some(rhs_range) = const_eval::try_evaluate_range(
-                                    &right,
-                                    source,
-                                    macros,
-                                    &var_ranges,
-                                ) {
-                                    let new_range = match op.as_str() {
-                                        "+=" => cur.range.add(&rhs_range),
-                                        "-=" => cur.range.sub(&rhs_range),
-                                        "*=" => cur.range.mul(&rhs_range),
-                                        "<<=" => cur.range.shl(&rhs_range),
-                                        _ => None,
-                                    };
-                                    if let Some(range) = new_range {
-                                        let var_type = cur.var_type.clone();
-                                        state.insert(var_name, TypedRange { range, var_type });
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            process_assignment_range(node, source, macros, summaries, state, local_types)
         }
-        "update_expression" => {
-            // x++ / x-- / ++x / --x
-            let (var_node, op_text) = get_update_info(node, source);
-            if let Some(var_name) = var_node {
-                if let Some(cur) = state.get(&var_name) {
-                    let delta = if op_text == "++" {
-                        ValueRange::exact(1)
-                    } else {
-                        ValueRange::exact(-1)
-                    };
-                    if let Some(range) = cur.range.add(&delta) {
-                        let var_type = cur.var_type.clone();
-                        state.insert(var_name, TypedRange { range, var_type });
-                    }
-                }
-            }
-        }
-        "call_expression" => {
-            // Any variable passed as &var may be written to by the callee.
-            // Widen those variables to their full type range (conservative).
-            if let Some(args) = node.child_by_field_name("arguments") {
-                for i in 0..args.child_count() {
-                    if let Some(arg) = args.child(i) {
-                        if arg.kind() == "pointer_expression" || arg.kind() == "unary_expression" {
-                            // Find the identifier inside &identifier
-                            for j in 0..arg.child_count() {
-                                if let Some(inner) = arg.child(j) {
-                                    if inner.kind() == "identifier" {
-                                        let var_name = get_text(&inner, source);
-                                        if let Some(existing) = state.get(&var_name) {
-                                            let var_type = existing.var_type.clone();
-                                            let full_range = var_type
-                                                .as_ref()
-                                                .map(|t| t.full_range())
-                                                .unwrap_or(ValueRange::new(i64::MIN, i64::MAX));
-                                            state.insert(
-                                                var_name,
-                                                TypedRange {
-                                                    range: full_range,
-                                                    var_type,
-                                                },
-                                            );
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        "update_expression" => process_update_range(node, source, state),
+        "call_expression" => process_call_arg_widening_range(node, source, state),
         _ => {}
+    }
+}
+
+/// `"assignment_expression"` case of [`process_expression_range`]: dispatch
+/// on the assignment operator once the LHS is confirmed to be a plain
+/// identifier.
+fn process_assignment_range(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    summaries: &HashMap<String, FunctionSummary>,
+    state: &mut RangeMap,
+    local_types: &HashMap<String, VarType>,
+) {
+    let (Some(left), Some(right)) = (
+        node.child_by_field_name("left"),
+        node.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+    if left.kind() != "identifier" {
+        return;
+    }
+    let var_name = get_text(&left, source);
+    let op = get_assignment_operator(node, source);
+    let var_ranges = extract_var_ranges_from_state(state);
+
+    match op.as_str() {
+        "=" => process_simple_assignment_range(
+            &var_name,
+            &right,
+            source,
+            macros,
+            summaries,
+            state,
+            local_types,
+            &var_ranges,
+        ),
+        "+=" | "-=" | "*=" | "<<=" | ">>=" => process_compound_assignment_range(
+            &var_name,
+            &op,
+            &right,
+            source,
+            macros,
+            state,
+            &var_ranges,
+        ),
+        _ => {}
+    }
+}
+
+/// `var = expr` case: evaluate the RHS as a constant range, else resolve a
+/// known callee's return range, else widen to the variable's full type
+/// range (can't evaluate — conservative fallback).
+fn process_simple_assignment_range(
+    var_name: &str,
+    right: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    summaries: &HashMap<String, FunctionSummary>,
+    state: &mut RangeMap,
+    local_types: &HashMap<String, VarType>,
+    var_ranges: &VarRangeMap,
+) {
+    if let Some(raw_range) = const_eval::try_evaluate_range(right, source, macros, var_ranges) {
+        let var_type = state.get(var_name).and_then(|t| t.var_type.clone());
+        let range = match &var_type {
+            Some(vt) => apply_unsigned_wrapping(raw_range, vt),
+            None => raw_range,
+        };
+        state.insert(var_name.to_string(), TypedRange { range, var_type });
+        return;
+    }
+    if let Some(range) = resolve_call_return_range(right, source, summaries) {
+        let var_type = state.get(var_name).and_then(|t| t.var_type.clone());
+        state.insert(var_name.to_string(), TypedRange { range, var_type });
+        return;
+    }
+    // Can't evaluate RHS — widen to type range.
+    // Look up type from existing state first, then fall back to
+    // local_types (for `int data;` without init).
+    let existing = state.get(var_name);
+    let var_type = existing
+        .and_then(|e| e.var_type.clone())
+        .or_else(|| local_types.get(var_name).cloned());
+    let type_range = var_type
+        .as_ref()
+        .map(|t| t.full_range())
+        .unwrap_or(ValueRange::new(i64::MIN, i64::MAX));
+    state.insert(
+        var_name.to_string(),
+        TypedRange {
+            range: type_range,
+            var_type,
+        },
+    );
+}
+
+/// `var += expr` (and `-=`/`*=`/`<<=`/`>>=`) case: only updates state when
+/// both the current range and an evaluable RHS range are available.
+fn process_compound_assignment_range(
+    var_name: &str,
+    op: &str,
+    right: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    state: &mut RangeMap,
+    var_ranges: &VarRangeMap,
+) {
+    let Some(cur) = state.get(var_name) else {
+        return;
+    };
+    let Some(rhs_range) = const_eval::try_evaluate_range(right, source, macros, var_ranges) else {
+        return;
+    };
+    let new_range = match op {
+        "+=" => cur.range.add(&rhs_range),
+        "-=" => cur.range.sub(&rhs_range),
+        "*=" => cur.range.mul(&rhs_range),
+        "<<=" => cur.range.shl(&rhs_range),
+        _ => None,
+    };
+    if let Some(range) = new_range {
+        let var_type = cur.var_type.clone();
+        state.insert(var_name.to_string(), TypedRange { range, var_type });
+    }
+}
+
+/// `"update_expression"` case of [`process_expression_range`]: `x++` / `x--`
+/// / `++x` / `--x`.
+fn process_update_range(node: &Node, source: &str, state: &mut RangeMap) {
+    let (var_node, op_text) = get_update_info(node, source);
+    let Some(var_name) = var_node else { return };
+    let Some(cur) = state.get(&var_name) else {
+        return;
+    };
+    let delta = if op_text == "++" {
+        ValueRange::exact(1)
+    } else {
+        ValueRange::exact(-1)
+    };
+    if let Some(range) = cur.range.add(&delta) {
+        let var_type = cur.var_type.clone();
+        state.insert(var_name, TypedRange { range, var_type });
+    }
+}
+
+/// `"call_expression"` case of [`process_expression_range`]: any variable
+/// passed as `&var` may be written to by the callee, so widen it to its
+/// full type range (conservative).
+fn process_call_arg_widening_range(node: &Node, source: &str, state: &mut RangeMap) {
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return;
+    };
+    for i in 0..args.child_count() {
+        let Some(arg) = args.child(i) else { continue };
+        if arg.kind() != "pointer_expression" && arg.kind() != "unary_expression" {
+            continue;
+        }
+        // Find the identifier inside &identifier
+        for j in 0..arg.child_count() {
+            let Some(inner) = arg.child(j) else { continue };
+            if inner.kind() != "identifier" {
+                continue;
+            }
+            let var_name = get_text(&inner, source);
+            if let Some(existing) = state.get(&var_name) {
+                let var_type = existing.var_type.clone();
+                let full_range = var_type
+                    .as_ref()
+                    .map(|t| t.full_range())
+                    .unwrap_or(ValueRange::new(i64::MIN, i64::MAX));
+                state.insert(
+                    var_name,
+                    TypedRange {
+                        range: full_range,
+                        var_type,
+                    },
+                );
+            }
+            break;
+        }
     }
 }
 

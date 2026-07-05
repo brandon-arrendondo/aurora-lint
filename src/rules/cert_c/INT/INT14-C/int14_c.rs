@@ -277,131 +277,168 @@ impl Int14C {
             ],
         ) {
             let node = &node;
-            // Check binary expressions
-            if node.kind() == "binary_expression" {
-                if let Some(op) = self.get_operator(node, source) {
-                    let op_type = if self.is_bitwise_operator(&op) {
-                        Some(OperationType::Bitwise)
-                    } else if self.is_arithmetic_operator(&op) {
-                        Some(OperationType::Arithmetic)
-                    } else {
-                        None
-                    };
+            match node.kind() {
+                "binary_expression" => self.analyze_binary_operation(
+                    node,
+                    source,
+                    variable_operations,
+                    variable_locations,
+                    signed_int_params,
+                    shift_operations,
+                ),
+                "assignment_expression" => self.analyze_compound_assignment_operation(
+                    node,
+                    source,
+                    variable_operations,
+                    variable_locations,
+                    signed_int_params,
+                    shift_operations,
+                ),
+                _ => Self::analyze_unary_operation(
+                    node,
+                    source,
+                    variable_operations,
+                    variable_locations,
+                ),
+            }
+        }
+    }
 
-                    if let Some(op_type) = op_type {
-                        // Extract variables from this expression
-                        let mut vars = HashSet::new();
-                        Self::extract_variables(node, source, &mut vars);
+    /// `binary_expression` case of [`analyze_operations`]: record the
+    /// bitwise/arithmetic operation type for each operand variable, and
+    /// track shift operations applied to signed integer parameters.
+    fn analyze_binary_operation(
+        &self,
+        node: &Node,
+        source: &str,
+        variable_operations: &mut HashMap<String, HashSet<OperationType>>,
+        variable_locations: &mut HashMap<String, (usize, usize)>,
+        signed_int_params: &HashSet<String>,
+        shift_operations: &mut HashMap<String, (usize, usize)>,
+    ) {
+        let Some(op) = self.get_operator(node, source) else {
+            return;
+        };
+        let op_type = if self.is_bitwise_operator(&op) {
+            OperationType::Bitwise
+        } else if self.is_arithmetic_operator(&op) {
+            OperationType::Arithmetic
+        } else {
+            return;
+        };
 
-                        // Record operation type for each variable
-                        for var in vars.iter() {
-                            variable_operations
-                                .entry(var.clone())
-                                .or_default()
-                                .insert(op_type.clone());
+        // Extract variables from this expression
+        let mut vars = HashSet::new();
+        Self::extract_variables(node, source, &mut vars);
 
-                            // Record first location if not already recorded
-                            if !variable_locations.contains_key(var) {
-                                let line = node.start_position().row + 1;
-                                let column = node.start_position().column + 1;
-                                variable_locations.insert(var.clone(), (line, column));
-                            }
-                        }
+        // Record operation type for each variable
+        for var in vars.iter() {
+            variable_operations
+                .entry(var.clone())
+                .or_default()
+                .insert(op_type.clone());
 
-                        // Track shift operations on signed integer parameters
-                        if self.is_shift_operator(&op) {
-                            for var in vars.iter() {
-                                if signed_int_params.contains(var)
-                                    && !shift_operations.contains_key(var)
-                                {
-                                    let line = node.start_position().row + 1;
-                                    let column = node.start_position().column + 1;
-                                    shift_operations.insert(var.clone(), (line, column));
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if node.kind() == "assignment_expression" {
-                // Check compound assignment expressions (e.g., x += 1, x <<= 2)
-                if let Some(op_node) = node.child(1) {
-                    let op_text = get_node_text(&op_node, source);
+            // Record first location if not already recorded
+            if !variable_locations.contains_key(var) {
+                let line = node.start_position().row + 1;
+                let column = node.start_position().column + 1;
+                variable_locations.insert(var.clone(), (line, column));
+            }
+        }
 
-                    // Check for compound assignment operators
-                    let op_type = if op_text == "+="
-                        || op_text == "-="
-                        || op_text == "*="
-                        || op_text == "/="
-                        || op_text == "%="
-                    {
-                        Some(OperationType::Arithmetic)
-                    } else if op_text == "<<="
-                        || op_text == ">>="
-                        || op_text == "&="
-                        || op_text == "|="
-                        || op_text == "^="
-                    {
-                        Some(OperationType::Bitwise)
-                    } else {
-                        None
-                    };
-
-                    if let Some(op_type) = op_type {
-                        // Extract the left-hand variable
-                        if let Some(left) = node.child_by_field_name("left") {
-                            if left.kind() == "identifier" {
-                                let var = get_node_text(&left, source).to_string();
-                                variable_operations
-                                    .entry(var.clone())
-                                    .or_default()
-                                    .insert(op_type);
-
-                                // Record first location if not already recorded
-                                if !variable_locations.contains_key(&var) {
-                                    let line = node.start_position().row + 1;
-                                    let column = node.start_position().column + 1;
-                                    variable_locations.insert(var.clone(), (line, column));
-                                }
-
-                                // Track shift compound assignments on signed int params
-                                if self.is_shift_operator(op_text)
-                                    && signed_int_params.contains(&var)
-                                    && !shift_operations.contains_key(&var)
-                                {
-                                    let line = node.start_position().row + 1;
-                                    let column = node.start_position().column + 1;
-                                    shift_operations.insert(var, (line, column));
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Check unary expressions (e.g., ~x)
-                if let Some(op_node) = node.child(0) {
-                    if op_node.kind() == "~" {
-                        // Extract variables from the operand
-                        let mut vars = HashSet::new();
-                        if let Some(operand) = node.child(1) {
-                            Self::extract_variables(&operand, source, &mut vars);
-
-                            for var in vars {
-                                variable_operations
-                                    .entry(var.clone())
-                                    .or_default()
-                                    .insert(OperationType::Bitwise);
-
-                                // Record first location if not already recorded
-                                variable_locations.entry(var).or_insert_with(|| {
-                                    let line = node.start_position().row + 1;
-                                    let column = node.start_position().column + 1;
-                                    (line, column)
-                                });
-                            }
-                        }
-                    }
+        // Track shift operations on signed integer parameters
+        if self.is_shift_operator(&op) {
+            for var in vars.iter() {
+                if signed_int_params.contains(var) && !shift_operations.contains_key(var) {
+                    let line = node.start_position().row + 1;
+                    let column = node.start_position().column + 1;
+                    shift_operations.insert(var.clone(), (line, column));
                 }
             }
+        }
+    }
+
+    /// `assignment_expression` case of [`analyze_operations`]: compound
+    /// assignment operators (e.g. `x += 1`, `x <<= 2`) record an operation
+    /// on the LHS variable, plus shift tracking for signed int parameters.
+    fn analyze_compound_assignment_operation(
+        &self,
+        node: &Node,
+        source: &str,
+        variable_operations: &mut HashMap<String, HashSet<OperationType>>,
+        variable_locations: &mut HashMap<String, (usize, usize)>,
+        signed_int_params: &HashSet<String>,
+        shift_operations: &mut HashMap<String, (usize, usize)>,
+    ) {
+        let Some(op_node) = node.child(1) else { return };
+        let op_text = get_node_text(&op_node, source);
+
+        let op_type = if matches!(op_text, "+=" | "-=" | "*=" | "/=" | "%=") {
+            OperationType::Arithmetic
+        } else if matches!(op_text, "<<=" | ">>=" | "&=" | "|=" | "^=") {
+            OperationType::Bitwise
+        } else {
+            return;
+        };
+
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
+        if left.kind() != "identifier" {
+            return;
+        }
+        let var = get_node_text(&left, source).to_string();
+        variable_operations
+            .entry(var.clone())
+            .or_default()
+            .insert(op_type);
+
+        // Record first location if not already recorded
+        if !variable_locations.contains_key(&var) {
+            let line = node.start_position().row + 1;
+            let column = node.start_position().column + 1;
+            variable_locations.insert(var.clone(), (line, column));
+        }
+
+        // Track shift compound assignments on signed int params
+        if self.is_shift_operator(op_text)
+            && signed_int_params.contains(&var)
+            && !shift_operations.contains_key(&var)
+        {
+            let line = node.start_position().row + 1;
+            let column = node.start_position().column + 1;
+            shift_operations.insert(var, (line, column));
+        }
+    }
+
+    /// `unary_expression` case of [`analyze_operations`]: `~x` records a
+    /// bitwise operation on each variable in the operand.
+    fn analyze_unary_operation(
+        node: &Node,
+        source: &str,
+        variable_operations: &mut HashMap<String, HashSet<OperationType>>,
+        variable_locations: &mut HashMap<String, (usize, usize)>,
+    ) {
+        let Some(op_node) = node.child(0) else { return };
+        if op_node.kind() != "~" {
+            return;
+        }
+        let Some(operand) = node.child(1) else { return };
+        let mut vars = HashSet::new();
+        Self::extract_variables(&operand, source, &mut vars);
+
+        for var in vars {
+            variable_operations
+                .entry(var.clone())
+                .or_default()
+                .insert(OperationType::Bitwise);
+
+            // Record first location if not already recorded
+            variable_locations.entry(var).or_insert_with(|| {
+                let line = node.start_position().row + 1;
+                let column = node.start_position().column + 1;
+                (line, column)
+            });
         }
     }
 }

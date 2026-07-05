@@ -1620,127 +1620,264 @@ impl Arr38C {
         // For memcpy/memmove, also check source buffer
         if (function_name == "memcpy" || function_name == "memmove") && args.len() >= 3 {
             let src_arg = &args[1];
-            if let Some(violation) = self.check_size_exceeds_buffer(
+            if self.check_memcpy_source_issues(
+                dest_arg,
                 src_arg,
                 size_arg,
+                resolved_size,
                 node,
+                source,
                 function_name,
                 buffer_info,
                 size_vars,
+                violations,
             ) {
-                violations.push(violation);
                 return;
-            }
-
-            // Check for sizeof(src) when dest is smaller
-            if size_arg.contains("sizeof(") {
-                // Extract the variable from sizeof(var)
-                if let Some(sizeof_var) = self.extract_sizeof_var(size_arg) {
-                    // If sizeof references source but dest is known to be smaller
-                    if sizeof_var == src_arg.trim() {
-                        if let Some(dest_info) = buffer_info.get(dest_arg.trim()) {
-                            if let Some(src_info) = buffer_info.get(src_arg.trim()) {
-                                if let (Some(dest_size), Some(src_size)) =
-                                    (dest_info.size, src_info.size)
-                                {
-                                    if src_size > dest_size {
-                                        let start_point = node.start_position();
-                                        violations.push(RuleViolation {
-                                            rule_id: self.rule_id().to_string(),
-                                            severity: Severity::High,
-                                            message: format!(
-                                                "Function '{}': sizeof({}) ({} bytes) exceeds destination buffer size ({} bytes)",
-                                                function_name, sizeof_var, src_size, dest_size
-                                            ),
-                                            file_path: String::new(),
-                                            line: start_point.row + 1,
-                                            column: start_point.column + 1,
-                                            suggestion: Some("Use sizeof(dest) or minimum of source and destination sizes".to_string()),
-                                            ..Default::default()
-                                        });
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Check for strlen(src)*sizeof(T) where source buffer > dest buffer
-            // Recovers TPs from the blanket strlen*sizeof exemption in is_dangerous_size_calculation
-            if let Some(strlen_arg) = self.extract_strlen_from_sizeof_expr(resolved_size) {
-                let strlen_arg = strlen_arg.trim();
-                if strlen_arg == src_arg.trim() {
-                    let effective_src_size = self
-                        .find_content_size_in_function(node, strlen_arg, source)
-                        .or_else(|| buffer_info.get(strlen_arg).and_then(|info| info.size));
-                    if let Some(src_size) = effective_src_size {
-                        if let Some(dest_info) = buffer_info.get(dest_arg.trim()) {
-                            if let Some(dest_size) = dest_info.size {
-                                if src_size > dest_size {
-                                    let start_point = node.start_position();
-                                    violations.push(RuleViolation {
-                                        rule_id: self.rule_id().to_string(),
-                                        severity: Severity::High,
-                                        message: format!(
-                                            "Function '{}': string length of '{}' (buffer size {}) may exceed destination '{}' size {}",
-                                            function_name, strlen_arg, src_size, dest_arg.trim(), dest_size
-                                        ),
-                                        file_path: String::new(),
-                                        line: start_point.row + 1,
-                                        column: start_point.column + 1,
-                                        suggestion: Some(format!(
-                                            "Use sizeof({}) as the size limit",
-                                            dest_arg.trim()
-                                        )),
-                                        ..Default::default()
-                                    });
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Check for sizeof(dest) when source is a string literal (shorter source)
-            // This catches patterns like: sizeof(p) used to copy from "Too short"
-            // But NOT when there's a ternary/min check like: sizeof(p) < strlen(q) + 1 ? sizeof(p) : strlen(q) + 1
-            if let Some(sizeof_var) = self.extract_sizeof_var(resolved_size) {
-                // If sizeof references destination and source is a string literal
-                if sizeof_var == dest_arg.trim() {
-                    // Check if there's already a size validation in the resolved expression
-                    // Skip if there's a ternary pattern like "sizeof(p) < strlen(q)"
-                    if !resolved_size.contains("strlen(")
-                        && !resolved_size.contains("?")
-                        && !resolved_size.contains("<")
-                    {
-                        // Check if source is a string literal or assigned from one
-                        if self.is_short_string_source(src_arg, dest_arg, source) {
-                            let start_point = node.start_position();
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                severity: Severity::High,
-                                message: format!(
-                                    "Function '{}': sizeof({}) may read past end of source buffer",
-                                    function_name, sizeof_var
-                                ),
-                                file_path: String::new(),
-                                line: start_point.row + 1,
-                                column: start_point.column + 1,
-                                suggestion: Some(
-                                    "Use minimum of sizeof(dest) and source size".to_string(),
-                                ),
-                                ..Default::default()
-                            });
-                            return;
-                        }
-                    }
-                }
             }
         }
 
+        self.check_generic_size_heuristics(
+            size_arg,
+            resolved_size,
+            node,
+            function_name,
+            source,
+            violations,
+        );
+    }
+
+    /// `memcpy`/`memmove`-specific source-buffer checks. Returns `true` if a
+    /// violation was pushed (caller should stop further checks).
+    #[allow(clippy::too_many_arguments)]
+    fn check_memcpy_source_issues(
+        &self,
+        dest_arg: &str,
+        src_arg: &str,
+        size_arg: &str,
+        resolved_size: &str,
+        node: &Node,
+        source: &str,
+        function_name: &str,
+        buffer_info: &HashMap<String, BufferInfo>,
+        size_vars: &HashMap<String, String>,
+        violations: &mut Vec<RuleViolation>,
+    ) -> bool {
+        if let Some(violation) = self.check_size_exceeds_buffer(
+            src_arg,
+            size_arg,
+            node,
+            function_name,
+            buffer_info,
+            size_vars,
+        ) {
+            violations.push(violation);
+            return true;
+        }
+        if self.check_sizeof_src_exceeds_dest(
+            dest_arg,
+            src_arg,
+            size_arg,
+            node,
+            function_name,
+            buffer_info,
+            violations,
+        ) {
+            return true;
+        }
+        if self.check_strlen_src_exceeds_dest(
+            dest_arg,
+            src_arg,
+            resolved_size,
+            node,
+            function_name,
+            source,
+            buffer_info,
+            violations,
+        ) {
+            return true;
+        }
+        self.check_sizeof_dest_short_string_source(
+            dest_arg,
+            src_arg,
+            resolved_size,
+            node,
+            function_name,
+            source,
+            violations,
+        )
+    }
+
+    /// `memcpy(dest, src, sizeof(src))` when `dest` is a known-smaller buffer.
+    #[allow(clippy::too_many_arguments)]
+    fn check_sizeof_src_exceeds_dest(
+        &self,
+        dest_arg: &str,
+        src_arg: &str,
+        size_arg: &str,
+        node: &Node,
+        function_name: &str,
+        buffer_info: &HashMap<String, BufferInfo>,
+        violations: &mut Vec<RuleViolation>,
+    ) -> bool {
+        if !size_arg.contains("sizeof(") {
+            return false;
+        }
+        // Extract the variable from sizeof(var)
+        let Some(sizeof_var) = self.extract_sizeof_var(size_arg) else {
+            return false;
+        };
+        // If sizeof references source but dest is known to be smaller
+        if sizeof_var != src_arg.trim() {
+            return false;
+        }
+        let Some(dest_info) = buffer_info.get(dest_arg.trim()) else {
+            return false;
+        };
+        let Some(src_info) = buffer_info.get(src_arg.trim()) else {
+            return false;
+        };
+        let (Some(dest_size), Some(src_size)) = (dest_info.size, src_info.size) else {
+            return false;
+        };
+        if src_size <= dest_size {
+            return false;
+        }
+        let start_point = node.start_position();
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: Severity::High,
+            message: format!(
+                "Function '{}': sizeof({}) ({} bytes) exceeds destination buffer size ({} bytes)",
+                function_name, sizeof_var, src_size, dest_size
+            ),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some(
+                "Use sizeof(dest) or minimum of source and destination sizes".to_string(),
+            ),
+            ..Default::default()
+        });
+        true
+    }
+
+    /// `strlen(src)*sizeof(T)` where the source buffer's content is larger
+    /// than the destination buffer. Recovers TPs from the blanket
+    /// strlen*sizeof exemption in `is_dangerous_size_calculation`.
+    #[allow(clippy::too_many_arguments)]
+    fn check_strlen_src_exceeds_dest(
+        &self,
+        dest_arg: &str,
+        src_arg: &str,
+        resolved_size: &str,
+        node: &Node,
+        function_name: &str,
+        source: &str,
+        buffer_info: &HashMap<String, BufferInfo>,
+        violations: &mut Vec<RuleViolation>,
+    ) -> bool {
+        let Some(strlen_arg) = self.extract_strlen_from_sizeof_expr(resolved_size) else {
+            return false;
+        };
+        let strlen_arg = strlen_arg.trim();
+        if strlen_arg != src_arg.trim() {
+            return false;
+        }
+        let effective_src_size = self
+            .find_content_size_in_function(node, strlen_arg, source)
+            .or_else(|| buffer_info.get(strlen_arg).and_then(|info| info.size));
+        let Some(src_size) = effective_src_size else {
+            return false;
+        };
+        let Some(dest_info) = buffer_info.get(dest_arg.trim()) else {
+            return false;
+        };
+        let Some(dest_size) = dest_info.size else {
+            return false;
+        };
+        if src_size <= dest_size {
+            return false;
+        }
+        let start_point = node.start_position();
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: Severity::High,
+            message: format!(
+                "Function '{}': string length of '{}' (buffer size {}) may exceed destination '{}' size {}",
+                function_name, strlen_arg, src_size, dest_arg.trim(), dest_size
+            ),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some(format!("Use sizeof({}) as the size limit", dest_arg.trim())),
+            ..Default::default()
+        });
+        true
+    }
+
+    /// `sizeof(dest)` used as the copy size when the source is a (shorter)
+    /// string literal. Catches patterns like `sizeof(p)` used to copy from
+    /// `"Too short"`, but not when a ternary/min check already guards it
+    /// (`sizeof(p) < strlen(q) + 1 ? sizeof(p) : strlen(q) + 1`).
+    fn check_sizeof_dest_short_string_source(
+        &self,
+        dest_arg: &str,
+        src_arg: &str,
+        resolved_size: &str,
+        node: &Node,
+        function_name: &str,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) -> bool {
+        // If sizeof references destination and source is a string literal
+        let Some(sizeof_var) = self.extract_sizeof_var(resolved_size) else {
+            return false;
+        };
+        if sizeof_var != dest_arg.trim() {
+            return false;
+        }
+        // Skip if there's already a size validation, e.g. a ternary pattern
+        // like "sizeof(p) < strlen(q)"
+        if resolved_size.contains("strlen(")
+            || resolved_size.contains('?')
+            || resolved_size.contains('<')
+        {
+            return false;
+        }
+        // Check if source is a string literal or assigned from one
+        if !self.is_short_string_source(src_arg, dest_arg, source) {
+            return false;
+        }
+        let start_point = node.start_position();
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: Severity::High,
+            message: format!(
+                "Function '{}': sizeof({}) may read past end of source buffer",
+                function_name, sizeof_var
+            ),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some("Use minimum of sizeof(dest) and source size".to_string()),
+            ..Default::default()
+        });
+        true
+    }
+
+    /// Generic size-argument heuristics that apply to any size-taking
+    /// function once buffer-specific checks have been exhausted: hardcoded
+    /// large sizes, user-controlled sizes (Heartbleed-like), and dangerous
+    /// type-size-mismatch calculations.
+    fn check_generic_size_heuristics(
+        &self,
+        size_arg: &str,
+        resolved_size: &str,
+        node: &Node,
+        function_name: &str,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         // Check for hardcoded sizes
         if self.is_hardcoded_large_size(size_arg) {
             let start_point = node.start_position();

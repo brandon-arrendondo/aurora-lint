@@ -63,179 +63,42 @@ fn check_scope_for_shadowing(
 
     // Scan for declarations at this level
     match node.kind() {
-        "translation_unit" => {
-            // File scope - collect all global declarations
-            let mut global_vars = HashMap::new();
-            collect_declarations_in_node(node, source, &mut global_vars);
-
-            // Check children with global scope
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "function_definition" {
-                        check_scope_for_shadowing(
-                            &child,
-                            source,
-                            &global_vars,
-                            violations,
-                            rule_id,
-                        );
-                    }
-                }
-            }
-        }
-        "function_definition" => {
-            // Function scope - collect parameters and check body
-            let params = extract_function_parameters(node, source);
-            for (param_name, line, col) in params {
-                if let Some((outer_line, outer_col)) = outer_vars.get(&param_name) {
-                    violations.push(RuleViolation {
-                        rule_id: rule_id.to_string(),
-                        severity: Severity::Low,
-                        message: format!(
-                            "Function parameter '{}' shadows variable from outer scope (line {}:{})",
-                            param_name, outer_line, outer_col
-                        ),
-                        file_path: String::new(),
-                        line,
-                        column: col,
-                        suggestion: Some(format!(
-                            "Rename parameter '{}' to avoid shadowing outer scope variable",
-                            param_name
-                        )),
-                        ..Default::default()
-                    });
-                }
-                current_scope.insert(param_name, (line, col));
-            }
-
-            // Check function body
-            if let Some(body) = find_compound_statement(node) {
-                check_scope_for_shadowing(&body, source, &current_scope, violations, rule_id);
-            }
-        }
-        "compound_statement" => {
-            // Block scope - collect declarations in this block
-            let mut block_vars = HashMap::new();
-
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    // Check for variable declarations
-                    if child.kind() == "declaration" {
-                        let decls = extract_declarations(&child, source);
-                        for (var_name, line, col) in decls {
-                            // Check if this shadows an outer variable
-                            if let Some((outer_line, outer_col)) = outer_vars.get(&var_name) {
-                                violations.push(RuleViolation {
-                                    rule_id: rule_id.to_string(),
-                                    severity: Severity::Low,
-                                    message: format!(
-                                        "Variable '{}' shadows variable from outer scope (line {}:{})",
-                                        var_name, outer_line, outer_col
-                                    ),
-                                    file_path: String::new(),
-                                    line,
-                                    column: col,
-                                    suggestion: Some(format!(
-                                        "Rename variable '{}' to avoid shadowing",
-                                        var_name
-                                    )),
-                                    ..Default::default()
-                                });
-                            }
-                            block_vars.insert(var_name, (line, col));
-                        }
-                    }
-                }
-            }
-
-            // Merge block variables into current scope
-            current_scope.extend(block_vars);
-
-            // Recursively check nested scopes
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    match child.kind() {
-                        "compound_statement" | "for_statement" | "while_statement"
-                        | "do_statement" | "if_statement" | "switch_statement" => {
-                            check_scope_for_shadowing(
-                                &child,
-                                source,
-                                &current_scope,
-                                violations,
-                                rule_id,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        "for_statement" => {
-            // For loop - check initializer for declarations
-            let mut loop_scope = current_scope.clone();
-
-            // Check for loop variable declarations in initializer
-            if let Some(init) = node.child_by_field_name("initializer") {
-                if init.kind() == "declaration" {
-                    let decls = extract_declarations(&init, source);
-                    for (var_name, line, col) in decls {
-                        if let Some((outer_line, outer_col)) = outer_vars.get(&var_name) {
-                            violations.push(RuleViolation {
-                                rule_id: rule_id.to_string(),
-                                severity: Severity::Low,
-                                message: format!(
-                                    "Loop variable '{}' shadows variable from outer scope (line {}:{})",
-                                    var_name, outer_line, outer_col
-                                ),
-                                file_path: String::new(),
-                                line,
-                                column: col,
-                                suggestion: Some(format!(
-                                    "Rename loop variable '{}' to avoid shadowing",
-                                    var_name
-                                )),
-                                ..Default::default()
-                            });
-                        }
-                        loop_scope.insert(var_name, (line, col));
-                    }
-                }
-            }
-
-            // Check loop body
-            if let Some(body) = node.child_by_field_name("body") {
-                check_scope_for_shadowing(&body, source, &loop_scope, violations, rule_id);
-            }
-        }
+        "translation_unit" => check_translation_unit_shadowing(node, source, violations, rule_id),
+        "function_definition" => check_function_definition_shadowing(
+            node,
+            source,
+            outer_vars,
+            &mut current_scope,
+            violations,
+            rule_id,
+        ),
+        "compound_statement" => check_compound_statement_shadowing(
+            node,
+            source,
+            outer_vars,
+            &mut current_scope,
+            violations,
+            rule_id,
+        ),
+        "for_statement" => check_for_statement_shadowing(
+            node,
+            source,
+            outer_vars,
+            &current_scope,
+            violations,
+            rule_id,
+        ),
+        // While/do-while loop - check body
         "while_statement" | "do_statement" => {
-            // While/do-while loop - check body
             if let Some(body) = node.child_by_field_name("body") {
                 check_scope_for_shadowing(&body, source, &current_scope, violations, rule_id);
             }
         }
         "if_statement" => {
-            // If statement - check consequence and alternative
-            if let Some(consequence) = node.child_by_field_name("consequence") {
-                check_scope_for_shadowing(
-                    &consequence,
-                    source,
-                    &current_scope,
-                    violations,
-                    rule_id,
-                );
-            }
-            if let Some(alternative) = node.child_by_field_name("alternative") {
-                check_scope_for_shadowing(
-                    &alternative,
-                    source,
-                    &current_scope,
-                    violations,
-                    rule_id,
-                );
-            }
+            check_if_statement_shadowing(node, source, &current_scope, violations, rule_id)
         }
+        // Switch statement - check body
         "switch_statement" => {
-            // Switch statement - check body
             if let Some(body) = node.child_by_field_name("body") {
                 check_scope_for_shadowing(&body, source, &current_scope, violations, rule_id);
             }
@@ -248,6 +111,188 @@ fn check_scope_for_shadowing(
                 }
             }
         }
+    }
+}
+
+/// `translation_unit` case of [`check_scope_for_shadowing`]: file scope
+/// collects all global declarations, then checks each function body against
+/// that global scope.
+fn check_translation_unit_shadowing(
+    node: &Node,
+    source: &str,
+    violations: &mut Vec<RuleViolation>,
+    rule_id: &str,
+) {
+    let mut global_vars = HashMap::new();
+    collect_declarations_in_node(node, source, &mut global_vars);
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "function_definition" {
+                check_scope_for_shadowing(&child, source, &global_vars, violations, rule_id);
+            }
+        }
+    }
+}
+
+/// `function_definition` case of [`check_scope_for_shadowing`]: function
+/// scope collects parameters (flagging any that shadow an outer variable),
+/// then checks the function body.
+fn check_function_definition_shadowing(
+    node: &Node,
+    source: &str,
+    outer_vars: &HashMap<String, (usize, usize)>,
+    current_scope: &mut HashMap<String, (usize, usize)>,
+    violations: &mut Vec<RuleViolation>,
+    rule_id: &str,
+) {
+    let params = extract_function_parameters(node, source);
+    for (param_name, line, col) in params {
+        if let Some((outer_line, outer_col)) = outer_vars.get(&param_name) {
+            violations.push(RuleViolation {
+                rule_id: rule_id.to_string(),
+                severity: Severity::Low,
+                message: format!(
+                    "Function parameter '{}' shadows variable from outer scope (line {}:{})",
+                    param_name, outer_line, outer_col
+                ),
+                file_path: String::new(),
+                line,
+                column: col,
+                suggestion: Some(format!(
+                    "Rename parameter '{}' to avoid shadowing outer scope variable",
+                    param_name
+                )),
+                ..Default::default()
+            });
+        }
+        current_scope.insert(param_name, (line, col));
+    }
+
+    if let Some(body) = find_compound_statement(node) {
+        check_scope_for_shadowing(&body, source, current_scope, violations, rule_id);
+    }
+}
+
+/// `compound_statement` case of [`check_scope_for_shadowing`]: block scope
+/// collects declarations in this block (flagging any that shadow an outer
+/// variable), then recurses into nested scopes.
+fn check_compound_statement_shadowing(
+    node: &Node,
+    source: &str,
+    outer_vars: &HashMap<String, (usize, usize)>,
+    current_scope: &mut HashMap<String, (usize, usize)>,
+    violations: &mut Vec<RuleViolation>,
+    rule_id: &str,
+) {
+    let mut block_vars = HashMap::new();
+
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        if child.kind() != "declaration" {
+            continue;
+        }
+        let decls = extract_declarations(&child, source);
+        for (var_name, line, col) in decls {
+            // Check if this shadows an outer variable
+            if let Some((outer_line, outer_col)) = outer_vars.get(&var_name) {
+                violations.push(RuleViolation {
+                    rule_id: rule_id.to_string(),
+                    severity: Severity::Low,
+                    message: format!(
+                        "Variable '{}' shadows variable from outer scope (line {}:{})",
+                        var_name, outer_line, outer_col
+                    ),
+                    file_path: String::new(),
+                    line,
+                    column: col,
+                    suggestion: Some(format!("Rename variable '{}' to avoid shadowing", var_name)),
+                    ..Default::default()
+                });
+            }
+            block_vars.insert(var_name, (line, col));
+        }
+    }
+
+    // Merge block variables into current scope
+    current_scope.extend(block_vars);
+
+    // Recursively check nested scopes
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        if matches!(
+            child.kind(),
+            "compound_statement"
+                | "for_statement"
+                | "while_statement"
+                | "do_statement"
+                | "if_statement"
+                | "switch_statement"
+        ) {
+            check_scope_for_shadowing(&child, source, current_scope, violations, rule_id);
+        }
+    }
+}
+
+/// `for_statement` case of [`check_scope_for_shadowing`]: checks the
+/// initializer for a loop-variable declaration that shadows an outer
+/// variable, then checks the loop body.
+fn check_for_statement_shadowing(
+    node: &Node,
+    source: &str,
+    outer_vars: &HashMap<String, (usize, usize)>,
+    current_scope: &HashMap<String, (usize, usize)>,
+    violations: &mut Vec<RuleViolation>,
+    rule_id: &str,
+) {
+    let mut loop_scope = current_scope.clone();
+
+    if let Some(init) = node.child_by_field_name("initializer") {
+        if init.kind() == "declaration" {
+            let decls = extract_declarations(&init, source);
+            for (var_name, line, col) in decls {
+                if let Some((outer_line, outer_col)) = outer_vars.get(&var_name) {
+                    violations.push(RuleViolation {
+                        rule_id: rule_id.to_string(),
+                        severity: Severity::Low,
+                        message: format!(
+                            "Loop variable '{}' shadows variable from outer scope (line {}:{})",
+                            var_name, outer_line, outer_col
+                        ),
+                        file_path: String::new(),
+                        line,
+                        column: col,
+                        suggestion: Some(format!(
+                            "Rename loop variable '{}' to avoid shadowing",
+                            var_name
+                        )),
+                        ..Default::default()
+                    });
+                }
+                loop_scope.insert(var_name, (line, col));
+            }
+        }
+    }
+
+    if let Some(body) = node.child_by_field_name("body") {
+        check_scope_for_shadowing(&body, source, &loop_scope, violations, rule_id);
+    }
+}
+
+/// `if_statement` case of [`check_scope_for_shadowing`]: checks the
+/// consequence and (if present) alternative branches.
+fn check_if_statement_shadowing(
+    node: &Node,
+    source: &str,
+    current_scope: &HashMap<String, (usize, usize)>,
+    violations: &mut Vec<RuleViolation>,
+    rule_id: &str,
+) {
+    if let Some(consequence) = node.child_by_field_name("consequence") {
+        check_scope_for_shadowing(&consequence, source, current_scope, violations, rule_id);
+    }
+    if let Some(alternative) = node.child_by_field_name("alternative") {
+        check_scope_for_shadowing(&alternative, source, current_scope, violations, rule_id);
     }
 }
 

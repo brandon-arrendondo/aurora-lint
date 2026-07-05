@@ -1883,35 +1883,9 @@ impl Arr30C {
             if let Some(index) = self.get_subscript_index_value(node, source) {
                 // Check for function parameter violations FIRST, even if buffer not tracked
                 // This handles cases like: void func(int arr[], int index) { arr[index]; }
-                if let IndexValue::Variable(ref var) = index {
-                    if let Some(func_node) = find_containing_function(node) {
-                        if is_function_parameter(&func_node, var, source) {
-                            // Static functions whose index param is a user-defined type
-                            // (e.g. an enum typedef like led_id_t) have a controlled caller
-                            // set and enum-constrained values — suppress to avoid FPs.
-                            if Self::is_static_function(&func_node, source)
-                                && Self::param_has_user_defined_type(&func_node, var, source)
-                            {
-                                // skip
-                            } else if !self
-                                .has_function_parameter_bounds_check(&func_node, var, source)
-                            {
-                                // Create a violation for unvalidated function parameter
-                                let start_point = node.start_position();
-                                violations.push(RuleViolation {
-                                    rule_id: self.rule_id().to_string(),
-                                    severity: Severity::High,
-                                    message: format!("Potentially unsafe array access with unvalidated function parameter index '{}'", var),
-                                    file_path: String::new(),
-                                    line: start_point.row + 1,
-                                    column: start_point.column + 1,
-                                    suggestion: Some("Add bounds checking for function parameter before using as array index.".to_string()),
-                                ..Default::default()
-                                });
-                                return violations;
-                            }
-                        }
-                    }
+                if let Some(violation) = self.check_unvalidated_param_index(node, source, &index) {
+                    violations.push(violation);
+                    return violations;
                 }
 
                 // Try to resolve alias first
@@ -1924,131 +1898,20 @@ impl Arr30C {
 
                 if let Some(buffer_info) = buffers.get(actual_buffer_name) {
                     // Calculate effective buffer size for cast pointers
-                    let effective_size = match &buffer_info.size {
-                        BufferSize::Static(size) | BufferSize::DynamicCalculated(size) => {
-                            if let Some(elem_bytes) = element_size_bytes {
-                                // For cast pointers, convert byte size to element count
-                                size / elem_bytes
-                            } else {
-                                *size
-                            }
-                        }
-                        _ => 0, // Will be handled separately below
-                    };
+                    let effective_size =
+                        Self::effective_buffer_size(buffer_info, element_size_bytes);
 
-                    let is_violation = match &buffer_info.size {
-                        BufferSize::Static(_size) | BufferSize::DynamicCalculated(_size) => {
-                            match &index {
-                                IndexValue::Constant(idx) => {
-                                    // Constant index access - check for negative indices OR out of bounds
-                                    *idx < 0 || (*idx as usize) >= effective_size
-                                }
-                                IndexValue::Expression(_, Some(eval_idx)) => {
-                                    // Expression evaluated to constant - check bounds
-                                    *eval_idx < 0 || (*eval_idx as usize) >= effective_size
-                                }
-                                IndexValue::Expression(expr, None) => {
-                                    // Expression with variable component - analyze it
-                                    self.check_expression_bounds(expr, effective_size)
-                                }
-                                IndexValue::Variable(var) => {
-                                    // VRA suppression: if VRA proves index in [0, size-1], safe.
-                                    let vra_safe = self
-                                        .vra_var_ranges_at(node)
-                                        .and_then(|ranges| ranges.get(var).copied())
-                                        .map(|range| {
-                                            range.min >= 0 && (range.max as usize) < effective_size
-                                        })
-                                        .unwrap_or(false);
-                                    if vra_safe {
-                                        false
-                                    } else if self.has_recursive_index_modification(
-                                        node,
-                                        var,
-                                        source,
-                                        effective_size,
-                                    ) {
-                                        true
-                                    } else if let Some(func_node) = find_containing_function(node) {
-                                        if is_function_parameter(&func_node, var, source)
-                                            && !(Self::is_static_function(&func_node, source)
-                                                && Self::param_has_user_defined_type(
-                                                    &func_node, var, source,
-                                                ))
-                                        {
-                                            !self.has_function_parameter_bounds_check(
-                                                &func_node, var, source,
-                                            )
-                                        } else {
-                                            !self.has_proper_bounds_check(
-                                                node,
-                                                source,
-                                                effective_size,
-                                                macro_constants,
-                                            )
-                                        }
-                                    } else {
-                                        !self.has_proper_bounds_check(
-                                            node,
-                                            source,
-                                            effective_size,
-                                            macro_constants,
-                                        )
-                                    }
-                                }
-                                IndexValue::Unknown => false,
-                            }
-                        }
-                        BufferSize::Symbolic(size_var) => {
-                            // VLA with symbolic size - check for provably out-of-bounds patterns
-                            match &index {
-                                IndexValue::Variable(var) => {
-                                    // Check if var == size_var (e.g., vla[n] when size is n)
-                                    // This is always out of bounds (valid range: 0 to n-1)
-                                    var == size_var
-                                }
-                                IndexValue::Expression(expr, _) => {
-                                    // Check for symbolic violations like "n + 5" when size is "n"
-                                    self.check_symbolic_bounds(expr, size_var)
-                                }
-                                IndexValue::Constant(idx) => {
-                                    // Negative index is always invalid
-                                    *idx < 0
-                                }
-                                IndexValue::Unknown => false,
-                            }
-                        }
-                        BufferSize::Dynamic(_) => {
-                            // For dynamic sizes, check if there's any bounds checking
-                            match index {
-                                IndexValue::Variable(_) | IndexValue::Expression(_, None) => {
-                                    !self.has_dynamic_bounds_check(node, source)
-                                }
-                                _ => false,
-                            }
-                        }
-                        BufferSize::Unknown => false,
-                    };
+                    let is_violation = self.is_subscript_violation(
+                        node,
+                        source,
+                        &index,
+                        buffer_info,
+                        effective_size,
+                        macro_constants,
+                    );
 
                     if is_violation {
-                        let msg = match index {
-                            IndexValue::Constant(idx) => {
-                                format!("Out-of-bounds array access at index {}", idx)
-                            }
-                            IndexValue::Expression(ref expr, Some(eval_idx)) => format!(
-                                "Out-of-bounds array access: '{}' evaluates to {}",
-                                expr, eval_idx
-                            ),
-                            IndexValue::Expression(ref expr, None) => format!(
-                                "Potentially unsafe array access with expression '{}'",
-                                expr
-                            ),
-                            IndexValue::Variable(ref var) => format!(
-                                "Potentially unsafe array access with variable index '{}'",
-                                var
-                            ),
-                            IndexValue::Unknown => "Potentially unsafe array access".to_string(),
-                        };
+                        let msg = Self::oob_message(&index);
                         violations.push(self.create_violation(
                             node,
                             &array_name,
@@ -2061,6 +1924,201 @@ impl Arr30C {
         }
 
         violations
+    }
+
+    /// If `index` is a bare variable that is an unvalidated function
+    /// parameter, build the "unvalidated function parameter index"
+    /// violation directly (bypassing buffer-size tracking, since this
+    /// applies even when the buffer isn't tracked at all).
+    fn check_unvalidated_param_index(
+        &self,
+        node: &Node,
+        source: &str,
+        index: &IndexValue,
+    ) -> Option<RuleViolation> {
+        let IndexValue::Variable(ref var) = index else {
+            return None;
+        };
+        let func_node = find_containing_function(node)?;
+        if !is_function_parameter(&func_node, var, source) {
+            return None;
+        }
+        // Static functions whose index param is a user-defined type (e.g. an
+        // enum typedef like led_id_t) have a controlled caller set and
+        // enum-constrained values — suppress to avoid FPs.
+        if Self::is_static_function(&func_node, source)
+            && Self::param_has_user_defined_type(&func_node, var, source)
+        {
+            return None;
+        }
+        if self.has_function_parameter_bounds_check(&func_node, var, source) {
+            return None;
+        }
+        let start_point = node.start_position();
+        Some(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: Severity::High,
+            message: format!(
+                "Potentially unsafe array access with unvalidated function parameter index '{}'",
+                var
+            ),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some(
+                "Add bounds checking for function parameter before using as array index."
+                    .to_string(),
+            ),
+            ..Default::default()
+        })
+    }
+
+    /// Convert a tracked buffer's byte/element size into the effective
+    /// element count for bounds checks, accounting for cast-pointer aliases
+    /// (whose size is tracked in bytes of a different element type).
+    fn effective_buffer_size(buffer_info: &BufferInfo, element_size_bytes: Option<usize>) -> usize {
+        match &buffer_info.size {
+            BufferSize::Static(size) | BufferSize::DynamicCalculated(size) => {
+                match element_size_bytes {
+                    Some(elem_bytes) => size / elem_bytes,
+                    None => *size,
+                }
+            }
+            _ => 0, // Handled separately per BufferSize variant below
+        }
+    }
+
+    /// Dispatch bounds-violation detection by the buffer's size-tracking kind.
+    fn is_subscript_violation(
+        &self,
+        node: &Node,
+        source: &str,
+        index: &IndexValue,
+        buffer_info: &BufferInfo,
+        effective_size: usize,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        match &buffer_info.size {
+            BufferSize::Static(_) | BufferSize::DynamicCalculated(_) => {
+                self.is_fixed_size_violation(node, source, index, effective_size, macro_constants)
+            }
+            BufferSize::Symbolic(size_var) => self.is_symbolic_size_violation(index, size_var),
+            BufferSize::Dynamic(_) => match index {
+                IndexValue::Variable(_) | IndexValue::Expression(_, None) => {
+                    !self.has_dynamic_bounds_check(node, source)
+                }
+                _ => false,
+            },
+            BufferSize::Unknown => false,
+        }
+    }
+
+    /// Bounds check for statically/dynamically-calculated fixed-size buffers.
+    fn is_fixed_size_violation(
+        &self,
+        node: &Node,
+        source: &str,
+        index: &IndexValue,
+        effective_size: usize,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        match index {
+            IndexValue::Constant(idx) => {
+                // Constant index access - check for negative indices OR out of bounds
+                *idx < 0 || (*idx as usize) >= effective_size
+            }
+            IndexValue::Expression(_, Some(eval_idx)) => {
+                // Expression evaluated to constant - check bounds
+                *eval_idx < 0 || (*eval_idx as usize) >= effective_size
+            }
+            IndexValue::Expression(expr, None) => {
+                // Expression with variable component - analyze it
+                self.check_expression_bounds(expr, effective_size)
+            }
+            IndexValue::Variable(var) => self.is_fixed_size_variable_index_violation(
+                node,
+                source,
+                var,
+                effective_size,
+                macro_constants,
+            ),
+            IndexValue::Unknown => false,
+        }
+    }
+
+    /// Bounds check for a bare-variable index into a fixed-size buffer: VRA
+    /// proof, recursive-modification heuristic, then parameter/general
+    /// bounds-check fallbacks.
+    fn is_fixed_size_variable_index_violation(
+        &self,
+        node: &Node,
+        source: &str,
+        var: &str,
+        effective_size: usize,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        // VRA suppression: if VRA proves index in [0, size-1], safe.
+        let vra_safe = self
+            .vra_var_ranges_at(node)
+            .and_then(|ranges| ranges.get(var).copied())
+            .map(|range| range.min >= 0 && (range.max as usize) < effective_size)
+            .unwrap_or(false);
+        if vra_safe {
+            return false;
+        }
+        if self.has_recursive_index_modification(node, var, source, effective_size) {
+            return true;
+        }
+        if let Some(func_node) = find_containing_function(node) {
+            if is_function_parameter(&func_node, var, source)
+                && !(Self::is_static_function(&func_node, source)
+                    && Self::param_has_user_defined_type(&func_node, var, source))
+            {
+                return !self.has_function_parameter_bounds_check(&func_node, var, source);
+            }
+        }
+        !self.has_proper_bounds_check(node, source, effective_size, macro_constants)
+    }
+
+    /// VLA-with-symbolic-size bounds check: only catches provably
+    /// out-of-bounds patterns (exact match on the size variable, or a
+    /// statically-known offset from it).
+    fn is_symbolic_size_violation(&self, index: &IndexValue, size_var: &str) -> bool {
+        match index {
+            IndexValue::Variable(var) => {
+                // Check if var == size_var (e.g., vla[n] when size is n)
+                // This is always out of bounds (valid range: 0 to n-1)
+                var == size_var
+            }
+            IndexValue::Expression(expr, _) => {
+                // Check for symbolic violations like "n + 5" when size is "n"
+                self.check_symbolic_bounds(expr, size_var)
+            }
+            IndexValue::Constant(idx) => {
+                // Negative index is always invalid
+                *idx < 0
+            }
+            IndexValue::Unknown => false,
+        }
+    }
+
+    /// Build the out-of-bounds diagnostic message for a violating index.
+    fn oob_message(index: &IndexValue) -> String {
+        match index {
+            IndexValue::Constant(idx) => format!("Out-of-bounds array access at index {}", idx),
+            IndexValue::Expression(expr, Some(eval_idx)) => format!(
+                "Out-of-bounds array access: '{}' evaluates to {}",
+                expr, eval_idx
+            ),
+            IndexValue::Expression(expr, None) => {
+                format!("Potentially unsafe array access with expression '{}'", expr)
+            }
+            IndexValue::Variable(var) => format!(
+                "Potentially unsafe array access with variable index '{}'",
+                var
+            ),
+            IndexValue::Unknown => "Potentially unsafe array access".to_string(),
+        }
     }
 
     /// Check if an expression with variables could cause out-of-bounds access
@@ -2196,113 +2254,126 @@ impl Arr30C {
 
         // Look for binary_expression children (e.g., "buffer + offset")
         for i in 0..return_node.child_count() {
-            if let Some(child) = return_node.child(i) {
-                if child.kind() == "binary_expression" {
-                    // Check if this is pointer arithmetic (buffer + offset or offset + buffer)
-                    if let Some((left_name, right_name)) =
-                        self.extract_binary_expr_operands(&child, source)
-                    {
-                        // Try both orders: buffer + offset OR offset + buffer
-                        let mut buffer_name = None;
-                        let mut offset_name = None;
-
-                        // Check if left is buffer and right is offset
-                        let left_actual = if let Some(alias) = aliases.get(&left_name) {
-                            alias.original_buffer.as_str()
-                        } else {
-                            left_name.as_str()
-                        };
-
-                        if buffers.contains_key(left_actual) {
-                            buffer_name = Some(left_actual);
-                            offset_name = Some(right_name.as_str());
-                        } else {
-                            // Check if right is buffer and left is offset
-                            let right_actual = if let Some(alias) = aliases.get(&right_name) {
-                                alias.original_buffer.as_str()
-                            } else {
-                                right_name.as_str()
-                            };
-
-                            if buffers.contains_key(right_actual) {
-                                buffer_name = Some(right_actual);
-                                offset_name = Some(left_name.as_str());
-                            }
-                        }
-
-                        if let (Some(_buf), Some(off)) = (buffer_name, offset_name) {
-                            // Check if offset is a signed function parameter without lower bound check
-                            if let Some(func_node) = find_containing_function(return_node) {
-                                // Extract the function_declarator from within the function_definition
-                                // (it may be nested inside a pointer_declarator for pointer return types)
-                                if let Some(func_declarator) =
-                                    self.find_function_declarator(&func_node)
-                                {
-                                    // Find the parameter_list in the function_declarator
-                                    for j in 0..func_declarator.child_count() {
-                                        if let Some(param_list) = func_declarator.child(j) {
-                                            if param_list.kind() == "parameter_list" {
-                                                // Check each parameter declaration
-                                                for k in 0..param_list.child_count() {
-                                                    if let Some(param_decl) = param_list.child(k) {
-                                                        if param_decl.kind()
-                                                            == "parameter_declaration"
-                                                        {
-                                                            let param_text = &source[param_decl
-                                                                .start_byte()
-                                                                ..param_decl.end_byte()];
-                                                            // Check if this parameter matches our offset name
-                                                            if param_text.contains(off) {
-                                                                // Check if the type is signed (int, long, ssize_t, etc.)
-                                                                let is_signed = param_text
-                                                                    .contains("int ")
-                                                                    && !param_text
-                                                                        .contains("unsigned")
-                                                                    && !param_text
-                                                                        .contains("size_t");
-
-                                                                if is_signed {
-                                                                    // Check if it has a lower bound check (>= 0)
-                                                                    if !self.has_lower_bound_check(
-                                                                        &func_node, off, source,
-                                                                    ) {
-                                                                        let start_point =
-                                                                            child.start_position();
-                                                                        violations.push(RuleViolation {
-                                                                            rule_id: self.rule_id().to_string(),
-                                                                            severity: Severity::High,
-                                                                            message: format!(
-                                                                                "Pointer arithmetic with signed parameter '{}' that lacks lower bound check (>= 0). Negative values cause undefined behavior.",
-                                                                                off
-                                                                            ),
-                                                                            file_path: String::new(),
-                                                                            line: start_point.row + 1,
-                                                                            column: start_point.column + 1,
-                                                                            suggestion: Some(format!(
-                                                                                "Add check: if ({} >= 0 && {} < size)",
-                                                                                off, off
-                                                                            )),
-                                                                            ..Default::default()
-                                                                        });
-                                                                    }
-                                                                }
-                                                                break;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            let Some(child) = return_node.child(i) else {
+                continue;
+            };
+            if child.kind() != "binary_expression" {
+                continue;
+            }
+            if let Some(violation) = self.check_return_pointer_arith_binary_expr(
+                &child,
+                return_node,
+                source,
+                buffers,
+                aliases,
+            ) {
+                violations.push(violation);
             }
         }
 
         violations
+    }
+
+    /// Check a single `buffer + offset` (or `offset + buffer`) binary
+    /// expression found in a return statement for an unchecked signed
+    /// offset parameter.
+    fn check_return_pointer_arith_binary_expr(
+        &self,
+        child: &Node,
+        return_node: &Node,
+        source: &str,
+        buffers: &HashMap<String, BufferInfo>,
+        aliases: &HashMap<String, PointerAlias>,
+    ) -> Option<RuleViolation> {
+        let (left_name, right_name) = self.extract_binary_expr_operands(child, source)?;
+        let offset = Self::resolve_pointer_arith_offset(&left_name, &right_name, buffers, aliases)?;
+
+        // Check if offset is a signed function parameter without lower bound check
+        let func_node = find_containing_function(return_node)?;
+        // Extract the function_declarator from within the function_definition
+        // (it may be nested inside a pointer_declarator for pointer return types)
+        let func_declarator = self.find_function_declarator(&func_node)?;
+        let param_decl = Self::find_matching_param_declaration(&func_declarator, offset, source)?;
+
+        let param_text = &source[param_decl.start_byte()..param_decl.end_byte()];
+        // Check if the type is signed (int, long, ssize_t, etc.)
+        let is_signed = param_text.contains("int ")
+            && !param_text.contains("unsigned")
+            && !param_text.contains("size_t");
+        if !is_signed || self.has_lower_bound_check(&func_node, offset, source) {
+            return None;
+        }
+
+        let start_point = child.start_position();
+        Some(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: Severity::High,
+            message: format!(
+                "Pointer arithmetic with signed parameter '{}' that lacks lower bound check (>= 0). Negative values cause undefined behavior.",
+                offset
+            ),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some(format!(
+                "Add check: if ({} >= 0 && {} < size)",
+                offset, offset
+            )),
+            ..Default::default()
+        })
+    }
+
+    /// Given the two operand names of a `a + b` expression, determine which
+    /// one is a tracked buffer (resolving aliases) and return the name of
+    /// the other operand (the pointer-arithmetic offset), in whichever
+    /// order they appeared.
+    fn resolve_pointer_arith_offset<'a>(
+        left_name: &'a str,
+        right_name: &'a str,
+        buffers: &HashMap<String, BufferInfo>,
+        aliases: &HashMap<String, PointerAlias>,
+    ) -> Option<&'a str> {
+        let resolve = |name: &str| -> String {
+            aliases
+                .get(name)
+                .map(|alias| alias.original_buffer.clone())
+                .unwrap_or_else(|| name.to_string())
+        };
+        if buffers.contains_key(&resolve(left_name)) {
+            return Some(right_name);
+        }
+        if buffers.contains_key(&resolve(right_name)) {
+            return Some(left_name);
+        }
+        None
+    }
+
+    /// Find the `parameter_declaration` inside `func_declarator`'s
+    /// `parameter_list` whose text mentions `offset` by name.
+    fn find_matching_param_declaration<'a>(
+        func_declarator: &Node<'a>,
+        offset: &str,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        for j in 0..func_declarator.child_count() {
+            let param_list = func_declarator.child(j)?;
+            if param_list.kind() != "parameter_list" {
+                continue;
+            }
+            for k in 0..param_list.child_count() {
+                let Some(param_decl) = param_list.child(k) else {
+                    continue;
+                };
+                if param_decl.kind() != "parameter_declaration" {
+                    continue;
+                }
+                let param_text = &source[param_decl.start_byte()..param_decl.end_byte()];
+                if param_text.contains(offset) {
+                    return Some(param_decl);
+                }
+            }
+        }
+        None
     }
 
     /// Check while loops for unbounded pointer increment

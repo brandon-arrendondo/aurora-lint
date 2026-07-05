@@ -798,104 +798,136 @@ impl Int31C {
             *node,
             &["if_statement", "expression_statement", "init_declarator"],
         ) {
-            // Look for if statements that validate bounds
-            if node.kind() == "if_statement" {
-                if let Some(condition) = node.child_by_field_name("condition") {
-                    let cond_text = get_node_text(&condition, source);
-
-                    // Check for validations of each tracked variable
-                    for (var, _var_type) in var_types.iter() {
-                        if cond_text.contains(var) {
-                            // Check for common validation patterns:
-                            // - < 0 (negative check for signed to unsigned)
-                            // - > MAX / <= MAX (upper bound for unsigned to signed or narrowing)
-                            // - < MIN / >= MIN (lower bound for signed narrowing)
-                            let has_bounds_check = (cond_text.contains('<')
-                                || cond_text.contains('>')
-                                || cond_text.contains("<=")
-                                || cond_text.contains(">="))
-                                && (cond_text.contains("0")
-                                    || cond_text.contains("MAX")
-                                    || cond_text.contains("MIN")
-                                    || cond_text.contains("_MAX")
-                                    || cond_text.contains("_MIN"));
-
-                            if has_bounds_check {
-                                // The variable is validated if:
-                                // 1. There's error handling in consequence (then block) - else block is safe
-                                // 2. The conversion happens in the consequence when bounds are validated
-                                // 3. There's an alternative (else) that handles errors
-
-                                if let Some(consequence) = node.child_by_field_name("consequence") {
-                                    let cons_text = get_node_text(&consequence, source);
-                                    // If error handling in consequence, the else branch is safe
-                                    if cons_text.contains("return")
-                                        || cons_text.contains("Handle error")
-                                        || cons_text.contains("error")
-                                    {
-                                        validated_vars.insert(var.clone());
-                                    }
-                                    // If the conversion/assignment to var is in consequence after bounds check
-                                    // (like `if (u_a <= SCHAR_MAX) { sc = (signed char)u_a; }`)
-                                    // The variable being converted (u_a) is validated for that use
-                                    if cons_text.contains(var) {
-                                        validated_vars.insert(var.clone());
-                                    }
-                                }
-                                if let Some(alternative) = node.child_by_field_name("alternative") {
-                                    let alt_text = get_node_text(&alternative, source);
-                                    // If assignment is in alternative (else), var is validated
-                                    if alt_text.contains(var) {
-                                        validated_vars.insert(var.clone());
-                                    }
-                                    // If else has error handling, then branch is safe
-                                    if alt_text.contains("Handle error")
-                                        || alt_text.contains("error")
-                                    {
-                                        validated_vars.insert(var.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
+            match node.kind() {
+                // Look for if statements that validate bounds
+                "if_statement" => {
+                    Self::collect_if_bounds_validation(node, source, validated_vars, var_types)
                 }
+                // Detect bounded constant assignments: data = CHAR_MAX - 5;
+                // If a tracked variable is assigned a value referencing a type-limit macro,
+                // the programmer is aware of type bounds and subsequent casts are intentional.
+                "expression_statement" => {
+                    Self::collect_narrow_limit_assignment(node, source, validated_vars, var_types)
+                }
+                // Also check init_declarator: int data = CHAR_MAX - 5;
+                "init_declarator" => Self::collect_narrow_limit_init(node, source, validated_vars),
+                _ => {}
+            }
+        }
+    }
+
+    /// `if_statement` case of [`collect_validations`]: for each tracked
+    /// variable mentioned in a bounds-checking condition, mark it validated
+    /// if either branch shows error handling or performs the conversion.
+    fn collect_if_bounds_validation(
+        node: &Node,
+        source: &str,
+        validated_vars: &mut HashSet<String>,
+        var_types: &HashMap<String, String>,
+    ) {
+        let Some(condition) = node.child_by_field_name("condition") else {
+            return;
+        };
+        let cond_text = get_node_text(&condition, source);
+
+        // Check for validations of each tracked variable
+        for var in var_types.keys() {
+            if !cond_text.contains(var) {
+                continue;
+            }
+            // Check for common validation patterns:
+            // - < 0 (negative check for signed to unsigned)
+            // - > MAX / <= MAX (upper bound for unsigned to signed or narrowing)
+            // - < MIN / >= MIN (lower bound for signed narrowing)
+            let has_bounds_check = (cond_text.contains('<')
+                || cond_text.contains('>')
+                || cond_text.contains("<=")
+                || cond_text.contains(">="))
+                && (cond_text.contains('0')
+                    || cond_text.contains("MAX")
+                    || cond_text.contains("MIN")
+                    || cond_text.contains("_MAX")
+                    || cond_text.contains("_MIN"));
+            if !has_bounds_check {
+                continue;
             }
 
-            // Detect bounded constant assignments: data = CHAR_MAX - 5;
-            // If a tracked variable is assigned a value referencing a type-limit macro,
-            // the programmer is aware of type bounds and subsequent casts are intentional.
-            if node.kind() == "expression_statement" {
-                if let Some(expr) = node.child(0) {
-                    if expr.kind() == "assignment_expression" {
-                        if let Some(left) = expr.child_by_field_name("left") {
-                            let lhs = get_node_text(&left, source).trim().to_string();
-                            if var_types.contains_key(&lhs) {
-                                if let Some(right) = expr.child_by_field_name("right") {
-                                    let rhs = get_node_text(&right, source);
-                                    if Self::rhs_has_narrow_limit_macro(rhs) {
-                                        validated_vars.insert(lhs);
-                                    }
-                                }
-                            }
-                        }
-                    }
+            // The variable is validated if:
+            // 1. There's error handling in consequence (then block) - else block is safe
+            // 2. The conversion happens in the consequence when bounds are validated
+            // 3. There's an alternative (else) that handles errors
+            if let Some(consequence) = node.child_by_field_name("consequence") {
+                let cons_text = get_node_text(&consequence, source);
+                // If error handling in consequence, the else branch is safe
+                if cons_text.contains("return")
+                    || cons_text.contains("Handle error")
+                    || cons_text.contains("error")
+                {
+                    validated_vars.insert(var.clone());
+                }
+                // If the conversion/assignment to var is in consequence after bounds check
+                // (like `if (u_a <= SCHAR_MAX) { sc = (signed char)u_a; }`)
+                // The variable being converted (u_a) is validated for that use
+                if cons_text.contains(var) {
+                    validated_vars.insert(var.clone());
                 }
             }
+            if let Some(alternative) = node.child_by_field_name("alternative") {
+                let alt_text = get_node_text(&alternative, source);
+                // If assignment is in alternative (else), var is validated
+                if alt_text.contains(var) {
+                    validated_vars.insert(var.clone());
+                }
+                // If else has error handling, then branch is safe
+                if alt_text.contains("Handle error") || alt_text.contains("error") {
+                    validated_vars.insert(var.clone());
+                }
+            }
+        }
+    }
 
-            // Also check init_declarator: int data = CHAR_MAX - 5;
-            if node.kind() == "init_declarator" {
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    let var_name = Self::extract_var_name(&declarator, source);
-                    if !var_name.is_empty() {
-                        if let Some(value) = node.child_by_field_name("value") {
-                            let rhs = get_node_text(&value, source);
-                            if Self::rhs_has_narrow_limit_macro(rhs) {
-                                validated_vars.insert(var_name);
-                            }
-                        }
-                    }
-                }
-            }
+    /// `expression_statement` case of [`collect_validations`]: `var = ...LIMIT_MACRO...;`.
+    fn collect_narrow_limit_assignment(
+        node: &Node,
+        source: &str,
+        validated_vars: &mut HashSet<String>,
+        var_types: &HashMap<String, String>,
+    ) {
+        let Some(expr) = node.child(0) else { return };
+        if expr.kind() != "assignment_expression" {
+            return;
+        }
+        let Some(left) = expr.child_by_field_name("left") else {
+            return;
+        };
+        let lhs = get_node_text(&left, source).trim().to_string();
+        if !var_types.contains_key(&lhs) {
+            return;
+        }
+        let Some(right) = expr.child_by_field_name("right") else {
+            return;
+        };
+        let rhs = get_node_text(&right, source);
+        if Self::rhs_has_narrow_limit_macro(rhs) {
+            validated_vars.insert(lhs);
+        }
+    }
+
+    /// `init_declarator` case of [`collect_validations`]: `int var = ...LIMIT_MACRO...;`.
+    fn collect_narrow_limit_init(node: &Node, source: &str, validated_vars: &mut HashSet<String>) {
+        let Some(declarator) = node.child_by_field_name("declarator") else {
+            return;
+        };
+        let var_name = Self::extract_var_name(&declarator, source);
+        if var_name.is_empty() {
+            return;
+        }
+        let Some(value) = node.child_by_field_name("value") else {
+            return;
+        };
+        let rhs = get_node_text(&value, source);
+        if Self::rhs_has_narrow_limit_macro(rhs) {
+            validated_vars.insert(var_name);
         }
     }
 

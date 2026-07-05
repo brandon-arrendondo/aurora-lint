@@ -327,102 +327,12 @@ fn process_declaration_null(
     summaries: &HashMap<String, FunctionSummary>,
 ) {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "init_declarator" {
-                if let Some(declarator) = child.child_by_field_name("declarator") {
-                    let var_name = get_identifier_from_declarator(&declarator, source);
-                    if var_name.is_empty() {
-                        continue;
-                    }
-                    let is_ptr = is_pointer_declarator(&declarator) && !contains_array(&declarator);
-
-                    if is_ptr {
-                        declared_pointers.insert(var_name.clone());
-                    }
-
-                    if let Some(value) = child.child_by_field_name("value") {
-                        if is_ptr {
-                            let rval = classify_rvalue_null(&value, source, summaries);
-                            // Propagate from another variable: Node *current = head;
-                            if rval == NullState::NotNull && value.kind() == "identifier" {
-                                let src_name = get_text(&value, source);
-                                if let Some(&src_state) = state.get(&src_name) {
-                                    state.insert(var_name, src_state);
-                                    continue;
-                                }
-                            }
-                            // Propagate from field access: ptr = other->next
-                            if rval == NullState::NotNull && value.kind() == "field_expression" {
-                                if let Some(arg) = value.child_by_field_name("argument") {
-                                    let base = get_text(&arg, source);
-                                    // Check dotted key first (struct field null propagation)
-                                    if let Some(field_node) = value.child_by_field_name("field") {
-                                        let field_name = get_text(&field_node, source);
-                                        let dotted = format!("{}.{}", base, field_name);
-                                        if let Some(&field_state) = state.get(&dotted) {
-                                            state.insert(var_name, field_state);
-                                            continue;
-                                        }
-                                    }
-                                    if let Some(&base_state) = state.get(&base) {
-                                        if base_state.is_unsafe() {
-                                            state.insert(var_name, NullState::PossiblyNull);
-                                            continue;
-                                        }
-                                    }
-                                }
-                            }
-                            // Propagate from array subscript: data = arr[idx]
-                            // Variant 66: array element null propagation (uses "arr.idx" dotted key)
-                            if rval == NullState::NotNull && value.kind() == "subscript_expression"
-                            {
-                                if let (Some(arg), Some(idx)) = (
-                                    value.child_by_field_name("argument"),
-                                    value.child_by_field_name("index"),
-                                ) {
-                                    let base = get_text(&arg, source);
-                                    let index = get_text(&idx, source);
-                                    let dotted = format!("{}.{}", base, index);
-                                    if let Some(&elem_state) = state.get(&dotted) {
-                                        state.insert(var_name, elem_state);
-                                        continue;
-                                    }
-                                }
-                            }
-                            // Propagate from pointer dereference: data = *dataPtr
-                            // or data = (*dataPtr) (parenthesized form in variant 64)
-                            // Variant 63/64: pointer-to-pointer null propagation
-                            if rval == NullState::NotNull {
-                                if let Some(deref_state) =
-                                    extract_deref_pointee_state(&value, source, state)
-                                {
-                                    state.insert(var_name, deref_state);
-                                    continue;
-                                }
-                            }
-                            // Propagate pointee state through cast: dataPtr = (T*)voidPtr
-                            // Variant 64: void pointer cast preserves pointee null state
-                            if value.kind() == "cast_expression" {
-                                if let Some(inner) = value.child_by_field_name("value") {
-                                    let inner = unwrap_parens(&inner);
-                                    if inner.kind() == "identifier" {
-                                        let inner_name = get_text(&inner, source);
-                                        let src_key = format!("*{}", inner_name);
-                                        if let Some(&s) = state.get(&src_key) {
-                                            let dst_key = format!("*{}", var_name);
-                                            state.insert(dst_key, s);
-                                        }
-                                    }
-                                }
-                            }
-                            state.insert(var_name, rval);
-                        }
-                    } else if is_ptr {
-                        // Uninitialized pointer
-                        state.insert(var_name, NullState::PossiblyNull);
-                    }
-                }
-            } else if child.kind() == "pointer_declarator" || child.kind() == "identifier" {
+        let Some(child) = node.child(i) else { continue };
+        match child.kind() {
+            "init_declarator" => {
+                process_init_declarator_null(&child, source, state, declared_pointers, summaries)
+            }
+            "pointer_declarator" | "identifier" => {
                 // Bare uninitialized pointer: "int *ptr;"
                 let var_name = get_identifier_from_declarator(&child, source);
                 if !var_name.is_empty() && is_pointer_declarator(&child) && !contains_array(&child)
@@ -431,7 +341,143 @@ fn process_declaration_null(
                     state.insert(var_name, NullState::PossiblyNull);
                 }
             }
+            _ => {}
         }
+    }
+}
+
+/// `init_declarator` case of [`process_declaration_null`]: resolve the
+/// pointer's initial null state, or mark it `PossiblyNull` when declared
+/// without an initializer.
+fn process_init_declarator_null(
+    child: &Node,
+    source: &str,
+    state: &mut StateMap,
+    declared_pointers: &mut HashSet<String>,
+    summaries: &HashMap<String, FunctionSummary>,
+) {
+    let Some(declarator) = child.child_by_field_name("declarator") else {
+        return;
+    };
+    let var_name = get_identifier_from_declarator(&declarator, source);
+    if var_name.is_empty() {
+        return;
+    }
+    let is_ptr = is_pointer_declarator(&declarator) && !contains_array(&declarator);
+    if is_ptr {
+        declared_pointers.insert(var_name.clone());
+    }
+    if !is_ptr {
+        return;
+    }
+
+    match child.child_by_field_name("value") {
+        Some(value) => resolve_pointer_init_state(var_name, &value, source, state, summaries),
+        None => {
+            // Uninitialized pointer
+            state.insert(var_name, NullState::PossiblyNull);
+        }
+    }
+}
+
+/// Classify the null state of a pointer's initializer expression, applying
+/// same-variable/field/subscript/dereference/cast propagation rules before
+/// falling back to the literal classification.
+fn resolve_pointer_init_state(
+    var_name: String,
+    value: &Node,
+    source: &str,
+    state: &mut StateMap,
+    summaries: &HashMap<String, FunctionSummary>,
+) {
+    let rval = classify_rvalue_null(value, source, summaries);
+    if rval == NullState::NotNull {
+        if let Some(propagated) = try_propagate_notnull_source_state(value, source, state) {
+            state.insert(var_name, propagated);
+            return;
+        }
+    }
+    // Propagate pointee state through cast: dataPtr = (T*)voidPtr
+    // Variant 64: void pointer cast preserves pointee null state
+    if value.kind() == "cast_expression" {
+        propagate_cast_pointee_state(&var_name, value, source, state);
+    }
+    state.insert(var_name, rval);
+}
+
+/// When a pointer initializer provably resolves to `NotNull` on its own
+/// terms (e.g. `malloc(...)`), check whether it's actually a propagation
+/// from another tracked value — a same-named variable (`current = head`), a
+/// struct field (`ptr = other->next`), an array element (`data = arr[idx]`,
+/// variant 66), or a dereference (`data = *dataPtr`, variant 63/64) — whose
+/// *tracked* state should be inherited instead of the literal `NotNull`.
+fn try_propagate_notnull_source_state(
+    value: &Node,
+    source: &str,
+    state: &StateMap,
+) -> Option<NullState> {
+    // Propagate from another variable: Node *current = head;
+    if value.kind() == "identifier" {
+        let src_name = get_text(value, source);
+        if let Some(&src_state) = state.get(&src_name) {
+            return Some(src_state);
+        }
+    }
+    // Propagate from field access: ptr = other->next
+    if value.kind() == "field_expression" {
+        if let Some(arg) = value.child_by_field_name("argument") {
+            let base = get_text(&arg, source);
+            // Check dotted key first (struct field null propagation)
+            if let Some(field_node) = value.child_by_field_name("field") {
+                let field_name = get_text(&field_node, source);
+                let dotted = format!("{}.{}", base, field_name);
+                if let Some(&field_state) = state.get(&dotted) {
+                    return Some(field_state);
+                }
+            }
+            if let Some(&base_state) = state.get(&base) {
+                if base_state.is_unsafe() {
+                    return Some(NullState::PossiblyNull);
+                }
+            }
+        }
+    }
+    // Propagate from array subscript: data = arr[idx]
+    // Variant 66: array element null propagation (uses "arr.idx" dotted key)
+    if value.kind() == "subscript_expression" {
+        if let (Some(arg), Some(idx)) = (
+            value.child_by_field_name("argument"),
+            value.child_by_field_name("index"),
+        ) {
+            let base = get_text(&arg, source);
+            let index = get_text(&idx, source);
+            let dotted = format!("{}.{}", base, index);
+            if let Some(&elem_state) = state.get(&dotted) {
+                return Some(elem_state);
+            }
+        }
+    }
+    // Propagate from pointer dereference: data = *dataPtr
+    // or data = (*dataPtr) (parenthesized form in variant 64)
+    // Variant 63/64: pointer-to-pointer null propagation
+    extract_deref_pointee_state(value, source, state)
+}
+
+/// `dataPtr = (T*)voidPtr` case: void-pointer casts preserve the pointee's
+/// null state, tracked under the `*var_name` dereference key (variant 64).
+fn propagate_cast_pointee_state(var_name: &str, value: &Node, source: &str, state: &mut StateMap) {
+    let Some(inner) = value.child_by_field_name("value") else {
+        return;
+    };
+    let inner = unwrap_parens(&inner);
+    if inner.kind() != "identifier" {
+        return;
+    }
+    let inner_name = get_text(&inner, source);
+    let src_key = format!("*{}", inner_name);
+    if let Some(&s) = state.get(&src_key) {
+        let dst_key = format!("*{}", var_name);
+        state.insert(dst_key, s);
     }
 }
 
@@ -442,93 +488,53 @@ fn process_expression_null(
     declared_pointers: &HashSet<String>,
     summaries: &HashMap<String, FunctionSummary>,
 ) {
-    if node.kind() == "assignment_expression" {
-        if let (Some(left), Some(right)) = (
-            node.child_by_field_name("left"),
-            node.child_by_field_name("right"),
-        ) {
-            let left_name = get_text(&left, source);
-            let left_is_ptr = left.kind() != "identifier" || declared_pointers.contains(&left_name);
+    if node.kind() != "assignment_expression" {
+        return;
+    }
+    let (Some(left), Some(right)) = (
+        node.child_by_field_name("left"),
+        node.child_by_field_name("right"),
+    ) else {
+        return;
+    };
 
-            if !left_is_ptr {
-                return;
-            }
+    let left_name = get_text(&left, source);
+    let left_is_ptr = left.kind() != "identifier" || declared_pointers.contains(&left_name);
+    if !left_is_ptr {
+        return;
+    }
 
-            let new_state = classify_rvalue_null(&right, source, summaries);
-            // Propagation from another variable
-            if new_state == NullState::NotNull && right.kind() == "identifier" {
-                let right_name = get_text(&right, source);
-                if let Some(&rhs_state) = state.get(&right_name) {
-                    state.insert(left_name, rhs_state);
-                    return;
-                }
-            }
-            if new_state == NullState::NotNull && right.kind() == "field_expression" {
-                // ptr = other->next: propagate other's state
-                if let Some(arg) = right.child_by_field_name("argument") {
-                    let base = get_text(&arg, source);
-                    // Check dotted key first (struct field null propagation)
-                    if let Some(field_node) = right.child_by_field_name("field") {
-                        let field_name = get_text(&field_node, source);
-                        let dotted = format!("{}.{}", base, field_name);
-                        if let Some(&field_state) = state.get(&dotted) {
-                            state.insert(left_name, field_state);
-                            return;
-                        }
-                    }
-                    if let Some(&base_state) = state.get(&base) {
-                        if base_state.is_unsafe() {
-                            state.insert(left_name, NullState::PossiblyNull);
-                            return;
-                        }
-                    }
-                }
-            }
-            // Propagate from array subscript: data = arr[idx] (variant 66)
-            if new_state == NullState::NotNull && right.kind() == "subscript_expression" {
-                if let (Some(arg), Some(idx)) = (
-                    right.child_by_field_name("argument"),
-                    right.child_by_field_name("index"),
-                ) {
-                    let base = get_text(&arg, source);
-                    let index = get_text(&idx, source);
-                    let dotted = format!("{}.{}", base, index);
-                    if let Some(&elem_state) = state.get(&dotted) {
-                        state.insert(left_name, elem_state);
-                        return;
-                    }
-                }
-            }
-            // Propagate from pointer dereference: data = *dataPtr or (*dataPtr)
-            // Variant 63/64: pointer-to-pointer null propagation
-            if new_state == NullState::NotNull {
-                if let Some(deref_state) = extract_deref_pointee_state(&right, source, state) {
-                    state.insert(left_name, deref_state);
-                    return;
-                }
-            }
-            // Propagate pointee state through cast: dataPtr = (T*)voidPtr (variant 64)
-            if right.kind() == "cast_expression" {
-                if let Some(inner) = right.child_by_field_name("value") {
-                    let inner = unwrap_parens(&inner);
-                    if inner.kind() == "identifier" {
-                        let inner_name = get_text(&inner, source);
-                        let src_key = format!("*{}", inner_name);
-                        if let Some(&s) = state.get(&src_key) {
-                            let dst_key = format!("*{}", left_name);
-                            state.insert(dst_key, s);
-                        }
-                    }
-                }
-            }
-            // Non-nullable function call clears null taint
-            if right.kind() == "call_expression" && new_state == NullState::NotNull {
-                state.insert(left_name, NullState::NotNull);
-                return;
-            }
-            state.insert(left_name, new_state);
+    resolve_assignment_null_state(left_name, &right, source, state, summaries);
+}
+
+/// Classify the null state of an assignment's RHS, applying the same
+/// variable/field/subscript/dereference/cast propagation rules as
+/// [`resolve_pointer_init_state`] before falling back to the literal
+/// classification.
+fn resolve_assignment_null_state(
+    left_name: String,
+    right: &Node,
+    source: &str,
+    state: &mut StateMap,
+    summaries: &HashMap<String, FunctionSummary>,
+) {
+    let new_state = classify_rvalue_null(right, source, summaries);
+    if new_state == NullState::NotNull {
+        if let Some(propagated) = try_propagate_notnull_source_state(right, source, state) {
+            state.insert(left_name, propagated);
+            return;
         }
     }
+    // Propagate pointee state through cast: dataPtr = (T*)voidPtr (variant 64)
+    if right.kind() == "cast_expression" {
+        propagate_cast_pointee_state(&left_name, right, source, state);
+    }
+    // Non-nullable function call clears null taint
+    if right.kind() == "call_expression" && new_state == NullState::NotNull {
+        state.insert(left_name, NullState::NotNull);
+        return;
+    }
+    state.insert(left_name, new_state);
 }
 
 /// Recognize an `assert(...)` precondition and mark every pointer the asserted
@@ -1060,68 +1066,8 @@ pub fn analyze_null_states_with_globals(
         }
     };
 
-    let mut declared_pointers = HashSet::new();
-
-    // Initialize entry state: pointer params -> NotNull (or callsite-derived), globals -> precomputed
-    let mut initial_state = StateMap::new();
-
-    // Seed with global variable states
-    for (name, &state) in global_states {
-        initial_state.insert(name.clone(), state);
-        declared_pointers.insert(name.clone());
-    }
-
-    // Look up call-site-derived param states if func_name is available
-    let func_summary = func_name.and_then(|name| summaries.get(name));
-    let callsite_states = func_summary.map(|s| &s.callsite_param_null_states);
-
-    if let Some(declarator) = func_node.child_by_field_name("declarator") {
-        collect_param_pointer_state(
-            &declarator,
-            source,
-            &mut initial_state,
-            &mut declared_pointers,
-            callsite_states,
-        );
-
-        // Seed struct field null states: "paramName.fieldName" → NullState
-        // Enables variant 67 detection (struct field null propagation across functions)
-        if let Some(summary) = func_summary {
-            if !summary.callsite_param_field_null_states.is_empty() {
-                let param_names =
-                    crate::analyze::function_summary::collect_param_names(func_node, source);
-                for (param_idx, field_states) in &summary.callsite_param_field_null_states {
-                    if let Some(param_name) = param_names.get(*param_idx) {
-                        if !param_name.is_empty() {
-                            for (field_name, &state) in field_states {
-                                let key = format!("{}.{}", param_name, field_name);
-                                initial_state.insert(key, state);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Seed pointer-to-pointer pointee null states: "*paramName" → NullState
-        // Enables variant 63 detection (pointer-to-pointer null propagation)
-        // When caller passes &data where data=NULL, sink receives **param and
-        // *param yields the NULL pointer.
-        if let Some(summary) = func_summary {
-            if !summary.callsite_param_pointee_null_states.is_empty() {
-                let param_names =
-                    crate::analyze::function_summary::collect_param_names(func_node, source);
-                for (param_idx, &state) in &summary.callsite_param_pointee_null_states {
-                    if let Some(param_name) = param_names.get(*param_idx) {
-                        if !param_name.is_empty() {
-                            let key = format!("*{}", param_name);
-                            initial_state.insert(key, state);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let (initial_state, mut declared_pointers) =
+        seed_initial_null_state(func_node, source, summaries, global_states, func_name);
 
     let mut entry_states: HashMap<BlockId, StateMap> = HashMap::new();
     let mut exit_states: HashMap<BlockId, StateMap> = HashMap::new();
@@ -1144,6 +1090,130 @@ pub fn analyze_null_states_with_globals(
     );
     exit_states.insert(cfg.entry, entry_exit);
 
+    run_null_state_worklist(
+        cfg,
+        &body,
+        source,
+        summaries,
+        &mut declared_pointers,
+        &mut entry_states,
+        &mut exit_states,
+    );
+
+    NullAnalysisResult {
+        block_entry_states: entry_states,
+        block_exit_states: exit_states,
+        declared_pointers,
+    }
+}
+
+/// Build the entry-block null-state seed: global variable states, then
+/// (if the function's declarator is available) call-site-derived parameter
+/// states, struct-field states (variant 67), and pointer-to-pointer pointee
+/// states (variant 63).
+fn seed_initial_null_state(
+    func_node: &Node,
+    source: &str,
+    summaries: &HashMap<String, FunctionSummary>,
+    global_states: &StateMap,
+    func_name: Option<&str>,
+) -> (StateMap, HashSet<String>) {
+    let mut declared_pointers = HashSet::new();
+    let mut initial_state = StateMap::new();
+
+    // Seed with global variable states
+    for (name, &state) in global_states {
+        initial_state.insert(name.clone(), state);
+        declared_pointers.insert(name.clone());
+    }
+
+    // Look up call-site-derived param states if func_name is available
+    let func_summary = func_name.and_then(|name| summaries.get(name));
+    let callsite_states = func_summary.map(|s| &s.callsite_param_null_states);
+
+    let Some(declarator) = func_node.child_by_field_name("declarator") else {
+        return (initial_state, declared_pointers);
+    };
+    collect_param_pointer_state(
+        &declarator,
+        source,
+        &mut initial_state,
+        &mut declared_pointers,
+        callsite_states,
+    );
+
+    if let Some(summary) = func_summary {
+        seed_callsite_field_null_states(func_node, source, summary, &mut initial_state);
+        seed_callsite_pointee_null_states(func_node, source, summary, &mut initial_state);
+    }
+
+    (initial_state, declared_pointers)
+}
+
+/// Seed struct field null states: "paramName.fieldName" → NullState.
+/// Enables variant 67 detection (struct field null propagation across functions).
+fn seed_callsite_field_null_states(
+    func_node: &Node,
+    source: &str,
+    summary: &FunctionSummary,
+    initial_state: &mut StateMap,
+) {
+    if summary.callsite_param_field_null_states.is_empty() {
+        return;
+    }
+    let param_names = crate::analyze::function_summary::collect_param_names(func_node, source);
+    for (param_idx, field_states) in &summary.callsite_param_field_null_states {
+        let Some(param_name) = param_names.get(*param_idx) else {
+            continue;
+        };
+        if param_name.is_empty() {
+            continue;
+        }
+        for (field_name, &state) in field_states {
+            let key = format!("{}.{}", param_name, field_name);
+            initial_state.insert(key, state);
+        }
+    }
+}
+
+/// Seed pointer-to-pointer pointee null states: "*paramName" → NullState.
+/// Enables variant 63 detection (pointer-to-pointer null propagation) — when
+/// caller passes `&data` where `data=NULL`, sink receives `**param` and
+/// `*param` yields the NULL pointer.
+fn seed_callsite_pointee_null_states(
+    func_node: &Node,
+    source: &str,
+    summary: &FunctionSummary,
+    initial_state: &mut StateMap,
+) {
+    if summary.callsite_param_pointee_null_states.is_empty() {
+        return;
+    }
+    let param_names = crate::analyze::function_summary::collect_param_names(func_node, source);
+    for (param_idx, &state) in &summary.callsite_param_pointee_null_states {
+        let Some(param_name) = param_names.get(*param_idx) else {
+            continue;
+        };
+        if param_name.is_empty() {
+            continue;
+        }
+        let key = format!("*{}", param_name);
+        initial_state.insert(key, state);
+    }
+}
+
+/// Run the forward-dataflow worklist fixpoint over the CFG, updating
+/// `entry_states`/`exit_states` in place.
+#[allow(clippy::too_many_arguments)]
+fn run_null_state_worklist(
+    cfg: &FunctionCfg,
+    body: &Node,
+    source: &str,
+    summaries: &HashMap<String, FunctionSummary>,
+    declared_pointers: &mut HashSet<String>,
+    entry_states: &mut HashMap<BlockId, StateMap>,
+    exit_states: &mut HashMap<BlockId, StateMap>,
+) {
     // Worklist — companion set for O(1) membership test instead of O(N) VecDeque::contains.
     let mut worklist: VecDeque<BlockId> = VecDeque::new();
     let mut in_worklist: HashSet<BlockId> = HashSet::new();
@@ -1171,8 +1241,7 @@ pub fn analyze_null_states_with_globals(
             let pred_exit = exit_states.get(pred_id).cloned().unwrap_or_default();
 
             // Apply edge refinement from condition
-            let refined =
-                apply_edge_refinement(&pred_exit, *pred_id, edge_kind, cfg, &body, source);
+            let refined = apply_edge_refinement(&pred_exit, *pred_id, edge_kind, cfg, body, source);
 
             if first {
                 new_entry = refined;
@@ -1192,9 +1261,9 @@ pub fn analyze_null_states_with_globals(
         let new_exit = apply_transfer(
             block,
             &new_entry,
-            &body,
+            body,
             source,
-            &mut declared_pointers,
+            declared_pointers,
             summaries,
         );
 
@@ -1213,12 +1282,6 @@ pub fn analyze_null_states_with_globals(
         } else {
             entry_states.insert(block_id, new_entry);
         }
-    }
-
-    NullAnalysisResult {
-        block_entry_states: entry_states,
-        block_exit_states: exit_states,
-        declared_pointers,
     }
 }
 

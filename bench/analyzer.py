@@ -317,75 +317,114 @@ def analyze_cwe(csv_path: str | Path, cwe_dir: str | Path,
         if not search_dir.is_dir():
             continue
         for c_file in sorted(search_dir.glob('*.c')):
-            sections = parse_c_file_sections(c_file)
-            filename = c_file.name
-            file_violations = violations_dict.get(filename, {})
-
-            if not sections['bad_lines'] and not sections['good_lines']:
+            result = _process_cwe_file(
+                c_file, violations_dict, cwe_rules, analysis, cwe_scan_id,
+                rule_tp, rule_fp, rule_flaw)
+            if result is None:
                 continue
-
-            analysis.files_analyzed += 1
-            analysis.flaw_lines_total += len(sections['flaw_lines'])
-            total_flaw_lines_for_hit += len(sections['flaw_lines'])
-
-            has_bad = bool(sections['bad_lines'])
+            has_bad, file_has_cwe_tp, flaw_line_count = result
+            total_flaw_lines_for_hit += flaw_line_count
             if has_bad:
                 files_with_bad_section += 1
-
-            file_has_cwe_tp = False
-
-            for line_num, rule_entries in file_violations.items():
-                for rule_id, filepath in rule_entries:
-                    in_bad = line_num in sections['bad_lines']
-                    in_good = line_num in sections['good_lines']
-                    on_flaw = _hits_flaw_line(line_num, sections['flaw_lines'])
-                    is_matched = rule_id in cwe_rules if cwe_rules else False
-
-                    if in_bad:
-                        classification = "tp"
-                        analysis.tp_count += 1
-                        rule_tp[rule_id] += 1
-                        if line_num in sections['flaw_lines']:
-                            analysis.flaw_lines_detected += 1
-                            rule_flaw[rule_id] += 1
-
-                        if is_matched:
-                            analysis.cwe_matched_tp += 1
-                            file_has_cwe_tp = True
-                            if on_flaw:
-                                analysis.flaw_hit_detected += 1
-                        else:
-                            analysis.noise_count += 1
-                    elif in_good:
-                        classification = "fp"
-                        analysis.fp_count += 1
-                        rule_fp[rule_id] += 1
-
-                        if is_matched:
-                            analysis.cwe_matched_fp += 1
-                        else:
-                            analysis.noise_count += 1
-                    else:
-                        classification = "unknown"
-
-                    # Build violation record for DB
-                    if cwe_scan_id is not None:
-                        analysis.violations.append({
-                            "cwe_scan_id": cwe_scan_id,
-                            "rule_id": rule_id,
-                            "file_path": filepath,
-                            "line": line_num,
-                            "classification": classification,
-                            "in_bad_section": int(in_bad),
-                            "in_good_section": int(in_good),
-                            "hits_flaw_line": int(on_flaw),
-                            "is_cwe_matched": int(is_matched),
-                        })
-
             if file_has_cwe_tp:
                 files_detected += 1
 
-    # Compute rates
+    _finalize_cwe_rates(analysis, files_with_bad_section, files_detected,
+                        total_flaw_lines_for_hit)
+    _build_rule_breakdown(analysis, rule_tp, rule_fp, rule_flaw, cwe_rules)
+
+    return analysis
+
+
+def _process_cwe_file(c_file, violations_dict, cwe_rules, analysis, cwe_scan_id,
+                      rule_tp, rule_fp, rule_flaw):
+    """Classify one Juliet C file's violations against its bad/good sections.
+
+    Updates `analysis`/`rule_tp`/`rule_fp`/`rule_flaw` in place. Returns
+    `None` if the file has no labeled bad/good sections (skip it), else
+    `(has_bad_section, file_has_cwe_tp, flaw_line_count)`.
+    """
+    sections = parse_c_file_sections(c_file)
+    filename = c_file.name
+    file_violations = violations_dict.get(filename, {})
+
+    if not sections['bad_lines'] and not sections['good_lines']:
+        return None
+
+    analysis.files_analyzed += 1
+    analysis.flaw_lines_total += len(sections['flaw_lines'])
+
+    file_has_cwe_tp = False
+    for line_num, rule_entries in file_violations.items():
+        for rule_id, filepath in rule_entries:
+            if _classify_and_record_violation(
+                line_num, rule_id, filepath, sections, cwe_rules, analysis,
+                cwe_scan_id, rule_tp, rule_fp, rule_flaw,
+            ):
+                file_has_cwe_tp = True
+
+    return bool(sections['bad_lines']), file_has_cwe_tp, len(sections['flaw_lines'])
+
+
+def _classify_and_record_violation(line_num, rule_id, filepath, sections, cwe_rules,
+                                   analysis, cwe_scan_id, rule_tp, rule_fp, rule_flaw):
+    """Classify one violation as tp/fp/unknown against a file's labeled
+    sections, update the running counters, and optionally append a DB
+    violation record. Returns True iff this is a CWE-matched true positive.
+    """
+    in_bad = line_num in sections['bad_lines']
+    in_good = line_num in sections['good_lines']
+    on_flaw = _hits_flaw_line(line_num, sections['flaw_lines'])
+    is_matched = rule_id in cwe_rules if cwe_rules else False
+    is_cwe_matched_tp = False
+
+    if in_bad:
+        classification = "tp"
+        analysis.tp_count += 1
+        rule_tp[rule_id] += 1
+        if line_num in sections['flaw_lines']:
+            analysis.flaw_lines_detected += 1
+            rule_flaw[rule_id] += 1
+
+        if is_matched:
+            analysis.cwe_matched_tp += 1
+            is_cwe_matched_tp = True
+            if on_flaw:
+                analysis.flaw_hit_detected += 1
+        else:
+            analysis.noise_count += 1
+    elif in_good:
+        classification = "fp"
+        analysis.fp_count += 1
+        rule_fp[rule_id] += 1
+
+        if is_matched:
+            analysis.cwe_matched_fp += 1
+        else:
+            analysis.noise_count += 1
+    else:
+        classification = "unknown"
+
+    # Build violation record for DB
+    if cwe_scan_id is not None:
+        analysis.violations.append({
+            "cwe_scan_id": cwe_scan_id,
+            "rule_id": rule_id,
+            "file_path": filepath,
+            "line": line_num,
+            "classification": classification,
+            "in_bad_section": int(in_bad),
+            "in_good_section": int(in_good),
+            "hits_flaw_line": int(on_flaw),
+            "is_cwe_matched": int(is_matched),
+        })
+
+    return is_cwe_matched_tp
+
+
+def _finalize_cwe_rates(analysis, files_with_bad_section, files_detected,
+                        total_flaw_lines_for_hit):
+    """Compute the derived rate fields on `analysis` from the raw counters."""
     total_violations = analysis.tp_count + analysis.fp_count
     if total_violations > 0:
         analysis.tp_rate_pct = round(analysis.tp_count / total_violations * 100, 1)
@@ -410,7 +449,9 @@ def analyze_cwe(csv_path: str | Path, cwe_dir: str | Path,
         analysis.flaw_hit_rate = round(
             analysis.flaw_hit_detected / total_flaw_lines_for_hit * 100, 1)
 
-    # Build rule breakdown
+
+def _build_rule_breakdown(analysis, rule_tp, rule_fp, rule_flaw, cwe_rules):
+    """Populate `analysis.rule_breakdown` from the per-rule counters."""
     all_rules = set(rule_tp) | set(rule_fp) | set(rule_flaw)
     for rule in all_rules:
         analysis.rule_breakdown[rule] = {
@@ -419,5 +460,3 @@ def analyze_cwe(csv_path: str | Path, cwe_dir: str | Path,
             "flaw": rule_flaw.get(rule, 0),
             "is_cwe_matched": int(rule in cwe_rules) if cwe_rules else 0,
         }
-
-    return analysis

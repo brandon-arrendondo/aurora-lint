@@ -223,69 +223,8 @@ impl Str31C {
 
         let lines: Vec<&str> = source.lines().collect();
 
-        // Look for array declarations like: char var_name[SIZE] or char var_name[N*M].
-        // Skip element-assignment lines like `data[0] = '\0'` — those are subscript writes,
-        // not declarations, and the captured index (0) is not the buffer size.
-        for line in &lines {
-            if line.contains(var_name) && line.contains("[") && line.contains("]") {
-                // Try simple numeric size first: var_name[N]
-                let pattern = format!(r"\b{}\s*\[\s*(\d+)\s*\]", regex::escape(var_name));
-                if let Ok(re) = regex::Regex::new(&pattern) {
-                    if let Some(captures) = re.captures(line) {
-                        // Guard: if ] is immediately followed by `= <scalar>` this is an
-                        // element assignment (data[0] = '\0'), not a declaration.
-                        // Scalar RHS = char literal, wide char literal, number, or NULL.
-                        // Allow macro/string/brace initializers (declaration syntax).
-                        let match_end = captures.get(0).unwrap().end();
-                        let after = line[match_end..].trim_start();
-                        let is_element_assign = after.starts_with('=') && {
-                            let rhs = after[1..].trim_start();
-                            rhs.starts_with('\'')    // char literal: '\0'
-                            || rhs.starts_with("L'") // wide char: L'\0'
-                            || rhs.starts_with("u'") || rhs.starts_with("U'")
-                            || rhs.chars().next().is_some_and(|c| c.is_ascii_digit())
-                            || rhs.starts_with("NULL")
-                            || rhs.starts_with("nullptr")
-                        };
-                        if !is_element_assign {
-                            if let Ok(size) = captures[1].parse::<usize>() {
-                                return Some(size);
-                            }
-                        }
-                    }
-                }
-                // Try arithmetic expression: var_name[N*M] or var_name[N+M] or var_name[N-M]
-                let arith_pattern = format!(
-                    r"\b{}\s*\[\s*(\d+)\s*([*+\-])\s*(\d+)\s*\]",
-                    regex::escape(var_name)
-                );
-                if let Ok(re) = regex::Regex::new(&arith_pattern) {
-                    if let Some(captures) = re.captures(line) {
-                        let match_end = captures.get(0).unwrap().end();
-                        let after = line[match_end..].trim_start();
-                        let is_element_assign = after.starts_with('=') && {
-                            let rhs = after[1..].trim_start();
-                            rhs.starts_with('\'')
-                                || rhs.starts_with("L'")
-                                || rhs.starts_with("u'")
-                                || rhs.starts_with("U'")
-                                || rhs.chars().next().is_some_and(|c| c.is_ascii_digit())
-                                || rhs.starts_with("NULL")
-                                || rhs.starts_with("nullptr")
-                        };
-                        if !is_element_assign {
-                            let size = buffer_size::eval_arith(
-                                captures[1].parse().ok(),
-                                Some(&captures[2]),
-                                captures[3].parse().ok(),
-                            );
-                            if let Some(s) = size {
-                                return Some(s);
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(size) = Self::find_array_declaration_size(var_name, &lines) {
+            return Some(size);
         }
 
         // Restrict dynamic-allocation scans to the enclosing function to prevent cross-function
@@ -293,6 +232,89 @@ impl Str31C {
         let fn_start = fn_range.map_or(0, |(s, _)| s);
         let fn_end = fn_range.map_or(lines.len().saturating_sub(1), |(_, e)| e);
 
+        if let Some(size) = Self::find_strlen_based_alloc_size(var_name, &lines, fn_start, fn_end) {
+            return Some(size);
+        }
+        if let Some(size) = Self::find_fixed_alloc_size(var_name, &lines, fn_start, fn_end) {
+            return Some(size);
+        }
+        if let Some(size) = Self::find_realloc_dynamic_size(var_name, &lines, fn_start, fn_end) {
+            return Some(size);
+        }
+        Self::find_alloca_size(var_name, &lines, fn_start, fn_end)
+    }
+
+    /// Look for array declarations like `char var_name[SIZE]` or
+    /// `char var_name[N*M]`. Skips element-assignment lines like
+    /// `data[0] = '\0'` — those are subscript writes, not declarations, and
+    /// the captured index (0) is not the buffer size.
+    fn find_array_declaration_size(var_name: &str, lines: &[&str]) -> Option<usize> {
+        /// Scalar RHS after `]=` = char/wide-char literal, number, or NULL —
+        /// signals an element assignment rather than a declaration initializer.
+        fn is_element_assign_rhs(after: &str) -> bool {
+            after.starts_with('=') && {
+                let rhs = after[1..].trim_start();
+                rhs.starts_with('\'')
+                    || rhs.starts_with("L'")
+                    || rhs.starts_with("u'")
+                    || rhs.starts_with("U'")
+                    || rhs.chars().next().is_some_and(|c| c.is_ascii_digit())
+                    || rhs.starts_with("NULL")
+                    || rhs.starts_with("nullptr")
+            }
+        }
+
+        for line in lines {
+            if !(line.contains(var_name) && line.contains('[') && line.contains(']')) {
+                continue;
+            }
+            // Try simple numeric size first: var_name[N]
+            let pattern = format!(r"\b{}\s*\[\s*(\d+)\s*\]", regex::escape(var_name));
+            if let Ok(re) = regex::Regex::new(&pattern) {
+                if let Some(captures) = re.captures(line) {
+                    let match_end = captures.get(0).unwrap().end();
+                    let after = line[match_end..].trim_start();
+                    if !is_element_assign_rhs(after) {
+                        if let Ok(size) = captures[1].parse::<usize>() {
+                            return Some(size);
+                        }
+                    }
+                }
+            }
+            // Try arithmetic expression: var_name[N*M] or var_name[N+M] or var_name[N-M]
+            let arith_pattern = format!(
+                r"\b{}\s*\[\s*(\d+)\s*([*+\-])\s*(\d+)\s*\]",
+                regex::escape(var_name)
+            );
+            if let Ok(re) = regex::Regex::new(&arith_pattern) {
+                if let Some(captures) = re.captures(line) {
+                    let match_end = captures.get(0).unwrap().end();
+                    let after = line[match_end..].trim_start();
+                    if !is_element_assign_rhs(after) {
+                        let size = buffer_size::eval_arith(
+                            captures[1].parse().ok(),
+                            Some(&captures[2]),
+                            captures[3].parse().ok(),
+                        );
+                        if let Some(s) = size {
+                            return Some(s);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Look for malloc/calloc assignments with `strlen`/`wcslen` + 1 →
+    /// dynamically safe, either directly in the call or via an
+    /// intermediate size variable assigned from strlen/wcslen.
+    fn find_strlen_based_alloc_size(
+        var_name: &str,
+        lines: &[&str],
+        fn_start: usize,
+        fn_end: usize,
+    ) -> Option<usize> {
         // Regexes for indirect strlen/wcslen safe-allocation detection (hoisted outside loop).
         // calloc(len+1, 1) or calloc(len+1, sizeof(char)) — byte-string safe allocation.
         let calloc_narrow_re = regex::Regex::new(
@@ -307,13 +329,27 @@ impl Str31C {
         // malloc(len+1) — implied byte-sized element safe allocation.
         let malloc_indirect_re = regex::Regex::new(r"malloc\s*\(\s*(\w+)\s*\+\s*1\s*\)").ok();
 
-        // Look for malloc/calloc assignments with strlen + 1 → dynamically safe
+        // Checks whether `size_var` was assigned from strlen()/wcslen() anywhere
+        // in the enclosing function's line range.
+        let assigned_from_len_fn = |size_var: &str, wide: bool| -> bool {
+            let pat = if wide {
+                format!(r"\b{}\s*=\s*wcslen\s*\(", regex::escape(size_var))
+            } else {
+                format!(r"\b{}\s*=\s*(?:w?)strlen\s*\(", regex::escape(size_var))
+            };
+            let Ok(re) = regex::Regex::new(&pat) else {
+                return false;
+            };
+            let end = fn_end.min(lines.len().saturating_sub(1));
+            lines[fn_start..=end].iter().any(|l| re.is_match(l))
+        };
+
         for (idx, line) in lines.iter().enumerate() {
             if idx < fn_start || idx > fn_end {
                 continue;
             }
             if line.contains(var_name)
-                && line.contains("=")
+                && line.contains('=')
                 && (line.contains("malloc") || line.contains("calloc"))
                 && line.contains("strlen")
                 && line.contains("+ 1")
@@ -324,193 +360,185 @@ impl Str31C {
             // strlen_var was assigned from strlen() — safe byte-string allocation.
             // Only matches when element size is 1 byte to distinguish from
             // calloc(strlen_var+1, sizeof(wchar_t)) which is a real bug.
-            if line.contains(var_name) && line.contains("=") && line.contains("calloc") {
-                if let Some(re) = &calloc_narrow_re {
-                    if let Some(caps) = re.captures(line) {
-                        let size_var = &caps[1];
-                        let strlen_pat =
-                            format!(r"\b{}\s*=\s*(?:w?)strlen\s*\(", regex::escape(size_var));
-                        if let Ok(strlen_re) = regex::Regex::new(&strlen_pat) {
-                            let end = fn_end.min(lines.len().saturating_sub(1));
-                            if lines[fn_start..=end].iter().any(|l| strlen_re.is_match(l)) {
-                                return Some(usize::MAX);
-                            }
-                        }
+            if line.contains(var_name) && line.contains('=') && line.contains("calloc") {
+                if let Some(caps) = calloc_narrow_re.as_ref().and_then(|re| re.captures(line)) {
+                    if assigned_from_len_fn(&caps[1], false) {
+                        return Some(usize::MAX);
                     }
                 }
                 // calloc(wcslen_var+1, sizeof(wchar_t)) where wcslen_var = wcslen(...)
                 // — safe wide-string allocation.  Requires wcslen specifically (not strlen)
                 // so calloc(strlen_var+1, sizeof(wchar_t)) remains flagged as a real bug.
-                if let Some(re) = &calloc_wide_re {
-                    if let Some(caps) = re.captures(line) {
-                        let size_var = &caps[1];
-                        let wcslen_pat =
-                            format!(r"\b{}\s*=\s*wcslen\s*\(", regex::escape(size_var));
-                        if let Ok(wcslen_re) = regex::Regex::new(&wcslen_pat) {
-                            let end = fn_end.min(lines.len().saturating_sub(1));
-                            if lines[fn_start..=end].iter().any(|l| wcslen_re.is_match(l)) {
-                                return Some(usize::MAX);
-                            }
-                        }
+                if let Some(caps) = calloc_wide_re.as_ref().and_then(|re| re.captures(line)) {
+                    if assigned_from_len_fn(&caps[1], true) {
+                        return Some(usize::MAX);
                     }
                 }
             }
             // malloc(strlen_var+1) — implied byte-sized element
-            if line.contains(var_name) && line.contains("=") && line.contains("malloc") {
-                if let Some(re) = &malloc_indirect_re {
-                    if let Some(caps) = re.captures(line) {
-                        let size_var = &caps[1];
-                        let strlen_pat =
-                            format!(r"\b{}\s*=\s*(?:w?)strlen\s*\(", regex::escape(size_var));
-                        if let Ok(strlen_re) = regex::Regex::new(&strlen_pat) {
-                            let end = fn_end.min(lines.len().saturating_sub(1));
-                            if lines[fn_start..=end].iter().any(|l| strlen_re.is_match(l)) {
-                                return Some(usize::MAX);
-                            }
-                        }
+            if line.contains(var_name) && line.contains('=') && line.contains("malloc") {
+                if let Some(caps) = malloc_indirect_re.as_ref().and_then(|re| re.captures(line)) {
+                    if assigned_from_len_fn(&caps[1], false) {
+                        return Some(usize::MAX);
                     }
                 }
             }
         }
+        None
+    }
 
-        // Look for malloc/calloc assignments with specific sizes.
-        // Handles casts: `data = (char *)malloc(N*sizeof(char))` and plain `malloc(N)`.
+    /// Look for malloc/calloc assignments with specific numeric sizes.
+    /// Handles casts (`data = (char *)malloc(N*sizeof(char))`), parenthesized
+    /// arithmetic (`malloc((N+M)*sizeof(type))`), and plain `malloc(N)`.
+    fn find_fixed_alloc_size(
+        var_name: &str,
+        lines: &[&str],
+        fn_start: usize,
+        fn_end: usize,
+    ) -> Option<usize> {
         let malloc_sizeof_re =
             regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[*,]\s*sizeof").ok();
-        // malloc((N+M)*sizeof(type)) — parenthesized arithmetic, e.g. malloc((10+1)*sizeof(char))
         let malloc_paren_sizeof_re = regex::Regex::new(
             r"(?:malloc|calloc)\s*\(\s*\(\s*(\d+)\s*(?:([+*\-])\s*(\d+))?\s*\)\s*\*\s*sizeof",
         )
         .ok();
         let malloc_plain_re = regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[,)]").ok();
+
+        for (idx, line) in lines.iter().enumerate() {
+            if idx < fn_start || idx > fn_end {
+                continue;
+            }
+            if !(line.contains(var_name)
+                && line.contains('=')
+                && (line.contains("malloc") || line.contains("calloc")))
+            {
+                continue;
+            }
+            // malloc(N*sizeof(type)) or calloc(N, sizeof(type))
+            if let Some(caps) = malloc_sizeof_re.as_ref().and_then(|re| re.captures(line)) {
+                if let Ok(n) = caps[1].parse::<usize>() {
+                    return Some(n);
+                }
+            }
+            // malloc((N+M)*sizeof(type)) or malloc((N)*sizeof(type))
+            if let Some(caps) = malloc_paren_sizeof_re
+                .as_ref()
+                .and_then(|re| re.captures(line))
+            {
+                let a = caps[1].parse::<usize>().ok();
+                let op = caps.get(2).map(|m| m.as_str());
+                let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
+                if let Some(n) = buffer_size::eval_arith(a, op, b) {
+                    return Some(n);
+                }
+            }
+            // Plain malloc(N) or calloc(N, M) with numeric first arg
+            if let Some(caps) = malloc_plain_re.as_ref().and_then(|re| re.captures(line)) {
+                if let Ok(n) = caps[1].parse::<usize>() {
+                    return Some(n);
+                }
+            }
+        }
+        None
+    }
+
+    /// Look for `realloc` patterns with strlen-based size calculations.
+    fn find_realloc_dynamic_size(
+        var_name: &str,
+        lines: &[&str],
+        fn_start: usize,
+        fn_end: usize,
+    ) -> Option<usize> {
         for (idx, line) in lines.iter().enumerate() {
             if idx < fn_start || idx > fn_end {
                 continue;
             }
             if line.contains(var_name)
-                && line.contains("=")
-                && (line.contains("malloc") || line.contains("calloc"))
+                && line.contains('=')
+                && line.contains("realloc")
+                && line.contains("strlen")
+                && (line.contains('+') || line.contains("new_size"))
             {
-                // malloc(N*sizeof(type)) or calloc(N, sizeof(type))
-                if let Some(re) = &malloc_sizeof_re {
-                    if let Some(caps) = re.captures(line) {
-                        if let Ok(n) = caps[1].parse::<usize>() {
-                            return Some(n);
-                        }
-                    }
-                }
-                // malloc((N+M)*sizeof(type)) or malloc((N)*sizeof(type))
-                if let Some(re) = &malloc_paren_sizeof_re {
-                    if let Some(caps) = re.captures(line) {
-                        let a = caps[1].parse::<usize>().ok();
-                        let op = caps.get(2).map(|m| m.as_str());
-                        let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
-                        if let Some(n) = buffer_size::eval_arith(a, op, b) {
-                            return Some(n);
-                        }
-                    }
-                }
-                // Plain malloc(N) or calloc(N, M) with numeric first arg
-                if let Some(re) = &malloc_plain_re {
-                    if let Some(caps) = re.captures(line) {
-                        if let Ok(n) = caps[1].parse::<usize>() {
-                            return Some(n);
-                        }
-                    }
-                }
+                return Some(usize::MAX);
             }
         }
+        None
+    }
 
-        // Look for realloc patterns with size calculations
+    /// Look for ALLOCA/alloca assignments: `var = (type *)ALLOCA(N*sizeof(type))`.
+    fn find_alloca_size(
+        var_name: &str,
+        lines: &[&str],
+        fn_start: usize,
+        fn_end: usize,
+    ) -> Option<usize> {
+        let assign_re = regex::Regex::new(&format!(r"\b{}\s*=", regex::escape(var_name))).ok()?;
+        let alloca_sizeof_re =
+            regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\*\s*sizeof\s*\(").ok();
+        // ALLOCA((N)*sizeof(type)) or ALLOCA((N+M)*sizeof(type)) — parenthesized arithmetic.
+        let alloca_paren_sizeof_re = regex::Regex::new(
+            r"(?:ALLOCA|alloca)\s*\(\s*\(\s*(\d+)\s*(?:([+*\-])\s*(\d+))?\s*\)\s*\*\s*sizeof\s*\(",
+        )
+        .ok();
+        let alloca_simple_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\)").ok();
+        let alloca_ident_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*\(?(\w+)").ok();
+
         for (idx, line) in lines.iter().enumerate() {
             if idx < fn_start || idx > fn_end {
                 continue;
             }
-            if line.contains(var_name) && line.contains("=") && line.contains("realloc") {
-                if line.contains("strlen") && (line.contains("+") || line.contains("new_size")) {
-                    return Some(usize::MAX);
+            // Use word-boundary regex to avoid "data" matching "dataBuffer"
+            if !assign_re.is_match(line) || !(line.contains("ALLOCA") || line.contains("alloca")) {
+                continue;
+            }
+            // strlen/wcslen directly in ALLOCA call → safe dynamic size
+            if line.contains("strlen") || line.contains("wcslen") {
+                return Some(usize::MAX);
+            }
+            // Pattern: ALLOCA(N*sizeof(type)) — N is the element count
+            if let Some(caps) = alloca_sizeof_re.as_ref().and_then(|re| re.captures(line)) {
+                if let Ok(n) = caps[1].parse::<usize>() {
+                    return Some(n);
                 }
             }
-        }
-
-        // Look for ALLOCA/alloca assignments: var = (type *)ALLOCA(N*sizeof(type))
-        if let Ok(assign_re) = regex::Regex::new(&format!(r"\b{}\s*=", regex::escape(var_name))) {
-            let alloca_sizeof_re =
-                regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\*\s*sizeof\s*\(").ok();
-            // ALLOCA((N)*sizeof(type)) or ALLOCA((N+M)*sizeof(type)) — parenthesized arithmetic.
-            let alloca_paren_sizeof_re = regex::Regex::new(
-                r"(?:ALLOCA|alloca)\s*\(\s*\(\s*(\d+)\s*(?:([+*\-])\s*(\d+))?\s*\)\s*\*\s*sizeof\s*\(",
-            )
-            .ok();
-            let alloca_simple_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\)").ok();
-            let alloca_ident_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*\(?(\w+)").ok();
-            for (idx, line) in lines.iter().enumerate() {
-                if idx < fn_start || idx > fn_end {
-                    continue;
+            // Pattern: ALLOCA((N)*sizeof(type)) or ALLOCA((N+M)*sizeof(type))
+            if let Some(caps) = alloca_paren_sizeof_re
+                .as_ref()
+                .and_then(|re| re.captures(line))
+            {
+                let a = caps[1].parse::<usize>().ok();
+                let op = caps.get(2).map(|m| m.as_str());
+                let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
+                if let Some(s) = buffer_size::eval_arith(a, op, b) {
+                    return Some(s);
                 }
-                // Use word-boundary regex to avoid "data" matching "dataBuffer"
-                if !assign_re.is_match(line)
-                    || !(line.contains("ALLOCA") || line.contains("alloca"))
-                {
-                    continue;
+            }
+            // Simpler: ALLOCA(N) without sizeof
+            if let Some(caps) = alloca_simple_re.as_ref().and_then(|re| re.captures(line)) {
+                if let Ok(n) = caps[1].parse::<usize>() {
+                    return Some(n);
                 }
-                // strlen/wcslen directly in ALLOCA call → safe dynamic size
-                if line.contains("strlen") || line.contains("wcslen") {
-                    return Some(usize::MAX);
-                }
-                // Pattern: ALLOCA(N*sizeof(type)) — N is the element count
-                if let Some(re) = &alloca_sizeof_re {
-                    if let Some(caps) = re.captures(line) {
-                        if let Ok(n) = caps[1].parse::<usize>() {
-                            return Some(n);
-                        }
-                    }
-                }
-                // Pattern: ALLOCA((N)*sizeof(type)) or ALLOCA((N+M)*sizeof(type))
-                if let Some(re) = &alloca_paren_sizeof_re {
-                    if let Some(caps) = re.captures(line) {
-                        let a = caps[1].parse::<usize>().ok();
-                        let op = caps.get(2).map(|m| m.as_str());
-                        let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
-                        if let Some(s) = buffer_size::eval_arith(a, op, b) {
-                            return Some(s);
-                        }
-                    }
-                }
-                // Simpler: ALLOCA(N) without sizeof
-                if let Some(re) = &alloca_simple_re {
-                    if let Some(caps) = re.captures(line) {
-                        if let Ok(n) = caps[1].parse::<usize>() {
-                            return Some(n);
-                        }
-                    }
-                }
-                // ALLOCA arg is a variable (e.g. ALLOCA((dataLen+1)*1)) — check if that
-                // variable was assigned from strlen() anywhere in the file, which means
-                // the allocation is exactly sized for the source string.
-                if let Some(re) = &alloca_ident_re {
-                    if let Some(caps) = re.captures(line) {
-                        let first_ident = &caps[1];
-                        let skip = matches!(
-                            first_ident,
-                            "sizeof" | "char" | "wchar_t" | "int" | "size_t" | "void" | "long"
-                        );
-                        if !skip {
-                            let strlen_pat = format!(
-                                r"\b{}\s*=\s*(?:w?)strlen\s*\(",
-                                regex::escape(first_ident)
-                            );
-                            if let Ok(strlen_re) = regex::Regex::new(&strlen_pat) {
-                                if lines.iter().any(|l| strlen_re.is_match(l)) {
-                                    return Some(usize::MAX);
-                                }
-                            }
+            }
+            // ALLOCA arg is a variable (e.g. ALLOCA((dataLen+1)*1)) — check if that
+            // variable was assigned from strlen() anywhere in the file, which means
+            // the allocation is exactly sized for the source string.
+            if let Some(caps) = alloca_ident_re.as_ref().and_then(|re| re.captures(line)) {
+                let first_ident = &caps[1];
+                let skip = matches!(
+                    first_ident,
+                    "sizeof" | "char" | "wchar_t" | "int" | "size_t" | "void" | "long"
+                );
+                if !skip {
+                    let strlen_pat =
+                        format!(r"\b{}\s*=\s*(?:w?)strlen\s*\(", regex::escape(first_ident));
+                    if let Ok(strlen_re) = regex::Regex::new(&strlen_pat) {
+                        if lines.iter().any(|l| strlen_re.is_match(l)) {
+                            return Some(usize::MAX);
                         }
                     }
                 }
             }
         }
-
         None
     }
 
@@ -637,179 +665,256 @@ impl Str31C {
 
     /// Check if strcpy is safe based on buffer analysis
     fn check_strcpy_safety(&self, arguments: &Node, source: &str, root: &Node) -> bool {
-        // Extract destination and source arguments
+        let (dest_name, source_name, source_length) =
+            self.extract_copy_call_args(arguments, source);
+
+        // If we have destination name, try to find its size
+        let Some(dest) = dest_name else {
+            return false;
+        };
+
+        // NEW: Check if destination was previously freed / has a prior safe realloc
+        if let Some(early) = self.check_strcpy_dest_precondition(dest, arguments, source) {
+            return early;
+        }
+
+        if let Some(buffer_size) = self.find_buffer_size_with_alias(dest, root, source, arguments) {
+            return self.check_strcpy_known_buffer_size(
+                buffer_size,
+                source_name,
+                source_length,
+                root,
+                source,
+                arguments,
+            );
+        }
+
+        self.check_strcpy_unknown_buffer_size(
+            dest,
+            source_name,
+            source_length,
+            arguments,
+            source,
+            root,
+        )
+    }
+
+    /// Extract the destination identifier, source identifier, and (for a
+    /// string-literal source) its length from a `strcpy`/`strncpy`-style
+    /// call's argument list.
+    fn extract_copy_call_args<'a>(
+        &self,
+        arguments: &Node,
+        source: &'a str,
+    ) -> (Option<&'a str>, Option<&'a str>, Option<usize>) {
         let mut dest_name = None;
         let mut source_name = None;
         let mut source_length = None;
         let mut arg_count = 0;
 
         for i in 0..arguments.child_count() {
-            if let Some(arg) = arguments.child(i) {
-                if arg.kind() == "identifier" || arg.kind() == "pointer_expression" {
-                    if arg_count == 0 {
-                        // First argument is destination
-                        dest_name = Some(&source[arg.start_byte()..arg.end_byte()]);
-                    } else if arg_count == 1 {
-                        // Second argument is source variable
-                        source_name = Some(&source[arg.start_byte()..arg.end_byte()]);
-                    }
-                } else if arg.kind() == "string_literal" && arg_count == 1 {
-                    // Second argument is source string
-                    source_length = self.analyze_string_length(&arg, source);
+            let Some(arg) = arguments.child(i) else {
+                continue;
+            };
+            if arg.kind() == "identifier" || arg.kind() == "pointer_expression" {
+                if arg_count == 0 {
+                    // First argument is destination
+                    dest_name = Some(&source[arg.start_byte()..arg.end_byte()]);
+                } else if arg_count == 1 {
+                    // Second argument is source variable
+                    source_name = Some(&source[arg.start_byte()..arg.end_byte()]);
                 }
+            } else if arg.kind() == "string_literal" && arg_count == 1 {
+                // Second argument is source string
+                source_length = self.analyze_string_length(&arg, source);
+            }
 
-                if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
-                    arg_count += 1;
-                }
+            if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
+                arg_count += 1;
+            }
+        }
+        (dest_name, source_name, source_length)
+    }
+
+    /// Check destination-buffer preconditions that short-circuit the rest of
+    /// the safety analysis: prior `free()` (always unsafe) or a prior safe
+    /// `realloc()` (always safe). Returns `None` to continue analysis.
+    fn check_strcpy_dest_precondition(
+        &self,
+        dest: &str,
+        arguments: &Node,
+        source: &str,
+    ) -> Option<bool> {
+        let fn_range_for_freed = Self::find_enclosing_function_lines(arguments);
+        if self.was_buffer_freed_in_range(dest, source, fn_range_for_freed) {
+            return Some(false); // Always unsafe to use freed memory
+        }
+        // Check if this strcpy/strcat happens after a realloc with proper size calculation
+        if self.has_prior_safe_realloc(dest, source) {
+            return Some(true); // Safe due to prior reallocation
+        }
+        None
+    }
+
+    /// Safety analysis once the destination buffer's size is known.
+    fn check_strcpy_known_buffer_size(
+        &self,
+        buffer_size: usize,
+        source_name: Option<&str>,
+        source_length: Option<usize>,
+        root: &Node,
+        source: &str,
+        arguments: &Node,
+    ) -> bool {
+        // Check if it's a dynamic allocation with strlen + 1
+        if buffer_size == usize::MAX {
+            return true; // Safe dynamic allocation
+        }
+
+        // If we know the source length, check if buffer is large enough
+        if let Some(src_len) = source_length {
+            // Buffer must be strictly larger than string length to accommodate null terminator
+            if buffer_size > src_len {
+                return true; // Buffer has room for string + null terminator
+            }
+        } else if let Some(src_name) = source_name {
+            if let Some(result) = self.check_strcpy_source_variable_safety(
+                src_name,
+                buffer_size,
+                root,
+                source,
+                arguments,
+            ) {
+                return result;
             }
         }
 
-        // If we have destination name, try to find its size
-        if let Some(dest) = dest_name {
-            // NEW: Check if destination was previously freed (scoped to enclosing function)
-            let fn_range_for_freed = Self::find_enclosing_function_lines(arguments);
-            if self.was_buffer_freed_in_range(dest, source, fn_range_for_freed) {
-                return false; // Always unsafe to use freed memory
-            }
-            // Check if this strcpy/strcat happens after a realloc with proper size calculation
-            if self.has_prior_safe_realloc(dest, source) {
-                return true; // Safe due to prior reallocation
-            }
+        // Special handling for very large buffers (like MAX_PATH = 260)
+        if buffer_size >= 256 {
+            return true; // Very large buffers are considered safe for typical usage
+        }
 
-            if let Some(buffer_size) =
-                self.find_buffer_size_with_alias(dest, root, source, arguments)
-            {
-                // Check if it's a dynamic allocation with strlen + 1
-                if buffer_size == usize::MAX {
-                    return true; // Safe dynamic allocation
-                }
+        // Removed overly permissive check for medium buffers - we need to verify source size
 
-                // If we know the source length, check if buffer is large enough
-                if let Some(src_len) = source_length {
-                    // Buffer must be strictly larger than string length to accommodate null terminator
-                    if buffer_size > src_len {
-                        return true; // Buffer has room for string + null terminator
-                    }
-                } else if let Some(src_name) = source_name {
-                    // NEW: Enhanced source variable analysis
-                    // Check for dangerous source patterns
-                    if src_name == "argv[1]" || src_name.contains("argv[") {
-                        // Command line arguments can be unlimited size
-                        return false; // Always dangerous
-                    }
-
-                    // Check if source variable traces back to argv (e.g., name = argv[0])
-                    if self.traces_to_argv(src_name, source) {
-                        return false; // Traces to argv - unbounded size
-                    }
-
-                    if src_name.contains("env_value")
-                        || src_name == "getenv"
-                        || src_name == "env_value"
-                    {
-                        // Environment variables can be unlimited size
-                        return false; // Always dangerous
-                    }
-
-                    // Check if variable comes from getenv() call
-                    if self.is_variable_from_getenv(src_name, source) {
-                        return false; // Environment variables are unlimited size
-                    }
-
-                    // Try to get content length from memset initialization.
-                    // This must come BEFORE source buffer size comparison because
-                    // memset content length (actual string length) is more precise
-                    // than the container buffer size.
-                    if let Some(content_len) =
-                        self.get_memset_content_length(src_name, source, arguments)
-                    {
-                        if buffer_size > content_len {
-                            return true; // Buffer has room for memset content + null terminator
-                        }
-                    }
-
-                    // Check if source is a larger buffer (with alias resolution)
-                    if let Some(src_buffer_size) =
-                        self.find_buffer_size_with_alias(src_name, root, source, arguments)
-                    {
-                        if src_buffer_size > buffer_size {
-                            return false; // Source is larger than destination - dangerous
-                        }
-                    }
-
-                    // Check for variables that are clearly larger arrays
-                    if self.is_larger_array_variable(src_name, buffer_size, source) {
-                        return false; // Source array is larger than destination
-                    }
-                    // Try to get string length from variable context
-                    if let Some(src_len) =
-                        self.get_string_length_from_context(Some(src_name), source)
-                    {
-                        if buffer_size > src_len {
-                            return true; // Buffer has room for string + null terminator
-                        }
-                    }
-                    // Check for known safe patterns
-                    let src_lower = src_name.to_lowercase();
-                    if (src_lower.contains("hello") || src_lower.contains("world"))
-                        && buffer_size >= 20
-                    {
-                        return true; // Known safe pattern from test cases
-                    }
-
-                    // Try to find source buffer size for array-to-array copy (with alias)
-                    if let Some(src_buffer_size) =
-                        self.find_buffer_size_with_alias(src_name, root, source, arguments)
-                    {
-                        if buffer_size >= src_buffer_size {
-                            return true; // Destination is at least as large as source
-                        }
-                    }
-                }
-
-                // Special handling for very large buffers (like MAX_PATH = 260)
-                if buffer_size >= 256 {
-                    return true; // Very large buffers are considered safe for typical usage
-                }
-
-                // Removed overly permissive check for medium buffers - we need to verify source size
-
-                // Even smaller buffers might be okay if source is a short literal
-                if let Some(src_len) = source_length {
-                    if buffer_size > src_len + 1 {
-                        // +1 for null terminator
-                        return true;
-                    }
-                }
-
-                // Buffer size is known but small and we couldn't confirm safety — flag it
-                return false;
-            }
-
-            // Cross-function: the local destination size is unknown because
-            // `dest` is a parameter. Consult the buffer size that callers pass
-            // here (recorded by the prescan). When every caller's buffer is at
-            // least as large as the source can fill, the copy cannot overflow —
-            // this clears the goodG2BSink false positives where the same sink is
-            // reached from a caller using a large buffer (Juliet variants 41+).
-            let needed = source_length.map(|n| n + 1).or_else(|| {
-                source_name
-                    .and_then(|s| self.find_buffer_size_with_alias(s, root, source, arguments))
-            });
-            if self.param_dest_bounded_by_caller(dest, arguments, source, needed) {
-                return true;
-            }
-
-            // Destination buffer size could not be determined (dynamic allocation, pointer param, etc.)
-            // If source is a known string literal (bounded at compile time), we can't confirm
-            // overflow without knowing the destination size — assume safe to avoid FPs in
-            // unrelated CWEs where good functions copy fixed strings into opaque buffers.
-            if source_length.is_some() && !self.is_function_parameter(dest, source) {
+        // Even smaller buffers might be okay if source is a short literal
+        if let Some(src_len) = source_length {
+            if buffer_size > src_len + 1 {
+                // +1 for null terminator
                 return true;
             }
         }
 
+        // Buffer size is known but small and we couldn't confirm safety — flag it
         false
+    }
+
+    /// NEW: Enhanced source variable analysis once the destination buffer
+    /// size is known but the source length wasn't a literal. Returns
+    /// `Some(is_safe)` on a conclusive pattern match, `None` to fall through
+    /// to the generic large-buffer/short-literal checks.
+    fn check_strcpy_source_variable_safety(
+        &self,
+        src_name: &str,
+        buffer_size: usize,
+        root: &Node,
+        source: &str,
+        arguments: &Node,
+    ) -> Option<bool> {
+        // Check for dangerous source patterns
+        if src_name == "argv[1]" || src_name.contains("argv[") {
+            // Command line arguments can be unlimited size
+            return Some(false); // Always dangerous
+        }
+
+        // Check if source variable traces back to argv (e.g., name = argv[0])
+        if self.traces_to_argv(src_name, source) {
+            return Some(false); // Traces to argv - unbounded size
+        }
+
+        if src_name.contains("env_value") || src_name == "getenv" || src_name == "env_value" {
+            // Environment variables can be unlimited size
+            return Some(false); // Always dangerous
+        }
+
+        // Check if variable comes from getenv() call
+        if self.is_variable_from_getenv(src_name, source) {
+            return Some(false); // Environment variables are unlimited size
+        }
+
+        // Try to get content length from memset initialization.
+        // This must come BEFORE source buffer size comparison because
+        // memset content length (actual string length) is more precise
+        // than the container buffer size.
+        if let Some(content_len) = self.get_memset_content_length(src_name, source, arguments) {
+            if buffer_size > content_len {
+                return Some(true); // Buffer has room for memset content + null terminator
+            }
+        }
+
+        // Check if source is a larger buffer (with alias resolution)
+        if let Some(src_buffer_size) =
+            self.find_buffer_size_with_alias(src_name, root, source, arguments)
+        {
+            if src_buffer_size > buffer_size {
+                return Some(false); // Source is larger than destination - dangerous
+            }
+        }
+
+        // Check for variables that are clearly larger arrays
+        if self.is_larger_array_variable(src_name, buffer_size, source) {
+            return Some(false); // Source array is larger than destination
+        }
+        // Try to get string length from variable context
+        if let Some(src_len) = self.get_string_length_from_context(Some(src_name), source) {
+            if buffer_size > src_len {
+                return Some(true); // Buffer has room for string + null terminator
+            }
+        }
+        // Check for known safe patterns
+        let src_lower = src_name.to_lowercase();
+        if (src_lower.contains("hello") || src_lower.contains("world")) && buffer_size >= 20 {
+            return Some(true); // Known safe pattern from test cases
+        }
+
+        // Try to find source buffer size for array-to-array copy (with alias)
+        if let Some(src_buffer_size) =
+            self.find_buffer_size_with_alias(src_name, root, source, arguments)
+        {
+            if buffer_size >= src_buffer_size {
+                return Some(true); // Destination is at least as large as source
+            }
+        }
+
+        None
+    }
+
+    /// Cross-function fallback when the local destination size is unknown
+    /// because `dest` is a parameter. Consult the buffer size that callers
+    /// pass here (recorded by the prescan). When every caller's buffer is at
+    /// least as large as the source can fill, the copy cannot overflow —
+    /// this clears the goodG2BSink false positives where the same sink is
+    /// reached from a caller using a large buffer (Juliet variants 41+).
+    fn check_strcpy_unknown_buffer_size(
+        &self,
+        dest: &str,
+        source_name: Option<&str>,
+        source_length: Option<usize>,
+        arguments: &Node,
+        source: &str,
+        root: &Node,
+    ) -> bool {
+        let needed = source_length.map(|n| n + 1).or_else(|| {
+            source_name.and_then(|s| self.find_buffer_size_with_alias(s, root, source, arguments))
+        });
+        if self.param_dest_bounded_by_caller(dest, arguments, source, needed) {
+            return true;
+        }
+
+        // Destination buffer size could not be determined (dynamic allocation, pointer param, etc.)
+        // If source is a known string literal (bounded at compile time), we can't confirm
+        // overflow without knowing the destination size — assume safe to avoid FPs in
+        // unrelated CWEs where good functions copy fixed strings into opaque buffers.
+        source_length.is_some() && !self.is_function_parameter(dest, source)
     }
 
     /// Check if a variable comes from a getenv() call

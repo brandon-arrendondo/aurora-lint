@@ -465,104 +465,134 @@ impl Api00C {
         validated: &mut HashSet<String>,
     ) {
         for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "if_statement" => {
-                        // Check if this is a validation pattern
-                        if let Some(condition) = child.child_by_field_name("condition") {
-                            let condition_text = get_node_text(&condition, source);
-
-                            // Case 1: early-return / early-exit pattern
-                            //   if (!ptr)        { return; }
-                            //   if (ptr == NULL) { return; }
-                            //   if (isNullOrEmpty(ptr)) { return; }  (helper fn call)
-                            if self.is_early_return_pattern(&child, source) {
-                                // Use broad match: any param appearing in the condition
-                                // of an early-return guard is considered validated.
-                                // This handles both direct null checks and helper fn calls.
-                                for param in pointer_params {
-                                    if condition_text.contains(param.as_str()) {
-                                        validated.insert(param.clone());
-                                    }
-                                }
-                            } else if child.child_by_field_name("alternative").is_some() {
-                                // Case 3: if/else chain — param is checked in condition and
-                                // actual work is in the else branch.
-                                //   if (NULL == ptr) { result = ERR; } else { work(ptr); }
-                                // Also handles if/else-if/else chains:
-                                //   if (NULL == a) { err; } else if (NULL == b) { err; } else { work(a,b); }
-                                let validated_in_condition = self
-                                    .extract_validated_params_from_condition(
-                                        &condition,
-                                        pointer_params,
-                                        source,
-                                    );
-                                for param in validated_in_condition {
-                                    validated.insert(param);
-                                }
-                                // Walk into chained else-if conditions to collect more validated params
-                                self.collect_else_if_chain_validations(
-                                    &child,
-                                    pointer_params,
-                                    source,
-                                    validated,
-                                );
-                            } else {
-                                // Case 2: positive guard pattern
-                                //   if (ptr != NULL) { /* all usage inside */ }
-                                // The parameter is only accessed inside the guarded block,
-                                // so it is safely validated even without an early return.
-                                let validated_in_condition = self
-                                    .extract_validated_params_from_condition(
-                                        &condition,
-                                        pointer_params,
-                                        source,
-                                    );
-                                for param in validated_in_condition {
-                                    if self.is_positive_null_guard(&condition_text, &param) {
-                                        validated.insert(param);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    "return_statement" => {
-                        // Case 4: return expression contains null check
-                        //   return (str == NULL || str[0] == '\0');
-                        // The null check IS the validation in short-circuit boolean returns.
-                        let stmt_text = get_node_text(&child, source);
-                        for param in pointer_params {
-                            if stmt_text.contains(&format!("{} == NULL", param))
-                                || stmt_text.contains(&format!("NULL == {}", param))
-                                || stmt_text.contains(&format!("!{}", param))
-                                || stmt_text.contains(&format!("! {}", param))
-                            {
-                                validated.insert(param.clone());
-                            }
-                        }
-                    }
-                    "expression_statement" => {
-                        // Check for assert() or similar validation macros
-                        let stmt_text = get_node_text(&child, source);
-                        if stmt_text.contains("assert") || stmt_text.contains("ASSERT") {
-                            for param in pointer_params {
-                                if stmt_text.contains(param) && stmt_text.contains("NULL") {
-                                    validated.insert(param.clone());
-                                }
-                            }
-                        }
-                    }
-                    // Recurse into preprocessor blocks — validation may be
-                    // inside #ifdef/#if/#else branches
-                    "preproc_ifdef"
-                    | "preproc_if"
-                    | "preproc_else"
-                    | "preproc_elif"
-                    | "preproc_function_def" => {
-                        self.check_validation_patterns(&child, pointer_params, source, validated);
-                    }
-                    _ => {}
+            let Some(child) = node.child(i) else { continue };
+            match child.kind() {
+                "if_statement" => {
+                    self.check_if_statement_validation(&child, pointer_params, source, validated)
                 }
+                "return_statement" => Self::check_return_statement_validation(
+                    &child,
+                    pointer_params,
+                    source,
+                    validated,
+                ),
+                "expression_statement" => Self::check_assert_expression_validation(
+                    &child,
+                    pointer_params,
+                    source,
+                    validated,
+                ),
+                // Recurse into preprocessor blocks — validation may be
+                // inside #ifdef/#if/#else branches
+                "preproc_ifdef"
+                | "preproc_if"
+                | "preproc_else"
+                | "preproc_elif"
+                | "preproc_function_def" => {
+                    self.check_validation_patterns(&child, pointer_params, source, validated);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `if_statement` case of [`check_validation_patterns`]: classify the
+    /// guard as early-return, if/else split, or positive-guard, and record
+    /// whichever params it validates.
+    fn check_if_statement_validation(
+        &self,
+        child: &Node,
+        pointer_params: &[String],
+        source: &str,
+        validated: &mut HashSet<String>,
+    ) {
+        let Some(condition) = child.child_by_field_name("condition") else {
+            return;
+        };
+        let condition_text = get_node_text(&condition, source);
+
+        // Case 1: early-return / early-exit pattern
+        //   if (!ptr)        { return; }
+        //   if (ptr == NULL) { return; }
+        //   if (isNullOrEmpty(ptr)) { return; }  (helper fn call)
+        if self.is_early_return_pattern(child, source) {
+            // Use broad match: any param appearing in the condition
+            // of an early-return guard is considered validated.
+            // This handles both direct null checks and helper fn calls.
+            for param in pointer_params {
+                if condition_text.contains(param.as_str()) {
+                    validated.insert(param.clone());
+                }
+            }
+            return;
+        }
+
+        if child.child_by_field_name("alternative").is_some() {
+            // Case 3: if/else chain — param is checked in condition and
+            // actual work is in the else branch.
+            //   if (NULL == ptr) { result = ERR; } else { work(ptr); }
+            // Also handles if/else-if/else chains:
+            //   if (NULL == a) { err; } else if (NULL == b) { err; } else { work(a,b); }
+            let validated_in_condition =
+                self.extract_validated_params_from_condition(&condition, pointer_params, source);
+            for param in validated_in_condition {
+                validated.insert(param);
+            }
+            // Walk into chained else-if conditions to collect more validated params
+            self.collect_else_if_chain_validations(child, pointer_params, source, validated);
+            return;
+        }
+
+        // Case 2: positive guard pattern
+        //   if (ptr != NULL) { /* all usage inside */ }
+        // The parameter is only accessed inside the guarded block,
+        // so it is safely validated even without an early return.
+        let validated_in_condition =
+            self.extract_validated_params_from_condition(&condition, pointer_params, source);
+        for param in validated_in_condition {
+            if self.is_positive_null_guard(&condition_text, &param) {
+                validated.insert(param);
+            }
+        }
+    }
+
+    /// `return_statement` case of [`check_validation_patterns`]: the null
+    /// check IS the validation in short-circuit boolean returns, e.g.
+    /// `return (str == NULL || str[0] == '\0');`.
+    fn check_return_statement_validation(
+        child: &Node,
+        pointer_params: &[String],
+        source: &str,
+        validated: &mut HashSet<String>,
+    ) {
+        let stmt_text = get_node_text(child, source);
+        for param in pointer_params {
+            if stmt_text.contains(&format!("{} == NULL", param))
+                || stmt_text.contains(&format!("NULL == {}", param))
+                || stmt_text.contains(&format!("!{}", param))
+                || stmt_text.contains(&format!("! {}", param))
+            {
+                validated.insert(param.clone());
+            }
+        }
+    }
+
+    /// `expression_statement` case of [`check_validation_patterns`]: an
+    /// `assert()`/`ASSERT()` call that mentions both the parameter and
+    /// `NULL` counts as validation.
+    fn check_assert_expression_validation(
+        child: &Node,
+        pointer_params: &[String],
+        source: &str,
+        validated: &mut HashSet<String>,
+    ) {
+        let stmt_text = get_node_text(child, source);
+        if !stmt_text.contains("assert") && !stmt_text.contains("ASSERT") {
+            return;
+        }
+        for param in pointer_params {
+            if stmt_text.contains(param) && stmt_text.contains("NULL") {
+                validated.insert(param.clone());
             }
         }
     }

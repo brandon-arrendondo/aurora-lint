@@ -801,54 +801,13 @@ fn is_read_context(node: &Node, source: &str) -> bool {
 
     // Walk up ancestors to check context
     // Some non-read contexts are nested: sizeof(x) → sizeof_expression > parenthesized_expression > identifier
-    let mut ancestor = Some(parent);
-    let mut depth = 0;
-    while let Some(anc) = ancestor {
-        depth += 1;
-        if depth > 5 {
-            break;
-        }
-        match anc.kind() {
-            "sizeof_expression" | "_Alignof" => return false,
-            "parenthesized_expression" => {
-                ancestor = anc.parent();
-                continue;
-            }
-            _ => break,
-        }
+    if has_sizeof_or_alignof_ancestor(parent) {
+        return false;
     }
 
     match parent.kind() {
         // LHS of assignment
-        "assignment_expression" => {
-            if let Some(left) = parent.child_by_field_name("left") {
-                if left.id() == node.id() {
-                    // Check for compound assignment (+=, -=, *=, etc.)
-                    // which both reads and writes the LHS
-                    for i in 0..parent.child_count() {
-                        if let Some(op) = parent.child(i) {
-                            let op_text = get_node_text(&op, source);
-                            if matches!(
-                                op_text,
-                                "+=" | "-="
-                                    | "*="
-                                    | "/="
-                                    | "%="
-                                    | "<<="
-                                    | ">>="
-                                    | "&="
-                                    | "|="
-                                    | "^="
-                            ) {
-                                return true; // Compound assignment reads the LHS
-                            }
-                        }
-                    }
-                    return false; // Simple assignment (=) — write only
-                }
-            }
-            true // RHS is a read
-        }
+        "assignment_expression" => is_read_in_assignment(&parent, node, source),
         // Compound assignment (+=, -=, etc.) — both read and write
         "augmented_assignment_expression" => true,
         // Declaration — not a read
@@ -857,44 +816,11 @@ fn is_read_context(node: &Node, source: &str) -> bool {
         "sizeof_expression" => false,
         // &x — address-of. Generally not a read, BUT if &x is passed to a
         // non-initializing function (one that reads from the pointer), it IS a read.
-        "pointer_expression" => {
-            let text = get_node_text(&parent, source);
-            if !text.starts_with('&') {
-                return true; // *x — dereference read
-            }
-            // Check if &var is inside an argument_list of a non-initializing function
-            if let Some(arg_list) = parent.parent() {
-                if arg_list.kind() == "argument_list" {
-                    if let Some(call) = arg_list.parent() {
-                        if call.kind() == "call_expression" {
-                            if let Some(func) = call.child_by_field_name("function") {
-                                let func_name = get_node_text(&func, source);
-                                if init_state::is_non_initializing_function(&func_name) {
-                                    return true; // &var passed to function that reads from it
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            false // Regular &var — not a read
-        }
+        "pointer_expression" => is_read_in_pointer_expression(&parent, source),
         // Update expression (i++, ++i) — both read and write, but we don't flag these
         "update_expression" => false,
         // Field expression LHS — writing to a field is NOT reading the base
-        "field_expression" => {
-            // Check if the field expression is on the LHS of an assignment
-            if let Some(grandparent) = parent.parent() {
-                if grandparent.kind() == "assignment_expression" {
-                    if let Some(left) = grandparent.child_by_field_name("left") {
-                        if left.id() == parent.id() {
-                            return false; // obj.field = val — obj is not "read"
-                        }
-                    }
-                }
-            }
-            true
-        }
+        "field_expression" => is_read_in_field_expression(&parent),
         // Subscript base (arr[i]) — the base identifier provides the address,
         // not a value read. Content reads are handled by check_subscript_read.
         "subscript_expression" => false,
@@ -907,22 +833,8 @@ fn is_read_context(node: &Node, source: &str) -> bool {
         // Function call argument — usually a read, but check for output args
         // of known initializing functions (e.g., fgets(input, ...) is a write to input)
         "argument_list" => {
-            // Special case: `__asm("..." : "=r"(var) ...)` is misparsed by
-            // tree-sitter as call_expression("__asm", [ERROR, "=r"(var), ...]).
-            // The output operand `"=r"(var)` becomes call_expression("=r", [var]).
-            // Detect this: identifier inside argument_list of a call whose
-            // function is a string_literal with "=" (output constraint).
-            if let Some(call_gp) = parent.parent() {
-                if call_gp.kind() == "call_expression" {
-                    if let Some(func) = call_gp.child_by_field_name("function") {
-                        if func.kind() == "string_literal" {
-                            let constraint = get_node_text(&func, source);
-                            if constraint.contains('=') {
-                                return false; // output operand of misparsed __asm
-                            }
-                        }
-                    }
-                }
+            if is_misparsed_asm_output_operand(&parent, source) {
+                return false;
             }
             is_read_in_argument_list(node, &parent, source)
         }
@@ -934,6 +846,114 @@ fn is_read_context(node: &Node, source: &str) -> bool {
         "gnu_asm_output_operand" => false,
         _ => true,
     }
+}
+
+/// Walk up through `parenthesized_expression` wrappers (max 5 hops) to check
+/// whether the nearest non-parenthesized ancestor is a `sizeof`/`_Alignof`
+/// context: `sizeof(x)` → `sizeof_expression` > `parenthesized_expression` > `identifier`.
+fn has_sizeof_or_alignof_ancestor(parent: Node) -> bool {
+    let mut ancestor = Some(parent);
+    let mut depth = 0;
+    while let Some(anc) = ancestor {
+        depth += 1;
+        if depth > 5 {
+            return false;
+        }
+        match anc.kind() {
+            "sizeof_expression" | "_Alignof" => return true,
+            "parenthesized_expression" => {
+                ancestor = anc.parent();
+                continue;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// LHS of a plain assignment is a write only; LHS of a compound assignment
+/// (`+=`, `-=`, ...) both reads and writes. The RHS is always a read.
+fn is_read_in_assignment(parent: &Node, node: &Node, source: &str) -> bool {
+    let Some(left) = parent.child_by_field_name("left") else {
+        return true; // RHS is a read
+    };
+    if left.id() != node.id() {
+        return true; // RHS is a read
+    }
+    for i in 0..parent.child_count() {
+        if let Some(op) = parent.child(i) {
+            let op_text = get_node_text(&op, source);
+            if matches!(
+                op_text,
+                "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "|=" | "^="
+            ) {
+                return true; // Compound assignment reads the LHS
+            }
+        }
+    }
+    false // Simple assignment (=) — write only
+}
+
+/// `*x` is always a dereference read. `&var` is a read only when passed to a
+/// non-initializing function (one that reads from the pointer).
+fn is_read_in_pointer_expression(parent: &Node, source: &str) -> bool {
+    let text = get_node_text(parent, source);
+    if !text.starts_with('&') {
+        return true; // *x — dereference read
+    }
+    // Check if &var is inside an argument_list of a non-initializing function
+    let Some(arg_list) = parent.parent() else {
+        return false;
+    };
+    if arg_list.kind() != "argument_list" {
+        return false;
+    }
+    let Some(call) = arg_list.parent() else {
+        return false;
+    };
+    if call.kind() != "call_expression" {
+        return false;
+    }
+    let Some(func) = call.child_by_field_name("function") else {
+        return false;
+    };
+    let func_name = get_node_text(&func, source);
+    init_state::is_non_initializing_function(&func_name) // &var read by callee
+}
+
+/// `obj.field` is not a read of `obj` when it is the LHS of an assignment.
+fn is_read_in_field_expression(parent: &Node) -> bool {
+    let Some(grandparent) = parent.parent() else {
+        return true;
+    };
+    if grandparent.kind() != "assignment_expression" {
+        return true;
+    }
+    let Some(left) = grandparent.child_by_field_name("left") else {
+        return true;
+    };
+    left.id() != parent.id() // obj.field = val — obj is not "read"
+}
+
+/// `__asm("..." : "=r"(var) ...)` is misparsed by tree-sitter as
+/// `call_expression("__asm", [ERROR, "=r"(var), ...])`. The output operand
+/// `"=r"(var)` becomes `call_expression("=r", [var])`. Detect this: an
+/// identifier inside an `argument_list` of a call whose function is a
+/// string_literal with "=" (output constraint).
+fn is_misparsed_asm_output_operand(arg_list: &Node, source: &str) -> bool {
+    let Some(call_gp) = arg_list.parent() else {
+        return false;
+    };
+    if call_gp.kind() != "call_expression" {
+        return false;
+    }
+    let Some(func) = call_gp.child_by_field_name("function") else {
+        return false;
+    };
+    if func.kind() != "string_literal" {
+        return false;
+    }
+    get_node_text(&func, source).contains('=')
 }
 
 /// Check if an identifier in an argument_list is being read (vs. being an output arg).
