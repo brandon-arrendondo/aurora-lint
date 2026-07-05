@@ -51,8 +51,8 @@ repos:
   # (bench/, mcp_servers/, scripts/). The repo's *.c/*.h files are all
   # deliberately-noncompliant CERT-C test fixtures, not production code, so
   # they are intentionally NOT gated.
-  - repo: https://github.com/brandon-arrendondo/knots
-    rev: v1.8.2
+  - repo: https://github.com/brandon-arrendondo/knots-pre-commit
+    rev: v1.13.1
     hooks:
       - id: knots
         types_or: [rust, python]
