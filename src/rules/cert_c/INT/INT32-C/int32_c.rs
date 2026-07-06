@@ -2155,6 +2155,17 @@ impl Int32C {
 
     /// Resolve the callee function name for an identifier that was initialized
     /// name instead of just a boolean.
+    ///
+    /// Uses an explicit continuation-frame stack instead of recursion: each
+    /// frame is `(scope, next_child_index)`, capturing exactly where a
+    /// native recursive call would resume its sibling loop after returning
+    /// from a nested scope. This avoids blowing the native stack on a
+    /// deeply nested if/while/for chain (the same hostap-style shape that
+    /// motivated task 153) while preserving the original left-to-right,
+    /// depth-first match order — a nested scope is fully explored before
+    /// its later siblings are considered, exactly as the recursive call
+    /// would (call-then-continue), rather than deferring nested scopes
+    /// until after all direct siblings are checked.
     fn resolve_identifier_call_name(
         scope: &Node,
         var_name: &str,
@@ -2162,8 +2173,15 @@ impl Int32C {
         usage_node: &Node,
     ) -> Option<String> {
         let usage_row = usage_node.start_position().row;
-        for i in 0..scope.named_child_count() {
-            if let Some(child) = scope.named_child(i) {
+        let mut frames: Vec<(Node, usize)> = vec![(*scope, 0)];
+
+        while let Some((cur_scope, start_idx)) = frames.pop() {
+            let mut i = start_idx;
+            while i < cur_scope.named_child_count() {
+                let Some(child) = cur_scope.named_child(i) else {
+                    i += 1;
+                    continue;
+                };
                 if child.start_position().row >= usage_row {
                     break;
                 }
@@ -2207,7 +2225,8 @@ impl Int32C {
                         }
                     }
                 }
-                // Recurse into preproc blocks and nested scopes
+                // Descend into preproc blocks and nested scopes: resume this
+                // scope at i + 1 after the nested scope is fully explored.
                 if child.kind().starts_with("preproc_")
                     || child.kind() == "compound_statement"
                     || child.kind() == "if_statement"
@@ -2216,12 +2235,11 @@ impl Int32C {
                     || child.kind() == "for_statement"
                     || child.kind() == "while_statement"
                 {
-                    if let Some(name) =
-                        Self::resolve_identifier_call_name(&child, var_name, source, usage_node)
-                    {
-                        return Some(name);
-                    }
+                    frames.push((cur_scope, i + 1));
+                    frames.push((child, 0));
+                    break;
                 }
+                i += 1;
             }
         }
         None
