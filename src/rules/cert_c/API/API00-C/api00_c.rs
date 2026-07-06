@@ -457,41 +457,54 @@ impl Api00C {
     /// - if (ptr == NULL) return;
     /// - if (!ptr || !ptr2) return;
     /// - assert(ptr != NULL);
+    ///
+    /// Uses an explicit stack instead of recursion: this only descends into
+    /// preprocessor-block children, so it's bounded by preprocessor nesting
+    /// depth (lower risk than the statement-chain cases in task 262), but
+    /// still an unbounded native recursion in principle -- the same risk
+    /// class as the original ARR00-C/MEM33-C bug (task 153) -- so it gets
+    /// the same treatment for consistency.
     fn check_validation_patterns(
         &self,
-        node: &Node,
+        root: &Node,
         pointer_params: &[String],
         source: &str,
         validated: &mut HashSet<String>,
     ) {
-        for i in 0..node.child_count() {
-            let Some(child) = node.child(i) else { continue };
-            match child.kind() {
-                "if_statement" => {
-                    self.check_if_statement_validation(&child, pointer_params, source, validated)
+        let mut stack = vec![*root];
+        while let Some(node) = stack.pop() {
+            for i in (0..node.child_count()).rev() {
+                let Some(child) = node.child(i) else { continue };
+                match child.kind() {
+                    "if_statement" => self.check_if_statement_validation(
+                        &child,
+                        pointer_params,
+                        source,
+                        validated,
+                    ),
+                    "return_statement" => Self::check_return_statement_validation(
+                        &child,
+                        pointer_params,
+                        source,
+                        validated,
+                    ),
+                    "expression_statement" => Self::check_assert_expression_validation(
+                        &child,
+                        pointer_params,
+                        source,
+                        validated,
+                    ),
+                    // Queue preprocessor blocks — validation may be
+                    // inside #ifdef/#if/#else branches
+                    "preproc_ifdef"
+                    | "preproc_if"
+                    | "preproc_else"
+                    | "preproc_elif"
+                    | "preproc_function_def" => {
+                        stack.push(child);
+                    }
+                    _ => {}
                 }
-                "return_statement" => Self::check_return_statement_validation(
-                    &child,
-                    pointer_params,
-                    source,
-                    validated,
-                ),
-                "expression_statement" => Self::check_assert_expression_validation(
-                    &child,
-                    pointer_params,
-                    source,
-                    validated,
-                ),
-                // Recurse into preprocessor blocks — validation may be
-                // inside #ifdef/#if/#else branches
-                "preproc_ifdef"
-                | "preproc_if"
-                | "preproc_else"
-                | "preproc_elif"
-                | "preproc_function_def" => {
-                    self.check_validation_patterns(&child, pointer_params, source, validated);
-                }
-                _ => {}
             }
         }
     }

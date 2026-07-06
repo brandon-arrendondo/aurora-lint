@@ -85,41 +85,52 @@ impl Api02C {
         self.check_parameters_recursive(declarator, declaration, source, violations);
     }
 
+    /// Uses an explicit stack instead of recursion. The prune at
+    /// `parameter_list` (deliberately not descending into a matched list's
+    /// own children, to avoid double-counting nested function-pointer
+    /// params) keeps this bounded in practice, but depth outside a matched
+    /// list is otherwise unbounded native recursion -- the same risk class
+    /// as the original ARR00-C/MEM33-C bug (task 153).
     fn check_parameters_recursive(
         &self,
-        node: &Node,
+        root: &Node,
         declaration: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Found parameter_list
-        if node.kind() == "parameter_list" {
-            // Collect all parameters
-            let mut params = Vec::new();
-            for i in 0..node.child_count() {
+        let mut stack = vec![*root];
+        while let Some(node) = stack.pop() {
+            // Found parameter_list
+            if node.kind() == "parameter_list" {
+                // Collect all parameters
+                let mut params = Vec::new();
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if child.kind() == "parameter_declaration" {
+                            params.push(child);
+                        }
+                    }
+                }
+
+                // Check each pointer parameter for missing size
+                for i in 0..params.len() {
+                    if self.is_pointer_parameter(&params[i], source) {
+                        // Check if next parameter is size_t
+                        if i + 1 >= params.len()
+                            || !self.is_size_t_parameter(&params[i + 1], source)
+                        {
+                            self.report_violation(declaration, &params[i], source, violations);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Queue children for searching
+            for i in (0..node.child_count()).rev() {
                 if let Some(child) = node.child(i) {
-                    if child.kind() == "parameter_declaration" {
-                        params.push(child);
-                    }
+                    stack.push(child);
                 }
-            }
-
-            // Check each pointer parameter for missing size
-            for i in 0..params.len() {
-                if self.is_pointer_parameter(&params[i], source) {
-                    // Check if next parameter is size_t
-                    if i + 1 >= params.len() || !self.is_size_t_parameter(&params[i + 1], source) {
-                        self.report_violation(declaration, &params[i], source, violations);
-                    }
-                }
-            }
-            return;
-        }
-
-        // Recursively search children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_parameters_recursive(&child, declaration, source, violations);
             }
         }
     }
