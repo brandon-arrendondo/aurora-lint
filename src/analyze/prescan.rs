@@ -613,18 +613,43 @@ fn collect_call_graph(
                 "function_definition" => {
                     if let Some(func_name) = extract_function_name_from_declarator(&child, source) {
                         let mut callees = HashSet::new();
-                        collect_callees(&child, source, &mut callees);
+                        // A syntax error anywhere in this function's subtree
+                        // means its span can't be trusted: a brace that opens
+                        // and closes in different branches of the same
+                        // repeated #ifdef/#ifndef guard can make tree-sitter-c
+                        // swallow every subsequent sibling function as a
+                        // nested descendant. Stop at nested function
+                        // boundaries instead of attributing a swallowed
+                        // sibling's calls to this (corrupted) caller.
+                        collect_callees(&child, source, child.has_error(), &mut callees);
                         // Merge instead of overwrite — multiple files can
                         // each define a `static` function with the same
                         // name. Without merging, only the last file's
                         // callees would survive.
                         call_graph.entry(func_name).or_default().extend(callees);
                     }
+                    // A function_definition nested inside another is invalid
+                    // in real C, but the corrupted-parse case above can still
+                    // produce one, arbitrarily deep inside the (malformed)
+                    // body. Recurse unconditionally when this node has_error()
+                    // so a swallowed sibling still gets its own,
+                    // correctly-scoped call-graph entry instead of being
+                    // invisible to every interprocedural rule.
+                    if child.has_error() {
+                        collect_call_graph(&child, source, call_graph);
+                    }
                 }
                 kind if kind.starts_with("preproc_")
                     || kind == "linkage_specification"
                     || kind == "declaration_list" =>
                 {
+                    collect_call_graph(&child, source, call_graph);
+                }
+                // Once we're inside an errored subtree, keep searching every
+                // kind of child for a swallowed function_definition — the
+                // selective recursion above only expects to find one at the
+                // top level or inside a preprocessor/linkage wrapper.
+                _ if node.has_error() => {
                     collect_call_graph(&child, source, call_graph);
                 }
                 _ => {}
@@ -640,16 +665,21 @@ fn collect_call_graph(
 /// `fp(args)`, `some_function` is recorded as a callee. This lets cross-file
 /// Juliet v65a/b patterns (command-injection, INT31-C, etc.) link the
 /// function-pointer caller to the real sink function.
-fn collect_callees(node: &Node, source: &str, callees: &mut HashSet<String>) {
+///
+/// `stop_at_nested`: when true, does not descend into a nested
+/// `function_definition`. Pass `node.has_error()` — see the call site in
+/// [`collect_call_graph`] for why a syntax error makes the span untrustworthy.
+fn collect_callees(node: &Node, source: &str, stop_at_nested: bool, callees: &mut HashSet<String>) {
     let mut aliases: HashMap<String, String> = HashMap::new();
     collect_fn_ptr_aliases(node, source, &mut aliases);
-    collect_callees_resolving(node, source, &aliases, callees);
+    collect_callees_resolving(node, source, &aliases, stop_at_nested, callees);
 }
 
 fn collect_callees_resolving(
     node: &Node,
     source: &str,
     aliases: &HashMap<String, String>,
+    stop_at_nested: bool,
     callees: &mut HashSet<String>,
 ) {
     if node.kind() == "call_expression" {
@@ -666,7 +696,10 @@ fn collect_callees_resolving(
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            collect_callees_resolving(&child, source, aliases, callees);
+            if stop_at_nested && child.kind() == "function_definition" {
+                continue;
+            }
+            collect_callees_resolving(&child, source, aliases, stop_at_nested, callees);
         }
     }
 }
@@ -3689,6 +3722,316 @@ mod tests {
         assert!(
             callees.contains("target"),
             "expected 'target' in callees, got {callees:?}"
+        );
+    }
+
+    #[test]
+    fn test_collect_call_graph_ifdef_spanning_brace_does_not_leak_swallowed_sibling_calls() {
+        // Regression for the sqlite3Init/sqlite3InitOne false MSC04-C
+        // indirect-recursion cycle (task 267/296), reproduced with the real
+        // sqlite3/src/prepare.c source (trimmed to the two functions
+        // involved): a brace that opens under `#ifndef
+        // SQLITE_OMIT_AUTHORIZATION` and closes under a second, identical
+        // guard a few lines later can't be reconciled by tree-sitter-c
+        // without a real preprocessor. It emits a local error and
+        // sqlite3InitOne's function_definition never closes normally,
+        // nesting sqlite3Init as a descendant. Without the has_error()
+        // guard, sqlite3InitOne's callee set wrongly absorbed sqlite3Init's
+        // calls too -- including a call back to sqlite3InitOne itself,
+        // producing a false self-recursion edge that doesn't exist in the
+        // source.
+        let code = r#"int sqlite3InitOne(sqlite3 *db, int iDb, char **pzErrMsg, u32 mFlags){
+  int rc;
+  int i;
+#ifndef SQLITE_OMIT_DEPRECATED
+  int size;
+#endif
+  Db *pDb;
+  char const *azArg[6];
+  int meta[5];
+  InitData initData;
+  const char *zSchemaTabName;
+  int openedTransaction = 0;
+  int mask = ((db->mDbFlags & DBFLAG_EncodingFixed) | ~DBFLAG_EncodingFixed);
+
+  assert( (db->mDbFlags & DBFLAG_SchemaKnownOk)==0 );
+  assert( iDb>=0 && iDb<db->nDb );
+  assert( db->aDb[iDb].pSchema );
+  assert( sqlite3_mutex_held(db->mutex) );
+  assert( iDb==1 || sqlite3BtreeHoldsMutex(db->aDb[iDb].pBt) );
+
+  db->init.busy = 1;
+
+  /* Construct the in-memory representation schema tables (sqlite_schema or
+  ** sqlite_temp_schema) by invoking the parser directly.  The appropriate
+  ** table name will be inserted automatically by the parser so we can just
+  ** use the abbreviation "x" here.  The parser will also automatically tag
+  ** the schema table as read-only. */
+  azArg[0] = "table";
+  azArg[1] = zSchemaTabName = SCHEMA_TABLE(iDb);
+  azArg[2] = azArg[1];
+  azArg[3] = "1";
+  azArg[4] = "CREATE TABLE x(type text,name text,tbl_name text,"
+                            "rootpage int,sql text)";
+  azArg[5] = 0;
+  initData.db = db;
+  initData.iDb = iDb;
+  initData.rc = SQLITE_OK;
+  initData.pzErrMsg = pzErrMsg;
+  initData.mInitFlags = mFlags;
+  initData.nInitRow = 0;
+  initData.mxPage = 0;
+  sqlite3InitCallback(&initData, 5, (char **)azArg, 0);
+  db->mDbFlags &= mask;
+  if( initData.rc ){
+    rc = initData.rc;
+    goto error_out;
+  }
+
+  /* Create a cursor to hold the database open
+  */
+  pDb = &db->aDb[iDb];
+  if( pDb->pBt==0 ){
+    assert( iDb==1 );
+    DbSetProperty(db, 1, DB_SchemaLoaded);
+    rc = SQLITE_OK;
+    goto error_out;
+  }
+
+  /* If there is not already a read-only (or read-write) transaction opened
+  ** on the b-tree database, open one now. If a transaction is opened, it 
+  ** will be closed before this function returns.  */
+  sqlite3BtreeEnter(pDb->pBt);
+  if( sqlite3BtreeTxnState(pDb->pBt)==SQLITE_TXN_NONE ){
+    rc = sqlite3BtreeBeginTrans(pDb->pBt, 0, 0);
+    if( rc!=SQLITE_OK ){
+      sqlite3SetString(pzErrMsg, db, sqlite3ErrStr(rc));
+      goto initone_error_out;
+    }
+    openedTransaction = 1;
+  }
+
+  /* Get the database meta information.
+  **
+  ** Meta values are as follows:
+  **    meta[0]   Schema cookie.  Changes with each schema change.
+  **    meta[1]   File format of schema layer.
+  **    meta[2]   Size of the page cache.
+  **    meta[3]   Largest rootpage (auto/incr_vacuum mode)
+  **    meta[4]   Db text encoding. 1:UTF-8 2:UTF-16LE 3:UTF-16BE
+  **    meta[5]   User version
+  **    meta[6]   Incremental vacuum mode
+  **    meta[7]   unused
+  **    meta[8]   unused
+  **    meta[9]   unused
+  **
+  ** Note: The #defined SQLITE_UTF* symbols in sqliteInt.h correspond to
+  ** the possible values of meta[4].
+  */
+  for(i=0; i<ArraySize(meta); i++){
+    sqlite3BtreeGetMeta(pDb->pBt, i+1, (u32 *)&meta[i]);
+  }
+  if( (db->flags & SQLITE_ResetDatabase)!=0 ){
+    memset(meta, 0, sizeof(meta));
+  }
+  pDb->pSchema->schema_cookie = meta[BTREE_SCHEMA_VERSION-1];
+
+  /* If opening a non-empty database, check the text encoding. For the
+  ** main database, set sqlite3.enc to the encoding of the main database.
+  ** For an attached db, it is an error if the encoding is not the same
+  ** as sqlite3.enc.
+  */
+  if( meta[BTREE_TEXT_ENCODING-1] ){  /* text encoding */
+    if( iDb==0 && (db->mDbFlags & DBFLAG_EncodingFixed)==0 ){
+      u8 encoding;
+#ifndef SQLITE_OMIT_UTF16
+      /* If opening the main database, set ENC(db). */
+      encoding = (u8)meta[BTREE_TEXT_ENCODING-1] & 3;
+      if( encoding==0 ) encoding = SQLITE_UTF8;
+#else
+      encoding = SQLITE_UTF8;
+#endif
+      sqlite3SetTextEncoding(db, encoding);
+    }else{
+      /* If opening an attached database, the encoding much match ENC(db) */
+      if( (meta[BTREE_TEXT_ENCODING-1] & 3)!=ENC(db) ){
+        sqlite3SetString(pzErrMsg, db, "attached databases must use the same"
+            " text encoding as main database");
+        rc = SQLITE_ERROR;
+        goto initone_error_out;
+      }
+    }
+  }
+  pDb->pSchema->enc = ENC(db);
+
+  if( pDb->pSchema->cache_size==0 ){
+#ifndef SQLITE_OMIT_DEPRECATED
+    size = sqlite3AbsInt32(meta[BTREE_DEFAULT_CACHE_SIZE-1]);
+    if( size==0 ){ size = SQLITE_DEFAULT_CACHE_SIZE; }
+    pDb->pSchema->cache_size = size;
+#else
+    pDb->pSchema->cache_size = SQLITE_DEFAULT_CACHE_SIZE;
+#endif
+    sqlite3BtreeSetCacheSize(pDb->pBt, pDb->pSchema->cache_size);
+  }
+
+  /*
+  ** file_format==1    Version 3.0.0.
+  ** file_format==2    Version 3.1.3.  // ALTER TABLE ADD COLUMN
+  ** file_format==3    Version 3.1.4.  // ditto but with non-NULL defaults
+  ** file_format==4    Version 3.3.0.  // DESC indices.  Boolean constants
+  */
+  pDb->pSchema->file_format = (u8)meta[BTREE_FILE_FORMAT-1];
+  if( pDb->pSchema->file_format==0 ){
+    pDb->pSchema->file_format = 1;
+  }
+  if( pDb->pSchema->file_format>SQLITE_MAX_FILE_FORMAT ){
+    sqlite3SetString(pzErrMsg, db, "unsupported file format");
+    rc = SQLITE_ERROR;
+    goto initone_error_out;
+  }
+
+  /* Ticket #2804:  When we open a database in the newer file format,
+  ** clear the legacy_file_format pragma flag so that a VACUUM will
+  ** not downgrade the database and thus invalidate any descending
+  ** indices that the user might have created.
+  */
+  if( iDb==0 && meta[BTREE_FILE_FORMAT-1]>=4 ){
+    db->flags &= ~(u64)SQLITE_LegacyFileFmt;
+  }
+
+  /* Read the schema information out of the schema tables
+  */
+  assert( db->init.busy );
+  initData.mxPage = sqlite3BtreeLastPage(pDb->pBt);
+  {
+    char *zSql;
+    zSql = sqlite3MPrintf(db, 
+        "SELECT*FROM\"%w\".%s ORDER BY rowid",
+        db->aDb[iDb].zDbSName, zSchemaTabName);
+#ifndef SQLITE_OMIT_AUTHORIZATION
+    {
+      sqlite3_xauth xAuth;
+      xAuth = db->xAuth;
+      db->xAuth = 0;
+#endif
+      rc = sqlite3_exec(db, zSql, sqlite3InitCallback, &initData, 0);
+#ifndef SQLITE_OMIT_AUTHORIZATION
+      db->xAuth = xAuth;
+    }
+#endif
+    if( rc==SQLITE_OK ) rc = initData.rc;
+    sqlite3DbFree(db, zSql);
+#ifndef SQLITE_OMIT_ANALYZE
+    if( rc==SQLITE_OK ){
+      sqlite3AnalysisLoad(db, iDb);
+    }
+#endif
+  }
+  assert( pDb == &(db->aDb[iDb]) );
+  if( db->mallocFailed ){
+    rc = SQLITE_NOMEM_BKPT;
+    sqlite3ResetAllSchemasOfConnection(db);
+    pDb = &db->aDb[iDb];
+  }else
+  if( rc==SQLITE_OK || ((db->flags&SQLITE_NoSchemaError) && rc!=SQLITE_NOMEM)){
+    /* Hack: If the SQLITE_NoSchemaError flag is set, then consider
+    ** the schema loaded, even if errors (other than OOM) occurred. In
+    ** this situation the current sqlite3_prepare() operation will fail,
+    ** but the following one will attempt to compile the supplied statement
+    ** against whatever subset of the schema was loaded before the error
+    ** occurred.
+    **
+    ** The primary purpose of this is to allow access to the sqlite_schema
+    ** table even when its contents have been corrupted.
+    */
+    DbSetProperty(db, iDb, DB_SchemaLoaded);
+    rc = SQLITE_OK;
+  }
+
+  /* Jump here for an error that occurs after successfully allocating
+  ** curMain and calling sqlite3BtreeEnter(). For an error that occurs
+  ** before that point, jump to error_out.
+  */
+initone_error_out:
+  if( openedTransaction ){
+    sqlite3BtreeCommit(pDb->pBt);
+  }
+  sqlite3BtreeLeave(pDb->pBt);
+
+error_out:
+  if( rc ){
+    if( rc==SQLITE_NOMEM || rc==SQLITE_IOERR_NOMEM ){
+      sqlite3OomFault(db);
+    }
+    sqlite3ResetOneSchema(db, iDb);
+  }
+  db->init.busy = 0;
+  return rc;
+}
+
+/*
+** Initialize all database files - the main database file, the file
+** used to store temporary tables, and any additional database files
+** created using ATTACH statements.  Return a success code.  If an
+** error occurs, write an error message into *pzErrMsg.
+**
+** After a database is initialized, the DB_SchemaLoaded bit is set
+** bit is set in the flags field of the Db structure. 
+*/
+int sqlite3Init(sqlite3 *db, char **pzErrMsg){
+  int i, rc;
+  int commit_internal = !(db->mDbFlags&DBFLAG_SchemaChange);
+  
+  assert( sqlite3_mutex_held(db->mutex) );
+  assert( sqlite3BtreeHoldsMutex(db->aDb[0].pBt) );
+  assert( db->init.busy==0 );
+  ENC(db) = SCHEMA_ENC(db);
+  assert( db->nDb>0 );
+  /* Do the main schema first */
+  if( !DbHasProperty(db, 0, DB_SchemaLoaded) ){
+    rc = sqlite3InitOne(db, 0, pzErrMsg, 0);
+    if( rc ) return rc;
+  }
+  /* All other schemas after the main schema. The "temp" schema must be last */
+  for(i=db->nDb-1; i>0; i--){
+    assert( i==1 || sqlite3BtreeHoldsMutex(db->aDb[i].pBt) );
+    if( !DbHasProperty(db, i, DB_SchemaLoaded) ){
+      rc = sqlite3InitOne(db, i, pzErrMsg, 0);
+      if( rc ) return rc;
+    }
+  }
+  if( commit_internal ){
+    sqlite3CommitInternalChanges(db);
+  }
+  return SQLITE_OK;
+}
+
+"#;
+        let (tree, source) = parse_c(code);
+        let mut graph = HashMap::new();
+        collect_call_graph(&tree.root_node(), &source, &mut graph);
+
+        // The real edge must still be found (via sqlite3Init's own,
+        // correctly scoped span).
+        assert!(
+            graph.get("sqlite3Init").unwrap().contains("sqlite3InitOne"),
+            "expected sqlite3Init -> sqlite3InitOne, got {:?}",
+            graph.get("sqlite3Init")
+        );
+        // sqlite3InitOne must NOT be credited with calling itself -- that
+        // edge only exists because the corrupted span swallowed sqlite3Init
+        // (whose real body calls sqlite3InitOne) as a descendant.
+        let init_one_callees = graph.get("sqlite3InitOne").cloned().unwrap_or_default();
+        assert!(
+            !init_one_callees.contains("sqlite3InitOne"),
+            "false self-recursion edge leaked into sqlite3InitOne's callees: {init_one_callees:?}"
+        );
+        // Likewise sqlite3CommitInternalChanges is only ever called from
+        // sqlite3Init's real body, never sqlite3InitOne's.
+        assert!(
+            !init_one_callees.contains("sqlite3CommitInternalChanges"),
+            "sqlite3Init's callees leaked into sqlite3InitOne: {init_one_callees:?}"
         );
     }
 

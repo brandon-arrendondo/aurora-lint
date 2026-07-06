@@ -1,6 +1,6 @@
 [package]
 name = "sqc"
-version = "0.4.80"
+version = "0.4.81"
 edition = "2021"
 description = "Software Code Quality - CERT C compliance checker"
 authors = ["Eric Buehler <eric.buehler@bissell.com>", "Brandon Arrendondo <brandon.arrendondo@bissell.com>"]
@@ -54,3 +54,9 @@ walkdir = "2.5"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 anyhow = "1.0"
+
+# TEMPORARY: validating the unreleased 0.1.8 call-graph fix (task 296) before
+# `cargo publish`. Remove this patch and bump the version pin above once
+# lang-parsing-substrate 0.1.8 is published to crates.io.
+[patch.crates-io]
+lang-parsing-substrate = { path = "../lang_parsing_substrate" }
