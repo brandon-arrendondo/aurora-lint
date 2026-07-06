@@ -31,83 +31,85 @@ impl CertRule for Dcl01C {
         let mut violations = Vec::new();
 
         // Collect all variable declarations at this level and check for shadowing
-        check_scope_for_shadowing(
-            node,
-            source,
-            &HashMap::new(),
-            &mut violations,
-            self.rule_id(),
-        );
+        check_scope_for_shadowing(node, source, &mut violations, self.rule_id());
 
         violations
     }
 }
 
-/// Recursively check scopes for variable name shadowing
+type Scope = HashMap<String, (usize, usize)>;
+
+/// Check scopes for variable name shadowing, starting at `root`.
 ///
-/// # Arguments
-/// * `node` - Current AST node being checked
-/// * `source` - Complete source code
-/// * `outer_vars` - Map of variable names from outer scopes (name -> declaration location)
-/// * `violations` - Vector to accumulate violations
-/// * `rule_id` - Rule ID for violation reporting
+/// Uses an explicit work stack instead of recursion: an else-if chain nests
+/// an `if_statement` as the `alternative` of the previous one, so a
+/// generated/obfuscated chain thousands deep would blow the native call
+/// stack if each link were a recursive call (the same hostap-style shape
+/// that motivated task 153).
+///
+/// Each stack entry pairs a node with the scope of variable names visible
+/// from its enclosing scopes (name -> declaration location); this mirrors
+/// the `outer_vars` parameter the recursive version threaded through calls.
 fn check_scope_for_shadowing(
-    node: &Node,
+    root: &Node,
     source: &str,
-    outer_vars: &HashMap<String, (usize, usize)>,
     violations: &mut Vec<RuleViolation>,
     rule_id: &str,
 ) {
-    // Build a new scope with variables declared at this level
-    let mut current_scope = outer_vars.clone();
+    let mut stack: Vec<(Node, Scope)> = vec![(*root, Scope::new())];
 
-    // Scan for declarations at this level
-    match node.kind() {
-        "translation_unit" => check_translation_unit_shadowing(node, source, violations, rule_id),
-        "function_definition" => check_function_definition_shadowing(
-            node,
-            source,
-            outer_vars,
-            &mut current_scope,
-            violations,
-            rule_id,
-        ),
-        "compound_statement" => check_compound_statement_shadowing(
-            node,
-            source,
-            outer_vars,
-            &mut current_scope,
-            violations,
-            rule_id,
-        ),
-        "for_statement" => check_for_statement_shadowing(
-            node,
-            source,
-            outer_vars,
-            &current_scope,
-            violations,
-            rule_id,
-        ),
-        // While/do-while loop - check body
-        "while_statement" | "do_statement" => {
-            if let Some(body) = node.child_by_field_name("body") {
-                check_scope_for_shadowing(&body, source, &current_scope, violations, rule_id);
+    while let Some((node, outer_vars)) = stack.pop() {
+        // Build a new scope with variables declared at this level
+        let mut current_scope = outer_vars.clone();
+
+        match node.kind() {
+            "translation_unit" => check_translation_unit_shadowing(&node, source, &mut stack),
+            "function_definition" => check_function_definition_shadowing(
+                &node,
+                source,
+                &outer_vars,
+                &mut current_scope,
+                violations,
+                rule_id,
+                &mut stack,
+            ),
+            "compound_statement" => check_compound_statement_shadowing(
+                &node,
+                source,
+                &outer_vars,
+                &mut current_scope,
+                violations,
+                rule_id,
+                &mut stack,
+            ),
+            "for_statement" => check_for_statement_shadowing(
+                &node,
+                source,
+                &outer_vars,
+                &current_scope,
+                violations,
+                rule_id,
+                &mut stack,
+            ),
+            // While/do-while loop - check body
+            "while_statement" | "do_statement" => {
+                if let Some(body) = node.child_by_field_name("body") {
+                    stack.push((body, current_scope));
+                }
             }
-        }
-        "if_statement" => {
-            check_if_statement_shadowing(node, source, &current_scope, violations, rule_id)
-        }
-        // Switch statement - check body
-        "switch_statement" => {
-            if let Some(body) = node.child_by_field_name("body") {
-                check_scope_for_shadowing(&body, source, &current_scope, violations, rule_id);
+            "if_statement" => check_if_statement_shadowing(&node, &current_scope, &mut stack),
+            // Switch statement - check body
+            "switch_statement" => {
+                if let Some(body) = node.child_by_field_name("body") {
+                    stack.push((body, current_scope));
+                }
             }
-        }
-        _ => {
-            // For other nodes, recursively check children
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    check_scope_for_shadowing(&child, source, &current_scope, violations, rule_id);
+            _ => {
+                // For other nodes, queue children for processing
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        stack.push((child, current_scope.clone()));
+                    }
                 }
             }
         }
@@ -115,13 +117,12 @@ fn check_scope_for_shadowing(
 }
 
 /// `translation_unit` case of [`check_scope_for_shadowing`]: file scope
-/// collects all global declarations, then checks each function body against
+/// collects all global declarations, then queues each function body against
 /// that global scope.
-fn check_translation_unit_shadowing(
-    node: &Node,
+fn check_translation_unit_shadowing<'a>(
+    node: &Node<'a>,
     source: &str,
-    violations: &mut Vec<RuleViolation>,
-    rule_id: &str,
+    stack: &mut Vec<(Node<'a>, Scope)>,
 ) {
     let mut global_vars = HashMap::new();
     collect_declarations_in_node(node, source, &mut global_vars);
@@ -129,7 +130,7 @@ fn check_translation_unit_shadowing(
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "function_definition" {
-                check_scope_for_shadowing(&child, source, &global_vars, violations, rule_id);
+                stack.push((child, global_vars.clone()));
             }
         }
     }
@@ -137,14 +138,16 @@ fn check_translation_unit_shadowing(
 
 /// `function_definition` case of [`check_scope_for_shadowing`]: function
 /// scope collects parameters (flagging any that shadow an outer variable),
-/// then checks the function body.
-fn check_function_definition_shadowing(
-    node: &Node,
+/// then queues the function body.
+#[allow(clippy::too_many_arguments)]
+fn check_function_definition_shadowing<'a>(
+    node: &Node<'a>,
     source: &str,
     outer_vars: &HashMap<String, (usize, usize)>,
     current_scope: &mut HashMap<String, (usize, usize)>,
     violations: &mut Vec<RuleViolation>,
     rule_id: &str,
+    stack: &mut Vec<(Node<'a>, Scope)>,
 ) {
     let params = extract_function_parameters(node, source);
     for (param_name, line, col) in params {
@@ -170,20 +173,22 @@ fn check_function_definition_shadowing(
     }
 
     if let Some(body) = find_compound_statement(node) {
-        check_scope_for_shadowing(&body, source, current_scope, violations, rule_id);
+        stack.push((body, current_scope.clone()));
     }
 }
 
 /// `compound_statement` case of [`check_scope_for_shadowing`]: block scope
 /// collects declarations in this block (flagging any that shadow an outer
-/// variable), then recurses into nested scopes.
-fn check_compound_statement_shadowing(
-    node: &Node,
+/// variable), then queues nested scopes.
+#[allow(clippy::too_many_arguments)]
+fn check_compound_statement_shadowing<'a>(
+    node: &Node<'a>,
     source: &str,
     outer_vars: &HashMap<String, (usize, usize)>,
     current_scope: &mut HashMap<String, (usize, usize)>,
     violations: &mut Vec<RuleViolation>,
     rule_id: &str,
+    stack: &mut Vec<(Node<'a>, Scope)>,
 ) {
     let mut block_vars = HashMap::new();
 
@@ -217,8 +222,9 @@ fn check_compound_statement_shadowing(
     // Merge block variables into current scope
     current_scope.extend(block_vars);
 
-    // Recursively check nested scopes
-    for i in 0..node.child_count() {
+    // Queue nested scopes, in reverse so they're popped in original
+    // left-to-right document order.
+    for i in (0..node.child_count()).rev() {
         let Some(child) = node.child(i) else { continue };
         if matches!(
             child.kind(),
@@ -229,21 +235,23 @@ fn check_compound_statement_shadowing(
                 | "if_statement"
                 | "switch_statement"
         ) {
-            check_scope_for_shadowing(&child, source, current_scope, violations, rule_id);
+            stack.push((child, current_scope.clone()));
         }
     }
 }
 
 /// `for_statement` case of [`check_scope_for_shadowing`]: checks the
 /// initializer for a loop-variable declaration that shadows an outer
-/// variable, then checks the loop body.
-fn check_for_statement_shadowing(
-    node: &Node,
+/// variable, then queues the loop body.
+#[allow(clippy::too_many_arguments)]
+fn check_for_statement_shadowing<'a>(
+    node: &Node<'a>,
     source: &str,
     outer_vars: &HashMap<String, (usize, usize)>,
     current_scope: &HashMap<String, (usize, usize)>,
     violations: &mut Vec<RuleViolation>,
     rule_id: &str,
+    stack: &mut Vec<(Node<'a>, Scope)>,
 ) {
     let mut loop_scope = current_scope.clone();
 
@@ -275,24 +283,27 @@ fn check_for_statement_shadowing(
     }
 
     if let Some(body) = node.child_by_field_name("body") {
-        check_scope_for_shadowing(&body, source, &loop_scope, violations, rule_id);
+        stack.push((body, loop_scope));
     }
 }
 
-/// `if_statement` case of [`check_scope_for_shadowing`]: checks the
-/// consequence and (if present) alternative branches.
-fn check_if_statement_shadowing(
-    node: &Node,
-    source: &str,
+/// `if_statement` case of [`check_scope_for_shadowing`]: queues the
+/// consequence and (if present) alternative branches. The alternative of an
+/// `else if` is itself an `if_statement`, so a long else-if chain is
+/// consumed one work-stack entry at a time rather than nesting a native
+/// call per link.
+fn check_if_statement_shadowing<'a>(
+    node: &Node<'a>,
     current_scope: &HashMap<String, (usize, usize)>,
-    violations: &mut Vec<RuleViolation>,
-    rule_id: &str,
+    stack: &mut Vec<(Node<'a>, Scope)>,
 ) {
-    if let Some(consequence) = node.child_by_field_name("consequence") {
-        check_scope_for_shadowing(&consequence, source, current_scope, violations, rule_id);
-    }
+    // Push alternative first so consequence (which appears first in source)
+    // is popped and processed first.
     if let Some(alternative) = node.child_by_field_name("alternative") {
-        check_scope_for_shadowing(&alternative, source, current_scope, violations, rule_id);
+        stack.push((alternative, current_scope.clone()));
+    }
+    if let Some(consequence) = node.child_by_field_name("consequence") {
+        stack.push((consequence, current_scope.clone()));
     }
 }
 
