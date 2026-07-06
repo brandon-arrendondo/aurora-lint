@@ -624,8 +624,16 @@ impl Int33C {
     }
 
     /// Check if there's an early return or exit when divisor is zero.
-    /// Recurses into nested blocks (if-bodies, compound statements) to find
+    /// Walks into nested blocks (if-bodies, compound statements) to find
     /// guards like `if (expr == 0) { return; }` at any nesting depth.
+    ///
+    /// Uses an explicit stack instead of recursion: an else-if chain nests
+    /// an `if_statement` inside every else clause, so a generated/
+    /// obfuscated chain thousands deep would blow the native call stack if
+    /// each link were a recursive call (the same hostap-style shape that
+    /// motivated task 153). This is a pure existence check (true as soon as
+    /// any guard is found anywhere), so traversal order doesn't affect the
+    /// result.
     fn has_early_return_for_zero(
         &self,
         scope: &Node,
@@ -634,47 +642,46 @@ impl Int33C {
         div_node: &Node,
     ) -> bool {
         let div_line = div_node.start_position().row;
+        let mut stack = vec![*scope];
 
-        for i in 0..scope.named_child_count() {
-            if let Some(child) = scope.named_child(i) {
-                let child_line = child.start_position().row;
+        while let Some(cur_scope) = stack.pop() {
+            for i in 0..cur_scope.named_child_count() {
+                if let Some(child) = cur_scope.named_child(i) {
+                    let child_line = child.start_position().row;
 
-                // Only check statements before the division
-                if child_line >= div_line {
-                    break;
-                }
+                    // Only check statements before the division
+                    if child_line >= div_line {
+                        break;
+                    }
 
-                if child.kind() == "if_statement" {
-                    if let Some(condition) = child.child_by_field_name("condition") {
-                        if self.checks_for_zero(&condition, var_name, source) {
-                            if let Some(consequence) = child.child_by_field_name("consequence") {
-                                if Self::has_return_or_exit(&consequence, source) {
-                                    return true;
+                    if child.kind() == "if_statement" {
+                        if let Some(condition) = child.child_by_field_name("condition") {
+                            if self.checks_for_zero(&condition, var_name, source) {
+                                if let Some(consequence) = child.child_by_field_name("consequence")
+                                {
+                                    if Self::has_return_or_exit(&consequence, source) {
+                                        return true;
+                                    }
                                 }
                             }
                         }
-                    }
-                    // Recurse into if-body to find guards at deeper nesting
-                    if let Some(consequence) = child.child_by_field_name("consequence") {
-                        if self.has_early_return_for_zero(&consequence, var_name, source, div_node)
-                        {
-                            return true;
+                        // Queue if-body to find guards at deeper nesting
+                        if let Some(consequence) = child.child_by_field_name("consequence") {
+                            stack.push(consequence);
                         }
                     }
-                }
 
-                // Recurse into bare compound statements
-                if child.kind() == "compound_statement" {
-                    if self.has_early_return_for_zero(&child, var_name, source, div_node) {
-                        return true;
+                    // Queue bare compound statements
+                    if child.kind() == "compound_statement" {
+                        stack.push(child);
                     }
-                }
 
-                // Check for do-while loops that validate input
-                if child.kind() == "do_statement" {
-                    if let Some(condition) = child.child_by_field_name("condition") {
-                        if self.checks_for_zero(&condition, var_name, source) {
-                            return true;
+                    // Check for do-while loops that validate input
+                    if child.kind() == "do_statement" {
+                        if let Some(condition) = child.child_by_field_name("condition") {
+                            if self.checks_for_zero(&condition, var_name, source) {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -1230,8 +1237,17 @@ impl Int33C {
         found_any
     }
 
-    /// Recursively walk `scope` collecting assignments to `var_name`.
+    /// Walk `scope` collecting assignments to `var_name`.
     /// Returns false immediately if any assignment is zero or non-constant.
+    ///
+    /// Uses an explicit stack instead of recursion: the catch-all `_` arm
+    /// below descends into every unmatched child kind (if/while/compound/
+    /// etc.), so a pathologically nested if/else-if or block chain could
+    /// blow the native call stack one frame per level (the same hostap-
+    /// style shape that motivated task 153). `found_any` is write-only
+    /// (set true, never cleared) and any bad assignment aborts the whole
+    /// walk immediately, so processing children out of document order via
+    /// the stack doesn't change the result.
     fn collect_assignments_all_nonzero(
         scope: &Node,
         var_name: &str,
@@ -1239,75 +1255,71 @@ impl Int33C {
         macros: &MacroConstantMap,
         found_any: &mut bool,
     ) -> bool {
-        for i in 0..scope.named_child_count() {
-            let child = match scope.named_child(i) {
-                Some(c) => c,
-                None => continue,
-            };
+        let mut stack = vec![*scope];
 
-            match child.kind() {
-                "declaration" => {
-                    // Check `int data = EXPR;`
-                    if Self::declaration_assigns_to(&child, var_name, source) {
-                        if let Some(val_node) =
-                            Self::declaration_init_value(&child, var_name, source)
-                        {
-                            if !Self::is_nonzero_constant(&val_node, source, macros) {
-                                return false;
+        while let Some(cur_scope) = stack.pop() {
+            for i in 0..cur_scope.named_child_count() {
+                let child = match cur_scope.named_child(i) {
+                    Some(c) => c,
+                    None => continue,
+                };
+
+                match child.kind() {
+                    "declaration" => {
+                        // Check `int data = EXPR;`
+                        if Self::declaration_assigns_to(&child, var_name, source) {
+                            if let Some(val_node) =
+                                Self::declaration_init_value(&child, var_name, source)
+                            {
+                                if !Self::is_nonzero_constant(&val_node, source, macros) {
+                                    return false;
+                                }
+                                *found_any = true;
                             }
-                            *found_any = true;
+                            // `int data;` without init — not an assignment
                         }
-                        // `int data;` without init — not an assignment
                     }
-                }
-                "expression_statement" => {
-                    // Check `data = EXPR;`
-                    if let Some(expr) = child.named_child(0) {
-                        if expr.kind() == "assignment_expression" {
-                            if let Some(lhs) = expr.child_by_field_name("left") {
-                                if lhs.kind() == "identifier"
-                                    && ast_utils::get_node_text(&lhs, source) == var_name
-                                {
-                                    if let Some(rhs) = expr.child_by_field_name("right") {
-                                        if !Self::is_nonzero_constant(&rhs, source, macros) {
-                                            return false;
+                    "expression_statement" => {
+                        // Check `data = EXPR;`
+                        if let Some(expr) = child.named_child(0) {
+                            if expr.kind() == "assignment_expression" {
+                                if let Some(lhs) = expr.child_by_field_name("left") {
+                                    if lhs.kind() == "identifier"
+                                        && ast_utils::get_node_text(&lhs, source) == var_name
+                                    {
+                                        if let Some(rhs) = expr.child_by_field_name("right") {
+                                            if !Self::is_nonzero_constant(&rhs, source, macros) {
+                                                return false;
+                                            }
+                                            *found_any = true;
                                         }
-                                        *found_any = true;
                                     }
                                 }
                             }
-                        }
-                        // Check for update_expression (i++, i--, ++i, --i)
-                        // or compound assignments (+=, -=, etc.) that modify the variable
-                        if Self::is_variable_modified_by_update(&expr, var_name, source) {
-                            return false;
-                        }
-                    }
-                }
-                // Also check for-loop update expressions (the update clause of for(;;update))
-                "for_statement" => {
-                    // Check if the for-loop's update or body modifies the variable
-                    let text = ast_utils::get_node_text(&child, source);
-                    if text.contains(var_name) {
-                        if let Some(update) = child.child_by_field_name("update") {
-                            if Self::is_variable_modified_by_update(&update, var_name, source) {
+                            // Check for update_expression (i++, i--, ++i, --i)
+                            // or compound assignments (+=, -=, etc.) that modify the variable
+                            if Self::is_variable_modified_by_update(&expr, var_name, source) {
                                 return false;
                             }
                         }
                     }
-                    // Still recurse into the for body
-                    if !Self::collect_assignments_all_nonzero(
-                        &child, var_name, source, macros, found_any,
-                    ) {
-                        return false;
+                    // Also check for-loop update expressions (the update clause of for(;;update))
+                    "for_statement" => {
+                        // Check if the for-loop's update or body modifies the variable
+                        let text = ast_utils::get_node_text(&child, source);
+                        if text.contains(var_name) {
+                            if let Some(update) = child.child_by_field_name("update") {
+                                if Self::is_variable_modified_by_update(&update, var_name, source) {
+                                    return false;
+                                }
+                            }
+                        }
+                        // Still queue the for body
+                        stack.push(child);
                     }
-                }
-                _ => {
-                    // Recurse into compound statements, if-bodies, etc.
-                    if !Self::collect_assignments_all_nonzero(
-                        &child, var_name, source, macros, found_any,
-                    ) {
-                        return false;
+                    _ => {
+                        // Queue compound statements, if-bodies, etc.
+                        stack.push(child);
                     }
                 }
             }
