@@ -111,25 +111,34 @@ impl Sig00C {
         false
     }
 
-    /// Recursively search for sigaddset calls before the target node
+    /// Search for sigaddset calls before the target node.
+    ///
+    /// Uses an explicit stack instead of recursion: this recurses into
+    /// every child unconditionally (pruned only by byte-offset position
+    /// relative to `target`, not by node kind), so deeply nested code
+    /// before the target would cost one native call frame per level --
+    /// same unbounded-depth risk class as the original ARR00-C/MEM33-C bug
+    /// (task 153). Pure existence check, so traversal order doesn't affect
+    /// the result.
     fn contains_sigaddset_before(&self, scope: &Node, target: &Node, source: &str) -> bool {
         let target_start = target.start_byte();
+        let mut stack = vec![*scope];
 
-        for i in 0..scope.child_count() {
-            if let Some(child) = scope.child(i) {
-                // Stop when we reach the target node
-                if child.start_byte() >= target_start {
-                    break;
-                }
+        while let Some(scope) = stack.pop() {
+            for i in 0..scope.child_count() {
+                if let Some(child) = scope.child(i) {
+                    // Stop when we reach the target node
+                    if child.start_byte() >= target_start {
+                        break;
+                    }
 
-                // Check if this is a sigaddset call
-                if self.is_sigaddset_call(&child, source) {
-                    return true;
-                }
+                    // Check if this is a sigaddset call
+                    if self.is_sigaddset_call(&child, source) {
+                        return true;
+                    }
 
-                // Recursively check child nodes
-                if self.contains_sigaddset_before(&child, target, source) {
-                    return true;
+                    // Queue child nodes for checking
+                    stack.push(child);
                 }
             }
         }

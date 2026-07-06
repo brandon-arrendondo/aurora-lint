@@ -392,6 +392,18 @@ impl Flp03C {
     /// For if-statements with constant conditions, only follows the feasible branch.
     /// Returns Some(true) if last reaching assignment is non-zero, Some(false) if zero,
     /// None if no assignment found.
+    ///
+    /// Uses an explicit continuation-frame stack instead of recursion: this
+    /// prunes by branch feasibility rather than node kind, so it can't be
+    /// mechanically flattened via a generic descendant query, and a long
+    /// chain of feasible nested ifs/compounds would cost one native call
+    /// frame per level (the same hostap-style risk class as the original
+    /// ARR00-C/MEM33-C bug, task 153). Each frame owns its scope's local
+    /// `last_val` accumulator; when a frame's scan finishes, its `last_val`
+    /// becomes the "return value" applied to the resuming parent frame --
+    /// mirroring `if let Some(v) = recursive_call() { last_val = Some(v); }`
+    /// exactly, just via an explicit `pending_return` slot instead of the
+    /// native call stack.
     fn walk_scope_for_last_assignment(
         scope: &Node,
         var_name: &str,
@@ -399,63 +411,101 @@ impl Flp03C {
         div_line: usize,
         constants: &const_eval::MacroConstantMap,
     ) -> Option<bool> {
-        let mut last_val: Option<bool> = None;
-        for i in 0..scope.named_child_count() {
-            let child = match scope.named_child(i) {
-                Some(c) => c,
-                None => continue,
-            };
-            if child.start_position().row >= div_line {
-                break;
+        struct Frame<'a> {
+            scope: Node<'a>,
+            idx: usize,
+            last_val: Option<bool>,
+        }
+
+        let mut stack: Vec<Frame> = vec![Frame {
+            scope: *scope,
+            idx: 0,
+            last_val: None,
+        }];
+        // Return value of the most recently completed child frame, to be
+        // applied to whichever frame resumes next.
+        let mut pending_return: Option<Option<bool>> = None;
+
+        loop {
+            let mut frame = stack.pop().expect("stack non-empty by loop invariant");
+
+            if let Some(Some(v)) = pending_return.take() {
+                frame.last_val = Some(v);
             }
-            // Direct assignment
-            if let Some(is_nz) = Self::get_assignment_value(&child, var_name, source) {
-                last_val = Some(is_nz);
-                continue;
-            }
-            // If-statement: resolve condition if possible
-            if child.kind() == "if_statement" {
-                if let Some(cond) = child.child_by_field_name("condition") {
-                    let const_val = Self::eval_condition_const(&cond, source, constants);
-                    match const_val {
-                        Some(true) => {
-                            // Only then-branch is feasible
-                            if let Some(then_br) = child.child_by_field_name("consequence") {
-                                if let Some(v) = Self::walk_scope_for_last_assignment(
-                                    &then_br, var_name, source, div_line, constants,
-                                ) {
-                                    last_val = Some(v);
-                                }
+
+            let mut spawned: Option<Frame> = None;
+            while frame.idx < frame.scope.named_child_count() {
+                let child = match frame.scope.named_child(frame.idx) {
+                    Some(c) => c,
+                    None => {
+                        frame.idx += 1;
+                        continue;
+                    }
+                };
+                if child.start_position().row >= div_line {
+                    break;
+                }
+                // Direct assignment
+                if let Some(is_nz) = Self::get_assignment_value(&child, var_name, source) {
+                    frame.last_val = Some(is_nz);
+                    frame.idx += 1;
+                    continue;
+                }
+                // If-statement: resolve condition if possible
+                if child.kind() == "if_statement" {
+                    let mut target = None;
+                    if let Some(cond) = child.child_by_field_name("condition") {
+                        match Self::eval_condition_const(&cond, source, constants) {
+                            Some(true) => {
+                                // Only then-branch is feasible
+                                target = child.child_by_field_name("consequence");
                             }
-                        }
-                        Some(false) => {
-                            // Only else-branch is feasible
-                            if let Some(else_br) = child.child_by_field_name("alternative") {
-                                if let Some(v) = Self::walk_scope_for_last_assignment(
-                                    &else_br, var_name, source, div_line, constants,
-                                ) {
-                                    last_val = Some(v);
-                                }
+                            Some(false) => {
+                                // Only else-branch is feasible
+                                target = child.child_by_field_name("alternative");
                             }
-                        }
-                        None => {
-                            // Unknown condition: conservatively don't update last_val
-                            // (both branches are possible, can't guarantee which)
+                            None => {
+                                // Unknown condition: conservatively don't update
+                                // last_val (both branches are possible, can't
+                                // guarantee which)
+                            }
                         }
                     }
+                    frame.idx += 1;
+                    if let Some(target) = target {
+                        spawned = Some(Frame {
+                            scope: target,
+                            idx: 0,
+                            last_val: None,
+                        });
+                        break;
+                    }
+                    continue;
                 }
+                // Recurse into compound statements
+                if child.kind() == "compound_statement" {
+                    frame.idx += 1;
+                    spawned = Some(Frame {
+                        scope: child,
+                        idx: 0,
+                        last_val: None,
+                    });
+                    break;
+                }
+                frame.idx += 1;
+            }
+
+            if let Some(child_frame) = spawned {
+                stack.push(frame);
+                stack.push(child_frame);
                 continue;
             }
-            // Recurse into compound statements
-            if child.kind() == "compound_statement" {
-                if let Some(v) = Self::walk_scope_for_last_assignment(
-                    &child, var_name, source, div_line, constants,
-                ) {
-                    last_val = Some(v);
-                }
+
+            if stack.is_empty() {
+                return frame.last_val;
             }
+            pending_return = Some(frame.last_val);
         }
-        last_val
     }
 
     /// Evaluate an if-condition as a constant boolean, using file-scope constants.
@@ -486,6 +536,12 @@ impl Flp03C {
     }
 
     /// Walk all assignments to var_name, tracking if all are non-zero.
+    ///
+    /// Uses an explicit stack instead of recursion: unlike
+    /// [`Self::walk_scope_for_last_assignment`], this has no branch-value
+    /// return dependency (it only accumulates into the shared `&mut`
+    /// flags), so a plain node stack suffices -- same unbounded-depth risk
+    /// class as the original ARR00-C/MEM33-C bug (task 153).
     fn check_all_assignments(
         scope: &Node,
         var_name: &str,
@@ -493,18 +549,21 @@ impl Flp03C {
         all_nonzero: &mut bool,
         found_any: &mut bool,
     ) {
-        for i in 0..scope.named_child_count() {
-            let child = match scope.named_child(i) {
-                Some(c) => c,
-                None => continue,
-            };
-            if let Some(is_nz) = Self::get_assignment_value(&child, var_name, source) {
-                *found_any = true;
-                if !is_nz {
-                    *all_nonzero = false;
+        let mut stack = vec![*scope];
+        while let Some(scope) = stack.pop() {
+            for i in (0..scope.named_child_count()).rev() {
+                let child = match scope.named_child(i) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                if let Some(is_nz) = Self::get_assignment_value(&child, var_name, source) {
+                    *found_any = true;
+                    if !is_nz {
+                        *all_nonzero = false;
+                    }
+                } else {
+                    stack.push(child);
                 }
-            } else {
-                Self::check_all_assignments(&child, var_name, source, all_nonzero, found_any);
             }
         }
     }
