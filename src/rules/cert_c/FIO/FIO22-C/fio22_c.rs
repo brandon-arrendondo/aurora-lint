@@ -106,19 +106,34 @@ impl Fio22CChecker {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Process statements sequentially, tracking file operations
-        for i in 0..node.child_count() {
+        // Explicit stack instead of recursion: an else-if chain nests an
+        // if_statement inside every else clause, so a generated/obfuscated
+        // chain thousands deep would blow the native call stack if each
+        // link were a recursive process_statement() call.
+        let mut stack: Vec<Node> = Vec::new();
+        Self::push_children_reversed(node, &mut stack);
+
+        while let Some(current) = stack.pop() {
+            self.process_statement(&current, source, violations, &mut stack);
+        }
+    }
+
+    /// Push a node's children onto `stack` in reverse order, so popping the
+    /// stack visits them in original left-to-right document order.
+    fn push_children_reversed<'a>(node: &Node<'a>, stack: &mut Vec<Node<'a>>) {
+        for i in (0..node.child_count()).rev() {
             if let Some(child) = node.child(i) {
-                self.process_statement(&child, source, violations);
+                stack.push(child);
             }
         }
     }
 
-    fn process_statement(
+    fn process_statement<'a>(
         &mut self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
         violations: &mut Vec<RuleViolation>,
+        stack: &mut Vec<Node<'a>>,
     ) {
         match node.kind() {
             "expression_statement" | "declaration" => {
@@ -164,7 +179,7 @@ impl Fio22CChecker {
                 }
             }
             "compound_statement" => {
-                self.check_compound_statement(node, source, violations);
+                Self::push_children_reversed(node, stack);
             }
             "if_statement" | "while_statement" | "for_statement" | "do_statement" => {
                 // Check for FD_CLOEXEC being set in condition
@@ -197,12 +212,12 @@ impl Fio22CChecker {
                     }
                 }
 
-                // Recursively check control flow statements
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.process_statement(&child, source, violations);
-                    }
-                }
+                // Queue control-flow children (condition/then/else) for
+                // processing via the same explicit stack, preserving the
+                // "unhandled statement kinds prune descent" behavior since
+                // only the kinds matched above ever get their children
+                // queued.
+                Self::push_children_reversed(node, stack);
             }
             _ => {}
         }
