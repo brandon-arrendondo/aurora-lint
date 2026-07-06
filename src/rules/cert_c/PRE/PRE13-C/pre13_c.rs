@@ -33,6 +33,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use std::rc::Rc;
 use tree_sitter::Node;
 
 pub struct Pre13C;
@@ -168,49 +169,71 @@ impl CertRule for Pre13C {
 }
 
 impl Pre13C {
+    /// Walk the tree, threading a per-path `defined_macros` accumulator down
+    /// `preproc_if` branches (each nested `#if defined(X)` extends the set
+    /// for its own subtree only).
+    ///
+    /// Uses an explicit stack instead of recursion: this walks every node in
+    /// the tree, so a deeply nested `#if`/`#elif` chain (or just deeply
+    /// nested code in general) would cost one native call frame per level
+    /// -- the same hostap-style risk class as the original ARR00-C/MEM33-C
+    /// bug (task 153). `defined_macros` is read-only once built for a given
+    /// subtree (only ever appended-to when entering a new `preproc_if`, never
+    /// mutated in place or merged back), so an `Rc<Vec<String>>` shared
+    /// handle reproduces the original borrowed-slice-vs-forked-clone
+    /// behavior exactly: plain nodes pass the same `Rc` through to their
+    /// children (cheap pointer clone, like the original `&[String]`
+    /// reborrow), while `preproc_if` builds a new `Rc` for its children.
     fn check_node(
         &self,
-        node: &Node,
+        root: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        defined_macros: &[String],
+        initial_defined_macros: &[String],
     ) {
-        // Check this node
-        self.check_preprocessor_conditional(node, source, violations, defined_macros);
+        let mut stack: Vec<(Node, Rc<Vec<String>>)> =
+            vec![(*root, Rc::new(initial_defined_macros.to_vec()))];
 
-        // For preproc_if nodes, extract macros checked with defined() and pass to children
-        if node.kind() == "preproc_if" {
-            if let Some(condition) = node.child_by_field_name("condition") {
-                let condition_text = get_node_text(&condition, source);
-                let mut new_defined_macros = defined_macros.to_vec();
+        while let Some((node, defined_macros)) = stack.pop() {
+            // Check this node
+            self.check_preprocessor_conditional(&node, source, violations, &defined_macros);
 
-                // Extract macros checked with defined() in this condition
-                for macro_name in self.get_standard_macros() {
-                    let defined_pattern = format!("defined({})", macro_name);
-                    let defined_pattern_spaces = format!("defined ({})", macro_name);
-                    if condition_text.contains(&defined_pattern)
-                        || condition_text.contains(&defined_pattern_spaces)
-                    {
-                        if !new_defined_macros.contains(&macro_name.to_string()) {
-                            new_defined_macros.push(macro_name.to_string());
+            // For preproc_if nodes, extract macros checked with defined() and pass to children
+            if node.kind() == "preproc_if" {
+                if let Some(condition) = node.child_by_field_name("condition") {
+                    let condition_text = get_node_text(&condition, source);
+                    let mut new_defined_macros = (*defined_macros).clone();
+
+                    // Extract macros checked with defined() in this condition
+                    for macro_name in self.get_standard_macros() {
+                        let defined_pattern = format!("defined({})", macro_name);
+                        let defined_pattern_spaces = format!("defined ({})", macro_name);
+                        if condition_text.contains(&defined_pattern)
+                            || condition_text.contains(&defined_pattern_spaces)
+                        {
+                            if !new_defined_macros.contains(&macro_name.to_string()) {
+                                new_defined_macros.push(macro_name.to_string());
+                            }
                         }
                     }
-                }
 
-                // Recurse into children with updated defined_macros set
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.check_node(&child, source, violations, &new_defined_macros);
+                    // Queue children with updated defined_macros set, in
+                    // reverse so they're popped in original document order.
+                    let new_macros = Rc::new(new_defined_macros);
+                    for i in (0..node.child_count()).rev() {
+                        if let Some(child) = node.child(i) {
+                            stack.push((child, Rc::clone(&new_macros)));
+                        }
                     }
+                    continue;
                 }
-                return;
             }
-        }
 
-        // Recursively check child nodes with current defined_macros set
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_node(&child, source, violations, defined_macros);
+            // Queue child nodes with the current defined_macros set
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push((child, Rc::clone(&defined_macros)));
+                }
             }
         }
     }

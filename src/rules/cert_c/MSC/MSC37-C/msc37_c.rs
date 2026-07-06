@@ -119,79 +119,101 @@ impl Msc37C {
     }
 
     /// Check if the last statement in a compound statement is a return
+    /// (possibly through nested if/switch branches that all return).
+    ///
+    /// `ends_with_return`/`all_branches_return`/`statement_returns` used to
+    /// be three mutually recursive functions chaining through nested
+    /// if/else-if and compound-statement nesting -- a long else-if chain
+    /// would cost one native call frame per link (the same hostap-style
+    /// risk class as the original ARR00-C/MEM33-C bug, task 153). They're
+    /// unified here into one postorder evaluator using an explicit
+    /// instruction/value stack instead of recursion: `if_statement` needs
+    /// BOTH its consequence and alternative evaluated before it can AND
+    /// them together, so this uses the classic stack-machine technique
+    /// (push `Eval` work, push an `And` combinator that pops two already-
+    /// computed results) rather than a plain node-only stack.
     fn ends_with_return(&self, compound_stmt: &Node) -> bool {
-        // Get the last non-brace, non-comment, non-preprocessor child.
-        // Comments (e.g., `return val; // note`) and preprocessor directives
-        // after a return would otherwise become the "last child" and cause false positives.
-        let mut last_stmt = None;
-        for i in 0..compound_stmt.child_count() {
-            if let Some(child) = compound_stmt.child(i) {
-                let kind = child.kind();
-                if kind == "{" || kind == "}" || kind == "comment" || kind.starts_with("preproc_") {
-                    continue;
-                }
-                last_stmt = Some(child);
-            }
-        }
-
-        if let Some(stmt) = last_stmt {
-            match stmt.kind() {
-                "return_statement" => true,
-                "if_statement" | "switch_statement" => {
-                    // Check if all branches end with return
-                    self.all_branches_return(&stmt)
-                }
-                "compound_statement" => self.ends_with_return(&stmt),
-                _ => false,
-            }
-        } else {
-            false
-        }
+        self.stmt_returns(compound_stmt)
     }
 
-    /// Check if all branches of a conditional statement return
-    fn all_branches_return(&self, node: &Node) -> bool {
-        match node.kind() {
-            "if_statement" => {
-                // Must have both consequence and alternative, both returning
-                if let Some(consequence) = node.child_by_field_name("consequence") {
-                    let consequence_returns = self.statement_returns(&consequence);
-
-                    if let Some(alternative) = node.child_by_field_name("alternative") {
-                        let alternative_returns = self.statement_returns(&alternative);
-                        return consequence_returns && alternative_returns;
-                    }
-                }
-                false
-            }
-            "switch_statement" => {
-                // Basic check: has default case and all cases return
-                // This is a simplification - full analysis would be more complex
-                self.has_return_statement(node)
-            }
-            _ => false,
+    fn stmt_returns(&self, root: &Node) -> bool {
+        enum Op<'a> {
+            Eval(Node<'a>),
+            And,
         }
-    }
 
-    /// Check if a statement returns
-    fn statement_returns(&self, stmt: &Node) -> bool {
-        match stmt.kind() {
-            "return_statement" => true,
-            "compound_statement" => self.ends_with_return(stmt),
-            "if_statement" | "switch_statement" => self.all_branches_return(stmt),
-            "else_clause" => {
-                // else_clause wraps the actual statement (compound_statement or single stmt)
-                for i in 0..stmt.child_count() {
-                    if let Some(child) = stmt.child(i) {
-                        if child.kind() != "else" {
-                            return self.statement_returns(&child);
+        let mut ops: Vec<Op> = vec![Op::Eval(*root)];
+        let mut values: Vec<bool> = Vec::new();
+
+        while let Some(op) = ops.pop() {
+            match op {
+                Op::Eval(node) => match node.kind() {
+                    "return_statement" => values.push(true),
+                    "compound_statement" => {
+                        // Last non-brace, non-comment, non-preprocessor child.
+                        // Comments (e.g., `return val; // note`) and
+                        // preprocessor directives after a return would
+                        // otherwise become the "last child" and cause false
+                        // positives.
+                        let mut last_stmt = None;
+                        for i in 0..node.child_count() {
+                            if let Some(child) = node.child(i) {
+                                let kind = child.kind();
+                                if kind == "{"
+                                    || kind == "}"
+                                    || kind == "comment"
+                                    || kind.starts_with("preproc_")
+                                {
+                                    continue;
+                                }
+                                last_stmt = Some(child);
+                            }
+                        }
+                        match last_stmt {
+                            Some(stmt) => ops.push(Op::Eval(stmt)),
+                            None => values.push(false),
                         }
                     }
+                    "if_statement" => {
+                        // Must have both consequence and alternative, both returning
+                        match (
+                            node.child_by_field_name("consequence"),
+                            node.child_by_field_name("alternative"),
+                        ) {
+                            (Some(consequence), Some(alternative)) => {
+                                ops.push(Op::And);
+                                ops.push(Op::Eval(alternative));
+                                ops.push(Op::Eval(consequence));
+                            }
+                            _ => values.push(false),
+                        }
+                    }
+                    "switch_statement" => {
+                        // Basic check: has a return statement anywhere.
+                        // This is a simplification - full analysis would be more complex
+                        values.push(self.has_return_statement(&node));
+                    }
+                    "else_clause" => {
+                        // else_clause wraps the actual statement (compound_statement or single stmt)
+                        let inner = (0..node.child_count())
+                            .filter_map(|i| node.child(i))
+                            .find(|child| child.kind() != "else");
+                        match inner {
+                            Some(child) => ops.push(Op::Eval(child)),
+                            None => values.push(false),
+                        }
+                    }
+                    _ => values.push(false),
+                },
+                Op::And => {
+                    let b = values.pop().unwrap_or(false);
+                    let a = values.pop().unwrap_or(false);
+                    values.push(a && b);
                 }
-                false
             }
-            _ => false,
         }
+
+        values.pop().unwrap_or(false)
     }
 
     /// Check a function definition for missing returns

@@ -81,20 +81,28 @@ impl Str02C {
 
     /// Walk all nodes: for function bodies use taint tracking,
     /// for bare code (no function) fall back to non-literal detection.
-    fn check_functions(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        if node.kind() == "function_definition" {
-            self.check_single_function(node, source, violations);
-            return;
-        }
-        // Bare code at translation_unit level: use non-literal fallback
-        if node.kind() == "call_expression" {
-            if self.find_containing_function(node).is_none() {
-                self.check_dangerous_function_call_legacy(node, source, violations);
+    ///
+    /// Uses an explicit stack instead of recursion. The prune at
+    /// `function_definition` keeps this shallow in practice (bounded by
+    /// non-function nesting at translation-unit scope, which is rarely deep
+    /// in real C), but it's still an unbounded native recursion in
+    /// principle -- the same risk class as the original ARR00-C/MEM33-C bug
+    /// (task 153) -- so it gets the same treatment for consistency.
+    fn check_functions(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let mut stack = vec![*root];
+        while let Some(node) = stack.pop() {
+            if node.kind() == "function_definition" {
+                self.check_single_function(&node, source, violations);
+                continue;
             }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.check_functions(&child, source, violations);
+            // Bare code at translation_unit level: use non-literal fallback
+            if node.kind() == "call_expression" && self.find_containing_function(&node).is_none() {
+                self.check_dangerous_function_call_legacy(&node, source, violations);
+            }
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
+                }
             }
         }
     }
