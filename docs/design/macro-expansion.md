@@ -222,8 +222,11 @@ recall-gated independently:
   already crosses headers, this captures vendored single-header libs
   (utlist/uthash) and project macros once, cached — analysis-time expansion is a
   lookup, not a re-walk. NB: adding a `ProjectContext` field changes the bincode
-  layout → bump a cache-format version and invalidate stale caches (the
-  `rebuild_prescan` path already exists). The registry (Phase 1) remains the
+  layout of sqc's `--save-prescan`/`--load-prescan` cache format (see
+  `src/analyze/context.rs`); bump a cache-format version if that CLI-level cache
+  is ever used. The benchmark runners do not use it (task 209: measured ~10%
+  wall-time savings on sqlite, not worth the staleness risk — every benchmark
+  run is a fresh in-memory prescan). The registry (Phase 1) remains the
   fallback for macros with **no** collected definition (system headers like
   `<sys/queue.h>`).
 - **Phase 3 — Migrate existing rules onto the shared model.** Replace the ~51

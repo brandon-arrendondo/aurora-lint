@@ -662,8 +662,7 @@ def _fetch_remote_results(host: str, version_dir: Path, run_id: str) -> dict:
     return {"fetched": fetched, "failed": failed}
 
 
-def _build_sqc_cmd(codebase: str, cfg: dict, results_dir: Path, run_id: str,
-                   **_kwargs) -> list[str]:
+def _build_sqc_cmd(codebase: str, cfg: dict, results_dir: Path, run_id: str) -> list[str]:
     path = str(cfg["path"])
     scan_path = cfg["sqc"].get("scan_path")
     scan_path = _expand([scan_path], path)[0] if scan_path else path
@@ -1005,8 +1004,7 @@ def _list_version_dirs() -> list[dict]:
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def run_analysis(tool: str, codebase: str, host: str | None = None,
-                 rebuild_prescan: bool = False) -> str:
+def run_analysis(tool: str, codebase: str, host: str | None = None) -> str:
     """
     Start a single analysis run (one tool against one codebase).
 
@@ -1015,9 +1013,10 @@ def run_analysis(tool: str, codebase: str, host: str | None = None,
         codebase: One of "libcrc", "sqlite", "mosquitto", "curl", "hostap"
         host: Optional remote host IP or nickname (e.g. "10.0.0.97", "workstation-97").
               If omitted, runs locally.
-        rebuild_prescan: Force prescan cache regeneration for sqc runs.
-              Use after changing prescan logic (prescan.rs, function_summary.rs, etc.).
-              Default: reuse existing cache if available.
+
+    Every sqc run does a fresh prescan (no caching — measured ~10% wall-time
+    savings from a warm prescan cache isn't worth the staleness risk for a
+    benchmark whose entire point is precise measurement; see task 209).
 
     Returns immediately. Use get_status() to monitor progress.
     """
@@ -1096,8 +1095,7 @@ def run_analysis(tool: str, codebase: str, host: str | None = None,
 
     # Build command
     if tool == "sqc":
-        cmd = _build_sqc_cmd(codebase, cfg, version_dir, run_id,
-                             rebuild_prescan=rebuild_prescan)
+        cmd = _build_sqc_cmd(codebase, cfg, version_dir, run_id)
     elif tool == "cppcheck":
         cmd = _build_cppcheck_cmd(codebase, cfg, version_dir, run_id)
     else:  # clang-tidy
@@ -1193,7 +1191,7 @@ def run_analysis(tool: str, codebase: str, host: str | None = None,
 
 @mcp.tool()
 def run_all(codebase: str | None = None, tool: str | None = None,
-            host: str | None = None, rebuild_prescan: bool = False) -> str:
+            host: str | None = None) -> str:
     """
     Run all tool×codebase combinations (or filter by codebase and/or tool).
 
@@ -1201,8 +1199,6 @@ def run_all(codebase: str | None = None, tool: str | None = None,
         codebase: Optional filter — only run against this codebase
         tool: Optional filter — only run this tool
         host: Optional remote host IP or nickname. If omitted, runs locally.
-        rebuild_prescan: Force prescan cache regeneration for sqc runs.
-              Use after changing prescan logic (prescan.rs, function_summary.rs, etc.).
 
     Launches each combo as a separate subprocess. Returns summary of what was started.
     """
@@ -1221,8 +1217,7 @@ def run_all(codebase: str | None = None, tool: str | None = None,
     for t in tools:
         for cb in codebases:
             try:
-                result = json.loads(run_analysis(t, cb, host=host,
-                                                 rebuild_prescan=rebuild_prescan))
+                result = json.loads(run_analysis(t, cb, host=host))
             except Exception as e:
                 result = {"status": "error", "error": str(e)}
             results.append({
