@@ -213,33 +213,41 @@ impl Dcl30C {
 
     /// Scan function body for assignments like `var = &something` or
     /// `var = &something[i]` where `something` is declared `static`.
+    ///
+    /// Uses an explicit stack instead of recursion: an else-if chain nests
+    /// an `if_statement` inside every else clause, so a generated/obfuscated
+    /// chain thousands deep would blow the native call stack if each link
+    /// were a recursive call (the same hostap-style shape that motivated
+    /// task 153). Each stack entry is a "current body" context, mirroring
+    /// the `body` parameter the recursive version rebound on each call.
     fn find_static_address_assignment(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "expression_statement" {
-                    if let Some(expr) = child.child(0) {
-                        if expr.kind() == "assignment_expression" {
-                            if let (Some(left), Some(right)) = (
-                                expr.child_by_field_name("left"),
-                                expr.child_by_field_name("right"),
-                            ) {
-                                let left_text = ast_utils::get_node_text(&left, source);
-                                if left_text == var_name {
-                                    if let Some(src_var) =
-                                        self.extract_address_of_target(&right, source)
-                                    {
-                                        if self.is_static_local(body, &src_var, source) {
-                                            return true;
+        let mut stack = vec![*body];
+        while let Some(cur_body) = stack.pop() {
+            for i in 0..cur_body.child_count() {
+                if let Some(child) = cur_body.child(i) {
+                    if child.kind() == "expression_statement" {
+                        if let Some(expr) = child.child(0) {
+                            if expr.kind() == "assignment_expression" {
+                                if let (Some(left), Some(right)) = (
+                                    expr.child_by_field_name("left"),
+                                    expr.child_by_field_name("right"),
+                                ) {
+                                    let left_text = ast_utils::get_node_text(&left, source);
+                                    if left_text == var_name {
+                                        if let Some(src_var) =
+                                            self.extract_address_of_target(&right, source)
+                                        {
+                                            if self.is_static_local(&cur_body, &src_var, source) {
+                                                return true;
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                if child.kind() == "compound_statement" || child.kind() == "if_statement" {
-                    if self.find_static_address_assignment(&child, var_name, source) {
-                        return true;
+                    if child.kind() == "compound_statement" || child.kind() == "if_statement" {
+                        stack.push(child);
                     }
                 }
             }
@@ -365,39 +373,45 @@ impl Dcl30C {
     }
 
     /// Scan function body for `var_name = alloc(...)` assignments.
+    ///
+    /// Uses an explicit stack instead of recursion (same hostap-style
+    /// else-if-chain overflow risk as [`Self::find_static_address_assignment`]).
+    /// Each stack entry is a "current body" context, mirroring the `body`
+    /// parameter the recursive version rebound on each call — including the
+    /// consequence/alternative branches, which get queued directly since
+    /// they aren't always a `compound_statement`/`if_statement` themselves
+    /// (e.g. a brace-less `else stmt;`).
     fn has_alloc_assignment_in_body(&self, body: &Node, var_name: &str, source: &str) -> bool {
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "expression_statement" {
-                    if let Some(expr) = child.child(0) {
-                        if expr.kind() == "assignment_expression" {
-                            if let (Some(left), Some(right)) = (
-                                expr.child_by_field_name("left"),
-                                expr.child_by_field_name("right"),
-                            ) {
-                                let left_text = ast_utils::get_node_text(&left, source);
-                                if left_text == var_name && self.is_alloc_expression(&right, source)
-                                {
-                                    return true;
+        let mut stack = vec![*body];
+        while let Some(cur_body) = stack.pop() {
+            for i in 0..cur_body.child_count() {
+                if let Some(child) = cur_body.child(i) {
+                    if child.kind() == "expression_statement" {
+                        if let Some(expr) = child.child(0) {
+                            if expr.kind() == "assignment_expression" {
+                                if let (Some(left), Some(right)) = (
+                                    expr.child_by_field_name("left"),
+                                    expr.child_by_field_name("right"),
+                                ) {
+                                    let left_text = ast_utils::get_node_text(&left, source);
+                                    if left_text == var_name
+                                        && self.is_alloc_expression(&right, source)
+                                    {
+                                        return true;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                // Recurse into if-blocks, etc.
-                if child.kind() == "if_statement" || child.kind() == "compound_statement" {
-                    if self.has_alloc_assignment_in_body(&child, var_name, source) {
-                        return true;
+                    // Queue if-blocks, etc.
+                    if child.kind() == "if_statement" || child.kind() == "compound_statement" {
+                        stack.push(child);
                     }
-                }
-                if let Some(consequence) = child.child_by_field_name("consequence") {
-                    if self.has_alloc_assignment_in_body(&consequence, var_name, source) {
-                        return true;
+                    if let Some(consequence) = child.child_by_field_name("consequence") {
+                        stack.push(consequence);
                     }
-                }
-                if let Some(alternative) = child.child_by_field_name("alternative") {
-                    if self.has_alloc_assignment_in_body(&alternative, var_name, source) {
-                        return true;
+                    if let Some(alternative) = child.child_by_field_name("alternative") {
+                        stack.push(alternative);
                     }
                 }
             }
