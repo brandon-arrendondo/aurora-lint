@@ -27,7 +27,7 @@ git2 = "0.19"
 # Language detection + the C grammar come from the shared substrate (C-only:
 # tools_sqc is a CERT-C checker). default-features = false keeps discovery
 # scoped to C/.h and avoids pulling in the other 15 grammars.
-lang-parsing-substrate = { version = "0.1.8", default-features = false, features = ["lang-c"] }
+lang-parsing-substrate = { version = "0.1.10", default-features = false, features = ["lang-c"] }
 tree-sitter = "0.25"
 streaming-iterator = "0.1"
 anyhow = "1.0"
@@ -54,9 +54,3 @@ walkdir = "2.5"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 anyhow = "1.0"
-
-# TEMPORARY: validating the unreleased 0.1.10 fn-ptr-alias port (task 297)
-# before `cargo publish`. Remove this patch and bump the version pin above
-# once lang-parsing-substrate 0.1.10 is published to crates.io.
-[patch.crates-io]
-lang-parsing-substrate = { path = "../lang_parsing_substrate" }
