@@ -839,6 +839,7 @@ def get_status(verbose: bool = False) -> str:
                 "version": state.get("version"),
                 "commit_sha": state.get("commit_sha"),
                 "backend": "sqlite",
+                "cache_state": run.get("cache_state", "cold"),
             }
 
             if verbose:
@@ -1498,6 +1499,7 @@ def list_runs(limit: int = 10, compact: bool = True, verbose: bool = False) -> s
                 "is_complete": r["status"] == "completed",
                 "status": r["status"],
                 "started_at": r["started_at"],
+                "cache_state": r["cache_state"],
                 "backend": "sqlite",
             })
             seen_names.add(r["run_id"])
@@ -1536,7 +1538,7 @@ def list_runs(limit: int = 10, compact: bool = True, verbose: bool = False) -> s
     shown = all_runs if limit <= 0 else all_runs[:limit]
 
     if compact:
-        keep = ("run_name", "version", "cwes_completed", "is_complete")
+        keep = ("run_name", "version", "cwes_completed", "is_complete", "cache_state")
         shown = [
             {k: r[k] for k in keep if k in r}
             | ({"is_current": True} if r.get("is_current") else {})

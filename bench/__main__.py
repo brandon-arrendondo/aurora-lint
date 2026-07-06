@@ -61,7 +61,8 @@ def cmd_status(args):
     else:
         summary = db.get_run_summary(resolved)
         s = summary["summary"]
-        print(f"Run: {resolved}  Status: {run['status']}")
+        print(f"Run: {resolved}  Status: {run['status']}  "
+              f"Cache: {s['cache_state']}")
         print(f"CWEs: {s['cwes_analyzed']}  "
               f"TP: {s['total_tp']}  FP: {s['total_fp']}  "
               f"TP Rate: {s['tp_rate_pct']}%")
@@ -94,6 +95,11 @@ def cmd_compare(args):
     print(f"Comparing: {s['base_run']} → {s['target_run']}")
     print(f"\nOverall Delta: TP {d['tp']:+d}  FP {d['fp']:+d}  "
           f"TP Rate {d['tp_rate_pp']:+.2f}pp")
+    base_cache = s["base"]["cache_state"]
+    target_cache = s["target"]["cache_state"]
+    if base_cache != "cold" or target_cache != "cold":
+        print(f"Cache: base={base_cache} target={target_cache} "
+              "— a cache-warm run can under-report movement")
 
     t = s.get("timing")
     if t and t["delta"].get("analysis_s") is not None:
@@ -131,15 +137,16 @@ def cmd_runs(args):
     if not runs:
         print("No benchmark runs found.")
         return
-    print(f"{'Run ID':<35} {'Status':<12} {'CWEs':<6} {'Started'}")
-    print("-" * 75)
+    print(f"{'Run ID':<35} {'Status':<12} {'CWEs':<6} {'Cache':<6} {'Started'}")
+    print("-" * 82)
     for r in runs:
         # Count CWEs from DB
         progress = db.get_progress(r["run_id"])
         done = progress["done_cwes"]
         total = progress["total_cwes"]
         started = r.get("started_at", "")[:19]
-        print(f"{r['run_id']:<35} {r['status']:<12} {done}/{total:<4} {started}")
+        cache = r.get("cache_state", "cold")
+        print(f"{r['run_id']:<35} {r['status']:<12} {done}/{total:<4} {cache:<6} {started}")
 
 
 def cmd_realworld(args):

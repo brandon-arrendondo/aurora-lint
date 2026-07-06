@@ -43,7 +43,10 @@ CREATE TABLE IF NOT EXISTS runs (
     cpu_model       TEXT,
     cpu_cores       INTEGER,
     ram_gb          REAL,
-    os_version      TEXT
+    os_version      TEXT,
+    -- Juliet runner never passes --load-prescan (bench/runner.py), so every
+    -- run is a fresh prescan; always 'cold' until a warm path is wired (task 209).
+    cache_state     TEXT NOT NULL DEFAULT 'cold'
 );
 
 CREATE TABLE IF NOT EXISTS cwe_scans (
@@ -260,6 +263,13 @@ class BenchDB:
             if "confidence" not in gt_cols:
                 conn.execute(
                     "ALTER TABLE ground_truth ADD COLUMN confidence TEXT")
+            # runs gained cache_state (task 208); backfill existing rows as
+            # 'cold' since no run ever used a prescan cache.
+            run_cols = {r[1] for r in
+                        conn.execute("PRAGMA table_info(runs)")}
+            if "cache_state" not in run_cols:
+                conn.execute(
+                    "ALTER TABLE runs ADD COLUMN cache_state TEXT NOT NULL DEFAULT 'cold'")
             conn.commit()
         finally:
             conn.close()
@@ -566,6 +576,7 @@ class BenchDB:
             "run_name": run_id,
             "version": run.get("sqc_version"),
             "commit_sha": run.get("commit_sha"),
+            "cache_state": run.get("cache_state", "cold"),
         }
 
         # Timing metrics. `wall_s` is the run's real elapsed time; `analysis_s`
@@ -720,12 +731,14 @@ class BenchDB:
                 "total": bs["total_violations"],
                 "tp_rate_pct": bs["tp_rate_pct"],
                 "cwes": bs["cwes_analyzed"],
+                "cache_state": bs["cache_state"],
             },
             "target": {
                 "tp": ts["total_tp"], "fp": ts["total_fp"],
                 "total": ts["total_violations"],
                 "tp_rate_pct": ts["tp_rate_pct"],
                 "cwes": ts["cwes_analyzed"],
+                "cache_state": ts["cache_state"],
             },
             "delta": {
                 "tp": ts["total_tp"] - bs["total_tp"],
