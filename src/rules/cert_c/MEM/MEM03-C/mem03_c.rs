@@ -15,7 +15,9 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 use tree_sitter::Node;
 
 pub struct Mem03C;
@@ -67,109 +69,136 @@ impl Mem03C {
     fn check_function(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Get compound statement (function body)
         if let Some(body) = node.child_by_field_name("body") {
-            // Track which pointers have been cleared
-            let mut cleared_ptrs: HashSet<String> = HashSet::new();
-
-            self.analyze_block(&body, source, violations, &mut cleared_ptrs);
+            self.analyze_block(&body, source, violations, HashSet::new());
 
             // CWE-226: check for sensitive data buffers not cleared before function exit
             self.check_sensitive_data_cleanup(&body, source, violations);
         }
     }
 
+    /// Track which pointers have been cleared (memset/memset_s/etc.) before a
+    /// free()/realloc() call, per branch.
+    ///
+    /// Uses an explicit continuation-frame stack instead of recursion:
+    /// analyze_block/process_statement used to mutually recurse through
+    /// every nested block and if/while/for body, and a chain of deeply
+    /// nested braces (or an obfuscated/generated deep block nesting) would
+    /// cost one native call frame per level -- the same hostap-style risk
+    /// class as the original ARR00-C/MEM33-C bug (task 153).
+    ///
+    /// Each frame is `(container, next_child_index, cleared)`, mirroring
+    /// where a native recursive call would resume the sibling loop, and
+    /// `cleared` is an `Rc<RefCell<..>>` handle so branch-sensitive state
+    /// still forks (and is discarded, never merged back) exactly like the
+    /// original `cleared_ptrs.clone()` per if/while/for body: a bare nested
+    /// compound_statement shares the *same* handle (mutations are visible
+    /// to later siblings, matching the original `&mut` threading), while
+    /// each if/while/for branch gets an independent clone.
     fn analyze_block(
         &self,
-        node: &Node,
+        root: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        cleared_ptrs: &mut HashSet<String>,
+        initial_cleared: HashSet<String>,
     ) {
-        // Process statements in order
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.process_statement(&child, source, violations, cleared_ptrs);
-            }
-        }
-    }
+        type Cleared = Rc<RefCell<HashSet<String>>>;
+        let mut frames: Vec<(Node, usize, Cleared)> =
+            vec![(*root, 0, Rc::new(RefCell::new(initial_cleared)))];
 
-    fn process_statement(
-        &self,
-        node: &Node,
-        source: &str,
-        violations: &mut Vec<RuleViolation>,
-        cleared_ptrs: &mut HashSet<String>,
-    ) {
-        let kind = node.kind();
+        while let Some((container, start_idx, cleared)) = frames.pop() {
+            let mut i = start_idx;
+            while i < container.child_count() {
+                let Some(stmt) = container.child(i) else {
+                    i += 1;
+                    continue;
+                };
+                let kind = stmt.kind();
 
-        // Check for memset/memset_s calls (clear operations)
-        if kind == "expression_statement" {
-            if let Some(ptr) = self.get_clear_call_ptr(node, source) {
-                cleared_ptrs.insert(ptr);
-            }
-        }
-
-        // Check for free() calls without prior clearing
-        if kind == "expression_statement" {
-            if let Some(ptr) = self.get_free_ptr(node, source) {
-                if !cleared_ptrs.contains(&ptr) {
-                    let pos = node.start_position();
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: Severity::Medium,
-                        message: format!(
-                            "Pointer '{}' freed without clearing sensitive data first",
-                            ptr
-                        ),
-                        file_path: String::new(),
-                        line: pos.row + 1,
-                        column: pos.column + 1,
-                        suggestion: Some(format!(
-                            "Add 'memset({}, 0, size);' before free({}) to clear sensitive data",
-                            ptr, ptr
-                        )),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
-
-        // Check for realloc() calls (always a potential issue)
-        if kind == "expression_statement" || kind == "declaration" || kind == "init_declarator" {
-            if let Some(ptr) = self.get_realloc_ptr(node, source) {
-                if !cleared_ptrs.contains(&ptr) {
-                    let pos = node.start_position();
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: Severity::Medium,
-                        message: format!(
-                            "realloc() on '{}' may leak sensitive data from old memory",
-                            ptr
-                        ),
-                        file_path: String::new(),
-                        line: pos.row + 1,
-                        column: pos.column + 1,
-                        suggestion: Some(
-                            "Consider allocating new memory, copying, clearing old, then freeing"
-                                .to_string(),
-                        ),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
-
-        // Recurse into nested blocks
-        if kind == "compound_statement" {
-            self.analyze_block(node, source, violations, cleared_ptrs);
-        } else if kind == "if_statement" || kind == "while_statement" || kind == "for_statement" {
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "compound_statement" {
-                        // Create a copy for nested scope
-                        let mut nested_cleared = cleared_ptrs.clone();
-                        self.analyze_block(&child, source, violations, &mut nested_cleared);
+                // Check for memset/memset_s calls (clear operations)
+                if kind == "expression_statement" {
+                    if let Some(ptr) = self.get_clear_call_ptr(&stmt, source) {
+                        cleared.borrow_mut().insert(ptr);
                     }
                 }
+
+                // Check for free() calls without prior clearing
+                if kind == "expression_statement" {
+                    if let Some(ptr) = self.get_free_ptr(&stmt, source) {
+                        if !cleared.borrow().contains(&ptr) {
+                            let pos = stmt.start_position();
+                            violations.push(RuleViolation {
+                                rule_id: self.rule_id().to_string(),
+                                severity: Severity::Medium,
+                                message: format!(
+                                    "Pointer '{}' freed without clearing sensitive data first",
+                                    ptr
+                                ),
+                                file_path: String::new(),
+                                line: pos.row + 1,
+                                column: pos.column + 1,
+                                suggestion: Some(format!(
+                                    "Add 'memset({}, 0, size);' before free({}) to clear sensitive data",
+                                    ptr, ptr
+                                )),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+
+                // Check for realloc() calls (always a potential issue)
+                if kind == "expression_statement"
+                    || kind == "declaration"
+                    || kind == "init_declarator"
+                {
+                    if let Some(ptr) = self.get_realloc_ptr(&stmt, source) {
+                        if !cleared.borrow().contains(&ptr) {
+                            let pos = stmt.start_position();
+                            violations.push(RuleViolation {
+                                rule_id: self.rule_id().to_string(),
+                                severity: Severity::Medium,
+                                message: format!(
+                                    "realloc() on '{}' may leak sensitive data from old memory",
+                                    ptr
+                                ),
+                                file_path: String::new(),
+                                line: pos.row + 1,
+                                column: pos.column + 1,
+                                suggestion: Some(
+                                    "Consider allocating new memory, copying, clearing old, then freeing"
+                                        .to_string(),
+                                ),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+
+                // Queue nested blocks: resume this container at i + 1 once
+                // the nested work is fully drained.
+                if kind == "compound_statement" {
+                    frames.push((container, i + 1, Rc::clone(&cleared)));
+                    frames.push((stmt, 0, Rc::clone(&cleared)));
+                    break;
+                } else if kind == "if_statement"
+                    || kind == "while_statement"
+                    || kind == "for_statement"
+                {
+                    frames.push((container, i + 1, Rc::clone(&cleared)));
+                    // Fork an independent, throwaway clone per branch body,
+                    // pushed in reverse so they drain in original document
+                    // order before this container resumes.
+                    for j in (0..stmt.child_count()).rev() {
+                        if let Some(child) = stmt.child(j) {
+                            if child.kind() == "compound_statement" {
+                                let forked = Rc::new(RefCell::new(cleared.borrow().clone()));
+                                frames.push((child, 0, forked));
+                            }
+                        }
+                    }
+                    break;
+                }
+                i += 1;
             }
         }
     }
