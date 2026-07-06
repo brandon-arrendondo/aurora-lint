@@ -2772,115 +2772,130 @@ impl Arr38C {
         functions
     }
 
+    /// Uses an explicit stack instead of recursion. The prune at nested
+    /// `function_definition` boundaries keeps this shallow in practice, but
+    /// depth within a single function body is otherwise unbounded -- the
+    /// same hostap-style risk class as the original ARR00-C/MEM33-C bug
+    /// (task 153).
     fn collect_function_definitions_recursive<'a>(
         &self,
-        node: &Node<'a>,
+        root: &Node<'a>,
         functions: &mut Vec<Node<'a>>,
     ) {
-        if node.kind() == "function_definition" {
-            functions.push(*node);
-            return; // Don't recurse into nested function definitions
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_function_definitions_recursive(&child, functions);
+        let mut stack = vec![*root];
+        while let Some(node) = stack.pop() {
+            if node.kind() == "function_definition" {
+                functions.push(node);
+                continue; // Don't recurse into nested function definitions
+            }
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
+                }
             }
         }
     }
 
     /// Collect simple pointer aliases from assignment statements (e.g., "data = dataBuffer")
     /// Collect pointer offset assignments within a single function node
+    /// Uses an explicit stack instead of recursion, preserving document
+    /// order (later assignments must be processed after earlier ones, since
+    /// a plain reassignment clears a previously tracked offset) -- same
+    /// unbounded-depth risk class as [`Self::collect_function_definitions_recursive`].
     fn collect_pointer_offsets_in_node(
         &self,
-        node: &Node,
+        root: &Node,
         source: &str,
         offsets: &mut HashMap<String, PointerOffsetInfo>,
     ) {
-        let text = get_node_text(node, source);
+        let mut stack = vec![*root];
+        while let Some(node) = stack.pop() {
+            let text = get_node_text(&node, source);
 
-        // Check declarations (init_declarator): char *data = buffer - 8;
-        if node.kind() == "declaration" || node.kind() == "init_declarator" {
-            if text.contains('=') && (text.contains('+') || text.contains(" - ")) {
-                if let Some((ptr_name, base, offset, negative)) =
-                    self.extract_pointer_offset_signed(&text)
-                {
-                    let offset_val = self.try_parse_size(&offset).map(|v| {
-                        if negative {
-                            -(v as i64)
-                        } else {
-                            v as i64
-                        }
-                    });
-                    offsets.insert(
-                        ptr_name,
-                        PointerOffsetInfo {
-                            base_buffer: base,
-                            offset: offset_val,
-                            offset_expr: if negative {
-                                format!("-{}", offset)
+            // Check declarations (init_declarator): char *data = buffer - 8;
+            if node.kind() == "declaration" || node.kind() == "init_declarator" {
+                if text.contains('=') && (text.contains('+') || text.contains(" - ")) {
+                    if let Some((ptr_name, base, offset, negative)) =
+                        self.extract_pointer_offset_signed(&text)
+                    {
+                        let offset_val = self.try_parse_size(&offset).map(|v| {
+                            if negative {
+                                -(v as i64)
                             } else {
-                                offset
+                                v as i64
+                            }
+                        });
+                        offsets.insert(
+                            ptr_name,
+                            PointerOffsetInfo {
+                                base_buffer: base,
+                                offset: offset_val,
+                                offset_expr: if negative {
+                                    format!("-{}", offset)
+                                } else {
+                                    offset
+                                },
                             },
-                        },
-                    );
-                    return;
+                        );
+                        continue;
+                    }
                 }
             }
-        }
 
-        // Check expression statements: data = buffer - 8;
-        if node.kind() == "expression_statement" {
-            if text.contains('=') && (text.contains('+') || text.contains(" - ")) {
-                if let Some((ptr_name, base, offset, negative)) =
-                    self.extract_pointer_offset_signed(&text)
-                {
-                    let offset_val = self.try_parse_size(&offset).map(|v| {
-                        if negative {
-                            -(v as i64)
-                        } else {
-                            v as i64
-                        }
-                    });
-                    offsets.insert(
-                        ptr_name,
-                        PointerOffsetInfo {
-                            base_buffer: base,
-                            offset: offset_val,
-                            offset_expr: if negative {
-                                format!("-{}", offset)
+            // Check expression statements: data = buffer - 8;
+            if node.kind() == "expression_statement" {
+                if text.contains('=') && (text.contains('+') || text.contains(" - ")) {
+                    if let Some((ptr_name, base, offset, negative)) =
+                        self.extract_pointer_offset_signed(&text)
+                    {
+                        let offset_val = self.try_parse_size(&offset).map(|v| {
+                            if negative {
+                                -(v as i64)
                             } else {
-                                offset
+                                v as i64
+                            }
+                        });
+                        offsets.insert(
+                            ptr_name,
+                            PointerOffsetInfo {
+                                base_buffer: base,
+                                offset: offset_val,
+                                offset_expr: if negative {
+                                    format!("-{}", offset)
+                                } else {
+                                    offset
+                                },
                             },
-                        },
-                    );
-                    return;
+                        );
+                        continue;
+                    }
                 }
-            }
-            // Plain assignment (data = buffer) clears any stale offset
-            let trimmed = text.trim().trim_end_matches(';').trim();
-            if let Some(eq_pos) = trimmed.find('=') {
-                if eq_pos > 0
-                    && !matches!(
-                        trimmed.as_bytes().get(eq_pos.wrapping_sub(1)),
-                        Some(b'!' | b'<' | b'>')
-                    )
-                    && trimmed.as_bytes().get(eq_pos + 1) != Some(&b'=')
-                {
-                    let lhs = trimmed[..eq_pos].trim();
-                    // If LHS is a tracked pointer being reassigned without offset, clear it
-                    if offsets.contains_key(lhs) {
-                        let rhs = trimmed[eq_pos + 1..].trim();
-                        if !rhs.contains('+') && !rhs.contains(" - ") {
-                            offsets.remove(lhs);
+                // Plain assignment (data = buffer) clears any stale offset
+                let trimmed = text.trim().trim_end_matches(';').trim();
+                if let Some(eq_pos) = trimmed.find('=') {
+                    if eq_pos > 0
+                        && !matches!(
+                            trimmed.as_bytes().get(eq_pos.wrapping_sub(1)),
+                            Some(b'!' | b'<' | b'>')
+                        )
+                        && trimmed.as_bytes().get(eq_pos + 1) != Some(&b'=')
+                    {
+                        let lhs = trimmed[..eq_pos].trim();
+                        // If LHS is a tracked pointer being reassigned without offset, clear it
+                        if offsets.contains_key(lhs) {
+                            let rhs = trimmed[eq_pos + 1..].trim();
+                            if !rhs.contains('+') && !rhs.contains(" - ") {
+                                offsets.remove(lhs);
+                            }
                         }
                     }
                 }
             }
-        }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_pointer_offsets_in_node(&child, source, offsets);
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
+                }
             }
         }
     }
