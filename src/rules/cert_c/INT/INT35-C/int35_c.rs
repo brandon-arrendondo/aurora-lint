@@ -69,10 +69,8 @@ impl CertRule for Int35C {
         "INT35-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.traverse(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.traverse(node, source, violations);
     }
 }
 

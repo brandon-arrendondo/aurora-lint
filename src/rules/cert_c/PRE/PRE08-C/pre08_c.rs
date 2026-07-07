@@ -202,9 +202,7 @@ impl CertRule for Pre08C {
         "PRE08-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.check_include_uniqueness(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.check_include_uniqueness(node, source, violations);
     }
 }

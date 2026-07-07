@@ -327,9 +327,7 @@ impl CertRule for Dcl37C {
         "DCL37-C"
     }
 
-    fn check(&self, root_node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.check_node(root_node, source, &mut violations);
-        violations
+    fn scan(&self, root_node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.check_node(root_node, source, violations);
     }
 }

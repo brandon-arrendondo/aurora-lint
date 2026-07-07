@@ -154,10 +154,8 @@ impl CertRule for Con31C {
         "CON31-C"
     }
 
-    fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.check_function(root, source, &mut violations);
-        violations
+    fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.check_function(root, source, violations);
     }
 }
 

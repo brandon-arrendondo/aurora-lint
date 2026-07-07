@@ -63,10 +63,8 @@ impl CertRule for Fio10C {
         "FIO10-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.find_unhandled_rename(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.find_unhandled_rename(node, source, violations);
     }
 }
 

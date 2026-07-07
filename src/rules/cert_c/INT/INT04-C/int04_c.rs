@@ -53,10 +53,8 @@ impl CertRule for Int04C {
         "INT04-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.check_function(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.check_function(node, source, violations);
     }
 }
 

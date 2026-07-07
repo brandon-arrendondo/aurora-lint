@@ -50,10 +50,8 @@ impl CertRule for Arr02C {
         "ARR02-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.check_declarations(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.check_declarations(node, source, violations);
     }
 }
 

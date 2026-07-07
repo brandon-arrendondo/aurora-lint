@@ -375,9 +375,7 @@ impl CertRule for Fio50C {
         "FIO50-C"
     }
 
-    fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.traverse(root, source, &mut violations);
-        violations
+    fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.traverse(root, source, violations);
     }
 }

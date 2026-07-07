@@ -27,10 +27,8 @@ impl CertRule for Mem07C {
         self.rule_id()
     }
 
-    fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.check_node(root, source, &mut violations);
-        violations
+    fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.check_node(root, source, violations);
     }
 }
 

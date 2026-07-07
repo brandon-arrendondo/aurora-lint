@@ -13,7 +13,22 @@ pub trait CertRule {
     fn severity(&self) -> crate::manifest::Severity;
     fn category(&self) -> crate::manifest::RuleCategory;
     fn cert_id(&self) -> &'static str;
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation>;
+
+    /// Default `check()` for rules using the standard mut-accumulator pattern:
+    /// allocate an empty `Vec`, delegate to `scan()` to populate it, return it.
+    /// Rules with a different shape (e.g. no violations vec, early returns)
+    /// should override `check()` directly instead of implementing `scan()`.
+    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
+        let mut violations = Vec::new();
+        self.scan(node, source, &mut violations);
+        violations
+    }
+
+    /// Populate `violations` by walking `node`. Only called by the default
+    /// `check()` impl above; rules that override `check()` never call this.
+    fn scan(&self, _node: &Node, _source: &str, _violations: &mut Vec<RuleViolation>) {
+        unreachable!("scan() has no implementation; this rule should override check() instead")
+    }
 
     /// Enhanced check that receives CFG data for flow-sensitive analysis.
     /// Default implementation delegates to `check()`, ignoring the CFG.

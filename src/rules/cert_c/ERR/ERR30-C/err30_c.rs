@@ -51,10 +51,8 @@ impl CertRule for Err30C {
         "ERR30-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.check_node(node, source, violations);
     }
 }
 

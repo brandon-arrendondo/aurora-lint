@@ -46,10 +46,8 @@ impl CertRule for Exp10C {
         "EXP10-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.find_unsequenced_side_effects(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.find_unsequenced_side_effects(node, source, violations);
     }
 }
 

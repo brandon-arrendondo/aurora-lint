@@ -41,10 +41,8 @@ impl CertRule for Brule060 {
         "BRULE-060"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.walk(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.walk(node, source, violations);
     }
 }
 

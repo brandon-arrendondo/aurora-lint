@@ -156,9 +156,7 @@ impl CertRule for Msc07C {
         "MSC07-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.walk_node(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.walk_node(node, source, violations);
     }
 }

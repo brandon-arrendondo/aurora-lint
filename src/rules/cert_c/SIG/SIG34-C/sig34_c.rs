@@ -27,10 +27,8 @@ impl CertRule for Sig34C {
         self.rule_id()
     }
 
-    fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.find_signal_handlers(root, source, &mut violations);
-        violations
+    fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.find_signal_handlers(root, source, violations);
     }
 }
 

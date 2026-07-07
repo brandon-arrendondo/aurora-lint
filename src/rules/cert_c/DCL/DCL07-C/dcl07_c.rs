@@ -402,9 +402,7 @@ impl CertRule for Dcl07C {
         *self.cross_file_functions.borrow_mut() = funcs;
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.check_node(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.check_node(node, source, violations);
     }
 }

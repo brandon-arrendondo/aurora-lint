@@ -56,10 +56,8 @@ impl CertRule for Mem00C {
         "MEM00-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.find_parameter_frees(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.find_parameter_frees(node, source, violations);
     }
 }
 

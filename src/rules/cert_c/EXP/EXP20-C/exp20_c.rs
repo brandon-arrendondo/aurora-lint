@@ -46,10 +46,8 @@ impl CertRule for Exp20C {
         "EXP20-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.find_implicit_tests(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.find_implicit_tests(node, source, violations);
     }
 }
 

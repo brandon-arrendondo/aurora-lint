@@ -67,10 +67,8 @@ impl CertRule for Flp00C {
         "FLP00-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.find_fp_equality_comparisons(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.find_fp_equality_comparisons(node, source, violations);
     }
 }
 

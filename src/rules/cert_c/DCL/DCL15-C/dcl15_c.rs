@@ -47,10 +47,8 @@ impl CertRule for Dcl15C {
         "DCL15-C"
     }
 
-    fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        let mut violations = Vec::new();
-        self.check_translation_unit(node, source, &mut violations);
-        violations
+    fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.check_translation_unit(node, source, violations);
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
