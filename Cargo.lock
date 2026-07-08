@@ -1138,9 +1138,9 @@ dependencies = [
 
 [[package]]
 name = "lang-parsing-substrate"
-version = "0.1.11"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7278ece8b1539cc62d0019627183c576fc2bd70a1153d90ca210d17246cc666"
+checksum = "0e432fbcd167f3c94756b50e6b08711d7b708e9031c9c43c157caf7eb780d495"
 dependencies = [
  "globset",
  "tree-sitter",
@@ -1861,7 +1861,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "sqc"
-version = "0.4.85"
+version = "0.4.86"
 dependencies = [
  "anyhow",
  "bincode",

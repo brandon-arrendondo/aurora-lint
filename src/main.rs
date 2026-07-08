@@ -29,6 +29,7 @@ use progress::CLIProgressReporter;
 use ui::TerminalUI;
 
 use std::collections::HashSet;
+use std::fs;
 use std::path::Path;
 
 fn main() {
@@ -172,6 +173,19 @@ fn run() -> Result<i32> {
                 .default_value("0")
                 .value_parser(clap::value_parser!(usize)),
         )
+        .arg(
+            Arg::new("detect_relevance")
+                .long("detect-relevance")
+                .help("Detect categorically-inapplicable rule classes (CON*/WIN*) in PATH and -d directories, then write a relevance-gated manifest with --write-manifest. Does not run an analysis.")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("write_manifest")
+                .long("write-manifest")
+                .help("With --detect-relevance: write the generated manifest here (requires --detect-relevance)")
+                .value_name("FILE")
+                .requires("detect_relevance"),
+        )
         .get_matches();
 
     let path = matches.get_one::<String>("path").unwrap();
@@ -207,6 +221,30 @@ fn run() -> Result<i32> {
     let save_prescan = matches.get_one::<String>("save_prescan");
     let load_prescan = matches.get_one::<String>("load_prescan");
     let jobs = *matches.get_one::<usize>("jobs").unwrap();
+    let detect_relevance = matches.get_flag("detect_relevance");
+    let write_manifest = matches.get_one::<String>("write_manifest");
+
+    if detect_relevance {
+        let mut corpus = vec![path.clone()];
+        corpus.extend(directories.iter().cloned());
+        let profile = analyze::relevance::detect(&corpus)?;
+        println!(
+            "Detected: threading={}, windows={}, max_c_standard={:?}",
+            profile.has_threading, profile.has_windows, profile.max_c_standard
+        );
+
+        let base_manifest = RuleManifest::load(manifest_path)?;
+        let generated = analyze::relevance::generate_manifest_toml(&base_manifest, &profile);
+
+        match write_manifest {
+            Some(out_path) => {
+                fs::write(out_path, &generated)?;
+                println!("Wrote relevance-gated manifest to: {}", out_path);
+            }
+            None => print!("{}", generated),
+        }
+        return Ok(0);
+    }
 
     // Verify the path and determine source type
     let project_source = ProjectSource::open(path)?;

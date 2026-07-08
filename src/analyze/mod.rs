@@ -9,6 +9,7 @@ pub mod macro_expand;
 pub mod macro_semantics;
 pub mod null_state;
 pub mod prescan;
+pub mod relevance;
 pub mod suppression;
 pub mod value_range;
 pub mod vra_access;
