@@ -50,6 +50,7 @@
 <li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
 <li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Running Benchmarks (MCP Server)</a><ul>
@@ -138,6 +139,46 @@ WAL mode).</p>
 </div>
 <section id="sqlite-schema">
 <h3>SQLite Schema<a class="headerlink" href="#sqlite-schema" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 75.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Table</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">runs</span></code></p></td>
+<td><p>One row per benchmark (version, SHA, mode, status, machine)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cwe_scans</span></code></p></td>
+<td><p>One row per CWE per run (file count, violations, duration)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">violations</span></code></p></td>
+<td><p>Every individual sqc finding with TP/FP classification</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cwe_metrics</span></code></p></td>
+<td><p>Pre-computed aggregates per CWE (TP/FP rates)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rule_cwe_breakdown</span></code></p></td>
+<td><p>Per-rule per-CWE counts</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">realworld_runs</span></code></p></td>
+<td><p>Real-world benchmark runs (sqc version, machine)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">realworld_results</span></code></p></td>
+<td><p>Per-project per-tool violation counts (+ codebase_commit)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">realworld_violations</span></code></p></td>
+<td><p>Every individual real-world sqc finding (file, line, rule)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ground_truth</span></code></p></td>
+<td><p>Adjudicated TP/FP oracle keyed on (project, commit, file, line, rule)</p></td>
+</tr>
+</tbody>
+</table>
 <p>Historical data from <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> and <code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code> has been
 backfilled into the database.</p>
 </section>

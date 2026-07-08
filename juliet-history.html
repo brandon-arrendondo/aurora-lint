@@ -1,0 +1,2191 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Juliet Benchmark History &mdash; SqC  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Analysis Architecture" href="architecture.html" />
+    <link rel="prev" title="Testing Methodology" href="testing-methodology.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            SqC
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Juliet Benchmark History</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#benchmark-environment">Benchmark Environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#fp-reduction-history-full-round-list">FP Reduction History (Full Round List)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#per-round-fix-details">Per-Round Fix Details</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#v0-3-19-fast-benchmark-mode-cwe-78-taint-tracking">v0.3.19 — Fast Benchmark Mode + CWE-78 Taint Tracking</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-3-17-cwe-78-macro-alias-resolution-cwe-253-incorrect-return-check">v0.3.17 — CWE-78 Macro Alias Resolution + CWE-253 Incorrect Return Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-3-14-exp33-c-int30-c-exp34-c-fp-fixes-full-suite">v0.3.14 — EXP33-C, INT30-C, EXP34-C FP Fixes (Full Suite)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-3-9-p3214-real-world-fp-fixes-12-cwe-subset">v0.3.9 — P3214 Real-World FP Fixes (12-CWE Subset)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-3-8-str31-c-api00-c-exp34-c-exp33-c-fp-fixes-12-cwe-subset">v0.3.8 — STR31-C, API00-C, EXP34-C, EXP33-C FP Fixes (12-CWE Subset)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-3-5-struct-field-type-resolution-real-world-fp-fixes">v0.3.5 — Struct Field Type Resolution, Real-World FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-25-arr32-c-tightening-rule-removals-value-range-fp-fixes">v0.2.25 — ARR32-C Tightening, Rule Removals, Value-Range FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-23-int32-c-const-eval-for-allocation-memory-abs-int30-c-built-in-macros">v0.2.23 — INT32-C Const-Eval for Allocation/Memory/Abs + INT30-C Built-in Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-16-exp34-c-call-site-null-propagation-phase-2">v0.2.16 — EXP34-C: Call-Site Null Propagation (Phase 2)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-21-const-eval-value-range-analysis-real-world-round-6-fp-fixes">v0.2.21 — Const-Eval Value-Range Analysis + Real-World Round 6 FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-20-real-world-fp-fixes-api00-c-int01-c-exp37-c-exp34-c">v0.2.20 — Real-World FP Fixes (API00-C, INT01-C, EXP37-C, EXP34-C)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-19-real-world-fp-reduction-int30-c-loop-guards-prescan-null-guards-arr00-c-fix">v0.2.19 — Real-World FP Reduction (INT30-C Loop Guards, Prescan Null Guards, ARR00-C Fix)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-18-quick-wins-fp-reduction-int31-c-arr36-c-api00-c-int30-c">v0.2.18 — Quick Wins FP Reduction (INT31-C, ARR36-C, API00-C, INT30-C)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-17-phase-3-cwe-476-fp-reduction-mem10-c-api00-c-api02-c-prescan">v0.2.17 — Phase 3: CWE-476 FP Reduction (MEM10-C, API00-C, API02-C, Prescan)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-15-real-world-fp-cleanup-17-patterns">v0.2.15 — Real-World FP Cleanup (17 Patterns)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-13-int31-c-implicit-narrowing-real-world-fp-fixes">v0.2.13 — INT31-C Implicit Narrowing + Real-World FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-12-dcl13-c-pointer-modification-int01-c-sizeof-skip">v0.2.12 — DCL13-C Pointer Modification + INT01-C sizeof Skip</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#v0-2-7-int36-c-tp-restore-int31-c-fp-fix">v0.2.7 — INT36-C TP Restore + INT31-C FP Fix</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-16-dcl13-c-main-exemption-mem10-c-parameter-only-null-check">Round 16 — DCL13-C main() Exemption + MEM10-C Parameter-Only Null Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-15-exp34-c-if-else-branch-merge">Round 15 — EXP34-C: if/else Branch Merge</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-14-exp34-c-deref-after-check-pattern">Round 14 — EXP34-C: deref_after_check Pattern</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-13-str31-c-l-prefix-and-literal-source-fixes">Round 13 — STR31-C: L-prefix and Literal-Source Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-12-int07-c-int32-c-exp10-c-exp34-c-int30-c-mem10-c-str31-c-windows-api">Round 12 — INT07-C, INT32-C, EXP10-C, EXP34-C, INT30-C, MEM10-C, STR31-C, Windows API</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-9-cfg-data-flow-inter-procedural-analysis">Round 9 — CFG, Data-Flow, Inter-Procedural Analysis</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-8-dcl40-c-flp32-c-err33-c">Round 8 — DCL40-C, FLP32-C, ERR33-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-7-exp36-c-exp34-c-arr37-c">Round 7 — EXP36-C, EXP34-C, ARR37-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-6-cross-file-analysis-d">Round 6 — Cross-File Analysis (<code class="docutils literal notranslate"><span class="pre">-d</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-5-flp02-c-dcl06-c-int30-c">Round 5 — FLP02-C, DCL06-C, INT30-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-4-exp12-c-flp03-c-int32-c">Round 4 — EXP12-C, FLP03-C, INT32-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-3-dcl31-c-dcl07-c-flp34-c">Round 3 — DCL31-C, DCL07-C, FLP34-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-2-exp33-c-sig31-c-arr01-c-dcl30-c-dcl02-c">Round 2 — EXP33-C, SIG31-C, ARR01-C, DCL30-C, DCL02-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#round-1-int08-c-con08-c-dcl20-c-arr38-c">Round 1 — INT08-C, CON08-C, DCL20-C, ARR38-C</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#performance-by-cwe-category-historical-snapshot">Performance by CWE Category (Historical Snapshot)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#tier-1-strong-detection-tp-50-18-categories">Tier 1: Strong Detection (TP &gt; 50%) — 18 categories</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#tier-2-moderate-detection-3550-68-categories">Tier 2: Moderate Detection (35–50%) — 68 categories</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#tier-3-below-average-2535-16-categories">Tier 3: Below Average (25–35%) — 16 categories</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#tier-4-weak-detection-25-4-categories">Tier 4: Weak Detection (&lt;25%) — 4 categories</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#full-per-cwe-results-round-1-baseline">Full Per-CWE Results (Round 1 Baseline)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#per-rule-data-accuracy-note-2026-03-03">Per-Rule Data Accuracy Note (2026-03-03)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#competitor-comparison">Competitor Comparison</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#version-history-v0-2-1-v0-3-17">Version History (v0.2.1 – v0.3.17)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#scripts-and-data-locations">Scripts and Data Locations</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">SqC</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Juliet Benchmark History</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/juliet-history.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="juliet-benchmark-history">
+<h1>Juliet Benchmark History<a class="headerlink" href="#juliet-benchmark-history" title="Link to this heading"></a></h1>
+<p>This page is the detailed, round-by-round engineering history behind SqC’s
+Juliet Test Suite results: every FP-reduction round, per-CWE tier breakdowns,
+the Round 1 baseline table, competitor comparisons, and the full version
+history. It exists so the granular “why did this number change” narrative has
+a home without bloating the top-level <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code>, which tracks only
+current state.</p>
+<p>See <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> (repo root) for the current run’s numbers, and
+<a class="reference internal" href="testing-methodology.html"><span class="doc">Testing Methodology</span></a> for how the benchmark itself works (ground truth
+classification, manifests, metrics).</p>
+<section id="benchmark-environment">
+<h2>Benchmark Environment<a class="headerlink" href="#benchmark-environment" title="Link to this heading"></a></h2>
+<p>Runtime varies significantly by machine and parallelism. Historical runs below
+were captured on a mix of hardware; always record machine/job count when
+reporting new results.</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 27.8%" />
+<col style="width: 16.7%" />
+<col style="width: 7.4%" />
+<col style="width: 7.4%" />
+<col style="width: 13.0%" />
+<col style="width: 27.8%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Run</p></th>
+<th class="head"><p>Machine</p></th>
+<th class="head"><p>Cores</p></th>
+<th class="head"><p>Jobs</p></th>
+<th class="head"><p>Total Runtime</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>v0.2.1 – v0.2.25 (full suite)</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>24</p></td>
+<td><p>12</p></td>
+<td><p>~40–50 min</p></td>
+<td><p>MCP benchmark server, full 118 CWE suite</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.3.8 – v0.3.9 (12-CWE subset)</p></td>
+<td><p>4-core laptop</p></td>
+<td><p>4</p></td>
+<td><p>4</p></td>
+<td><p>TBD</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">run_juliet_multi_cwe.sh</span></code>, 12-CWE subset only</p></td>
+</tr>
+</tbody>
+</table>
+<p>The parallel runner (<code class="docutils literal notranslate"><span class="pre">run_juliet_parallel.sh</span></code>) defaults to <code class="docutils literal notranslate"><span class="pre">JOBS=12</span></code>.
+Higher core counts reduce wall-clock time but don’t affect per-CWE results.
+When comparing runtimes across versions, ensure the same machine and job count
+were used.</p>
+</section>
+<section id="fp-reduction-history-full-round-list">
+<h2>FP Reduction History (Full Round List)<a class="headerlink" href="#fp-reduction-history-full-round-list" title="Link to this heading"></a></h2>
+<p>Every tracked round from the original baseline through the last full-suite
+run (v0.3.17). <code class="docutils literal notranslate"><span class="pre">testing-methodology.rst</span></code> carries a condensed milestone
+version of this table; this is the complete list.</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 10.4%" />
+<col style="width: 8.3%" />
+<col style="width: 43.8%" />
+<col style="width: 10.4%" />
+<col style="width: 10.4%" />
+<col style="width: 8.3%" />
+<col style="width: 8.3%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Round</p></th>
+<th class="head"><p>Version</p></th>
+<th class="head"><p>Fixes</p></th>
+<th class="head"><p>TP</p></th>
+<th class="head"><p>FP</p></th>
+<th class="head"><p>TP Rate</p></th>
+<th class="head"><p>FP Delta</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Baseline</p></td>
+<td><p>v0.2.1</p></td>
+<td><p>–</p></td>
+<td><p>586,539</p></td>
+<td><p>839,341</p></td>
+<td><p>41.1%</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round 1</p></td>
+<td></td>
+<td><p>INT08-C, CON08-C, DCL20-C, ARR38-C</p></td>
+<td><p>552,645</p></td>
+<td><p>752,422</p></td>
+<td><p>42.3%</p></td>
+<td><p>-86,919</p></td>
+</tr>
+<tr class="row-even"><td><p>Round 2</p></td>
+<td></td>
+<td><p>EXP33-C, SIG31-C, ARR01-C, DCL30-C, DCL02-C</p></td>
+<td><p>555,700</p></td>
+<td><p>736,563</p></td>
+<td><p>43.0%</p></td>
+<td><p>-15,859</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round 3</p></td>
+<td></td>
+<td><p>DCL31-C, DCL07-C, FLP34-C</p></td>
+<td><p>402,013</p></td>
+<td><p>537,589</p></td>
+<td><p>42.8%</p></td>
+<td><p>-198,974</p></td>
+</tr>
+<tr class="row-even"><td><p>Round 4</p></td>
+<td></td>
+<td><p>EXP12-C, FLP03-C, INT32-C</p></td>
+<td><p>363,914</p></td>
+<td><p>492,648</p></td>
+<td><p>42.5%</p></td>
+<td><p>-44,941</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round 5</p></td>
+<td></td>
+<td><p>FLP02-C, DCL06-C, INT30-C</p></td>
+<td><p>340,894</p></td>
+<td><p>475,813</p></td>
+<td><p>41.7%</p></td>
+<td><p>-16,835</p></td>
+</tr>
+<tr class="row-even"><td><p>Round 6</p></td>
+<td></td>
+<td><p>Cross-file analysis (<code class="docutils literal notranslate"><span class="pre">-d</span></code>)</p></td>
+<td><p>247,757</p></td>
+<td><p>327,191</p></td>
+<td><p>43.1%</p></td>
+<td><p>-148,622</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round 7</p></td>
+<td></td>
+<td><p>EXP36-C, EXP34-C, ARR37-C</p></td>
+<td><p>231,053</p></td>
+<td><p>301,475</p></td>
+<td><p>43.4%</p></td>
+<td><p>-25,716</p></td>
+</tr>
+<tr class="row-even"><td><p>Round 8</p></td>
+<td></td>
+<td><p>DCL40-C, FLP32-C, ERR33-C</p></td>
+<td><p>230,992</p></td>
+<td><p>296,415</p></td>
+<td><p>43.8%</p></td>
+<td><p>-5,060</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round 9</p></td>
+<td></td>
+<td><p>CFG, data-flow, inter-procedural</p></td>
+<td><p>230,643</p></td>
+<td><p>296,342</p></td>
+<td><p>43.8%</p></td>
+<td><p>-73</p></td>
+</tr>
+<tr class="row-even"><td><p>Round 11</p></td>
+<td></td>
+<td><p>DCL07-C/DCL31-C: ALL_CAPS + POSIX std_functions</p></td>
+<td><p>207,800</p></td>
+<td><p>272,782</p></td>
+<td><p>43.2%</p></td>
+<td><p>-23,560</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round 12</p></td>
+<td><p>v0.2.4</p></td>
+<td><p>INT07-C, INT32-C, EXP10-C, EXP34-C, INT30-C, MEM10-C, STR31-C, Windows API</p></td>
+<td><p>189,950</p></td>
+<td><p>243,849</p></td>
+<td><p>43.8%</p></td>
+<td><p>-28,933</p></td>
+</tr>
+<tr class="row-even"><td><p>Round 13</p></td>
+<td></td>
+<td><p>STR31-C: L-prefix + literal-source suppression</p></td>
+<td><p>189,016</p></td>
+<td><p>239,724</p></td>
+<td><p>44.1%</p></td>
+<td><p>-4,125</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round 15</p></td>
+<td></td>
+<td><p>EXP34-C: if/else branch merge (variant 12) — measured by MCP server, not directly comparable to legacy runner counts above</p></td>
+<td><p>n/a</p></td>
+<td><p>n/a</p></td>
+<td><p>44.7%</p></td>
+<td><p>n/a</p></td>
+</tr>
+<tr class="row-even"><td><p>Round 16</p></td>
+<td><p>v0.2.6</p></td>
+<td><p>DCL13-C main() + MEM10-C param-only null check — same MCP-server caveat as Round 15</p></td>
+<td><p>n/a</p></td>
+<td><p>n/a</p></td>
+<td><p>44.8%</p></td>
+<td><p>n/a</p></td>
+</tr>
+<tr class="row-odd"><td><p>–</p></td>
+<td><p>v0.2.7</p></td>
+<td><p>INT36-C TP restore + INT31-C FP fix</p></td>
+<td><p>172,780</p></td>
+<td><p>215,671</p></td>
+<td><p>44.5%</p></td>
+<td><p>-1</p></td>
+</tr>
+<tr class="row-even"><td><p>–</p></td>
+<td><p>v0.2.11</p></td>
+<td><p>INT32-C bounds-check detection, INT30-C macro fixes</p></td>
+<td><p>172,780</p></td>
+<td><p>215,669</p></td>
+<td><p>44.5%</p></td>
+<td><p>-2</p></td>
+</tr>
+<tr class="row-odd"><td><p>–</p></td>
+<td><p>v0.2.12</p></td>
+<td><p>DCL13-C pointer modification + INT01-C sizeof skip</p></td>
+<td><p>169,161</p></td>
+<td><p>210,138</p></td>
+<td><p>44.6%</p></td>
+<td><p>-5,531</p></td>
+</tr>
+<tr class="row-even"><td><p>–</p></td>
+<td><p>v0.2.13</p></td>
+<td><p>INT31-C implicit narrowing + real-world FP fixes</p></td>
+<td><p>158,403</p></td>
+<td><p>196,177</p></td>
+<td><p>44.7%</p></td>
+<td><p>-13,961</p></td>
+</tr>
+<tr class="row-odd"><td><p>–</p></td>
+<td><p>v0.2.15</p></td>
+<td><p>Real-world FP cleanup (17 patterns)</p></td>
+<td><p>146,714</p></td>
+<td><p>185,499</p></td>
+<td><p>44.2%</p></td>
+<td><p>-10,678</p></td>
+</tr>
+<tr class="row-even"><td><p>–</p></td>
+<td><p>v0.2.16</p></td>
+<td><p>EXP34-C: call-site null propagation (Phase 2)</p></td>
+<td><p>146,733</p></td>
+<td><p>185,510</p></td>
+<td><p>44.2%</p></td>
+<td><p>+11</p></td>
+</tr>
+<tr class="row-odd"><td><p>–</p></td>
+<td><p>v0.2.17</p></td>
+<td><p>Phase 3: MEM10-C, API00-C, API02-C, prescan enhancement</p></td>
+<td><p>146,913</p></td>
+<td><p>185,591</p></td>
+<td><p>44.2%</p></td>
+<td><p>+81</p></td>
+</tr>
+<tr class="row-even"><td><p>–</p></td>
+<td><p>v0.2.18</p></td>
+<td><p>INT31-C pointer cast, ARR36-C type filter, API00-C void-cast, INT30-C guards</p></td>
+<td><p>145,639</p></td>
+<td><p>184,645</p></td>
+<td><p>44.1%</p></td>
+<td><p>-946</p></td>
+</tr>
+<tr class="row-odd"><td><p>–</p></td>
+<td><p>v0.2.19</p></td>
+<td><p>INT30-C loop guards, prescan null guards, ARR00-C crash fix</p></td>
+<td><p>145,639</p></td>
+<td><p>184,644</p></td>
+<td><p>44.1%</p></td>
+<td><p>-1</p></td>
+</tr>
+<tr class="row-even"><td><p>–</p></td>
+<td><p>v0.2.20</p></td>
+<td><p>API00-C static skip, INT01-C dedup, EXP37-C init_declarator, EXP34-C array NotNull</p></td>
+<td><p>144,278</p></td>
+<td><p>181,924</p></td>
+<td><p>44.2%</p></td>
+<td><p>-2,720</p></td>
+</tr>
+<tr class="row-odd"><td><p>–</p></td>
+<td><p>v0.2.21</p></td>
+<td><p>const_eval value-range analysis + real-world Round 6 FP fixes</p></td>
+<td><p>137,921</p></td>
+<td><p>175,667</p></td>
+<td><p>44.0%</p></td>
+<td><p>-6,257</p></td>
+</tr>
+<tr class="row-even"><td><p>–</p></td>
+<td><p>v0.2.22</p></td>
+<td><p>INT30-C: extend upper-bound guard to if_statement</p></td>
+<td><p>137,921</p></td>
+<td><p>175,673</p></td>
+<td><p>44.0%</p></td>
+<td><p>+6</p></td>
+</tr>
+<tr class="row-odd"><td><p>–</p></td>
+<td><p>v0.2.23</p></td>
+<td><p>INT32-C const_eval alloc/memory/abs + INT30-C uint64_t + built-in macros</p></td>
+<td><p>131,661</p></td>
+<td><p>163,585</p></td>
+<td><p>44.6%</p></td>
+<td><p>-12,088</p></td>
+</tr>
+<tr class="row-even"><td><p>–</p></td>
+<td><p>v0.2.25</p></td>
+<td><p>ARR32-C tightening, INT18-C/EXP05-C removal, value-range FP fixes</p></td>
+<td><p>130,199</p></td>
+<td><p>161,965</p></td>
+<td><p>44.6%</p></td>
+<td><p>-1,620</p></td>
+</tr>
+<tr class="row-odd"><td><p>–</p></td>
+<td><p>v0.3.5</p></td>
+<td><p>Struct field type resolution, DCL13-C/DCL30-C/EXP33-C FP fixes</p></td>
+<td><p>130,004</p></td>
+<td><p>161,510</p></td>
+<td><p>44.6%</p></td>
+<td><p>-455</p></td>
+</tr>
+<tr class="row-even"><td><p>–</p></td>
+<td><p>v0.3.8</p></td>
+<td><p>STR31-C, API00-C, EXP34-C, EXP33-C FP fixes — 12-CWE subset (~25K files), not full suite: TP=61,799 FP=77,826</p></td>
+<td><p>n/a</p></td>
+<td><p>n/a</p></td>
+<td><p>44.3%</p></td>
+<td><p>n/a</p></td>
+</tr>
+<tr class="row-odd"><td><p>–</p></td>
+<td><p>v0.3.9</p></td>
+<td><p>DCL08-C, EXP36-C, INT36-C, INT01-C, EXP33-C FP fixes — same 12-CWE subset: TP=61,349 FP=77,245 (-450 TP / -581 FP vs v0.3.8)</p></td>
+<td><p>n/a</p></td>
+<td><p>n/a</p></td>
+<td><p>44.3%</p></td>
+<td><p>n/a</p></td>
+</tr>
+<tr class="row-even"><td><p>–</p></td>
+<td><p>v0.3.14</p></td>
+<td><p>EXP33-C for-loop init, INT30-C subtraction guard, EXP34-C param null propagation — full suite resumes here</p></td>
+<td><p>126,106</p></td>
+<td><p>158,036</p></td>
+<td><p>44.4%</p></td>
+<td><p>-3,474</p></td>
+</tr>
+<tr class="row-odd"><td><p>–</p></td>
+<td><p>v0.3.17</p></td>
+<td><p>CWE-78 macro alias resolution + CWE-253 incorrect-return check</p></td>
+<td><p>128,038</p></td>
+<td><p>160,496</p></td>
+<td><p>44.4%</p></td>
+<td><p>–</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Trend</strong>: Diminishing returns on FP reduction via rule tuning — Round 3
+removed 199K FP; by Round 8 only 5K. Cumulative FP reduction from baseline
+through v0.3.17: -678,845 (-80.9%).</p>
+</section>
+<section id="per-round-fix-details">
+<h2>Per-Round Fix Details<a class="headerlink" href="#per-round-fix-details" title="Link to this heading"></a></h2>
+<section id="v0-3-19-fast-benchmark-mode-cwe-78-taint-tracking">
+<h3>v0.3.19 — Fast Benchmark Mode + CWE-78 Taint Tracking<a class="headerlink" href="#v0-3-19-fast-benchmark-mode-cwe-78-taint-tracking" title="Link to this heading"></a></h3>
+<p>First benchmark using <strong>fast mode</strong> (<code class="docutils literal notranslate"><span class="pre">--fast</span></code>): per-CWE manifests that
+include only CWE-matched rules, eliminating noise from unrelated rules. 68
+CWEs scanned (29 skipped — no CWE-mapped rules), 12 parallel jobs.</p>
+<p>Fast benchmark mode: <code class="docutils literal notranslate"><span class="pre">generate_rule_cwe_map.py</span></code> generates 147 per-CWE TOML
+manifests. <code class="docutils literal notranslate"><span class="pre">run_juliet_parallel.sh</span> <span class="pre">--fast</span></code> uses them. Noise ratio drops to
+0% by design.</p>
+<p><strong>ENV03-C function-scoped sanitization</strong>: <code class="docutils literal notranslate"><span class="pre">clearenv()</span></code>/<code class="docutils literal notranslate"><span class="pre">setenv(&quot;PATH&quot;)</span></code>
+now checked per-function instead of file-level. A <code class="docutils literal notranslate"><span class="pre">clearenv()</span></code> in one
+function no longer suppresses violations in other functions in the same file.</p>
+<p><strong>STR02-C intra-function taint tracking</strong>: Replaced blanket
+“non-literal = risky” check with taint analysis. Tracks <code class="docutils literal notranslate"><span class="pre">recv()</span></code>,
+<code class="docutils literal notranslate"><span class="pre">fgets()</span></code>, <code class="docutils literal notranslate"><span class="pre">fgetws()</span></code>, <code class="docutils literal notranslate"><span class="pre">scanf()</span></code>, <code class="docutils literal notranslate"><span class="pre">getenv()</span></code>, etc. as taint sources.
+Handles cast expressions like <code class="docutils literal notranslate"><span class="pre">(char</span> <span class="pre">*)(data</span> <span class="pre">+</span> <span class="pre">offset)</span></code>. Function
+parameters treated as tainted by default. Taint propagation through
+<code class="docutils literal notranslate"><span class="pre">strcpy</span></code>/<code class="docutils literal notranslate"><span class="pre">sprintf</span></code>/<code class="docutils literal notranslate"><span class="pre">memcpy</span></code>.</p>
+<p>CWE-78 impact (v0.3.17 → v0.3.19, fast mode):</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 31.2%" />
+<col style="width: 18.8%" />
+<col style="width: 18.8%" />
+<col style="width: 31.2%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>v0.3.17</p></th>
+<th class="head"><p>v0.3.19</p></th>
+<th class="head"><p>Delta</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>CWE-78 TP</p></td>
+<td><p>1,282</p></td>
+<td><p>1,204</p></td>
+<td><p>-78</p></td>
+</tr>
+<tr class="row-odd"><td><p>CWE-78 FP</p></td>
+<td><p>1,773</p></td>
+<td><p>1,443</p></td>
+<td><p>-330</p></td>
+</tr>
+<tr class="row-even"><td><p>CWE-78 Precision</p></td>
+<td><p>42.0%</p></td>
+<td><p>45.5%</p></td>
+<td><p>+3.5pp</p></td>
+</tr>
+<tr class="row-odd"><td><p>CWE-78 Per-file</p></td>
+<td><p>13.0%</p></td>
+<td><p>13.0%</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-even"><td><p>STR02-C TP</p></td>
+<td><p>~278</p></td>
+<td><p>200</p></td>
+<td><p>-78 (cross-function)</p></td>
+</tr>
+<tr class="row-odd"><td><p>STR02-C FP</p></td>
+<td><p>~382</p></td>
+<td><p>52</p></td>
+<td><p>-330 (-86%)</p></td>
+</tr>
+</tbody>
+</table>
+<p>CWE-aware highlights (fast mode, CWE-matched rules only):</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>CWE</p></th>
+<th class="head"><p>CWE-matched TP</p></th>
+<th class="head"><p>CWE-matched FP</p></th>
+<th class="head"><p>Precision</p></th>
+<th class="head"><p>Per-file</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>252</p></td>
+<td><p>179</p></td>
+<td><p>0</p></td>
+<td><p>100%</p></td>
+<td><p>16.5%</p></td>
+<td><p>ERR33-C</p></td>
+</tr>
+<tr class="row-odd"><td><p>253</p></td>
+<td><p>178</p></td>
+<td><p>0</p></td>
+<td><p>100%</p></td>
+<td><p>26.0%</p></td>
+<td><p>ERR33-C</p></td>
+</tr>
+<tr class="row-even"><td><p>690</p></td>
+<td><p>290</p></td>
+<td><p>62</p></td>
+<td><p>82.4%</p></td>
+<td><p>25.9%</p></td>
+<td><p>EXP34-C</p></td>
+</tr>
+<tr class="row-odd"><td><p>197</p></td>
+<td><p>259</p></td>
+<td><p>126</p></td>
+<td><p>67.5%</p></td>
+<td><p>37.4%</p></td>
+<td><p>INT31-C</p></td>
+</tr>
+<tr class="row-even"><td><p>401</p></td>
+<td><p>284</p></td>
+<td><p>287</p></td>
+<td><p>49.7%</p></td>
+<td><p>21.7%</p></td>
+<td><p>MEM31-C</p></td>
+</tr>
+<tr class="row-odd"><td><p>78</p></td>
+<td><p>1,204</p></td>
+<td><p>1,443</p></td>
+<td><p>45.5%</p></td>
+<td><p>13.0%</p></td>
+<td><p>ENV03-C/STR02-C taint</p></td>
+</tr>
+<tr class="row-even"><td><p>476</p></td>
+<td><p>140</p></td>
+<td><p>161</p></td>
+<td><p>46.5%</p></td>
+<td><p>29.0%</p></td>
+<td><p>EXP34-C</p></td>
+</tr>
+<tr class="row-odd"><td><p>190</p></td>
+<td><p>650</p></td>
+<td><p>820</p></td>
+<td><p>44.2%</p></td>
+<td><p>12.9%</p></td>
+<td><p>INT30-C/INT32-C</p></td>
+</tr>
+<tr class="row-even"><td><p>194</p></td>
+<td><p>447</p></td>
+<td><p>626</p></td>
+<td><p>41.7%</p></td>
+<td><p>27.0%</p></td>
+<td><p>INT31-C (new in v0.3.18)</p></td>
+</tr>
+<tr class="row-odd"><td><p>195</p></td>
+<td><p>406</p></td>
+<td><p>588</p></td>
+<td><p>40.8%</p></td>
+<td><p>24.8%</p></td>
+<td><p>INT31-C (new in v0.3.18)</p></td>
+</tr>
+<tr class="row-even"><td><p>121</p></td>
+<td><p>854</p></td>
+<td><p>1,317</p></td>
+<td><p>39.3%</p></td>
+<td><p>12.8%</p></td>
+<td><p>STR31-C/ARR30-C</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Perfect precision (100% TP)</strong>: CWE-244, CWE-252, CWE-253, CWE-338, CWE-467,
+CWE-481, CWE-587, CWE-590, CWE-591, CWE-681 (10 CWEs).</p>
+<p><strong>Zero-detection CWEs</strong> (rules mapped but 0 violations): CWE-114, CWE-188,
+CWE-226, CWE-259, CWE-272, CWE-273, CWE-327, CWE-367, CWE-459, CWE-464,
+CWE-468, CWE-469, CWE-666, CWE-672, CWE-676, CWE-761, CWE-762, CWE-789,
+CWE-843 (19 CWEs).</p>
+<p><strong>Duration</strong>: ~8 min wall time (12 jobs, 4-core laptop), 68 CWEs scanned.
+Fast mode is ~10x faster than full suite for CWE-focused analysis.</p>
+</section>
+<section id="v0-3-17-cwe-78-macro-alias-resolution-cwe-253-incorrect-return-check">
+<h3>v0.3.17 — CWE-78 Macro Alias Resolution + CWE-253 Incorrect Return Check<a class="headerlink" href="#v0-3-17-cwe-78-macro-alias-resolution-cwe-253-incorrect-return-check" title="Link to this heading"></a></h3>
+<p>Two new detection capabilities: P6 (CWE-78 macro alias resolution) and P7
+(CWE-253 incorrect comparison validation).</p>
+<p><strong>P6: CWE-78 macro alias resolution</strong> (commit <code class="docutils literal notranslate"><span class="pre">d8587d80</span></code>): Added
+<code class="docutils literal notranslate"><span class="pre">collect_macro_aliases()</span></code> to resolve <code class="docutils literal notranslate"><span class="pre">#define</span> <span class="pre">SYSTEM</span> <span class="pre">system</span></code> patterns.
+ENV33-C, ENV03-C, STR02-C now detect dangerous function calls through macro
+indirection. Also added Windows exec/spawn variants (<code class="docutils literal notranslate"><span class="pre">_execl</span></code>, <code class="docutils literal notranslate"><span class="pre">_execv</span></code>,
+<code class="docutils literal notranslate"><span class="pre">_spawnl</span></code>, etc.) to ENV33-C and STR02-C.</p>
+<p><strong>P7: CWE-253 ERR33-C comparison validation</strong> (commit <code class="docutils literal notranslate"><span class="pre">83a71e54</span></code>): Functions
+classified by error return kind (NullPointer, NegativeInt, Eof, NonZero,
+Count). When a direct call appears in a binary_expression, the comparison
+operator/value is validated against function semantics. Detects:
+<code class="docutils literal notranslate"><span class="pre">fgets()</span> <span class="pre">&lt;</span> <span class="pre">0</span></code> (pointer with ordered op), <code class="docutils literal notranslate"><span class="pre">fprintf()</span> <span class="pre">==</span> <span class="pre">0</span></code> (error is &lt; 0),
+<code class="docutils literal notranslate"><span class="pre">putc()</span> <span class="pre">==</span> <span class="pre">0</span></code> (error is EOF), <code class="docutils literal notranslate"><span class="pre">remove()</span> <span class="pre">==</span> <span class="pre">0</span></code> (0 = success),
+<code class="docutils literal notranslate"><span class="pre">fwrite()</span> <span class="pre">&lt;</span> <span class="pre">0</span></code> (size_t unsigned). Includes wchar_t variants and macro alias
+resolution.</p>
+<p>Juliet impact (v0.3.14 → v0.3.17): Overall TP 126,106→128,038 (+1,932), FP
+158,036→160,496 (+2,460), TP rate 44.4% → 44.4% (unchanged) — net increase
+from new detections (macro-resolved calls + CWE-253 patterns).</p>
+<p>CWE-aware highlights (first run with CWE-aware scoring):</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>CWE</p></th>
+<th class="head"><p>CWE-matched TP</p></th>
+<th class="head"><p>CWE-matched FP</p></th>
+<th class="head"><p>Precision</p></th>
+<th class="head"><p>Per-file</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>253</p></td>
+<td><p>178</p></td>
+<td><p>0</p></td>
+<td><p>100%</p></td>
+<td><p>26.0%</p></td>
+<td><p>New — P7 detection</p></td>
+</tr>
+<tr class="row-odd"><td><p>252</p></td>
+<td><p>179</p></td>
+<td><p>0</p></td>
+<td><p>100%</p></td>
+<td><p>16.5%</p></td>
+<td><p>Existing ERR33-C</p></td>
+</tr>
+<tr class="row-even"><td><p>690</p></td>
+<td><p>290</p></td>
+<td><p>62</p></td>
+<td><p>82.4%</p></td>
+<td><p>25.9%</p></td>
+<td><p>EXP34-C null deref from return</p></td>
+</tr>
+<tr class="row-odd"><td><p>78</p></td>
+<td><p>1,282</p></td>
+<td><p>1,773</p></td>
+<td><p>42.0%</p></td>
+<td><p>13.0%</p></td>
+<td><p>P6 macro aliases</p></td>
+</tr>
+<tr class="row-even"><td><p>590</p></td>
+<td><p>94</p></td>
+<td><p>0</p></td>
+<td><p>100%</p></td>
+<td><p>10.4%</p></td>
+<td><p>MEM31-C free-not-on-heap</p></td>
+</tr>
+<tr class="row-odd"><td><p>467</p></td>
+<td><p>20</p></td>
+<td><p>0</p></td>
+<td><p>100%</p></td>
+<td><p>37.0%</p></td>
+<td><p>ARR01-C sizeof-on-pointer</p></td>
+</tr>
+<tr class="row-even"><td><p>481</p></td>
+<td><p>12</p></td>
+<td><p>0</p></td>
+<td><p>100%</p></td>
+<td><p>66.7%</p></td>
+<td><p>EXP45-C assign-vs-compare</p></td>
+</tr>
+<tr class="row-odd"><td><p>391</p></td>
+<td><p>36</p></td>
+<td><p>22</p></td>
+<td><p>62.1%</p></td>
+<td><p>37.0%</p></td>
+<td><p>ERR33-C unchecked error</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>CWE-aware aggregate</strong> (68 CWEs with mapped rules): CWE-matched TP rate
+44.3%, per-file detection 12.6%, flaw-hit rate 4.6%, noise ratio 93.3%.</p>
+<p><strong>Duration</strong>: 1h 47m 15s (54,484 files, 118 CWEs), 24-core workstation via MCP
+benchmark server.</p>
+</section>
+<section id="v0-3-14-exp33-c-int30-c-exp34-c-fp-fixes-full-suite">
+<h3>v0.3.14 — EXP33-C, INT30-C, EXP34-C FP Fixes (Full Suite)<a class="headerlink" href="#v0-3-14-exp33-c-int30-c-exp34-c-fp-fixes-full-suite" title="Link to this heading"></a></h3>
+<p>First full-suite benchmark since v0.3.5 (v0.3.8 and v0.3.9 used a 12-CWE
+subset only). Includes all changes from v0.3.6–v0.3.14, of which v0.3.8 and
+v0.3.9 are documented below.</p>
+<p>Additional fixes in v0.3.10–v0.3.14:</p>
+<ul class="simple">
+<li><p><strong>EXP34-C</strong>: Parameter null propagation — seed callee params with null
+state inferred from call-site arguments.</p></li>
+<li><p><strong>INT30-C</strong>: Subtraction guard — detect <code class="docutils literal notranslate"><span class="pre">a</span> <span class="pre">-</span> <span class="pre">b</span></code> patterns where a
+preceding comparison proves <code class="docutils literal notranslate"><span class="pre">a</span> <span class="pre">&gt;=</span> <span class="pre">b</span></code> and suppress the unsigned wrap
+violation.</p></li>
+<li><p><strong>EXP33-C</strong>: For-loop init recognized as dominating assignment —
+<code class="docutils literal notranslate"><span class="pre">for</span> <span class="pre">(int</span> <span class="pre">i</span> <span class="pre">=</span> <span class="pre">0;</span> <span class="pre">...)</span></code> loop variable initializer now counted as
+initialization before first use. Also fixed a double-push in
+<code class="docutils literal notranslate"><span class="pre">collect_init_func_calls_for_var</span></code> that caused position deduplication
+failures.</p></li>
+</ul>
+<p>Juliet impact (v0.3.5 → v0.3.14): Overall TP 130,004→126,106 (-3,898), FP
+161,510→158,036 (-3,474), TP rate 44.6% → 44.4% (-0.2pp). CWE categories with
+data: 106→103. Categories &gt;50% TP: 19→17. v0.3.8/v0.3.9 12-CWE subset had
+reported 44.3%; full-suite is 44.4% — consistent with subset measurement.</p>
+<p>Top CWEs by FP count (v0.3.14 full suite):</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>CWE</p></th>
+<th class="head"><p>TP</p></th>
+<th class="head"><p>FP</p></th>
+<th class="head"><p>TP%</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>CWE78 OS Command Injection</p></td>
+<td><p>17,350</p></td>
+<td><p>5,592</p></td>
+<td><p>75.6%</p></td>
+</tr>
+<tr class="row-odd"><td><p>CWE197 Numeric Truncation Error</p></td>
+<td><p>1,148</p></td>
+<td><p>227</p></td>
+<td><p>83.5%</p></td>
+</tr>
+<tr class="row-even"><td><p>CWE506 Embedded Malicious Code</p></td>
+<td><p>666</p></td>
+<td><p>120</p></td>
+<td><p>84.7%</p></td>
+</tr>
+<tr class="row-odd"><td><p>CWE617 Reachable Assertion</p></td>
+<td><p>312</p></td>
+<td><p>48</p></td>
+<td><p>86.7%</p></td>
+</tr>
+<tr class="row-even"><td><p>CWE464 Addition of Data Structure Sentinel</p></td>
+<td><p>48</p></td>
+<td><p>5</p></td>
+<td><p>90.6%</p></td>
+</tr>
+<tr class="row-odd"><td><p>CWE457 Use of Uninitialized Variable</p></td>
+<td><p>704</p></td>
+<td><p>2,549</p></td>
+<td><p>21.6% (worst)</p></td>
+</tr>
+<tr class="row-even"><td><p>CWE563 Unused Variable</p></td>
+<td><p>54</p></td>
+<td><p>250</p></td>
+<td><p>17.8%</p></td>
+</tr>
+<tr class="row-odd"><td><p>CWE366 Race Condition Within Thread</p></td>
+<td><p>1</p></td>
+<td><p>12</p></td>
+<td><p>7.7%</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Duration</strong>: 1h 14m 1s (54,484 files, 118 CWEs), 24-core workstation via MCP
+benchmark server.</p>
+</section>
+<section id="v0-3-9-p3214-real-world-fp-fixes-12-cwe-subset">
+<h3>v0.3.9 — P3214 Real-World FP Fixes (12-CWE Subset)<a class="headerlink" href="#v0-3-9-p3214-real-world-fp-fixes-12-cwe-subset" title="Link to this heading"></a></h3>
+<p>Targeted at 5 high-frequency FP patterns from P3214 embedded firmware
+(CMS80F752x/8051 MCU). 12-CWE subset: TP=61,349, FP=77,245, rate=44.3%
+(-450 TP / -581 FP vs v0.3.8).</p>
+<ul class="simple">
+<li><p><strong>DCL08-C</strong>: Skip pair-offset “relationship” check when all 3+ enumerators
+have explicit values. Protocol/wire-format/register enums assign all values
+deliberately — no implicit relationship to encode. 2-member enums
+(canonical <code class="docutils literal notranslate"><span class="pre">{IN_STR_LEN=18,</span> <span class="pre">OUT_STR_LEN=20}</span></code>) still checked. Eliminates
+~205 FPs per protocol-heavy file.</p></li>
+<li><p><strong>EXP36-C</strong>: Added <code class="docutils literal notranslate"><span class="pre">uint8_t</span> <span class="pre">*</span></code> and <code class="docutils literal notranslate"><span class="pre">int8_t</span> <span class="pre">*</span></code> to alignment map with
+value 1. Previously <code class="docutils literal notranslate"><span class="pre">ends_with(&quot;*&quot;)</span></code> fallback assigned them alignment 4,
+causing <code class="docutils literal notranslate"><span class="pre">(uint8_t</span> <span class="pre">*)&amp;struct_var</span></code> to be flagged as increasing alignment
+strictness (it decreases it). Eliminates 4 FPs per memcpy/memset site.</p></li>
+<li><p><strong>INT36-C</strong>: Guard <code class="docutils literal notranslate"><span class="pre">check_pointer_to_integer_cast</span></code> with
+<code class="docutils literal notranslate"><span class="pre">!is_pointer_type(type_text)</span></code>. <code class="docutils literal notranslate"><span class="pre">is_integer_type(&quot;uint8_t</span> <span class="pre">*&quot;)</span></code> returned
+true because “uint8_t” contains “int”. Pointer casts like
+<code class="docutils literal notranslate"><span class="pre">(uint8_t</span> <span class="pre">*)&amp;x</span></code> were incorrectly flagged as pointer-to-integer
+conversions. Eliminates 14 FPs per file.</p></li>
+<li><p><strong>INT01-C</strong>: Skip <code class="docutils literal notranslate"><span class="pre">check_param_list</span></code> when param uses
+<code class="docutils literal notranslate"><span class="pre">uint8_t</span></code>/<code class="docutils literal notranslate"><span class="pre">uint16_t</span></code>/<code class="docutils literal notranslate"><span class="pre">int8_t</span></code>/<code class="docutils literal notranslate"><span class="pre">int16_t</span></code>. On 8/16-bit MCUs these are
+correct types for size parameters; <code class="docutils literal notranslate"><span class="pre">size_t</span></code> would waste scarce registers.
+Eliminates 12 FPs.</p></li>
+<li><p><strong>EXP33-C</strong>: When a variable is initialized in 2+ distinct conditional
+branches (if/else-if without final else), use <code class="docutils literal notranslate"><span class="pre">ConditionallyInitialized</span></code>
+instead of <code class="docutils literal notranslate"><span class="pre">Uninitialized</span></code>. Multi-branch chains indicate the programmer
+covers all cases (e.g., exhaustive enum dispatch); sqc cannot prove this
+statically. Single-branch if-without-else still flags. Also fixed position
+deduplication in <code class="docutils literal notranslate"><span class="pre">collect_init_func_calls_for_var</span></code> (identifier args were
+pushed twice). Eliminates 31 FPs.</p></li>
+</ul>
+<p>Juliet impact (v0.3.8 → v0.3.9): TP 61,799→61,349 (-450), FP 77,826→77,245
+(-581), rate 44.3%→44.3%. TP loss primarily from DCL08-C no longer flagging
+all-explicit-value enums (low-confidence detections on protocol enum
+patterns).</p>
+</section>
+<section id="v0-3-8-str31-c-api00-c-exp34-c-exp33-c-fp-fixes-12-cwe-subset">
+<h3>v0.3.8 — STR31-C, API00-C, EXP34-C, EXP33-C FP Fixes (12-CWE Subset)<a class="headerlink" href="#v0-3-8-str31-c-api00-c-exp34-c-exp33-c-fp-fixes-12-cwe-subset" title="Link to this heading"></a></h3>
+<p>Scope: 12-CWE subset (25,860 files); not comparable to the full-suite counts
+in the round table above (see the v0.3.8/v0.3.9 rows there for the subset
+numbers).</p>
+<ul class="simple">
+<li><p><strong>STR31-C</strong>: Gate literal-source suppression in <code class="docutils literal notranslate"><span class="pre">check_strcpy_safety</span></code> and
+<code class="docutils literal notranslate"><span class="pre">check_strcat_safety</span></code> on <code class="docutils literal notranslate"><span class="pre">!is_function_parameter(dest)</span></code>. Recovers TPs in
+CWE124/127 (not in this 12-CWE set, so no measurable change here).</p></li>
+<li><p><strong>API00-C</strong>: 4 new validation patterns recognized: return-statement null
+check, if/else chain, helper-fn early-return, unsigned char arithmetic
+exclusion. Reduces FPs in real-world code.</p></li>
+<li><p><strong>EXP34-C</strong>: Compound null guard fix — <code class="docutils literal notranslate"><span class="pre">parse_all_null_conditions</span></code>
+collects ALL variables from <code class="docutils literal notranslate"><span class="pre">||</span></code> conditions.
+<code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">(a</span> <span class="pre">==</span> <span class="pre">NULL</span> <span class="pre">||</span> <span class="pre">b</span> <span class="pre">==</span> <span class="pre">NULL)</span> <span class="pre">return;</span></code> now marks both <code class="docutils literal notranslate"><span class="pre">a</span></code> and <code class="docutils literal notranslate"><span class="pre">b</span></code>
+NotNull on the false branch.</p></li>
+<li><p><strong>EXP33-C</strong>: Field/subscript write on uninitialized struct no longer
+treated as a read (<code class="docutils literal notranslate"><span class="pre">myUnion.field</span> <span class="pre">=</span> <span class="pre">x</span></code>, <code class="docutils literal notranslate"><span class="pre">arr[i].field</span> <span class="pre">=</span> <span class="pre">x</span></code> don’t read
+the base variable); <code class="docutils literal notranslate"><span class="pre">process_assignment</span></code> now marks the base variable as
+Initialized on any field write (stack structs and malloc arrays).</p></li>
+</ul>
+<p>EXP33-C delta: TP 2,524→2,225 (-299), FP 3,022→2,446 (-576). FP rate
+54.5%→52.4%. Overall: TP 62,098→61,799 (-299), FP 78,402→77,826 (-576), TP
+rate 44.2%→44.3% (+0.1pp).</p>
+</section>
+<section id="v0-3-5-struct-field-type-resolution-real-world-fp-fixes">
+<h3>v0.3.5 — Struct Field Type Resolution, Real-World FP Fixes<a class="headerlink" href="#v0-3-5-struct-field-type-resolution-real-world-fp-fixes" title="Link to this heading"></a></h3>
+<p>Struct field type resolution for INT32-C/INT30-C, plus DCL13-C/DCL30-C/
+EXP33-C targeted FP fixes.</p>
+<p><strong>Struct field type resolution</strong>: Prescan now collects struct definitions
+into <code class="docutils literal notranslate"><span class="pre">struct_field_types:</span> <span class="pre">HashMap&lt;String,</span> <span class="pre">HashMap&lt;String,</span> <span class="pre">String&gt;&gt;</span></code>.
+INT32-C and INT30-C <code class="docutils literal notranslate"><span class="pre">infer_type()</span></code> resolves <code class="docutils literal notranslate"><span class="pre">field_expression</span></code> nodes
+(e.g., <code class="docutils literal notranslate"><span class="pre">s-&gt;count</span></code>) via two-level lookup: variable type → struct name →
+field type. Previously returned <code class="docutils literal notranslate"><span class="pre">not_applicable</span></code>/<code class="docutils literal notranslate"><span class="pre">unknown</span></code> for all struct
+field accesses.</p>
+<p><strong>Real-world FP fixes</strong>: DCL13-C (removed FILE-modifying functions from
+READ_ONLY_FUNCTIONS), DCL30-C (added <code class="docutils literal notranslate"><span class="pre">conditional_expression</span></code> handling to
+<code class="docutils literal notranslate"><span class="pre">is_alloc_expression()</span></code>), EXP33-C (array output parameter recognition for
+unknown functions). Cleared 3 inline suppressions.</p>
+<p>Juliet impact (0.2.25 → 0.3.5): Overall TP 130,199→130,004 (-195), FP
+161,965→161,510 (-455), TP rate 44.6% → 44.6% (unchanged). Minimal Juliet
+impact expected — Juliet uses explicit local variables, not struct member
+access patterns; real-world impact expected on struct-heavy codebases (curl,
+mosquitto, etc.).</p>
+<p>Files changed: <code class="docutils literal notranslate"><span class="pre">prescan.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">context.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">ast_utils.rs</span></code>,
+<code class="docutils literal notranslate"><span class="pre">int32_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">int30_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">dcl13_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">dcl30_c.rs</span></code>,
+<code class="docutils literal notranslate"><span class="pre">exp33_c.rs</span></code>.</p>
+</section>
+<section id="v0-2-25-arr32-c-tightening-rule-removals-value-range-fp-fixes">
+<h3>v0.2.25 — ARR32-C Tightening, Rule Removals, Value-Range FP Fixes<a class="headerlink" href="#v0-2-25-arr32-c-tightening-rule-removals-value-range-fp-fixes" title="Link to this heading"></a></h3>
+<p>Mixed release: ARR32-C refinement (pre-existing), INT18-C/EXP05-C rule
+removal, and real-world value-range FP fixes.</p>
+<p><strong>ARR32-C tightening</strong> (dominant effect): Refined array size validation to
+reduce false positives. -1,201 TP/-926 FP — trades some TPs for cleaner
+results. Largest CWE impacts: CWE190 -584 FP, CWE191 -391 FP, CWE194 -148 TP
+(no FP change), CWE195 -132 TP (no FP change).</p>
+<p><strong>INT18-C removal</strong>: Rule removed entirely (-232 TP/-621 FP). Was generating
+2.7:1 FP:TP ratio — not worth keeping.</p>
+<p><strong>EXP05-C removal</strong>: Rule removed entirely (-3 TP/-12 FP). Negligible
+detection with poor ratio.</p>
+<p><strong>INT30-C pointer type detection</strong>: Fixed <code class="docutils literal notranslate"><span class="pre">infer_type()</span></code> to check for
+pointer types (<code class="docutils literal notranslate"><span class="pre">*</span></code>) before <code class="docutils literal notranslate"><span class="pre">is_unsigned_type()</span></code>. <code class="docutils literal notranslate"><span class="pre">unsigned</span> <span class="pre">char</span> <span class="pre">*</span></code> was
+incorrectly classified as “unsigned” instead of “not_applicable”. Also fixed
+<code class="docutils literal notranslate"><span class="pre">extract_type_and_name()</span></code> to include <code class="docutils literal notranslate"><span class="pre">*</span></code> in type_map for pointer
+declarators, and pointer_expression dereference to strip one <code class="docutils literal notranslate"><span class="pre">*</span></code> level.
+(-26 TP/-62 FP)</p>
+<p><strong>INT32-C field_expression skip</strong>: <code class="docutils literal notranslate"><span class="pre">check_memory_function_overflow()</span></code> now
+skips <code class="docutils literal notranslate"><span class="pre">field_expression</span></code> nodes (e.g., <code class="docutils literal notranslate"><span class="pre">server_host-&gt;h_length</span></code>) —
+<code class="docutils literal notranslate"><span class="pre">contains_arithmetic()</span></code> was matching <code class="docutils literal notranslate"><span class="pre">-&gt;</span></code> as subtraction.</p>
+<p><strong>INT32-C/INT30-C small increment suppression</strong>: New
+<code class="docutils literal notranslate"><span class="pre">is_small_increment_of_opaque()</span></code> suppresses <code class="docutils literal notranslate"><span class="pre">call_expression</span> <span class="pre">+</span> <span class="pre">small_literal</span></code>
+and <code class="docutils literal notranslate"><span class="pre">call_initialized_var</span> <span class="pre">+</span> <span class="pre">small_literal</span></code> patterns where const_eval can’t
+evaluate function return values.</p>
+<p><strong>INT34-C const_eval integration</strong>: Converted from unit struct to stateful
+struct with <code class="docutils literal notranslate"><span class="pre">MacroConstantMap</span></code>. Shift amount range evaluation via
+<code class="docutils literal notranslate"><span class="pre">try_evaluate_range()</span></code> + loop-bounds validation as fallback.</p>
+<p>Juliet impact (0.2.23 → 0.2.25): Overall TP 131,661→130,199 (-1,462), FP
+163,585→161,965 (-1,620), TP rate 44.6% → 44.6% (unchanged). Per-rule:
+ARR32-C -1,201 TP/-926 FP, INT18-C -232 TP/-621 FP, INT30-C -26 TP/-62 FP,
+EXP05-C -3 TP/-12 FP. Only regression: FIO05-C +1 FP (noise), CWE773 +2 FP
+(noise). CWE194 -148 TP/0 FP and CWE195 -132 TP/0 FP from ARR32-C changes (TP
+loss, no FP benefit).</p>
+<p><strong>Real-world impact</strong>: 7 target FPs eliminated (64 → 61 violations). All from
+value-range fixes (INT30-C pointer type, INT32-C field_expr/small_increment,
+INT30-C small_increment, INT34-C const_eval).</p>
+<p>Files changed: <code class="docutils literal notranslate"><span class="pre">int30_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">int32_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">int34_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">mod.rs</span></code>,
+<code class="docutils literal notranslate"><span class="pre">arr32_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">exp05_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">int18_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">str04_c.rs</span></code>.</p>
+</section>
+<section id="v0-2-23-int32-c-const-eval-for-allocation-memory-abs-int30-c-built-in-macros">
+<h3>v0.2.23 — INT32-C Const-Eval for Allocation/Memory/Abs + INT30-C Built-in Macros<a class="headerlink" href="#v0-2-23-int32-c-const-eval-for-allocation-memory-abs-int30-c-built-in-macros" title="Link to this heading"></a></h3>
+<p>Major const_eval enhancement: built-in C standard limit macros, sizeof
+resolution, and AST-based allocation overflow checks.</p>
+<p><strong>Built-in limit macros</strong>: Added ~35 C standard macros (INT_MAX, UINT_MAX,
+CHAR_MAX, etc.) as defaults in <code class="docutils literal notranslate"><span class="pre">collect_macro_constants()</span></code>. Since
+tree-sitter doesn’t process <code class="docutils literal notranslate"><span class="pre">#include</span> <span class="pre">&lt;limits.h&gt;</span></code>, const_eval previously
+couldn’t resolve expressions involving these macros. Now
+<code class="docutils literal notranslate"><span class="pre">INT_MAX/2</span> <span class="pre">+</span> <span class="pre">INT_MAX/2</span></code>, <code class="docutils literal notranslate"><span class="pre">UINT_MAX</span> <span class="pre">-</span> <span class="pre">50</span></code>, and similar are correctly
+evaluated.</p>
+<p><strong>sizeof resolution</strong>: Maps ~20 C types to LP64 sizes (<code class="docutils literal notranslate"><span class="pre">char``→1,</span>
+<span class="pre">``int``→4,</span> <span class="pre">``long``→8,</span> <span class="pre">``size_t``→8,</span> <span class="pre">pointers→8).</span> <span class="pre">Enables</span> <span class="pre">const-folding</span> <span class="pre">of</span>
+<span class="pre">``N</span> <span class="pre">*</span> <span class="pre">sizeof(T)</span></code> allocation expressions.</p>
+<p><strong>INT32-C allocation overflow</strong>: Refactored <code class="docutils literal notranslate"><span class="pre">check_allocation_overflow()</span></code>
+and <code class="docutils literal notranslate"><span class="pre">check_memory_function_overflow()</span></code> from text-level
+<code class="docutils literal notranslate"><span class="pre">contains_arithmetic()</span></code> (just <code class="docutils literal notranslate"><span class="pre">expr.contains('*')</span></code>) to AST node traversal
+with <code class="docutils literal notranslate"><span class="pre">expression_fits_in_signed()</span></code> (64-bit width for size_t).
+<code class="docutils literal notranslate"><span class="pre">malloc(100</span> <span class="pre">*</span> <span class="pre">sizeof(char))</span></code> now resolves to 400 and is suppressed.</p>
+<p><strong>INT32-C abs() suppression</strong>: Two new checks in <code class="docutils literal notranslate"><span class="pre">check_abs_overflow()</span></code>:
+widening cast (<code class="docutils literal notranslate"><span class="pre">abs((long)data)</span></code> can’t overflow because long range
+contains all int values) and comparison condition (<code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">(abs(x)</span> <span class="pre">&lt;=</span> <span class="pre">limit)</span></code>
+— the abs() IS the bounds check, not a violation).</p>
+<p><strong>INT30-C uint64_t subtraction skip</strong>: <code class="docutils literal notranslate"><span class="pre">uint64_t</span></code> subtraction wrapping is
+practically impossible (2^64 ns = ~584 years). Skip unsigned subtraction
+checks when both operands are 64-bit.</p>
+<p>Juliet impact (0.2.22 → 0.2.23): Overall TP 137,921→131,661 (-6,260), FP
+175,673→163,585 (-12,088), TP rate 44.0% → 44.6% (+0.6pp). Per-rule: INT32-C
+-2,394 TP/-5,238 FP (2.2:1 ratio), INT30-C -3,866 TP/-6,848 FP (1.8:1 ratio).
+Zero rule regressions; only CWE194 +28 FP and CWE195 +25 FP (noise from
+const_eval enabling new evaluations). Top CWE improvements: CWE197 +14.8pp TP
+rate (69.4%→84.2%), CWE590 +3.1pp, CWE226 +3.5pp, CWE122 -2,809 FP.</p>
+<p>Files changed: <code class="docutils literal notranslate"><span class="pre">const_eval.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">int32_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">int30_c.rs</span></code>,
+<code class="docutils literal notranslate"><span class="pre">function_summary.rs</span></code>.</p>
+</section>
+<section id="v0-2-16-exp34-c-call-site-null-propagation-phase-2">
+<h3>v0.2.16 — EXP34-C: Call-Site Null Propagation (Phase 2)<a class="headerlink" href="#v0-2-16-exp34-c-call-site-null-propagation-phase-2" title="Link to this heading"></a></h3>
+<p>Two complementary mechanisms for cross-file null pointer analysis:</p>
+<p><strong>A. Call-site flagging (new TPs)</strong>: Re-enabled <code class="docutils literal notranslate"><span class="pre">check_callsite_null_args</span></code>
+— flags DefinitelyNull arguments passed to callees that don’t null-check
+them. Removed the old <code class="docutils literal notranslate"><span class="pre">dereferences_params</span></code> gate (too aggressive, killed
+all TPs). Added <code class="docutils literal notranslate"><span class="pre">is_null_safe_function()</span></code> guard for <code class="docutils literal notranslate"><span class="pre">free</span></code>,
+<code class="docutils literal notranslate"><span class="pre">printLine</span></code>, etc. Only fires when callee has a prescan summary (guards
+against unknown library functions).</p>
+<p><strong>B. Callee param seeding (FP reduction)</strong>: Prescan second pass collects
+argument null states at every call site via AST-level inference
+(<code class="docutils literal notranslate"><span class="pre">infer_arg_null_state</span></code>). Aggregates per-callee per-param with lattice
+join. Seeds callee params with call-site-derived states instead of blanket
+PossiblyNull. Header-declared functions get an implicit Unknown caller to
+prevent false NotNull seeding.</p>
+<p>Juliet impact (0.2.15 → 0.2.16): Net +11 FP (+0.006%), +19 TP, TP rate 44.2%
+→ 44.2% (unchanged at 1dp). Only CWE-476 affected: +19 TP / +17 FP (TP rate
+35.9% → 36.6%, +0.7pp). EXP34-C in CWE-476: TP 80 → 99 (+19), FP 94 → 111
+(+17). Approach A delivered +19 TPs (call-site flagging working as intended
+for Juliet variants 51-54). Approach B had limited impact: most good-source
+functions pass identifiers (Unknown from prescan AST inference, not
+trackable without dataflow), so param seeding couldn’t distinguish good vs
+bad callers. Relay chains (variants 52-54) correctly produce Unknown →
+PossiblyNull (safe fallback). No impact on other CWEs.</p>
+<p>Files changed: <code class="docutils literal notranslate"><span class="pre">exp34_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">function_summary.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">prescan.rs</span></code>,
+<code class="docutils literal notranslate"><span class="pre">null_state.rs</span></code>.</p>
+</section>
+<section id="v0-2-21-const-eval-value-range-analysis-real-world-round-6-fp-fixes">
+<h3>v0.2.21 — Const-Eval Value-Range Analysis + Real-World Round 6 FP Fixes<a class="headerlink" href="#v0-2-21-const-eval-value-range-analysis-real-world-round-6-fp-fixes" title="Link to this heading"></a></h3>
+<p>New <code class="docutils literal notranslate"><span class="pre">src/analyze/const_eval.rs</span></code> module (~550 lines) implements lightweight
+constant evaluation: macro constant collection from <code class="docutils literal notranslate"><span class="pre">#define</span></code> nodes,
+<code class="docutils literal notranslate"><span class="pre">ValueRange</span></code> interval arithmetic, recursive AST constant folder, loop-bound
+extraction from enclosing <code class="docutils literal notranslate"><span class="pre">for</span></code>/<code class="docutils literal notranslate"><span class="pre">while</span></code>/<code class="docutils literal notranslate"><span class="pre">do</span></code> statements, and local
+variable range resolution. Integrated into INT32-C and INT30-C as
+early-return suppression when
+<code class="docutils literal notranslate"><span class="pre">expression_fits_in_signed()</span></code>/<code class="docutils literal notranslate"><span class="pre">expression_fits_in_unsigned()</span></code> proves
+safety.</p>
+<p>Additional real-world FP fixes (also included): ARR02-C skip
+string-literal-initialized arrays, POS02-C removed <code class="docutils literal notranslate"><span class="pre">socket</span></code>/<code class="docutils literal notranslate"><span class="pre">setsockopt</span></code>
+from privileged operation list, PRE31-C strip string literals before
+side-effect analysis, MEM05-C ALL_CAPS macro constant VLA suppression +
+word-boundary recursion matching.</p>
+<p>Juliet impact (0.2.20 → 0.2.21): Overall TP 144,278→137,921 (-6,357), FP
+181,924→175,667 (-6,257), TP rate 44.2% → 44.0% (-0.2pp). Zero CWE/rule
+regressions. Top rule changes: INT32-C -2,849 FP/-2,147 TP (const_eval),
+POS02-C -1,660 FP/-2,398 TP (socket/setsockopt), MEM05-C -1,454 FP/-1,638 TP
+(ALL_CAPS VLA), ARR02-C -157 FP/-88 TP, INT30-C -136 FP/-86 TP. <strong>POS02-C
+concern</strong>: 0.69:1 FP:TP ratio — loses more TPs than FPs; Juliet patterns use
+<code class="docutils literal notranslate"><span class="pre">socket()</span></code>/<code class="docutils literal notranslate"><span class="pre">setsockopt()</span></code> in good/bad function pairs, so removing the
+check suppresses violations in surrounding code (real-world impact much
+smaller, -167 across curl+hostap). CWE190 (Integer Overflow): -1,269 FP
+(biggest CWE improvement); CWE191: -848 FP.</p>
+<p><strong>Real-world results</strong>: INT32-C 10→8 (-2 macro×literal FPs suppressed).
+INT30-C unchanged.</p>
+<p>Files changed: <code class="docutils literal notranslate"><span class="pre">const_eval.rs</span></code> (NEW), <code class="docutils literal notranslate"><span class="pre">context.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">prescan.rs</span></code>,
+<code class="docutils literal notranslate"><span class="pre">mod.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">int32_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">int30_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">arr02_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">pos02_c.rs</span></code>,
+<code class="docutils literal notranslate"><span class="pre">pre31_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">mem05_c.rs</span></code>.</p>
+</section>
+<section id="v0-2-20-real-world-fp-fixes-api00-c-int01-c-exp37-c-exp34-c">
+<h3>v0.2.20 — Real-World FP Fixes (API00-C, INT01-C, EXP37-C, EXP34-C)<a class="headerlink" href="#v0-2-20-real-world-fp-fixes-api00-c-int01-c-exp37-c-exp34-c" title="Link to this heading"></a></h3>
+<p>Fixes driven by real-world false positive analysis. Four rounds of targeted
+fixes (transitive includes, snprintf arg count, K&amp;R declaration, static
+function skip, DCL13-C alias tracking, INT01-C dedup, stack array NotNull).</p>
+<ul class="simple">
+<li><p><strong>API00-C static function skip</strong>: <code class="docutils literal notranslate"><span class="pre">check_function_parameter_validation()</span></code>
+returns early for <code class="docutils literal notranslate"><span class="pre">static</span></code> functions and <code class="docutils literal notranslate"><span class="pre">STATIC</span></code> macro prefixes.
+API00-C is about public API contracts — static functions are internal.</p></li>
+<li><p><strong>INT01-C duplicate firing fix</strong>: <code class="docutils literal notranslate"><span class="pre">check_size_params()</span></code> double-visited
+<code class="docutils literal notranslate"><span class="pre">function_declarator</span></code>/<code class="docutils literal notranslate"><span class="pre">parameter_list</span></code> nodes via both explicit child
+iteration and general recursion. Fix: skip already-handled node kinds in
+general recursion.</p></li>
+<li><p><strong>EXP37-C init_declarator skip</strong>: K&amp;R-style declaration check now skips
+<code class="docutils literal notranslate"><span class="pre">declaration</span></code> nodes with <code class="docutils literal notranslate"><span class="pre">init_declarator</span></code> child (variable declarations
+with initialization, not function prototypes).</p></li>
+<li><p><strong>EXP34-C stack array NotNull</strong>: <code class="docutils literal notranslate"><span class="pre">collect_assignments_recursive()</span></code> in
+prescan now detects <code class="docutils literal notranslate"><span class="pre">array_declarator</span></code> children and marks them NotNull
+(stack arrays can never be null).</p></li>
+<li><p><strong>FIO47-C snprintf arg count</strong>: <code class="docutils literal notranslate"><span class="pre">count_arguments()</span></code> subtracts 3 for
+<code class="docutils literal notranslate"><span class="pre">snprintf</span></code>/<code class="docutils literal notranslate"><span class="pre">vsnprintf</span></code> (buffer + size + format).</p></li>
+<li><p><strong>DCL13-C address-of-member + alias</strong>: Detects <code class="docutils literal notranslate"><span class="pre">&amp;(param-&gt;field)</span></code> in
+function args and <code class="docutils literal notranslate"><span class="pre">T</span> <span class="pre">*local</span> <span class="pre">=</span> <span class="pre">param;</span></code> alias patterns as modification
+through the parameter.</p></li>
+</ul>
+<p>Juliet impact (0.2.19 → 0.2.20): Overall TP 145,639→144,278 (-1,361), FP
+184,644→181,924 (-2,720), TP rate 44.1% → 44.2% (+0.1pp). No CWE
+regressions. Top rule changes: API00-C -1,917 FP (static skip), INT01-C -231
+FP (dedup), EXP34-C -221 FP (array NotNull), DCL30-C -201 FP, FIO47-C -88 FP.
+No rule regressions — previously reported POS02-C/ERR05-C/MEM06-C
+“regressions” were a measurement artifact (see the per-rule data accuracy
+note below).</p>
+<p>Files changed: <code class="docutils literal notranslate"><span class="pre">api00_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">int01_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">exp37_c.rs</span></code>,
+<code class="docutils literal notranslate"><span class="pre">fio47_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">dcl13_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">prescan.rs</span></code>.</p>
+</section>
+<section id="v0-2-19-real-world-fp-reduction-int30-c-loop-guards-prescan-null-guards-arr00-c-fix">
+<h3>v0.2.19 — Real-World FP Reduction (INT30-C Loop Guards, Prescan Null Guards, ARR00-C Fix)<a class="headerlink" href="#v0-2-19-real-world-fp-reduction-int30-c-loop-guards-prescan-null-guards-arr00-c-fix" title="Link to this heading"></a></h3>
+<p>Three changes targeting real-world false positives (not Juliet-specific
+patterns).</p>
+<p><strong>INT30-C loop-bounded increment</strong>: Added <code class="docutils literal notranslate"><span class="pre">is_add_one_bounded_by_loop()</span></code>
+and <code class="docutils literal notranslate"><span class="pre">is_bounded_by_loop_condition()</span></code> — walk AST ancestors for enclosing
+<code class="docutils literal notranslate"><span class="pre">while</span></code>/<code class="docutils literal notranslate"><span class="pre">for</span></code> with <code class="docutils literal notranslate"><span class="pre">var</span> <span class="pre">&lt;</span> <span class="pre">limit</span></code> condition. Suppresses <code class="docutils literal notranslate"><span class="pre">var</span> <span class="pre">+</span> <span class="pre">1</span></code>,
+<code class="docutils literal notranslate"><span class="pre">var</span> <span class="pre">+=</span> <span class="pre">1</span></code>, <code class="docutils literal notranslate"><span class="pre">var++</span></code> when bounded by loop condition (proves no unsigned
+wrap).</p>
+<p><strong>Prescan early-return null guards</strong>: Added
+<code class="docutils literal notranslate"><span class="pre">collect_early_return_null_guards()</span></code> to detect <code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">(p</span> <span class="pre">==</span> <span class="pre">NULL)</span> <span class="pre">return;</span></code>
+patterns at function entry. Marks guarded parameters as NotNull in
+local_states for downstream rules (EXP34-C, API00-C caller-aware
+suppression).</p>
+<p><strong>ARR00-C crash fix</strong>: <code class="docutils literal notranslate"><span class="pre">array_size</span> <span class="pre">-</span> <span class="pre">1</span></code> panicked when <code class="docutils literal notranslate"><span class="pre">array_size</span></code> was 0
+(unsigned underflow). Changed to <code class="docutils literal notranslate"><span class="pre">saturating_sub(1)</span></code>.</p>
+<p>Juliet impact (0.2.18 → 0.2.19): Overall TP 145,639→145,639 (0), FP
+184,645→184,644 (-1), TP rate 44.1% → 44.1% (unchanged) — essentially
+neutral, changes target real-world patterns not present in Juliet. Rule-level
+churn: FIO06-C -169 FP (prescan improvement) offset by FIO03-C +169 FP,
+ARR00-C -74 FP offset by EXP10-C +74 FP. No CWE-level regressions.</p>
+<p>Files changed: <code class="docutils literal notranslate"><span class="pre">int30_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">prescan.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">arr00_c.rs</span></code>.</p>
+</section>
+<section id="v0-2-18-quick-wins-fp-reduction-int31-c-arr36-c-api00-c-int30-c">
+<h3>v0.2.18 — Quick Wins FP Reduction (INT31-C, ARR36-C, API00-C, INT30-C)<a class="headerlink" href="#v0-2-18-quick-wins-fp-reduction-int31-c-arr36-c-api00-c-int30-c" title="Link to this heading"></a></h3>
+<p>Four targeted fixes addressing false positives identified from real-world
+codebases.</p>
+<ul class="simple">
+<li><p><strong>INT31-C pointer cast skip</strong>: Added early return when either target or
+source type contains <code class="docutils literal notranslate"><span class="pre">*</span></code>. Pointer reinterpretation casts like
+<code class="docutils literal notranslate"><span class="pre">(uint8_t</span> <span class="pre">*)buf</span></code> are not integer value conversions and should not
+trigger INT31-C.</p></li>
+<li><p><strong>ARR36-C type filtering</strong>: Only track pointer/array declarators
+(<code class="docutils literal notranslate"><span class="pre">pointer_declarator</span></code> or <code class="docutils literal notranslate"><span class="pre">array_declarator</span></code>) in
+<code class="docutils literal notranslate"><span class="pre">process_declaration()</span></code>. Scalar variables initialized from array
+subscripts (e.g., <code class="docutils literal notranslate"><span class="pre">int</span> <span class="pre">a</span> <span class="pre">=</span> <span class="pre">arr[0]</span></code>) are not pointers — their
+subtraction/comparison is integer arithmetic, not pointer arithmetic.</p></li>
+<li><p><strong>API00-C void-cast detection</strong>: Recognize <code class="docutils literal notranslate"><span class="pre">(void)param</span></code> casts and
+<code class="docutils literal notranslate"><span class="pre">UNUSED(param)</span></code> macros as intentional suppression patterns. Parameters
+explicitly cast to void are acknowledged as unused by design and should
+not trigger API00-C’s “validate before use” check.</p></li>
+<li><p><strong>INT30-C guard pattern expansion</strong>: Rewrote <code class="docutils literal notranslate"><span class="pre">is_guarded_by_gt_zero()</span></code> to
+walk AST ancestors looking for enclosing <code class="docutils literal notranslate"><span class="pre">if</span></code>, <code class="docutils literal notranslate"><span class="pre">while</span></code>, and <code class="docutils literal notranslate"><span class="pre">for</span></code>
+conditions. Added <code class="docutils literal notranslate"><span class="pre">condition_implies_positive()</span></code> with compound condition
+support (handles <code class="docutils literal notranslate"><span class="pre">&amp;&amp;</span></code>/<code class="docutils literal notranslate"><span class="pre">||</span></code> via <code class="docutils literal notranslate"><span class="pre">contains()</span></code>). Recognizes
+<code class="docutils literal notranslate"><span class="pre">var</span> <span class="pre">&gt;</span> <span class="pre">expr</span></code> (any lower bound, not just zero) and <code class="docutils literal notranslate"><span class="pre">expr</span> <span class="pre">&lt;</span> <span class="pre">var</span></code> (with
+<code class="docutils literal notranslate"><span class="pre">&lt;&lt;</span></code>/<code class="docutils literal notranslate"><span class="pre">&lt;=</span></code> exclusion). Added <code class="docutils literal notranslate"><span class="pre">is_subtract_one_guarded()</span></code> for both
+binary subtraction and compound <code class="docutils literal notranslate"><span class="pre">-=</span> <span class="pre">1</span></code>.</p></li>
+</ul>
+<p>Juliet impact (0.2.17 → 0.2.18): Overall TP 146,913→145,639 (-1,274), FP
+185,591→184,645 (-946), TP rate 44.2% → 44.1% (-0.1pp). INT30-C dominant:
+-1,292 TP / -935 FP (guard expansion removes both TPs and FPs). CWE191
+(Integer Underflow): -1 TP / -45 FP (clean win). WIN03-C: +16 TP / -102 FP
+(unexpected improvement). ARR38-C: 0 TP / -36 FP (clean win). Only 1 trivial
+regression: CWE675 +1 FP. INT30-C FP:TP ratio ~0.7:1 (loses more TPs than
+FPs — guard patterns are slightly too aggressive).</p>
+<p>Files changed: <code class="docutils literal notranslate"><span class="pre">int31_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">arr36_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">api00_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">int30_c.rs</span></code>.</p>
+</section>
+<section id="v0-2-17-phase-3-cwe-476-fp-reduction-mem10-c-api00-c-api02-c-prescan">
+<h3>v0.2.17 — Phase 3: CWE-476 FP Reduction (MEM10-C, API00-C, API02-C, Prescan)<a class="headerlink" href="#v0-2-17-phase-3-cwe-476-fp-reduction-mem10-c-api00-c-api02-c-prescan" title="Link to this heading"></a></h3>
+<p>Targeted CWE-476 false positive reduction via rule narrowing and enhanced
+inter-procedural analysis.</p>
+<ul class="simple">
+<li><p><strong>MEM10-C positive guard suppression</strong>: Suppress violations when the
+condition is a positive null guard (<code class="docutils literal notranslate"><span class="pre">!=</span> <span class="pre">NULL</span></code> or bare truthiness) and
+the parameter is only used inside the guarded block. This pattern
+(<code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">(data</span> <span class="pre">!=</span> <span class="pre">NULL)</span> <span class="pre">{</span> <span class="pre">use(data);</span> <span class="pre">}</span></code>) is the prescribed fix per EXP34-C —
+MEM10-C was penalizing correct code.</p></li>
+<li><p><strong>API02-C ``const wchar_t *`` exclusion</strong>: Extended existing
+<code class="docutils literal notranslate"><span class="pre">const</span> <span class="pre">char</span> <span class="pre">*</span></code> skip to wide strings. Wide char pointers follow the same
+null-terminated string convention. Original plan to skip all mutable
+<code class="docutils literal notranslate"><span class="pre">char</span> <span class="pre">*</span></code> was too aggressive — <code class="docutils literal notranslate"><span class="pre">char</span> <span class="pre">*</span></code> as destination buffer correctly
+requires a size parameter.</p></li>
+<li><p><strong>API00-C caller-aware suppression</strong>: Converted from unit struct to
+stateful with <code class="docutils literal notranslate"><span class="pre">function_summaries</span></code>. Added <code class="docutils literal notranslate"><span class="pre">set_project_context()</span></code> to
+receive summaries from prescan. Before flagging a pointer parameter,
+checks <code class="docutils literal notranslate"><span class="pre">callsite_param_null_states</span></code>: if all callers pass NotNull →
+suppress violation.</p></li>
+<li><p><strong>Prescan local variable tracking</strong>: Enhanced
+<code class="docutils literal notranslate"><span class="pre">collect_callsite_args_from_tree</span></code> with <code class="docutils literal notranslate"><span class="pre">collect_local_var_states()</span></code> —
+scans function bodies for simple assignments (<code class="docutils literal notranslate"><span class="pre">var</span> <span class="pre">=</span> <span class="pre">NULL</span></code> →
+DefinitelyNull, <code class="docutils literal notranslate"><span class="pre">var</span> <span class="pre">=</span> <span class="pre">&quot;str&quot;</span></code> → NotNull, <code class="docutils literal notranslate"><span class="pre">var</span> <span class="pre">=</span> <span class="pre">malloc(...)</span></code> →
+PossiblyNull). Resolves identifier arguments via local state lookup
+instead of returning Unknown.</p></li>
+<li><p><strong>Variant 45 global tracking</strong>: Verified working correctly —
+<code class="docutils literal notranslate"><span class="pre">badSink()</span></code> flagged (reads DefinitelyNull global), <code class="docutils literal notranslate"><span class="pre">goodG2BSink()</span></code> and
+<code class="docutils literal notranslate"><span class="pre">goodB2GSink()</span></code> correctly suppressed. No code changes needed.</p></li>
+</ul>
+<p>Juliet impact (0.2.16 → 0.2.17): Overall +180 TP, +81 FP, TP rate 44.2% →
+44.2% (unchanged). CWE-476: TP 313→320 (+7), FP 542→512 (-30), TP rate 36.6%
+→ 38.5% (+1.9pp). CWE-690: TP 3711→3747 (+36), FP 4474→4411 (-63), TP rate
++0.6pp. Per-rule: MEM10-C -38 FP/0 TP (clean elimination), API00-C -3 FP/0
+TP. Side benefits from prescan: FIO03-C -169 FP, ERR05-C -105 FP, FIO20-C
+-102 FP. Regressions: EXP34-C +76 FP, FIO06-C +169 FP (enhanced prescan
+provides more inter-procedural data to these rules).</p>
+<p>Files changed: <code class="docutils literal notranslate"><span class="pre">mem10_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">api00_c.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">api02_c.rs</span></code>,
+<code class="docutils literal notranslate"><span class="pre">prescan.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">mod.rs</span></code>.</p>
+</section>
+<section id="v0-2-15-real-world-fp-cleanup-17-patterns">
+<h3>v0.2.15 — Real-World FP Cleanup (17 Patterns)<a class="headerlink" href="#v0-2-15-real-world-fp-cleanup-17-patterns" title="Link to this heading"></a></h3>
+<p>Addressed 17 FP patterns (~51 violations) identified from real-world
+codebases across two commits. Targeted real-world precision over Juliet
+benchmark score.</p>
+<p>Commit 1 (<code class="docutils literal notranslate"><span class="pre">d31a6c3</span></code>) — Batch 1 (10 rule fixes, ~36 FPs): FIO46-C
+source-order stream tracking (store <code class="docutils literal notranslate"><span class="pre">start_byte()</span></code>, only flag after
+fclose); INT32-C returns <code class="docutils literal notranslate"><span class="pre">not_applicable</span></code> for <code class="docutils literal notranslate"><span class="pre">field_expression</span></code> nodes;
+FLP03-C precise scientific notation regex + per-operand float check in
+division; EXP40-C checks parent <code class="docutils literal notranslate"><span class="pre">declaration</span></code> for <code class="docutils literal notranslate"><span class="pre">const</span></code> type
+qualifier; EXP12-C checks <code class="docutils literal notranslate"><span class="pre">node.parent()</span></code> — skip when return value is
+captured; INT01-C skips <code class="docutils literal notranslate"><span class="pre">sizeof(...)</span> <span class="pre">*</span> <span class="pre">N</span></code> binary expressions in allocation
+args; INT10-C <code class="docutils literal notranslate"><span class="pre">collect_variable_types()</span></code> + <code class="docutils literal notranslate"><span class="pre">operand_has_unsigned_type()</span></code>
+for struct fields; ARR39-C skips ALL_CAPS-only arithmetic (macro/enum
+constants); EXP05-C doesn’t recurse into <code class="docutils literal notranslate"><span class="pre">function_definition</span></code> nodes for
+const scanning; EXP02-C exempts <code class="docutils literal notranslate"><span class="pre">NULL_CHECK</span> <span class="pre">&amp;&amp;</span> <span class="pre">FUNCTION_CALL</span></code> guard
+pattern.</p>
+<p>Commit 2 (<code class="docutils literal notranslate"><span class="pre">0a45c9f</span></code>) — 6 remaining violations: INT32-C (x3) propagate
+unsigned type through binary_expression chains; INT10-C (x1) skip
+<code class="docutils literal notranslate"><span class="pre">field_expression</span></code> operands in modulo sign check; EXP05-C (x1) skip
+<code class="docutils literal notranslate"><span class="pre">field_expression</span></code> in const-qualification check; ARR39-C (x1) recursive
+<code class="docutils literal notranslate"><span class="pre">is_all_caps_arithmetic()</span></code> for nested expressions.</p>
+<p>Juliet impact (0.2.13 → 0.2.15): Net -10,678 FP (-5.4%), -11,689 TP, TP rate
+44.7% → 44.2% (-0.5pp) — decline accepted since fixes are semantically
+correct for real-world code. Top rule deltas: EXP12-C -5,477 FP/-7,530 TP
+(parent check reduces over-flagging), INT01-C -2,714 FP/-740 TP, INT32-C -181
+FP/-1,122 TP. FIO46-C and EXP02-C eliminated entirely (0 detections —
+correct, these rules had very low signal).</p>
+</section>
+<section id="v0-2-13-int31-c-implicit-narrowing-real-world-fp-fixes">
+<h3>v0.2.13 — INT31-C Implicit Narrowing + Real-World FP Fixes<a class="headerlink" href="#v0-2-13-int31-c-implicit-narrowing-real-world-fp-fixes" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>INT31-C</strong>: Implemented <code class="docutils literal notranslate"><span class="pre">check_assignment_conversion()</span></code> for implicit
+narrowing detection (<code class="docutils literal notranslate"><span class="pre">uint8_t</span> <span class="pre">tag</span> <span class="pre">=</span> <span class="pre">(uint16_t)(expr)</span></code>). Conservative:
+only flags when both LHS and RHS have known integer types. FP
+suppressions: literal-fits, safe-mask (<code class="docutils literal notranslate"><span class="pre">&amp;</span> <span class="pre">0xFF</span></code>), bounds-checked blocks,
+double-flag prevention. Juliet CWE197 impact: -9 TP / -9 FP (unchanged —
+Juliet uses explicit casts). Real-world: +229 new findings across
+curl/hostap/sqlite/mosquitto.</p></li>
+<li><p><strong>INT32-C</strong>: Skip unsigned operands in binary overflow checks (FP-004).
+-8,390 FP, -7,068 TP.</p></li>
+<li><p><strong>DCL07-C/DCL31-C</strong>: Skip indirect calls (function pointers) + preproc
+-guarded calls (FP-009). -2,529/-2,429 FP.</p></li>
+<li><p><strong>DCL15-C</strong>: Skip functions declared in header files (public API). -663 FP
+(curl).</p></li>
+</ul>
+<p>Net: -13,961 FP (-6.6%), -10,758 TP, TP rate 44.6% → 44.7% (+0.1pp). Zero CWE
+regressions. Top CWE improvements: CWE90 (-2,737 FP, +8.2pp), CWE78 (-1,704
+FP, +2.7pp). Rule regressions under investigation at the time: ARR00-C (+905
+FP), WIN03-C (+233 FP), MEM01-C (+225 FP).</p>
+<p>Real-world benchmark (0.2.11 → 0.2.13, 4 codebases):</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Codebase</p></th>
+<th class="head"><p>0.2.11</p></th>
+<th class="head"><p>0.2.13</p></th>
+<th class="head"><p>Delta</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>curl</p></td>
+<td><p>93,576</p></td>
+<td><p>73,816</p></td>
+<td><p>-19,760 (-21.1%)</p></td>
+</tr>
+<tr class="row-odd"><td><p>hostap</p></td>
+<td><p>234,421</p></td>
+<td><p>206,906</p></td>
+<td><p>-27,515 (-11.7%)</p></td>
+</tr>
+<tr class="row-even"><td><p>sqlite</p></td>
+<td><p>177,983</p></td>
+<td><p>147,091</p></td>
+<td><p>-30,892 (-17.4%)</p></td>
+</tr>
+<tr class="row-odd"><td><p>mosquitto</p></td>
+<td><p>39,177</p></td>
+<td><p>33,638</p></td>
+<td><p>-5,539 (-14.1%)</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Total</strong></p></td>
+<td><p>545,157</p></td>
+<td><p>461,451</p></td>
+<td><p>-83,706 (-15.4%)</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="v0-2-12-dcl13-c-pointer-modification-int01-c-sizeof-skip">
+<h3>v0.2.12 — DCL13-C Pointer Modification + INT01-C sizeof Skip<a class="headerlink" href="#v0-2-12-dcl13-c-pointer-modification-int01-c-sizeof-skip" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>DCL13-C</strong>: Comprehensive pointer modification detection — tracks
+<code class="docutils literal notranslate"><span class="pre">*ptr</span> <span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">ptr[i]</span> <span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">ptr-&gt;field</span> <span class="pre">=</span></code>, increment/decrement, and
+function-call mutations. Rule went from 4,713 FP → 486 FP (-4,227 FP,
+-3,163 TP). The large TP drop is expected: many “const-qualify”
+violations in Juliet’s bad code were technically correct flags but
+low-signal.</p></li>
+<li><p><strong>INT01-C</strong>: Skip <code class="docutils literal notranslate"><span class="pre">sizeof(...)</span></code> expressions in allocation argument
+checks. <code class="docutils literal notranslate"><span class="pre">malloc(sizeof(int)</span> <span class="pre">*</span> <span class="pre">n)</span></code> no longer flags <code class="docutils literal notranslate"><span class="pre">sizeof(int)</span></code> as an
+implicit conversion. -988 FP, -1,251 TP.</p></li>
+<li><p><strong>Side effects</strong>: DCL13-C’s reduction exposed previously-masked
+violations from other rules: EXP33-C (+1,022 FP), API02-C (+628 FP),
+ERR05-C (+431 FP), EXP12-C (+279 FP). Net still strongly positive.</p></li>
+</ul>
+<p>Net: -5,531 FP (-2.6%), -3,619 TP, TP rate 44.5% → 44.6% (+0.1pp). Only 1 CWE
+regressed: CWE773 (+3 FP, 0 TP change).</p>
+</section>
+<section id="v0-2-7-int36-c-tp-restore-int31-c-fp-fix">
+<h3>v0.2.7 — INT36-C TP Restore + INT31-C FP Fix<a class="headerlink" href="#v0-2-7-int36-c-tp-restore-int31-c-fp-fix" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>INT36-C</strong>: Re-allowed <code class="docutils literal notranslate"><span class="pre">-&gt;</span></code> field access in pointer-to-int detection
+(+955 TP, +149 FP — restoring TPs from earlier over-aggressive
+filtering).</p></li>
+<li><p><strong>INT31-C</strong>: Added shift-narrowing detection for
+<code class="docutils literal notranslate"><span class="pre">(uint8_t)(value</span> <span class="pre">&gt;&gt;</span> <span class="pre">N)</span></code> patterns (-138 FP, -9 TP; CWE197 TP rate 71.8% →
+75.7%).</p></li>
+</ul>
+<p>Overall: +72 TP, -1 FP.</p>
+</section>
+<section id="round-16-dcl13-c-main-exemption-mem10-c-parameter-only-null-check">
+<h3>Round 16 — DCL13-C main() Exemption + MEM10-C Parameter-Only Null Check<a class="headerlink" href="#round-16-dcl13-c-main-exemption-mem10-c-parameter-only-null-check" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p><strong>DCL13-C</strong>: <code class="docutils literal notranslate"><span class="pre">main()</span></code> parameters defined by C standard — not flagged
+for const-qualification.</p></li>
+<li><p><strong>MEM10-C</strong>: Inline null-check detection restricted to function
+parameters only. Good functions in CWE-476 add <code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">(data</span> <span class="pre">!=</span> <span class="pre">NULL)</span></code>
+guards; MEM10-C was penalizing this correct pattern. CWE-476 MEM10-C
+FPs: 134 → 28 (-106).</p></li>
+</ol>
+</section>
+<section id="round-15-exp34-c-if-else-branch-merge">
+<h3>Round 15 — EXP34-C: if/else Branch Merge<a class="headerlink" href="#round-15-exp34-c-if-else-branch-merge" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">collect_null_variables</span></code> now merges state from both if/else branches
+(union of <code class="docutils literal notranslate"><span class="pre">potentially_null_vars</span></code>). Fixes variant 12
+(<code class="docutils literal notranslate"><span class="pre">globalReturnsTrueOrFalse</span></code>) where if-branch sets ptr=NULL and else-branch
+sets ptr=non-null.</p>
+</section>
+<section id="round-14-exp34-c-deref-after-check-pattern">
+<h3>Round 14 — EXP34-C: deref_after_check Pattern<a class="headerlink" href="#round-14-exp34-c-deref-after-check-pattern" title="Link to this heading"></a></h3>
+<p>Fixed <code class="docutils literal notranslate"><span class="pre">null_check_positions</span></code> to store <code class="docutils literal notranslate"><span class="pre">end_byte</span></code> so derefs inside the
+null branch (<code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">(ptr</span> <span class="pre">==</span> <span class="pre">NULL)</span> <span class="pre">{</span> <span class="pre">*ptr;</span> <span class="pre">}</span></code>) are still flagged. +18 TPs, 0
+new FPs.</p>
+</section>
+<section id="round-13-str31-c-l-prefix-and-literal-source-fixes">
+<h3>Round 13 — STR31-C: L-prefix and Literal-Source Fixes<a class="headerlink" href="#round-13-str31-c-l-prefix-and-literal-source-fixes" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>Strip L-prefix before measuring wide string literals (<code class="docutils literal notranslate"><span class="pre">L&quot;*.*&quot;</span></code> → 3
+chars, not 4).</p></li>
+<li><p>Literal source + unknown dest → safe (suppresses FPs in CWE134 good
+functions).</p></li>
+</ol>
+<p>Net: -4,125 FP (-1.7%), -934 TP, TP rate +0.3pp.</p>
+</section>
+<section id="round-12-int07-c-int32-c-exp10-c-exp34-c-int30-c-mem10-c-str31-c-windows-api">
+<h3>Round 12 — INT07-C, INT32-C, EXP10-C, EXP34-C, INT30-C, MEM10-C, STR31-C, Windows API<a class="headerlink" href="#round-12-int07-c-int32-c-exp10-c-exp34-c-int30-c-mem10-c-str31-c-windows-api" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>INT07-C: Removed comparison operators from numeric-use detection.</p></li>
+<li><p>INT32-C: <code class="docutils literal notranslate"><span class="pre">infer_type()</span></code> returns “not_applicable” for non-integer types.</p></li>
+<li><p>EXP10-C: <code class="docutils literal notranslate"><span class="pre">is_pure_function()</span></code> whitelist (~50 functions).</p></li>
+<li><p>EXP34-C: Gates nullable-function-call taint on <code class="docutils literal notranslate"><span class="pre">declared_pointer_vars</span></code>.</p></li>
+<li><p>INT30-C: Not-applicable guards for pointer arithmetic.</p></li>
+<li><p>MEM10-C: Removed <code class="docutils literal notranslate"><span class="pre">==</span> <span class="pre">0</span></code>/<code class="docutils literal notranslate"><span class="pre">!=</span> <span class="pre">0</span></code> from null-check detection.</p></li>
+<li><p>STR31-C: Short literal suppression (≤3 chars).</p></li>
+<li><p><strong>std_functions</strong>: +~100 Windows API functions. DCL31-C/DCL07-C: 21K/20K
+→ 2.5K/2.4K FP.</p></li>
+</ul>
+<p>Net: -28,933 FP (-10.6%), TP rate +0.6pp.</p>
+</section>
+<section id="round-9-cfg-data-flow-inter-procedural-analysis">
+<h3>Round 9 — CFG, Data-Flow, Inter-Procedural Analysis<a class="headerlink" href="#round-9-cfg-data-flow-inter-procedural-analysis" title="Link to this heading"></a></h3>
+<p>CFG construction, reaching definitions, inter-procedural function summaries.
+Minimal Juliet impact (-73 FP) — targets multi-file real-world codebases.</p>
+</section>
+<section id="round-8-dcl40-c-flp32-c-err33-c">
+<h3>Round 8 — DCL40-C, FLP32-C, ERR33-C<a class="headerlink" href="#round-8-dcl40-c-flp32-c-err33-c" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>DCL40-C: Removed 31-char prefix collision check (was O(n²) FPs). FP ~12K
+→ ~0, 0 TP loss.</p></li>
+<li><p>FLP32-C: Windowed error checking (5 stmts) instead of entire scope.</p></li>
+<li><p>ERR33-C: Argument-list detection for nested calls.</p></li>
+</ul>
+<p>Net: -5,060 FP (-1.7%), TP rate +0.4pp.</p>
+</section>
+<section id="round-7-exp36-c-exp34-c-arr37-c">
+<h3>Round 7 — EXP36-C, EXP34-C, ARR37-C<a class="headerlink" href="#round-7-exp36-c-exp34-c-arr37-c" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>EXP36-C: Only check pointer-to-pointer casts; skip integer casts and
+unknown source types.</p></li>
+<li><p>EXP34-C: Removed <code class="docutils literal notranslate"><span class="pre">_t</span></code> suffix heuristic; field null propagation now
+conditional on base.</p></li>
+<li><p>ARR37-C: Stop flagging Unknown pointers; all pointer params now
+ambiguous.</p></li>
+</ul>
+<p>Net: -25,716 FP (-7.9%), TP rate +0.3pp.</p>
+</section>
+<section id="round-6-cross-file-analysis-d">
+<h3>Round 6 — Cross-File Analysis (<code class="docutils literal notranslate"><span class="pre">-d</span></code>)<a class="headerlink" href="#round-6-cross-file-analysis-d" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">--directories</span></code> CLI option pre-scans for function definitions. DCL31-C/
+DCL07-C eliminated FPs from Juliet helper functions. Net: -148,622 FP
+(-31.2%), TP rate +1.4pp.</p>
+</section>
+<section id="round-5-flp02-c-dcl06-c-int30-c">
+<h3>Round 5 — FLP02-C, DCL06-C, INT30-C<a class="headerlink" href="#round-5-flp02-c-dcl06-c-int30-c" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>FLP02-C: AST-node-kind checks instead of text heuristics.</p></li>
+<li><p>DCL06-C: Expanded acceptable literal values to 0–10.</p></li>
+<li><p>INT30-C: <code class="docutils literal notranslate"><span class="pre">collect_variable_types()</span></code> pattern; removed name heuristics.</p></li>
+</ul>
+<p>Net: -16,835 FP (-3.4%), TP rate -0.7pp (DCL06-C is ~50/50).</p>
+</section>
+<section id="round-4-exp12-c-flp03-c-int32-c">
+<h3>Round 4 — EXP12-C, FLP03-C, INT32-C<a class="headerlink" href="#round-4-exp12-c-flp03-c-int32-c" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>EXP12-C: Removed ~30 side-effect functions from “important return value”
+whitelist.</p></li>
+<li><p>FLP03-C: Removed assignment_expression arm.</p></li>
+<li><p>INT32-C: <code class="docutils literal notranslate"><span class="pre">collect_variable_types()</span></code> HashMap; default “unknown” for
+unmapped variables.</p></li>
+</ul>
+<p>Net: -44,941 FP (-8.4%).</p>
+</section>
+<section id="round-3-dcl31-c-dcl07-c-flp34-c">
+<h3>Round 3 — DCL31-C, DCL07-C, FLP34-C<a class="headerlink" href="#round-3-dcl31-c-dcl07-c-flp34-c" title="Link to this heading"></a></h3>
+<p>Shared <code class="docutils literal notranslate"><span class="pre">std_functions.rs</span></code> database (~270 functions). -198,974 FP. FLP34-C:
+type-aware checking.</p>
+</section>
+<section id="round-2-exp33-c-sig31-c-arr01-c-dcl30-c-dcl02-c">
+<h3>Round 2 — EXP33-C, SIG31-C, ARR01-C, DCL30-C, DCL02-C<a class="headerlink" href="#round-2-exp33-c-sig31-c-arr01-c-dcl30-c-dcl02-c" title="Link to this heading"></a></h3>
+<p>Fixed preprocessor-block visibility bug (functions inside <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code>
+invisible). DCL02-C similar-identifier check. -15,859 FP; CWE-457 TP rate
+12.2% → 22.6%.</p>
+</section>
+<section id="round-1-int08-c-con08-c-dcl20-c-arr38-c">
+<h3>Round 1 — INT08-C, CON08-C, DCL20-C, ARR38-C<a class="headerlink" href="#round-1-int08-c-con08-c-dcl20-c-arr38-c" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>INT08-C: Removed <code class="docutils literal notranslate"><span class="pre">int</span></code> from “narrow type” definition.</p></li>
+<li><p>CON08-C: Only flag multiple <em>atomic</em> functions without mutex.</p></li>
+<li><p>DCL20-C: Only flag declarations/prototypes, not definitions.</p></li>
+<li><p>ARR38-C: Removed duplicate strcpy/strcat flagging.</p></li>
+</ul>
+<p>Net: -86,919 FP (-10.4%), TP rate +1.2pp.</p>
+</section>
+</section>
+<section id="performance-by-cwe-category-historical-snapshot">
+<h2>Performance by CWE Category (Historical Snapshot)<a class="headerlink" href="#performance-by-cwe-category-historical-snapshot" title="Link to this heading"></a></h2>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>These tiers reflect an older full-suite run (pre-fast-mode). See
+<code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> for current per-CWE precision via
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">get-cwe-detail</span></code> / the MCP <code class="docutils literal notranslate"><span class="pre">get_cwe_detail</span></code> tool.</p>
+</div>
+<section id="tier-1-strong-detection-tp-50-18-categories">
+<h3>Tier 1: Strong Detection (TP &gt; 50%) — 18 categories<a class="headerlink" href="#tier-1-strong-detection-tp-50-18-categories" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>CWE</p></th>
+<th class="head"><p>Category</p></th>
+<th class="head"><p>TP Rate</p></th>
+<th class="head"><p>Files</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>464</p></td>
+<td><p>Data Structure Sentinel Addition</p></td>
+<td><p>89.1%</p></td>
+<td><p>56</p></td>
+</tr>
+<tr class="row-odd"><td><p>617</p></td>
+<td><p>Reachable Assertion</p></td>
+<td><p>86.7%</p></td>
+<td><p>354</p></td>
+</tr>
+<tr class="row-even"><td><p>506</p></td>
+<td><p>Embedded Malicious Code</p></td>
+<td><p>85.7%</p></td>
+<td><p>158</p></td>
+</tr>
+<tr class="row-odd"><td><p>587</p></td>
+<td><p>Fixed Address to Pointer</p></td>
+<td><p>100%</p></td>
+<td><p>18</p></td>
+</tr>
+<tr class="row-even"><td><p>526</p></td>
+<td><p>Info Exposure via Env Variables</p></td>
+<td><p>100%</p></td>
+<td><p>18</p></td>
+</tr>
+<tr class="row-odd"><td><p>78</p></td>
+<td><p>OS Command Injection</p></td>
+<td><p>76.1%</p></td>
+<td><p>5,600</p></td>
+</tr>
+<tr class="row-even"><td><p>114</p></td>
+<td><p>Process Control</p></td>
+<td><p>73.6%</p></td>
+<td><p>672</p></td>
+</tr>
+<tr class="row-odd"><td><p>427</p></td>
+<td><p>Uncontrolled Search Path Element</p></td>
+<td><p>72.0%</p></td>
+<td><p>560</p></td>
+</tr>
+<tr class="row-even"><td><p>510</p></td>
+<td><p>Trapdoor</p></td>
+<td><p>70.0%</p></td>
+<td><p>70</p></td>
+</tr>
+<tr class="row-odd"><td><p>197</p></td>
+<td><p>Numeric Truncation Error</p></td>
+<td><p>84.2%</p></td>
+<td><p>1,008</p></td>
+</tr>
+<tr class="row-even"><td><p>15</p></td>
+<td><p>External Control of System/Config</p></td>
+<td><p>66.9%</p></td>
+<td><p>56</p></td>
+</tr>
+<tr class="row-odd"><td><p>620</p></td>
+<td><p>Unverified Password Change</p></td>
+<td><p>64.4%</p></td>
+<td><p>36</p></td>
+</tr>
+<tr class="row-even"><td><p>194</p></td>
+<td><p>Unexpected Sign Extension</p></td>
+<td><p>59.9%</p></td>
+<td><p>1,344</p></td>
+</tr>
+<tr class="row-odd"><td><p>188</p></td>
+<td><p>Reliance on Data/Memory Layout</p></td>
+<td><p>59.5%</p></td>
+<td><p>36</p></td>
+</tr>
+<tr class="row-even"><td><p>123</p></td>
+<td><p>Write-What-Where Condition</p></td>
+<td><p>58.6%</p></td>
+<td><p>168</p></td>
+</tr>
+<tr class="row-odd"><td><p>90</p></td>
+<td><p>LDAP Injection</p></td>
+<td><p>57.9%</p></td>
+<td><p>560</p></td>
+</tr>
+<tr class="row-even"><td><p>195</p></td>
+<td><p>Signed-to-Unsigned Conversion</p></td>
+<td><p>57.9%</p></td>
+<td><p>1,344</p></td>
+</tr>
+<tr class="row-odd"><td><p>835</p></td>
+<td><p>Infinite Loop</p></td>
+<td><p>50.0%</p></td>
+<td><p>18</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="tier-2-moderate-detection-3550-68-categories">
+<h3>Tier 2: Moderate Detection (35–50%) — 68 categories<a class="headerlink" href="#tier-2-moderate-detection-3550-68-categories" title="Link to this heading"></a></h3>
+<p>The bulk of categories (64%) cluster here. Includes buffer overflows
+(CWE-121 ~43%, CWE-122 ~42%), format strings (CWE-134 ~37%), and resource
+management.</p>
+</section>
+<section id="tier-3-below-average-2535-16-categories">
+<h3>Tier 3: Below Average (25–35%) — 16 categories<a class="headerlink" href="#tier-3-below-average-2535-16-categories" title="Link to this heading"></a></h3>
+<p>Includes integer overflow/underflow (CWE-190 ~33%, CWE-191 ~35%), memory
+management (CWE-401 ~34%, CWE-415 ~34%), NULL pointer dereference (CWE-476
+~39%).</p>
+</section>
+<section id="tier-4-weak-detection-25-4-categories">
+<h3>Tier 4: Weak Detection (&lt;25%) — 4 categories<a class="headerlink" href="#tier-4-weak-detection-25-4-categories" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>CWE</p></th>
+<th class="head"><p>Category</p></th>
+<th class="head"><p>TP Rate</p></th>
+<th class="head"><p>Root Cause</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>256</p></td>
+<td><p>Plaintext Password Storage</p></td>
+<td><p>~15%</p></td>
+<td><p>No credential-storage rules</p></td>
+</tr>
+<tr class="row-odd"><td><p>338</p></td>
+<td><p>Weak PRNG</p></td>
+<td><p>~23%</p></td>
+<td><p>No PRNG-quality rules</p></td>
+</tr>
+<tr class="row-even"><td><p>457</p></td>
+<td><p>Use of Uninitialized Variable</p></td>
+<td><p>~24%</p></td>
+<td><p>Improved from 12.2% after fixes</p></td>
+</tr>
+<tr class="row-odd"><td><p>319</p></td>
+<td><p>Cleartext Transmission</p></td>
+<td><p>~25%</p></td>
+<td><p>Limited cleartext detection</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<section id="full-per-cwe-results-round-1-baseline">
+<h2>Full Per-CWE Results (Round 1 Baseline)<a class="headerlink" href="#full-per-cwe-results-round-1-baseline" title="Link to this heading"></a></h2>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This table reflects Round 1 (42.3% TP rate). Current performance is much
+higher. Relative ordering remains representative of rule difficulty.</p>
+</div>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>CWE</p></th>
+<th class="head"><p>Vulnerability Type</p></th>
+<th class="head"><p>Files</p></th>
+<th class="head"><p>TP</p></th>
+<th class="head"><p>FP</p></th>
+<th class="head"><p>TP Rate</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>506</p></td>
+<td><p>Embedded Malicious Code</p></td>
+<td><p>158</p></td>
+<td><p>3,421</p></td>
+<td><p>552</p></td>
+<td><p>86.1%</p></td>
+</tr>
+<tr class="row-odd"><td><p>15</p></td>
+<td><p>External Control of System/Config</p></td>
+<td><p>56</p></td>
+<td><p>1,255</p></td>
+<td><p>422</p></td>
+<td><p>74.8%</p></td>
+</tr>
+<tr class="row-even"><td><p>427</p></td>
+<td><p>Uncontrolled Search Path Element</p></td>
+<td><p>560</p></td>
+<td><p>7,656</p></td>
+<td><p>2,798</p></td>
+<td><p>73.2%</p></td>
+</tr>
+<tr class="row-odd"><td><p>78</p></td>
+<td><p>OS Command Injection</p></td>
+<td><p>5,600</p></td>
+<td><p>79,292</p></td>
+<td><p>30,203</p></td>
+<td><p>72.4%</p></td>
+</tr>
+<tr class="row-even"><td><p>617</p></td>
+<td><p>Reachable Assertion</p></td>
+<td><p>354</p></td>
+<td><p>2,685</p></td>
+<td><p>1,192</p></td>
+<td><p>69.3%</p></td>
+</tr>
+<tr class="row-odd"><td><p>197</p></td>
+<td><p>Numeric Truncation Error</p></td>
+<td><p>1,008</p></td>
+<td><p>7,899</p></td>
+<td><p>3,733</p></td>
+<td><p>67.9%</p></td>
+</tr>
+<tr class="row-even"><td><p>123</p></td>
+<td><p>Write-What-Where Condition</p></td>
+<td><p>168</p></td>
+<td><p>2,239</p></td>
+<td><p>1,213</p></td>
+<td><p>64.9%</p></td>
+</tr>
+<tr class="row-odd"><td><p>114</p></td>
+<td><p>Process Control</p></td>
+<td><p>672</p></td>
+<td><p>8,839</p></td>
+<td><p>4,973</p></td>
+<td><p>64.0%</p></td>
+</tr>
+<tr class="row-even"><td><p>194</p></td>
+<td><p>Unexpected Sign Extension</p></td>
+<td><p>1,344</p></td>
+<td><p>18,260</p></td>
+<td><p>12,440</p></td>
+<td><p>59.5%</p></td>
+</tr>
+<tr class="row-odd"><td><p>510</p></td>
+<td><p>Trapdoor</p></td>
+<td><p>70</p></td>
+<td><p>1,450</p></td>
+<td><p>1,037</p></td>
+<td><p>58.3%</p></td>
+</tr>
+<tr class="row-even"><td><p>195</p></td>
+<td><p>Signed-to-Unsigned Conversion</p></td>
+<td><p>1,344</p></td>
+<td><p>16,087</p></td>
+<td><p>11,865</p></td>
+<td><p>57.6%</p></td>
+</tr>
+<tr class="row-odd"><td><p>90</p></td>
+<td><p>LDAP Injection</p></td>
+<td><p>560</p></td>
+<td><p>12,600</p></td>
+<td><p>10,252</p></td>
+<td><p>55.1%</p></td>
+</tr>
+<tr class="row-even"><td><p>464</p></td>
+<td><p>Data Structure Sentinel Addition</p></td>
+<td><p>56</p></td>
+<td><p>334</p></td>
+<td><p>280</p></td>
+<td><p>54.4%</p></td>
+</tr>
+<tr class="row-odd"><td><p>526</p></td>
+<td><p>Info Exposure via Env Variables</p></td>
+<td><p>18</p></td>
+<td><p>69</p></td>
+<td><p>58</p></td>
+<td><p>54.3%</p></td>
+</tr>
+<tr class="row-even"><td><p>587</p></td>
+<td><p>Fixed Address to Pointer</p></td>
+<td><p>18</p></td>
+<td><p>36</p></td>
+<td><p>31</p></td>
+<td><p>53.7%</p></td>
+</tr>
+<tr class="row-odd"><td><p>680</p></td>
+<td><p>Integer Overflow to Buffer Overflow</p></td>
+<td><p>336</p></td>
+<td><p>5,381</p></td>
+<td><p>4,715</p></td>
+<td><p>53.3%</p></td>
+</tr>
+<tr class="row-even"><td><p>188</p></td>
+<td><p>Reliance on Data/Memory Layout</p></td>
+<td><p>36</p></td>
+<td><p>286</p></td>
+<td><p>275</p></td>
+<td><p>51.0%</p></td>
+</tr>
+<tr class="row-odd"><td><p>843</p></td>
+<td><p>Type Confusion</p></td>
+<td><p>100</p></td>
+<td><p>279</p></td>
+<td><p>340</p></td>
+<td><p>45.1%</p></td>
+</tr>
+<tr class="row-even"><td><p>481</p></td>
+<td><p>Assigning Instead of Comparing</p></td>
+<td><p>18</p></td>
+<td><p>195</p></td>
+<td><p>239</p></td>
+<td><p>44.9%</p></td>
+</tr>
+<tr class="row-odd"><td><p>480</p></td>
+<td><p>Use of Incorrect Operator</p></td>
+<td><p>18</p></td>
+<td><p>79</p></td>
+<td><p>97</p></td>
+<td><p>44.9%</p></td>
+</tr>
+<tr class="row-even"><td><p>121</p></td>
+<td><p>Stack-Based Buffer Overflow</p></td>
+<td><p>5,906</p></td>
+<td><p>50,353</p></td>
+<td><p>66,007</p></td>
+<td><p>43.3%</p></td>
+</tr>
+<tr class="row-odd"><td><p>122</p></td>
+<td><p>Heap-Based Buffer Overflow</p></td>
+<td><p>3,656</p></td>
+<td><p>42,202</p></td>
+<td><p>58,891</p></td>
+<td><p>41.7%</p></td>
+</tr>
+<tr class="row-even"><td><p>134</p></td>
+<td><p>Uncontrolled Format String</p></td>
+<td><p>3,360</p></td>
+<td><p>52,276</p></td>
+<td><p>90,251</p></td>
+<td><p>36.7%</p></td>
+</tr>
+<tr class="row-odd"><td><p>476</p></td>
+<td><p>NULL Pointer Dereference</p></td>
+<td><p>372</p></td>
+<td><p>1,222</p></td>
+<td><p>2,475</p></td>
+<td><p>33.1%</p></td>
+</tr>
+<tr class="row-even"><td><p>190</p></td>
+<td><p>Integer Overflow</p></td>
+<td><p>5,040</p></td>
+<td><p>26,103</p></td>
+<td><p>54,636</p></td>
+<td><p>32.3%</p></td>
+</tr>
+<tr class="row-odd"><td><p>191</p></td>
+<td><p>Integer Underflow</p></td>
+<td><p>3,864</p></td>
+<td><p>19,849</p></td>
+<td><p>40,831</p></td>
+<td><p>32.7%</p></td>
+</tr>
+<tr class="row-even"><td><p>401</p></td>
+<td><p>Memory Leak</p></td>
+<td><p>1,228</p></td>
+<td><p>10,976</p></td>
+<td><p>23,198</p></td>
+<td><p>32.1%</p></td>
+</tr>
+<tr class="row-odd"><td><p>416</p></td>
+<td><p>Use After Free</p></td>
+<td><p>150</p></td>
+<td><p>1,787</p></td>
+<td><p>4,698</p></td>
+<td><p>27.6%</p></td>
+</tr>
+<tr class="row-even"><td><p>457</p></td>
+<td><p>Use of Uninitialized Variable</p></td>
+<td><p>616</p></td>
+<td><p>5,045</p></td>
+<td><p>36,338</p></td>
+<td><p>12.2%</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>TOTALS (106 categories)</strong>: 54,484 files, TP 552,645, FP 752,422, TP rate
+42.3%.</p>
+<p>12 categories had no C test data (Java/C++ only): CWE-23, CWE-36, CWE-396,
+CWE-397, CWE-440, CWE-500, CWE-561, CWE-562, CWE-672, CWE-674, CWE-676,
+CWE-762.</p>
+</section>
+<section id="per-rule-data-accuracy-note-2026-03-03">
+<h2>Per-Rule Data Accuracy Note (2026-03-03)<a class="headerlink" href="#per-rule-data-accuracy-note-2026-03-03" title="Link to this heading"></a></h2>
+<p>Prior to this date, the analysis script output only the <strong>top 10 rules</strong> per
+CWE for TP and FP. The MCP benchmark server aggregated per-rule totals from
+these top-10 lists, producing lossy data. This caused:</p>
+<ul class="simple">
+<li><p><strong>Phantom regressions</strong>: Rules appearing in the top-10 window when other
+rules dropped out (e.g., v0.2.20’s reported POS02-C/ERR05-C/MEM06-C
+“regressions” were entirely phantom — zero actual change).</p></li>
+<li><p><strong>Inaccurate per-rule deltas</strong>: Numbers could be undercounted (rule only
+in top-10 for some CWEs) or overcounted (rule entering top-10 due to
+another rule’s reduction).</p></li>
+<li><p><strong>Total TP/FP and TP rates were always correct</strong> — these were computed
+from full violation data, not per-rule aggregation.</p></li>
+</ul>
+<p>The analysis script now outputs all rules, and all runs since have been
+reanalyzed with full per-rule data. Historical per-rule numbers in the
+“Per-Round Fix Details” section above predate this fix and may have varying
+accuracy. The overall direction of changes was generally correct.</p>
+</section>
+<section id="competitor-comparison">
+<h2>Competitor Comparison<a class="headerlink" href="#competitor-comparison" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 15.6%" />
+<col style="width: 11.1%" />
+<col style="width: 8.9%" />
+<col style="width: 33.3%" />
+<col style="width: 11.1%" />
+<col style="width: 8.9%" />
+<col style="width: 11.1%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>Detection Rate</p></th>
+<th class="head"><p>FP Rate</p></th>
+<th class="head"><p>Analysis Depth</p></th>
+<th class="head"><p>Juliet Data</p></th>
+<th class="head"><p>CERT C</p></th>
+<th class="head"><p>Price</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>SqC</p></td>
+<td><p>44.6%</p></td>
+<td><p>55.4%</p></td>
+<td><p>AST + CFG + inter-procedural + call-site null + local var tracking + const_eval</p></td>
+<td><p>Full (118 CWEs)</p></td>
+<td><p>283 rules</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>Semgrep CE</p></td>
+<td><p>44–48%</p></td>
+<td><p>Very low</p></td>
+<td><p>AST (tree-sitter)</p></td>
+<td><p>No</p></td>
+<td><p>Community</p></td>
+<td><p>Free</p></td>
+</tr>
+<tr class="row-even"><td><p>Semgrep Pro</p></td>
+<td><p>72–75%</p></td>
+<td><p>Very low</p></td>
+<td><p>AST + taint + inter-file</p></td>
+<td><p>No</p></td>
+<td><p>Community</p></td>
+<td><p>Commercial</p></td>
+</tr>
+<tr class="row-odd"><td><p>Infer</p></td>
+<td><p>~55%</p></td>
+<td><p>~45%</p></td>
+<td><p>Separation logic</p></td>
+<td><p>Partial (4 CWEs)</p></td>
+<td><p>No</p></td>
+<td><p>Free</p></td>
+</tr>
+<tr class="row-even"><td><p>Flawfinder</p></td>
+<td><p>~40%</p></td>
+<td><p>High</p></td>
+<td><p>Lexical scanning</p></td>
+<td><p>Indirect</p></td>
+<td><p>No</p></td>
+<td><p>Free</p></td>
+</tr>
+<tr class="row-odd"><td><p>CodeQL</p></td>
+<td><p>~29%</p></td>
+<td><p>Moderate</p></td>
+<td><p>Data-flow, taint</p></td>
+<td><p>Indirect</p></td>
+<td><p>Partial</p></td>
+<td><p>Free/Commercial</p></td>
+</tr>
+<tr class="row-even"><td><p>Cppcheck</p></td>
+<td><p>Low</p></td>
+<td><p>Very low</p></td>
+<td><p>Data-flow</p></td>
+<td><p>Indirect</p></td>
+<td><p>Partial</p></td>
+<td><p>Free</p></td>
+</tr>
+<tr class="row-odd"><td><p>Coverity</p></td>
+<td><p>Best-in-class</p></td>
+<td><p>~15–20%</p></td>
+<td><p>Inter-procedural, path-sensitive</p></td>
+<td><p>Not public</p></td>
+<td><p>Partial</p></td>
+<td><p>Enterprise</p></td>
+</tr>
+<tr class="row-even"><td><p>Commercial “Tool C”</p></td>
+<td><p>~73%</p></td>
+<td><p>~7%</p></td>
+<td><p>Inter-procedural</p></td>
+<td><p>Yes (22 CWEs)</p></td>
+<td><p>–</p></td>
+<td><p>Commercial</p></td>
+</tr>
+</tbody>
+</table>
+<p>The SqC row above is from the 44.6% full-suite era (v0.2.23); current fast-mode
+TP rate is 83.7% (v0.4.84, see <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code>) but is not directly
+comparable since the competitor figures below were not re-measured
+fast-mode/CWE-matched.</p>
+<p>“Commercial Tool C” is anonymized from <a class="reference external" href="https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf">Goseva-Popstojanova &amp; Perhinschi 2015</a>, tested on 22
+CWEs only.</p>
+<p>Key context from literature:</p>
+<ul class="simple">
+<li><p>Tools on average find ~20% of weaknesses in basic Juliet test cases
+(<a class="reference external" href="https://dl.acm.org/doi/10.1145/3533767.3534380">ISSTA 2022</a>).</p></li>
+<li><p>Even commercial tools miss 27% of C/C++ vulnerabilities (Goseva 2015).</p></li>
+<li><p>FP rates range from 6.5% to 76%+ depending on rule set.</p></li>
+<li><p>Industry target for developer adoption is 10–20% FP rate.</p></li>
+<li><p>No single tool is comprehensive; academic consensus recommends tool
+combination.</p></li>
+</ul>
+<p>Sources: <a class="reference external" href="https://dl.acm.org/doi/10.1145/3533767.3534380">ISSTA 2022</a> |
+<a class="reference external" href="https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf">Goseva 2015</a> |
+<a class="reference external" href="https://www.se.jku.at/wp-content/uploads/2014/08/2014.Using-the-Juliet-Test-Suite.pdf">JKU 2014</a> |
+<a class="reference external" href="https://semgrep.dev/blog/2025/security-research-comparing-semgrep-community-edition-and-semgrep-code-for-static-analysis/">Semgrep Blog 2025</a></p>
+</section>
+<section id="version-history-v0-2-1-v0-3-17">
+<h2>Version History (v0.2.1 – v0.3.17)<a class="headerlink" href="#version-history-v0-2-1-v0-3-17" title="Link to this heading"></a></h2>
+<p>Full-suite runs only (pre-fast-mode). See <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> for
+fast-mode versions from v0.3.20 onward, or query <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code>
+directly for every run.</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 14.0%" />
+<col style="width: 8.0%" />
+<col style="width: 8.0%" />
+<col style="width: 8.0%" />
+<col style="width: 8.0%" />
+<col style="width: 14.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Version</p></th>
+<th class="head"><p>TP Rate</p></th>
+<th class="head"><p>FP</p></th>
+<th class="head"><p>TP</p></th>
+<th class="head"><p>Runtime</p></th>
+<th class="head"><p>Machine</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>v0.2.1 (baseline)</p></td>
+<td><p>41.1%</p></td>
+<td><p>839,341</p></td>
+<td><p>~584K</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>Original</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.2.4</p></td>
+<td><p>43.8%</p></td>
+<td><p>243,849</p></td>
+<td><p>189,950</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>Windows API + multiple rule fixes</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.2.6</p></td>
+<td><p>44.5%</p></td>
+<td><p>215,672</p></td>
+<td><p>172,708</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>CFG null state + bounds-check detection</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.2.7</p></td>
+<td><p>44.5%</p></td>
+<td><p>215,671</p></td>
+<td><p>172,780</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>INT36-C TP restore + INT31-C FP fix</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.2.12</p></td>
+<td><p>44.6%</p></td>
+<td><p>210,138</p></td>
+<td><p>169,161</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>DCL13-C pointer modification + INT01-C sizeof skip</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.2.13</p></td>
+<td><p>44.7%</p></td>
+<td><p>196,177</p></td>
+<td><p>158,403</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>INT31-C implicit narrowing + real-world FP fixes</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.2.15</p></td>
+<td><p>44.2%</p></td>
+<td><p>185,499</p></td>
+<td><p>146,714</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>Real-world FP cleanup (17 patterns)</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.2.16</p></td>
+<td><p>44.2%</p></td>
+<td><p>185,510</p></td>
+<td><p>146,733</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>EXP34-C call-site null propagation (Phase 2)</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.2.17</p></td>
+<td><p>44.2%</p></td>
+<td><p>185,591</p></td>
+<td><p>146,913</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>Phase 3: MEM10-C, API00-C, API02-C, prescan (CWE-476 38.5%)</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.2.18</p></td>
+<td><p>44.1%</p></td>
+<td><p>184,645</p></td>
+<td><p>145,639</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>INT31-C pointer cast, ARR36-C, API00-C void-cast, INT30-C guards</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.2.19</p></td>
+<td><p>44.1%</p></td>
+<td><p>184,644</p></td>
+<td><p>145,639</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>INT30-C loop guards, prescan null guards, ARR00-C fix</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.2.20</p></td>
+<td><p>44.2%</p></td>
+<td><p>181,924</p></td>
+<td><p>144,278</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>Real-world FP fixes: API00-C, INT01-C, EXP37-C, EXP34-C</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.2.21</p></td>
+<td><p>44.0%</p></td>
+<td><p>175,667</p></td>
+<td><p>137,921</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>const_eval value-range analysis + real-world Round 6 FP fixes</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.2.22</p></td>
+<td><p>44.0%</p></td>
+<td><p>175,673</p></td>
+<td><p>137,921</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>INT30-C: extend upper-bound guard to if_statement</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.2.23</p></td>
+<td><p>44.6%</p></td>
+<td><p>163,585</p></td>
+<td><p>131,661</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>INT32-C const_eval alloc/memory/abs + INT30-C uint64_t + built-in macros</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.2.25</p></td>
+<td><p>44.6%</p></td>
+<td><p>161,965</p></td>
+<td><p>130,199</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>ARR32-C tightening, INT18-C/EXP05-C removal, value-range FP fixes</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.3.5</p></td>
+<td><p>44.6%</p></td>
+<td><p>161,510</p></td>
+<td><p>130,004</p></td>
+<td><p>–</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>Struct field type resolution (INT32-C/INT30-C), DCL13-C/DCL30-C/EXP33-C fixes</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.3.8</p></td>
+<td><p>44.3%</p></td>
+<td><p>77,826</p></td>
+<td><p>61,799</p></td>
+<td><p>–</p></td>
+<td><p>4-core laptop</p></td>
+<td><p>STR31-C, API00-C, EXP34-C, EXP33-C fixes — 12-CWE subset, not full suite (see FP Reduction History table above)</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.3.14</p></td>
+<td><p>44.4%</p></td>
+<td><p>158,036</p></td>
+<td><p>126,106</p></td>
+<td><p>1h 14m</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>EXP33-C, INT30-C, EXP34-C FP fixes (full suite)</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.3.17</p></td>
+<td><p>44.4%</p></td>
+<td><p>160,496</p></td>
+<td><p>128,038</p></td>
+<td><p>1h 47m</p></td>
+<td><p>24-core workstation</p></td>
+<td><p>CWE-78 macro alias + CWE-253 incorrect return check</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="scripts-and-data-locations">
+<h2>Scripts and Data Locations<a class="headerlink" href="#scripts-and-data-locations" title="Link to this heading"></a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">bench</span><span class="o">/</span>                                 <span class="n">Python</span> <span class="n">benchmark</span> <span class="n">module</span> <span class="p">(</span><span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">juliet</span><span class="p">)</span>
+
+<span class="o">~/</span><span class="n">data</span><span class="o">/</span><span class="n">benchmarks</span><span class="o">/</span><span class="n">juliet</span><span class="o">-</span><span class="n">test</span><span class="o">-</span><span class="n">suite</span><span class="o">-</span><span class="n">c</span><span class="o">/</span>
+  <span class="n">testcases</span><span class="o">/</span>                           <span class="mi">118</span> <span class="n">CWE</span> <span class="n">categories</span><span class="p">,</span> <span class="mi">54</span><span class="p">,</span><span class="mi">484</span> <span class="o">.</span><span class="n">c</span> <span class="n">files</span>
+  <span class="n">testcasesupport</span><span class="o">/</span>                     <span class="n">Shared</span> <span class="n">helper</span> <span class="n">functions</span>
+
+<span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">juliet_results</span><span class="o">/</span>                   <span class="n">Per</span><span class="o">-</span><span class="n">run</span> <span class="n">output</span> <span class="p">(</span><span class="n">MCP</span> <span class="n">benchmark</span> <span class="n">server</span><span class="p">,</span> <span class="n">legacy</span> <span class="n">pre</span><span class="o">-</span><span class="n">SQLite</span><span class="p">)</span>
+<span class="n">data</span><span class="o">/</span><span class="n">benchmarks</span><span class="o">.</span><span class="n">db</span>                     <span class="n">Canonical</span> <span class="n">store</span> <span class="kn">from</span> <span class="nn">v0.</span><span class="mf">3.20</span> <span class="n">onward</span> <span class="p">(</span><span class="n">SQLite</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="testing-methodology.html" class="btn btn-neutral float-left" title="Testing Methodology" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="architecture.html" class="btn btn-neutral float-right" title="Analysis Architecture" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -49,6 +49,7 @@
 <li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
 <li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
 <li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
@@ -165,6 +166,58 @@ testing methodology, project internals, and contributing.</p>
 <li class="toctree-l3"><a class="reference internal" href="testing-methodology.html#known-rule-implementation-gaps">Known Rule Implementation Gaps</a></li>
 </ul>
 </li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#benchmark-environment">Benchmark Environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#fp-reduction-history-full-round-list">FP Reduction History (Full Round List)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#per-round-fix-details">Per-Round Fix Details</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-19-fast-benchmark-mode-cwe-78-taint-tracking">v0.3.19 — Fast Benchmark Mode + CWE-78 Taint Tracking</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-17-cwe-78-macro-alias-resolution-cwe-253-incorrect-return-check">v0.3.17 — CWE-78 Macro Alias Resolution + CWE-253 Incorrect Return Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-14-exp33-c-int30-c-exp34-c-fp-fixes-full-suite">v0.3.14 — EXP33-C, INT30-C, EXP34-C FP Fixes (Full Suite)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-9-p3214-real-world-fp-fixes-12-cwe-subset">v0.3.9 — P3214 Real-World FP Fixes (12-CWE Subset)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-8-str31-c-api00-c-exp34-c-exp33-c-fp-fixes-12-cwe-subset">v0.3.8 — STR31-C, API00-C, EXP34-C, EXP33-C FP Fixes (12-CWE Subset)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-3-5-struct-field-type-resolution-real-world-fp-fixes">v0.3.5 — Struct Field Type Resolution, Real-World FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-25-arr32-c-tightening-rule-removals-value-range-fp-fixes">v0.2.25 — ARR32-C Tightening, Rule Removals, Value-Range FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-23-int32-c-const-eval-for-allocation-memory-abs-int30-c-built-in-macros">v0.2.23 — INT32-C Const-Eval for Allocation/Memory/Abs + INT30-C Built-in Macros</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-16-exp34-c-call-site-null-propagation-phase-2">v0.2.16 — EXP34-C: Call-Site Null Propagation (Phase 2)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-21-const-eval-value-range-analysis-real-world-round-6-fp-fixes">v0.2.21 — Const-Eval Value-Range Analysis + Real-World Round 6 FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-20-real-world-fp-fixes-api00-c-int01-c-exp37-c-exp34-c">v0.2.20 — Real-World FP Fixes (API00-C, INT01-C, EXP37-C, EXP34-C)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-19-real-world-fp-reduction-int30-c-loop-guards-prescan-null-guards-arr00-c-fix">v0.2.19 — Real-World FP Reduction (INT30-C Loop Guards, Prescan Null Guards, ARR00-C Fix)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-18-quick-wins-fp-reduction-int31-c-arr36-c-api00-c-int30-c">v0.2.18 — Quick Wins FP Reduction (INT31-C, ARR36-C, API00-C, INT30-C)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-17-phase-3-cwe-476-fp-reduction-mem10-c-api00-c-api02-c-prescan">v0.2.17 — Phase 3: CWE-476 FP Reduction (MEM10-C, API00-C, API02-C, Prescan)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-15-real-world-fp-cleanup-17-patterns">v0.2.15 — Real-World FP Cleanup (17 Patterns)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-13-int31-c-implicit-narrowing-real-world-fp-fixes">v0.2.13 — INT31-C Implicit Narrowing + Real-World FP Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-12-dcl13-c-pointer-modification-int01-c-sizeof-skip">v0.2.12 — DCL13-C Pointer Modification + INT01-C sizeof Skip</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#v0-2-7-int36-c-tp-restore-int31-c-fp-fix">v0.2.7 — INT36-C TP Restore + INT31-C FP Fix</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-16-dcl13-c-main-exemption-mem10-c-parameter-only-null-check">Round 16 — DCL13-C main() Exemption + MEM10-C Parameter-Only Null Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-15-exp34-c-if-else-branch-merge">Round 15 — EXP34-C: if/else Branch Merge</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-14-exp34-c-deref-after-check-pattern">Round 14 — EXP34-C: deref_after_check Pattern</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-13-str31-c-l-prefix-and-literal-source-fixes">Round 13 — STR31-C: L-prefix and Literal-Source Fixes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-12-int07-c-int32-c-exp10-c-exp34-c-int30-c-mem10-c-str31-c-windows-api">Round 12 — INT07-C, INT32-C, EXP10-C, EXP34-C, INT30-C, MEM10-C, STR31-C, Windows API</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-9-cfg-data-flow-inter-procedural-analysis">Round 9 — CFG, Data-Flow, Inter-Procedural Analysis</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-8-dcl40-c-flp32-c-err33-c">Round 8 — DCL40-C, FLP32-C, ERR33-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-7-exp36-c-exp34-c-arr37-c">Round 7 — EXP36-C, EXP34-C, ARR37-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-6-cross-file-analysis-d">Round 6 — Cross-File Analysis (<code class="docutils literal notranslate"><span class="pre">-d</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-5-flp02-c-dcl06-c-int30-c">Round 5 — FLP02-C, DCL06-C, INT30-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-4-exp12-c-flp03-c-int32-c">Round 4 — EXP12-C, FLP03-C, INT32-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-3-dcl31-c-dcl07-c-flp34-c">Round 3 — DCL31-C, DCL07-C, FLP34-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-2-exp33-c-sig31-c-arr01-c-dcl30-c-dcl02-c">Round 2 — EXP33-C, SIG31-C, ARR01-C, DCL30-C, DCL02-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#round-1-int08-c-con08-c-dcl20-c-arr38-c">Round 1 — INT08-C, CON08-C, DCL20-C, ARR38-C</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#performance-by-cwe-category-historical-snapshot">Performance by CWE Category (Historical Snapshot)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#tier-1-strong-detection-tp-50-18-categories">Tier 1: Strong Detection (TP &gt; 50%) — 18 categories</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#tier-2-moderate-detection-3550-68-categories">Tier 2: Moderate Detection (35–50%) — 68 categories</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#tier-3-below-average-2535-16-categories">Tier 3: Below Average (25–35%) — 16 categories</a></li>
+<li class="toctree-l3"><a class="reference internal" href="juliet-history.html#tier-4-weak-detection-25-4-categories">Tier 4: Weak Detection (&lt;25%) — 4 categories</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#full-per-cwe-results-round-1-baseline">Full Per-CWE Results (Round 1 Baseline)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#per-rule-data-accuracy-note-2026-03-03">Per-Rule Data Accuracy Note (2026-03-03)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#competitor-comparison">Competitor Comparison</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#version-history-v0-2-1-v0-3-17">Version History (v0.2.1 – v0.3.17)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="juliet-history.html#scripts-and-data-locations">Scripts and Data Locations</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a><ul>
