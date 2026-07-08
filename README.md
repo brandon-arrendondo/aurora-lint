@@ -15,11 +15,12 @@ A terminal-based static analysis tool for C code compliance with [SEI CERT C Cod
 
 | Metric | Value |
 |--------|-------|
-| **Juliet TP Rate** | 67.5% (v0.3.119) |
+| **Juliet TP Rate** | 83.7% (v0.4.84) |
 | **Juliet CWEs Scanned** | 74 (fast mode, CWE-matched rules) |
-| **100% Precision CWEs** | 34 (zero false positives) |
-| **Per-File Detection** | 40.8% (20,420 / 50,038 files) |
-| **Real-World Projects** | libcrc, sqlite, mosquitto, curl, hostap |
+| **100% Precision CWEs** | 48 (zero false positives) |
+| **Per-File Detection** | 38.2% (19,104 / 50,038 files) |
+| **Real-World Precision / Recall** | 6.2% / 93.8% (v0.4.83, adjudicated oracle) |
+| **Real-World Projects** | libcrc, sqlite, mosquitto, curl, hostap, lua, raylib |
 
 Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 5 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) and [REALWORLD_RESULTS.md](REALWORLD_RESULTS.md) for details.
 

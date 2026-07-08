@@ -22,19 +22,30 @@ Benchmark Infrastructure
 SQLite Schema
 ~~~~~~~~~~~~~
 
-=======================  =============================================================
-Table                    Purpose
-=======================  =============================================================
-``runs``                 One row per benchmark (version, SHA, mode, status, machine)
-``cwe_scans``            One row per CWE per run (file count, violations, duration)
-``violations``           Every individual sqc finding with TP/FP classification
-``cwe_metrics``          Pre-computed aggregates per CWE (TP/FP rates)
-``rule_cwe_breakdown``   Per-rule per-CWE counts
-``realworld_runs``       Real-world benchmark runs (sqc version, machine)
-``realworld_results``    Per-project per-tool violation counts (+ codebase_commit)
-``realworld_violations`` Every individual real-world sqc finding (file, line, rule)
-``ground_truth``         Adjudicated TP/FP oracle keyed on (project, commit, file, line, rule)
-=======================  =============================================================
+.. list-table::
+   :header-rows: 1
+   :widths: 20 60
+
+   * - Table
+     - Purpose
+   * - ``runs``
+     - One row per benchmark (version, SHA, mode, status, machine)
+   * - ``cwe_scans``
+     - One row per CWE per run (file count, violations, duration)
+   * - ``violations``
+     - Every individual sqc finding with TP/FP classification
+   * - ``cwe_metrics``
+     - Pre-computed aggregates per CWE (TP/FP rates)
+   * - ``rule_cwe_breakdown``
+     - Per-rule per-CWE counts
+   * - ``realworld_runs``
+     - Real-world benchmark runs (sqc version, machine)
+   * - ``realworld_results``
+     - Per-project per-tool violation counts (+ codebase_commit)
+   * - ``realworld_violations``
+     - Every individual real-world sqc finding (file, line, rule)
+   * - ``ground_truth``
+     - Adjudicated TP/FP oracle keyed on (project, commit, file, line, rule)
 
 Historical data from ``JULIET_RESULTS.md`` and ``REALWORLD_RESULTS.md`` has been
 backfilled into the database.

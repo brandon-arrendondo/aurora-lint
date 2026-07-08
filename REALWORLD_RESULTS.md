@@ -1,8 +1,8 @@
 # SqC — Real-World Benchmark Results
 
-**Last Updated**: 2026-06-21
+**Last Updated**: 2026-07-08
 
-Automated benchmark results across 5 real-world C codebases using sqc, cppcheck, and clang-tidy.
+Automated benchmark results across 7 real-world C codebases using sqc, cppcheck, and clang-tidy.
 
 > **Canonical source**: as of the SQLite migration, `data/benchmarks.db`
 > (`realworld_runs` + `realworld_results`) is the source of truth for all
@@ -11,9 +11,41 @@ Automated benchmark results across 5 real-world C codebases using sqc, cppcheck,
 
 ---
 
-## Latest Results (sqc v0.4.57)
+## Latest Results (sqc v0.4.83)
 
-Full sweep on commit `1bbbbf14` (cppcheck 2.10, clang-tidy 21.1.6, sqc v0.4.57). 83/83 runs, 0 failed.
+Full sweep on commit `2220dc55` (cppcheck 2.10, clang-tidy 21.1.6, sqc v0.4.83),
+run #91, scanned 2026-07-06. Adds `lua` and `raylib` as a 5th and 6th
+ground-truth oracle alongside the original 5 projects (see
+[Structural-C99 / Lua oracle context] below).
+
+### Violation Counts — All Three Tools
+
+| Project | C Files | LOC | sqc | cppcheck | clang-tidy |
+|---------|--------:|----:|----:|--------:|-----------:|
+| **libcrc** | 9 | 1,034 | 391 | 40 | 2 |
+| **lua** | 33 | 31,637 | 3,090 | 49 | 107 |
+| **raylib** | 17 | 56,107 | 5,248 | 1,060 | 469 |
+| **mosquitto** | 120 | 39,368 | 11,299 | 277 | 44 |
+| **curl** | 222 | 186,220 | 16,181 | 556 | 116 |
+| **sqlite** | 125 | 218,733 | 31,314 | 503 | 137 |
+| **hostap** | 430 | 589,724 | 37,910 | 1,761 | 1,710 |
+| **Total** | **956** | **1,122,823** | **105,433** | **4,246** | **2,585** |
+
+Aggregate measured precision (adjudicated oracle, `bench realworld-score 91`):
+**6.2%** (TP 2,073 / 33,359 labeled of 93,411 findings), **recall 93.8%**
+(2,073 / 2,209 known TPs flagged); label coverage 33,399 / 93,411 findings (40
+matched labels are "uncertain" and excluded from precision).
+
+This figure is the empirical precision floor across a diverse, adjudicated
+multi-project sample, not a single-codebase spot check — cite it scoped (project
+count, oracle methodology, recall alongside precision), not as a raw headline
+number.
+
+---
+
+## Results (sqc v0.4.57)
+
+Full sweep on commit `1bbbbf14` (cppcheck 2.10, clang-tidy 21.1.6, sqc v0.4.57). 83/83 runs, 0 failed. 5-project set, before `lua`/`raylib` were added.
 
 ### Violation Counts — All Three Tools
 
