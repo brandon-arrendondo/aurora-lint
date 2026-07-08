@@ -219,6 +219,10 @@ fn walk_for_relative_command_write(
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
+            // Don't cross into a nested (swallowed-sibling) function boundary.
+            if is_real_nested_function_definition(&child, source) {
+                continue;
+            }
             walk_for_relative_command_write(&child, source, string_macros, found);
             if *found {
                 return;
@@ -264,7 +268,7 @@ fn collect_function_summaries(
     string_macros: &HashMap<String, String>,
     summaries: &mut HashMap<String, FunctionSummary>,
 ) {
-    if node.kind() == "function_definition" {
+    if node.kind() == "function_definition" && !is_macro_function_definition(node) {
         if let Some(name) = extract_function_name(node, source) {
             let summary = analyze_function(
                 node,
@@ -278,38 +282,99 @@ fn collect_function_summaries(
         }
     }
 
-    // Recurse into preproc blocks
+    // Recurse into every child unconditionally, not just preproc wrappers.
+    // A brace that opens and closes in different branches of the same
+    // repeated #ifdef guard makes tree-sitter-c's preprocessor-less parse
+    // swallow every subsequent sibling function_definition as a nested
+    // descendant of the corrupted one (see `is_real_nested_function_definition`
+    // and lang_parsing_substrate::calls, which hit the identical failure
+    // mode for call-graph edges). Stopping at preproc_* children only would
+    // leave every swallowed sibling permanently invisible to this map — a
+    // silent false-negative for every interprocedural rule keyed on
+    // FunctionSummary (MSC04-C, EXP34-C, MEM30/31-C, null-state, taint).
+    // Recursing everywhere instead still finds and summarizes it under its
+    // own name, even though it's nested in the AST.
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            match child.kind() {
-                "function_definition" => {
-                    if let Some(name) = extract_function_name(&child, source) {
-                        let summary = analyze_function(
-                            &child,
-                            source,
-                            macros,
-                            compute_return_ranges,
-                            taint_source_aliases,
-                            string_macros,
-                        );
-                        summaries.insert(name, summary);
-                    }
-                }
-                kind if kind.starts_with("preproc_") => {
-                    collect_function_summaries(
-                        &child,
-                        source,
-                        macros,
-                        compute_return_ranges,
-                        taint_source_aliases,
-                        string_macros,
-                        summaries,
-                    );
-                }
-                _ => {}
-            }
+            collect_function_summaries(
+                &child,
+                source,
+                macros,
+                compute_return_ranges,
+                taint_source_aliases,
+                string_macros,
+                summaries,
+            );
         }
     }
+}
+
+/// True when a `function_definition` node is actually a macro invocation
+/// mis-parsed as one (declarator is a parenthesized macro call like
+/// `DEFINE_HANDLER(foo) { ... }`), not a real function.
+fn is_macro_function_definition(node: &Node) -> bool {
+    node.kind() == "function_definition"
+        && node
+            .child_by_field_name("declarator")
+            .map(|d| d.kind() == "parenthesized_declarator")
+            .unwrap_or(false)
+}
+
+/// True when `node` is a `function_definition` that represents a genuine
+/// nested function boundary and not tree-sitter error-recovery debris (a
+/// keyword like `if`/`while` mis-parsed as a nameless function whose "name"
+/// resolves to the keyword itself) or a macro-invocation function_definition.
+/// C has no real nested functions, so any node satisfying this while walking
+/// another function's body is swallowed sibling content from a corrupted
+/// parse and must not be treated as part of the enclosing function's own
+/// summary — mirrors `lang_parsing_substrate::calls`'s identical guard for
+/// call-graph edges.
+fn is_real_nested_function_definition(node: &Node, source: &str) -> bool {
+    if node.kind() != "function_definition" || is_macro_function_definition(node) {
+        return false;
+    }
+    match extract_function_name(node, source) {
+        Some(name) => !is_c_keyword(&name),
+        None => true,
+    }
+}
+
+fn is_c_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "if" | "else"
+            | "for"
+            | "while"
+            | "do"
+            | "switch"
+            | "case"
+            | "default"
+            | "return"
+            | "break"
+            | "continue"
+            | "goto"
+            | "sizeof"
+            | "typedef"
+            | "struct"
+            | "union"
+            | "enum"
+    )
+}
+
+/// Finds the start byte of the first real nested `function_definition`
+/// inside `node`'s subtree (`node` itself excluded), if any. Only meaningful
+/// to call when `node.has_error()` — see `is_real_nested_function_definition`.
+fn find_nested_function_boundary(node: &Node, source: &str) -> Option<usize> {
+    for i in 0..node.child_count() {
+        let child = node.child(i)?;
+        if is_real_nested_function_definition(&child, source) {
+            return Some(child.start_byte());
+        }
+        if let Some(boundary) = find_nested_function_boundary(&child, source) {
+            return Some(boundary);
+        }
+    }
+    None
 }
 
 /// Analyze a single function definition to produce its summary.
@@ -357,10 +422,27 @@ fn analyze_function(
 
     // Analyze function body
     if let Some(body) = func_node.child_by_field_name("body") {
-        let body_text = body.utf8_text(source.as_bytes()).unwrap_or("");
+        // When the body's parse contains an error, it may be a case of the
+        // brace-in-different-#ifdef-branches corruption: this function's
+        // span swallowed a subsequent sibling as a nested function_definition
+        // descendant. Bound the plain text scans below to the source before
+        // that boundary so this function's summary isn't polluted with the
+        // swallowed sibling's content (which gets its own, correctly-scoped
+        // summary via `collect_function_summaries`'s unconditional recursion).
+        // The AST-walking helpers below (check_never_returns is text-only;
+        // the rest take `body` directly) each stop at the same boundary via
+        // `is_real_nested_function_definition`, independent of this text
+        // bound, so this stays correct even if boundary detection here ever
+        // disagrees with theirs.
+        let text_end = if body.has_error() {
+            find_nested_function_boundary(&body, source).unwrap_or_else(|| body.end_byte())
+        } else {
+            body.end_byte()
+        };
+        let body_text = &source[body.start_byte()..text_end];
 
         // Check for never-returns patterns
-        summary.never_returns = check_never_returns(&body, source);
+        summary.never_returns = check_never_returns(body_text);
 
         // Check for returns-allocation pattern
         summary.returns_allocation = body_text.contains("malloc(")
@@ -413,7 +495,7 @@ fn analyze_function(
         }
 
         // Analyze parameter usage
-        analyze_param_usage(&body, source, &params, &mut summary);
+        analyze_param_usage(&body, source, body_text, &params, &mut summary);
 
         // Compute return value range for integer-returning functions (only when VRA is needed)
         if compute_return_ranges && !is_void_return && !is_pointer_return {
@@ -461,9 +543,7 @@ fn collect_params_recursive(node: &Node, source: &str, params: &mut Vec<String>)
 }
 
 /// Check if a function body always calls abort/exit/longjmp (never returns normally).
-fn check_never_returns(body: &Node, source: &str) -> bool {
-    let body_text = body.utf8_text(source.as_bytes()).unwrap_or("");
-
+fn check_never_returns(body_text: &str) -> bool {
     // Quick text check — if none of these are present, the function can return
     if !body_text.contains("abort(")
         && !body_text.contains("exit(")
@@ -566,6 +646,10 @@ fn check_returns_null(body: &Node, source: &str) -> bool {
 
     for i in 0..body.child_count() {
         if let Some(child) = body.child(i) {
+            // Don't cross into a nested (swallowed-sibling) function boundary.
+            if is_real_nested_function_definition(&child, source) {
+                continue;
+            }
             if check_returns_null(&child, source) {
                 return true;
             }
@@ -575,15 +659,17 @@ fn check_returns_null(body: &Node, source: &str) -> bool {
     false
 }
 
-/// Analyze how parameters are used in the function body.
+/// Analyze how parameters are used in the function body. `body_text` may be
+/// a boundary-truncated slice of `body`'s source (see `analyze_function`);
+/// `collect_param_passthroughs` walks `body` itself and applies its own
+/// nested-function boundary guard independently.
 fn analyze_param_usage(
     body: &Node,
     source: &str,
+    body_text: &str,
     params: &[String],
     summary: &mut FunctionSummary,
 ) {
-    let body_text = body.utf8_text(source.as_bytes()).unwrap_or("");
-
     for (idx, param_name) in params.iter().enumerate() {
         if param_name.is_empty() {
             continue;
@@ -910,6 +996,10 @@ fn collect_param_passthroughs(
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
+            // Don't cross into a nested (swallowed-sibling) function boundary.
+            if is_real_nested_function_definition(&child, source) {
+                continue;
+            }
             collect_param_passthroughs(&child, source, params, summary);
         }
     }
@@ -954,7 +1044,7 @@ pub fn propagate_transitive_frees(summaries: &mut HashMap<String, FunctionSummar
 /// the transitive-propagation seed for `returns_tainted`.
 fn collect_returns_from_callees(body: &Node, source: &str, out: &mut HashSet<String>) {
     let mut returns = Vec::new();
-    collect_return_expressions(body, &mut returns);
+    collect_return_expressions(body, source, &mut returns);
     for ret in returns {
         let inner = unwrap_to_call_node(ret);
         if inner.kind() == "call_expression" {
@@ -1043,7 +1133,7 @@ fn compute_return_range(
     macros: &MacroConstantMap,
 ) -> Option<ValueRange> {
     let mut return_exprs = Vec::new();
-    collect_return_expressions(body, &mut return_exprs);
+    collect_return_expressions(body, source, &mut return_exprs);
 
     if return_exprs.is_empty() {
         return None;
@@ -1069,7 +1159,7 @@ fn compute_return_range(
 }
 
 /// Recursively collect the expression child of every `return_statement` in `node`.
-fn collect_return_expressions<'a>(node: &Node<'a>, out: &mut Vec<Node<'a>>) {
+fn collect_return_expressions<'a>(node: &Node<'a>, source: &str, out: &mut Vec<Node<'a>>) {
     if node.kind() == "return_statement" {
         // The return expression is the first non-keyword child
         for i in 0..node.child_count() {
@@ -1086,7 +1176,11 @@ fn collect_return_expressions<'a>(node: &Node<'a>, out: &mut Vec<Node<'a>>) {
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            collect_return_expressions(&child, out);
+            // Don't cross into a nested (swallowed-sibling) function boundary.
+            if is_real_nested_function_definition(&child, source) {
+                continue;
+            }
+            collect_return_expressions(&child, source, out);
         }
     }
 }
@@ -1377,5 +1471,601 @@ mod tests {
         let summaries = parse_and_summarize(code);
         let summary = summaries.get("get_error").unwrap();
         assert_eq!(summary.return_range, Some(ValueRange::exact(-1)));
+    }
+
+    #[test]
+    fn test_ifdef_spanning_brace_does_not_swallow_sibling_summary() {
+        // Regression for task 267/296 (see the identical fixture and bug
+        // description in prescan.rs's
+        // test_collect_call_graph_ifdef_spanning_brace_does_not_leak_swallowed_sibling_calls):
+        // a brace that opens under `#ifndef SQLITE_OMIT_AUTHORIZATION` and
+        // closes under a second, identical guard a few lines later can't be
+        // reconciled by tree-sitter-c without a real preprocessor.
+        // sqlite3InitOne's function_definition never closes normally
+        // ([0..8717] out of an 8718-byte file), nesting sqlite3Init as a
+        // descendant at [7870..8717]. Before this fix,
+        // `collect_function_summaries` only matched `function_definition` as
+        // a direct child of the translation unit (or of a `preproc_*`
+        // wrapper), so sqlite3Init -- now nested inside sqlite3InitOne --
+        // got zero summary entry: invisible to every interprocedural rule
+        // keyed on FunctionSummary (MSC04-C, EXP34-C, MEM30/31-C, null-state,
+        // taint) for the rest of the file.
+        let code = r#"int sqlite3InitOne(sqlite3 *db, int iDb, char **pzErrMsg, u32 mFlags){
+  int rc;
+  int i;
+#ifndef SQLITE_OMIT_DEPRECATED
+  int size;
+#endif
+  Db *pDb;
+  char const *azArg[6];
+  int meta[5];
+  InitData initData;
+  const char *zSchemaTabName;
+  int openedTransaction = 0;
+  int mask = ((db->mDbFlags & DBFLAG_EncodingFixed) | ~DBFLAG_EncodingFixed);
+
+  assert( (db->mDbFlags & DBFLAG_SchemaKnownOk)==0 );
+  assert( iDb>=0 && iDb<db->nDb );
+  assert( db->aDb[iDb].pSchema );
+  assert( sqlite3_mutex_held(db->mutex) );
+  assert( iDb==1 || sqlite3BtreeHoldsMutex(db->aDb[iDb].pBt) );
+
+  db->init.busy = 1;
+
+  /* Construct the in-memory representation schema tables (sqlite_schema or
+  ** sqlite_temp_schema) by invoking the parser directly.  The appropriate
+  ** table name will be inserted automatically by the parser so we can just
+  ** use the abbreviation "x" here.  The parser will also automatically tag
+  ** the schema table as read-only. */
+  azArg[0] = "table";
+  azArg[1] = zSchemaTabName = SCHEMA_TABLE(iDb);
+  azArg[2] = azArg[1];
+  azArg[3] = "1";
+  azArg[4] = "CREATE TABLE x(type text,name text,tbl_name text,"
+                            "rootpage int,sql text)";
+  azArg[5] = 0;
+  initData.db = db;
+  initData.iDb = iDb;
+  initData.rc = SQLITE_OK;
+  initData.pzErrMsg = pzErrMsg;
+  initData.mInitFlags = mFlags;
+  initData.nInitRow = 0;
+  initData.mxPage = 0;
+  sqlite3InitCallback(&initData, 5, (char **)azArg, 0);
+  db->mDbFlags &= mask;
+  if( initData.rc ){
+    rc = initData.rc;
+    goto error_out;
+  }
+
+  /* Create a cursor to hold the database open
+  */
+  pDb = &db->aDb[iDb];
+  if( pDb->pBt==0 ){
+    assert( iDb==1 );
+    DbSetProperty(db, 1, DB_SchemaLoaded);
+    rc = SQLITE_OK;
+    goto error_out;
+  }
+
+  /* If there is not already a read-only (or read-write) transaction opened
+  ** on the b-tree database, open one now. If a transaction is opened, it 
+  ** will be closed before this function returns.  */
+  sqlite3BtreeEnter(pDb->pBt);
+  if( sqlite3BtreeTxnState(pDb->pBt)==SQLITE_TXN_NONE ){
+    rc = sqlite3BtreeBeginTrans(pDb->pBt, 0, 0);
+    if( rc!=SQLITE_OK ){
+      sqlite3SetString(pzErrMsg, db, sqlite3ErrStr(rc));
+      goto initone_error_out;
+    }
+    openedTransaction = 1;
+  }
+
+  /* Get the database meta information.
+  **
+  ** Meta values are as follows:
+  **    meta[0]   Schema cookie.  Changes with each schema change.
+  **    meta[1]   File format of schema layer.
+  **    meta[2]   Size of the page cache.
+  **    meta[3]   Largest rootpage (auto/incr_vacuum mode)
+  **    meta[4]   Db text encoding. 1:UTF-8 2:UTF-16LE 3:UTF-16BE
+  **    meta[5]   User version
+  **    meta[6]   Incremental vacuum mode
+  **    meta[7]   unused
+  **    meta[8]   unused
+  **    meta[9]   unused
+  **
+  ** Note: The #defined SQLITE_UTF* symbols in sqliteInt.h correspond to
+  ** the possible values of meta[4].
+  */
+  for(i=0; i<ArraySize(meta); i++){
+    sqlite3BtreeGetMeta(pDb->pBt, i+1, (u32 *)&meta[i]);
+  }
+  if( (db->flags & SQLITE_ResetDatabase)!=0 ){
+    memset(meta, 0, sizeof(meta));
+  }
+  pDb->pSchema->schema_cookie = meta[BTREE_SCHEMA_VERSION-1];
+
+  /* If opening a non-empty database, check the text encoding. For the
+  ** main database, set sqlite3.enc to the encoding of the main database.
+  ** For an attached db, it is an error if the encoding is not the same
+  ** as sqlite3.enc.
+  */
+  if( meta[BTREE_TEXT_ENCODING-1] ){  /* text encoding */
+    if( iDb==0 && (db->mDbFlags & DBFLAG_EncodingFixed)==0 ){
+      u8 encoding;
+#ifndef SQLITE_OMIT_UTF16
+      /* If opening the main database, set ENC(db). */
+      encoding = (u8)meta[BTREE_TEXT_ENCODING-1] & 3;
+      if( encoding==0 ) encoding = SQLITE_UTF8;
+#else
+      encoding = SQLITE_UTF8;
+#endif
+      sqlite3SetTextEncoding(db, encoding);
+    }else{
+      /* If opening an attached database, the encoding much match ENC(db) */
+      if( (meta[BTREE_TEXT_ENCODING-1] & 3)!=ENC(db) ){
+        sqlite3SetString(pzErrMsg, db, "attached databases must use the same"
+            " text encoding as main database");
+        rc = SQLITE_ERROR;
+        goto initone_error_out;
+      }
+    }
+  }
+  pDb->pSchema->enc = ENC(db);
+
+  if( pDb->pSchema->cache_size==0 ){
+#ifndef SQLITE_OMIT_DEPRECATED
+    size = sqlite3AbsInt32(meta[BTREE_DEFAULT_CACHE_SIZE-1]);
+    if( size==0 ){ size = SQLITE_DEFAULT_CACHE_SIZE; }
+    pDb->pSchema->cache_size = size;
+#else
+    pDb->pSchema->cache_size = SQLITE_DEFAULT_CACHE_SIZE;
+#endif
+    sqlite3BtreeSetCacheSize(pDb->pBt, pDb->pSchema->cache_size);
+  }
+
+  /*
+  ** file_format==1    Version 3.0.0.
+  ** file_format==2    Version 3.1.3.  // ALTER TABLE ADD COLUMN
+  ** file_format==3    Version 3.1.4.  // ditto but with non-NULL defaults
+  ** file_format==4    Version 3.3.0.  // DESC indices.  Boolean constants
+  */
+  pDb->pSchema->file_format = (u8)meta[BTREE_FILE_FORMAT-1];
+  if( pDb->pSchema->file_format==0 ){
+    pDb->pSchema->file_format = 1;
+  }
+  if( pDb->pSchema->file_format>SQLITE_MAX_FILE_FORMAT ){
+    sqlite3SetString(pzErrMsg, db, "unsupported file format");
+    rc = SQLITE_ERROR;
+    goto initone_error_out;
+  }
+
+  /* Ticket #2804:  When we open a database in the newer file format,
+  ** clear the legacy_file_format pragma flag so that a VACUUM will
+  ** not downgrade the database and thus invalidate any descending
+  ** indices that the user might have created.
+  */
+  if( iDb==0 && meta[BTREE_FILE_FORMAT-1]>=4 ){
+    db->flags &= ~(u64)SQLITE_LegacyFileFmt;
+  }
+
+  /* Read the schema information out of the schema tables
+  */
+  assert( db->init.busy );
+  initData.mxPage = sqlite3BtreeLastPage(pDb->pBt);
+  {
+    char *zSql;
+    zSql = sqlite3MPrintf(db, 
+        "SELECT*FROM\"%w\".%s ORDER BY rowid",
+        db->aDb[iDb].zDbSName, zSchemaTabName);
+#ifndef SQLITE_OMIT_AUTHORIZATION
+    {
+      sqlite3_xauth xAuth;
+      xAuth = db->xAuth;
+      db->xAuth = 0;
+#endif
+      rc = sqlite3_exec(db, zSql, sqlite3InitCallback, &initData, 0);
+#ifndef SQLITE_OMIT_AUTHORIZATION
+      db->xAuth = xAuth;
+    }
+#endif
+    if( rc==SQLITE_OK ) rc = initData.rc;
+    sqlite3DbFree(db, zSql);
+#ifndef SQLITE_OMIT_ANALYZE
+    if( rc==SQLITE_OK ){
+      sqlite3AnalysisLoad(db, iDb);
+    }
+#endif
+  }
+  assert( pDb == &(db->aDb[iDb]) );
+  if( db->mallocFailed ){
+    rc = SQLITE_NOMEM_BKPT;
+    sqlite3ResetAllSchemasOfConnection(db);
+    pDb = &db->aDb[iDb];
+  }else
+  if( rc==SQLITE_OK || ((db->flags&SQLITE_NoSchemaError) && rc!=SQLITE_NOMEM)){
+    /* Hack: If the SQLITE_NoSchemaError flag is set, then consider
+    ** the schema loaded, even if errors (other than OOM) occurred. In
+    ** this situation the current sqlite3_prepare() operation will fail,
+    ** but the following one will attempt to compile the supplied statement
+    ** against whatever subset of the schema was loaded before the error
+    ** occurred.
+    **
+    ** The primary purpose of this is to allow access to the sqlite_schema
+    ** table even when its contents have been corrupted.
+    */
+    DbSetProperty(db, iDb, DB_SchemaLoaded);
+    rc = SQLITE_OK;
+  }
+
+  /* Jump here for an error that occurs after successfully allocating
+  ** curMain and calling sqlite3BtreeEnter(). For an error that occurs
+  ** before that point, jump to error_out.
+  */
+initone_error_out:
+  if( openedTransaction ){
+    sqlite3BtreeCommit(pDb->pBt);
+  }
+  sqlite3BtreeLeave(pDb->pBt);
+
+error_out:
+  if( rc ){
+    if( rc==SQLITE_NOMEM || rc==SQLITE_IOERR_NOMEM ){
+      sqlite3OomFault(db);
+    }
+    sqlite3ResetOneSchema(db, iDb);
+  }
+  db->init.busy = 0;
+  return rc;
+}
+
+/*
+** Initialize all database files - the main database file, the file
+** used to store temporary tables, and any additional database files
+** created using ATTACH statements.  Return a success code.  If an
+** error occurs, write an error message into *pzErrMsg.
+**
+** After a database is initialized, the DB_SchemaLoaded bit is set
+** bit is set in the flags field of the Db structure. 
+*/
+int sqlite3Init(sqlite3 *db, char **pzErrMsg){
+  int i, rc;
+  int commit_internal = !(db->mDbFlags&DBFLAG_SchemaChange);
+  
+  assert( sqlite3_mutex_held(db->mutex) );
+  assert( sqlite3BtreeHoldsMutex(db->aDb[0].pBt) );
+  assert( db->init.busy==0 );
+  ENC(db) = SCHEMA_ENC(db);
+  assert( db->nDb>0 );
+  /* Do the main schema first */
+  if( !DbHasProperty(db, 0, DB_SchemaLoaded) ){
+    rc = sqlite3InitOne(db, 0, pzErrMsg, 0);
+    if( rc ) return rc;
+  }
+  /* All other schemas after the main schema. The "temp" schema must be last */
+  for(i=db->nDb-1; i>0; i--){
+    assert( i==1 || sqlite3BtreeHoldsMutex(db->aDb[i].pBt) );
+    if( !DbHasProperty(db, i, DB_SchemaLoaded) ){
+      rc = sqlite3InitOne(db, i, pzErrMsg, 0);
+      if( rc ) return rc;
+    }
+  }
+  if( commit_internal ){
+    sqlite3CommitInternalChanges(db);
+  }
+  return SQLITE_OK;
+}"#;
+        let summaries = parse_and_summarize(code);
+        assert!(
+            summaries.contains_key("sqlite3Init"),
+            "sqlite3Init was swallowed into sqlite3InitOne's corrupted span \
+             and got no summary entry of its own: {:?}",
+            summaries.keys().collect::<Vec<_>>()
+        );
+        assert!(summaries.contains_key("sqlite3InitOne"));
+    }
+
+    #[test]
+    fn test_ifdef_spanning_brace_does_not_contaminate_outer_summary() {
+        // Same corruption as above, with a third function appended
+        // (`extra_leak_marker`, containing malloc()/abort() -- signals not
+        // present anywhere in the real sqlite3InitOne/sqlite3Init source)
+        // that also ends up nested inside sqlite3InitOne's corrupted span.
+        // Before the has_error()-gated boundary in `analyze_function`,
+        // sqlite3InitOne's `body_text` spanned its own source AND both
+        // swallowed siblings, so these plain text scans (returns_allocation,
+        // never_returns) would wrongly flip true for sqlite3InitOne itself.
+        let code = r#"int sqlite3InitOne(sqlite3 *db, int iDb, char **pzErrMsg, u32 mFlags){
+  int rc;
+  int i;
+#ifndef SQLITE_OMIT_DEPRECATED
+  int size;
+#endif
+  Db *pDb;
+  char const *azArg[6];
+  int meta[5];
+  InitData initData;
+  const char *zSchemaTabName;
+  int openedTransaction = 0;
+  int mask = ((db->mDbFlags & DBFLAG_EncodingFixed) | ~DBFLAG_EncodingFixed);
+
+  assert( (db->mDbFlags & DBFLAG_SchemaKnownOk)==0 );
+  assert( iDb>=0 && iDb<db->nDb );
+  assert( db->aDb[iDb].pSchema );
+  assert( sqlite3_mutex_held(db->mutex) );
+  assert( iDb==1 || sqlite3BtreeHoldsMutex(db->aDb[iDb].pBt) );
+
+  db->init.busy = 1;
+
+  /* Construct the in-memory representation schema tables (sqlite_schema or
+  ** sqlite_temp_schema) by invoking the parser directly.  The appropriate
+  ** table name will be inserted automatically by the parser so we can just
+  ** use the abbreviation "x" here.  The parser will also automatically tag
+  ** the schema table as read-only. */
+  azArg[0] = "table";
+  azArg[1] = zSchemaTabName = SCHEMA_TABLE(iDb);
+  azArg[2] = azArg[1];
+  azArg[3] = "1";
+  azArg[4] = "CREATE TABLE x(type text,name text,tbl_name text,"
+                            "rootpage int,sql text)";
+  azArg[5] = 0;
+  initData.db = db;
+  initData.iDb = iDb;
+  initData.rc = SQLITE_OK;
+  initData.pzErrMsg = pzErrMsg;
+  initData.mInitFlags = mFlags;
+  initData.nInitRow = 0;
+  initData.mxPage = 0;
+  sqlite3InitCallback(&initData, 5, (char **)azArg, 0);
+  db->mDbFlags &= mask;
+  if( initData.rc ){
+    rc = initData.rc;
+    goto error_out;
+  }
+
+  /* Create a cursor to hold the database open
+  */
+  pDb = &db->aDb[iDb];
+  if( pDb->pBt==0 ){
+    assert( iDb==1 );
+    DbSetProperty(db, 1, DB_SchemaLoaded);
+    rc = SQLITE_OK;
+    goto error_out;
+  }
+
+  /* If there is not already a read-only (or read-write) transaction opened
+  ** on the b-tree database, open one now. If a transaction is opened, it 
+  ** will be closed before this function returns.  */
+  sqlite3BtreeEnter(pDb->pBt);
+  if( sqlite3BtreeTxnState(pDb->pBt)==SQLITE_TXN_NONE ){
+    rc = sqlite3BtreeBeginTrans(pDb->pBt, 0, 0);
+    if( rc!=SQLITE_OK ){
+      sqlite3SetString(pzErrMsg, db, sqlite3ErrStr(rc));
+      goto initone_error_out;
+    }
+    openedTransaction = 1;
+  }
+
+  /* Get the database meta information.
+  **
+  ** Meta values are as follows:
+  **    meta[0]   Schema cookie.  Changes with each schema change.
+  **    meta[1]   File format of schema layer.
+  **    meta[2]   Size of the page cache.
+  **    meta[3]   Largest rootpage (auto/incr_vacuum mode)
+  **    meta[4]   Db text encoding. 1:UTF-8 2:UTF-16LE 3:UTF-16BE
+  **    meta[5]   User version
+  **    meta[6]   Incremental vacuum mode
+  **    meta[7]   unused
+  **    meta[8]   unused
+  **    meta[9]   unused
+  **
+  ** Note: The #defined SQLITE_UTF* symbols in sqliteInt.h correspond to
+  ** the possible values of meta[4].
+  */
+  for(i=0; i<ArraySize(meta); i++){
+    sqlite3BtreeGetMeta(pDb->pBt, i+1, (u32 *)&meta[i]);
+  }
+  if( (db->flags & SQLITE_ResetDatabase)!=0 ){
+    memset(meta, 0, sizeof(meta));
+  }
+  pDb->pSchema->schema_cookie = meta[BTREE_SCHEMA_VERSION-1];
+
+  /* If opening a non-empty database, check the text encoding. For the
+  ** main database, set sqlite3.enc to the encoding of the main database.
+  ** For an attached db, it is an error if the encoding is not the same
+  ** as sqlite3.enc.
+  */
+  if( meta[BTREE_TEXT_ENCODING-1] ){  /* text encoding */
+    if( iDb==0 && (db->mDbFlags & DBFLAG_EncodingFixed)==0 ){
+      u8 encoding;
+#ifndef SQLITE_OMIT_UTF16
+      /* If opening the main database, set ENC(db). */
+      encoding = (u8)meta[BTREE_TEXT_ENCODING-1] & 3;
+      if( encoding==0 ) encoding = SQLITE_UTF8;
+#else
+      encoding = SQLITE_UTF8;
+#endif
+      sqlite3SetTextEncoding(db, encoding);
+    }else{
+      /* If opening an attached database, the encoding much match ENC(db) */
+      if( (meta[BTREE_TEXT_ENCODING-1] & 3)!=ENC(db) ){
+        sqlite3SetString(pzErrMsg, db, "attached databases must use the same"
+            " text encoding as main database");
+        rc = SQLITE_ERROR;
+        goto initone_error_out;
+      }
+    }
+  }
+  pDb->pSchema->enc = ENC(db);
+
+  if( pDb->pSchema->cache_size==0 ){
+#ifndef SQLITE_OMIT_DEPRECATED
+    size = sqlite3AbsInt32(meta[BTREE_DEFAULT_CACHE_SIZE-1]);
+    if( size==0 ){ size = SQLITE_DEFAULT_CACHE_SIZE; }
+    pDb->pSchema->cache_size = size;
+#else
+    pDb->pSchema->cache_size = SQLITE_DEFAULT_CACHE_SIZE;
+#endif
+    sqlite3BtreeSetCacheSize(pDb->pBt, pDb->pSchema->cache_size);
+  }
+
+  /*
+  ** file_format==1    Version 3.0.0.
+  ** file_format==2    Version 3.1.3.  // ALTER TABLE ADD COLUMN
+  ** file_format==3    Version 3.1.4.  // ditto but with non-NULL defaults
+  ** file_format==4    Version 3.3.0.  // DESC indices.  Boolean constants
+  */
+  pDb->pSchema->file_format = (u8)meta[BTREE_FILE_FORMAT-1];
+  if( pDb->pSchema->file_format==0 ){
+    pDb->pSchema->file_format = 1;
+  }
+  if( pDb->pSchema->file_format>SQLITE_MAX_FILE_FORMAT ){
+    sqlite3SetString(pzErrMsg, db, "unsupported file format");
+    rc = SQLITE_ERROR;
+    goto initone_error_out;
+  }
+
+  /* Ticket #2804:  When we open a database in the newer file format,
+  ** clear the legacy_file_format pragma flag so that a VACUUM will
+  ** not downgrade the database and thus invalidate any descending
+  ** indices that the user might have created.
+  */
+  if( iDb==0 && meta[BTREE_FILE_FORMAT-1]>=4 ){
+    db->flags &= ~(u64)SQLITE_LegacyFileFmt;
+  }
+
+  /* Read the schema information out of the schema tables
+  */
+  assert( db->init.busy );
+  initData.mxPage = sqlite3BtreeLastPage(pDb->pBt);
+  {
+    char *zSql;
+    zSql = sqlite3MPrintf(db, 
+        "SELECT*FROM\"%w\".%s ORDER BY rowid",
+        db->aDb[iDb].zDbSName, zSchemaTabName);
+#ifndef SQLITE_OMIT_AUTHORIZATION
+    {
+      sqlite3_xauth xAuth;
+      xAuth = db->xAuth;
+      db->xAuth = 0;
+#endif
+      rc = sqlite3_exec(db, zSql, sqlite3InitCallback, &initData, 0);
+#ifndef SQLITE_OMIT_AUTHORIZATION
+      db->xAuth = xAuth;
+    }
+#endif
+    if( rc==SQLITE_OK ) rc = initData.rc;
+    sqlite3DbFree(db, zSql);
+#ifndef SQLITE_OMIT_ANALYZE
+    if( rc==SQLITE_OK ){
+      sqlite3AnalysisLoad(db, iDb);
+    }
+#endif
+  }
+  assert( pDb == &(db->aDb[iDb]) );
+  if( db->mallocFailed ){
+    rc = SQLITE_NOMEM_BKPT;
+    sqlite3ResetAllSchemasOfConnection(db);
+    pDb = &db->aDb[iDb];
+  }else
+  if( rc==SQLITE_OK || ((db->flags&SQLITE_NoSchemaError) && rc!=SQLITE_NOMEM)){
+    /* Hack: If the SQLITE_NoSchemaError flag is set, then consider
+    ** the schema loaded, even if errors (other than OOM) occurred. In
+    ** this situation the current sqlite3_prepare() operation will fail,
+    ** but the following one will attempt to compile the supplied statement
+    ** against whatever subset of the schema was loaded before the error
+    ** occurred.
+    **
+    ** The primary purpose of this is to allow access to the sqlite_schema
+    ** table even when its contents have been corrupted.
+    */
+    DbSetProperty(db, iDb, DB_SchemaLoaded);
+    rc = SQLITE_OK;
+  }
+
+  /* Jump here for an error that occurs after successfully allocating
+  ** curMain and calling sqlite3BtreeEnter(). For an error that occurs
+  ** before that point, jump to error_out.
+  */
+initone_error_out:
+  if( openedTransaction ){
+    sqlite3BtreeCommit(pDb->pBt);
+  }
+  sqlite3BtreeLeave(pDb->pBt);
+
+error_out:
+  if( rc ){
+    if( rc==SQLITE_NOMEM || rc==SQLITE_IOERR_NOMEM ){
+      sqlite3OomFault(db);
+    }
+    sqlite3ResetOneSchema(db, iDb);
+  }
+  db->init.busy = 0;
+  return rc;
+}
+
+/*
+** Initialize all database files - the main database file, the file
+** used to store temporary tables, and any additional database files
+** created using ATTACH statements.  Return a success code.  If an
+** error occurs, write an error message into *pzErrMsg.
+**
+** After a database is initialized, the DB_SchemaLoaded bit is set
+** bit is set in the flags field of the Db structure. 
+*/
+int sqlite3Init(sqlite3 *db, char **pzErrMsg){
+  int i, rc;
+  int commit_internal = !(db->mDbFlags&DBFLAG_SchemaChange);
+  
+  assert( sqlite3_mutex_held(db->mutex) );
+  assert( sqlite3BtreeHoldsMutex(db->aDb[0].pBt) );
+  assert( db->init.busy==0 );
+  ENC(db) = SCHEMA_ENC(db);
+  assert( db->nDb>0 );
+  /* Do the main schema first */
+  if( !DbHasProperty(db, 0, DB_SchemaLoaded) ){
+    rc = sqlite3InitOne(db, 0, pzErrMsg, 0);
+    if( rc ) return rc;
+  }
+  /* All other schemas after the main schema. The "temp" schema must be last */
+  for(i=db->nDb-1; i>0; i--){
+    assert( i==1 || sqlite3BtreeHoldsMutex(db->aDb[i].pBt) );
+    if( !DbHasProperty(db, i, DB_SchemaLoaded) ){
+      rc = sqlite3InitOne(db, i, pzErrMsg, 0);
+      if( rc ) return rc;
+    }
+  }
+  if( commit_internal ){
+    sqlite3CommitInternalChanges(db);
+  }
+  return SQLITE_OK;
+}
+
+void extra_leak_marker(void){
+  void *buf = malloc(4);
+  free(buf);
+  abort();
+}"#;
+        let summaries = parse_and_summarize(code);
+        let outer = summaries
+            .get("sqlite3InitOne")
+            .expect("sqlite3InitOne should still get its own summary");
+        assert!(
+            !outer.returns_allocation,
+            "sqlite3InitOne's summary was contaminated with extra_leak_marker's malloc() call"
+        );
+        assert!(
+            !outer.never_returns,
+            "sqlite3InitOne's summary was contaminated with extra_leak_marker's abort() call"
+        );
+        // Both swallowed siblings must still get their own, correctly-scoped summaries.
+        assert!(summaries.contains_key("sqlite3Init"));
+        let marker = summaries
+            .get("extra_leak_marker")
+            .expect("extra_leak_marker should get its own summary entry");
+        assert!(marker.returns_allocation);
+        assert!(marker.never_returns);
     }
 }
