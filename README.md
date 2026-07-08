@@ -1,11 +1,11 @@
 # SqC - Software Code Quality
 
-A terminal-based static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard). SqC checks 285 rules across 17 categories, providing both an interactive terminal UI and CI/CD-ready command-line interface.
+A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard). SqC checks 285 rules across 17 categories, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
 ## Key Features
 
 - **285 CERT C rules** across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
-- **Interactive terminal UI** for browsing and managing violations
+- **Optional interactive terminal UI** for browsing and managing violations (build with `--features tui`)
 - **Multiple export formats**: CSV, XLSX, JSON, SARIF 2.1.0
 - **CI/CD ready**: exit codes, severity thresholds, diff-only mode, SARIF output
 - **Cross-file analysis**: pre-scans directories for function definitions to reduce false positives
@@ -48,7 +48,10 @@ sqc /path/to/project -d /path/to/project
 
 ### Interactive mode
 
+The terminal UI is disabled by default (CLI + CI/CD is the primary use case). Build with the `tui` feature to enable it:
+
 ```bash
+cargo build --release --features tui
 sqc /path/to/project --interactive
 ```
 

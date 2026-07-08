@@ -44,7 +44,7 @@ Project Structure
     |       +-- SIG/         # Signal rules (7 rules)
     |       +-- STR/         # String rules (16 rules)
     |       +-- WIN/         # Windows rules (6 rules)
-    +-- ui/                  # Terminal user interface
+    +-- ui/                  # Terminal user interface (optional `tui` feature, disabled by default)
     |   +-- mod.rs           # Ratatui-based interactive UI
     +-- utility/             # Helper functions
         +-- mod.rs           # Common utilities and helpers

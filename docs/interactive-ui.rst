@@ -1,12 +1,23 @@
 Interactive Console UI
 ======================
 
-Launch the interactive terminal UI with ``--interactive`` (or ``-i``):
+The interactive terminal UI is an optional build-time feature (disabled by
+default, since the primary use of sqc is CLI + CI/CD). Build with the ``tui``
+feature to enable it:
+
+::
+
+    cargo build --release --features tui
+
+Then launch it with ``--interactive`` (or ``-i``):
 
 ::
 
     sqc /path/to/project --interactive
     sqc /path/to/project -d /path/to/project -i    # with cross-file context
+
+Running ``--interactive`` against a binary built without the ``tui`` feature
+exits with an error telling you to rebuild with ``--features tui``.
 
 The UI is built with `ratatui <https://ratatui.rs/>`_ and provides two tabs:
 **Violations** and **Configuration**.

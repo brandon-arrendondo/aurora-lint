@@ -14,6 +14,7 @@ pub mod parser;
 pub mod progress;
 pub mod rules;
 pub mod toolchain;
+#[cfg(feature = "tui")]
 pub mod ui;
 pub mod utility;
 

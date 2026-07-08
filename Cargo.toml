@@ -17,12 +17,18 @@ path = "src/lib.rs"
 name = "sqc"
 path = "src/main.rs"
 
+[features]
+default = []
+# Interactive terminal UI (`--interactive`/`-i`). Disabled by default since the
+# primary use of sqc is CLI + CI/CD; build with `--features tui` to enable it.
+tui = ["dep:ratatui", "dep:crossterm"]
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
-ratatui = "0.28"
-crossterm = "0.28"
+ratatui = { version = "0.28", optional = true }
+crossterm = { version = "0.28", optional = true }
 git2 = "0.19"
 # Language detection + the C grammar come from the shared substrate (C-only:
 # tools_sqc is a CERT-C checker). default-features = false keeps discovery

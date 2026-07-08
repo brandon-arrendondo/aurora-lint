@@ -13,6 +13,7 @@ mod parser;
 mod progress;
 mod rules;
 mod toolchain;
+#[cfg(feature = "tui")]
 mod ui;
 mod utility;
 
@@ -24,6 +25,7 @@ use analyze::{analyze_project, handle_generate_suppression};
 use export::export_all_violations;
 use files::ProjectSource;
 use progress::CLIProgressReporter;
+#[cfg(feature = "tui")]
 use ui::TerminalUI;
 
 use std::collections::HashSet;
@@ -63,7 +65,7 @@ fn run() -> Result<i32> {
             Arg::new("interactive")
                 .long("interactive")
                 .short('i')
-                .help("Run in interactive terminal UI mode")
+                .help("Run in interactive terminal UI mode (requires building with `--features tui`)")
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
@@ -219,9 +221,18 @@ fn run() -> Result<i32> {
     }
 
     if interactive {
-        let mut ui = TerminalUI::new(path, manifest, &directories, &include_paths)?;
-        ui.run()?;
-        return Ok(0);
+        #[cfg(feature = "tui")]
+        {
+            let mut ui = TerminalUI::new(path, manifest, &directories, &include_paths)?;
+            ui.run()?;
+            return Ok(0);
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            anyhow::bail!(
+                "sqc was built without the `tui` feature; rebuild with `cargo build --features tui` to use --interactive"
+            );
+        }
     }
 
     println!("Analyzing {} at: {}", project_source.source_type(), path);

@@ -15,6 +15,7 @@ Full Command Reference
       -m, --manifest <FILE>            Path to the rules manifest file
                                        [default: rules_templates/rules-all.toml]
       -i, --interactive                Run in interactive terminal UI mode
+                                       (requires building with `--features tui`)
       -e, --export <FILE>              Export violations to file (format by extension:
                                        .csv, .xlsx, .json, .sarif, .sarif.json)
           --generate-suppression <FILE:LINE:RULE>
