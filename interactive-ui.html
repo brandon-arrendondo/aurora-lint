@@ -99,11 +99,19 @@
              
   <section id="interactive-console-ui">
 <h1>Interactive Console UI<a class="headerlink" href="#interactive-console-ui" title="Link to this heading"></a></h1>
-<p>Launch the interactive terminal UI with <code class="docutils literal notranslate"><span class="pre">--interactive</span></code> (or <code class="docutils literal notranslate"><span class="pre">-i</span></code>):</p>
+<p>The interactive terminal UI is an optional build-time feature (disabled by
+default, since the primary use of sqc is CLI + CI/CD). Build with the <code class="docutils literal notranslate"><span class="pre">tui</span></code>
+feature to enable it:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cargo</span> <span class="n">build</span> <span class="o">--</span><span class="n">release</span> <span class="o">--</span><span class="n">features</span> <span class="n">tui</span>
+</pre></div>
+</div>
+<p>Then launch it with <code class="docutils literal notranslate"><span class="pre">--interactive</span></code> (or <code class="docutils literal notranslate"><span class="pre">-i</span></code>):</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">sqc</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">--</span><span class="n">interactive</span>
 <span class="n">sqc</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">-</span><span class="n">d</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">-</span><span class="n">i</span>    <span class="c1"># with cross-file context</span>
 </pre></div>
 </div>
+<p>Running <code class="docutils literal notranslate"><span class="pre">--interactive</span></code> against a binary built without the <code class="docutils literal notranslate"><span class="pre">tui</span></code> feature
+exits with an error telling you to rebuild with <code class="docutils literal notranslate"><span class="pre">--features</span> <span class="pre">tui</span></code>.</p>
 <p>The UI is built with <a class="reference external" href="https://ratatui.rs/">ratatui</a> and provides two tabs:
 <strong>Violations</strong> and <strong>Configuration</strong>.</p>
 <div class="admonition note">
