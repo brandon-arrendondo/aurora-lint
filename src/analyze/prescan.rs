@@ -1127,6 +1127,9 @@ pub(crate) fn aggregate_callsite_buf_args(
 /// forwarding hop (`a → b → c …`); Juliet's deepest chain is 5 (variant 54).
 const MAX_BUFFER_PROP_PASSES: usize = 6;
 
+/// Per-callee call-site buffer-size arguments, keyed by callee name.
+type CalleeBufArgs = HashMap<String, Vec<Vec<Option<usize>>>>;
+
 /// Propagate parameter buffer sizes through forwarding chains.
 ///
 /// The first aggregation only resolves parameters whose callers pass a *local*
@@ -1161,6 +1164,18 @@ fn propagate_param_buffer_sizes(
         return;
     }
 
+    // Per-file cache of collected callsite buffer args. A file's collected
+    // result only changes once one of ITS OWN functions gets newly seeded
+    // (its body can then resolve a forwarded parameter it couldn't before);
+    // otherwise re-parsing it re-derives the same result already cached. The
+    // full `fresh` map merges every file's cached result each pass, not just
+    // the ones re-parsed this pass -- re-parsing only a subset must never
+    // drop a still-valid contribution from an untouched file (task 204 did,
+    // regressing STR31-C: functions bound only via a direct-buffer call in a
+    // non-forwarder file lost that bound the first time their file wasn't
+    // reprocessed).
+    let mut per_file_cache: HashMap<PathBuf, CalleeBufArgs> = HashMap::new();
+
     for _pass in 0..MAX_BUFFER_PROP_PASSES {
         let seeds: HashMap<String, HashMap<usize, usize>> = summaries
             .iter()
@@ -1171,25 +1186,38 @@ fn propagate_param_buffer_sizes(
             return;
         }
 
-        // Only files defining a seeded (forwarder) function can produce new
-        // callsite info this pass: a function whose parameters aren't in
-        // `seeds` re-collects byte-identical results to the previous pass, so
-        // re-parsing it is wasted work. This is what shrinks the re-parse set
-        // for buffer-forwarding-free CWE dirs (task 204).
-        let relevant_files: Vec<&PathBuf> = source_files
-            .iter()
-            .filter(|f| {
-                file_functions
-                    .get(f.as_path())
-                    .is_some_and(|fns| fns.iter().any(|n| seeds.contains_key(n)))
-            })
-            .collect();
+        // On the first pass every file is unresolved-relative-to-seeds, so
+        // parse them all. Afterward, only files defining a seeded (forwarder)
+        // function can produce a *different* result than what's cached.
+        let relevant_files: Vec<&PathBuf> = if per_file_cache.is_empty() {
+            source_files.iter().collect()
+        } else {
+            source_files
+                .iter()
+                .filter(|f| {
+                    file_functions
+                        .get(f.as_path())
+                        .is_some_and(|fns| fns.iter().any(|n| seeds.contains_key(n)))
+                })
+                .collect()
+        };
 
-        let mut fresh: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
         for file_path in relevant_files {
             if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
                 let root = tree.root_node();
-                collect_callsite_buf_args_with_param_sizes(&root, &source, &seeds, &mut fresh);
+                let mut file_fresh = HashMap::new();
+                collect_callsite_buf_args_with_param_sizes(&root, &source, &seeds, &mut file_fresh);
+                per_file_cache.insert(file_path.clone(), file_fresh);
+            }
+        }
+
+        let mut fresh: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
+        for file_map in per_file_cache.values() {
+            for (callee, sites) in file_map {
+                fresh
+                    .entry(callee.clone())
+                    .or_default()
+                    .extend(sites.iter().cloned());
             }
         }
 
