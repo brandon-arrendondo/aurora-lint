@@ -1226,127 +1226,337 @@ impl Str31C {
         false
     }
 
-    /// Detect off-by-one error in manual string copy (dest[i] = '\0' after loop with i < n)
+    /// Unwrap a `parenthesized_expression` down to its inner expression
+    /// (needed for `while` conditions, which the grammar wraps in parens;
+    /// `for` conditions are already bare, so this is a no-op for those).
+    fn unwrap_parens(mut node: Node) -> Node {
+        while node.kind() == "parenthesized_expression" {
+            match node.named_child(0) {
+                Some(inner) => node = inner,
+                None => break,
+            }
+        }
+        node
+    }
+
+    /// Whether a `char_literal` node's text is the null terminator `'\0'`,
+    /// ignoring any wide/UTF encoding prefix (`L'\0'`, `u'\0'`, ...).
+    fn char_literal_is_null(node: &Node, source: &str) -> bool {
+        let text = ast_utils::get_node_text(node, source);
+        text.trim_start_matches(|c: char| c.is_ascii_alphabetic()) == "'\\0'"
+    }
+
+    /// Whether `node.child_by_field_name("update")` (for a `for_statement`)
+    /// or the loop body's last increment (for a `while_statement`) contains
+    /// a genuine `++var` / `var++` on `var`.
+    fn loop_increments_var(loop_node: &Node, var: &str, source: &str) -> bool {
+        let is_increment_of_var = |n: &Node| {
+            n.kind() == "update_expression"
+                && n.child_by_field_name("operator")
+                    .is_some_and(|o| ast_utils::get_node_text(&o, source) == "++")
+                && n.child_by_field_name("argument")
+                    .is_some_and(|a| ast_utils::get_node_text(&a, source) == var)
+        };
+        if loop_node.kind() == "for_statement" {
+            return loop_node
+                .child_by_field_name("update")
+                .is_some_and(|u| is_increment_of_var(&u));
+        }
+        loop_node
+            .child_by_field_name("body")
+            .map(|body| {
+                query::find_descendants_of_kind(body, "update_expression")
+                    .iter()
+                    .any(is_increment_of_var)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Whether the statement immediately following `loop_node` (skipping
+    /// comments) is `<var>[<index>] = '\0';` — the classic off-by-one
+    /// null-terminator write that lands one past the loop's last valid
+    /// index once `index == bound`.
+    fn next_statement_writes_null_at_index(
+        loop_node: &Node,
+        index_var: &str,
+        source: &str,
+    ) -> bool {
+        let mut sibling = loop_node.next_sibling();
+        while let Some(s) = sibling {
+            if s.kind() == "comment" || !s.is_named() {
+                sibling = s.next_sibling();
+                continue;
+            }
+            let assignment = if s.kind() == "expression_statement" {
+                s.named_child(0)
+            } else {
+                Some(s)
+            };
+            if let Some(assign) = assignment.filter(|a| a.kind() == "assignment_expression") {
+                let Some(left) = assign.child_by_field_name("left") else {
+                    return false;
+                };
+                let Some(right) = assign.child_by_field_name("right") else {
+                    return false;
+                };
+                return left.kind() == "subscript_expression"
+                    && left
+                        .child_by_field_name("index")
+                        .is_some_and(|i| ast_utils::get_node_text(&i, source) == index_var)
+                    && right.kind() == "char_literal"
+                    && Self::char_literal_is_null(&right, source);
+            }
+            // First real statement after the loop didn't match — the classic
+            // pattern always has the null-write immediately after the loop.
+            return false;
+        }
+        false
+    }
+
+    /// Detect off-by-one error in manual string copy (dest[i] = '\0' after loop with i < n).
+    ///
+    /// Structural version of the classic Juliet pattern
+    /// `for (i = 0; i < n; ++i) { dest[i] = src[i]; } dest[i] = '\0';` —
+    /// `i` equals `n` once the loop exits, so `dest[n]` is one past the
+    /// last valid index (should be `dest[i - 1]` or the loop bound should
+    /// be `i < n - 1`).
     fn detect_off_by_one_error(&self, node: &Node, source: &str) -> bool {
-        // Look for function definitions containing the pattern
-        if node.kind() == "function_definition" {
-            let func_text = &source[node.start_byte()..node.end_byte()];
+        if node.kind() != "function_definition" {
+            return false;
+        }
 
-            // Pattern: for (i = 0; ... i < n; ++i) { dest[i] = src[i]; } dest[i] = '\0';
-            // The issue: i == n after loop, but dest[n] is out of bounds (should be dest[n-1])
-            // SAFE pattern: i < n - 1 (then dest[i] is safe)
+        for loop_node in
+            query::find_descendants_of_kinds(*node, &["for_statement", "while_statement"])
+        {
+            let Some(condition) = loop_node.child_by_field_name("condition") else {
+                continue;
+            };
+            let condition = Self::unwrap_parens(condition);
 
-            // Check for a loop with condition "i < n" (but NOT "i < n - 1" which is safe)
-            if (func_text.contains("i < n") || func_text.contains("i < size"))
-                && !func_text.contains("i < n - 1")
-                && !func_text.contains("i < size - 1")
-                && !func_text.contains("i < n-1")
-                && !func_text.contains("i < size-1")
-                && func_text.contains("++i")
-                && func_text.contains("[i]")
-            {
-                // Look for assignment after the loop using the same index
-                // Pattern: dest[i] = '\0' or similar after the closing brace
-                let lines: Vec<&str> = func_text.lines().collect();
-                let mut found_loop_end = false;
-
-                for line in lines {
-                    // Look for closing brace (end of loop)
-                    if line.trim() == "}" {
-                        found_loop_end = true;
+            // Find a `<` comparison anywhere in the condition (root included) —
+            // covers both a bare `i < n` condition and a compound guard like
+            // `src[i] && (i < n)`, which still off-by-ones once `i == n`.
+            let bare_lt_bound = query::find_descendants_of_kind(condition, "binary_expression")
+                .into_iter()
+                .filter(|c| {
+                    c.child_by_field_name("operator")
+                        .is_some_and(|o| ast_utils::get_node_text(&o, source) == "<")
+                })
+                .find_map(|c| {
+                    let left = c.child_by_field_name("left")?;
+                    let right = c.child_by_field_name("right")?;
+                    // Bound must be a bare identifier (`i < n`) — `i < n - 1`
+                    // (any subtraction) is the safe form, deliberately unmatched.
+                    if left.kind() == "identifier" && right.kind() == "identifier" {
+                        Some(ast_utils::get_node_text(&left, source))
+                    } else {
+                        None
                     }
+                });
+            let Some(loop_var) = bare_lt_bound else {
+                continue;
+            };
 
-                    // After loop ends, look for dest[i] = '\0' or similar
-                    if found_loop_end
-                        && line.contains("[i]")
-                        && line.contains("=")
-                        && line.contains("'\\0'")
-                    {
-                        return true; // Off-by-one: i might equal n, accessing out of bounds
-                    }
-                }
+            if !Self::loop_increments_var(&loop_node, loop_var, source) {
+                continue;
+            }
+
+            let Some(loop_body) = loop_node.child_by_field_name("body") else {
+                continue;
+            };
+            let body_indexes_by_loop_var =
+                query::find_descendants_of_kind(loop_body, "subscript_expression")
+                    .iter()
+                    .any(|s| {
+                        s.child_by_field_name("index")
+                            .is_some_and(|i| ast_utils::get_node_text(&i, source) == loop_var)
+                    });
+            if !body_indexes_by_loop_var {
+                continue;
+            }
+
+            if Self::next_statement_writes_null_at_index(&loop_node, loop_var, source) {
+                return true; // Off-by-one: loop_var might equal the bound, accessing out of bounds
             }
         }
 
         false
     }
 
-    /// Detect manual string loops without bounds checking
+    /// Whether `condition` is a null-terminated string-walk test:
+    /// `data[i] != '\0'`, `*src != '\0'`, or a bare pointer truthy check
+    /// like `*src` (implicitly `!= 0`).
+    fn condition_is_null_terminated_walk(condition: &Node, source: &str) -> bool {
+        match condition.kind() {
+            "binary_expression" => {
+                let Some(op) = condition.child_by_field_name("operator") else {
+                    return false;
+                };
+                if ast_utils::get_node_text(&op, source) != "!=" {
+                    return false;
+                }
+                let (Some(left), Some(right)) = (
+                    condition.child_by_field_name("left"),
+                    condition.child_by_field_name("right"),
+                ) else {
+                    return false;
+                };
+                let is_indexable =
+                    |n: &Node| matches!(n.kind(), "subscript_expression" | "pointer_expression");
+                let is_null_or_zero = |n: &Node| match n.kind() {
+                    "char_literal" => Self::char_literal_is_null(n, source),
+                    "number_literal" => ast_utils::get_node_text(n, source) == "0",
+                    _ => false,
+                };
+                (is_indexable(&left) && is_null_or_zero(&right))
+                    || (is_indexable(&right) && is_null_or_zero(&left))
+            }
+            // Bare `*src` truthy check.
+            "pointer_expression" => condition
+                .child_by_field_name("operator")
+                .is_some_and(|o| ast_utils::get_node_text(&o, source) == "*"),
+            _ => false,
+        }
+    }
+
+    /// Whether `body` contains a genuine buffer write: an array-index
+    /// assignment (`dest[i] = ...`) or a post-increment pointer-dereference
+    /// write (`*dest++ = ...`, for any pointer variable name).
+    fn body_has_buffer_write(body: &Node, source: &str) -> bool {
+        query::find_descendants_of_kind(*body, "assignment_expression")
+            .iter()
+            .any(|a| {
+                let Some(left) = a.child_by_field_name("left") else {
+                    return false;
+                };
+                match left.kind() {
+                    "subscript_expression" => true,
+                    "pointer_expression" => {
+                        left.child_by_field_name("operator")
+                            .is_some_and(|o| ast_utils::get_node_text(&o, source) == "*")
+                            && left.child_by_field_name("argument").is_some_and(|arg| {
+                                arg.kind() == "update_expression"
+                                    && arg.child_by_field_name("operator").is_some_and(|op| {
+                                        ast_utils::get_node_text(&op, source) == "++"
+                                    })
+                            })
+                    }
+                    _ => false,
+                }
+            })
+    }
+
+    /// Whether `node` is a relational comparison (`<`, `<=`, `>`, `>=`).
+    fn is_relational_comparison(node: &Node, source: &str) -> bool {
+        node.kind() == "binary_expression"
+            && node.child_by_field_name("operator").is_some_and(|o| {
+                matches!(
+                    ast_utils::get_node_text(&o, source),
+                    "<" | "<=" | ">" | ">="
+                )
+            })
+    }
+
+    /// Whether the loop has any recognizable bounds check: a compound
+    /// condition ANDing the walk test with a relational bound, a `sizeof`
+    /// anywhere in the loop, a reference to a bound/limit-named variable
+    /// (matched against each identifier's own text, so a comment or string
+    /// literal containing the same word can't fool this), or a
+    /// pointer-distance comparison (`p - buf < size`).
+    fn loop_has_bounds_check(loop_node: &Node, condition: &Node, source: &str) -> bool {
+        if condition.kind() == "binary_expression"
+            && condition
+                .child_by_field_name("operator")
+                .is_some_and(|o| ast_utils::get_node_text(&o, source) == "&&")
+        {
+            let sides = [
+                condition.child_by_field_name("left"),
+                condition.child_by_field_name("right"),
+            ];
+            if sides
+                .into_iter()
+                .flatten()
+                .any(|s| Self::is_relational_comparison(&s, source))
+            {
+                return true;
+            }
+        }
+
+        if !query::find_descendants_of_kind(*loop_node, "sizeof_expression").is_empty() {
+            return true;
+        }
+
+        const BOUND_NAME_WORDS: &[&str] = &[
+            "size", "len", "limit", "end", "max", "bufsize", "buf_size", "maxlen", "max_len",
+        ];
+        let has_bound_named_identifier = query::find_descendants_of_kind(*loop_node, "identifier")
+            .iter()
+            .any(|id| {
+                let text = ast_utils::get_node_text(id, source);
+                BOUND_NAME_WORDS.iter().any(|kw| text.contains(kw))
+            });
+        if has_bound_named_identifier {
+            return true;
+        }
+
+        // Pointer-distance bound: a relational comparison where one side is
+        // itself a subtraction, e.g. `p - buf < size`.
+        query::find_descendants_of_kind(*loop_node, "binary_expression")
+            .iter()
+            .any(|rel| {
+                Self::is_relational_comparison(rel, source)
+                    && [
+                        rel.child_by_field_name("left"),
+                        rel.child_by_field_name("right"),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|side| {
+                        side.kind() == "binary_expression"
+                            && side
+                                .child_by_field_name("operator")
+                                .is_some_and(|o| ast_utils::get_node_text(&o, source) == "-")
+                    })
+            })
+    }
+
+    /// Detect manual string copying loops without bounds checking.
+    ///
+    /// Structural version: a null-terminated-walk or getchar loop
+    /// (`while (data[i] != '\0')`, `while (*src)`,
+    /// `while ((ch = getchar()) != '\n')`) whose body performs a genuine
+    /// buffer write and whose condition/body has no recognizable bounds
+    /// check is flagged.
     fn detect_manual_string_loop(&self, node: &Node, source: &str) -> bool {
-        // Only check loop statements
         if node.kind() != "while_statement" && node.kind() != "for_statement" {
             return false;
         }
 
-        // Extract the loop condition text (NOT the full loop body).
-        let condition_text = node
-            .child_by_field_name("condition")
-            .map(|c| &source[c.start_byte()..c.end_byte()])
-            .unwrap_or("");
+        let Some(condition) = node.child_by_field_name("condition") else {
+            return false;
+        };
+        let condition = Self::unwrap_parens(condition);
 
-        // Extract loop body text
-        let body_text = node
-            .child_by_field_name("body")
-            .map(|c| &source[c.start_byte()..c.end_byte()])
-            .unwrap_or("");
-
-        // Pattern 1: Null-terminated string walk
-        //   while (data[i] != '\0') { *ptr++ = data[i++]; }
-        //   while (*src) { *dest++ = *src++; }
-        //   for (int i = 0; source[i]; i++) { dest[i] = source[i]; }
-        let is_string_walk = condition_text.contains("!= '\\0'")
-            || condition_text.contains("!='\\0'")
-            || (condition_text.contains("!= 0")
-                && (condition_text.contains("[") || condition_text.contains("*")));
-
-        // Pattern 2: getchar loop writing to buffer
-        //   while ((ch = getchar()) != '\n') { *p++ = ch; }
-        let is_getchar_loop = condition_text.contains("getchar");
+        let is_string_walk = Self::condition_is_null_terminated_walk(&condition, source);
+        let is_getchar_loop = query::find_descendants_of_kind(condition, "call_expression")
+            .iter()
+            .any(|c| {
+                c.child_by_field_name("function")
+                    .is_some_and(|f| ast_utils::get_node_text(&f, source) == "getchar")
+            });
 
         if !is_string_walk && !is_getchar_loop {
             return false;
         }
 
-        // The body must write to memory (array indexing or pointer increment)
-        let has_write =
-            // Array-to-array copy: dest[i] = src[i]
-            (body_text.contains("[") && body_text.contains("] ="))
-            // Pointer write with increment: *ptr++ = ..., *p++ = ...
-            || body_text.contains("*p++ =") || body_text.contains("*p++=")
-            || body_text.contains("*ptr++ =") || body_text.contains("*ptr++=")
-            || body_text.contains("*dest++ =") || body_text.contains("*dst++ =")
-            || body_text.contains("*buf++ =") || body_text.contains("*buffer++ =")
-            // General pattern: *(identifier)++ = (something)
-            || (body_text.contains("++") && body_text.contains("*") && body_text.contains("="));
-
-        if !has_write {
+        let Some(body) = node.child_by_field_name("body") else {
+            return false;
+        };
+        if !Self::body_has_buffer_write(&body, source) {
             return false;
         }
 
-        // For getchar loops, require pointer increment to be a genuine buffer write
-        if is_getchar_loop && !has_write {
-            return false;
-        }
-
-        // Check for any bounds-checking in the condition or body
-        let full_loop_text = &source[node.start_byte()..node.end_byte()];
-        let has_bounds_check =
-            // Condition has a conjunction with a size check
-            (condition_text.contains("&&") && (
-                condition_text.contains("< ") || condition_text.contains("<=")
-                || condition_text.contains("size") || condition_text.contains("len")
-                || condition_text.contains("limit") || condition_text.contains("end")
-                || condition_text.contains("max")))
-            // For-loop condition has a less-than bound AND the body has array copy
-            || (node.kind() == "for_statement" && condition_text.contains("< ") && condition_text.contains("sizeof"))
-            // Body checks bounds
-            || body_text.contains("sizeof")
-            || full_loop_text.contains("buf_size") || full_loop_text.contains("bufsize")
-            || full_loop_text.contains("maxlen") || full_loop_text.contains("max_len")
-            // Pointer distance check: p - buf < size
-            || full_loop_text.contains("- buf") || full_loop_text.contains("- buffer");
-
-        !has_bounds_check
+        !Self::loop_has_bounds_check(node, &condition, source)
     }
 
     /// Check for strncpy null termination issues
