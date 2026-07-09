@@ -1302,13 +1302,19 @@ impl Arr30C {
             }
         }
 
-        // Check for function-level bounds checking (parameter validation)
+        // Check for function-level bounds checking (parameter validation).
+        // Matched against each identifier's own text, not the whole function's
+        // raw span, so a comment or string literal mentioning "size"/"length"/
+        // "count" can't fake a bounds check that isn't actually there.
         if let Some(func_node) = find_containing_function(node) {
-            let function_text = &source[func_node.start_byte()..func_node.end_byte()];
-            if function_text.contains("size")
-                || function_text.contains("length")
-                || function_text.contains("count")
-            {
+            let has_bound_named_identifier =
+                query::find_descendants_of_kind(func_node, "identifier")
+                    .iter()
+                    .any(|id| {
+                        let text = &source[id.start_byte()..id.end_byte()];
+                        text.contains("size") || text.contains("length") || text.contains("count")
+                    });
+            if has_bound_named_identifier {
                 return true;
             }
         }
@@ -1327,11 +1333,28 @@ impl Arr30C {
         size: usize,
         macro_constants: &HashMap<String, i64>,
     ) -> bool {
-        let loop_text = &source[for_node.start_byte()..for_node.end_byte()];
-
-        // Look for patterns like: i < SIZE or i < 10
-        if loop_text.contains(&format!("< {}", size)) {
-            return true;
+        // Look for a condition comparison like `i < 10` where the bound is
+        // exactly `size` — scoped to the loop's own condition (not its body),
+        // and matched against the comparison operator/operand nodes, not a
+        // whole-loop text scan a comment or unrelated body statement could
+        // fake a match in.
+        if let Some(condition) = for_node.child_by_field_name("condition") {
+            let has_exact_size_bound =
+                query::find_descendants_of_kind(condition, "binary_expression")
+                    .iter()
+                    .any(|cmp| {
+                        cmp.child_by_field_name("operator")
+                            .is_some_and(|o| &source[o.start_byte()..o.end_byte()] == "<")
+                            && cmp.child_by_field_name("right").is_some_and(|r| {
+                                r.kind() == "number_literal"
+                                    && source[r.start_byte()..r.end_byte()]
+                                        .parse::<usize>()
+                                        .is_ok_and(|n| n == size)
+                            })
+                    });
+            if has_exact_size_bound {
+                return true;
+            }
         }
 
         // Extract the loop index variable name
@@ -2386,53 +2409,93 @@ impl Arr30C {
     ) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Extract the while loop body
-        let mut loop_body_text = String::new();
-        let mut condition_text = String::new();
+        let (Some(condition), Some(body)) = (
+            while_node.child_by_field_name("condition"),
+            while_node.child_by_field_name("body"),
+        ) else {
+            return violations;
+        };
 
-        for i in 0..while_node.child_count() {
-            if let Some(child) = while_node.child(i) {
-                match child.kind() {
-                    "parenthesized_expression" | "condition_clause" => {
-                        condition_text = source[child.start_byte()..child.end_byte()].to_string();
-                    }
-                    "compound_statement" | "expression_statement" => {
-                        loop_body_text = source[child.start_byte()..child.end_byte()].to_string();
-                    }
-                    _ => {}
-                }
-            }
-        }
+        // Genuine `identifier++`/`++identifier`/`identifier--`/`--identifier`
+        // updates in the loop body — walking update_expression nodes instead
+        // of substring-scanning the body's raw text means a comment or
+        // string literal mentioning "++" can't fake an increment.
+        let incremented_pointers: Vec<String> =
+            query::find_descendants_of_kind(body, "update_expression")
+                .iter()
+                .filter(|u| {
+                    u.child_by_field_name("operator").is_some_and(|o| {
+                        matches!(&source[o.start_byte()..o.end_byte()], "++" | "--")
+                    })
+                })
+                .filter_map(|u| u.child_by_field_name("argument"))
+                .map(|arg| source[arg.start_byte()..arg.end_byte()].to_string())
+                .collect();
 
-        // Check if loop body contains pointer increment (ptr++ or *ptr++)
-        let has_pointer_increment = loop_body_text.contains("++") || loop_body_text.contains("--");
-
-        if !has_pointer_increment {
+        if incremented_pointers.is_empty() {
             return violations; // No pointer increment, safe
         }
 
-        // Check if there's bounds checking in the condition
-        // Safe patterns: size check, length check, null check with counter, etc.
-        let has_bounds_check = condition_text.contains("< ")
-            || condition_text.contains("> ")
-            || condition_text.contains("<=")
-            || condition_text.contains(">=")
-            || condition_text.contains("size")
-            || condition_text.contains("length")
-            || condition_text.contains("count")
-            || condition_text.contains("len");
+        // Check if there's bounds checking in the condition: a genuine
+        // relational comparison, or a reference to a bound/limit-named
+        // variable — matched against the condition's own binary_expression
+        // operators and identifier nodes, not its raw text, so a comment or
+        // unrelated string literal can't fake a bounds check.
+        let has_relational_comparison =
+            query::find_descendants_of_kind(condition, "binary_expression")
+                .iter()
+                .any(|cmp| {
+                    cmp.child_by_field_name("operator").is_some_and(|o| {
+                        matches!(
+                            &source[o.start_byte()..o.end_byte()],
+                            "<" | ">" | "<=" | ">="
+                        )
+                    })
+                });
+        let has_bound_named_identifier = query::find_descendants_of_kind(condition, "identifier")
+            .iter()
+            .any(|id| {
+                let text = &source[id.start_byte()..id.end_byte()];
+                text.contains("size")
+                    || text.contains("length")
+                    || text.contains("count")
+                    || text.contains("len")
+            });
+        let has_bounds_check = has_relational_comparison || has_bound_named_identifier;
 
         if !has_bounds_check {
-            // Unbounded pointer increment detected
-            // Extract pointer names from the increment operations
-            let pointer_names = self.extract_incremented_pointers(&loop_body_text);
-
-            // Check if any of these pointers are buffers we're tracking
-            for ptr_name in pointer_names {
-                // Check if this matches a tracked buffer or is used for array access
-                if buffers.contains_key(&ptr_name)
-                    || loop_body_text.contains(&format!("*{}", ptr_name))
-                {
+            // Unbounded pointer increment detected — check if any incremented
+            // pointer is a tracked buffer or is genuinely dereferenced in the body.
+            for ptr_name in incremented_pointers {
+                // Matches a bare `*ptr` dereference as well as the combined
+                // `*ptr++`/`*ptr--` deref-and-increment idiom, where the
+                // pointer_expression's argument is the update_expression
+                // rather than the bare identifier.
+                let derefs_ptr = query::find_descendants_of_kind(body, "pointer_expression")
+                    .iter()
+                    .any(|n| {
+                        n.child_by_field_name("argument").is_some_and(|a| {
+                            if source[a.start_byte()..a.end_byte()] == *ptr_name {
+                                return true;
+                            }
+                            // `*ptr++` (postfix): the pointer_expression's argument is
+                            // the update_expression. `*++ptr` (prefix) is NOT matched —
+                            // it dereferences the pointer's *next* position, not the
+                            // pre-increment one, so it isn't the same access pattern.
+                            a.kind() == "update_expression"
+                                && matches!(
+                                    (
+                                        a.child_by_field_name("operator"),
+                                        a.child_by_field_name("argument")
+                                    ),
+                                    (Some(op), Some(arg)) if op.start_byte() > arg.start_byte()
+                                )
+                                && a.child_by_field_name("argument").is_some_and(|inner| {
+                                    source[inner.start_byte()..inner.end_byte()] == *ptr_name
+                                })
+                        })
+                    });
+                if buffers.contains_key(&ptr_name) || derefs_ptr {
                     let start_point = while_node.start_position();
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
@@ -2455,28 +2518,6 @@ impl Arr30C {
         }
 
         violations
-    }
-
-    /// Extract pointer names that are being incremented in the loop body
-    /// Looks for patterns like ptr++, ++ptr, *ptr++, etc.
-    fn extract_incremented_pointers(&self, loop_body: &str) -> Vec<String> {
-        let mut pointers = Vec::new();
-
-        // Simple regex-like matching for identifier++
-        for word in loop_body.split_whitespace() {
-            if word.contains("++") {
-                // Extract the identifier before ++
-                let clean = word.trim_start_matches('*').trim_start_matches('(');
-                if let Some(idx) = clean.find("++") {
-                    let ptr_name = clean[..idx].trim().to_string();
-                    if !ptr_name.is_empty() && !ptr_name.contains(';') && !ptr_name.contains(')') {
-                        pointers.push(ptr_name);
-                    }
-                }
-            }
-        }
-
-        pointers
     }
 
     /// Collect the names of local pointers in `func_node` that are tainted by an
@@ -2581,6 +2622,30 @@ impl Arr30C {
             .any(|acc| text.contains(&format!("{}(", acc)))
     }
 
+    /// `node`'s source span with every `comment`/`string_literal`/`char_literal`
+    /// byte range blanked to spaces (newlines preserved, so line numbers derived
+    /// from the result stay meaningful). The decode-loop heuristics below do
+    /// substring/regex matching over raw source spans for expedience — this
+    /// sanitization pass is what keeps a comment (`// p++ removed`) or a string
+    /// literal (`"advance p < end"`) from injecting a false match into those
+    /// checks, without having to re-derive each heuristic from the AST.
+    fn text_sans_comments_and_strings(node: Node, source: &str) -> String {
+        let base = node.start_byte();
+        let mut bytes = source.as_bytes()[base..node.end_byte()].to_vec();
+        for n in
+            query::find_descendants_of_kinds(node, &["comment", "string_literal", "char_literal"])
+        {
+            let start = n.start_byte() - base;
+            let end = (n.end_byte() - base).min(bytes.len());
+            for b in &mut bytes[start..end] {
+                if *b != b'\n' {
+                    *b = b' ';
+                }
+            }
+        }
+        String::from_utf8(bytes).unwrap_or_default()
+    }
+
     /// Detect an unbounded decode loop over an untrusted (blob/value-derived)
     /// pointer: a `while`/`for`/`do` loop that advances a tainted pointer (or
     /// feeds it to a varint reader) while chasing a terminator or continuation
@@ -2598,7 +2663,7 @@ impl Arr30C {
             Some(b) => b,
             None => return violations,
         };
-        let loop_text = &source[loop_node.start_byte()..loop_node.end_byte()];
+        let loop_text = Self::text_sans_comments_and_strings(*loop_node, source);
         let body_rel_start = body.start_byte() - loop_node.start_byte();
         let body_rel_end = body.end_byte() - loop_node.start_byte();
         let header = format!(
@@ -2606,7 +2671,7 @@ impl Arr30C {
             &loop_text[..body_rel_start],
             &loop_text[body_rel_end..]
         );
-        let body_text = source[body.start_byte()..body.end_byte()].to_string();
+        let body_text = loop_text[body_rel_start..body_rel_end].to_string();
 
         // Taint is scoped to the containing function. Memoize per function so
         // the scan runs once per function rather than once per loop.
@@ -2618,8 +2683,8 @@ impl Arr30C {
         if !self.decode_taint_cache.borrow().contains_key(&func_key) {
             // Cheap pre-filter: only walk the function when its text mentions a
             // blob/value accessor at all, otherwise cache an empty set.
-            let func_text = &source[func_node.start_byte()..func_node.end_byte()];
-            let tainted = if Self::text_calls_blob_accessor(func_text) {
+            let func_text = Self::text_sans_comments_and_strings(func_node, source);
+            let tainted = if Self::text_calls_blob_accessor(&func_text) {
                 self.collect_blob_tainted_pointers(&func_node, source)
             } else {
                 HashSet::new()
@@ -2788,7 +2853,7 @@ impl Arr30C {
             Some(b) => b,
             None => return violations,
         };
-        let loop_text = &source[loop_node.start_byte()..loop_node.end_byte()];
+        let loop_text = Self::text_sans_comments_and_strings(*loop_node, source);
         let body_rel_start = body.start_byte() - loop_node.start_byte();
         let body_rel_end = body.end_byte() - loop_node.start_byte();
         let header = format!(
@@ -2797,7 +2862,7 @@ impl Arr30C {
             &loop_text[body_rel_end..]
         );
 
-        let func_text = &source[func_node.start_byte()..func_node.end_byte()];
+        let func_text = Self::text_sans_comments_and_strings(func_node, source);
 
         // Embedded-increment subscripts (`buf[++i]` / `buf[i++]`) on a candidate
         // buffer, attributed to the innermost enclosing loop so the same access
@@ -2812,7 +2877,7 @@ impl Arr30C {
                 continue;
             }
             // The index is bounded somewhere in the function (`i < n`, `n > i`).
-            if Self::index_is_relationally_bounded(&idx, func_text) {
+            if Self::index_is_relationally_bounded(&idx, &func_text) {
                 continue;
             }
             self.param_decode_reported.borrow_mut().insert(func_key);
@@ -3411,6 +3476,25 @@ impl Arr30C {
         violations
     }
 
+    /// Whether `value` is a call to malloc/calloc/realloc, unwrapping a
+    /// leading cast (`(char *)malloc(n)`) if present. Matched against the
+    /// callee identifier node, not the RHS's raw text, so a string-literal
+    /// initializer like `char *msg = "malloc(10) failed";` can't be
+    /// mistaken for an allocation.
+    fn is_alloc_call(value: &Node, source: &str) -> bool {
+        let value = match value.kind() {
+            "cast_expression" => value.child_by_field_name("value").unwrap_or(*value),
+            _ => *value,
+        };
+        value.kind() == "call_expression"
+            && value.child_by_field_name("function").is_some_and(|f| {
+                matches!(
+                    &source[f.start_byte()..f.end_byte()],
+                    "malloc" | "calloc" | "realloc"
+                )
+            })
+    }
+
     /// Find all malloc/calloc/realloc assignments in a function
     fn find_malloc_assignments(
         &self,
@@ -3419,12 +3503,28 @@ impl Arr30C {
         malloc_vars: &mut HashMap<String, usize>,
     ) {
         // Check current node for malloc assignment
-        if node.kind() == "declaration" || node.kind() == "assignment_expression" {
-            let text = &source[node.start_byte()..node.end_byte()];
-
-            // Pattern: var = malloc(...) or var = calloc(...) or var = realloc(...)
-            if text.contains("malloc(") || text.contains("calloc(") || text.contains("realloc(") {
-                // Extract variable name from left side of assignment
+        if node.kind() == "declaration" {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "init_declarator" {
+                        if child
+                            .child_by_field_name("value")
+                            .is_some_and(|v| Self::is_alloc_call(&v, source))
+                        {
+                            if let Some(var_name) = self.extract_assignment_lhs(node, source) {
+                                let line = node.start_position().row + 1;
+                                malloc_vars.insert(var_name, line);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        } else if node.kind() == "assignment_expression" {
+            if node
+                .child_by_field_name("right")
+                .is_some_and(|r| Self::is_alloc_call(&r, source))
+            {
                 if let Some(var_name) = self.extract_assignment_lhs(node, source) {
                     let line = node.start_position().row + 1;
                     malloc_vars.insert(var_name, line);
@@ -3505,16 +3605,10 @@ impl Arr30C {
     fn find_safe_null_check(&self, node: &Node, source: &str, var_name: &str) -> bool {
         // Check if this is an if statement with NULL check
         if node.kind() == "if_statement" {
-            let text = &source[node.start_byte()..node.end_byte()];
-
-            // Check if condition checks for NULL
-            // Accept patterns: buffer == NULL, NULL == buffer, !buffer
-            let has_null_check = text.contains(&format!("{} == NULL", var_name))
-                || text.contains(&format!("NULL == {}", var_name))
-                || text.contains(&format!("!{}", var_name));
-
-            if has_null_check {
-                return true; // NULL check found - considered safe
+            if let Some(condition) = node.child_by_field_name("condition") {
+                if Self::condition_has_null_check(&condition, source, var_name) {
+                    return true; // NULL check found - considered safe
+                }
             }
         }
 
@@ -3530,6 +3624,54 @@ impl Arr30C {
         false
     }
 
+    /// Whether `condition` checks `var_name` for NULL: `var == NULL`,
+    /// `NULL == var`, `var != NULL`, `NULL != var`, or `!var`. Matched
+    /// against the comparison's own operand nodes, not the condition's raw
+    /// text, so a comment or string literal mentioning the variable name
+    /// can't fake a check that isn't actually there.
+    fn condition_has_null_check(condition: &Node, source: &str, var_name: &str) -> bool {
+        let is_var = |n: &Node| {
+            n.kind() == "identifier" && &source[n.start_byte()..n.end_byte()] == var_name
+        };
+        // `NULL` is its own dedicated node kind ("null") in tree-sitter-c,
+        // not an `identifier` — plus a defensive fallback for a
+        // project-defined `NULL` macro that resolves to a plain identifier.
+        let is_null = |n: &Node| {
+            n.kind() == "null"
+                || (n.kind() == "identifier" && &source[n.start_byte()..n.end_byte()] == "NULL")
+        };
+
+        let has_binary_null_check =
+            query::find_descendants_of_kind(*condition, "binary_expression")
+                .iter()
+                .any(|cmp| {
+                    let is_eq_or_neq = cmp.child_by_field_name("operator").is_some_and(|o| {
+                        matches!(&source[o.start_byte()..o.end_byte()], "==" | "!=")
+                    });
+                    let (Some(left), Some(right)) = (
+                        cmp.child_by_field_name("left"),
+                        cmp.child_by_field_name("right"),
+                    ) else {
+                        return false;
+                    };
+                    is_eq_or_neq
+                        && ((is_var(&left) && is_null(&right))
+                            || (is_null(&left) && is_var(&right)))
+                });
+        if has_binary_null_check {
+            return true;
+        }
+
+        query::find_descendants_of_kind(*condition, "unary_expression")
+            .iter()
+            .any(|u| {
+                u.child_by_field_name("operator")
+                    .is_some_and(|o| &source[o.start_byte()..o.end_byte()] == "!")
+                    && u.child_by_field_name("argument")
+                        .is_some_and(|a| is_var(&a))
+            })
+    }
+
     /// Find pointer arithmetic usage of the given variable
     /// Returns the line number where pointer arithmetic is used, or None
     fn find_pointer_arithmetic_usage(
@@ -3538,24 +3680,40 @@ impl Arr30C {
         source: &str,
         var_name: &str,
     ) -> Option<usize> {
-        let text = &source[node.start_byte()..node.end_byte()];
+        let is_var = |n: &Node| {
+            n.kind() == "identifier" && &source[n.start_byte()..n.end_byte()] == var_name
+        };
 
-        // Check for pointer arithmetic patterns:
-        // 1. var + offset
-        // 2. var += offset
-        // 3. function(var + offset, ...)
-
-        // Pattern 1 & 3: var + something
-        if text.contains(&format!("{} +", var_name)) || text.contains(&format!("+ {}", var_name)) {
-            // Make sure it's not just part of a NULL check (avoid false positives)
-            if !text.contains("== NULL") && !text.contains("!= NULL") {
-                return Some(node.start_position().row + 1);
+        // `var + offset` / `offset + var` — matched against the binary `+`
+        // operator's own operand nodes, not the enclosing span's raw text,
+        // so this can't collide with an unrelated `== NULL`/`!= NULL` check
+        // elsewhere in the same (possibly large) enclosing node.
+        if node.kind() == "binary_expression" {
+            let is_plus = node
+                .child_by_field_name("operator")
+                .is_some_and(|o| &source[o.start_byte()..o.end_byte()] == "+");
+            if is_plus {
+                let involves_var = [
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|side| is_var(&side));
+                if involves_var {
+                    return Some(node.start_position().row + 1);
+                }
             }
         }
 
-        // Pattern 2: var += offset
-        if text.contains(&format!("{} +=", var_name)) {
-            return Some(node.start_position().row + 1);
+        // `var += offset`
+        if node.kind() == "assignment_expression" {
+            let is_plus_eq = node
+                .child_by_field_name("operator")
+                .is_some_and(|o| &source[o.start_byte()..o.end_byte()] == "+=");
+            if is_plus_eq && node.child_by_field_name("left").is_some_and(|l| is_var(&l)) {
+                return Some(node.start_position().row + 1);
+            }
         }
 
         // Recursively check children
