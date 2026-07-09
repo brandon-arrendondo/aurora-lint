@@ -1079,12 +1079,25 @@ fn is_subscript_read_context(node: &Node) -> bool {
 // Interprocedural pre-scan
 // ---------------------------------------------------------------------------
 
+/// Whether `body` contains a call to a function named `name`, matched
+/// against the callee identifier node rather than the body's raw text — a
+/// comment or string literal mentioning the name can't fake a call.
+fn body_calls_function(body: &Node, source: &str, name: &str) -> bool {
+    query::find_descendants_of_kind(*body, "call_expression")
+        .iter()
+        .any(|c| {
+            c.child_by_field_name("function")
+                .is_some_and(|f| get_node_text(&f, source) == name)
+        })
+}
+
 /// Scan translation unit for functions that wrap realloc.
 fn scan_realloc_wrappers(node: &Node, source: &str, wrappers: &mut HashSet<String>) {
     for func_def in query::find_descendants_of_kind(*node, "function_definition") {
         if let Some(body) = func_def.child_by_field_name("body") {
-            let body_text = get_node_text(&body, source);
-            if body_text.contains("realloc(") && !body_text.contains("memset") {
+            if body_calls_function(&body, source, "realloc")
+                && !body_calls_function(&body, source, "memset")
+            {
                 if let Some(declarator) = func_def.child_by_field_name("declarator") {
                     let name = get_func_name(&declarator, source);
                     if !name.is_empty() {
@@ -1130,31 +1143,51 @@ fn get_conditional_init_param_indices(func_node: &Node, source: &str) -> HashSet
     let mut all_params: Vec<(usize, String, bool)> = Vec::new(); // (index, name, is_pointer)
     collect_param_list_with_indices(func_node, source, &mut all_params);
 
-    let body_text = get_node_text(&body, source);
+    // Whether `node` is `*param_name` — a genuine pointer dereference of the
+    // given parameter, matched against the pointer_expression's own operand
+    // nodes rather than raw text, so a comment or string literal mentioning
+    // "*param_name" can't fake a dereference that isn't actually there.
+    let is_param_deref = |node: &Node, param_name: &str| {
+        node.kind() == "pointer_expression"
+            && node
+                .child_by_field_name("operator")
+                .is_some_and(|o| get_node_text(&o, source) == "*")
+            && node.child_by_field_name("argument").is_some_and(|a| {
+                a.kind() == "identifier" && get_node_text(&a, source) == param_name
+            })
+    };
 
     for (idx, param_name, is_pointer) in &all_params {
         if !is_pointer {
             continue;
         }
-        let deref_write = format!("*{}", param_name);
 
-        if !body_text.contains(&deref_write) {
+        // Cheap pre-filter: is the param dereferenced anywhere in the body at all?
+        let derefs_param = query::find_descendants_of_kind(body, "pointer_expression")
+            .iter()
+            .any(|p| is_param_deref(p, param_name));
+        if !derefs_param {
             continue; // Param not written through at all
         }
 
-        // Check: does *param = appear at compound_statement top level?
-        let mut has_unconditional_write = false;
-        for i in 0..body.child_count() {
-            if let Some(child) = body.child(i) {
-                if child.kind() == "expression_statement" {
-                    let stmt_text = get_node_text(&child, source);
-                    if stmt_text.contains(&deref_write) && stmt_text.contains('=') {
-                        has_unconditional_write = true;
-                        break;
+        // Precise check: does `*param = ...` appear as an assignment at
+        // compound_statement top level (i.e. unconditionally, not nested
+        // inside an `if`)?
+        let has_unconditional_write =
+            (0..body.child_count())
+                .filter_map(|i| body.child(i))
+                .any(|child| {
+                    if child.kind() != "expression_statement" {
+                        return false;
                     }
-                }
-            }
-        }
+                    let Some(expr) = child.named_child(0) else {
+                        return false;
+                    };
+                    expr.kind() == "assignment_expression"
+                        && expr
+                            .child_by_field_name("left")
+                            .is_some_and(|left| is_param_deref(&left, param_name))
+                });
 
         if !has_unconditional_write {
             result.insert(*idx);
