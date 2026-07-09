@@ -34,21 +34,30 @@ impl CertRule for Sig34C {
 
 impl Sig34C {
     fn find_signal_handlers(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        // Look for function definitions that might be signal handlers
+        // Look for function definitions matching the signal-handler signature:
+        // exactly one parameter of type `int` (e.g. `void handler(int sig)`).
         for func in query::find_descendants_of_kind(*node, "function_definition") {
-            if let Some(declarator) = func.child_by_field_name("declarator") {
-                let func_text = get_node_text(&declarator, source);
-                // Check if this looks like a signal handler (takes int parameter)
-                if func_text.contains("int")
-                    || func_text.contains("signum")
-                    || func_text.contains("sig")
-                {
-                    // Check for signal() calls within this function
-                    if let Some(body) = func.child_by_field_name("body") {
-                        self.check_for_signal_calls(&body, source, violations);
-                    }
+            if self.has_signal_handler_signature(&func, source) {
+                if let Some(body) = func.child_by_field_name("body") {
+                    self.check_for_signal_calls(&body, source, violations);
                 }
             }
+        }
+    }
+
+    fn has_signal_handler_signature(&self, func: &Node, source: &str) -> bool {
+        let declarator = match func.child_by_field_name("declarator") {
+            Some(d) => d,
+            None => return false,
+        };
+        let params: Vec<Node> =
+            query::find_descendants_of_kind(declarator, "parameter_declaration");
+        if params.len() != 1 {
+            return false;
+        }
+        match params[0].child_by_field_name("type") {
+            Some(ty) => get_node_text(&ty, source).trim() == "int",
+            None => false,
         }
     }
 
