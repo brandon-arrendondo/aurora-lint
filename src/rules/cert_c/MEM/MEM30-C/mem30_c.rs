@@ -272,120 +272,109 @@ impl GlobalTracker {
                 && query::find_ancestor(n, |a| is_preproc_if_zero(&a, source)).is_none()
         }) {
             self.analyze_function_patterns(&func, source);
-            // Also check for recursive UAF pattern via text analysis
-            self.check_recursive_uaf_text_pattern(&func, source);
             // Check for realloc zero-size pattern
             self.check_realloc_noncompliant_pattern(&func, source);
         }
     }
 
-    /// Text-based check for recursive function accessing global after recursive call
-    fn check_recursive_uaf_text_pattern(&mut self, func_node: &Node, source: &str) {
-        let func_name = self.get_function_name(func_node, source);
-        if func_name.is_empty() {
-            return;
-        }
-
-        if let Some(body) = func_node.child_by_field_name("body") {
-            let body_text = get_node_text(&body, source);
-
-            // Check if function calls itself
-            let recursive_call = format!("{}(", func_name);
-            if !body_text.contains(&recursive_call) {
-                return;
-            }
-
-            // Check if function frees a global
-            for global in &self.global_vars.clone() {
-                let free_pattern = format!("free({})", global);
-                if body_text.contains(&free_pattern) {
-                    // Check if there's a dereference of this global AFTER the recursive call
-                    // Look for pattern: recursive_call ... *global or global-> or global[
-                    if let Some(rec_pos) = body_text.find(&recursive_call) {
-                        let after_recursive = &body_text[rec_pos..];
-                        let deref_pattern = format!("*{}", global);
-                        let arrow_pattern = format!("{}->", global);
-                        let subscript_pattern = format!("{}[", global);
-
-                        if after_recursive.contains(&deref_pattern)
-                            || after_recursive.contains(&arrow_pattern)
-                            || after_recursive.contains(&subscript_pattern)
-                        {
-                            // Find approximate line number
-                            let line_num = func_node.start_position().row
-                                + 1
-                                + body_text[..rec_pos].matches('\n').count();
-
-                            self.recursive_patterns.push((
-                                line_num,
-                                1,
-                                format!(
-                                    "Recursive UAF: function '{}' accesses global '{}' after recursive call that may free it",
-                                    func_name, global
-                                ),
-                            ));
-                        }
-                    }
+    /// Whether `body` has a comparison guarding `size_var` against zero
+    /// (`size_var != 0`, `size_var > 0`, `0 != size_var`, `0 < size_var`),
+    /// matched structurally against the comparison's own operand nodes —
+    /// never against raw text, so a comment or string mentioning the same
+    /// words can't fake a guard that isn't actually there.
+    fn body_has_positive_size_guard(body: &Node, size_var: &str, source: &str) -> bool {
+        query::find_descendants_of_kind(*body, "binary_expression")
+            .iter()
+            .any(|cmp| {
+                let Some(op) = cmp
+                    .child_by_field_name("operator")
+                    .map(|o| get_node_text(&o, source))
+                else {
+                    return false;
+                };
+                if !matches!(op, "!=" | ">" | "<") {
+                    return false;
                 }
-            }
-        }
+                let (Some(left), Some(right)) = (
+                    cmp.child_by_field_name("left"),
+                    cmp.child_by_field_name("right"),
+                ) else {
+                    return false;
+                };
+                let is_var =
+                    |n: &Node| n.kind() == "identifier" && get_node_text(n, source) == size_var;
+                let is_zero =
+                    |n: &Node| n.kind() == "number_literal" && get_node_text(n, source) == "0";
+                (is_var(&left) && is_zero(&right)) || (is_zero(&left) && is_var(&right))
+            })
     }
 
-    /// Check for wiki_noncompliant_3 pattern: realloc without size guard followed by free
+    /// Check for wiki_noncompliant_3 pattern: `realloc(ptr, size)` without a
+    /// guard that `size` is nonzero, followed later in the body by
+    /// `free(ptr)` — realloc is permitted to free `ptr` and return `NULL`
+    /// when `size == 0`, so the later `free(ptr)` can be a double-free.
     fn check_realloc_noncompliant_pattern(&mut self, func_node: &Node, source: &str) {
-        if let Some(body) = func_node.child_by_field_name("body") {
-            let body_text = get_node_text(&body, source);
+        let Some(body) = func_node.child_by_field_name("body") else {
+            return;
+        };
 
-            // Pattern: realloc(ptr, size_var) followed by if (NULL) { free(ptr) }
-            // Without a guard like if (size != 0)
+        for realloc_call in query::find_descendants_of_kind(body, "call_expression") {
+            let is_realloc = realloc_call
+                .child_by_field_name("function")
+                .is_some_and(|f| get_node_text(&f, source) == "realloc");
+            if !is_realloc {
+                continue;
+            }
+            let Some(args) = realloc_call.child_by_field_name("arguments") else {
+                continue;
+            };
+            let named_args: Vec<Node> = (0..args.named_child_count())
+                .filter_map(|i| args.named_child(i))
+                .collect();
+            let [ptr_arg, size_arg] = named_args.as_slice() else {
+                continue;
+            };
 
-            // Check if there's a realloc call
-            if !body_text.contains("realloc(") {
-                return;
+            // A clearly-positive size (a literal, or `sizeof(...)` without a
+            // zero-valued multiplier) can never realloc-as-free — skip.
+            if self.is_constant_positive_size(get_node_text(size_arg, source)) {
+                continue;
+            }
+            // A runtime guard on the size variable makes this the compliant
+            // pattern.
+            if size_arg.kind() == "identifier"
+                && Self::body_has_positive_size_guard(
+                    &body,
+                    get_node_text(size_arg, source),
+                    source,
+                )
+            {
+                continue;
             }
 
-            // Check if there's NOT a size != 0 or size > 0 guard before realloc
-            let has_size_guard = body_text.contains("size != 0")
-                || body_text.contains("size > 0")
-                || body_text.contains("0 != size")
-                || body_text.contains("0 < size");
-
-            if has_size_guard {
-                return; // Properly guarded, this is the compliant pattern
+            let ptr_var = self.extract_base_variable(ptr_arg, source);
+            if ptr_var.is_empty() {
+                continue;
             }
-
-            // Look for pattern: realloc(var, size_param) ... if (...NULL) { free(var) }
-            // Use regex-like pattern matching
-            if let Some(realloc_start) = body_text.find("realloc(") {
-                let after_realloc = &body_text[realloc_start..];
-
-                // Extract the arguments to realloc
-                if let Some(paren_end) = after_realloc.find(')') {
-                    let args = &after_realloc[8..paren_end]; // Skip "realloc("
-                    if let Some(comma_pos) = args.find(',') {
-                        let first_arg = args[..comma_pos].trim();
-                        let second_arg = args[comma_pos + 1..].trim();
-
-                        // If the size argument is clearly a constant expression, skip
-                        // Look for patterns like "10 * sizeof", "sizeof", or a number
-                        if self.is_constant_positive_size(second_arg) {
-                            return;
-                        }
-
-                        // Check if there's a free(first_arg) after realloc
-                        let free_pattern = format!("free({})", first_arg);
-                        if after_realloc.contains(&free_pattern) {
-                            self.realloc_zero_patterns.push((
-                                func_node.start_position().row + 1,
-                                1,
-                                format!(
-                                    "Potential double-free: realloc({}, ...) may free memory when size is 0, then free({}) is called",
-                                    first_arg, first_arg
-                                ),
-                            ));
-                        }
-                    }
-                }
+            let freed_after = query::find_descendants_of_kind(body, "call_expression")
+                .into_iter()
+                .filter(|c| c.start_byte() > realloc_call.start_byte())
+                .any(|c| {
+                    c.child_by_field_name("function")
+                        .is_some_and(|f| get_node_text(&f, source) == "free")
+                        && c.child_by_field_name("arguments")
+                            .and_then(|a| a.named_child(0))
+                            .is_some_and(|arg| self.extract_base_variable(&arg, source) == ptr_var)
+                });
+            if freed_after {
+                self.realloc_zero_patterns.push((
+                    func_node.start_position().row + 1,
+                    1,
+                    format!(
+                        "Potential double-free: realloc({}, ...) may free memory when size is 0, then free({}) is called",
+                        ptr_var, ptr_var
+                    ),
+                ));
             }
         }
     }
@@ -661,7 +650,7 @@ impl GlobalTracker {
         let var_name = get_node_text(node, source).to_string();
         if self.global_vars.contains(&var_name) {
             // Check if this is a read access (not inside free() args)
-            if !self.is_inside_free_call(node) {
+            if !self.is_inside_free_call(node, source) {
                 accessed_globals.insert(var_name.clone());
                 // Track line/col for recursive pattern detection
                 if *has_recursive_call {
@@ -820,18 +809,20 @@ impl GlobalTracker {
         false
     }
 
-    fn is_inside_free_call(&self, node: &Node) -> bool {
+    fn is_inside_free_call(&self, node: &Node, source: &str) -> bool {
         // Walk up to find if we're inside a free() argument list
         let mut current = node.parent();
         while let Some(parent) = current {
             if parent.kind() == "argument_list" {
-                // Check if the grandparent is a call to free
+                // Check if the grandparent is actually a call to free() —
+                // any other call (e.g. printf(x, *global)) must NOT suppress
+                // the access, or genuine UAF reads passed to unrelated
+                // functions go untracked.
                 if let Some(call) = parent.parent() {
                     if call.kind() == "call_expression" {
                         if let Some(func) = call.child_by_field_name("function") {
-                            if func.kind() == "identifier" {
-                                // Check function name - we can't access source here,
-                                // so just check if we're in an argument list of a call
+                            if func.kind() == "identifier" && get_node_text(&func, source) == "free"
+                            {
                                 return true;
                             }
                         }
@@ -971,6 +962,33 @@ impl GlobalTracker {
         }
     }
 
+    /// Whether `scope` contains a genuine dereference of `var`: `*var`,
+    /// `var->field`, or `var[i]`. Matched against the actual
+    /// pointer/field/subscript expression nodes' `argument` field, never
+    /// against raw text, so a comment or string literal mentioning the same
+    /// variable name can't fake an access that isn't really there.
+    fn scope_derefs_var(scope: &Node, var: &str, source: &str) -> bool {
+        query::find_descendants_of_kinds(
+            *scope,
+            &[
+                "pointer_expression",
+                "field_expression",
+                "subscript_expression",
+            ],
+        )
+        .iter()
+        .any(|n| {
+            if n.kind() == "pointer_expression"
+                && n.child_by_field_name("operator")
+                    .is_none_or(|o| get_node_text(&o, source) != "*")
+            {
+                return false; // `&var` is an address-of, not a dereference
+            }
+            n.child_by_field_name("argument")
+                .is_some_and(|a| get_node_text(&a, source) == var)
+        })
+    }
+
     /// Check for setjmp/longjmp UAF pattern
     /// Pattern: setjmp() followed by call to function that frees global and longjmps,
     /// with else branch accessing the freed global
@@ -980,56 +998,56 @@ impl GlobalTracker {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Look for if statements with setjmp condition
         for if_node in query::find_descendants_of_kind(*node, "if_statement") {
-            let node = &if_node;
-            if let Some(condition) = node.child_by_field_name("condition") {
-                let cond_text = get_node_text(&condition, source);
-                // Check if condition involves setjmp
-                if cond_text.contains("setjmp") {
-                    // Check the consequence (then branch) for calls to functions that longjmp after free
-                    if let Some(consequence) = node.child_by_field_name("consequence") {
-                        let then_text = get_node_text(&consequence, source);
+            let Some(condition) = if_node.child_by_field_name("condition") else {
+                continue;
+            };
+            let condition_calls_setjmp =
+                query::find_descendants_of_kind(condition, "call_expression")
+                    .iter()
+                    .any(|c| {
+                        c.child_by_field_name("function")
+                            .is_some_and(|f| get_node_text(&f, source) == "setjmp")
+                    });
+            if !condition_calls_setjmp {
+                continue;
+            }
+            let Some(consequence) = if_node.child_by_field_name("consequence") else {
+                continue;
+            };
 
-                        // Check if calls function that longjmps after freeing
-                        for (func_name, freed_globals) in &self.longjmp_after_free {
-                            if then_text.contains(func_name) {
-                                // Check the alternative (else branch) for access to freed globals
-                                if let Some(alternative) = node.child_by_field_name("alternative") {
-                                    let else_text = get_node_text(&alternative, source);
-
-                                    for global in freed_globals {
-                                        // Check if global is accessed in else branch
-                                        // Look for *global or global-> or global[
-                                        let deref_pattern = format!("*{}", global);
-                                        let arrow_pattern = format!("{}->", global);
-                                        let subscript_pattern = format!("{}[", global);
-
-                                        if else_text.contains(&deref_pattern)
-                                            || else_text.contains(&arrow_pattern)
-                                            || else_text.contains(&subscript_pattern)
-                                        {
-                                            violations.push(RuleViolation {
-                                                rule_id: "MEM30-C".to_string(),
-                                                severity: Severity::Critical,
-                                                message: format!(
-                                                    "setjmp/longjmp UAF: '{}' frees global '{}' and longjmps, then else branch accesses it",
-                                                    func_name, global
-                                                ),
-                                                file_path: String::new(),
-                                                line: alternative.start_position().row + 1,
-                                                column: alternative.start_position().column + 1,
-                                                suggestion: Some(
-                                                    "Do not access memory freed before longjmp in else branch."
-                                                        .to_string(),
-                                                ),
-                                                ..Default::default()
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
+            for (func_name, freed_globals) in &self.longjmp_after_free {
+                let consequence_calls_func =
+                    query::find_descendants_of_kind(consequence, "call_expression")
+                        .iter()
+                        .any(|c| {
+                            c.child_by_field_name("function")
+                                .is_some_and(|f| get_node_text(&f, source) == func_name.as_str())
+                        });
+                if !consequence_calls_func {
+                    continue;
+                }
+                let Some(alternative) = if_node.child_by_field_name("alternative") else {
+                    continue;
+                };
+                for global in freed_globals {
+                    if Self::scope_derefs_var(&alternative, global, source) {
+                        violations.push(RuleViolation {
+                            rule_id: "MEM30-C".to_string(),
+                            severity: Severity::Critical,
+                            message: format!(
+                                "setjmp/longjmp UAF: '{}' frees global '{}' and longjmps, then else branch accesses it",
+                                func_name, global
+                            ),
+                            file_path: String::new(),
+                            line: alternative.start_position().row + 1,
+                            column: alternative.start_position().column + 1,
+                            suggestion: Some(
+                                "Do not access memory freed before longjmp in else branch."
+                                    .to_string(),
+                            ),
+                            ..Default::default()
+                        });
                     }
                 }
             }
@@ -2441,53 +2459,67 @@ impl MemoryAnalyzer {
     }
 
     /// Check for loop pattern for dangerous p = p->next after free(p)
+    /// Look for the classic linked-list free error:
+    /// `for (p = head; p != NULL; p = p->next) { free(p); }` — `free(p)` in
+    /// the body invalidates `p` before the update clause dereferences it via
+    /// `p->next`.
     fn check_for_loop_pattern(
         &self,
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Get the loop text for pattern matching
-        let loop_text = get_node_text(node, source);
+        let Some(update) = node.child_by_field_name("update") else {
+            return;
+        };
+        if update.kind() != "assignment_expression" {
+            return;
+        }
+        let (Some(left), Some(right)) = (
+            update.child_by_field_name("left"),
+            update.child_by_field_name("right"),
+        ) else {
+            return;
+        };
+        if left.kind() != "identifier" {
+            return;
+        }
+        let var = get_node_text(&left, source);
+        // `p = p->next`-shaped advance: RHS is a field access on `p` itself.
+        let advances_via_field = right.kind() == "field_expression"
+            && right
+                .child_by_field_name("argument")
+                .is_some_and(|a| get_node_text(&a, source) == var);
+        if !advances_via_field {
+            return;
+        }
 
-        // Look for classic linked list free error:
-        // for (p = head; p != NULL; p = p->next) { free(p); }
-        if loop_text.contains("free(") && loop_text.contains("->") {
-            // Check if free happens before the pointer is used in update
-            // This is a heuristic check
-            if let Some(update) = node.child_by_field_name("update") {
-                let update_text = get_node_text(&update, source);
-                // Look for patterns like: p = p->next
-                if update_text.contains("->") {
-                    // Check if there's a free() in the body that frees the same variable
-                    if let Some(body) = node.child_by_field_name("body") {
-                        let body_text = get_node_text(&body, source);
-                        // Extract the variable from update (e.g., "p" from "p = p->next")
-                        if let Some(eq_pos) = update_text.find('=') {
-                            let var_part = update_text[..eq_pos].trim();
-                            // Check if free(var) is in the body
-                            let free_pattern = format!("free({})", var_part);
-                            if body_text.contains(&free_pattern) {
-                                violations.push(RuleViolation {
-                                    rule_id: "MEM30-C".to_string(),
-                                    severity: Severity::Critical,
-                                    message: format!(
-                                        "Use-after-free in loop: accessing '{}'->next after free({})",
-                                        var_part, var_part
-                                    ),
-                                    file_path: String::new(),
-                                    line: node.start_position().row + 1,
-                                    column: node.start_position().column + 1,
-                                    suggestion: Some(
-                                        "Save pointer->next before freeing pointer.".to_string(),
-                                    ),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                    }
-                }
-            }
+        let Some(body) = node.child_by_field_name("body") else {
+            return;
+        };
+        let frees_var = query::find_descendants_of_kind(body, "call_expression")
+            .iter()
+            .any(|c| {
+                c.child_by_field_name("function")
+                    .is_some_and(|f| get_node_text(&f, source) == "free")
+                    && c.child_by_field_name("arguments")
+                        .and_then(|a| a.named_child(0))
+                        .is_some_and(|arg| self.extract_base_variable(&arg, source) == var)
+            });
+        if frees_var {
+            violations.push(RuleViolation {
+                rule_id: "MEM30-C".to_string(),
+                severity: Severity::Critical,
+                message: format!(
+                    "Use-after-free in loop: accessing '{}'->next after free({})",
+                    var, var
+                ),
+                file_path: String::new(),
+                line: node.start_position().row + 1,
+                column: node.start_position().column + 1,
+                suggestion: Some("Save pointer->next before freeing pointer.".to_string()),
+                ..Default::default()
+            });
         }
     }
 
