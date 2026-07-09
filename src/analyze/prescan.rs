@@ -191,10 +191,18 @@ pub fn prescan_directories(
     let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
     let mut callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
     let mut source_files: Vec<PathBuf> = Vec::new();
+    let mut file_functions: HashMap<PathBuf, Vec<String>> = HashMap::new();
 
     for r in file_results {
         known_functions.extend(r.known_functions);
         header_declared_functions.extend(r.header_declared_functions);
+
+        if let Some(path) = &r.source_path {
+            file_functions
+                .entry(path.clone())
+                .or_default()
+                .extend(r.function_summaries.keys().cloned());
+        }
 
         // OR-merge taint/summary bits; first definition wins for all other fields
         for (name, summary) in r.function_summaries {
@@ -286,6 +294,7 @@ pub fn prescan_directories(
     );
     propagate_param_buffer_sizes(
         &source_files,
+        &file_functions,
         &mut parser,
         &mut function_summaries,
         &header_declared_functions,
@@ -1129,6 +1138,7 @@ const MAX_BUFFER_PROP_PASSES: usize = 6;
 /// keeps the sound "every caller passes a known buffer" invariant intact.
 fn propagate_param_buffer_sizes(
     source_files: &[PathBuf],
+    file_functions: &HashMap<PathBuf, Vec<String>>,
     parser: &mut CParser,
     summaries: &mut HashMap<String, FunctionSummary>,
     header_declared: &HashSet<String>,
@@ -1161,8 +1171,22 @@ fn propagate_param_buffer_sizes(
             return;
         }
 
+        // Only files defining a seeded (forwarder) function can produce new
+        // callsite info this pass: a function whose parameters aren't in
+        // `seeds` re-collects byte-identical results to the previous pass, so
+        // re-parsing it is wasted work. This is what shrinks the re-parse set
+        // for buffer-forwarding-free CWE dirs (task 204).
+        let relevant_files: Vec<&PathBuf> = source_files
+            .iter()
+            .filter(|f| {
+                file_functions
+                    .get(f.as_path())
+                    .is_some_and(|fns| fns.iter().any(|n| seeds.contains_key(n)))
+            })
+            .collect();
+
         let mut fresh: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
-        for file_path in source_files {
+        for file_path in relevant_files {
             if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
                 let root = tree.root_node();
                 collect_callsite_buf_args_with_param_sizes(&root, &source, &seeds, &mut fresh);
