@@ -43,8 +43,8 @@ python -m bench runs
    `target/release/sqc`. If you rebuild while it's running, you corrupt results
    mid-run. Make ALL code changes and commits BEFORE starting the benchmark.
 
-3. **Wait for completion**: Fast-mode Juliet benchmarks take ~13-19 minutes
-   (avg 15.5). Real-world sqc-only takes ~10-15 minutes. Full Juliet suite
+3. **Wait for completion**: Fast-mode Juliet benchmarks take ~32-40 minutes.
+   Real-world sqc-only takes ~10-15 minutes. Full Juliet suite
    takes ~40-50 minutes. Check status with `get_status()` no more than once
    every 5 minutes.
 
