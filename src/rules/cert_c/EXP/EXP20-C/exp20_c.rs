@@ -98,8 +98,16 @@ impl Exp20C {
                         if let Some(argument) = n.child_by_field_name("argument") {
                             if argument.kind() == "call_expression" {
                                 let func_text = get_node_text(&argument, source);
+                                // Match against the callee identifier alone, not the whole
+                                // call's text — the call's argument list can contain a string
+                                // literal (e.g. `log("checkpoint")`) or comment whose text
+                                // would otherwise leak into the substring check below.
+                                let callee_name = argument
+                                    .child_by_field_name("function")
+                                    .map(|f| get_node_text(&f, source))
+                                    .unwrap_or("");
                                 // Only flag if it looks like a validation/checking function
-                                if self.is_validation_function(&func_text) {
+                                if self.is_validation_function(callee_name) {
                                     // `!strcmp()`/`!strncmp()`/`!memcmp()` (and wide variants) are
                                     // a near-universal C idiom for string/buffer equality — CERT
                                     // adversarial review found this is a much weaker signal for
@@ -109,7 +117,7 @@ impl Exp20C {
                                     // manual review instead of full-confidence, rather than
                                     // suppressing it outright (some are real TPs on untrusted
                                     // input; see data/precision_audit/mosquitto/adversarial_verification.md).
-                                    let is_cmp_idiom = Self::is_comparison_function(&func_text);
+                                    let is_cmp_idiom = Self::is_comparison_function(callee_name);
                                     violations.push(RuleViolation {
                                         rule_id: self.rule_id().to_string(),
                                         message: format!(
@@ -139,15 +147,15 @@ impl Exp20C {
         }
     }
 
-    /// Check if function name suggests validation/checking or string comparison
-    fn is_validation_function(&self, func_text: &str) -> bool {
-        func_text.contains("validate")
-            || func_text.contains("Validate")
-            || func_text.contains("check")
-            || func_text.contains("Check")
-            || func_text.contains("verify")
-            || func_text.contains("Verify")
-            || Self::is_comparison_function(func_text)
+    /// Check if the callee identifier suggests validation/checking or string comparison.
+    fn is_validation_function(&self, callee_name: &str) -> bool {
+        callee_name.contains("validate")
+            || callee_name.contains("Validate")
+            || callee_name.contains("check")
+            || callee_name.contains("Check")
+            || callee_name.contains("verify")
+            || callee_name.contains("Verify")
+            || Self::is_comparison_function(callee_name)
     }
 
     /// True for the `strcmp`/`strncmp`/`memcmp`/`wcscmp`/`wcsncmp` family —
@@ -156,11 +164,11 @@ impl Exp20C {
     /// `requires_manual_review` rather than dropped, since some are real bugs
     /// (see adversarial_verification.md), but it's a weaker signal than an
     /// actual validate/check/verify function.
-    fn is_comparison_function(func_text: &str) -> bool {
-        func_text.contains("strcmp")
-            || func_text.contains("strncmp")
-            || func_text.contains("memcmp")
-            || func_text.contains("wcscmp")
-            || func_text.contains("wcsncmp")
+    fn is_comparison_function(callee_name: &str) -> bool {
+        callee_name.contains("strcmp")
+            || callee_name.contains("strncmp")
+            || callee_name.contains("memcmp")
+            || callee_name.contains("wcscmp")
+            || callee_name.contains("wcsncmp")
     }
 }
