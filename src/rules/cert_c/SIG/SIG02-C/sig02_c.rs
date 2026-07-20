@@ -39,7 +39,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, get_sanitized_node_text};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -206,7 +206,9 @@ impl Sig02C {
         // Modern handlers with proper signatures are better handled by the signal registration check
         if let Some(declarator) = node.child_by_field_name("declarator") {
             let decl_text = get_node_text(&declarator, source);
-            let func_text = get_node_text(node, source);
+            // Sanitized so a comment/string literal in the function can't
+            // spoof a K&R-style-parameter or unsafe-call pattern below.
+            let func_text = get_sanitized_node_text(node, source);
 
             // Check for K&R style function definition with single parameter named signo/sig/signal
             // These are commonly used in older signal handling code
@@ -224,7 +226,7 @@ impl Sig02C {
             if is_kr_style_handler || is_known_handler {
                 // Check for complex operations in the handler body
                 if let Some(body) = node.child_by_field_name("body") {
-                    let body_text = get_node_text(&body, source);
+                    let body_text = get_sanitized_node_text(&body, source);
 
                     // Check for clearly unsafe operations in signal handlers
                     let has_unsafe_ops = body_text.contains("syslog")
