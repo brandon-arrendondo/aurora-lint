@@ -1,5 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use crate::utility::cert_c::ast_utils::get_sanitized_node_text;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -223,10 +224,12 @@ fn has_nearby_bounds_check(node: &Node, source: &str) -> bool {
         }
     }
 
-    // Fallback: check immediate context (grandparent)
+    // Fallback: check immediate context (grandparent), sanitized so a
+    // comment/string literal can't spoof a bounds-check pattern and
+    // silently suppress a genuine violation.
     if let Some(parent) = node.parent() {
         if let Some(grandparent) = parent.parent() {
-            let context = &source[grandparent.start_byte()..grandparent.end_byte()];
+            let context = get_sanitized_node_text(&grandparent, source);
 
             // Look for common bounds checking patterns
             return context.contains("if")
@@ -278,7 +281,10 @@ fn has_prior_validation(body_node: &Node, source: &str, var_name: &str, vla_line
 
             // Check if this statement validates the variable
             if stmt.kind() == "if_statement" {
-                let stmt_text = &source[stmt.start_byte()..stmt.end_byte()];
+                // Sanitized so a comment/string literal inside the if-block
+                // can't spoof a validation pattern and silently suppress a
+                // genuine VLA-size violation.
+                let stmt_text = get_sanitized_node_text(&stmt, source);
 
                 // Look for validation patterns involving the variable
                 if stmt_text.contains(var_name) {
