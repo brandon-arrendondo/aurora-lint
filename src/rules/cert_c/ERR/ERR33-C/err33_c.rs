@@ -907,16 +907,43 @@ impl Err33C {
         var_name: &str,
         source: &str,
     ) -> bool {
-        let body_text = get_node_text(compound_stmt, source);
+        // Pattern: if (!var) { ... abort()/exit(...) ... } or if (var == NULL) { ... }
+        // Structural (AST) check instead of whole-function-body substring matching, so a
+        // comment/string literal elsewhere in the function can't spuriously suppress a
+        // genuine missing-check violation (silent false negative).
+        query::find_descendants_of_kinds(*compound_stmt, &["if_statement"])
+            .into_iter()
+            .any(|if_stmt| {
+                let Some(condition) = if_stmt.child_by_field_name("condition") else {
+                    return false;
+                };
+                let is_null_check = self
+                    .contains_null_check_for_variable(&condition, var_name, source)
+                    || query::find_first_descendant(condition, |c| {
+                        c.kind() == "unary_expression"
+                            && c.child_by_field_name("operator")
+                                .map(|o| get_node_text(&o, source).trim() == "!")
+                                .unwrap_or(false)
+                            && c.child_by_field_name("argument")
+                                .map(|a| get_node_text(&a, source).trim() == var_name)
+                                .unwrap_or(false)
+                    })
+                    .is_some();
+                if !is_null_check {
+                    return false;
+                }
 
-        // Pattern: if (!var) { ... abort/exit ... } or if (var == NULL) { ... abort/exit ... }
-        let has_null_check = body_text.contains(&format!("!{}", var_name))
-            || body_text.contains(&format!("{} == NULL", var_name))
-            || body_text.contains(&format!("NULL == {}", var_name));
-
-        let has_abort_exit = body_text.contains("abort()") || body_text.contains("exit(");
-
-        has_null_check && has_abort_exit
+                let Some(consequence) = if_stmt.child_by_field_name("consequence") else {
+                    return false;
+                };
+                query::find_descendants_of_kinds(consequence, &["call_expression"])
+                    .into_iter()
+                    .any(|call| {
+                        call.child_by_field_name("function")
+                            .map(|f| matches!(get_node_text(&f, source).trim(), "abort" | "exit"))
+                            .unwrap_or(false)
+                    })
+            })
     }
 
     /// Search through statements in a compound statement for error checking patterns
@@ -1516,21 +1543,6 @@ impl Err33C {
                     }
                 }
 
-                // Fallback: text-based check for simple cases
-                let compound_text = get_node_text(&parent, source);
-                if compound_text.contains("fclose(") && compound_text.contains("return") {
-                    // Look for pattern: fclose(...); return with minimal content in between
-                    let lines: Vec<&str> = compound_text.lines().collect();
-                    for i in 0..lines.len().saturating_sub(1) {
-                        if lines[i].contains("fclose(")
-                            && (lines[i + 1].trim().starts_with("return")
-                                || (i + 2 < lines.len()
-                                    && lines[i + 2].trim().starts_with("return")))
-                        {
-                            return true;
-                        }
-                    }
-                }
                 break;
             }
             current = parent.parent();
