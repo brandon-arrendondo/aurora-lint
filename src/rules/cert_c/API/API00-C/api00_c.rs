@@ -47,7 +47,9 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::null_state::NullState;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{get_function_parameters, get_node_text, is_pointer_type};
+use crate::utility::cert_c::ast_utils::{
+    get_function_parameters, get_node_text, get_sanitized_node_text, is_pointer_type,
+};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -261,11 +263,16 @@ impl Api00C {
 
     /// Check if an integer parameter is used in arithmetic without overflow validation
     fn has_unchecked_arithmetic(&self, body: &Node, param_name: &str, source: &str) -> bool {
-        // Check if there's overflow validation before arithmetic use
-        let body_text = get_node_text(body, source);
-
-        // Remove comments from body text to avoid false positives
-        let body_no_comments = self.remove_comments(&body_text);
+        // Raw text is kept only for the two "will overflow"/"overflow check"
+        // patterns below, which are intentionally designed to match a
+        // developer's acknowledging comment. Every other substring check
+        // uses the sanitized (comments/string/char literals blanked) text,
+        // so a comment or string literal can't spoof a *code* pattern
+        // (an INT_MAX comparison, an `if` guard, etc.) and silently
+        // suppress a genuine violation.
+        let raw_body_text = get_node_text(body, source);
+        let body_no_comments = get_sanitized_node_text(body, source);
+        let body_text = &body_no_comments;
 
         // Look for arithmetic operators with the parameter
         let arithmetic_patterns = [
@@ -310,18 +317,20 @@ impl Api00C {
             // Check for UINT_MAX comparisons
             format!("{} > UINT_MAX", param_name),
             format!("{} >= UINT_MAX", param_name),
-            // Check for division overflow check (result / divisor != dividend)
-            "will overflow".to_string(),
-            "overflow check".to_string(),
             // Wrapped arithmetic check
             "__builtin_add_overflow".to_string(),
             "__builtin_sub_overflow".to_string(),
             "__builtin_mul_overflow".to_string(),
         ];
 
+        // "will overflow"/"overflow check" are meant to match a developer's
+        // acknowledging comment, so these two look at the raw (unsanitized)
+        // text on purpose.
         let has_overflow_check = overflow_check_patterns
             .iter()
-            .any(|p| body_text.contains(p));
+            .any(|p| body_text.contains(p))
+            || raw_body_text.contains("will overflow")
+            || raw_body_text.contains("overflow check");
 
         // Also check for basic parameter validation (if param == 0, if param < X, etc.)
         let basic_validation_patterns = [
@@ -378,34 +387,6 @@ impl Api00C {
 
         // Return true if there's arithmetic but no overflow check AND no basic validation
         !has_overflow_check && !has_basic_validation
-    }
-
-    /// Remove C-style comments from text to avoid false positives
-    fn remove_comments(&self, text: &str) -> String {
-        let mut result = String::with_capacity(text.len());
-        let chars: Vec<char> = text.chars().collect();
-        let mut i = 0;
-
-        while i < chars.len() {
-            if i + 1 < chars.len() && chars[i] == '/' && chars[i + 1] == '*' {
-                // Skip block comment
-                i += 2;
-                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
-                    i += 1;
-                }
-                i += 2; // Skip closing */
-            } else if i + 1 < chars.len() && chars[i] == '/' && chars[i + 1] == '/' {
-                // Skip line comment
-                while i < chars.len() && chars[i] != '\n' {
-                    i += 1;
-                }
-            } else {
-                result.push(chars[i]);
-                i += 1;
-            }
-        }
-
-        result
     }
 
     /// Check if a type is an integer type (not floating point)
