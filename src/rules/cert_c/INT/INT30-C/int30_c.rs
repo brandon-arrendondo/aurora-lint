@@ -7,7 +7,7 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
-use crate::utility::cert_c::ast_utils::{self, get_node_text};
+use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -1205,7 +1205,7 @@ impl Int30C {
             return false;
         }
         let func = func.unwrap();
-        let func_text = get_node_text(&func, source);
+        let func_text = get_sanitized_node_text(&func, source);
 
         // Check for parameter declarations like "unsigned int var_name" or "unsigned int *var_name"
         if func_text.contains(&format!("unsigned int {}", var_name))
@@ -1936,10 +1936,20 @@ impl Int30C {
 
     /// Check if there's an overflow check in the code preceding this node
     fn has_preceding_overflow_check(&self, node: &Node, source: &str) -> bool {
-        // Get text before this node in the translation unit
+        // Get text before this node in the translation unit, sanitized so a
+        // comment/string literal elsewhere can't spoof the pattern.
         let node_start = node.start_byte();
         if node_start > 0 {
-            let preceding_text = &source[..node_start];
+            let mut root = *node;
+            while let Some(p) = root.parent() {
+                root = p;
+            }
+            let sanitized = get_sanitized_node_text(&root, source);
+            let root_start = root.start_byte();
+            if node_start <= root_start {
+                return false;
+            }
+            let preceding_text = &sanitized[..(node_start - root_start).min(sanitized.len())];
             // Look for SIZE_MAX/UINT_MAX division check patterns
             if (preceding_text.contains("SIZE_MAX /") || preceding_text.contains("UINT_MAX /"))
                 && preceding_text.contains("if")
@@ -2004,15 +2014,18 @@ impl Int30C {
         // Look in the containing function for overflow checking patterns.
         // Fall back to the full translation unit when the call is at file
         // scope (e.g. wiki snippet tests without a wrapping function).
+        // Sanitized so a comment/string literal elsewhere in the function
+        // can't spoof one of the patterns and silently suppress a real
+        // violation.
         if let Some(func) = self.find_containing_function(node) {
-            let func_text = get_node_text(&func, source);
+            let func_text = get_sanitized_node_text(&func, source);
             return patterns.iter().all(|pattern| func_text.contains(pattern));
         }
         let mut root = *node;
         while let Some(p) = root.parent() {
             root = p;
         }
-        let text = get_node_text(&root, source);
+        let text = get_sanitized_node_text(&root, source);
         patterns.iter().all(|pattern| text.contains(pattern))
     }
 
@@ -2020,7 +2033,7 @@ impl Int30C {
     fn has_subtraction_precondition(&self, node: &Node, source: &str) -> bool {
         // Look for if statement before the subtraction that compares the operands
         if let Some(func) = self.find_containing_function(node) {
-            let func_text = get_node_text(&func, source);
+            let func_text = get_sanitized_node_text(&func, source);
             // Look for typical precondition pattern
             if func_text.contains("if (ui_a < ui_b)")
                 || func_text.contains("if (a < b)")
@@ -2036,7 +2049,7 @@ impl Int30C {
     /// Check for postcondition check (if (result < original) or if (result > original))
     fn has_postcondition_check(&self, node: &Node, source: &str) -> bool {
         if let Some(func) = self.find_containing_function(node) {
-            let func_text = get_node_text(&func, source);
+            let func_text = get_sanitized_node_text(&func, source);
             // Look for postcondition patterns like "if (usum < ui_a)" or "if (udiff > ui_a)"
             if func_text.contains("if (usum < ")
                 || func_text.contains("if (udiff > ")
@@ -2055,7 +2068,7 @@ impl Int30C {
     fn uses_wider_type(&self, node: &Node, source: &str) -> bool {
         // Check parent for cast to wider type
         if let Some(parent) = node.parent() {
-            let parent_text = get_node_text(&parent, source);
+            let parent_text = get_sanitized_node_text(&parent, source);
             if parent_text.contains("(uint64_t)")
                 || parent_text.contains("(unsigned long long)")
                 || parent_text.contains("(int64_t)")
@@ -2064,7 +2077,7 @@ impl Int30C {
             }
         }
         // Also check if operands are cast to wider type
-        let node_text = get_node_text(node, source);
+        let node_text = get_sanitized_node_text(node, source);
         if node_text.contains("(uint64_t)") || node_text.contains("(unsigned long long)") {
             return true;
         }
@@ -2327,7 +2340,9 @@ impl Int30C {
         let mut current = node.parent();
         while let Some(parent) = current {
             if parent.kind() == "compound_statement" {
-                let before_text = &source[parent.start_byte()..node.start_byte()];
+                let sanitized = get_sanitized_node_text(&parent, source);
+                let rel_end = (node.start_byte() - parent.start_byte()).min(sanitized.len());
+                let before_text = &sanitized[..rel_end];
                 // Check for var++ or ++var
                 let postinc = format!("{}++", var_name);
                 let preinc = format!("++{}", var_name);

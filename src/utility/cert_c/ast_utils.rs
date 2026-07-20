@@ -18,6 +18,33 @@ pub fn get_node_text_owned(node: &Node, source: &str) -> String {
     query::node_text(*node, source.as_bytes()).to_string()
 }
 
+/// Extract a node's text with comment, string-literal, and char-literal spans
+/// blanked out (replaced with spaces, preserving byte offsets/length).
+///
+/// For rules whose heuristics are too intricate to safely re-derive as pure
+/// AST structural checks, this lets an existing text-substring heuristic run
+/// against sanitized text instead — so a `.contains("UINT_MAX")` or similar
+/// pattern can no longer be spoofed by a comment or string literal elsewhere
+/// in the scanned span (a real false-negative risk: silent suppression of a
+/// genuine violation, which is the worse failure direction for a security tool).
+pub fn get_sanitized_node_text(node: &Node, source: &str) -> String {
+    let start = node.start_byte();
+    let end = node.end_byte();
+    let mut bytes = source.as_bytes()[start..end].to_vec();
+    for lit in
+        query::find_descendants_of_kinds(*node, &["comment", "string_literal", "char_literal"])
+    {
+        let lit_start = lit.start_byte().max(start);
+        let lit_end = lit.end_byte().min(end);
+        if lit_start < lit_end {
+            for b in &mut bytes[(lit_start - start)..(lit_end - start)] {
+                *b = b' ';
+            }
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 // ============================================================================
 // AST Navigation
 // ============================================================================
