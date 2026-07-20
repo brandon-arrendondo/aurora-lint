@@ -397,7 +397,10 @@ impl Flp34C {
             None => return false,
         };
 
-        let body_text = ast_utils::get_node_text(&body, source);
+        // Sanitized so a comment/string literal in the function can't spoof
+        // a range-check pattern and silently suppress a genuine unchecked
+        // floating-point conversion.
+        let body_text = ast_utils::get_sanitized_node_text(&body, source);
 
         // Look for range checking patterns
         if body_text.contains("isnan") {
