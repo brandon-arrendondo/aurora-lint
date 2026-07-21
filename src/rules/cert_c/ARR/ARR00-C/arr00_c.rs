@@ -16,8 +16,8 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{collect_macro_constants, try_evaluate_expr, MacroConstantMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
-    find_containing_function, get_function_parameters, is_array_parameter_type,
-    is_function_parameter, is_inside_loop, is_write_context,
+    find_containing_function, get_function_parameters, get_sanitized_node_text,
+    is_array_parameter_type, is_function_parameter, is_inside_loop, is_write_context,
 };
 use crate::utility::cert_c::size_analysis::{
     find_allocation_size, find_element_size, find_string_literal_length,
@@ -389,8 +389,13 @@ fn check_vla_size_validation(
     let vla_position = decl_node.start_byte();
 
     // Simple heuristic: check if we can find "size_var = 0" before the VLA
+    // Sanitized so a comment/string literal elsewhere in the function can't
+    // spoof "size_var = 0" or a validation pattern (the latter would silently
+    // suppress a genuine unvalidated-VLA-size violation).
     let function_start = function_node.start_byte();
-    let preceding_text = &source[function_start..vla_position];
+    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let preceding_text = &sanitized_function_text
+        [..(vla_position - function_start).min(sanitized_function_text.len())];
 
     // Check for direct assignment of 0
     if preceding_text.contains(&format!("{} = 0", size_var))
@@ -698,10 +703,14 @@ fn check_obvious_string_overflow(node: &Node, source: &str) -> Option<RuleViolat
     let dest_name = &source[dest.start_byte()..dest.end_byte()];
 
     // Find the destination array declaration to get its size
+    // Sanitized: a comment/string literal claiming a large buffer size could
+    // otherwise spoof find_array_size() into missing a real overflow.
     let function_node = find_containing_function(node)?;
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
-    let preceding_text = &source[function_start..call_position];
+    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let preceding_text = &sanitized_function_text
+        [..(call_position - function_start).min(sanitized_function_text.len())];
 
     // Look for array declaration
     if let Some(dest_size) = find_array_size(dest_name, preceding_text) {
@@ -793,10 +802,14 @@ fn check_memcpy_size_mismatch(node: &Node, source: &str) -> Option<RuleViolation
     let src_name = &source[src.start_byte()..src.end_byte()];
 
     // Find the containing function to look up array sizes
+    // Sanitized so a comment/string literal can't spoof the array-size scan
+    // and hide a real dest/src size mismatch.
     let function_node = find_containing_function(node)?;
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
-    let preceding_text = &source[function_start..call_position];
+    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let preceding_text = &sanitized_function_text
+        [..(call_position - function_start).min(sanitized_function_text.len())];
 
     // Check if sizeof is applied to the source when it should be dest
     // Pattern: memcpy(dest, src, sizeof(src)) where sizeof(dest) < sizeof(src)
@@ -894,10 +907,14 @@ fn check_memory_operation_overflow(node: &Node, source: &str) -> Option<RuleViol
     let buffer_name = &source[buffer.start_byte()..buffer.end_byte()];
 
     // Find the containing function to look up array size
+    // Sanitized so a comment/string literal can't spoof the array-size or
+    // element-size scan and hide a real buffer overflow.
     let function_node = find_containing_function(node)?;
     let function_start = function_node.start_byte();
     let call_position = node.start_byte();
-    let preceding_text = &source[function_start..call_position];
+    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let preceding_text = &sanitized_function_text
+        [..(call_position - function_start).min(sanitized_function_text.len())];
 
     // Try to find the array size
     let array_size = find_array_size(buffer_name, preceding_text)?;
@@ -979,8 +996,10 @@ fn check_loop_exceeds_allocation(node: &Node, source: &str) -> Option<RuleViolat
     };
 
     // Get the loop body
+    // Sanitized so a comment/string literal inside the loop body can't spoof
+    // the "[loop_var]" subscript pattern or the array-name extraction.
     let body = node.child_by_field_name("body")?;
-    let body_text = &source[body.start_byte()..body.end_byte()];
+    let body_text = get_sanitized_node_text(&body, source);
 
     // Check if loop variable is used as array index
     let subscript_pattern = format!("[{}]", loop_var_name);
@@ -989,13 +1008,17 @@ fn check_loop_exceeds_allocation(node: &Node, source: &str) -> Option<RuleViolat
     }
 
     // Extract array name
-    let array_name = extract_array_name_from_subscript(body_text, loop_var_name)?;
+    let array_name = extract_array_name_from_subscript(&body_text, loop_var_name)?;
 
     // Look for malloc/realloc calls for this pointer
+    // Sanitized so a comment/string literal can't spoof the allocation-size
+    // scan and hide a real out-of-bounds loop access.
     let function_node = find_containing_function(node)?;
     let function_start = function_node.start_byte();
     let loop_position = node.start_byte();
-    let preceding_text = &source[function_start..loop_position];
+    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let preceding_text = &sanitized_function_text
+        [..(loop_position - function_start).min(sanitized_function_text.len())];
 
     // Find the most recent malloc/realloc for this pointer
     if let Some(alloc_size) = find_allocation_size(&array_name, preceding_text) {
@@ -1083,7 +1106,9 @@ fn check_loop_bound_exceeds_array(node: &Node, source: &str) -> Option<RuleViola
     let body = node.child_by_field_name("body")?;
 
     // Look for array access using the loop variable: arr[loop_var]
-    let body_text = &source[body.start_byte()..body.end_byte()];
+    // Sanitized so a comment/string literal inside the loop body can't spoof
+    // the "[loop_var]" subscript pattern or the array-name extraction.
+    let body_text = get_sanitized_node_text(&body, source);
     let subscript_pattern = format!("[{}]", loop_var_name);
 
     if !body_text.contains(&subscript_pattern) {
@@ -1092,14 +1117,18 @@ fn check_loop_bound_exceeds_array(node: &Node, source: &str) -> Option<RuleViola
 
     // Find arrays being accessed in the loop body
     // Look for pattern: array_name[loop_var]
+    // Sanitized so a comment/string literal can't spoof the array-size scan
+    // and hide a real off-by-one loop bound.
     let function_node = find_containing_function(node)?;
     let function_start = function_node.start_byte();
     let loop_position = node.start_byte();
-    let preceding_text = &source[function_start..loop_position];
+    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let preceding_text = &sanitized_function_text
+        [..(loop_position - function_start).min(sanitized_function_text.len())];
 
     // Try to find array declarations and check if bound exceeds array size
     // Parse body_text to find identifiers before [loop_var]
-    if let Some(array_name) = extract_array_name_from_subscript(body_text, loop_var_name) {
+    if let Some(array_name) = extract_array_name_from_subscript(&body_text, loop_var_name) {
         if let Some(array_size) = find_array_size(&array_name, preceding_text) {
             // Check if loop bound allows out-of-bounds access
             // For arr[10] with size 10, valid indices are 0-9
@@ -1184,10 +1213,14 @@ fn check_loop_array_access(node: &Node, source: &str) -> Option<RuleViolation> {
     }
 
     // Look backwards in the function to see if bound_var was populated from user input or is uninitialized
+    // Sanitized so a comment/string literal can't spoof user-input/validation
+    // detection and suppress a real unvalidated-loop-bound violation.
     let function_node = find_containing_function(node)?;
     let loop_position = node.start_byte();
     let function_start = function_node.start_byte();
-    let preceding_text = &source[function_start..loop_position];
+    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let preceding_text = &sanitized_function_text
+        [..(loop_position - function_start).min(sanitized_function_text.len())];
 
     // Check if bound_var is a function parameter - if so, it's the caller's responsibility
     if is_function_parameter(&function_node, &bound_var, source) {
@@ -1315,9 +1348,14 @@ fn check_subscript_bounds(node: &Node, source: &str) -> Option<RuleViolation> {
     let function_node = find_containing_function(node)?;
 
     // Get the function body text up to this point
+    // Sanitized so a comment/string literal can't spoof the loop-variable,
+    // validation, or user-input detection below and suppress a real
+    // unvalidated-index violation.
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
-    let preceding_text = &source[function_start..subscript_position];
+    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let preceding_text = &sanitized_function_text
+        [..(subscript_position - function_start).min(sanitized_function_text.len())];
 
     // Check if index_var is a loop variable (defined in a for loop)
     // Pattern: for (...; index_var ...; ...) or for (... index_var = ...
@@ -1468,8 +1506,11 @@ fn is_static_function(function_node: &Node, source: &str) -> bool {
         }
     }
     // Also match project-specific STATIC macros (e.g., STATIC, LIN_STATIC_INLINE).
-    let func_text = &source[function_node.start_byte()..function_node.end_byte()];
-    let before_paren = func_text.split('(').next().unwrap_or("");
+    // Sanitized so an inline comment in the signature (e.g. `void /* STATIC */ foo(...)`)
+    // can't spoof this into treating a non-static function as static, which
+    // would suppress a real unvalidated-index violation downstream.
+    let sanitized_func_text = get_sanitized_node_text(function_node, source);
+    let before_paren = sanitized_func_text.split('(').next().unwrap_or("");
     before_paren
         .split_whitespace()
         .any(|tok| tok.contains("STATIC"))
@@ -1501,10 +1542,15 @@ fn check_uninitialized_array_read(node: &Node, source: &str) -> Option<RuleViola
     }
 
     // Look backwards in the function to check if array was initialized
+    // Sanitized so a comment/string literal (e.g. mentioning "arr[" or a fake
+    // "arr[i] = ..." write) can't spoof the initializer/write scan below and
+    // suppress a real uninitialized-array-read violation.
     let function_node = find_containing_function(node)?;
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
-    let preceding_text = &source[function_start..subscript_position];
+    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let preceding_text = &sanitized_function_text
+        [..(subscript_position - function_start).min(sanitized_function_text.len())];
 
     // Only flag true array declarations (type name[SIZE]), not pointers
     if !has_array_declaration(&function_node, array_name, source) {
@@ -1595,10 +1641,14 @@ fn check_use_after_free(node: &Node, source: &str) -> Option<RuleViolation> {
     let array_name = &source[array_node.start_byte()..array_node.end_byte()];
 
     // Look backwards in the function to see if this pointer was freed
+    // Sanitized so a comment/string literal containing "free(name)" text
+    // can't spoof a use-after-free finding on an otherwise-safe access.
     let function_node = find_containing_function(node)?;
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
-    let preceding_text = &source[function_start..subscript_position];
+    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let preceding_text = &sanitized_function_text
+        [..(subscript_position - function_start).min(sanitized_function_text.len())];
 
     // Check if free(array_name) appears before this access
     let free_pattern = format!("free({})", array_name);
@@ -1806,10 +1856,14 @@ fn check_boundary_value_index(node: &Node, source: &str) -> Option<RuleViolation
     let index_var = &source[index_node.start_byte()..index_node.end_byte()];
 
     // Find the containing function to check context
+    // Sanitized so a comment/string literal mentioning e.g. "idx = UINT_MAX"
+    // can't spoof the boundary-value-initialization detection below.
     let function_node = find_containing_function(node)?;
     let function_start = function_node.start_byte();
     let subscript_position = node.start_byte();
-    let preceding_text = &source[function_start..subscript_position];
+    let sanitized_function_text = get_sanitized_node_text(&function_node, source);
+    let preceding_text = &sanitized_function_text
+        [..(subscript_position - function_start).min(sanitized_function_text.len())];
 
     // Check if this variable was initialized to a boundary value
     if let Some(boundary_value) = is_initialized_to_boundary_value(index_var, preceding_text) {
@@ -1911,7 +1965,10 @@ fn check_return_local_array(node: &Node, source: &str) -> Option<RuleViolation> 
     let function_node = find_containing_function(node)?;
 
     // Search for local array declaration with this name
-    let function_text = &source[function_node.start_byte()..function_node.end_byte()];
+    // Sanitized so a comment/string literal containing "name[" text can't
+    // spoof the declaration scan below (either suppressing a real
+    // return-of-local-array violation or spuriously triggering one).
+    let function_text = get_sanitized_node_text(&function_node, source);
 
     // Look for pattern: type name[size] where name matches return_var
     // Need to check for word boundaries to avoid false positives like "size" matching "s<i>ze"
@@ -2017,11 +2074,13 @@ fn check_pointer_arithmetic(node: &Node, source: &str) -> Option<RuleViolation> 
 
     // Find the compound_statement (function body) within the function_definition
     let mut body_start = function_node.start_byte();
+    let mut body_node = None;
     for i in 0..function_node.child_count() {
         if let Some(child) = function_node.child(i) {
             if child.kind() == "compound_statement" {
                 // Skip the opening brace '{'
                 body_start = child.start_byte() + 1;
+                body_node = Some(child);
                 break;
             }
         }
@@ -2035,10 +2094,19 @@ fn check_pointer_arithmetic(node: &Node, source: &str) -> Option<RuleViolation> 
         return None;
     }
 
-    let preceding_text = &source[body_start..ptr_position];
+    // Sanitized so a comment/string literal in the function body can't spoof
+    // the array-size scan and hide real out-of-bounds pointer arithmetic.
+    let preceding_text: String = if let Some(body) = body_node {
+        let sanitized_body = get_sanitized_node_text(&body, source);
+        let rel_start = (body_start - body.start_byte()).min(sanitized_body.len());
+        let rel_end = (ptr_position - body.start_byte()).min(sanitized_body.len());
+        sanitized_body[rel_start..rel_end].to_string()
+    } else {
+        source[body_start..ptr_position].to_string()
+    };
 
     // Look for array declaration: type array_name[SIZE]
-    if let Some(array_size) = find_array_size(array_name, preceding_text) {
+    if let Some(array_size) = find_array_size(array_name, &preceding_text) {
         // Check if offset exceeds the array size
         // Note: arr + size (one past the end) is technically allowed but shouldn't be dereferenced
         if offset > array_size {
