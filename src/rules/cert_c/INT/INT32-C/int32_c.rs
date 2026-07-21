@@ -7,7 +7,7 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
-use crate::utility::cert_c::ast_utils::{self, get_node_text};
+use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -1850,7 +1850,10 @@ impl Int32C {
             if parent.kind() == "function_definition" {
                 // Look in function parameters
                 if let Some(params) = parent.child_by_field_name("parameters") {
-                    let params_text = get_node_text(&params, source);
+                    // Sanitized so a comment/string literal in the parameter
+                    // list can't spoof "unsigned"/"signed" and silently
+                    // misclassify a variable's signedness.
+                    let params_text = get_sanitized_node_text(&params, source);
                     if params_text.contains("unsigned") && params_text.contains(var_name) {
                         return Some("unsigned".to_string());
                     }
@@ -1870,7 +1873,9 @@ impl Int32C {
         current = node.parent();
         while let Some(parent) = current {
             if parent.kind() == "declaration" {
-                let decl_text = get_node_text(&parent, source);
+                // Sanitized: a comment/string literal inside the declaration
+                // (e.g. an initializer) can't spoof "unsigned"/"signed".
+                let decl_text = get_sanitized_node_text(&parent, source);
                 if decl_text.contains(var_name) {
                     if decl_text.contains("unsigned") {
                         return Some("unsigned".to_string());
@@ -2283,7 +2288,10 @@ impl Int32C {
         let mut current = node.parent();
         while let Some(parent) = current {
             if parent.kind() == "for_statement" {
-                let for_text = get_node_text(&parent, source);
+                // Sanitized so a comment/string literal anywhere in the loop
+                // (including its body) can't spoof a limit macro and flip
+                // this bounded-loop determination.
+                let for_text = get_sanitized_node_text(&parent, source);
                 // Check that the loop doesn't involve near-limit values
                 if for_text.contains("INT_MAX")
                     || for_text.contains("LONG_MAX")
@@ -2599,7 +2607,10 @@ impl Int32C {
         let mut current = node.parent();
         while let Some(parent) = current {
             if parent.kind() == "function_definition" {
-                let func_text = get_node_text(&parent, source);
+                // Sanitized so a comment/string literal elsewhere in the
+                // function can't spoof an overflow-guard pattern and
+                // silently suppress a real violation.
+                let func_text = get_sanitized_node_text(&parent, source);
 
                 // First: do the patterns even exist in this function?
                 if !patterns.iter().all(|p| func_text.contains(p)) {
@@ -2814,7 +2825,10 @@ impl Int32C {
     fn has_surrounding_check(&self, node: &Node, source: &str, patterns: &[&str]) -> bool {
         if let Some(parent) = node.parent() {
             if let Some(grandparent) = parent.parent() {
-                let context = get_node_text(&grandparent, source);
+                // Sanitized so a comment/string literal in the surrounding
+                // context can't spoof an overflow-guard pattern and
+                // silently suppress a real violation.
+                let context = get_sanitized_node_text(&grandparent, source);
                 return patterns.iter().all(|pattern| context.contains(pattern));
             }
         }
