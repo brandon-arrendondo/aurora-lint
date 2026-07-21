@@ -19,7 +19,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, get_sanitized_node_text};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -319,8 +319,10 @@ impl Fio34C {
         let mut current = node.parent();
         while let Some(parent) = current {
             if parent.kind() == "function_definition" || parent.kind() == "compound_statement" {
-                // Search for char declarations in this scope
-                let scope_text = get_node_text(&parent, source);
+                // Sanitized so a comment/string literal in this scope can't
+                // spoof a "char <var>" declaration pattern and spuriously
+                // trigger a violation.
+                let scope_text = get_sanitized_node_text(&parent, source);
                 if scope_text.contains(&format!("char {}", var_name))
                     || scope_text.contains(&format!("char *{}", var_name))
                     || scope_text.contains(&format!("unsigned char {}", var_name))
@@ -343,8 +345,10 @@ impl Fio34C {
         let mut current = node.parent();
         while let Some(parent) = current {
             if parent.kind() == "function_definition" || parent.kind() == "compound_statement" {
-                // Search for wchar_t declarations in this scope
-                let scope_text = get_node_text(&parent, source);
+                // Sanitized so a comment/string literal in this scope can't
+                // spoof a "wchar_t <var>" declaration pattern and spuriously
+                // trigger a violation.
+                let scope_text = get_sanitized_node_text(&parent, source);
                 if scope_text.contains(&format!("wchar_t {}", var_name)) {
                     return true;
                 }
