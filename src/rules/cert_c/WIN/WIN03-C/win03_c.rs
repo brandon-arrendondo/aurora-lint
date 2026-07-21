@@ -27,7 +27,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, get_sanitized_node_text};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -158,7 +158,10 @@ impl Win03C {
                             // Finding the containing function/scope
                             let scope = self.find_containing_scope(node);
                             if let Some(scope) = scope {
-                                let scope_text = get_node_text(&scope, source);
+                                // Sanitized so a comment/string literal in
+                                // the scope can't spoof DuplicateHandle usage
+                                // and silently suppress a genuine violation.
+                                let scope_text = get_sanitized_node_text(&scope, source);
                                 // If DuplicateHandle is used, this is the compliant pattern
                                 if scope_text.contains("DuplicateHandle") {
                                     return; // Compliant - handle is being validated
