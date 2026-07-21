@@ -30,7 +30,9 @@ use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{get_node_text, is_function_parameter};
+use crate::utility::cert_c::ast_utils::{
+    get_node_text, get_sanitized_node_text, is_function_parameter,
+};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -468,7 +470,10 @@ impl Str02C {
                 // Check if there's any indication of sanitization in the containing scope
                 let scope = self.find_containing_scope(node);
                 if let Some(scope) = scope {
-                    let scope_text = get_node_text(&scope, source);
+                    // Sanitized so a comment/string literal in the scope
+                    // can't spoof a sanitization pattern and silently
+                    // suppress a genuine command-injection violation.
+                    let scope_text = get_sanitized_node_text(&scope, source);
                     // If strspn or similar sanitization is present, it's likely safe
                     if scope_text.contains("strspn(")
                         || scope_text.contains("strcspn(")
