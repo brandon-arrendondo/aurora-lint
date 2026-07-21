@@ -91,7 +91,7 @@ impl Flp36C {
                     if let Some(value) = node.child_by_field_name("value") {
                         let value_text = ast_utils::get_node_text(&value, source);
                         // Look for the long variable in scope
-                        if self.is_long_variable(&value_text, source) {
+                        if self.is_long_variable(node, &value_text, source) {
                             return true;
                         }
                     }
@@ -102,10 +102,20 @@ impl Flp36C {
     }
 
     /// Check if a variable name refers to a long type variable
-    fn is_long_variable(&self, var_name: &str, source: &str) -> bool {
+    fn is_long_variable(&self, node: &Node, var_name: &str, source: &str) -> bool {
         let var_name = var_name.trim();
+        // Sanitized (comments/string/char literals blanked) so a comment or
+        // string literal mentioning "long" and the variable name elsewhere
+        // in the file can't spoof a false "is long" match — this only
+        // affects whether the violation is TRIGGERED, but a spurious trigger
+        // is still an incorrect finding worth preventing.
+        let mut root = *node;
+        while let Some(p) = root.parent() {
+            root = p;
+        }
+        let sanitized_source = ast_utils::get_sanitized_node_text(&root, source);
         // Search source for declaration of this variable as long
-        for line in source.lines() {
+        for line in sanitized_source.lines() {
             if (line.contains("long int") || (line.contains("long") && !line.contains("double")))
                 && line.contains(var_name)
             {
@@ -124,7 +134,10 @@ impl Flp36C {
             None => return false,
         };
 
-        let body_text = ast_utils::get_node_text(&body, source);
+        // Sanitized so a comment/string literal in the function can't spoof
+        // a precision-check pattern and silently suppress a genuine
+        // precision-loss violation.
+        let body_text = ast_utils::get_sanitized_node_text(&body, source);
 
         // Look for precision checking patterns
         if body_text.contains("PRECISION") {
