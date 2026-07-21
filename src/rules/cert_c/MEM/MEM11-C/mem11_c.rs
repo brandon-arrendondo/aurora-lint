@@ -42,7 +42,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, get_sanitized_node_text};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -176,7 +176,10 @@ impl Mem11C {
                 "if_statement",
             ],
         ) {
-            let node_text = get_node_text(&n, source);
+            // Sanitized so a string literal argument (e.g. inside a strcmp()
+            // condition) can't spoof a bound-check pattern and silently
+            // suppress a genuine unbounded-allocation violation.
+            let node_text = get_sanitized_node_text(&n, source);
 
             // Check for increment patterns (count++, ++count, count += 1, i++, etc.)
             if n.kind() == "update_expression" {
@@ -212,11 +215,11 @@ impl Mem11C {
             // Check for break statements with conditions
             if n.kind() == "if_statement" {
                 if let Some(body) = n.child_by_field_name("consequence") {
-                    let body_text = get_node_text(&body, source);
+                    let body_text = get_sanitized_node_text(&body, source);
                     if body_text.contains("break") {
                         // This is a conditional break, check if condition has comparison
                         if let Some(condition) = n.child_by_field_name("condition") {
-                            let cond_text = get_node_text(&condition, source);
+                            let cond_text = get_sanitized_node_text(&condition, source);
                             if cond_text.contains(">=")
                                 || cond_text.contains(">")
                                 || cond_text.contains("MAX")
