@@ -39,7 +39,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, get_sanitized_node_text};
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -195,8 +195,19 @@ impl Msc40C {
     }
 
     fn is_non_static_inline_function(&self, node: &Node, source: &str) -> bool {
-        // Check for inline specifier and ensure it's not static inline
-        let func_text = get_node_text(node, source);
+        // Check for inline specifier and ensure it's not static inline.
+        // Scan only the signature (up to the body), not the whole function —
+        // this both narrows the scope structurally (a comment/string literal
+        // in the BODY can no longer be misread as an "inline"/"extern"/
+        // "static" specifier) and, as a further guard, sanitizes that
+        // signature slice so an inline comment can't spoof it either.
+        let signature_end = node
+            .child_by_field_name("body")
+            .map(|b| b.start_byte())
+            .unwrap_or_else(|| node.end_byte());
+        let sanitized_func_text = get_sanitized_node_text(node, source);
+        let rel_end = (signature_end - node.start_byte()).min(sanitized_func_text.len());
+        let func_text = &sanitized_func_text[..rel_end];
 
         // Check for "extern inline" or just "inline" (not "static inline")
         let has_inline = func_text.contains("inline");
