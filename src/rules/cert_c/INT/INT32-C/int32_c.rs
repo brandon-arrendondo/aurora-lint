@@ -2284,6 +2284,18 @@ impl Int32C {
 
     /// Check if a binary expression is inside a for-loop with a small constant bound,
     /// making overflow impossible (e.g., `i * i` where `i < 100`).
+    ///
+    /// Requires the operation's operands to actually include the loop
+    /// variable — a small loop trip count says nothing about the range of
+    /// an unrelated value used inside the loop body (e.g. `data * 2` where
+    /// `data` comes from external input, inside `for (j = 0; j < 1; j++)`).
+    /// Pre-existing gap found while auditing task 302's comment-sanitization
+    /// fix here: 18 genuine Juliet overflow/underflow violations (flow
+    /// variant 17, for-loop control flow) were only being correctly flagged
+    /// because a comment mentioning "LLONG_MAX" (substring-matching
+    /// "LONG_MAX") coincidentally tripped the near-limit-value early-return
+    /// below on the unsanitized text — not because the heuristic itself
+    /// checked operand relevance.
     fn is_in_bounded_for_loop(&self, node: &Node, source: &str) -> bool {
         let mut current = node.parent();
         while let Some(parent) = current {
@@ -2302,6 +2314,8 @@ impl Int32C {
                 }
                 // Heuristic: if the for-loop condition contains a small numeric bound
                 // (< 4 digits), the loop variable won't overflow in typical arithmetic
+                // — but only when the flagged operation actually operates on that
+                // loop variable (not an unrelated value merely used inside the loop).
                 if let Some(condition) = parent.child_by_field_name("condition") {
                     let cond_text = get_node_text(&condition, source);
                     // Look for patterns like "i < 100" or "i <= 999"
@@ -2313,7 +2327,11 @@ impl Int32C {
                                 && num.parse::<i64>().is_ok_and(|n| (0..=10000).contains(&n))
                         });
                     if bound_re {
-                        return true;
+                        let loop_vars = self.extract_operand_names(&condition, source);
+                        let op_vars = self.extract_operand_names(node, source);
+                        if op_vars.iter().any(|v| loop_vars.contains(v)) {
+                            return true;
+                        }
                     }
                 }
                 return false;
