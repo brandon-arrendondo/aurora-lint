@@ -37,8 +37,14 @@ pub fn get_sanitized_node_text(node: &Node, source: &str) -> String {
         let lit_start = lit.start_byte().max(start);
         let lit_end = lit.end_byte().min(end);
         if lit_start < lit_end {
+            // Blank every byte except embedded newlines, so a multi-line
+            // comment/string doesn't collapse onto one line — callers that
+            // scan sanitized text line-by-line (`.lines()`) rely on the
+            // original line structure being preserved.
             for b in &mut bytes[(lit_start - start)..(lit_end - start)] {
-                *b = b' ';
+                if *b != b'\n' {
+                    *b = b' ';
+                }
             }
         }
     }
