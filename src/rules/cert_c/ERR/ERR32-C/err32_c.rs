@@ -11,7 +11,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, get_sanitized_node_text};
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -91,7 +91,10 @@ impl Err32C {
 
     /// Check if a function definition saves and restores errno (compliance pattern)
     fn has_errno_save_restore(&self, func_node: &Node, source: &str) -> bool {
-        let func_text = get_node_text(func_node, source);
+        // Sanitized so a comment/string literal in the function can't spoof
+        // the save/restore pattern and silently suppress a genuine
+        // errno-in-signal-handler violation.
+        let func_text = get_sanitized_node_text(func_node, source);
         // Pattern: saves errno at start and restores it at end
         // Look for: save_var = errno; ... errno = save_var;
         // Common patterns: save_errno, saved_errno, errno_save, old_errno
