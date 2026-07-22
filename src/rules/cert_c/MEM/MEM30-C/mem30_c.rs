@@ -2168,6 +2168,14 @@ impl MemoryAnalyzer {
             self.nullified_vars.insert(lv.clone());
             self.freed_vars.remove(&lv);
             self.realloc_invalidated.remove(&lv);
+
+            // Also clear the base variable, matching the original dual-key
+            // (full-path + base) clearing: e.g. `SAFE_FREE(data->x)` must
+            // not leave `data` itself considered freed by some other
+            // (possibly heuristic-driven) tracking elsewhere in the function.
+            let base = LValue::Var(lv.root_var().to_string());
+            self.nullified_vars.insert(base.clone());
+            self.freed_vars.remove(&base);
         }
     }
 
