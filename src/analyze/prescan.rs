@@ -301,6 +301,7 @@ pub fn prescan_directories(
     );
 
     function_summary::propagate_transitive_frees(&mut function_summaries);
+    function_summary::propagate_transitive_frees_param_fields(&mut function_summaries);
     function_summary::propagate_return_taint(&mut function_summaries);
 
     if let Some(reporter) = progress {

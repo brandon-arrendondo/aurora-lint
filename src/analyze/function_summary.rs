@@ -1099,6 +1099,48 @@ pub fn propagate_transitive_frees(summaries: &mut HashMap<String, FunctionSummar
     }
 }
 
+/// Propagate transitive field-frees through param pass-through chains.
+///
+/// Mirrors `propagate_transitive_frees` but for `frees_param_fields`: if
+/// function B passes its param 0 to callee C at param 0, and C frees field
+/// `name` off that param, then B transitively frees field `name` off its
+/// own param 0. Needed because real-world destructors usually delegate to
+/// helper cleanup functions rather than calling `free(param->field)`
+/// directly — e.g. mosquitto's `mosquitto__destroy(mosq)` calls
+/// `message__cleanup_all(mosq)` and `will__clear(mosq)`, which are the ones
+/// that actually free `mosq`'s fields (task 2: MEM31-C ownership model).
+pub fn propagate_transitive_frees_param_fields(summaries: &mut HashMap<String, FunctionSummary>) {
+    for _pass in 0..10 {
+        let mut changed = false;
+        let snapshot: HashMap<String, HashMap<usize, HashSet<String>>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.frees_param_fields.clone()))
+            .collect();
+
+        for summary in summaries.values_mut() {
+            for (caller_idx, callees) in &summary.param_passthroughs {
+                for (callee_name, callee_idx) in callees {
+                    let Some(callee_fields) =
+                        snapshot.get(callee_name).and_then(|m| m.get(callee_idx))
+                    else {
+                        continue;
+                    };
+                    let entry = summary.frees_param_fields.entry(*caller_idx).or_default();
+                    for field in callee_fields {
+                        if entry.insert(field.clone()) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
 /// Walk every `return_statement` under `body` and, when the return
 /// expression unwraps to a call, record the callee identifier. Used as
 /// the transitive-propagation seed for `returns_tainted`.
