@@ -49,6 +49,14 @@ pub struct FunctionSummary {
     /// Used for transitive free propagation (MEM31-C).
     #[serde(default)]
     pub param_passthroughs: HashMap<usize, Vec<(String, usize)>>,
+    /// Struct field names freed directly off a parameter within this function's
+    /// body, e.g. `free(param->name)` or `free((*param)->name)`. Maps
+    /// param_idx → set of field names. Lets MEM31-C credit a custom
+    /// deallocator (e.g. `destroy_person(&p)`) with freeing `p->name` even
+    /// though the free happens inside the callee, not the caller (task 2:
+    /// MEM31-C ownership model).
+    #[serde(default)]
+    pub frees_param_fields: HashMap<usize, HashSet<String>>,
     /// True if the function body contains a call to a known taint-source
     /// function (recv, fgets, scanf, getenv, ...). Used by ENV03-C to
     /// decide whether a helper function's callers are passing in
@@ -717,6 +725,58 @@ fn analyze_param_usage(
 
     // Detect param pass-through: when a parameter is forwarded to a callee
     collect_param_passthroughs(body, source, params, summary);
+
+    // Detect direct field frees off a parameter: free(param->field) or
+    // free((*param)->field) (the double-pointer-deref idiom used by
+    // `void destroy(T **param)` style destructors).
+    collect_frees_param_fields(body, source, params, summary);
+}
+
+/// Scan for `free(...)` calls whose argument is a field access rooted in one
+/// of `params` (via `points_to::lvalue_of`, which unwraps `*`/parens/casts),
+/// recording the field name against that parameter's index. AST-based
+/// (unlike the sibling `free(param)` text scan above) because field names
+/// must be extracted precisely, not just detected.
+fn collect_frees_param_fields(
+    body: &Node,
+    source: &str,
+    params: &[String],
+    summary: &mut FunctionSummary,
+) {
+    use crate::analyze::points_to::LValue;
+    use lang_parsing_substrate::query;
+
+    for call in query::find_descendants_of_kind(*body, "call_expression") {
+        let Some(function) = call.child_by_field_name("function") else {
+            continue;
+        };
+        if function.utf8_text(source.as_bytes()).unwrap_or("") != "free" {
+            continue;
+        }
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        for i in 0..arguments.child_count() {
+            let Some(arg) = arguments.child(i) else {
+                continue;
+            };
+            let Some(LValue::Field(base, field)) =
+                crate::analyze::points_to::lvalue_of(&arg, source)
+            else {
+                continue;
+            };
+            let LValue::Var(base_name) = base.as_ref() else {
+                continue;
+            };
+            if let Some(idx) = params.iter().position(|p| p == base_name) {
+                summary
+                    .frees_param_fields
+                    .entry(idx)
+                    .or_default()
+                    .insert(field);
+            }
+        }
+    }
 }
 
 /// Match a null-check expression on `param_name` anywhere in `body_text`.

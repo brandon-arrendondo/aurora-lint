@@ -1111,10 +1111,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
             return;
         };
+        let mut param_idx = 0usize;
         for i in 0..arguments.child_count() {
             let Some(arg) = arguments.child(i) else {
                 continue;
             };
+            if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
+                continue;
+            }
+            let this_param_idx = param_idx;
+            param_idx += 1;
             let var_name = if arg.kind() == "pointer_expression" {
                 // Handle &var pattern (address-of expression)
                 arg.child_by_field_name("argument")
@@ -1151,6 +1157,22 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // Mark as freed (for leak detection)
             self.freed_memory
                 .insert(var_name.clone(), (free_pos.row + 1, free_pos.column + 1));
+
+            // If the callee's summary shows it frees specific struct fields
+            // off this parameter internally (e.g. `destroy_person(&p)` where
+            // `destroy_person` does `free((*p)->name); free(*p);`), credit
+            // those fields as freed here too — otherwise they read as leaks
+            // even though ownership was transferred to the deallocator
+            // (task 2: MEM31-C ownership model).
+            if let Some(summary) = self.function_summaries.get(func_name) {
+                if let Some(fields) = summary.frees_param_fields.get(&this_param_idx) {
+                    for field in fields {
+                        let field_key = format!("{}->{}", var_name, field);
+                        self.freed_memory
+                            .insert(field_key, (free_pos.row + 1, free_pos.column + 1));
+                    }
+                }
+            }
         }
     }
 
