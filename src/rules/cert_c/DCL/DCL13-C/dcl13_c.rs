@@ -1,4 +1,5 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::points_to::lvalue_of;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
@@ -310,6 +311,17 @@ fn is_pointer_param_modified(body: &Node, param_name: &str, source: &str) -> boo
                 if is_write_through_param(&left, param_name, source) {
                     return true;
                 }
+                // `container->field = param;` (or any expression derived
+                // from param) — the parameter's identity escapes into a
+                // struct field for later use elsewhere (task 3's own
+                // example: ringbuffer.c ptrBuffer). Any such store is
+                // sufficient evidence the parameter is potentially
+                // modified; further uses of the field are not traced.
+                if let Some(right) = node.child_by_field_name("right") {
+                    if param_stored_into_field(&left, &right, param_name, source) {
+                        return true;
+                    }
+                }
             }
         }
 
@@ -332,6 +344,23 @@ fn is_pointer_param_modified(body: &Node, param_name: &str, source: &str) -> boo
         false
     })
     .is_some()
+}
+
+/// True if `left` is a struct-field target (e.g. `container->buf`,
+/// `s.field`) and `right` is (or derives from) `param_name` — the
+/// parameter's identity has escaped into a struct field. Reuses the shared
+/// `lvalue_of` parser instead of duplicating `arg_is_param`'s text-equality
+/// check. Additive to (not a replacement for) `is_write_through_param`,
+/// which covers the opposite direction (`param->field = x`, a write
+/// *through* param).
+fn param_stored_into_field(left: &Node, right: &Node, param_name: &str, source: &str) -> bool {
+    let Some(left_lv) = lvalue_of(left, source) else {
+        return false;
+    };
+    if !left_lv.is_field() {
+        return false;
+    }
+    lvalue_of(right, source).is_some_and(|rv| rv.root_var() == param_name)
 }
 
 /// Collect local pointer variables that are initialized from a parameter.

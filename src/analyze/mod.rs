@@ -8,6 +8,7 @@ pub mod init_state;
 pub mod macro_expand;
 pub mod macro_semantics;
 pub mod null_state;
+pub mod points_to;
 pub mod prescan;
 pub mod relevance;
 pub mod suppression;

@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::FunctionMacro;
+use crate::analyze::points_to::{lvalue_of, resolve_canonical, AliasMap, LValue};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -1281,11 +1282,11 @@ enum ReallocNullBranch {
 /// merge_if_branches`) or restored verbatim before the else-branch walk.
 #[derive(Clone)]
 struct BranchState {
-    freed_vars: HashSet<String>,
-    nullified_vars: HashSet<String>,
-    aliases: HashMap<String, String>,
-    realloc_updated: HashSet<String>,
-    realloc_invalidated: HashSet<String>,
+    freed_vars: HashSet<LValue>,
+    nullified_vars: HashSet<LValue>,
+    aliases: AliasMap,
+    realloc_updated: HashSet<LValue>,
+    realloc_invalidated: HashSet<LValue>,
 }
 
 impl BranchState {
@@ -1310,26 +1311,29 @@ impl BranchState {
 
 struct MemoryAnalyzer {
     // Track which variables are currently freed
-    freed_vars: HashSet<String>,
+    freed_vars: HashSet<LValue>,
     // Byte offset (start_byte) of the free site that most recently marked each
     // name freed. Consulted only on a candidate double-free, to detect whether a
     // preprocessor conditional directive separates the two free sites (task 251).
-    freed_at: HashMap<String, usize>,
-    // Track aliases: if alias = ptr, then aliases["alias"] = "ptr"
-    aliases: HashMap<String, String>,
+    freed_at: HashMap<LValue, usize>,
+    // Track aliases: if alias = ptr, then aliases[alias] = ptr
+    aliases: AliasMap,
     // Track which variables have been set to NULL after free
-    nullified_vars: HashSet<String>,
+    nullified_vars: HashSet<LValue>,
     // Track realloc old pointers that have been updated to new pointer
-    realloc_updated: HashSet<String>,
+    realloc_updated: HashSet<LValue>,
     // Track realloc relationships: realloc_map[old_ptr] = new_ptr
     // When we see new_ptr = realloc(old_ptr, ...), old_ptr becomes potentially invalid
-    realloc_invalidated: HashSet<String>,
+    realloc_invalidated: HashSet<LValue>,
     // Maps realloc result variable -> original pointers that were invalidated.
     // Used to clear invalidation in else-branches where realloc returned NULL
     // (meaning the original pointer is still valid).
-    realloc_source: HashMap<String, Vec<String>>,
-    // Track union members - when one member is freed, all are freed
-    union_members: HashMap<String, HashSet<String>>,
+    realloc_source: HashMap<LValue, Vec<LValue>>,
+    // Track union members - when one member is freed, all are freed. Keyed by
+    // the base variable's name (union tracking is base-variable-scoped, not
+    // field-sensitive); values are the member LValues so they stay
+    // comparable against freed_vars/realloc_invalidated.
+    union_members: HashMap<String, HashSet<LValue>>,
     // Function-like "safe free" macros (free AND null their arg): macro name ->
     // nulled parameter indices. A call to one of these clears the freed state of
     // its argument, matching the macro's own `= NULL` (Phase 2c-iii).
@@ -1809,8 +1813,8 @@ impl MemoryAnalyzer {
         match cond.kind() {
             // if (result) — non-null in then, null in else
             "identifier" => {
-                let var = get_node_text(&cond, source);
-                if self.realloc_updated.contains(var) {
+                let var = LValue::Var(get_node_text(&cond, source).to_string());
+                if self.realloc_updated.contains(&var) {
                     Some(ReallocNullBranch::Else)
                 } else {
                     None
@@ -1827,8 +1831,8 @@ impl MemoryAnalyzer {
                                 arg
                             };
                             if inner.kind() == "identifier" {
-                                let var = get_node_text(&inner, source);
-                                if self.realloc_updated.contains(var) {
+                                let var = LValue::Var(get_node_text(&inner, source).to_string());
+                                if self.realloc_updated.contains(&var) {
                                     return Some(ReallocNullBranch::Then);
                                 }
                             }
@@ -1857,8 +1861,9 @@ impl MemoryAnalyzer {
                         } else {
                             ("", false)
                         };
+                    let var = LValue::Var(var.to_string());
 
-                    if is_null_cmp && self.realloc_updated.contains(var) {
+                    if is_null_cmp && self.realloc_updated.contains(&var) {
                         match op_text {
                             // if (result == NULL) — then=null, else=non-null
                             "==" => Some(ReallocNullBranch::Then),
@@ -1926,6 +1931,7 @@ impl MemoryAnalyzer {
             }
             _ => return,
         };
+        let var_name = LValue::Var(var_name);
 
         // Look up which original pointers this realloc result corresponds to
         if let Some(old_ptrs) = self.realloc_source.get(&var_name) {
@@ -2055,27 +2061,25 @@ impl MemoryAnalyzer {
             arg
         };
 
-        // For field expressions like free(data->name), track the full path
-        // not just the base variable
-        let (var_name, base_var) = if actual_arg.kind() == "field_expression" {
-            let full_path = get_node_text(&actual_arg, source).to_string();
-            // For union support: also track the base variable
-            // When free(u.member1) is called, u.member2 also becomes invalid
-            let base = self.extract_base_variable(&actual_arg, source);
-            (full_path, Some(base))
-        } else if actual_arg.kind() == "identifier" {
-            (get_node_text(&actual_arg, source).to_string(), None)
-        } else {
-            // For other complex expressions, skip to avoid false positives
-            return;
-        };
-
-        if var_name.is_empty() {
+        // For field expressions like free(data->name), track the full field
+        // path, not just the base variable; for a bare identifier this is
+        // just the identifier. Only these two top-level kinds are accepted
+        // as free targets — everything else (e.g. a cast-wrapped
+        // `&x`/`*x`, which `lvalue_of` would otherwise happily unwrap) is
+        // skipped to avoid false positives, matching the original behavior.
+        if actual_arg.kind() != "identifier" && actual_arg.kind() != "field_expression" {
             return;
         }
+        let Some(lv) = lvalue_of(&actual_arg, source) else {
+            return;
+        };
+        // For union support: also track the base variable — when
+        // free(u.member1) is called, u.member2 also becomes invalid.
+        let base_var = lv.is_field().then(|| lv.root_var().to_string());
+        let display_name = get_node_text(&actual_arg, source);
 
         // Resolve to canonical name (in case of alias)
-        let canonical = self.resolve_canonical(&var_name);
+        let canonical = resolve_canonical(&self.aliases, &lv);
 
         // Check for double-free (only check freed_vars, not realloc_invalidated)
         // It's OK to free a realloc-invalidated pointer (that's expected when realloc fails)
@@ -2089,7 +2093,7 @@ impl MemoryAnalyzer {
         let preproc_split = self
             .freed_at
             .get(&canonical)
-            .or_else(|| self.freed_at.get(&var_name))
+            .or_else(|| self.freed_at.get(&lv))
             .copied()
             .is_some_and(|prior| {
                 let here = node.start_byte();
@@ -2102,7 +2106,7 @@ impl MemoryAnalyzer {
             violations.push(RuleViolation {
                 rule_id: "MEM30-C".to_string(),
                 severity: Severity::Critical,
-                message: format!("Double-free: '{}' freed multiple times", var_name),
+                message: format!("Double-free: '{}' freed multiple times", display_name),
                 file_path: String::new(),
                 line: node.start_position().row + 1,
                 column: node.start_position().column + 1,
@@ -2115,11 +2119,11 @@ impl MemoryAnalyzer {
 
         // Mark as freed
         self.freed_vars.insert(canonical.clone());
-        self.freed_vars.insert(var_name.clone());
+        self.freed_vars.insert(lv.clone());
         // Record the free site for the preproc-split double-free check above.
         let free_byte = node.start_byte();
         self.freed_at.insert(canonical.clone(), free_byte);
-        self.freed_at.insert(var_name.clone(), free_byte);
+        self.freed_at.insert(lv.clone(), free_byte);
 
         // For union support: track union member relationships
         // When free(u.member) is called, all u.* accesses become invalid.
@@ -2132,17 +2136,17 @@ impl MemoryAnalyzer {
             if !base.is_empty() && self.union_typed_vars.contains(&base) {
                 // Add to union tracking - all field accesses on this base are suspect
                 self.union_members
-                    .entry(base.clone())
+                    .entry(base)
                     .or_default()
-                    .insert(var_name.clone());
+                    .insert(lv.clone());
             }
         }
 
         // Also mark any aliases as freed
-        let aliases_to_free: Vec<String> = self
+        let aliases_to_free: Vec<LValue> = self
             .aliases
             .iter()
-            .filter(|(_, v)| **v == canonical || **v == var_name)
+            .filter(|(_, v)| **v == canonical || **v == lv)
             .map(|(k, _)| k.clone())
             .collect();
         for alias in aliases_to_free {
@@ -2158,17 +2162,12 @@ impl MemoryAnalyzer {
         let args = crate::analyze::macro_semantics::positional_args(call);
         for &idx in indices {
             let Some(arg) = args.get(idx) else { continue };
-            let full_path = get_node_text(arg, source).to_string();
-            if !full_path.is_empty() {
-                self.nullified_vars.insert(full_path.clone());
-                self.freed_vars.remove(&full_path);
-                self.realloc_invalidated.remove(&full_path);
-            }
-            let base = self.extract_base_variable(arg, source);
-            if !base.is_empty() {
-                self.nullified_vars.insert(base.clone());
-                self.freed_vars.remove(&base);
-            }
+            let Some(lv) = lvalue_of(arg, source) else {
+                continue;
+            };
+            self.nullified_vars.insert(lv.clone());
+            self.freed_vars.remove(&lv);
+            self.realloc_invalidated.remove(&lv);
         }
     }
 
@@ -2183,28 +2182,24 @@ impl MemoryAnalyzer {
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
         ) {
-            // Get full path for field expressions (e.g., im->clip->list)
-            let left_full_path = get_node_text(&left, source).to_string();
+            // Full lvalue for field expressions (e.g., im->clip->list); None
+            // for anything that isn't a trackable storage location.
+            let Some(left_lv) = lvalue_of(&left, source) else {
+                return;
+            };
+            let left_var = LValue::Var(left_lv.root_var().to_string());
 
             // Check if assigning NULL - this clears freed status
             let right_text = get_node_text(&right, source);
             if right_text.trim() == "NULL" || right_text.trim() == "0" {
                 // For field expressions like data->name = NULL, track the full path
-                self.nullified_vars.insert(left_full_path.clone());
-                self.freed_vars.remove(&left_full_path);
-                self.realloc_invalidated.remove(&left_full_path);
+                self.nullified_vars.insert(left_lv.clone());
+                self.freed_vars.remove(&left_lv);
+                self.realloc_invalidated.remove(&left_lv);
 
                 // Also track base variable
-                let left_var = self.extract_base_variable(&left, source);
-                if !left_var.is_empty() {
-                    self.nullified_vars.insert(left_var.clone());
-                    self.freed_vars.remove(&left_var);
-                }
-                return;
-            }
-
-            let left_var = self.extract_base_variable(&left, source);
-            if left_var.is_empty() && left_full_path.is_empty() {
+                self.nullified_vars.insert(left_var.clone());
+                self.freed_vars.remove(&left_var);
                 return;
             }
 
@@ -2212,22 +2207,60 @@ impl MemoryAnalyzer {
             if left.kind() == "pointer_expression" {
                 // This is writing through a pointer
                 if let Some(arg) = left.child_by_field_name("argument") {
-                    let ptr_var = self.extract_base_variable(&arg, source);
-                    if !ptr_var.is_empty() && self.is_freed(&ptr_var) {
-                        violations.push(RuleViolation {
-                            rule_id: "MEM30-C".to_string(),
-                            severity: Severity::Critical,
-                            message: format!(
-                                "Use-after-free: writing to freed memory via '{}'",
-                                ptr_var
-                            ),
-                            file_path: String::new(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            suggestion: Some("Do not access memory after freeing it.".to_string()),
-                            ..Default::default()
-                        });
+                    if let Some(ptr_var) = lvalue_of(&arg, source) {
+                        let ptr_var = LValue::Var(ptr_var.root_var().to_string());
+                        if self.is_freed(&ptr_var) {
+                            violations.push(RuleViolation {
+                                rule_id: "MEM30-C".to_string(),
+                                severity: Severity::Critical,
+                                message: format!(
+                                    "Use-after-free: writing to freed memory via '{}'",
+                                    ptr_var.root_var()
+                                ),
+                                file_path: String::new(),
+                                line: node.start_position().row + 1,
+                                column: node.start_position().column + 1,
+                                suggestion: Some(
+                                    "Do not access memory after freeing it.".to_string(),
+                                ),
+                                ..Default::default()
+                            });
+                        }
                     }
+                }
+                return;
+            }
+
+            // Writing to a container ELEMENT (`arr[i] = value`, including
+            // `container->field[i] = value`) never reassigns the
+            // container's own pointer identity — unlike a plain identifier
+            // or field LHS, it must not clear the container's freed/
+            // realloc-invalidated state below (that logic is for "this
+            // storage location now holds a fresh/live value", which isn't
+            // true here: only one element changed). `lvalue_of` is
+            // deliberately index-insensitive (task 1), so a subscript LHS's
+            // `left_lv` collapses to the exact same LValue as the
+            // container/field itself — without this early return, the
+            // "reassigning to a live value" branch below would incorrectly
+            // erase that container's real invalidation (e.g. the realloc
+            // self-assign-into-field UAF pattern, CERT wiki noncompliant
+            // example: `im->clip->list[i] = x;` after `gdRealloc(im->clip
+            // ->list, ...)` without writing the result back).
+            if left.kind() == "subscript_expression" {
+                if self.is_freed(&left_lv) {
+                    violations.push(RuleViolation {
+                        rule_id: "MEM30-C".to_string(),
+                        severity: Severity::Critical,
+                        message: format!(
+                            "Use-after-free: writing to freed memory via '{}'",
+                            get_node_text(&left, source)
+                        ),
+                        file_path: String::new(),
+                        line: node.start_position().row + 1,
+                        column: node.start_position().column + 1,
+                        suggestion: Some("Do not access memory after freeing it.".to_string()),
+                        ..Default::default()
+                    });
                 }
                 return;
             }
@@ -2235,8 +2268,9 @@ impl MemoryAnalyzer {
             // Check if right side is a realloc result variable
             // If we're assigning a realloc result to the original pointer (ptr = new_ptr),
             // clear the freed status since the pointer is now valid again
-            let right_var = self.extract_base_variable(&right, source);
-            if !right_var.is_empty() {
+            let right_var =
+                lvalue_of(&right, source).map(|rv| LValue::Var(rv.root_var().to_string()));
+            if let Some(right_var) = right_var {
                 // Check if right_var was the result of a realloc on left_var
                 // This handles: new_ptr = realloc(ptr, ...); ptr = new_ptr;
                 // Also handles: im->clip->list = more; after more = gdRealloc(im->clip->list, ...)
@@ -2246,9 +2280,9 @@ impl MemoryAnalyzer {
                     self.nullified_vars.remove(&left_var);
                     self.realloc_invalidated.remove(&left_var);
                     // For field expressions, also clear the full path
-                    self.freed_vars.remove(&left_full_path);
-                    self.nullified_vars.remove(&left_full_path);
-                    self.realloc_invalidated.remove(&left_full_path);
+                    self.freed_vars.remove(&left_lv);
+                    self.nullified_vars.remove(&left_lv);
+                    self.realloc_invalidated.remove(&left_lv);
                     // Also clear any aliases pointing to the old value
                     self.aliases.remove(&left_var);
                 }
@@ -2268,9 +2302,9 @@ impl MemoryAnalyzer {
                     // 1 & 2). Clear the assigned lvalue path; for a plain
                     // identifier that IS the base name, so `free(s); s->f = x;`
                     // does not un-track the still-freed base `s`.
-                    self.freed_vars.remove(&left_full_path);
-                    self.nullified_vars.remove(&left_full_path);
-                    self.realloc_invalidated.remove(&left_full_path);
+                    self.freed_vars.remove(&left_lv);
+                    self.nullified_vars.remove(&left_lv);
+                    self.realloc_invalidated.remove(&left_lv);
                     self.aliases.remove(&left_var);
                     if right.kind() == "identifier" && left.kind() == "identifier" {
                         // Track a fresh pointer-to-pointer alias.
@@ -2322,19 +2356,19 @@ impl MemoryAnalyzer {
                         // re-invalidates it and the later `cfg->topics[i]` reads
                         // false-flag as use-after-free).
                         self.realloc_updated.insert(left_var.clone());
-                        if !left_full_path.is_empty() && left_full_path != left_var {
-                            self.realloc_updated.insert(left_full_path.clone());
+                        if left_lv != left_var {
+                            self.realloc_updated.insert(left_lv.clone());
                         }
                         if !old_ptrs.is_empty() {
                             self.realloc_source
                                 .insert(left_var.clone(), old_ptrs.clone());
-                            if !left_full_path.is_empty() && left_full_path != left_var {
-                                self.realloc_source.insert(left_full_path.clone(), old_ptrs);
+                            if left_lv != left_var {
+                                self.realloc_source.insert(left_lv.clone(), old_ptrs);
                             }
                         }
-                        self.clear_freed_state(&left_var, &left_full_path);
+                        self.clear_freed_state(&left_var, &left_lv);
                     } else if is_fresh_allocation_name(&func_name) {
-                        self.clear_freed_state(&left_var, &left_full_path);
+                        self.clear_freed_state(&left_var, &left_lv);
                     }
                 }
             }
@@ -2344,13 +2378,11 @@ impl MemoryAnalyzer {
     /// Clear all freed/nullified/realloc-invalidation tracking for a variable
     /// (both its base name and full field path), e.g. after reassigning it to a
     /// fresh allocation.
-    fn clear_freed_state(&mut self, base: &str, full_path: &str) {
+    fn clear_freed_state(&mut self, base: &LValue, full_path: &LValue) {
         for key in [base, full_path] {
-            if !key.is_empty() {
-                self.freed_vars.remove(key);
-                self.nullified_vars.remove(key);
-                self.realloc_invalidated.remove(key);
-            }
+            self.freed_vars.remove(key);
+            self.nullified_vars.remove(key);
+            self.realloc_invalidated.remove(key);
         }
     }
 
@@ -2369,6 +2401,7 @@ impl MemoryAnalyzer {
             if left_var.is_empty() {
                 return;
             }
+            let left_var = LValue::Var(left_var);
 
             // A declaration introduces a FRESH binding for `left_var`. The
             // analyzer is scope-flat, so a same-named local re-declared in a
@@ -2434,13 +2467,11 @@ impl MemoryAnalyzer {
             // (task 232 container-vs-member; rtext.c fullFont). Restricting
             // aliasing to an identifier RHS prevents that false UAF.
             if value.kind() == "identifier" {
-                let right_var = get_node_text(&value, source).to_string();
-                if !right_var.is_empty() {
-                    self.aliases.insert(left_var.clone(), right_var.clone());
-                    // If source is freed, the new variable is also freed
-                    if self.is_freed(&right_var) {
-                        self.freed_vars.insert(left_var);
-                    }
+                let right_var = LValue::Var(get_node_text(&value, source).to_string());
+                self.aliases.insert(left_var.clone(), right_var.clone());
+                // If source is freed, the new variable is also freed
+                if self.is_freed(&right_var) {
+                    self.freed_vars.insert(left_var);
                 }
             }
         }
@@ -2465,18 +2496,23 @@ impl MemoryAnalyzer {
         }
 
         if let Some(arg) = node.child_by_field_name("argument") {
-            let var_name = self.extract_base_variable(&arg, source);
-            if !var_name.is_empty() && self.is_freed(&var_name) {
-                violations.push(RuleViolation {
-                    rule_id: "MEM30-C".to_string(),
-                    severity: Severity::Critical,
-                    message: format!("Use-after-free: dereferencing freed pointer '{}'", var_name),
-                    file_path: String::new(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                    suggestion: Some("Do not access memory after freeing it.".to_string()),
-                    ..Default::default()
-                });
+            if let Some(lv) = lvalue_of(&arg, source) {
+                let var_name = LValue::Var(lv.root_var().to_string());
+                if self.is_freed(&var_name) {
+                    violations.push(RuleViolation {
+                        rule_id: "MEM30-C".to_string(),
+                        severity: Severity::Critical,
+                        message: format!(
+                            "Use-after-free: dereferencing freed pointer '{}'",
+                            var_name.root_var()
+                        ),
+                        file_path: String::new(),
+                        line: node.start_position().row + 1,
+                        column: node.start_position().column + 1,
+                        suggestion: Some("Do not access memory after freeing it.".to_string()),
+                        ..Default::default()
+                    });
+                }
             }
         }
     }
@@ -2489,13 +2525,18 @@ impl MemoryAnalyzer {
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(arg) = node.child_by_field_name("argument") {
+            let Some(lv) = lvalue_of(&arg, source) else {
+                return;
+            };
             // First check if the full path is freed (e.g., obj->data.values)
-            let full_path = get_node_text(&arg, source);
-            if self.is_freed(&full_path) {
+            if self.is_freed(&lv) {
                 violations.push(RuleViolation {
                     rule_id: "MEM30-C".to_string(),
                     severity: Severity::Critical,
-                    message: format!("Use-after-free: accessing freed array '{}'", full_path),
+                    message: format!(
+                        "Use-after-free: accessing freed array '{}'",
+                        get_node_text(&arg, source)
+                    ),
                     file_path: String::new(),
                     line: node.start_position().row + 1,
                     column: node.start_position().column + 1,
@@ -2506,12 +2547,15 @@ impl MemoryAnalyzer {
             }
 
             // Also check base variable
-            let var_name = self.extract_base_variable(&arg, source);
-            if !var_name.is_empty() && self.is_freed(&var_name) {
+            let var_name = LValue::Var(lv.root_var().to_string());
+            if self.is_freed(&var_name) {
                 violations.push(RuleViolation {
                     rule_id: "MEM30-C".to_string(),
                     severity: Severity::Critical,
-                    message: format!("Use-after-free: accessing freed array '{}'", var_name),
+                    message: format!(
+                        "Use-after-free: accessing freed array '{}'",
+                        var_name.root_var()
+                    ),
                     file_path: String::new(),
                     line: node.start_position().row + 1,
                     column: node.start_position().column + 1,
@@ -2536,21 +2580,25 @@ impl MemoryAnalyzer {
         ) {
             let op_text = get_node_text(&operator, source);
             if op_text == "+" || op_text == "-" {
-                let left_var = self.extract_base_variable(&left, source);
-                if !left_var.is_empty() && self.is_freed(&left_var) {
-                    violations.push(RuleViolation {
-                        rule_id: "MEM30-C".to_string(),
-                        severity: Severity::Critical,
-                        message: format!(
-                            "Use-after-free: pointer arithmetic on freed pointer '{}'",
-                            left_var
-                        ),
-                        file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        suggestion: Some("Do not use freed pointers in arithmetic.".to_string()),
-                        ..Default::default()
-                    });
+                if let Some(left_var) = lvalue_of(&left, source) {
+                    let left_var = LValue::Var(left_var.root_var().to_string());
+                    if self.is_freed(&left_var) {
+                        violations.push(RuleViolation {
+                            rule_id: "MEM30-C".to_string(),
+                            severity: Severity::Critical,
+                            message: format!(
+                                "Use-after-free: pointer arithmetic on freed pointer '{}'",
+                                left_var.root_var()
+                            ),
+                            file_path: String::new(),
+                            line: node.start_position().row + 1,
+                            column: node.start_position().column + 1,
+                            suggestion: Some(
+                                "Do not use freed pointers in arithmetic.".to_string(),
+                            ),
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         }
@@ -2570,21 +2618,25 @@ impl MemoryAnalyzer {
                         continue;
                     }
 
-                    let var_name = self.extract_base_variable(&arg, source);
-                    if !var_name.is_empty() && self.is_freed(&var_name) {
-                        violations.push(RuleViolation {
-                            rule_id: "MEM30-C".to_string(),
-                            severity: Severity::Critical,
-                            message: format!(
-                                "Use-after-free: passing freed pointer '{}' to function",
-                                var_name
-                            ),
-                            file_path: String::new(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            suggestion: Some("Do not pass freed memory to functions.".to_string()),
-                            ..Default::default()
-                        });
+                    if let Some(lv) = lvalue_of(&arg, source) {
+                        let var_name = LValue::Var(lv.root_var().to_string());
+                        if self.is_freed(&var_name) {
+                            violations.push(RuleViolation {
+                                rule_id: "MEM30-C".to_string(),
+                                severity: Severity::Critical,
+                                message: format!(
+                                    "Use-after-free: passing freed pointer '{}' to function",
+                                    var_name.root_var()
+                                ),
+                                file_path: String::new(),
+                                line: node.start_position().row + 1,
+                                column: node.start_position().column + 1,
+                                suggestion: Some(
+                                    "Do not pass freed memory to functions.".to_string(),
+                                ),
+                                ..Default::default()
+                            });
+                        }
                     }
                 }
             }
@@ -2604,18 +2656,25 @@ impl MemoryAnalyzer {
                 if child.kind() == "return" {
                     continue;
                 }
-                let var_name = self.extract_base_variable(&child, source);
-                if !var_name.is_empty() && self.is_freed(&var_name) {
-                    violations.push(RuleViolation {
-                        rule_id: "MEM30-C".to_string(),
-                        severity: Severity::Critical,
-                        message: format!("Use-after-free: returning freed pointer '{}'", var_name),
-                        file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        suggestion: Some("Do not return freed memory from functions.".to_string()),
-                        ..Default::default()
-                    });
+                if let Some(lv) = lvalue_of(&child, source) {
+                    let var_name = LValue::Var(lv.root_var().to_string());
+                    if self.is_freed(&var_name) {
+                        violations.push(RuleViolation {
+                            rule_id: "MEM30-C".to_string(),
+                            severity: Severity::Critical,
+                            message: format!(
+                                "Use-after-free: returning freed pointer '{}'",
+                                var_name.root_var()
+                            ),
+                            file_path: String::new(),
+                            line: node.start_position().row + 1,
+                            column: node.start_position().column + 1,
+                            suggestion: Some(
+                                "Do not return freed memory from functions.".to_string(),
+                            ),
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         }
@@ -2667,7 +2726,8 @@ impl MemoryAnalyzer {
                     .is_some_and(|f| get_node_text(&f, source) == "free")
                     && c.child_by_field_name("arguments")
                         .and_then(|a| a.named_child(0))
-                        .is_some_and(|arg| self.extract_base_variable(&arg, source) == var)
+                        .and_then(|arg| lvalue_of(&arg, source))
+                        .is_some_and(|lv| lv.root_var() == var)
             });
         if frees_var {
             violations.push(RuleViolation {
@@ -2725,13 +2785,20 @@ impl MemoryAnalyzer {
             }
         }
 
-        // Check if the full field expression is freed (e.g., buf->data)
-        let full_path = get_node_text(node, source);
-        if self.is_freed(&full_path) {
+        // Check if the full field expression is freed (e.g., buf->data) —
+        // structurally, so `p->buf` and `(*p).buf` are recognized as the
+        // same field regardless of spelling (task 1).
+        let Some(lv) = lvalue_of(node, source) else {
+            return;
+        };
+        if self.is_freed(&lv) {
             violations.push(RuleViolation {
                 rule_id: "MEM30-C".to_string(),
                 severity: Severity::Critical,
-                message: format!("Use-after-free: accessing freed pointer '{}'", full_path),
+                message: format!(
+                    "Use-after-free: accessing freed pointer '{}'",
+                    get_node_text(node, source)
+                ),
                 file_path: String::new(),
                 line: node.start_position().row + 1,
                 column: node.start_position().column + 1,
@@ -2742,41 +2809,39 @@ impl MemoryAnalyzer {
         }
 
         // Check if the base of field expression is freed
-        if let Some(arg) = node.child_by_field_name("argument") {
-            let var_name = self.extract_base_variable(&arg, source);
-            if !var_name.is_empty() && self.is_freed(&var_name) {
-                violations.push(RuleViolation {
-                    rule_id: "MEM30-C".to_string(),
-                    severity: Severity::Critical,
-                    message: format!(
-                        "Use-after-free: accessing member of freed pointer '{}'",
-                        var_name
-                    ),
-                    file_path: String::new(),
-                    line: node.start_position().row + 1,
-                    column: node.start_position().column + 1,
-                    suggestion: Some("Do not access members of freed memory.".to_string()),
-                    ..Default::default()
-                });
-            }
+        let var_name = LValue::Var(lv.root_var().to_string());
+        if self.is_freed(&var_name) {
+            violations.push(RuleViolation {
+                rule_id: "MEM30-C".to_string(),
+                severity: Severity::Critical,
+                message: format!(
+                    "Use-after-free: accessing member of freed pointer '{}'",
+                    var_name.root_var()
+                ),
+                file_path: String::new(),
+                line: node.start_position().row + 1,
+                column: node.start_position().column + 1,
+                suggestion: Some("Do not access members of freed memory.".to_string()),
+                ..Default::default()
+            });
         }
     }
 
     /// Check if a variable is in freed state (considering aliases and realloc invalidation)
     /// Used for use-after-free detection
-    fn is_freed(&self, var_name: &str) -> bool {
-        if self.nullified_vars.contains(var_name) {
+    fn is_freed(&self, lv: &LValue) -> bool {
+        if self.nullified_vars.contains(lv) {
             return false;
         }
-        if self.freed_vars.contains(var_name) {
+        if self.freed_vars.contains(lv) {
             return true;
         }
         // Check if invalidated by realloc (old pointer after realloc)
-        if self.realloc_invalidated.contains(var_name) {
+        if self.realloc_invalidated.contains(lv) {
             return true;
         }
         // Check if it's an alias of a freed or invalidated variable
-        if let Some(canonical) = self.aliases.get(var_name) {
+        if let Some(canonical) = self.aliases.get(lv) {
             if self.nullified_vars.contains(canonical) {
                 return false;
             }
@@ -2785,20 +2850,16 @@ impl MemoryAnalyzer {
             }
         }
         // Check if any union member sharing this base is freed.
-        // Require that var_name is `base->...` or `base.member` — not `base`
-        // itself, which would incorrectly trigger on `free(base->field)` and
-        // then flag the subsequent `free(base)` as a use-after-free.
-        for (base, members) in &self.union_members {
-            let rest = match var_name.strip_prefix(base.as_str()) {
-                Some(r) => r,
-                None => continue,
-            };
-            if !rest.starts_with("->") && !rest.starts_with('.') {
-                continue; // var_name IS the base, not a member of it
-            }
-            for member in members {
-                if self.freed_vars.contains(member) || self.realloc_invalidated.contains(member) {
-                    return true;
+        // Require that `lv` is a field of `base` — not `base` itself, which
+        // would incorrectly trigger on `free(base->field)` and then flag the
+        // subsequent `free(base)` as a use-after-free.
+        if lv.is_field() {
+            if let Some(members) = self.union_members.get(lv.root_var()) {
+                for member in members {
+                    if self.freed_vars.contains(member) || self.realloc_invalidated.contains(member)
+                    {
+                        return true;
+                    }
                 }
             }
         }
@@ -2807,15 +2868,15 @@ impl MemoryAnalyzer {
 
     /// Check if a variable has actually been freed (not just realloc-invalidated)
     /// Used for double-free detection - it's OK to free a realloc-invalidated pointer
-    fn is_actually_freed(&self, var_name: &str) -> bool {
-        if self.nullified_vars.contains(var_name) {
+    fn is_actually_freed(&self, lv: &LValue) -> bool {
+        if self.nullified_vars.contains(lv) {
             return false;
         }
-        if self.freed_vars.contains(var_name) {
+        if self.freed_vars.contains(lv) {
             return true;
         }
         // Check if it's an alias of a freed variable (not realloc-invalidated)
-        if let Some(canonical) = self.aliases.get(var_name) {
+        if let Some(canonical) = self.aliases.get(lv) {
             if self.nullified_vars.contains(canonical) {
                 return false;
             }
@@ -2827,23 +2888,23 @@ impl MemoryAnalyzer {
     }
 
     /// Track the old pointer passed to realloc as invalidated.
-    /// Returns the old pointer names that were invalidated (for realloc_source tracking).
-    fn track_realloc_old_pointer(&mut self, call_node: &Node, source: &str) -> Vec<String> {
+    /// Returns the old pointer lvalues that were invalidated (for realloc_source tracking).
+    fn track_realloc_old_pointer(&mut self, call_node: &Node, source: &str) -> Vec<LValue> {
         let mut invalidated = Vec::new();
         if let Some(args) = call_node.child_by_field_name("arguments") {
             // First argument to realloc is the old pointer
             for i in 0..args.child_count() {
                 if let Some(arg) = args.child(i) {
                     if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                        // For field expressions (like im->clip->list), track the full path
-                        // since only that specific field becomes invalid
-                        let old_ptr = if arg.kind() == "field_expression" {
-                            get_node_text(&arg, source).to_string()
-                        } else {
-                            self.extract_base_variable(&arg, source)
-                        };
+                        // For field expressions (like im->clip->list), track the full
+                        // field path since only that specific field becomes invalid;
+                        // `lvalue_of` already gives exactly that for a top-level
+                        // field_expression, and collapses to the base identifier for
+                        // every other node kind — matching the old
+                        // extract_base_variable fallback in one call.
+                        let old_ptr = lvalue_of(&arg, source);
 
-                        if !old_ptr.is_empty() {
+                        if let Some(old_ptr) = old_ptr {
                             // Self-realloc guard: if the old pointer already holds a
                             // realloc result (`X = realloc(X, n)`), the result is
                             // stored straight back into X, so X is not dangling. The
@@ -2860,7 +2921,7 @@ impl MemoryAnalyzer {
                             self.realloc_invalidated.insert(old_ptr.clone());
                             invalidated.push(old_ptr.clone());
                             // Also invalidate any aliases pointing to the old pointer
-                            let aliases_to_invalidate: Vec<String> = self
+                            let aliases_to_invalidate: Vec<LValue> = self
                                 .aliases
                                 .iter()
                                 .filter(|(_, v)| **v == old_ptr)
@@ -2877,71 +2938,6 @@ impl MemoryAnalyzer {
             }
         }
         invalidated
-    }
-
-    /// Resolve a variable to its canonical name (follow alias chain)
-    fn resolve_canonical(&self, var_name: &str) -> String {
-        let mut current = var_name.to_string();
-        let mut visited = HashSet::new();
-        while let Some(target) = self.aliases.get(&current) {
-            if visited.contains(target) {
-                break; // Avoid infinite loop
-            }
-            visited.insert(current.clone());
-            current = target.clone();
-        }
-        current
-    }
-
-    /// Extract the base variable name from various node types
-    fn extract_base_variable(&self, node: &Node, source: &str) -> String {
-        match node.kind() {
-            "identifier" => get_node_text(node, source).to_string(),
-            "pointer_expression" => {
-                // *ptr - get the base pointer
-                if let Some(arg) = node.child_by_field_name("argument") {
-                    self.extract_base_variable(&arg, source)
-                } else {
-                    String::new()
-                }
-            }
-            "field_expression" => {
-                // ptr->field - get the base
-                if let Some(arg) = node.child_by_field_name("argument") {
-                    self.extract_base_variable(&arg, source)
-                } else {
-                    String::new()
-                }
-            }
-            "subscript_expression" => {
-                // arr[i] - get the base array
-                if let Some(arg) = node.child_by_field_name("argument") {
-                    self.extract_base_variable(&arg, source)
-                } else {
-                    String::new()
-                }
-            }
-            "parenthesized_expression" => {
-                // (ptr) - unwrap
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() != "(" && child.kind() != ")" {
-                            return self.extract_base_variable(&child, source);
-                        }
-                    }
-                }
-                String::new()
-            }
-            "cast_expression" => {
-                // (type)ptr - get the operand
-                if let Some(value) = node.child_by_field_name("value") {
-                    self.extract_base_variable(&value, source)
-                } else {
-                    String::new()
-                }
-            }
-            _ => String::new(),
-        }
     }
 
     /// Extract variable name from a declarator node
