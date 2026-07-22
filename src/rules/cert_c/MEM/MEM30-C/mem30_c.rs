@@ -485,6 +485,15 @@ impl GlobalTracker {
         }
     }
 
+    /// Preorder scan, left-to-right, same order as the original recursive
+    /// walk — `has_recursive_call` is order-dependent (it's read by
+    /// `scan_identifier_access` at the point of traversal), so the explicit
+    /// stack below must visit nodes in exactly the same sequence a recursive
+    /// descent would. Converted (task 295) after a deep-if-nesting stress
+    /// fixture showed this walk — despite being described as a "secondary,
+    /// bounded-depth concern" — does in fact overflow the native stack on
+    /// the same adversarial input class the main `MemoryAnalyzer` conversion
+    /// targets.
     fn scan_function_body(
         &mut self,
         node: &Node,
@@ -498,51 +507,44 @@ impl GlobalTracker {
         has_recursive_call: &mut bool,
         global_access_after_recursive: &mut Vec<(String, usize, usize)>,
     ) {
-        match node.kind() {
-            "call_expression" => {
-                self.scan_call_expression(
-                    node,
-                    source,
-                    params,
-                    freed_globals,
-                    freed_params,
-                    func_name,
-                    has_longjmp,
-                    has_recursive_call,
-                );
-            }
-            "identifier" => {
-                self.scan_identifier_access(
-                    node,
-                    source,
-                    accessed_globals,
-                    has_recursive_call,
-                    global_access_after_recursive,
-                );
-            }
-            "assignment_expression" => {
-                self.scan_assignment_escape(node, source, params, func_name);
-            }
-            _ => {}
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if is_preproc_if_zero(&child, source) {
-                    continue;
+        let mut stack: Vec<Node> = vec![*node];
+        while let Some(n) = stack.pop() {
+            match n.kind() {
+                "call_expression" => {
+                    self.scan_call_expression(
+                        &n,
+                        source,
+                        params,
+                        freed_globals,
+                        freed_params,
+                        func_name,
+                        has_longjmp,
+                        has_recursive_call,
+                    );
                 }
-                self.scan_function_body(
-                    &child,
-                    source,
-                    params,
-                    freed_globals,
-                    accessed_globals,
-                    freed_params,
-                    func_name,
-                    has_longjmp,
-                    has_recursive_call,
-                    global_access_after_recursive,
-                );
+                "identifier" => {
+                    self.scan_identifier_access(
+                        &n,
+                        source,
+                        accessed_globals,
+                        has_recursive_call,
+                        global_access_after_recursive,
+                    );
+                }
+                "assignment_expression" => {
+                    self.scan_assignment_escape(&n, source, params, func_name);
+                }
+                _ => {}
+            }
+
+            let count = n.child_count();
+            for i in (0..count).rev() {
+                if let Some(child) = n.child(i) {
+                    if is_preproc_if_zero(&child, source) {
+                        continue;
+                    }
+                    stack.push(child);
+                }
             }
         }
     }
@@ -1274,6 +1276,38 @@ enum ReallocNullBranch {
     Else, // if (result) or if (result != NULL) — else-branch is the NULL case
 }
 
+/// The subset of `MemoryAnalyzer`'s fields that are forked across an
+/// `if`/`else` branch and either merged back (via `MemoryAnalyzer::
+/// merge_if_branches`) or restored verbatim before the else-branch walk.
+#[derive(Clone)]
+struct BranchState {
+    freed_vars: HashSet<String>,
+    nullified_vars: HashSet<String>,
+    aliases: HashMap<String, String>,
+    realloc_updated: HashSet<String>,
+    realloc_invalidated: HashSet<String>,
+}
+
+impl BranchState {
+    fn fork(analyzer: &MemoryAnalyzer) -> Self {
+        Self {
+            freed_vars: analyzer.freed_vars.clone(),
+            nullified_vars: analyzer.nullified_vars.clone(),
+            aliases: analyzer.aliases.clone(),
+            realloc_updated: analyzer.realloc_updated.clone(),
+            realloc_invalidated: analyzer.realloc_invalidated.clone(),
+        }
+    }
+
+    fn restore(&self, analyzer: &mut MemoryAnalyzer) {
+        analyzer.freed_vars = self.freed_vars.clone();
+        analyzer.nullified_vars = self.nullified_vars.clone();
+        analyzer.aliases = self.aliases.clone();
+        analyzer.realloc_updated = self.realloc_updated.clone();
+        analyzer.realloc_invalidated = self.realloc_invalidated.clone();
+    }
+}
+
 struct MemoryAnalyzer {
     // Track which variables are currently freed
     freed_vars: HashSet<String>,
@@ -1391,189 +1425,285 @@ impl MemoryAnalyzer {
         }
     }
 
-    /// Analyze nodes within a function
+    /// Analyze nodes within a function.
+    ///
+    /// Uses an explicit heap-allocated frame stack instead of native
+    /// recursion (task 295): deeply/adversarially nested `if`/expression
+    /// trees (Juliet-style generated code) can otherwise blow the native
+    /// call stack, one frame per nesting level. `Frame::Visit` mirrors the
+    /// original per-node dispatch + "recurse into children" fallthrough;
+    /// `if_statement` additionally needs to suspend mid-procedure across its
+    /// condition/then/else parts and resume with a branch merge, which the
+    /// `AfterCondition`/`AfterThen`/`AfterElse` continuation frames encode
+    /// (condition -> then-branch -> capture -> reset -> else-branch ->
+    /// capture -> merge -> resume caller). This is a pure mechanical
+    /// conversion: merge policy and ordering of side effects are preserved
+    /// exactly, including the pre-existing quirk that `self.aliases` is
+    /// reset before the else-branch but never re-merged afterward (it ends
+    /// up as whatever the else-branch — or the reset, if there's no else —
+    /// last left it as).
     fn analyze_function_body(
         &mut self,
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        match node.kind() {
-            "if_statement" => {
-                // Handle if-else with branch-sensitive analysis
-                self.analyze_if_statement(node, source, violations);
-                return; // Don't recurse - handled by analyze_if_statement
-            }
-            "call_expression" => {
-                self.process_call_expression(node, source, violations);
-            }
-            "assignment_expression" => {
-                self.process_assignment(node, source, violations);
-            }
-            "init_declarator" => {
-                self.process_init_declarator(node, source, violations);
-            }
-            "pointer_expression" => {
-                // Check for dereference of freed memory (*ptr)
-                self.check_pointer_dereference(node, source, violations);
-            }
-            "subscript_expression" => {
-                // Check for array access on freed memory (arr[i])
-                self.check_subscript_access(node, source, violations);
-                // Don't recurse into subscript - we already checked the argument
-                // This prevents double-checking field expressions that are subscript arguments
-                return;
-            }
-            "binary_expression" => {
-                // Check for pointer arithmetic on freed memory (ptr + n)
-                self.check_binary_expression(node, source, violations);
-            }
-            "return_statement" => {
-                // Check for returning freed memory
-                self.check_return_statement(node, source, violations);
-            }
-            "for_statement" => {
-                // Check for dangerous loop free patterns
-                self.check_for_loop_pattern(node, source, violations);
-            }
-            "field_expression" => {
-                // Check for field access on freed memory (ptr->field)
-                self.check_field_access(node, source, violations);
-            }
-            _ => {}
+        enum Frame<'a> {
+            Visit(Node<'a>),
+            AfterCondition {
+                if_node: Node<'a>,
+                consequence: Option<Node<'a>>,
+                alternative: Option<Node<'a>>,
+            },
+            AfterThen {
+                if_node: Node<'a>,
+                consequence: Option<Node<'a>>,
+                alternative: Option<Node<'a>>,
+                pre_state: BranchState,
+                realloc_null_branch: Option<ReallocNullBranch>,
+            },
+            AfterElse {
+                alternative: Option<Node<'a>>,
+                pre_state: BranchState,
+                then_state: BranchState,
+                then_returns: bool,
+            },
         }
 
-        // Recursively process child nodes
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if is_preproc_if_zero(&child, source) {
-                    continue;
+        fn push_children<'a>(stack: &mut Vec<Frame<'a>>, node: &Node<'a>, source: &str) {
+            let count = node.child_count();
+            for i in (0..count).rev() {
+                if let Some(child) = node.child(i) {
+                    if is_preproc_if_zero(&child, source) {
+                        continue;
+                    }
+                    stack.push(Frame::Visit(child));
                 }
-                self.analyze_function_body(&child, source, violations);
+            }
+        }
+
+        let mut stack: Vec<Frame> = vec![Frame::Visit(*node)];
+        while let Some(frame) = stack.pop() {
+            match frame {
+                Frame::Visit(n) => match n.kind() {
+                    "if_statement" => {
+                        let consequence = n.child_by_field_name("consequence");
+                        let alternative = n.child_by_field_name("alternative");
+                        let condition = n.child_by_field_name("condition");
+                        stack.push(Frame::AfterCondition {
+                            if_node: n,
+                            consequence,
+                            alternative,
+                        });
+                        if let Some(condition) = condition {
+                            stack.push(Frame::Visit(condition));
+                        }
+                    }
+                    "call_expression" => {
+                        self.process_call_expression(&n, source, violations);
+                        push_children(&mut stack, &n, source);
+                    }
+                    "assignment_expression" => {
+                        self.process_assignment(&n, source, violations);
+                        push_children(&mut stack, &n, source);
+                    }
+                    "init_declarator" => {
+                        self.process_init_declarator(&n, source, violations);
+                        push_children(&mut stack, &n, source);
+                    }
+                    "pointer_expression" => {
+                        // Check for dereference of freed memory (*ptr)
+                        self.check_pointer_dereference(&n, source, violations);
+                        push_children(&mut stack, &n, source);
+                    }
+                    "subscript_expression" => {
+                        // Check for array access on freed memory (arr[i]).
+                        // Don't recurse into it — we already checked the
+                        // argument, which prevents double-checking field
+                        // expressions that are subscript arguments.
+                        self.check_subscript_access(&n, source, violations);
+                    }
+                    "binary_expression" => {
+                        // Check for pointer arithmetic on freed memory (ptr + n)
+                        self.check_binary_expression(&n, source, violations);
+                        push_children(&mut stack, &n, source);
+                    }
+                    "return_statement" => {
+                        // Check for returning freed memory
+                        self.check_return_statement(&n, source, violations);
+                        push_children(&mut stack, &n, source);
+                    }
+                    "for_statement" => {
+                        // Check for dangerous loop free patterns
+                        self.check_for_loop_pattern(&n, source, violations);
+                        push_children(&mut stack, &n, source);
+                    }
+                    "field_expression" => {
+                        // Check for field access on freed memory (ptr->field)
+                        self.check_field_access(&n, source, violations);
+                        push_children(&mut stack, &n, source);
+                    }
+                    _ => {
+                        push_children(&mut stack, &n, source);
+                    }
+                },
+                Frame::AfterCondition {
+                    if_node,
+                    consequence,
+                    alternative,
+                } => {
+                    // Check if the condition tests a realloc result variable.
+                    // Pattern: if (temp) or if (temp != NULL) means then=realloc succeeded, else=failed.
+                    // Pattern: if (!temp) or if (temp == NULL) means then=realloc failed, else=succeeded.
+                    // When realloc fails (returns NULL), the original pointer is still valid.
+                    let realloc_null_branch =
+                        self.detect_realloc_condition_branch(&if_node, source);
+
+                    // Save state before branches
+                    let pre_state = BranchState::fork(self);
+
+                    // If the then-branch is the realloc-failed path, clear invalidation there
+                    if realloc_null_branch == Some(ReallocNullBranch::Then) {
+                        if let Some(cond) = if_node.child_by_field_name("condition") {
+                            self.clear_realloc_invalidation_for_condition(&cond, source);
+                        }
+                    }
+
+                    stack.push(Frame::AfterThen {
+                        if_node,
+                        consequence,
+                        alternative,
+                        pre_state,
+                        realloc_null_branch,
+                    });
+                    if let Some(consequence) = consequence {
+                        stack.push(Frame::Visit(consequence));
+                    }
+                }
+                Frame::AfterThen {
+                    if_node,
+                    consequence,
+                    alternative,
+                    pre_state,
+                    realloc_null_branch,
+                } => {
+                    // Save state after then-branch
+                    let then_state = BranchState::fork(self);
+                    let then_returns = consequence
+                        .map(|c| self.unconditionally_diverges(&c))
+                        .unwrap_or(false);
+
+                    // Reset state for else branch (starts from saved state)
+                    pre_state.restore(self);
+
+                    // If the else-branch is the realloc-failed path, clear invalidation there
+                    if realloc_null_branch == Some(ReallocNullBranch::Else) {
+                        if let Some(cond) = if_node.child_by_field_name("condition") {
+                            self.clear_realloc_invalidation_for_condition(&cond, source);
+                        }
+                    }
+
+                    stack.push(Frame::AfterElse {
+                        alternative,
+                        pre_state,
+                        then_state,
+                        then_returns,
+                    });
+                    if let Some(alternative) = alternative {
+                        stack.push(Frame::Visit(alternative));
+                    }
+                }
+                Frame::AfterElse {
+                    alternative,
+                    pre_state,
+                    then_state,
+                    then_returns,
+                } => {
+                    let else_state = BranchState::fork(self);
+                    let else_returns = alternative
+                        .map(|a| self.unconditionally_diverges(&a))
+                        .unwrap_or(false);
+                    Self::merge_if_branches(
+                        self,
+                        &pre_state,
+                        &then_state,
+                        then_returns,
+                        &else_state,
+                        else_returns,
+                    );
+                }
             }
         }
     }
 
-    /// Analyze if-statement with branch-sensitive analysis
-    fn analyze_if_statement(
-        &mut self,
-        node: &Node,
-        source: &str,
-        violations: &mut Vec<RuleViolation>,
+    /// Merge post-then/post-else state back onto `analyzer` after an
+    /// `if`/`else`, per which branch(es) unconditionally diverge. `aliases`
+    /// is deliberately excluded — see the note on `analyze_function_body`.
+    fn merge_if_branches(
+        analyzer: &mut Self,
+        pre_state: &BranchState,
+        then_state: &BranchState,
+        then_returns: bool,
+        else_state: &BranchState,
+        else_returns: bool,
     ) {
-        // First analyze the condition (it's executed in the current state)
-        if let Some(condition) = node.child_by_field_name("condition") {
-            self.analyze_function_body(&condition, source, violations);
-        }
-
-        // Check if the condition tests a realloc result variable.
-        // Pattern: if (temp) or if (temp != NULL) means then=realloc succeeded, else=failed.
-        // Pattern: if (!temp) or if (temp == NULL) means then=realloc failed, else=succeeded.
-        // When realloc fails (returns NULL), the original pointer is still valid.
-        let realloc_null_branch = self.detect_realloc_condition_branch(node, source);
-
-        // Save state before branches
-        let saved_freed = self.freed_vars.clone();
-        let saved_nullified = self.nullified_vars.clone();
-        let saved_aliases = self.aliases.clone();
-        let saved_realloc_updated = self.realloc_updated.clone();
-        let saved_realloc_invalidated = self.realloc_invalidated.clone();
-
-        // If the then-branch is the realloc-failed path, clear invalidation there
-        if realloc_null_branch == Some(ReallocNullBranch::Then) {
-            if let Some(cond) = node.child_by_field_name("condition") {
-                self.clear_realloc_invalidation_for_condition(&cond, source);
-            }
-        }
-
-        // Analyze the "consequence" (then branch)
-        let mut then_returns = false;
-        if let Some(consequence) = node.child_by_field_name("consequence") {
-            self.analyze_function_body(&consequence, source, violations);
-            then_returns = self.unconditionally_diverges(&consequence);
-        }
-
-        // Save state after then-branch
-        let then_freed = self.freed_vars.clone();
-        let then_nullified = self.nullified_vars.clone();
-        let then_realloc_invalidated = self.realloc_invalidated.clone();
-        let then_realloc_updated = self.realloc_updated.clone();
-
-        // Reset state for else branch (starts from saved state)
-        self.freed_vars = saved_freed.clone();
-        self.nullified_vars = saved_nullified.clone();
-        self.aliases = saved_aliases.clone();
-        self.realloc_updated = saved_realloc_updated.clone();
-        self.realloc_invalidated = saved_realloc_invalidated.clone();
-
-        // If the else-branch is the realloc-failed path, clear invalidation there
-        if realloc_null_branch == Some(ReallocNullBranch::Else) {
-            if let Some(cond) = node.child_by_field_name("condition") {
-                self.clear_realloc_invalidation_for_condition(&cond, source);
-            }
-        }
-
-        // Analyze the "alternative" (else branch) if present
-        let mut else_returns = false;
-        if let Some(alternative) = node.child_by_field_name("alternative") {
-            self.analyze_function_body(&alternative, source, violations);
-            else_returns = self.unconditionally_diverges(&alternative);
-        }
-
-        let else_freed = self.freed_vars.clone();
-        let else_nullified = self.nullified_vars.clone();
-        let else_realloc_invalidated = self.realloc_invalidated.clone();
-        let else_realloc_updated = self.realloc_updated.clone();
-
-        // Merge states based on which branches return
         if then_returns && else_returns {
             // Both branches return - code after is unreachable, keep saved state
-            self.freed_vars = saved_freed;
-            self.nullified_vars = saved_nullified;
-            self.realloc_invalidated = saved_realloc_invalidated;
-            self.realloc_updated = saved_realloc_updated;
+            analyzer.freed_vars = pre_state.freed_vars.clone();
+            analyzer.nullified_vars = pre_state.nullified_vars.clone();
+            analyzer.realloc_invalidated = pre_state.realloc_invalidated.clone();
+            analyzer.realloc_updated = pre_state.realloc_updated.clone();
         } else if then_returns {
             // Only then returns - use else branch state
-            self.freed_vars = else_freed;
-            self.nullified_vars = else_nullified;
-            self.realloc_invalidated = else_realloc_invalidated;
-            self.realloc_updated = else_realloc_updated;
+            analyzer.freed_vars = else_state.freed_vars.clone();
+            analyzer.nullified_vars = else_state.nullified_vars.clone();
+            analyzer.realloc_invalidated = else_state.realloc_invalidated.clone();
+            analyzer.realloc_updated = else_state.realloc_updated.clone();
         } else if else_returns {
             // Only else returns - use then branch state
-            self.freed_vars = then_freed;
-            self.nullified_vars = then_nullified;
-            self.realloc_invalidated = then_realloc_invalidated;
-            self.realloc_updated = then_realloc_updated;
+            analyzer.freed_vars = then_state.freed_vars.clone();
+            analyzer.nullified_vars = then_state.nullified_vars.clone();
+            analyzer.realloc_invalidated = then_state.realloc_invalidated.clone();
+            analyzer.realloc_updated = then_state.realloc_updated.clone();
         } else {
             // Neither returns - merge states
             // For use-after-free detection: if freed in EITHER branch, it's potentially freed after
             // This ensures we catch use-after-free even on conditional frees
-            self.freed_vars = then_freed;
-            for var in else_freed {
-                self.freed_vars.insert(var);
+            let mut freed_vars = then_state.freed_vars.clone();
+            for var in else_state.freed_vars.iter() {
+                freed_vars.insert(var.clone());
             }
             // But remove vars that were nullified in both branches
-            for var in saved_nullified.iter() {
-                if then_nullified.contains(var) && else_nullified.contains(var) {
-                    self.freed_vars.remove(var);
+            for var in pre_state.nullified_vars.iter() {
+                if then_state.nullified_vars.contains(var)
+                    && else_state.nullified_vars.contains(var)
+                {
+                    freed_vars.remove(var);
                 }
             }
+            analyzer.freed_vars = freed_vars;
+
             // Union of nullified
-            self.nullified_vars = then_nullified;
-            for var in else_nullified {
-                self.nullified_vars.insert(var);
+            let mut nullified_vars = then_state.nullified_vars.clone();
+            for var in else_state.nullified_vars.iter() {
+                nullified_vars.insert(var.clone());
             }
+            analyzer.nullified_vars = nullified_vars;
+
             // For realloc_invalidated: use union (if invalidated in either branch, could be invalid)
             // This is conservative for detecting use-after-free
-            self.realloc_invalidated = then_realloc_invalidated;
-            for var in else_realloc_invalidated {
-                self.realloc_invalidated.insert(var);
+            let mut realloc_invalidated = then_state.realloc_invalidated.clone();
+            for var in else_state.realloc_invalidated.iter() {
+                realloc_invalidated.insert(var.clone());
             }
+            analyzer.realloc_invalidated = realloc_invalidated;
+
             // Union of realloc_updated
-            self.realloc_updated = then_realloc_updated;
-            for var in else_realloc_updated {
-                self.realloc_updated.insert(var);
+            let mut realloc_updated = then_state.realloc_updated.clone();
+            for var in else_state.realloc_updated.iter() {
+                realloc_updated.insert(var.clone());
             }
+            analyzer.realloc_updated = realloc_updated;
         }
     }
 
@@ -1588,16 +1718,25 @@ impl MemoryAnalyzer {
     /// error branches free-then-`goto cleanup` / free-then-`break` (task 181
     /// pattern 2). The merge only recognized `return` before.
     fn unconditionally_diverges(&self, node: &Node) -> bool {
-        match node.kind() {
-            "return_statement" | "goto_statement" | "break_statement" | "continue_statement" => {
-                true
-            }
-            "compound_statement" => {
-                // A compound statement unconditionally diverges if its last real
-                // statement diverges. Braces and trailing comments are not
-                // statements: a `comment` node after `goto cleanup;` would
-                // otherwise become the "last child" and defeat the check (a
-                // common shape in real error branches).
+        // Explicit work/result stacks instead of native recursion (task 295):
+        // a chain of else-less nested `if`s (each testing `unconditionally_
+        // diverges` on its own consequence) recurses once per nesting level
+        // here too, independent of `analyze_function_body`'s own conversion,
+        // so it needs the same treatment to stay stack-safe on deeply nested
+        // input.
+        enum Frame<'a> {
+            Eval(Node<'a>),
+            /// No node to evaluate (e.g. an `if` with no `else`) — contributes
+            /// `false`, matching the original `.unwrap_or(false)`.
+            PushFalse,
+            AndCombine,
+        }
+
+        // A compound statement's result is exactly its last real statement's
+        // result (braces/comments aren't statements), so chains of nested
+        // compounds can be unwrapped in a plain loop — no stack growth.
+        fn resolve<'a>(mut node: Node<'a>) -> Option<Node<'a>> {
+            while node.kind() == "compound_statement" {
                 let mut last_child = None;
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
@@ -1606,26 +1745,50 @@ impl MemoryAnalyzer {
                         }
                     }
                 }
-                if let Some(last) = last_child {
-                    self.unconditionally_diverges(&last)
-                } else {
-                    false
+                match last_child {
+                    Some(last) => node = last,
+                    None => return None,
                 }
             }
-            "if_statement" => {
-                // An if-statement unconditionally returns only if BOTH branches unconditionally return
-                let then_returns = node
-                    .child_by_field_name("consequence")
-                    .map(|c| self.unconditionally_diverges(&c))
-                    .unwrap_or(false);
-                let else_returns = node
-                    .child_by_field_name("alternative")
-                    .map(|c| self.unconditionally_diverges(&c))
-                    .unwrap_or(false);
-                then_returns && else_returns
-            }
-            _ => false,
+            Some(node)
         }
+
+        let mut work: Vec<Frame> = vec![Frame::Eval(*node)];
+        let mut results: Vec<bool> = Vec::new();
+        while let Some(frame) = work.pop() {
+            match frame {
+                Frame::PushFalse => results.push(false),
+                Frame::AndCombine => {
+                    let b = results.pop().unwrap_or(false);
+                    let a = results.pop().unwrap_or(false);
+                    results.push(a && b);
+                }
+                Frame::Eval(n) => match resolve(n) {
+                    None => results.push(false),
+                    Some(resolved) => match resolved.kind() {
+                        "return_statement" | "goto_statement" | "break_statement"
+                        | "continue_statement" => {
+                            results.push(true);
+                        }
+                        "if_statement" => {
+                            // An if-statement unconditionally diverges only if
+                            // BOTH branches unconditionally diverge.
+                            work.push(Frame::AndCombine);
+                            match resolved.child_by_field_name("alternative") {
+                                Some(alt) => work.push(Frame::Eval(alt)),
+                                None => work.push(Frame::PushFalse),
+                            }
+                            match resolved.child_by_field_name("consequence") {
+                                Some(cons) => work.push(Frame::Eval(cons)),
+                                None => work.push(Frame::PushFalse),
+                            }
+                        }
+                        _ => results.push(false),
+                    },
+                },
+            }
+        }
+        results.pop().unwrap_or(false)
     }
 
     /// Detect if an if-statement's condition tests a realloc result variable.

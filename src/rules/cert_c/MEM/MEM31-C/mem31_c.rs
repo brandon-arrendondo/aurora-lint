@@ -95,6 +95,86 @@ struct AllocInfo {
     alloc_type: String,
 }
 
+/// The subset of `MemoryLeakAnalyzer`'s fields that are forked/reset/merged
+/// across `if`/`switch` branches.
+#[derive(Clone)]
+struct LeakBranchState {
+    freed_memory: HashMap<String, (usize, usize)>,
+    null_variables: HashSet<String>,
+}
+
+impl LeakBranchState {
+    fn fork(analyzer: &MemoryLeakAnalyzer) -> Self {
+        Self {
+            freed_memory: analyzer.freed_memory.clone(),
+            null_variables: analyzer.null_variables.clone(),
+        }
+    }
+
+    fn restore(&self, analyzer: &mut MemoryLeakAnalyzer) {
+        analyzer.freed_memory = self.freed_memory.clone();
+        analyzer.null_variables = self.null_variables.clone();
+    }
+}
+
+// (alloc_info, free_info, loop_condition), as returned by
+// `MemoryLeakAnalyzer::find_loop_array_pattern` plus the loop's own
+// condition text.
+type LoopArrayPattern = (
+    Option<(String, bool)>,
+    Option<(String, bool)>,
+    Option<String>,
+);
+
+/// Explicit continuation-stack frames driving `MemoryLeakAnalyzer::
+/// analyze_node` (task 295) — see that method's doc comment for why.
+enum Frame<'a> {
+    Visit(Node<'a>),
+    /// Resume an `if`'s else-branch handling once the then-branch's own
+    /// subtree (pushed on top of this frame) has fully drained.
+    AfterTrueBranch {
+        if_node: Node<'a>,
+        saved_state: LeakBranchState,
+        saved_allocated: HashMap<String, AllocInfo>,
+        true_has_return: bool,
+        else_has_return: bool,
+        else_clause: Option<Node<'a>>,
+        truthiness_var: Option<String>,
+        non_null_check_var: Option<String>,
+    },
+    /// Merge then/else results once the else-branch's own subtree has fully
+    /// drained.
+    AfterElseBranch {
+        if_node: Node<'a>,
+        saved_state: LeakBranchState,
+        saved_allocated: HashMap<String, AllocInfo>,
+        true_has_return: bool,
+        else_has_return: bool,
+        true_state: LeakBranchState,
+    },
+    /// Reset to `pre_state` and walk the next `switch` case, once the
+    /// previous case's own subtree has fully drained.
+    SwitchNextCase {
+        remaining_reversed: Vec<Node<'a>>,
+        pre_state: LeakBranchState,
+    },
+    /// Decrement loop-nesting bookkeeping (and, for `for`, record the array
+    /// alloc/free loop-condition pattern) once the loop body's own subtree
+    /// has fully drained.
+    ExitLoop {
+        array_pattern: Option<LoopArrayPattern>,
+    },
+}
+
+fn push_children<'a>(stack: &mut Vec<Frame<'a>>, node: &Node<'a>) {
+    let count = node.child_count();
+    for i in (0..count).rev() {
+        if let Some(child) = node.child(i) {
+            stack.push(Frame::Visit(child));
+        }
+    }
+}
+
 impl<'a> MemoryLeakAnalyzer<'a> {
     fn new(function_summaries: &'a HashMap<String, FunctionSummary>) -> Self {
         Self {
@@ -287,53 +367,412 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
+    /// Entry point: analyze a function body (or any subtree) using an
+    /// explicit heap-allocated frame stack instead of native recursion
+    /// (task 295). `analyze_node`/`analyze_children`/`analyze_if`/
+    /// `analyze_switch`/`analyze_for_loop`/`analyze_simple_loop`/
+    /// `process_statement` previously formed a mutually-recursive walk whose
+    /// depth tracked C statement nesting — deeply/adversarially nested
+    /// input (Juliet-style generated code) could overflow the native call
+    /// stack. This is a pure mechanical conversion: dispatch, traversal
+    /// order (left-to-right, preorder), and branch-merge policy for `if`
+    /// (freed_memory/null_variables) are unchanged, including the
+    /// pre-existing quirk that `analyze_switch` never merges/restores state
+    /// after its last case (state is left as whatever that case produced).
+    /// Note `analyze_children`'s original recursion, unlike MEM30-C's,
+    /// never filtered out `#if 0` subtrees — that omission is preserved
+    /// here too, not fixed under cover of this refactor.
     fn analyze_node(&mut self, node: &Node, source: &str) {
-        match node.kind() {
-            "declaration" | "expression_statement" => {
-                // Check for macro calls that might hide early returns
-                self.check_for_return_macro(node, source);
-                self.process_statement(node, source);
-            }
-            "assignment_expression" => {
-                self.process_assignment(node, source);
-            }
-            "call_expression" => {
-                self.process_call(node, source);
-            }
-            "return_statement" => {
-                self.process_return(node, source);
-            }
-            "goto_statement" => {
-                self.analyze_goto(node, source);
-            }
-            "for_statement" => {
-                self.analyze_for_loop(node, source);
-            }
-            "while_statement" | "do_statement" => {
-                self.analyze_simple_loop(node, source);
-            }
-            "if_statement" => {
-                self.analyze_if(node, source);
-            }
-            "switch_statement" => {
-                self.analyze_switch(node, source);
-            }
-            "compound_statement" => {
-                // Process compound statements recursively
-                self.analyze_children(node, source);
-            }
-            _ => {
-                // Recursively process other nodes
-                self.analyze_children(node, source);
+        let mut stack: Vec<Frame> = vec![Frame::Visit(*node)];
+        while let Some(frame) = stack.pop() {
+            match frame {
+                Frame::Visit(n) => self.visit(n, source, &mut stack),
+                Frame::AfterTrueBranch {
+                    if_node,
+                    saved_state,
+                    saved_allocated,
+                    true_has_return,
+                    else_has_return,
+                    else_clause,
+                    truthiness_var,
+                    non_null_check_var,
+                } => self.after_true_branch(
+                    if_node,
+                    saved_state,
+                    saved_allocated,
+                    true_has_return,
+                    else_has_return,
+                    else_clause,
+                    truthiness_var,
+                    non_null_check_var,
+                    &mut stack,
+                ),
+                Frame::AfterElseBranch {
+                    if_node,
+                    saved_state,
+                    saved_allocated,
+                    true_has_return,
+                    else_has_return,
+                    true_state,
+                } => {
+                    let else_state = LeakBranchState::fork(self);
+                    Self::finish_if(
+                        self,
+                        &if_node,
+                        &saved_state,
+                        &saved_allocated,
+                        true_has_return,
+                        else_has_return,
+                        &true_state,
+                        &else_state,
+                        true,
+                    );
+                }
+                Frame::SwitchNextCase {
+                    remaining_reversed,
+                    pre_state,
+                } => self.switch_next_case(remaining_reversed, pre_state, &mut stack),
+                Frame::ExitLoop { array_pattern } => self.exit_loop(array_pattern),
             }
         }
     }
 
-    /// Recurse into every child of `node`.
-    fn analyze_children(&mut self, node: &Node, source: &str) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.analyze_node(&child, source);
+    /// Dispatch for a single visited node: leaf statements are handled
+    /// directly; statements that need to suspend across a nested subtree
+    /// (`if`/`switch`/loops) push continuation frames instead of recursing.
+    fn visit<'n>(&mut self, n: Node<'n>, source: &str, stack: &mut Vec<Frame<'n>>) {
+        match n.kind() {
+            "declaration" | "expression_statement" => {
+                self.visit_declaration_or_expr(n, source, stack)
+            }
+            "assignment_expression" => self.process_assignment(&n, source),
+            "call_expression" => self.process_call(&n, source),
+            "return_statement" => self.process_return(&n, source),
+            "goto_statement" => self.analyze_goto(&n, source),
+            "for_statement" => self.visit_for_statement(n, source, stack),
+            "while_statement" | "do_statement" => self.visit_while_do_statement(stack, n),
+            "if_statement" => self.visit_if_statement(n, source, stack),
+            "switch_statement" => self.visit_switch_statement(n, stack),
+            _ => push_children(stack, &n),
+        }
+    }
+
+    /// `declaration`/`expression_statement`: `init_declarator` children are
+    /// handled inline (no further traversal, matching the original); any
+    /// other child is deferred onto the stack instead of a recursive
+    /// `analyze_node` call, preserving left-to-right order.
+    fn visit_declaration_or_expr<'n>(
+        &mut self,
+        n: Node<'n>,
+        source: &str,
+        stack: &mut Vec<Frame<'n>>,
+    ) {
+        // Check for macro calls that might hide early returns
+        self.check_for_return_macro(&n, source);
+        let mut pending: Vec<Node> = Vec::new();
+        for i in 0..n.child_count() {
+            if let Some(child) = n.child(i) {
+                if child.kind() == "init_declarator" {
+                    self.process_init_declarator_child(&child, source);
+                } else {
+                    pending.push(child);
+                }
+            }
+        }
+        for child in pending.into_iter().rev() {
+            stack.push(Frame::Visit(child));
+        }
+    }
+
+    fn visit_for_statement<'n>(&mut self, n: Node<'n>, source: &str, stack: &mut Vec<Frame<'n>>) {
+        let loop_condition = n
+            .child_by_field_name("condition")
+            .map(|c| ast_utils::get_node_text_owned(&c, source));
+        self.in_loop = true;
+        self.loop_depth += 1;
+        let alloc_info = self.find_loop_array_pattern(&n, source, true);
+        let free_info = self.find_loop_array_pattern(&n, source, false);
+        stack.push(Frame::ExitLoop {
+            array_pattern: Some((alloc_info, free_info, loop_condition)),
+        });
+        push_children(stack, &n);
+    }
+
+    fn visit_while_do_statement<'n>(&mut self, stack: &mut Vec<Frame<'n>>, n: Node<'n>) {
+        self.in_loop = true;
+        self.loop_depth += 1;
+        stack.push(Frame::ExitLoop {
+            array_pattern: None,
+        });
+        push_children(stack, &n);
+    }
+
+    fn visit_if_statement<'n>(&mut self, n: Node<'n>, source: &str, stack: &mut Vec<Frame<'n>>) {
+        let saved_state = LeakBranchState::fork(self);
+        let saved_allocated = self.allocated_memory.clone();
+
+        let null_check_var = self.get_null_check_variable(&n, source);
+        let non_null_check_var = self.get_non_null_check_variable(&n, source);
+        let truthiness_var = self.get_truthiness_check_variable(&n, source);
+
+        let mut true_branch: Option<Node> = None;
+        let mut else_clause: Option<Node> = None;
+        for i in 0..n.child_count() {
+            if let Some(child) = n.child(i) {
+                if child.kind() == "compound_statement" && true_branch.is_none() {
+                    true_branch = Some(child);
+                } else if child.kind() == "else_clause" {
+                    else_clause = Some(child);
+                }
+            }
+        }
+
+        let true_has_return = true_branch
+            .as_ref()
+            .map(|b| self.block_has_return(b))
+            .unwrap_or(false);
+        let else_has_return = else_clause
+            .as_ref()
+            .map(|e| self.block_has_return(e))
+            .unwrap_or(false);
+
+        if let Some(ref var_name) = null_check_var {
+            self.null_variables.insert(var_name.clone());
+        }
+        self.clear_realloc_invalidation_if_related(&truthiness_var, n);
+        self.clear_realloc_invalidation_if_related(&non_null_check_var, n);
+
+        stack.push(Frame::AfterTrueBranch {
+            if_node: n,
+            saved_state,
+            saved_allocated,
+            true_has_return,
+            else_has_return,
+            else_clause,
+            truthiness_var,
+            non_null_check_var,
+        });
+        if let Some(branch) = true_branch {
+            stack.push(Frame::Visit(branch));
+        }
+    }
+
+    /// If `result_var` is a tracked realloc result, its old pointer's
+    /// invalidation was already recorded when the realloc ran; a truthiness
+    /// or non-NULL check on the result means the realloc succeeded, so the
+    /// old pointer is (re-)treated as freed rather than dangling.
+    fn clear_realloc_invalidation_if_related(
+        &mut self,
+        result_var: &Option<String>,
+        if_node: Node,
+    ) {
+        let Some(result_var) = result_var else {
+            return;
+        };
+        if let Some(old_ptr) = self.realloc_relations.get(result_var).cloned() {
+            let pos = if_node.start_position();
+            self.freed_memory
+                .insert(old_ptr, (pos.row + 1, pos.column + 1));
+        }
+    }
+
+    fn visit_switch_statement<'n>(&mut self, n: Node<'n>, stack: &mut Vec<Frame<'n>>) {
+        let mut cases: Vec<Node> = Vec::new();
+        if let Some(body) = n.child_by_field_name("body") {
+            for i in 0..body.child_count() {
+                if let Some(child) = body.child(i) {
+                    if child.kind() == "case_statement" {
+                        cases.push(child);
+                    }
+                }
+            }
+        }
+        cases.reverse();
+        stack.push(Frame::SwitchNextCase {
+            remaining_reversed: cases,
+            pre_state: LeakBranchState::fork(self),
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn after_true_branch<'n>(
+        &mut self,
+        if_node: Node<'n>,
+        saved_state: LeakBranchState,
+        saved_allocated: HashMap<String, AllocInfo>,
+        true_has_return: bool,
+        else_has_return: bool,
+        else_clause: Option<Node<'n>>,
+        truthiness_var: Option<String>,
+        non_null_check_var: Option<String>,
+        stack: &mut Vec<Frame<'n>>,
+    ) {
+        let true_state = LeakBranchState::fork(self);
+
+        if let Some(else_node) = else_clause {
+            saved_state.restore(self);
+            if let Some(ref var_name) = truthiness_var {
+                self.null_variables.insert(var_name.clone());
+            }
+            if let Some(ref var_name) = non_null_check_var {
+                self.null_variables.insert(var_name.clone());
+            }
+            stack.push(Frame::AfterElseBranch {
+                if_node,
+                saved_state,
+                saved_allocated,
+                true_has_return,
+                else_has_return,
+                true_state,
+            });
+            stack.push(Frame::Visit(else_node));
+        } else {
+            // No else clause - the "else path" is just the saved state
+            Self::finish_if(
+                self,
+                &if_node,
+                &saved_state,
+                &saved_allocated,
+                true_has_return,
+                else_has_return,
+                &true_state,
+                &saved_state,
+                false,
+            );
+        }
+    }
+
+    fn switch_next_case<'n>(
+        &mut self,
+        mut remaining_reversed: Vec<Node<'n>>,
+        pre_state: LeakBranchState,
+        stack: &mut Vec<Frame<'n>>,
+    ) {
+        if let Some(case) = remaining_reversed.pop() {
+            pre_state.restore(self);
+            stack.push(Frame::SwitchNextCase {
+                remaining_reversed,
+                pre_state: pre_state.clone(),
+            });
+            stack.push(Frame::Visit(case));
+        }
+        // else: no more cases - chain ends, self stays as whatever the last
+        // case left it (pre-existing quirk, preserved: no merge/restore
+        // after the loop).
+    }
+
+    fn exit_loop(&mut self, array_pattern: Option<LoopArrayPattern>) {
+        if let Some((alloc_info, free_info, loop_condition)) = array_pattern {
+            if let Some((array_base, _)) = alloc_info {
+                if let Some(cond) = &loop_condition {
+                    let entry = self
+                        .loop_array_patterns
+                        .entry(array_base)
+                        .or_insert((None, None));
+                    entry.0 = Some(cond.clone());
+                }
+            }
+            if let Some((array_base, _)) = free_info {
+                if let Some(cond) = &loop_condition {
+                    let entry = self
+                        .loop_array_patterns
+                        .entry(array_base)
+                        .or_insert((None, None));
+                    entry.1 = Some(cond.clone());
+                }
+            }
+        }
+        self.loop_depth -= 1;
+        if self.loop_depth == 0 {
+            self.in_loop = false;
+        }
+    }
+
+    /// Merge post-then/post-else state back onto `analyzer` after an `if`,
+    /// per which branch(es) unconditionally return, and report conditional
+    /// leaks when neither returns and both branches exist. Direct
+    /// transcription of the original `analyze_if`'s final merge block.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_if(
+        analyzer: &mut Self,
+        if_node: &Node,
+        saved_state: &LeakBranchState,
+        saved_allocated: &HashMap<String, AllocInfo>,
+        true_has_return: bool,
+        else_has_return: bool,
+        true_state: &LeakBranchState,
+        else_state: &LeakBranchState,
+        else_clause_present: bool,
+    ) {
+        if true_has_return && else_has_return {
+            saved_state.restore(analyzer);
+        } else if true_has_return {
+            else_state.restore(analyzer);
+        } else if else_has_return {
+            true_state.restore(analyzer);
+        } else if else_clause_present {
+            analyzer.report_conditional_leaks(
+                if_node,
+                saved_allocated,
+                &saved_state.null_variables,
+                &true_state.freed_memory,
+                &else_state.freed_memory,
+                &else_state.null_variables,
+            );
+            let mut merged = true_state.freed_memory.clone();
+            for (k, v) in else_state.freed_memory.clone() {
+                merged.entry(k).or_insert(v);
+            }
+            analyzer.freed_memory = merged;
+        }
+        // else: no else clause - just keep current (true-branch) state
+    }
+
+    /// Inline body of the original `process_statement`'s `init_declarator`
+    /// branch — allocation bookkeeping only, never recurses.
+    fn process_init_declarator_child(&mut self, child: &Node, source: &str) {
+        if let Some(declarator) = child.child_by_field_name("declarator") {
+            let var_name = self.get_variable_name(&declarator, source);
+
+            if let Some(value) = child.child_by_field_name("value") {
+                if self.is_allocation_call(&value, source) {
+                    let pos = value.start_position();
+                    let alloc_type = self.get_allocation_type(&value, source);
+
+                    // Special handling for realloc: track relationship for later
+                    if alloc_type == "realloc" {
+                        self.handle_realloc_in_decl(&var_name, &value, source);
+                    }
+
+                    self.allocated_memory.insert(
+                        var_name.clone(),
+                        AllocInfo {
+                            line: pos.row + 1,
+                            column: pos.column + 1,
+                            alloc_type: alloc_type.clone(),
+                        },
+                    );
+
+                    // If signal handler has been registered, warn about potential leak
+                    if self.signal_registered {
+                        self.leak_violations.push(RuleViolation {
+                            rule_id: "MEM31-C".to_string(),
+                            severity: Severity::High,
+                            message: format!(
+                                "Potential memory leak: '{}' allocated with '{}' may not be freed if signal handler terminates the program",
+                                var_name, alloc_type
+                            ),
+                            file_path: String::new(),
+                            line: pos.row + 1,
+                            column: pos.column + 1,
+                            suggestion: Some(format!(
+                                "Allocate '{}' before registering signal handlers, or ensure cleanup in signal handler",
+                                var_name
+                            )),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
         }
     }
@@ -405,191 +844,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
-    /// Analyze a `for` loop body and record its array allocation/free patterns for
-    /// later alloc-vs-free mismatch detection.
-    fn analyze_for_loop(&mut self, node: &Node, source: &str) {
-        // Track loop condition for array allocation/free mismatch detection
-        let loop_condition = node
-            .child_by_field_name("condition")
-            .map(|c| ast_utils::get_node_text_owned(&c, source));
-
-        self.in_loop = true;
-        self.loop_depth += 1;
-
-        // Pre-scan for allocation and free patterns in this loop
-        let alloc_info = self.find_loop_array_pattern(node, source, true);
-        let free_info = self.find_loop_array_pattern(node, source, false);
-
-        self.analyze_children(node, source);
-
-        // Record pattern for later comparison
-        if let Some((array_base, _)) = alloc_info {
-            if let Some(cond) = &loop_condition {
-                let entry = self
-                    .loop_array_patterns
-                    .entry(array_base)
-                    .or_insert((None, None));
-                entry.0 = Some(cond.clone());
-            }
-        }
-        if let Some((array_base, _)) = free_info {
-            if let Some(cond) = &loop_condition {
-                let entry = self
-                    .loop_array_patterns
-                    .entry(array_base)
-                    .or_insert((None, None));
-                entry.1 = Some(cond.clone());
-            }
-        }
-
-        self.loop_depth -= 1;
-        if self.loop_depth == 0 {
-            self.in_loop = false;
-        }
-    }
-
-    /// Analyze a `while`/`do` loop body, tracking loop nesting for double-free detection.
-    fn analyze_simple_loop(&mut self, node: &Node, source: &str) {
-        // Track loop nesting for double-free detection
-        self.in_loop = true;
-        self.loop_depth += 1;
-        self.analyze_children(node, source);
-        self.loop_depth -= 1;
-        if self.loop_depth == 0 {
-            self.in_loop = false;
-        }
-    }
-
-    /// Branch-aware analysis of an `if` statement: tracks NULL/truthiness conditions,
-    /// processes each branch with its own state, and reconciles freed/null state
-    /// (reporting conditional leaks when one branch frees and the other doesn't).
-    fn analyze_if(&mut self, node: &Node, source: &str) {
-        // For if statements, use branch-aware analysis
-        let saved_freed = self.freed_memory.clone();
-        let saved_null = self.null_variables.clone();
-        let saved_allocated = self.allocated_memory.clone();
-
-        // Check if condition is a NULL check (var == NULL)
-        let null_check_var = self.get_null_check_variable(node, source);
-
-        // Check if condition is a non-NULL check (var != NULL)
-        let non_null_check_var = self.get_non_null_check_variable(node, source);
-
-        // Check if condition is a truthiness check (if (ptr))
-        let truthiness_var = self.get_truthiness_check_variable(node, source);
-
-        // Find true branch (compound_statement) and else clause
-        let mut true_branch: Option<Node> = None;
-        let mut else_clause: Option<Node> = None;
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "compound_statement" && true_branch.is_none() {
-                    true_branch = Some(child);
-                } else if child.kind() == "else_clause" {
-                    else_clause = Some(child);
-                }
-            }
-        }
-
-        // Check which branches have returns
-        let true_has_return = true_branch
-            .as_ref()
-            .map(|b| self.block_has_return(b))
-            .unwrap_or(false);
-        let else_has_return = else_clause
-            .as_ref()
-            .map(|e| self.block_has_return(e))
-            .unwrap_or(false);
-
-        // If this is a NULL check, mark the variable as null in the true branch
-        if let Some(ref var_name) = null_check_var {
-            self.null_variables.insert(var_name.clone());
-        }
-
-        // If this is a truthiness check on a realloc result, mark old ptr as freed in true branch
-        // e.g., if (new_ptr) { ... } where new_ptr = realloc(old_ptr, ...)
-        if let Some(ref result_var) = truthiness_var {
-            if let Some(old_ptr) = self.realloc_relations.get(result_var).cloned() {
-                let pos = node.start_position();
-                self.freed_memory
-                    .insert(old_ptr, (pos.row + 1, pos.column + 1));
-            }
-        }
-        // Also for explicit != NULL checks
-        if let Some(ref result_var) = non_null_check_var {
-            if let Some(old_ptr) = self.realloc_relations.get(result_var).cloned() {
-                let pos = node.start_position();
-                self.freed_memory
-                    .insert(old_ptr, (pos.row + 1, pos.column + 1));
-            }
-        }
-
-        // Process true branch
-        if let Some(ref branch) = true_branch {
-            self.analyze_node(branch, source);
-        }
-
-        let true_freed = self.freed_memory.clone();
-        let true_null = self.null_variables.clone();
-
-        // Process else branch if present, or use saved state if no else
-        let (else_freed, else_null) = if let Some(ref else_node) = else_clause {
-            // Reset to saved state for else branch
-            self.freed_memory = saved_freed.clone();
-            self.null_variables = saved_null.clone();
-
-            // For else clause, mark truthiness var as null
-            if let Some(ref var_name) = truthiness_var {
-                self.null_variables.insert(var_name.clone());
-            }
-            // Mark non-null check var as null in else branch
-            if let Some(ref var_name) = non_null_check_var {
-                self.null_variables.insert(var_name.clone());
-            }
-
-            self.analyze_node(else_node, source);
-            (self.freed_memory.clone(), self.null_variables.clone())
-        } else {
-            // No else clause - the "else path" is just the saved state
-            (saved_freed.clone(), saved_null.clone())
-        };
-
-        // Determine final state based on which branches return
-        if true_has_return && else_has_return {
-            // Both branches return - restore initial state
-            self.freed_memory = saved_freed;
-            self.null_variables = saved_null;
-        } else if true_has_return {
-            // Only true returns - else branch state continues
-            self.freed_memory = else_freed;
-            self.null_variables = else_null;
-        } else if else_has_return {
-            // Only else returns - true branch state continues
-            self.freed_memory = true_freed;
-            self.null_variables = true_null;
-        } else if else_clause.is_some() {
-            // NEITHER branch returns and BOTH branches exist
-            self.report_conditional_leaks(
-                node,
-                &saved_allocated,
-                &saved_null,
-                &true_freed,
-                &else_freed,
-                &else_null,
-            );
-            // Use UNION of both branches: if freed in either path, consider
-            // it freed. The conditional leak check above already reported
-            // the case where only one branch frees.
-            let mut merged = true_freed;
-            for (k, v) in else_freed {
-                merged.entry(k).or_insert(v);
-            }
-            self.freed_memory = merged;
-        }
-        // else: no else clause - just keep current state
-    }
-
     /// When neither `if` branch returns, report allocations freed in the true branch
     /// but not the else branch (and not nulled there) as conditional leaks.
     #[allow(clippy::too_many_arguments)]
@@ -631,85 +885,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     suggestion: Some(format!("Ensure '{}' is freed in both branches", var_name)),
                     ..Default::default()
                 });
-            }
-        }
-    }
-
-    /// Analyze a `switch` statement, processing each case as an independent path
-    /// from the pre-switch state.
-    fn analyze_switch(&mut self, node: &Node, source: &str) {
-        // For switch statements, each case is an independent path
-        // Save state before the switch
-        let saved_freed = self.freed_memory.clone();
-        let saved_null = self.null_variables.clone();
-
-        // Find the switch body and process each case
-        if let Some(body) = node.child_by_field_name("body") {
-            for i in 0..body.child_count() {
-                if let Some(child) = body.child(i) {
-                    if child.kind() == "case_statement" {
-                        // Reset to saved state for each case
-                        self.freed_memory = saved_freed.clone();
-                        self.null_variables = saved_null.clone();
-                        self.analyze_node(&child, source);
-                    }
-                }
-            }
-        }
-    }
-
-    fn process_statement(&mut self, node: &Node, source: &str) {
-        // Look for declarations with malloc/calloc/realloc
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(declarator) = child.child_by_field_name("declarator") {
-                        let var_name = self.get_variable_name(&declarator, source);
-
-                        if let Some(value) = child.child_by_field_name("value") {
-                            if self.is_allocation_call(&value, source) {
-                                let pos = value.start_position();
-                                let alloc_type = self.get_allocation_type(&value, source);
-
-                                // Special handling for realloc: track relationship for later
-                                if alloc_type == "realloc" {
-                                    self.handle_realloc_in_decl(&var_name, &value, source);
-                                }
-
-                                self.allocated_memory.insert(
-                                    var_name.clone(),
-                                    AllocInfo {
-                                        line: pos.row + 1,
-                                        column: pos.column + 1,
-                                        alloc_type: alloc_type.clone(),
-                                    },
-                                );
-
-                                // If signal handler has been registered, warn about potential leak
-                                if self.signal_registered {
-                                    self.leak_violations.push(RuleViolation {
-                                        rule_id: "MEM31-C".to_string(),
-                                        severity: Severity::High,
-                                        message: format!(
-                                            "Potential memory leak: '{}' allocated with '{}' may not be freed if signal handler terminates the program",
-                                            var_name, alloc_type
-                                        ),
-                                        file_path: String::new(),
-                                        line: pos.row + 1,
-                                        column: pos.column + 1,
-                                        suggestion: Some(format!(
-                                            "Allocate '{}' before registering signal handlers, or ensure cleanup in signal handler",
-                                            var_name
-                                        )),
-                                        ..Default::default()
-                                    });
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    self.analyze_node(&child, source);
-                }
             }
         }
     }
