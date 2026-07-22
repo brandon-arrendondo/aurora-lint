@@ -251,6 +251,7 @@ pub fn compute_summaries(
     compute_return_ranges: bool,
     taint_source_aliases: &[String],
     string_macros: &HashMap<String, String>,
+    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
 ) -> HashMap<String, FunctionSummary> {
     let mut summaries = HashMap::new();
 
@@ -261,12 +262,14 @@ pub fn compute_summaries(
         compute_return_ranges,
         taint_source_aliases,
         string_macros,
+        function_macros,
         &mut summaries,
     );
 
     summaries
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_function_summaries(
     node: &Node,
     source: &str,
@@ -274,6 +277,7 @@ fn collect_function_summaries(
     compute_return_ranges: bool,
     taint_source_aliases: &[String],
     string_macros: &HashMap<String, String>,
+    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     summaries: &mut HashMap<String, FunctionSummary>,
 ) {
     if node.kind() == "function_definition" && !is_macro_function_definition(node) {
@@ -285,6 +289,7 @@ fn collect_function_summaries(
                 compute_return_ranges,
                 taint_source_aliases,
                 string_macros,
+                function_macros,
             );
             summaries.insert(name, summary);
         }
@@ -311,6 +316,7 @@ fn collect_function_summaries(
                 compute_return_ranges,
                 taint_source_aliases,
                 string_macros,
+                function_macros,
                 summaries,
             );
         }
@@ -397,6 +403,7 @@ fn analyze_function(
     compute_return_ranges: bool,
     taint_source_aliases: &[String],
     string_macros: &HashMap<String, String>,
+    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
 ) -> FunctionSummary {
     let mut summary = FunctionSummary::default();
 
@@ -503,7 +510,14 @@ fn analyze_function(
         }
 
         // Analyze parameter usage
-        analyze_param_usage(&body, source, body_text, &params, &mut summary);
+        analyze_param_usage(
+            &body,
+            source,
+            body_text,
+            &params,
+            function_macros,
+            &mut summary,
+        );
 
         // Compute return value range for integer-returning functions (only when VRA is needed)
         if compute_return_ranges && !is_void_return && !is_pointer_return {
@@ -676,6 +690,7 @@ fn analyze_param_usage(
     source: &str,
     body_text: &str,
     params: &[String],
+    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     summary: &mut FunctionSummary,
 ) {
     for (idx, param_name) in params.iter().enumerate() {
@@ -729,7 +744,7 @@ fn analyze_param_usage(
     // Detect direct field frees off a parameter: free(param->field) or
     // free((*param)->field) (the double-pointer-deref idiom used by
     // `void destroy(T **param)` style destructors).
-    collect_frees_param_fields(body, source, params, summary);
+    collect_frees_param_fields(body, source, params, function_macros, summary);
 }
 
 /// Scan for `free(...)`-shaped calls whose argument is a field access rooted
@@ -739,19 +754,34 @@ fn analyze_param_usage(
 /// sibling `free(param)` text scan above) because the chain must be
 /// extracted precisely, not just detected.
 ///
-/// Matches literal `free` as well as any call whose name matches
-/// `ast_utils::is_deallocation_call_name` (destroy_*/free_*/..._free/etc.),
-/// since real-world code overwhelmingly wraps `free` in a macro or helper
-/// (e.g. mosquitto's `#define mosquitto_FREE(A) do{ mosquitto_free(A); (A) =
-/// NULL; }while(0)`) rather than calling it directly — sqc has no
-/// preprocessor, so the macro call itself is the only AST evidence available
-/// (task 2: MEM31-C ownership model).
+/// Three ways a call is recognized as freeing its argument, in preference
+/// order:
+///  1. Literal `free` — every argument is a candidate.
+///  2. A function-like macro matching the "safe free" idiom (frees AND nulls
+///     its parameter — `macro_expand::macro_nulls_param_indices`), e.g.
+///     mosquitto's `#define mosquitto_FREE(A) do{ mosquitto_free(A); (A) =
+///     NULL; }while(0)`. This is genuine engine-based detection (the macro
+///     body is expanded and inspected), independent of the macro's name —
+///     "engine, not allowlist", matching MEM30-C's existing use of the same
+///     API. Only the argument position(s) the engine identifies are
+///     credited.
+///  3. A plain call whose name matches `ast_utils::is_deallocation_call_name`
+///     (destroy_*/free_*/..._free/etc.) — a name-heuristic fallback for
+///     ordinary C helper functions (not macros) and free-shaped macros that
+///     don't null their argument, where the engine has nothing to say.
+///     Every argument is a candidate, as for literal `free`.
+///
+/// sqc has no preprocessor, so for (2)/(3) the macro/helper call itself is
+/// the only AST evidence available that a free happened inside it (task 2:
+/// MEM31-C ownership model).
 fn collect_frees_param_fields(
     body: &Node,
     source: &str,
     params: &[String],
+    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     summary: &mut FunctionSummary,
 ) {
+    use crate::analyze::macro_expand::macro_nulls_param_indices;
     use crate::analyze::points_to::LValue;
     use crate::utility::cert_c::ast_utils;
     use lang_parsing_substrate::query;
@@ -769,36 +799,64 @@ fn collect_frees_param_fields(
         }
     }
 
+    // Real (non-punctuation) arguments in call order, matching how macro/
+    // function parameter indices are counted.
+    fn real_args<'a>(arguments: &Node<'a>) -> Vec<Node<'a>> {
+        (0..arguments.child_count())
+            .filter_map(|i| arguments.child(i))
+            .filter(|a| !matches!(a.kind(), "," | "(" | ")"))
+            .collect()
+    }
+
+    let credit_field = |summary: &mut FunctionSummary, arg: &Node| {
+        let Some(lv) = crate::analyze::points_to::lvalue_of(arg, source) else {
+            return;
+        };
+        let (root_name, fields) = flatten(&lv);
+        if fields.is_empty() {
+            return;
+        }
+        let Some(idx) = params.iter().position(|p| p == &root_name) else {
+            return;
+        };
+        summary
+            .frees_param_fields
+            .entry(idx)
+            .or_default()
+            .insert(fields.join("->"));
+    };
+
     for call in query::find_descendants_of_kind(*body, "call_expression") {
         let Some(function) = call.child_by_field_name("function") else {
             continue;
         };
         let func_name = function.utf8_text(source.as_bytes()).unwrap_or("");
-        if func_name != "free" && !ast_utils::is_deallocation_call_name(func_name) {
-            continue;
-        }
         let Some(arguments) = call.child_by_field_name("arguments") else {
             continue;
         };
-        for i in 0..arguments.child_count() {
-            let Some(arg) = arguments.child(i) else {
-                continue;
-            };
-            let Some(lv) = crate::analyze::points_to::lvalue_of(&arg, source) else {
-                continue;
-            };
-            let (root_name, fields) = flatten(&lv);
-            if fields.is_empty() {
-                continue;
+        let args = real_args(&arguments);
+
+        if func_name == "free" {
+            for arg in &args {
+                credit_field(summary, arg);
             }
-            let Some(idx) = params.iter().position(|p| p == &root_name) else {
-                continue;
-            };
-            summary
-                .frees_param_fields
-                .entry(idx)
-                .or_default()
-                .insert(fields.join("->"));
+            continue;
+        }
+
+        let null_idxs = macro_nulls_param_indices(function_macros, func_name);
+        if !null_idxs.is_empty() {
+            for idx in null_idxs {
+                if let Some(arg) = args.get(idx) {
+                    credit_field(summary, arg);
+                }
+            }
+            continue;
+        }
+
+        if ast_utils::is_deallocation_call_name(func_name) {
+            for arg in &args {
+                credit_field(summary, arg);
+            }
         }
     }
 }
@@ -1426,7 +1484,15 @@ mod tests {
         parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         let macros = const_eval::collect_macro_constants(&tree.root_node(), code);
-        compute_summaries(&tree.root_node(), code, &macros, true, &[], &HashMap::new())
+        compute_summaries(
+            &tree.root_node(),
+            code,
+            &macros,
+            true,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
     }
 
     #[test]

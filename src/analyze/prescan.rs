@@ -88,6 +88,9 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
 
         let file_string_macros = const_eval::collect_string_literal_macros(&root, &source);
 
+        result.function_macros =
+            crate::analyze::macro_expand::collect_function_macros(&root, &source);
+
         result.function_summaries = function_summary::compute_summaries(
             &root,
             &source,
@@ -95,14 +98,12 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             needs_vra,
             &file_taint_aliases,
             &file_string_macros,
+            &result.function_macros,
         );
 
         collect_call_graph(&root, &source, &mut result.call_graph);
 
         result.macro_aliases.extend(file_aliases);
-
-        result.function_macros =
-            crate::analyze::macro_expand::collect_function_macros(&root, &source);
 
         collect_struct_definitions(&root, &source, &mut result.struct_field_types);
 
@@ -374,6 +375,7 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         .map(|(alias, _)| alias.clone())
         .collect();
     let string_macros = const_eval::collect_string_literal_macros(root, source);
+    let function_macros = crate::analyze::macro_expand::collect_function_macros(root, source);
     let mut function_summaries = function_summary::compute_summaries(
         root,
         source,
@@ -381,6 +383,7 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         false,
         &taint_aliases,
         &string_macros,
+        &function_macros,
     );
 
     let mut callsite_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
@@ -420,7 +423,7 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         known_functions,
         function_summaries,
         macro_constants: macros,
-        function_macros: crate::analyze::macro_expand::collect_function_macros(root, source),
+        function_macros,
         struct_field_types,
         global_writers,
         ..ProjectContext::default()
@@ -3263,6 +3266,8 @@ pub fn resolve_includes(
 
                 let header_string_macros =
                     const_eval::collect_string_literal_macros(&root, &hsource);
+                let header_function_macros =
+                    crate::analyze::macro_expand::collect_function_macros(&root, &hsource);
                 let file_summaries = function_summary::compute_summaries(
                     &root,
                     &hsource,
@@ -3270,11 +3275,15 @@ pub fn resolve_includes(
                     needs_vra,
                     &header_taint_aliases,
                     &header_string_macros,
+                    &header_function_macros,
                 );
                 for (name, summary) in file_summaries {
                     context.function_summaries.insert(name, summary);
                 }
                 context.macro_aliases.extend(header_aliases);
+                for (name, m) in header_function_macros {
+                    context.function_macros.entry(name).or_insert(m);
+                }
 
                 // Collect struct field types from resolved headers
                 collect_struct_definitions(&root, &hsource, &mut context.struct_field_types);

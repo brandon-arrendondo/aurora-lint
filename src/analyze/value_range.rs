@@ -2192,6 +2192,7 @@ int f(int x) {
             true,
             &[],
             &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
         );
 
         // Find the last function_definition (the caller)

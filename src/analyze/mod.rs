@@ -634,6 +634,7 @@ fn compute_vra_if_needed(
         true,
         &[],
         &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
     );
 
     // Augment same-file summaries with caller constant arg propagation so that
