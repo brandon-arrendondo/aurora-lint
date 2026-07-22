@@ -13,6 +13,29 @@ pub fn get_node_text<'a>(node: &Node, source: &'a str) -> &'a str {
     query::node_text(*node, source.as_bytes())
 }
 
+/// Heuristic: does this call's name look like a custom deallocator
+/// (destroy_*, free_*, delete_*, cleanup_*, release_*, close_*, or the
+/// matching suffix forms)? Shared between MEM31-C's own custom-deallocator
+/// handling and the prescan field-frees collector (`frees_param_fields`),
+/// so a macro-wrapped free like `#define mosquitto_FREE(A) free(A)` is
+/// recognized consistently in both places (task 2: MEM31-C ownership model —
+/// sqc has no preprocessor, so such wrapper calls are otherwise invisible).
+pub fn is_deallocation_call_name(func_name: &str) -> bool {
+    let lower_name = func_name.to_lowercase();
+    lower_name.starts_with("destroy_")
+        || lower_name.starts_with("free_")
+        || lower_name.starts_with("delete_")
+        || lower_name.starts_with("cleanup_")
+        || lower_name.starts_with("release_")
+        || lower_name.starts_with("close_")
+        || lower_name.ends_with("_destroy")
+        || lower_name.ends_with("_free")
+        || lower_name.ends_with("_delete")
+        || lower_name.ends_with("_cleanup")
+        || lower_name.ends_with("_release")
+        || lower_name.ends_with("_close")
+}
+
 /// Extract the text content of a node as an owned String
 pub fn get_node_text_owned(node: &Node, source: &str) -> String {
     query::node_text(*node, source.as_bytes()).to_string()

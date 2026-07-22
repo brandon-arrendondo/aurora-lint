@@ -1163,7 +1163,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // `destroy_person` does `free((*p)->name); free(*p);`), credit
             // those fields as freed here too — otherwise they read as leaks
             // even though ownership was transferred to the deallocator
-            // (task 2: MEM31-C ownership model).
+            // (task 2: MEM31-C ownership model). `field` may itself be an
+            // arrow-joined chain (e.g. "will->topic") for nested structs.
             if let Some(summary) = self.function_summaries.get(func_name) {
                 if let Some(fields) = summary.frees_param_fields.get(&this_param_idx) {
                     for field in fields {
@@ -1510,19 +1511,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Check if a function name suggests it's a deallocation function
     fn is_deallocation_call(&self, func_name: &str) -> bool {
-        let lower_name = func_name.to_lowercase();
-        lower_name.starts_with("destroy_")
-            || lower_name.starts_with("free_")
-            || lower_name.starts_with("delete_")
-            || lower_name.starts_with("cleanup_")
-            || lower_name.starts_with("release_")
-            || lower_name.starts_with("close_")
-            || lower_name.ends_with("_destroy")
-            || lower_name.ends_with("_free")
-            || lower_name.ends_with("_delete")
-            || lower_name.ends_with("_cleanup")
-            || lower_name.ends_with("_release")
-            || lower_name.ends_with("_close")
+        ast_utils::is_deallocation_call_name(func_name)
     }
 
     fn is_allocation_call(&self, node: &Node, source: &str) -> bool {

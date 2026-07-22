@@ -732,11 +732,20 @@ fn analyze_param_usage(
     collect_frees_param_fields(body, source, params, summary);
 }
 
-/// Scan for `free(...)` calls whose argument is a field access rooted in one
-/// of `params` (via `points_to::lvalue_of`, which unwraps `*`/parens/casts),
-/// recording the field name against that parameter's index. AST-based
-/// (unlike the sibling `free(param)` text scan above) because field names
-/// must be extracted precisely, not just detected.
+/// Scan for `free(...)`-shaped calls whose argument is a field access rooted
+/// in one of `params` (via `points_to::lvalue_of`, which unwraps
+/// `*`/parens/casts), recording the arrow-joined field chain (e.g. `"will"`
+/// or `"will->topic"`) against that parameter's index. AST-based (unlike the
+/// sibling `free(param)` text scan above) because the chain must be
+/// extracted precisely, not just detected.
+///
+/// Matches literal `free` as well as any call whose name matches
+/// `ast_utils::is_deallocation_call_name` (destroy_*/free_*/..._free/etc.),
+/// since real-world code overwhelmingly wraps `free` in a macro or helper
+/// (e.g. mosquitto's `#define mosquitto_FREE(A) do{ mosquitto_free(A); (A) =
+/// NULL; }while(0)`) rather than calling it directly — sqc has no
+/// preprocessor, so the macro call itself is the only AST evidence available
+/// (task 2: MEM31-C ownership model).
 fn collect_frees_param_fields(
     body: &Node,
     source: &str,
@@ -744,13 +753,28 @@ fn collect_frees_param_fields(
     summary: &mut FunctionSummary,
 ) {
     use crate::analyze::points_to::LValue;
+    use crate::utility::cert_c::ast_utils;
     use lang_parsing_substrate::query;
+
+    // Flatten a field-access chain into (root variable, arrow-joined field
+    // path), e.g. `m->will->topic` -> ("m", "will->topic").
+    fn flatten(lv: &LValue) -> (String, Vec<String>) {
+        match lv {
+            LValue::Var(name) => (name.clone(), Vec::new()),
+            LValue::Field(base, field) => {
+                let (root, mut fields) = flatten(base);
+                fields.push(field.clone());
+                (root, fields)
+            }
+        }
+    }
 
     for call in query::find_descendants_of_kind(*body, "call_expression") {
         let Some(function) = call.child_by_field_name("function") else {
             continue;
         };
-        if function.utf8_text(source.as_bytes()).unwrap_or("") != "free" {
+        let func_name = function.utf8_text(source.as_bytes()).unwrap_or("");
+        if func_name != "free" && !ast_utils::is_deallocation_call_name(func_name) {
             continue;
         }
         let Some(arguments) = call.child_by_field_name("arguments") else {
@@ -760,21 +784,21 @@ fn collect_frees_param_fields(
             let Some(arg) = arguments.child(i) else {
                 continue;
             };
-            let Some(LValue::Field(base, field)) =
-                crate::analyze::points_to::lvalue_of(&arg, source)
-            else {
+            let Some(lv) = crate::analyze::points_to::lvalue_of(&arg, source) else {
                 continue;
             };
-            let LValue::Var(base_name) = base.as_ref() else {
+            let (root_name, fields) = flatten(&lv);
+            if fields.is_empty() {
                 continue;
-            };
-            if let Some(idx) = params.iter().position(|p| p == base_name) {
-                summary
-                    .frees_param_fields
-                    .entry(idx)
-                    .or_default()
-                    .insert(field);
             }
+            let Some(idx) = params.iter().position(|p| p == &root_name) else {
+                continue;
+            };
+            summary
+                .frees_param_fields
+                .entry(idx)
+                .or_default()
+                .insert(fields.join("->"));
         }
     }
 }
