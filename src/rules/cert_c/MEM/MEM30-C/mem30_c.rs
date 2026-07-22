@@ -2253,23 +2253,13 @@ impl MemoryAnalyzer {
             // erase that container's real invalidation (e.g. the realloc
             // self-assign-into-field UAF pattern, CERT wiki noncompliant
             // example: `im->clip->list[i] = x;` after `gdRealloc(im->clip
-            // ->list, ...)` without writing the result back).
+            // ->list, ...)` without writing the result back). No violation
+            // is reported here: the left-hand subscript_expression node is
+            // still independently visited via the generic child traversal
+            // (unlike a field-expression LHS, check_subscript_access has no
+            // "skip if LHS of assignment" guard), so it already reports the
+            // UAF on its own — reporting here too would just duplicate it.
             if left.kind() == "subscript_expression" {
-                if self.is_freed(&left_lv) {
-                    violations.push(RuleViolation {
-                        rule_id: "MEM30-C".to_string(),
-                        severity: Severity::Critical,
-                        message: format!(
-                            "Use-after-free: writing to freed memory via '{}'",
-                            get_node_text(&left, source)
-                        ),
-                        file_path: String::new(),
-                        line: node.start_position().row + 1,
-                        column: node.start_position().column + 1,
-                        suggestion: Some("Do not access memory after freeing it.".to_string()),
-                        ..Default::default()
-                    });
-                }
                 return;
             }
 
