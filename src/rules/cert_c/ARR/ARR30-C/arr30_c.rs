@@ -55,7 +55,8 @@ use tree_sitter::Node;
 // Import shared utility functions
 use crate::utility::cert_c::ast_utils::{
     find_containing_for_loop, find_containing_function, find_containing_if_statement,
-    find_identifier_in_declarator, is_function_parameter,
+    find_enclosing_declaration_for_identifier, find_identifier_in_declarator,
+    get_identifier_from_declarator, is_function_parameter,
 };
 
 pub struct Arr30C {
@@ -1017,6 +1018,247 @@ impl Arr30C {
         }
 
         None
+    }
+
+    /// Resolve what `name` evaluates to at `position_node`'s source
+    /// position, scope-correctly: finds the *specific* declaration bound to
+    /// `name` at that point (disambiguating shadowed re-declarations in
+    /// sibling/nested blocks — see `find_enclosing_declaration_for_identifier`),
+    /// then scans only that declaration's enclosing block, in source order,
+    /// for the last value assigned to `name` before `position_node`. If that
+    /// value is itself read through a pointer dereference (`*ptr`), resolves
+    /// through the pointer's current pointee instead of giving up (depth-
+    /// bounded to avoid pathological chains — this bucket only ever needs
+    /// one hop: read-through-alias followed by a plain constant).
+    fn resolve_value_of_identifier_at(
+        &self,
+        name: &str,
+        position_node: &Node,
+        source: &str,
+        depth: u8,
+    ) -> Option<isize> {
+        const MAX_DEPTH: u8 = 3;
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        let decl = find_enclosing_declaration_for_identifier(position_node, name, source)?;
+        let block = decl.parent()?;
+
+        let mut last_value_expr: Option<Node> = None;
+        if let Some(init) = Self::declaration_initializer_for(&decl, name, source) {
+            last_value_expr = Some(init);
+        }
+        for i in 0..block.child_count() {
+            let Some(stmt) = block.child(i) else { continue };
+            if stmt.id() == decl.id() {
+                continue;
+            }
+            if stmt.start_byte() <= decl.start_byte()
+                || stmt.start_byte() >= position_node.start_byte()
+            {
+                continue;
+            }
+            if let Some(value) = Self::plain_assignment_value(&stmt, name, source) {
+                last_value_expr = Some(value);
+            }
+        }
+
+        let value_node = last_value_expr?;
+        self.resolve_value_expr(&value_node, source, depth)
+    }
+
+    /// Resolve a value EXPRESSION node to a constant: a numeric literal
+    /// directly, a plain identifier (recurses, scope-correctly, on that
+    /// name at the expression's own position), or a pointer dereference
+    /// (`*ptr` — resolves through whatever the pointer currently aliases,
+    /// via `resolve_value_written_through_alias`).
+    fn resolve_value_expr(&self, value_node: &Node, source: &str, depth: u8) -> Option<isize> {
+        match value_node.kind() {
+            "number_literal" => {
+                let text = &source[value_node.start_byte()..value_node.end_byte()];
+                text.trim().parse::<isize>().ok()
+            }
+            "unary_expression" => {
+                // Handles a leading-minus literal, e.g. `-1`.
+                let text = &source[value_node.start_byte()..value_node.end_byte()];
+                text.trim().parse::<isize>().ok()
+            }
+            "identifier" => {
+                let name = &source[value_node.start_byte()..value_node.end_byte()];
+                self.resolve_value_of_identifier_at(name, value_node, source, depth + 1)
+            }
+            "pointer_expression" => {
+                let op = value_node.child_by_field_name("operator")?;
+                if &source[op.start_byte()..op.end_byte()] != "*" {
+                    return None; // address-of, not a dereference read
+                }
+                let ptr_arg = value_node.child_by_field_name("argument")?;
+                if ptr_arg.kind() != "identifier" {
+                    return None;
+                }
+                let ptr_name = &source[ptr_arg.start_byte()..ptr_arg.end_byte()];
+                let func_node = find_containing_function(value_node)?;
+                let pointee_map = Self::build_pointee_map(&func_node, source);
+                let pointee = pointee_map.get(ptr_name)?;
+                self.resolve_value_written_through_alias(pointee, value_node, source, depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// Find the most recent (highest byte offset, but still before
+    /// `position_node`) statement of the form `*ptr = <expr>;` anywhere in
+    /// the enclosing function where `ptr` is known (via the pointee map) to
+    /// alias `pointee_name`, and resolve `<expr>` at that write's own
+    /// position. This is what threads a write through one alias
+    /// (`*dataPtr1 = data;`) to a read through a different alias of the same
+    /// storage (`*dataPtr2`).
+    fn resolve_value_written_through_alias(
+        &self,
+        pointee_name: &str,
+        position_node: &Node,
+        source: &str,
+        depth: u8,
+    ) -> Option<isize> {
+        let func_node = find_containing_function(position_node)?;
+        let pointee_map = Self::build_pointee_map(&func_node, source);
+
+        let mut best: Option<Node> = None;
+        Self::for_each_descendant(&func_node, &mut |n| {
+            if n.kind() != "assignment_expression" || n.start_byte() >= position_node.start_byte() {
+                return;
+            }
+            let Some(left) = n.child_by_field_name("left") else {
+                return;
+            };
+            if left.kind() != "pointer_expression" {
+                return;
+            }
+            let Some(ptr_arg) = left.child_by_field_name("argument") else {
+                return;
+            };
+            if ptr_arg.kind() != "identifier" {
+                return;
+            }
+            let ptr_name = &source[ptr_arg.start_byte()..ptr_arg.end_byte()];
+            if pointee_map.get(ptr_name).map(String::as_str) != Some(pointee_name) {
+                return;
+            }
+            if best.is_none_or(|b: Node| n.start_byte() > b.start_byte()) {
+                best = Some(n);
+            }
+        });
+
+        let write = best?;
+        let value_node = write.child_by_field_name("right")?;
+        self.resolve_value_expr(&value_node, source, depth)
+    }
+
+    /// The initializer value node of an `init_declarator` binding `name`
+    /// within `decl` (a `declaration` node), if any.
+    fn declaration_initializer_for<'a>(
+        decl: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        for i in 0..decl.child_count() {
+            let child = decl.child(i)?;
+            if child.kind() != "init_declarator" {
+                continue;
+            }
+            let declarator = child.child_by_field_name("declarator")?;
+            if get_identifier_from_declarator(&declarator, source) != name {
+                continue;
+            }
+            return child.child_by_field_name("value");
+        }
+        None
+    }
+
+    /// The RHS value node of a plain `name = <expr>;` assignment statement
+    /// (an `expression_statement` wrapping an `assignment_expression` whose
+    /// LHS is exactly the bare identifier `name`), if `stmt` is one.
+    fn plain_assignment_value<'a>(stmt: &Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
+        if stmt.kind() != "expression_statement" {
+            return None;
+        }
+        let assign = stmt.child(0)?;
+        if assign.kind() != "assignment_expression" {
+            return None;
+        }
+        let left = assign.child_by_field_name("left")?;
+        if left.kind() != "identifier" || &source[left.start_byte()..left.end_byte()] != name {
+            return None;
+        }
+        assign.child_by_field_name("right")
+    }
+
+    /// Map each pointer variable declared/assigned `&var` to the name of the
+    /// storage it aliases (e.g. `"dataPtr1" -> "data"`), by one linear scan
+    /// of `func_node`. Deliberately narrow: address-of only, no pointer
+    /// arithmetic, no reassignment tracking — this bucket only needs `int
+    /// *p = &x;`-shaped aliasing, and the outer variable is never re-pointed
+    /// once declared in the Juliet dataflow-32 family this targets.
+    fn build_pointee_map(func_node: &Node, source: &str) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        Self::for_each_descendant(func_node, &mut |n| {
+            let (declarator, value) = match n.kind() {
+                "init_declarator" => {
+                    let Some(d) = n.child_by_field_name("declarator") else {
+                        return;
+                    };
+                    let Some(v) = n.child_by_field_name("value") else {
+                        return;
+                    };
+                    (d, v)
+                }
+                "assignment_expression" => {
+                    let Some(l) = n.child_by_field_name("left") else {
+                        return;
+                    };
+                    let Some(r) = n.child_by_field_name("right") else {
+                        return;
+                    };
+                    if l.kind() != "identifier" {
+                        return;
+                    }
+                    (l, r)
+                }
+                _ => return,
+            };
+            if value.kind() != "pointer_expression" {
+                return;
+            }
+            let Some(op) = value.child_by_field_name("operator") else {
+                return;
+            };
+            if &source[op.start_byte()..op.end_byte()] != "&" {
+                return; // dereference, not address-of
+            }
+            let Some(addressed) = value.child_by_field_name("argument") else {
+                return;
+            };
+            if addressed.kind() != "identifier" {
+                return;
+            }
+            let Some(ptr_name) = find_identifier_in_declarator(&declarator, source) else {
+                return;
+            };
+            let pointee_name = source[addressed.start_byte()..addressed.end_byte()].to_string();
+            map.insert(ptr_name, pointee_name);
+        });
+        map
+    }
+
+    /// Visit every descendant of `node` (not including `node` itself),
+    /// preorder, calling `visit` on each.
+    fn for_each_descendant<'a>(node: &Node<'a>, visit: &mut impl FnMut(Node<'a>)) {
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                visit(child);
+                Self::for_each_descendant(&child, visit);
+            }
+        }
     }
 
     // Removed: find_enclosing_function - now using ast_utils::find_containing_function
@@ -2087,6 +2329,24 @@ impl Arr30C {
             .map(|range| range.min >= 0 && (range.max as usize) < effective_size)
             .unwrap_or(false);
         if vra_safe {
+            return false;
+        }
+        // Pointer-aliasing constant resolution (task 206): an additional
+        // proof source alongside VRA, for patterns VRA can't model at all
+        // (VRA has zero pointer-dereference modeling) — write-then-read
+        // through an aliased pointer (`*dataPtr1 = data; ... *dataPtr2`,
+        // both pointing at the same storage). Deliberately additive-only:
+        // if the resolved value is itself out of range, this does NOT
+        // short-circuit to "violation" — a resolved-but-out-of-range value
+        // may still be correctly guarded by a surrounding `if`, which
+        // `has_proper_bounds_check` below already handles (e.g. Juliet's
+        // `goodB2G` variant); it just falls through exactly as before this
+        // check existed.
+        let alias_safe = self
+            .resolve_value_of_identifier_at(var, node, source, 0)
+            .map(|v| v >= 0 && (v as usize) < effective_size)
+            .unwrap_or(false);
+        if alias_safe {
             return false;
         }
         if self.has_recursive_index_modification(node, var, source, effective_size) {

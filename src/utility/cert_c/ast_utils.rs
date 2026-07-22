@@ -64,6 +64,66 @@ pub fn find_containing_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     query::nearest_ancestor_of_kind(*node, "function_definition")
 }
 
+/// Walk up from `ident_node` through enclosing `compound_statement` blocks to
+/// find the nearest `declaration` that binds `name`, preferring the latest
+/// (highest byte offset) such declaration before `ident_node`'s own position
+/// within each block. Correctly disambiguates shadowed re-declarations of the
+/// same name in sibling or nested blocks — unlike a whole-function text/regex
+/// scan, which cannot tell two different declarations of the same identifier
+/// apart.
+///
+/// Stops at the function body (does not resolve to a parameter — callers
+/// needing that should also check `is_function_parameter` separately).
+pub fn find_enclosing_declaration_for_identifier<'a>(
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    let mut search_from = *ident_node;
+    loop {
+        let block = query::find_ancestor(search_from, |n| n.kind() == "compound_statement")?;
+        let mut best: Option<Node<'a>> = None;
+        for i in 0..block.child_count() {
+            let Some(child) = block.child(i) else {
+                continue;
+            };
+            if child.kind() == "declaration"
+                && child.start_byte() < ident_node.start_byte()
+                && declaration_binds_name(&child, name, source)
+                && best.is_none_or(|b: Node<'a>| child.start_byte() > b.start_byte())
+            {
+                best = Some(child);
+            }
+        }
+        if best.is_some() {
+            return best;
+        }
+        search_from = block;
+    }
+}
+
+/// True if a `declaration` node binds `name` via a direct declarator (`T
+/// name;`) or an `init_declarator` (`T name = value;`), including
+/// comma-separated multi-declarator declarations.
+fn declaration_binds_name(decl_node: &Node, name: &str, source: &str) -> bool {
+    for i in 0..decl_node.child_count() {
+        let Some(child) = decl_node.child(i) else {
+            continue;
+        };
+        let declarator = match child.kind() {
+            "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
+            "identifier" | "pointer_declarator" | "array_declarator" | "function_declarator" => {
+                child
+            }
+            _ => continue,
+        };
+        if get_identifier_from_declarator(&declarator, source) == name {
+            return true;
+        }
+    }
+    false
+}
+
 /// Check if a node is inside a loop (for, while, or do-while)
 ///
 /// No function-boundary short-circuit: `function_definition`s never nest in
