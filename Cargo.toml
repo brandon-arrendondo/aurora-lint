@@ -1,6 +1,6 @@
 [package]
 name = "sqc"
-version = "0.4.121"
+version = "0.4.122"
 edition = "2021"
 description = "Software Code Quality - CERT C compliance checker"
 authors = ["Eric Buehler <eric.buehler@bissell.com>", "Brandon Arrendondo <brandon.arrendondo@bissell.com>"]
@@ -8,6 +8,29 @@ license = "Apache-2.0"
 repository = "https://github.com/brandon-arrendondo/tools_sqc"
 homepage = "https://brandon-arrendondo.github.io/tools_sqc"
 documentation = "https://brandon-arrendondo.github.io/tools_sqc"
+
+# Allowlist what actually ships in the crate tarball. Everything else in the
+# repo (data/, bench/, mcp_servers/, conf/, .claude/, paper/, tasks.py, the
+# todo DB, etc.) is internal dev/research tooling, not part of the published
+# tool.
+include = [
+    "src/**",
+    "build.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "assets/icon.ico",
+    "rules_templates/**",
+    "tests/**",
+    # Cargo auto-includes README/LICENSE files found anywhere in the tree even
+    # under a restrictive `include`, so explicitly drop the stray ones that
+    # live in directories we intentionally don't publish (include/exclude
+    # can't both be set, so these are negated patterns within `include`).
+    "!.pytest_cache/README.md",
+    "!conf/realworld/README.md",
+    "!data/precision_audit/**/README.md",
+    "!docs/screenshots/README.md",
+]
 
 [lib]
 name = "sqc"
