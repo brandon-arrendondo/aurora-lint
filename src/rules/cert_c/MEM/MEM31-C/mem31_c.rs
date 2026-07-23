@@ -1,6 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
-use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
@@ -86,6 +86,17 @@ struct MemoryLeakAnalyzer<'a> {
     loop_array_patterns: HashMap<String, (Option<String>, Option<String>)>,
     // Function summaries from prescan for inter-procedural analysis
     function_summaries: &'a HashMap<String, FunctionSummary>,
+    // Names of this function's own parameters (task 306: a struct reached
+    // through a bare parameter is caller-owned/borrowed — this function
+    // populating one of its fields doesn't make this function responsible
+    // for freeing it at return).
+    function_params: HashSet<String>,
+    // Parameters whose *pointee* was freshly allocated in this function via
+    // a `*param = malloc(...)`-shaped out-parameter assignment. A struct
+    // reached this way (e.g. `(*out)->field = malloc(...)`) IS this
+    // function's own fresh allocation, not a borrowed caller struct, so it
+    // stays a leak candidate.
+    deref_allocated_params: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +202,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             signal_registered: false,
             loop_array_patterns: HashMap::new(),
             function_summaries,
+            function_params: HashSet::new(),
+            deref_allocated_params: HashSet::new(),
         }
     }
 
@@ -201,6 +214,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(body) = func_node.child_by_field_name("body") {
+            self.function_params = function_summary::collect_param_names(func_node, source)
+                .into_iter()
+                .filter(|n| !n.is_empty())
+                .collect();
+
             // Pre-analysis: collect what variables are freed at each label
             self.collect_label_frees(&body, source);
 
@@ -920,16 +938,109 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
+    /// Walk down an lvalue expression (the target of a struct-field or
+    /// array-element assignment) to find its root identifier, following
+    /// `field_expression` -> `argument`, `subscript_expression` -> `argument`,
+    /// `parenthesized_expression` unwrapping, and unary `*` dereference.
+    /// Returns `(root_name, saw_deref)` where `saw_deref` is true if a `*`
+    /// dereference or `[]` subscript was crossed en route to the root (task
+    /// 306: distinguishes `cfg->field` — direct borrowed-struct-parameter
+    /// access — from `(*out)->field` — an out-parameter pattern that may
+    /// point at a struct this function itself just allocated).
+    fn root_identifier_of_lvalue(&self, node: &Node, source: &str) -> Option<(String, bool)> {
+        let mut current = *node;
+        let mut saw_deref = false;
+        loop {
+            match current.kind() {
+                "identifier" => {
+                    return Some((ast_utils::get_node_text_owned(&current, source), saw_deref));
+                }
+                "field_expression" => {
+                    current = current.child_by_field_name("argument")?;
+                }
+                "subscript_expression" => {
+                    saw_deref = true;
+                    current = current.child_by_field_name("argument")?;
+                }
+                "parenthesized_expression" => {
+                    current = current.named_child(0)?;
+                }
+                "unary_expression" => {
+                    let op = current
+                        .child_by_field_name("operator")
+                        .map(|o| ast_utils::get_node_text_owned(&o, source))
+                        .unwrap_or_default();
+                    if op != "*" {
+                        return None;
+                    }
+                    saw_deref = true;
+                    current = current.child_by_field_name("argument")?;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Is `left` (a struct-field/array-element lvalue) a leak candidate this
+    /// function should be held responsible for, or does it reach into a
+    /// caller-owned/borrowed struct via a bare function parameter (task
+    /// 306)? A parameter's struct is only "owned" by this function if the
+    /// parameter itself was used as an out-parameter that this function
+    /// freshly allocated into (`*param = malloc(...)`); a plain
+    /// `param->field = alloc()` is always borrowed.
+    fn is_this_function_owned_field_target(&self, left: &Node, source: &str) -> bool {
+        let Some((root, saw_deref)) = self.root_identifier_of_lvalue(left, source) else {
+            // Couldn't determine a root identifier (unusual lvalue shape) -
+            // preserve prior behavior and still track it.
+            return true;
+        };
+        if !self.function_params.contains(&root) {
+            return true;
+        }
+        saw_deref && self.deref_allocated_params.contains(&root)
+    }
+
+    /// Track `*param = malloc(...)`-shaped out-parameter allocations: this is
+    /// the signal that a struct reached through `param` was freshly
+    /// allocated by this function, not borrowed from the caller (task 306).
+    fn record_deref_allocated_param(&mut self, left: &Node, right: &Node, source: &str) {
+        let op = left
+            .child_by_field_name("operator")
+            .map(|o| ast_utils::get_node_text_owned(&o, source))
+            .unwrap_or_default();
+        if op != "*" || !self.is_allocation_call(right, source) {
+            return;
+        }
+        let Some(arg) = left.child_by_field_name("argument") else {
+            return;
+        };
+        if arg.kind() != "identifier" {
+            return;
+        }
+        let name = ast_utils::get_node_text_owned(&arg, source);
+        if self.function_params.contains(&name) {
+            self.deref_allocated_params.insert(name);
+        }
+    }
+
     fn process_assignment(&mut self, node: &Node, source: &str) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
         ) {
+            if left.kind() == "unary_expression" {
+                self.record_deref_allocated_param(&left, &right, source);
+                return;
+            }
+
             // Handle field expressions on the left - track allocation if RHS is allocation
             // e.g., data->text = malloc(100) or array[i] = malloc(50)
             if left.kind() == "field_expression" || left.kind() == "subscript_expression" {
                 // If right side is an allocation, track it with the full expression as key
                 if self.is_allocation_call(&right, source) {
+                    if !self.is_this_function_owned_field_target(&left, source) {
+                        return;
+                    }
                     let var_name = ast_utils::get_node_text_owned(&left, source);
                     let pos = right.start_position();
                     let alloc_type = self.get_allocation_type(&right, source);
