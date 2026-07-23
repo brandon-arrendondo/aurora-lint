@@ -19,6 +19,7 @@ mod utility;
 
 use crate::manifest::Severity;
 use crate::prelude::*;
+use anyhow::Context;
 use clap::{Arg, Command};
 
 use analyze::{analyze_project, handle_generate_suppression};
@@ -31,6 +32,19 @@ use ui::TerminalUI;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+
+/// Embedded at compile time so `sqc` works when installed outside the repo
+/// checkout (e.g. via `cargo install`), where `rules_templates/rules-all.toml`
+/// doesn't exist on disk relative to the binary.
+const DEFAULT_MANIFEST_TOML: &str = include_str!("../rules_templates/rules-all.toml");
+
+fn load_manifest(manifest_path: Option<&String>) -> Result<RuleManifest> {
+    match manifest_path {
+        Some(path) => RuleManifest::load(path),
+        None => RuleManifest::from_toml_str(DEFAULT_MANIFEST_TOML)
+            .context("Failed to parse built-in default manifest"),
+    }
+}
 
 fn main() {
     let result = run();
@@ -58,9 +72,8 @@ fn run() -> Result<i32> {
             Arg::new("manifest")
                 .long("manifest")
                 .short('m')
-                .help("Path to the rules manifest file")
-                .value_name("FILE")
-                .default_value("rules_templates/rules-all.toml"),
+                .help("Path to the rules manifest file (defaults to the built-in manifest)")
+                .value_name("FILE"),
         )
         .arg(
             Arg::new("interactive")
@@ -189,7 +202,7 @@ fn run() -> Result<i32> {
         .get_matches();
 
     let path = matches.get_one::<String>("path").unwrap();
-    let manifest_path = matches.get_one::<String>("manifest").unwrap();
+    let manifest_path = matches.get_one::<String>("manifest");
     let interactive = matches.get_flag("interactive");
     let export_file = matches.get_one::<String>("export");
     let generate_suppression = matches.get_one::<String>("generate_suppression");
@@ -233,7 +246,7 @@ fn run() -> Result<i32> {
             profile.has_threading, profile.has_windows, profile.max_c_standard
         );
 
-        let base_manifest = RuleManifest::load(manifest_path)?;
+        let base_manifest = load_manifest(manifest_path)?;
         let generated = analyze::relevance::generate_manifest_toml(&base_manifest, &profile);
 
         match write_manifest {
@@ -250,7 +263,7 @@ fn run() -> Result<i32> {
     let project_source = ProjectSource::open(path)?;
     println!("Detected {} at: {}", project_source.source_type(), path);
 
-    let manifest = RuleManifest::load(manifest_path)?;
+    let manifest = load_manifest(manifest_path)?;
 
     // Handle suppression generation
     if let Some(gen_spec) = generate_suppression {
@@ -274,7 +287,12 @@ fn run() -> Result<i32> {
     }
 
     println!("Analyzing {} at: {}", project_source.source_type(), path);
-    println!("Using manifest: {}", manifest_path);
+    println!(
+        "Using manifest: {}",
+        manifest_path
+            .map(String::as_str)
+            .unwrap_or("<built-in default>")
+    );
 
     if diff_only {
         println!("Mode: diff-only (analyzing modified files)");

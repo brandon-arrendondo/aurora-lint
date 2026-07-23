@@ -104,9 +104,12 @@ impl RuleManifest {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read manifest file: {}", path))?;
 
-        let manifest: RuleManifest = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse manifest file: {}", path))?;
+        Self::from_toml_str(&content)
+            .with_context(|| format!("Failed to parse manifest file: {}", path))
+    }
 
+    pub fn from_toml_str(content: &str) -> Result<Self> {
+        let manifest: RuleManifest = toml::from_str(content)?;
         Ok(manifest)
     }
 
