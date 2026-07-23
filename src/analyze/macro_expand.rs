@@ -586,6 +586,114 @@ pub fn macro_nulls_param_indices(table: &HashMap<String, FunctionMacro>, name: &
     out
 }
 
+/// Deallocation functions recognized by [`macro_frees_param_indices`].
+const DEALLOC_FUNCTIONS: &[&str] = &["free", "fclose", "close"];
+
+/// Parameter indices that a function-like macro releases: the body calls one
+/// of `free`/`fclose`/`close` with the (possibly wrapped) parameter as an
+/// argument, directly or after expanding nested macros from `table`. Unlike
+/// [`macro_nulls_param_indices`] this does not require the macro to also null
+/// the pointer — callers that only need to know the resource was released
+/// (e.g. MEM12-C's early-return leak check) don't need the null-clearing
+/// signal.
+pub fn macro_frees_param_indices(table: &HashMap<String, FunctionMacro>, name: &str) -> Vec<usize> {
+    let m = match table.get(name) {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+    if m.params.is_empty() {
+        return Vec::new();
+    }
+    let sentinels: Vec<String> = (0..m.params.len())
+        .map(|i| format!("__SQC_MFREE_{i}__"))
+        .collect();
+    let expanded = match expand_invocation(table, name, &sentinels) {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (i, sent) in sentinels.iter().enumerate() {
+        if calls_dealloc_fn_with_arg(&expanded, sent) {
+            out.push(i);
+        }
+    }
+    out
+}
+
+/// True if `text` contains a call to one of [`DEALLOC_FUNCTIONS`] with `ident`
+/// appearing as one of its arguments.
+fn calls_dealloc_fn_with_arg(text: &str, ident: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    for &fn_name in DEALLOC_FUNCTIONS {
+        let fname: Vec<char> = fn_name.chars().collect();
+        let flen = fname.len();
+        let mut i = 0;
+        while i + flen <= n {
+            if chars[i..i + flen] == fname[..] {
+                let prev_ok = i == 0 || !is_ident_char(chars[i - 1]);
+                let mut j = i + flen;
+                while j < n && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                if prev_ok && j < n && chars[j] == '(' {
+                    // Find the matching close paren, then check whether
+                    // `ident` occurs (as a whole token) inside the argument
+                    // list.
+                    let mut depth = 0i32;
+                    let mut k = j;
+                    let mut close = None;
+                    while k < n {
+                        match chars[k] {
+                            '(' => depth += 1,
+                            ')' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    close = Some(k);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        k += 1;
+                    }
+                    if let Some(close) = close {
+                        let arg_text: String = chars[j + 1..close].iter().collect();
+                        if contains_whole_ident(&arg_text, ident) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+    false
+}
+
+/// True if `ident` appears anywhere in `text` as a whole token (not a
+/// substring of a longer identifier).
+fn contains_whole_ident(text: &str, ident: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let id: Vec<char> = ident.chars().collect();
+    let (n, m) = (chars.len(), id.len());
+    if m == 0 {
+        return false;
+    }
+    let mut i = 0;
+    while i + m <= n {
+        if chars[i..i + m] == id[..] {
+            let prev_ok = i == 0 || !is_ident_char(chars[i - 1]);
+            let next_ok = i + m >= n || !is_ident_char(chars[i + m]);
+            if prev_ok && next_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 /// True if the token starting at `start` (after skipping whitespace and an
 /// optional opening paren of a cast we don't model) is the null pointer
 /// constant `NULL` or `0`, terminated by a non-identifier/non-digit char.
@@ -916,6 +1024,26 @@ mod tests {
         // Frees a, nulls b — only b is the nulled param.
         let t = table("#define FN(a, b) do { free(a); (b) = NULL; } while(0)\n");
         assert_eq!(macro_nulls_param_indices(&t, "FN"), vec![1]);
+    }
+
+    // ── Deallocation (frees) macro detection ────────────────────────────────
+
+    #[test]
+    fn frees_param_simple_fclose_wrapper() {
+        let t = table("#define SAFE_FCLOSE(f) fclose(f)\n");
+        assert_eq!(macro_frees_param_indices(&t, "SAFE_FCLOSE"), vec![0]);
+    }
+
+    #[test]
+    fn frees_param_safe_free_shape() {
+        let t = table("#define SAFE_FREE(x) do { free(x); (x) = NULL; } while(0)\n");
+        assert_eq!(macro_frees_param_indices(&t, "SAFE_FREE"), vec![0]);
+    }
+
+    #[test]
+    fn frees_param_unrelated_macro_is_empty() {
+        let t = table("#define MIN(x,y) (((x) < (y)) ? (x) : (y))\n");
+        assert!(macro_frees_param_indices(&t, "MIN").is_empty());
     }
 
     #[test]

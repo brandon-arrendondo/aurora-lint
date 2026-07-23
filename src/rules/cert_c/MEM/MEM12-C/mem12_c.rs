@@ -53,10 +53,13 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::macro_expand::{
+    collect_function_macros, macro_frees_param_indices, FunctionMacro,
+};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Mem12C;
@@ -85,9 +88,15 @@ impl CertRule for Mem12C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
+        // Function-like macro definitions visible in this file, so a
+        // cleanup macro (e.g. `SAFE_FREE`, `mosquitto_FREE`) is recognized
+        // as a deallocation the same as a bare free()/fclose()/close() call
+        // (task 315).
+        let function_macros = collect_function_macros(node, source);
+
         // Check function definitions, including nested ones (though uncommon in C)
         for func_node in query::find_descendants_of_kind(*node, "function_definition") {
-            self.check_function(&func_node, source, &mut violations);
+            self.check_function(&func_node, source, &function_macros, &mut violations);
         }
 
         violations
@@ -96,7 +105,13 @@ impl CertRule for Mem12C {
 
 impl Mem12C {
     /// Check a function for resource leak issues
-    fn check_function(&self, func_node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_function(
+        &self,
+        func_node: &Node,
+        source: &str,
+        function_macros: &HashMap<String, FunctionMacro>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         // Get function body
         let body = match func_node.child_by_field_name("body") {
             Some(b) => b,
@@ -108,7 +123,7 @@ impl Mem12C {
         let mut deallocations: Vec<(String, usize)> = Vec::new(); // (var_name, line)
 
         self.find_allocations(&body, source, &mut allocations);
-        self.find_deallocations(&body, source, &mut deallocations);
+        self.find_deallocations(&body, source, function_macros, &mut deallocations);
 
         // Find return statements and check if they leak resources
         self.check_early_returns(&body, source, &allocations, &deallocations, violations);
@@ -155,27 +170,31 @@ impl Mem12C {
         &self,
         node: &Node,
         source: &str,
+        function_macros: &HashMap<String, FunctionMacro>,
         deallocations: &mut Vec<(String, usize)>,
     ) {
         for n in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(function) = n.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
+                let Some(arguments) = n.child_by_field_name("arguments") else {
+                    continue;
+                };
 
-                // Check if it's a deallocation function
-                if func_name == "fclose" || func_name == "free" || func_name == "close" {
-                    // Get the argument (resource being freed)
-                    if let Some(arguments) = n.child_by_field_name("arguments") {
-                        for i in 0..arguments.child_count() {
-                            if let Some(arg) = arguments.child(i) {
-                                if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
-                                    let resource_name =
-                                        get_node_text(&arg, source).trim().to_string();
-                                    let line = n.start_position().row;
-                                    deallocations.push((resource_name, line));
-                                    break;
-                                }
-                            }
-                        }
+                // Check if it's a deallocation function, or a function-like
+                // macro whose body releases one of its arguments (task 315).
+                let arg_idx =
+                    if func_name == "fclose" || func_name == "free" || func_name == "close" {
+                        Some(0)
+                    } else {
+                        macro_frees_param_indices(function_macros, &func_name)
+                            .into_iter()
+                            .next()
+                    };
+
+                if let Some(arg_idx) = arg_idx {
+                    if let Some(arg) = nth_call_argument(&arguments, arg_idx, source) {
+                        let line = n.start_position().row;
+                        deallocations.push((arg, line));
                     }
                 }
             }
@@ -248,4 +267,21 @@ impl Mem12C {
             || expr.contains("open(")
             || expr.contains("socket(")
     }
+}
+
+/// Return the text of the `idx`-th argument (skipping `(`, `)`, `,` punctuation
+/// children) of a call's `arguments` node.
+fn nth_call_argument(arguments: &Node, idx: usize, source: &str) -> Option<String> {
+    let mut seen = 0usize;
+    for i in 0..arguments.child_count() {
+        let arg = arguments.child(i)?;
+        if arg.kind() == "(" || arg.kind() == ")" || arg.kind() == "," {
+            continue;
+        }
+        if seen == idx {
+            return Some(get_node_text(&arg, source).trim().to_string());
+        }
+        seen += 1;
+    }
+    None
 }
