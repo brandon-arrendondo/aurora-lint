@@ -176,6 +176,18 @@ queries.  Primary consumer: MEM01-C.</p>
 MallocInitialized).  Detects partial-init patterns in loops.  Primary
 consumer: EXP33-C.</p>
 </dd>
+<dt><strong>Macro-expansion engine</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/macro_expand.rs</span></code>).</dt><dd><p>Registry-based, name-independent modeling of function-like macro bodies —
+not a per-macro name allowlist.  <code class="docutils literal notranslate"><span class="pre">collect_function_macros</span></code> +
+<code class="docutils literal notranslate"><span class="pre">FunctionMacro</span></code> recognize two shapes regardless of the macro’s name:
+<code class="docutils literal notranslate"><span class="pre">macro_nulls_param_indices</span></code> (the macro frees <em>and</em> null-writes its
+argument — the “safe free” idiom, e.g. <code class="docutils literal notranslate"><span class="pre">SAFE_FREE</span></code>/<code class="docutils literal notranslate"><span class="pre">mosquitto_FREE</span></code>/
+<code class="docutils literal notranslate"><span class="pre">Curl_safefree</span></code>) and <code class="docutils literal notranslate"><span class="pre">macro_output_param_indices</span></code> (the macro writes to
+an output parameter).  Consumed by MEM30-C, MEM31-C, EXP33-C, and DCL31-C.
+Before adding a name-heuristic workaround for a macro-opacity false
+positive, check whether this engine already covers it — see
+<code class="docutils literal notranslate"><span class="pre">docs/design/macro-expansion.md</span></code> for the full design rationale and a
+per-rule disposition table.</p>
+</dd>
 <dt><strong>Standard function database</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/std_functions.rs</span></code>).</dt><dd><p>~370 C11, POSIX, and Windows API functions recognized to suppress false
 positives on standard library calls (DCL31-C, DCL07-C).</p>
 </dd>
@@ -229,22 +241,27 @@ return ranges, type-aware intervals</p></td>
 <tr class="row-even"><td><p>Constant evaluation</p></td>
 <td><p>Macro resolution, built-in limits, sizeof types</p></td>
 </tr>
-<tr class="row-odd"><td><p>Call-site null propagation</p></td>
+<tr class="row-odd"><td><p>Macro-expansion engine (registry)</p></td>
+<td><p>Name-independent free+null and output-param macro
+body modeling (MEM30/31-C, EXP33-C, DCL31-C)</p></td>
+</tr>
+<tr class="row-even"><td><p>Call-site null propagation</p></td>
 <td><p>Aggregated argument states across all callers</p></td>
 </tr>
-<tr class="row-even"><td><p>Transitive free propagation</p></td>
-<td><p>Parameter pass-through chains (MEM31-C)</p></td>
+<tr class="row-odd"><td><p>Transitive free propagation</p></td>
+<td><p>Parameter pass-through chains + field-sensitive
+custom-deallocator credit (MEM31-C)</p></td>
 </tr>
-<tr class="row-odd"><td><p>Global pointer null state</p></td>
+<tr class="row-even"><td><p>Global pointer null state</p></td>
 <td><p>Cross-file extern pointer tracking (EXP34-C)</p></td>
 </tr>
-<tr class="row-even"><td><p>Struct field type resolution</p></td>
+<tr class="row-odd"><td><p>Struct field type resolution</p></td>
 <td><p>Prescan-collected struct definitions</p></td>
 </tr>
-<tr class="row-odd"><td><p>Taint tracking</p></td>
+<tr class="row-even"><td><p>Taint tracking</p></td>
 <td><p>Intra-function (FIO30-C, STR02-C)</p></td>
 </tr>
-<tr class="row-even"><td><p>Dead-branch elimination</p></td>
+<tr class="row-odd"><td><p>Dead-branch elimination</p></td>
 <td><p>Macro-constant-aware CFG construction</p></td>
 </tr>
 </tbody>
@@ -259,9 +276,16 @@ return ranges, type-aware intervals</p></td>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>No preprocessor expansion</p></td>
-<td><p>Macros appear as function calls; partially mitigated
-by <code class="docutils literal notranslate"><span class="pre">collect_macro_aliases</span></code></p></td>
+<tr class="row-even"><td><p>No general macro expansion</p></td>
+<td><p>Arbitrary macro bodies are not expanded.  A
+registry-based engine (<code class="docutils literal notranslate"><span class="pre">macro_expand.rs</span></code>,
+see above) models two recognized shapes
+(free+null, output-param) name-independently
+for MEM30/31-C, EXP33-C, DCL31-C; outside
+those shapes macros are still opaque function
+calls, partially mitigated by
+<code class="docutils literal notranslate"><span class="pre">collect_macro_aliases</span></code> for constant-valued
+macros</p></td>
 </tr>
 <tr class="row-odd"><td><p>No alias analysis</p></td>
 <td><p>Pointer aliasing unresolved; field-scoped alias
@@ -286,29 +310,35 @@ cross-function taint for injection CWEs planned</p></td>
 no field-level free or null tracking</p></td>
 </tr>
 <tr class="row-odd"><td><p>No ownership model</p></td>
-<td><p>Cross-function memory ownership untracked;
-limits MEM31-C/MEM30-C precision</p></td>
+<td><p>Same-function ownership transfer (allocate + custom
+deallocator) is credited, but parameter-owned vs.
+locally-owned struct lifetimes are not distinguished;
+dominant remaining MEM31-C real-world FP source</p></td>
 </tr>
 </tbody>
 </table>
 </section>
 <section id="architectural-ceiling">
 <h2>Architectural Ceiling<a class="headerlink" href="#architectural-ceiling" title="Link to this heading"></a></h2>
-<p>Current TP rate: <strong>67.5%</strong> (Juliet, v0.3.119, 74 CWEs).  The remaining gaps
-are concentrated in CWEs requiring deeper analysis:</p>
+<p>Current TP rate: <strong>83.8%</strong> (Juliet, v0.4.116, 74 CWEs; up from 67.5% at
+v0.3.119).  CWE-190/191 (integer overflow) and CWE-476 (null dereference)
+have since moved substantially with VRA and null-state work; the remaining
+gaps are concentrated in a smaller set of CWEs still requiring deeper
+analysis:</p>
 <ul class="simple">
-<li><p><strong>CWE-190/191</strong> (integer overflow/underflow): 60.9%/55.3% vs clang-tidy 94%.
-Requires more complete value-range propagation and bounds-check recognition.</p></li>
-<li><p><strong>CWE-369</strong> (divide by zero): 56.0% vs clang-tidy 94.7%.
-Requires stronger zero-value tracking through assignments.</p></li>
-<li><p><strong>CWE-476</strong> (null dereference): 61.9% vs clang-tidy 94.3%.
+<li><p><strong>CWE-190</strong> (integer overflow): 100.0% — resolved via value-range analysis.</p></li>
+<li><p><strong>CWE-191</strong> (integer underflow): 98.5% (was 55.3%) — same VRA work.</p></li>
+<li><p><strong>CWE-476</strong> (null dereference): 67.9% (was 61.9%) vs clang-tidy 94.3%.
 Requires deeper inter-procedural null propagation and alias analysis.</p></li>
-<li><p><strong>CWE-121</strong> (stack buffer overflow): 57.5% vs clang-tidy 86.6%.
+<li><p><strong>CWE-121</strong> (stack buffer overflow): 71.0% (was 57.5%) vs clang-tidy 86.6%.
 Requires symbolic buffer size tracking across assignments.</p></li>
+<li><p><strong>CWE-369</strong> (divide by zero): 57.8% (was 56.0%) vs clang-tidy 94.7%.
+Requires stronger zero-value tracking through assignments; largely
+unmoved despite the VRA/alias investment that lifted 190/191/476/121.</p></li>
 </ul>
-<p>Alias analysis and field-sensitive value tracking are the two capabilities
-most likely to lift the ceiling.  Each would require significant
-architectural investment but could push TP rate toward 75%+.</p>
+<p>Alias analysis and field-sensitive value tracking remain the two
+capabilities most likely to close the remaining gap, particularly for
+CWE-369 and the residual CWE-121/476 share tied to pointer aliasing.</p>
 </section>
 <section id="competitor-landscape">
 <h2>Competitor Landscape<a class="headerlink" href="#competitor-landscape" title="Link to this heading"></a></h2>
@@ -355,11 +385,16 @@ architectural investment but could push TP rate toward 75%+.</p>
 </tr>
 </tbody>
 </table>
-<p><em>SqC results from v0.3.119 Juliet benchmark (74 CWEs). Competitor figures from
-prior study on 15 overlapping CWEs.</em></p>
-<p>SqC achieves 100% precision (zero FP) on 34 CWEs including CWE-690, CWE-761,
-CWE-78, and CWE-416.  Broadest CWE coverage (74+ CWEs benchmarked vs
-clang-tidy’s 15).</p>
+<p><em>SqC row is from the v0.3.119 Juliet benchmark, held fixed here because the
+other four tools were not re-run at v0.4.116 — this table is a frozen
+snapshot of a one-time comparative study, not a continuously re-measured
+figure. SqC’s own overall TP rate has since risen to 83.8% (see above); it
+is not directly comparable to the 67.5% row without re-running the other
+four tools on the same 15-CWE, 28,488-file slice.</em></p>
+<p>SqC achieves 100% precision (zero FP) on 48 of 74 benchmarked CWEs as of
+v0.4.116 (see <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code>), including CWE-690, CWE-761, CWE-78,
+and CWE-190. Broadest CWE coverage (74+ CWEs benchmarked vs clang-tidy’s 15
+in the frozen study above).</p>
 <p><strong>Key context</strong>: Tools on average find ~20% of weaknesses in Juliet
 (ISSTA2022). Even commercial tools miss 27% (Goseva2015). Industry FP target
 for adoption is 10–20%. See <a class="reference internal" href="bibliography.html"><span class="doc">Bibliography</span></a> for full references.</p>

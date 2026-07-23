@@ -118,25 +118,25 @@ Running the benchmark:
     python -m bench status RUN_ID   # Check a running benchmark
     python -m bench compare v1 v2   # Compare two runs
 
-Current Results (v0.3.119)
+Current Results (v0.4.116)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ===============================  ==========
 Metric                           Value
 ===============================  ==========
 **CWEs Scanned**                 74
-**True Positives**               24,345
-**False Positives**              11,702
-**TP Rate (Precision)**          67.5%
-**Per-file Detection Rate**      40.8%
-**100% Precision CWEs**          34
-**FP Reduction from Baseline**   -98.6%
+**True Positives**               21,770
+**False Positives**              4,220
+**TP Rate (Precision)**          83.8%
+**Per-file Detection Rate**      38.2%
+**100% Precision CWEs**          48
+**FP Reduction from Baseline**   -99.5%
 ===============================  ==========
 
-SqC achieves 100% precision (zero false positives) on 34 CWEs including:
+SqC achieves 100% precision (zero false positives) on 48 CWEs including:
 
 - CWE-78 (OS command injection)
-- CWE-416 (Use after free)
+- CWE-190 (Integer overflow)
 - CWE-481 (Assigning instead of comparing)
 - CWE-467 (sizeof on pointer type)
 - CWE-252 (Unchecked return value)
@@ -146,8 +146,8 @@ SqC achieves 100% precision (zero false positives) on 34 CWEs including:
 - CWE-690 (NULL dereference from return)
 - CWE-789 (Uncontrolled memory allocation)
 
-High-precision (>80% TP rate) on an additional 7 CWEs including CWE-127 (82.4%),
-CWE-401 (77.6%), CWE-272 (79.9%), and CWE-675 (93.0%).
+High-precision (>80% TP rate) on several additional CWEs including CWE-191
+(98.5%), CWE-127 (81.5%), and CWE-675 (93.0%).
 
 See ``JULIET_RESULTS.md`` for full per-CWE breakdowns.
 
@@ -155,7 +155,7 @@ FP Reduction History
 ~~~~~~~~~~~~~~~~~~~~
 
 Over 30+ rounds of targeted optimization, SqC has reduced false positives by
-98.6% from baseline while improving the TP rate from 41.1% to 67.5%:
+99.5% from baseline while improving the TP rate from 41.1% to 83.8%:
 
 ========  ==========================================  ==========  =========  =========
 Round     Key Changes                                 FP          TP Rate    FP Delta
@@ -168,42 +168,49 @@ Round 12  CFG + inter-procedural analysis             215,671     44.5%      -28
 v0.2.23   Built-in C limit macros + const_eval        163,585     44.6%      -12,088
 v0.3.37   Fast mode, taint tracking                   9,067       48.4%      --
 v0.3.119  74 CWEs (6 new), precision improvements     11,702      67.5%      +2,635
+v0.4.116  VRA, macro expansion, field-sensitive        4,220       83.8%      -7,482
+          alias tracking, per-rule tuning
 ========  ==========================================  ==========  =========  =========
 
 *Note: v0.3.37 and later use fast mode (CWE-matched rules only); earlier rounds
 used full-suite scoring, so absolute FP counts are not directly comparable across
 the two methodologies. TP rate is the consistent metric. The FP increase from
 v0.3.37 to v0.3.119 reflects expanded CWE scope (68 → 74 CWEs) and more test files,
-not regression — TP rate improved 19.1 percentage points over the same span.*
+not regression — TP rate improved 19.1 percentage points over the same span. The
+v0.3.119 → v0.4.116 span (dozens of intermediate releases; see
+``docs/juliet-history.rst``) cut FP by more than half again while gaining a
+further 16.3 points of TP rate.*
 
 Real-World Code Analysis
 ------------------------
 
-SqC is benchmarked against 5 real-world open-source C codebases alongside
+SqC is benchmarked against 7 real-world open-source C codebases alongside
 cppcheck and clang-tidy:
 
 ===========  =========  =============  ============  ============  ============
 Project      C Files    LOC            sqc           cppcheck      clang-tidy
 ===========  =========  =============  ============  ============  ============
-libcrc       16         2,130          734           43            2
-mosquitto    384        88,717         29,824        747           44
-curl         697        240,412        63,207        519           114
-sqlite       310        402,321        129,035       1,181         135
-hostap       505        541,441        179,833       2,118         2,279
-**Total**    **1,912**  **1,275,021**  **402,633**   **4,608**     **2,574**
+libcrc       9          1,034          391           40            2
+lua          33         31,637         3,068         49            107
+raylib       17         56,107         5,213         1,060         469
+mosquitto    120        39,368         11,225        277           44
+curl         222        186,220        16,085        556           116
+sqlite       125        218,733        31,319        503           137
+hostap       430        589,724        37,432        1,761         1,710
+**Total**    **956**    **1,122,823**  **104,733**   **4,246**     **2,585**
 ===========  =========  =============  ============  ============  ============
 
-*Data from sqc v0.3.5, cppcheck 2.10, clang-tidy 21.1.6.*
+*Data from sqc v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).*
 
 **Why sqc reports more violations**: SqC implements 285 CERT C rules (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.
 
-**Trend**: SqC violations on real-world code have decreased steadily from
-548,027 (v0.2.7) to 402,633 (v0.3.5) — a 26% reduction through targeted
-FP reduction, cross-file analysis, and improved type inference.
-
-See ``REALWORLD_RESULTS.md`` for full version history and per-rule breakdowns.
+**Measured precision/recall**: 6.2% precision / 91.7% recall against the
+adjudicated ground-truth oracle (``python -m bench realworld-score 118``) —
+the empirical floor across all 7 projects, not a raw violation-count
+comparison. See ``REALWORLD_RESULTS.md`` for the full version history,
+per-rule breakdowns, and oracle methodology.
 
 Cross-Tool Comparison Methodology
 ----------------------------------

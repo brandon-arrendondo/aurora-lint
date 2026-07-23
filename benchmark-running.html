@@ -354,7 +354,7 @@ a one-line measured precision/recall in the status payload (<code class="docutil
 Scoring only joins findings to <em>existing</em> labels — it never adjudicates new
 findings. Re-run any time with <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-score</span> <span class="pre">&lt;RUN&gt;</span></code>.</p>
 <p>Typical real-world workflow:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mf">1.</span> <span class="n">run_all</span><span class="p">(</span><span class="n">tool</span><span class="o">=</span><span class="s2">&quot;sqc&quot;</span><span class="p">)</span>           <span class="c1"># Run sqc against all 5 codebases</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mf">1.</span> <span class="n">run_all</span><span class="p">(</span><span class="n">tool</span><span class="o">=</span><span class="s2">&quot;sqc&quot;</span><span class="p">)</span>           <span class="c1"># Run sqc against all 7 codebases</span>
 <span class="mf">2.</span> <span class="n">get_status</span><span class="p">()</span>                  <span class="c1"># Monitor progress</span>
 <span class="mf">3.</span> <span class="n">get_results</span><span class="p">()</span>                 <span class="c1"># View all results</span>
 <span class="mf">4.</span> <span class="n">compare_runs</span><span class="p">(</span><span class="n">base</span><span class="o">=</span><span class="s2">&quot;0.2.6&quot;</span><span class="p">,</span> <span class="n">target</span><span class="o">=</span><span class="s2">&quot;0.2.7&quot;</span><span class="p">)</span>

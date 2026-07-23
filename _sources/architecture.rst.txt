@@ -95,6 +95,19 @@ Analysis Modules
   MallocInitialized).  Detects partial-init patterns in loops.  Primary
   consumer: EXP33-C.
 
+**Macro-expansion engine** (``src/analyze/macro_expand.rs``).
+  Registry-based, name-independent modeling of function-like macro bodies —
+  not a per-macro name allowlist.  ``collect_function_macros`` +
+  ``FunctionMacro`` recognize two shapes regardless of the macro's name:
+  ``macro_nulls_param_indices`` (the macro frees *and* null-writes its
+  argument — the "safe free" idiom, e.g. ``SAFE_FREE``/``mosquitto_FREE``/
+  ``Curl_safefree``) and ``macro_output_param_indices`` (the macro writes to
+  an output parameter).  Consumed by MEM30-C, MEM31-C, EXP33-C, and DCL31-C.
+  Before adding a name-heuristic workaround for a macro-opacity false
+  positive, check whether this engine already covers it — see
+  ``docs/design/macro-expansion.md`` for the full design rationale and a
+  per-rule disposition table.
+
 **Standard function database** (``src/utility/cert_c/std_functions.rs``).
   ~370 C11, POSIX, and Windows API functions recognized to suppress false
   positives on standard library calls (DCL31-C, DCL07-C).
@@ -123,8 +136,11 @@ Value range analysis                  CFG-based forward dataflow, inter-procedur
                                       return ranges, type-aware intervals
 Initialization state analysis         Forward dataflow with malloc-aware semantics
 Constant evaluation                   Macro resolution, built-in limits, sizeof types
+Macro-expansion engine (registry)     Name-independent free+null and output-param macro
+                                      body modeling (MEM30/31-C, EXP33-C, DCL31-C)
 Call-site null propagation             Aggregated argument states across all callers
-Transitive free propagation           Parameter pass-through chains (MEM31-C)
+Transitive free propagation           Parameter pass-through chains + field-sensitive
+                                      custom-deallocator credit (MEM31-C)
 Global pointer null state              Cross-file extern pointer tracking (EXP34-C)
 Struct field type resolution           Prescan-collected struct definitions
 Taint tracking                        Intra-function (FIO30-C, STR02-C)
@@ -137,8 +153,15 @@ Known Limitations
 ==============================  ====================================================
 Gap                             Impact
 ==============================  ====================================================
-No preprocessor expansion       Macros appear as function calls; partially mitigated
-                                by ``collect_macro_aliases``
+No general macro expansion      Arbitrary macro bodies are not expanded.  A
+                                registry-based engine (``macro_expand.rs``,
+                                see above) models two recognized shapes
+                                (free+null, output-param) name-independently
+                                for MEM30/31-C, EXP33-C, DCL31-C; outside
+                                those shapes macros are still opaque function
+                                calls, partially mitigated by
+                                ``collect_macro_aliases`` for constant-valued
+                                macros
 No alias analysis               Pointer aliasing unresolved; field-scoped alias
                                 collection causes cross-function issues
 No symbolic execution           Complex path conditions not evaluated
@@ -149,28 +172,34 @@ Limited taint tracking          Intra-function only (STR02-C, FIO30-C);
                                 cross-function taint for injection CWEs planned
 Struct field tracking limited   Prescan-visible structs only (INT32-C/INT30-C);
                                 no field-level free or null tracking
-No ownership model              Cross-function memory ownership untracked;
-                                limits MEM31-C/MEM30-C precision
+No ownership model              Same-function ownership transfer (allocate + custom
+                                deallocator) is credited, but parameter-owned vs.
+                                locally-owned struct lifetimes are not distinguished;
+                                dominant remaining MEM31-C real-world FP source
 ==============================  ====================================================
 
 Architectural Ceiling
 ---------------------
 
-Current TP rate: **67.5%** (Juliet, v0.3.119, 74 CWEs).  The remaining gaps
-are concentrated in CWEs requiring deeper analysis:
+Current TP rate: **83.8%** (Juliet, v0.4.116, 74 CWEs; up from 67.5% at
+v0.3.119).  CWE-190/191 (integer overflow) and CWE-476 (null dereference)
+have since moved substantially with VRA and null-state work; the remaining
+gaps are concentrated in a smaller set of CWEs still requiring deeper
+analysis:
 
-- **CWE-190/191** (integer overflow/underflow): 60.9%/55.3% vs clang-tidy 94%.
-  Requires more complete value-range propagation and bounds-check recognition.
-- **CWE-369** (divide by zero): 56.0% vs clang-tidy 94.7%.
-  Requires stronger zero-value tracking through assignments.
-- **CWE-476** (null dereference): 61.9% vs clang-tidy 94.3%.
+- **CWE-190** (integer overflow): 100.0% — resolved via value-range analysis.
+- **CWE-191** (integer underflow): 98.5% (was 55.3%) — same VRA work.
+- **CWE-476** (null dereference): 67.9% (was 61.9%) vs clang-tidy 94.3%.
   Requires deeper inter-procedural null propagation and alias analysis.
-- **CWE-121** (stack buffer overflow): 57.5% vs clang-tidy 86.6%.
+- **CWE-121** (stack buffer overflow): 71.0% (was 57.5%) vs clang-tidy 86.6%.
   Requires symbolic buffer size tracking across assignments.
+- **CWE-369** (divide by zero): 57.8% (was 56.0%) vs clang-tidy 94.7%.
+  Requires stronger zero-value tracking through assignments; largely
+  unmoved despite the VRA/alias investment that lifted 190/191/476/121.
 
-Alias analysis and field-sensitive value tracking are the two capabilities
-most likely to lift the ceiling.  Each would require significant
-architectural investment but could push TP rate toward 75%+.
+Alias analysis and field-sensitive value tracking remain the two
+capabilities most likely to close the remaining gap, particularly for
+CWE-369 and the residual CWE-121/476 share tied to pointer aliasing.
 
 Competitor Landscape
 --------------------
@@ -187,12 +216,17 @@ Infer           43.6%           56.4%      Separation logic                     
 cppcheck        36.4%           63.6%      Data-flow                             Free
 ==============  ==============  =========  ====================================  ===========
 
-*SqC results from v0.3.119 Juliet benchmark (74 CWEs). Competitor figures from
-prior study on 15 overlapping CWEs.*
+*SqC row is from the v0.3.119 Juliet benchmark, held fixed here because the
+other four tools were not re-run at v0.4.116 — this table is a frozen
+snapshot of a one-time comparative study, not a continuously re-measured
+figure. SqC's own overall TP rate has since risen to 83.8% (see above); it
+is not directly comparable to the 67.5% row without re-running the other
+four tools on the same 15-CWE, 28,488-file slice.*
 
-SqC achieves 100% precision (zero FP) on 34 CWEs including CWE-690, CWE-761,
-CWE-78, and CWE-416.  Broadest CWE coverage (74+ CWEs benchmarked vs
-clang-tidy's 15).
+SqC achieves 100% precision (zero FP) on 48 of 74 benchmarked CWEs as of
+v0.4.116 (see ``JULIET_RESULTS.md``), including CWE-690, CWE-761, CWE-78,
+and CWE-190. Broadest CWE coverage (74+ CWEs benchmarked vs clang-tidy's 15
+in the frozen study above).
 
 **Key context**: Tools on average find ~20% of weaknesses in Juliet
 (ISSTA2022). Even commercial tools miss 27% (Goseva2015). Industry FP target

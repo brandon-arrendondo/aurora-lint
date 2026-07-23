@@ -1318,7 +1318,7 @@ Competitor Comparison
      - Commercial
 
 The SqC row above is from the 44.6% full-suite era (v0.2.23); current fast-mode
-TP rate is 83.7% (v0.4.84, see ``JULIET_RESULTS.md``) but is not directly
+TP rate is 83.8% (v0.4.116, see ``JULIET_RESULTS.md``) but is not directly
 comparable since the competitor figures below were not re-measured
 fast-mode/CWE-matched.
 

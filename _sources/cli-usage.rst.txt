@@ -43,6 +43,12 @@ Full Command Reference
                                        re-scanning -d directories
       -j, --jobs <N>                   Number of parallel analysis threads
                                        (0 = auto-detect, 1 = sequential; default: 0)
+          --detect-relevance           Detect categorically-inapplicable rule classes
+                                       (CON*/WIN*) in PATH and -d directories, then write
+                                       a relevance-gated manifest with --write-manifest.
+                                       Does not run an analysis.
+          --write-manifest <FILE>      With --detect-relevance: write the generated
+                                       manifest here (requires --detect-relevance)
       -h, --help                       Print help
       -V, --version                    Print version
 
@@ -162,6 +168,38 @@ changes vs HEAD):
 
 This is particularly useful in CI pipelines to provide fast feedback on pull
 requests without scanning the entire codebase.
+
+
+Project-Relevance Detection
+----------------------------
+
+For a codebase with no tailored manifest, ``--detect-relevance`` scans PATH
+(and any ``-d`` directories) for evidence of threading (``pthread``,
+``<threads.h>``, ``_Atomic``) and Windows API usage, then generates a
+manifest with the categorically-inapplicable rule classes disabled
+(``CON*`` if no threading evidence, ``WIN*`` if no Windows API evidence).
+It never runs an analysis itself — pair it with ``--write-manifest`` to
+save the generated manifest, then pass that manifest to a normal scan via
+``-m``:
+
+::
+
+    # Generate a relevance-gated manifest for a POSIX-only codebase
+    sqc /path/to/repo --detect-relevance --write-manifest gated-rules.toml
+
+    # Use it for the actual scan
+    sqc /path/to/repo -m gated-rules.toml
+
+Detection is conservative by design: a rule class is disabled only when no
+evidence of it was found anywhere in the scanned corpus (including
+resolved ``-I``/``-d`` includes); an unresolved include path leaves the
+affected rules enabled with an ``# unresolved: ...`` comment rather than
+guessing. C11/Annex-K-specific rules are detected and annotated but not
+yet auto-gated (v2 work); see
+``docs/design/project-relevance-gating.md`` for the full design and
+current scope. This is unrelated to the ``conf/realworld/*-rules.toml``
+manifests used by the benchmark suite, which remain hand-curated and are
+never overwritten by this flag.
 
 
 Exit Codes

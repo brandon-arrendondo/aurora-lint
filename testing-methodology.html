@@ -54,7 +54,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#unit-tests">Unit Tests</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#nist-juliet-test-suite-benchmarking">NIST Juliet Test Suite Benchmarking</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#how-juliet-benchmarking-works">How Juliet Benchmarking Works</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#current-results-v0-3-119">Current Results (v0.3.119)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#current-results-v0-4-116">Current Results (v0.4.116)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#fp-reduction-history">FP Reduction History</a></li>
 </ul>
 </li>
@@ -216,8 +216,8 @@ per-CWE metrics, per-rule breakdowns, and cross-version comparison support.</p><
 </pre></div>
 </div>
 </section>
-<section id="current-results-v0-3-119">
-<h3>Current Results (v0.3.119)<a class="headerlink" href="#current-results-v0-3-119" title="Link to this heading"></a></h3>
+<section id="current-results-v0-4-116">
+<h3>Current Results (v0.4.116)<a class="headerlink" href="#current-results-v0-4-116" title="Link to this heading"></a></h3>
 <table class="docutils align-default">
 <thead>
 <tr class="row-odd"><th class="head"><p>Metric</p></th>
@@ -229,29 +229,29 @@ per-CWE metrics, per-rule breakdowns, and cross-version comparison support.</p><
 <td><p>74</p></td>
 </tr>
 <tr class="row-odd"><td><p><strong>True Positives</strong></p></td>
-<td><p>24,345</p></td>
+<td><p>21,770</p></td>
 </tr>
 <tr class="row-even"><td><p><strong>False Positives</strong></p></td>
-<td><p>11,702</p></td>
+<td><p>4,220</p></td>
 </tr>
 <tr class="row-odd"><td><p><strong>TP Rate (Precision)</strong></p></td>
-<td><p>67.5%</p></td>
+<td><p>83.8%</p></td>
 </tr>
 <tr class="row-even"><td><p><strong>Per-file Detection Rate</strong></p></td>
-<td><p>40.8%</p></td>
+<td><p>38.2%</p></td>
 </tr>
 <tr class="row-odd"><td><p><strong>100% Precision CWEs</strong></p></td>
-<td><p>34</p></td>
+<td><p>48</p></td>
 </tr>
 <tr class="row-even"><td><p><strong>FP Reduction from Baseline</strong></p></td>
-<td><p>-98.6%</p></td>
+<td><p>-99.5%</p></td>
 </tr>
 </tbody>
 </table>
-<p>SqC achieves 100% precision (zero false positives) on 34 CWEs including:</p>
+<p>SqC achieves 100% precision (zero false positives) on 48 CWEs including:</p>
 <ul class="simple">
 <li><p>CWE-78 (OS command injection)</p></li>
-<li><p>CWE-416 (Use after free)</p></li>
+<li><p>CWE-190 (Integer overflow)</p></li>
 <li><p>CWE-481 (Assigning instead of comparing)</p></li>
 <li><p>CWE-467 (sizeof on pointer type)</p></li>
 <li><p>CWE-252 (Unchecked return value)</p></li>
@@ -261,14 +261,14 @@ per-CWE metrics, per-rule breakdowns, and cross-version comparison support.</p><
 <li><p>CWE-690 (NULL dereference from return)</p></li>
 <li><p>CWE-789 (Uncontrolled memory allocation)</p></li>
 </ul>
-<p>High-precision (&gt;80% TP rate) on an additional 7 CWEs including CWE-127 (82.4%),
-CWE-401 (77.6%), CWE-272 (79.9%), and CWE-675 (93.0%).</p>
+<p>High-precision (&gt;80% TP rate) on several additional CWEs including CWE-191
+(98.5%), CWE-127 (81.5%), and CWE-675 (93.0%).</p>
 <p>See <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> for full per-CWE breakdowns.</p>
 </section>
 <section id="fp-reduction-history">
 <h3>FP Reduction History<a class="headerlink" href="#fp-reduction-history" title="Link to this heading"></a></h3>
 <p>Over 30+ rounds of targeted optimization, SqC has reduced false positives by
-98.6% from baseline while improving the TP rate from 41.1% to 67.5%:</p>
+99.5% from baseline while improving the TP rate from 41.1% to 83.8%:</p>
 <table class="docutils align-default">
 <thead>
 <tr class="row-odd"><th class="head"><p>Round</p></th>
@@ -327,18 +327,28 @@ CWE-401 (77.6%), CWE-272 (79.9%), and CWE-675 (93.0%).</p>
 <td><p>67.5%</p></td>
 <td><p>+2,635</p></td>
 </tr>
+<tr class="row-even"><td><p>v0.4.116</p></td>
+<td><p>VRA, macro expansion, field-sensitive
+alias tracking, per-rule tuning</p></td>
+<td><p>4,220</p></td>
+<td><p>83.8%</p></td>
+<td><p>-7,482</p></td>
+</tr>
 </tbody>
 </table>
 <p><em>Note: v0.3.37 and later use fast mode (CWE-matched rules only); earlier rounds
 used full-suite scoring, so absolute FP counts are not directly comparable across
 the two methodologies. TP rate is the consistent metric. The FP increase from
 v0.3.37 to v0.3.119 reflects expanded CWE scope (68 → 74 CWEs) and more test files,
-not regression — TP rate improved 19.1 percentage points over the same span.</em></p>
+not regression — TP rate improved 19.1 percentage points over the same span. The
+v0.3.119 → v0.4.116 span (dozens of intermediate releases; see
+``docs/juliet-history.rst``) cut FP by more than half again while gaining a
+further 16.3 points of TP rate.</em></p>
 </section>
 </section>
 <section id="real-world-code-analysis">
 <h2>Real-World Code Analysis<a class="headerlink" href="#real-world-code-analysis" title="Link to this heading"></a></h2>
-<p>SqC is benchmarked against 5 real-world open-source C codebases alongside
+<p>SqC is benchmarked against 7 real-world open-source C codebases alongside
 cppcheck and clang-tidy:</p>
 <table class="docutils align-default">
 <thead>
@@ -352,57 +362,72 @@ cppcheck and clang-tidy:</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>libcrc</p></td>
-<td><p>16</p></td>
-<td><p>2,130</p></td>
-<td><p>734</p></td>
-<td><p>43</p></td>
+<td><p>9</p></td>
+<td><p>1,034</p></td>
+<td><p>391</p></td>
+<td><p>40</p></td>
 <td><p>2</p></td>
 </tr>
+<tr class="row-odd"><td><p>lua</p></td>
+<td><p>33</p></td>
+<td><p>31,637</p></td>
+<td><p>3,068</p></td>
+<td><p>49</p></td>
+<td><p>107</p></td>
+</tr>
+<tr class="row-even"><td><p>raylib</p></td>
+<td><p>17</p></td>
+<td><p>56,107</p></td>
+<td><p>5,213</p></td>
+<td><p>1,060</p></td>
+<td><p>469</p></td>
+</tr>
 <tr class="row-odd"><td><p>mosquitto</p></td>
-<td><p>384</p></td>
-<td><p>88,717</p></td>
-<td><p>29,824</p></td>
-<td><p>747</p></td>
+<td><p>120</p></td>
+<td><p>39,368</p></td>
+<td><p>11,225</p></td>
+<td><p>277</p></td>
 <td><p>44</p></td>
 </tr>
 <tr class="row-even"><td><p>curl</p></td>
-<td><p>697</p></td>
-<td><p>240,412</p></td>
-<td><p>63,207</p></td>
-<td><p>519</p></td>
-<td><p>114</p></td>
+<td><p>222</p></td>
+<td><p>186,220</p></td>
+<td><p>16,085</p></td>
+<td><p>556</p></td>
+<td><p>116</p></td>
 </tr>
 <tr class="row-odd"><td><p>sqlite</p></td>
-<td><p>310</p></td>
-<td><p>402,321</p></td>
-<td><p>129,035</p></td>
-<td><p>1,181</p></td>
-<td><p>135</p></td>
+<td><p>125</p></td>
+<td><p>218,733</p></td>
+<td><p>31,319</p></td>
+<td><p>503</p></td>
+<td><p>137</p></td>
 </tr>
 <tr class="row-even"><td><p>hostap</p></td>
-<td><p>505</p></td>
-<td><p>541,441</p></td>
-<td><p>179,833</p></td>
-<td><p>2,118</p></td>
-<td><p>2,279</p></td>
+<td><p>430</p></td>
+<td><p>589,724</p></td>
+<td><p>37,432</p></td>
+<td><p>1,761</p></td>
+<td><p>1,710</p></td>
 </tr>
 <tr class="row-odd"><td><p><strong>Total</strong></p></td>
-<td><p><strong>1,912</strong></p></td>
-<td><p><strong>1,275,021</strong></p></td>
-<td><p><strong>402,633</strong></p></td>
-<td><p><strong>4,608</strong></p></td>
-<td><p><strong>2,574</strong></p></td>
+<td><p><strong>956</strong></p></td>
+<td><p><strong>1,122,823</strong></p></td>
+<td><p><strong>104,733</strong></p></td>
+<td><p><strong>4,246</strong></p></td>
+<td><p><strong>2,585</strong></p></td>
 </tr>
 </tbody>
 </table>
-<p><em>Data from sqc v0.3.5, cppcheck 2.10, clang-tidy 21.1.6.</em></p>
+<p><em>Data from sqc v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).</em></p>
 <p><strong>Why sqc reports more violations</strong>: SqC implements 285 CERT C rules (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.</p>
-<p><strong>Trend</strong>: SqC violations on real-world code have decreased steadily from
-548,027 (v0.2.7) to 402,633 (v0.3.5) — a 26% reduction through targeted
-FP reduction, cross-file analysis, and improved type inference.</p>
-<p>See <code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code> for full version history and per-rule breakdowns.</p>
+<p><strong>Measured precision/recall</strong>: 6.2% precision / 91.7% recall against the
+adjudicated ground-truth oracle (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-score</span> <span class="pre">118</span></code>) —
+the empirical floor across all 7 projects, not a raw violation-count
+comparison. See <code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code> for the full version history,
+per-rule breakdowns, and oracle methodology.</p>
 </section>
 <section id="cross-tool-comparison-methodology">
 <h2>Cross-Tool Comparison Methodology<a class="headerlink" href="#cross-tool-comparison-methodology" title="Link to this heading"></a></h2>
