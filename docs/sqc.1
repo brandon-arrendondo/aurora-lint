@@ -1,6 +1,6 @@
 .\" sqc - Software Code Quality
 .\" Man page for sqc(1)
-.TH SQC 1 "July 2026" "sqc 0.4.79" "User Commands"
+.TH SQC 1 "July 2026" "sqc 0.4.120" "User Commands"
 .SH NAME
 sqc \- CERT C compliance checker for C source code
 .SH SYNOPSIS
@@ -82,6 +82,23 @@ Requires the target path to be inside a git repository.
 \fB\-\-generate\-suppression\fR \fIFILE\fR:\fILINE\fR:\fIRULE\fR
 Generate a suppression comment for the specified violation. Output is printed
 to stdout. Conflicts with \fB\-\-interactive\fR and \fB\-\-export\fR.
+.SS "Project-Relevance Detection"
+.TP
+\fB\-\-detect\-relevance\fR
+Scan \fIPATH\fR and any \fB\-d\fR directories for evidence of threading
+(\fBpthread\fR, \fI<threads.h>\fR, \fB_Atomic\fR) and Windows API usage, then
+generate a rules manifest with the categorically-inapplicable rule classes
+disabled (\fBCON\fR* if no threading evidence is found, \fBWIN\fR* if no
+Windows API evidence is found). Does not run an analysis; pair with
+\fB\-\-write\-manifest\fR to save the result. Detection is conservative: a
+rule class is disabled only when no evidence of it is found anywhere in the
+scanned corpus, including resolved \fB\-I\fR/\fB\-d\fR includes. An
+unresolved include path leaves the affected rules enabled with an
+\fB# unresolved: ...\fR comment rather than guessing.
+.TP
+\fB\-\-write\-manifest\fR \fIFILE\fR
+With \fB\-\-detect\-relevance\fR, write the generated manifest to \fIFILE\fR.
+Requires \fB\-\-detect\-relevance\fR.
 .SS "Filtering"
 .TP
 \fB\-\-min\-severity\fR \fILEVEL\fR
@@ -228,6 +245,16 @@ Parallel analysis using 8 threads:
 .RS
 .nf
 sqc -j 8 -d src/ -d lib/ src/
+.fi
+.RE
+.PP
+Generate a relevance-gated manifest for a codebase with no tailored
+manifest, then use it for the actual scan:
+.PP
+.RS
+.nf
+sqc /path/to/project --detect-relevance --write-manifest gated-rules.toml
+sqc /path/to/project -m gated-rules.toml
 .fi
 .RE
 .SH FILES

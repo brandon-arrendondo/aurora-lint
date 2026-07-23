@@ -182,7 +182,7 @@ findings. Re-run any time with ``python -m bench realworld-score <RUN>``.
 
 Typical real-world workflow::
 
-    1. run_all(tool="sqc")           # Run sqc against all 5 codebases
+    1. run_all(tool="sqc")           # Run sqc against all 7 codebases
     2. get_status()                  # Monitor progress
     3. get_results()                 # View all results
     4. compare_runs(base="0.2.6", target="0.2.7")

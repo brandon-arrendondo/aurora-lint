@@ -1,6 +1,6 @@
 # SqC — Juliet Benchmark Results
 
-**Last Updated**: 2026-07-08
+**Last Updated**: 2026-07-22
 **Benchmark**: [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) for C/C++
 
 > **Note**: This file tracks current state only. All benchmark results are
@@ -13,18 +13,18 @@
 
 ---
 
-## Current State (v0.4.84)
+## Current State (v0.4.116)
 
-Run `sqc-0.4.84-38451a2c`, completed 2026-07-07 (~32 min wall time, fast mode).
+Run `sqc-0.4.116-7a175389`, completed 2026-07-22 (~33 min wall time, fast mode).
 
 | Metric | Value |
 |--------|-------|
 | **Rules Implemented** | 285 CERT C rules |
 | **Juliet CWEs Scanned** | 74 (fast mode, CWE-matched rules) |
-| **True Positives** | 21,759 |
-| **False Positives** | 4,250 |
-| **TP Rate** | **83.7%** |
-| **Per-file Detection Rate** | 38.2% (19,104 / 50,038 files) |
+| **True Positives** | 21,770 |
+| **False Positives** | 4,220 |
+| **TP Rate** | **83.8%** |
+| **Per-file Detection Rate** | 38.2% (19,117 / 50,038 files) |
 | **Zero-FP CWEs** | 48 of 74 (41 with real detections, 7 with none) |
 | **Benchmark Mode** | Fast (per-CWE manifests, 0% noise) |
 
@@ -36,13 +36,19 @@ Run `sqc-0.4.84-38451a2c`, completed 2026-07-07 (~32 min wall time, fast mode).
 **Zero-detection CWEs** (rules mapped but 0 violations, 7): CWE-23, 259, 328,
 667, 672, 676, 762.
 
-### Recent Progress (fast-mode benchmarks, v0.3.20 → v0.4.84)
+> No Juliet run has been taken since v0.4.116 — the four MEM31-C
+> ownership-model iterations (v0.4.117–v0.4.120, task 2) were verified
+> byte-identical on Juliet via targeted unit repros rather than a full
+> fast-mode sweep, since they targeted real-world-only FP patterns.
+
+### Recent Progress (fast-mode benchmarks, v0.3.20 → v0.4.116)
 
 | Version | CWEs Scanned | TP | FP | TP Rate |
 |---------|-------------:|---:|---:|--------:|
 | v0.3.20 | 68 | 7,918 | 9,371 | 45.8% |
 | v0.3.37 | 68 | 8,508 | 9,067 | 48.4% |
-| **v0.4.84** | **74** | **21,759** | **4,250** | **83.7%** |
+| v0.4.84 | 74 | 21,759 | 4,250 | 83.7% |
+| **v0.4.116** | **74** | **21,770** | **4,220** | **83.8%** |
 
 The rise from ~48% (v0.3.37) to 83.7% (v0.4.84) spans dozens of releases of
 targeted rule and false-positive work (const-eval value-range analysis,

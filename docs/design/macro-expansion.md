@@ -1,6 +1,18 @@
 # Scoping: Macro Expansion in sqc
 
-**Status:** Scoping / design (2026-06-16). No implementation yet.
+**Status:** IMPLEMENTED (as of 2026-07-22; originally scoped 2026-06-16).
+The engine described here (`src/analyze/macro_expand.rs`,
+`FunctionMacro`/`collect_function_macros`/`macro_nulls_param_indices`/
+`macro_output_param_indices`) is live and wired into MEM30-C, MEM31-C,
+EXP33-C, and DCL31-C. **The line above is the one fact to check before
+assuming this is unimplemented** — Phases 0-3 below are historical
+narrative from when it was being built; see §10 and the "Already on the
+engine" row of the disposition table for current status. Do not
+reimplement macro-invocation detection with a name heuristic (e.g.
+matching `*_free`/`*_FREE` by string) without first checking whether
+`context.function_macros` + the helpers above already solve it
+name-independently — this has been done by mistake at least once (task 2,
+MEM31-C, v0.4.117-119, before the engine was wired in at v0.4.120).
 **Driver:** Recurring, codebase-independent false positives rooted in sqc's
 inability to see through C macros. Tracked from task 180 (EXP33/EXP34 macro
 opacity), but the problem is broader than two rules.
@@ -371,7 +383,7 @@ shared infra, legitimately definition-side, or incidental AST traversal.
 
 | Category | Rules | Disposition | Why |
 |---|---|---|---|
-| **Already on the engine** (`macro_expand` / `macro_semantics`) | EXP33, EXP34, MEM30, DCL31 | done | Migrated in Phase 1 / 2c. |
+| **Already on the engine** (`macro_expand` / `macro_semantics`) | EXP33, EXP34, MEM30, DCL31, MEM31 | done | Migrated in Phase 1 / 2c. MEM31-C added 2026-07-22 (task 2, v0.4.120): `frees_param_fields` in `function_summary.rs` now checks `macro_nulls_param_indices` before falling back to the `is_deallocation_call_name` name heuristic, so a macro-wrapped free (e.g. `mosquitto_FREE`, `Curl_safefree`) is credited by its actual free+null body shape, not by name pattern-matching. |
 | **Engine duplicate — MIGRATE** | **ARR30** | **migrate** | Local `extract_function_macros` + dead-code `FunctionMacro` struct = a single-file reimplementation of `context.function_macros` (`macro_expand::FunctionMacro`). Its `check_macro_invocation` is *live* (~60 manual-review flags across the curl audit), so this is also a precision lever — cross-file context exposes header macros → must gate the flag count. |
 | **`const_eval` consumers — DRY candidate** | INT30, INT32, INT33, INT34, FIO30, FLP03, STR02, ERR33, ENV03, ENV33, DCL07 | optional DRY | Already consume the shared `const_eval::collect_macro_constants` / `collect_macro_aliases` + `context.macro_constants` / `macro_aliases`. *Not opaque-macro debt.* They repeat a "collect-per-file + merge cross-file context, per-file wins" idiom (~10×) that could fold into one `const_eval` helper for consistency — mechanical, low-risk, modest payoff. |
 | **Definition-side hygiene / naming / declaration rules — KEEP** | PRE00–13, PRE30–32, MSC38, MSC41, API10, API03, DCL37, EXP44, DCL19, DCL15 | keep | Audit macro *definitions* as written (reserved-name `#undef`/`#define`, `_Generic`, `static`-in-macro-prefix, multiple-eval hygiene). Per §3.8 these need the raw view; expansion would defeat their purpose. |

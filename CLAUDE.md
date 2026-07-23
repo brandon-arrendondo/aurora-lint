@@ -104,8 +104,9 @@ Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
 |------|----------|
 | `README.md` | Tool overview, installation, usage, CLI reference |
 | `JULIET_RESULTS.md` | Juliet benchmark data by sqc version |
-| `REALWORLD_RESULTS.md` | Real-world codebase results (5 projects × 3 tools) |
+| `REALWORLD_RESULTS.md` | Real-world codebase results (7 projects × 3 tools) |
 | `docs/index.rst` | Developer guide: advanced usage, CI/CD, benchmarks, testing, contributing |
+| `docs/design/*.md` | Scoping docs for in-progress/completed capabilities (e.g. macro-expansion, project-relevance-gating). Not in the Sphinx toctree — read directly. **Their "Status" header goes stale once the work ships**; check `todo-sqlite-cli show <task>` for the real status before trusting the header, and check whether the feature needs a mention in `docs/cli-usage.rst`/`docs/architecture.rst` once it ships. |
 
 ---
 
@@ -140,6 +141,19 @@ For each new rule:
 1. Create `src/rules/cert_c/CATEGORY/RULE_ID/rule_id_c.rs`
 2. Register in `mod.rs` and enable in the TOML
 3. Build and test
+
+**Before writing a fix for a macro-related false positive/negative**, check
+whether `src/analyze/macro_expand.rs` already solves it — do NOT reach for a
+name-heuristic workaround first. sqc has a real, name-independent
+macro-expansion engine (`collect_function_macros`, `macro_nulls_param_indices`
+for "safe free" macros that free+null their arg, `macro_output_param_indices`
+for output-param macros), already wired into MEM30-C, MEM31-C, EXP33-C, and
+DCL31-C. See `docs/design/macro-expansion.md` for the full design rationale
+and a per-rule disposition table (which rules are already on the engine,
+which are legitimately definition-side and should stay off it). Its
+"Status" line at the top is stale (says "no implementation yet" from the
+original scoping date) — trust the phase stock-takes further down the file,
+not that header.
 
 ## Git Commit Rules (CRITICAL)
 

@@ -1,6 +1,6 @@
 # SqC — Real-World Benchmark Results
 
-**Last Updated**: 2026-07-08
+**Last Updated**: 2026-07-22
 
 Automated benchmark results across 7 real-world C codebases using sqc, cppcheck, and clang-tidy.
 
@@ -11,7 +11,47 @@ Automated benchmark results across 7 real-world C codebases using sqc, cppcheck,
 
 ---
 
-## Latest Results (sqc v0.4.83)
+## Latest Results (sqc v0.4.120)
+
+Full sweep on per-project pinned commits (cppcheck 2.10, clang-tidy 21.1.6,
+sqc v0.4.120), run #118, scanned 2026-07-22. Same 7-project set (`libcrc`,
+`lua`, `raylib`, `mosquitto`, `curl`, `sqlite`, `hostap`) as the v0.4.83
+snapshot below.
+
+### Violation Counts — All Three Tools
+
+| Project | C Files | LOC | sqc | cppcheck | clang-tidy |
+|---------|--------:|----:|----:|--------:|-----------:|
+| **libcrc** | 9 | 1,034 | 391 | 40 | 2 |
+| **lua** | 33 | 31,637 | 3,068 | 49 | 107 |
+| **raylib** | 17 | 56,107 | 5,213 | 1,060 | 469 |
+| **mosquitto** | 120 | 39,368 | 11,225 | 277 | 44 |
+| **curl** | 222 | 186,220 | 16,085 | 556 | 116 |
+| **sqlite** | 125 | 218,733 | 31,319 | 503 | 137 |
+| **hostap** | 430 | 589,724 | 37,432 | 1,761 | 1,710 |
+| **Total** | **956** | **1,122,823** | **104,733** | **4,246** | **2,585** |
+
+Aggregate measured precision (adjudicated oracle, `bench realworld-score 118`):
+**6.2%** (TP 2,025 / 32,868 labeled of 92,915 findings), **recall 91.7%**
+(2,025 / 2,209 known TPs flagged); label coverage 32,908 / 92,915 findings (40
+matched labels are "uncertain" and excluded from precision).
+
+This figure is the empirical precision floor across a diverse, adjudicated
+multi-project sample, not a single-codebase spot check — cite it scoped (project
+count, oracle methodology, recall alongside precision), not as a raw headline
+number.
+
+> The four MEM31-C ownership-model iterations targeting this run (task 2,
+> v0.4.117–v0.4.120) moved the needle only slightly (-8 MEM31-C violations,
+> all in `hostap`; `mosquitto` — the primary target — unchanged). The
+> dominant real-world MEM31-C false-positive pattern turned out to be
+> parameter-owned struct fields, a distinct root cause tracked separately
+> (todo #306), not the same-function ownership-transfer pattern these
+> iterations fixed.
+
+---
+
+## Previous Results (sqc v0.4.83)
 
 Full sweep on commit `2220dc55` (cppcheck 2.10, clang-tidy 21.1.6, sqc v0.4.83),
 run #91, scanned 2026-07-06. Adds `lua` and `raylib` as a 5th and 6th
@@ -35,11 +75,6 @@ Aggregate measured precision (adjudicated oracle, `bench realworld-score 91`):
 **6.2%** (TP 2,073 / 33,359 labeled of 93,411 findings), **recall 93.8%**
 (2,073 / 2,209 known TPs flagged); label coverage 33,399 / 93,411 findings (40
 matched labels are "uncertain" and excluded from precision).
-
-This figure is the empirical precision floor across a diverse, adjudicated
-multi-project sample, not a single-codebase spot check — cite it scoped (project
-count, oracle methodology, recall alongside precision), not as a raw headline
-number.
 
 ---
 

@@ -1,6 +1,13 @@
 # Scoping: Project-Relevance Gating (task 216)
 
-**Status:** Scoping / design (2026-07-08). No implementation yet.
+**Status:** v1 IMPLEMENTED (2026-07-08, v0.4.86). `src/analyze/relevance.rs`
++ the `--detect-relevance`/`--write-manifest` CLI flags ship exactly the v1
+scope below: CON*/WIN* auto-gating only. **Check `todo-sqlite-cli show 216`
+for the latest status, not this header** — v1/v2 split and the design
+narrative below predate implementation and are not kept in sync with it.
+C11/Annex-K auto-gating (detection-only today, not auto-disabled) is the
+open v2 scope. User-facing docs: `docs/cli-usage.rst` ("Project-Relevance
+Detection").
 **Driver:** Task 151 established that per-project rule applicability is
 currently curated *by hand* in `conf/realworld/<project>-rules.toml` — each
 file hand-disables categorically-inapplicable rule classes and documents why
