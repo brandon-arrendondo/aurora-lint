@@ -119,10 +119,16 @@ impl Mem03C {
                     }
                 }
 
-                // Check for free() calls without prior clearing
+                // Check for free() calls without prior clearing. Only
+                // plausibly-sensitive buffers are in scope (task 317): this
+                // rule previously fired on every free() regardless of what
+                // the pointer held, which made it explode once macro-wrapped
+                // frees were recognized (any project's dominant free-wrapper
+                // macro, e.g. hostap's os_free at 3800+ call sites, would
+                // have multiplied an already-unfocused rule).
                 if kind == "expression_statement" {
                     if let Some(ptr) = self.get_free_ptr(&stmt, source) {
-                        if !cleared.borrow().contains(&ptr) {
+                        if Self::is_sensitive_name(&ptr) && !cleared.borrow().contains(&ptr) {
                             let pos = stmt.start_position();
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
@@ -144,13 +150,14 @@ impl Mem03C {
                     }
                 }
 
-                // Check for realloc() calls (always a potential issue)
+                // Check for realloc() calls on plausibly-sensitive buffers
+                // (same sensitivity gate as the free() check above).
                 if kind == "expression_statement"
                     || kind == "declaration"
                     || kind == "init_declarator"
                 {
                     if let Some(ptr) = self.get_realloc_ptr(&stmt, source) {
-                        if !cleared.borrow().contains(&ptr) {
+                        if Self::is_sensitive_name(&ptr) && !cleared.borrow().contains(&ptr) {
                             let pos = stmt.start_position();
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
@@ -302,6 +309,16 @@ impl Mem03C {
 
     const SENSITIVE_NAMES: &'static [&'static str] =
         &["password", "passwd", "secret", "credential", "passphrase"];
+
+    /// Does `name` (a pointer expression, e.g. `p`, `ctx->key`) look like it
+    /// might hold sensitive data? Matches on the same name list as
+    /// [`Self::check_sensitive_data_cleanup`] so the free()/realloc() checks
+    /// in `analyze_block` and the scope-exit check agree on what counts as
+    /// "sensitive" (task 317).
+    fn is_sensitive_name(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        Self::SENSITIVE_NAMES.iter().any(|n| lower.contains(n))
+    }
 
     /// Check if sensitive-named buffers are cleared before function exit
     fn check_sensitive_data_cleanup(
