@@ -27,6 +27,7 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::function_summary::extract_function_name;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -65,6 +66,16 @@ impl Mem00C {
     /// Find functions that free memory passed as parameters
     fn find_parameter_frees(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         for func_def in query::find_descendants_of_kind(*node, "function_definition") {
+            // A function whose own name signals it's a destructor is
+            // SUPPOSED to free what's passed in -- that's the entire point
+            // of a "free_X"/"X_destroy"/"module_cleanup_thing" helper, not
+            // a same-abstraction-level violation (task 318).
+            if let Some(name) = extract_function_name(&func_def, source) {
+                if Self::name_has_destructor_token(&name) {
+                    continue;
+                }
+            }
+
             // Get parameter names
             let params = self.get_pointer_params(&func_def, source);
 
@@ -182,5 +193,23 @@ impl Mem00C {
             }
         }
         None
+    }
+
+    /// Does `name` contain a destructor/cleanup action word as a whole
+    /// underscore-delimited token (e.g. `hostapd_config_free_radius`,
+    /// `hostapd_cleanup_iface`, `release_resources`)? Unlike
+    /// [`is_deallocation_call_name`]'s prefix/suffix-only check, this also
+    /// catches the common `<module>_<action>_<subject>` naming convention
+    /// where the action word sits in the middle of a compound identifier
+    /// (task 318 -- hostap's `hostapd_config_free_radius` doesn't start
+    /// with `free_` or end with `_free`, but is unambiguously a
+    /// dedicated-cleanup helper).
+    fn name_has_destructor_token(name: &str) -> bool {
+        const DESTRUCTOR_TOKENS: &[&str] = &[
+            "free", "destroy", "delete", "del", "cleanup", "release", "close", "deinit",
+            "teardown", "uninit", "fini",
+        ];
+        name.split('_')
+            .any(|tok| DESTRUCTOR_TOKENS.contains(&tok.to_lowercase().as_str()))
     }
 }
