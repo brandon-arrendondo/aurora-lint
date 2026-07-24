@@ -216,6 +216,9 @@ impl CfgBuilder {
             "compound_statement" => {
                 self.build_from_compound_statement(node, source);
             }
+            "preproc_ifdef" | "preproc_ifndef" | "preproc_if" => {
+                self.process_preproc_conditional(node, source);
+            }
             "labeled_statement" => {
                 // Start a new block at the label — goto edges target this block
                 let label_block = self.new_block();
@@ -428,6 +431,78 @@ impl CfgBuilder {
         self.add_edge(cond_block, exit_block, CfgEdge::FalseBranch);
 
         self.current_block = exit_block;
+    }
+
+    /// Model a `#ifdef`/`#ifndef`/`#if`/`#elif` conditional block.
+    ///
+    /// sqc has no preprocessor (task 319 / macro-expansion-strategy): it cannot know
+    /// which branch of a conditional-compilation directive would actually be
+    /// compiled, so both the consequence and any `#else`/`#elif` alternative must be
+    /// modeled as reachable, forking/joining CFG paths — exactly like an `if` with a
+    /// non-constant condition. Previously this node kind fell through to the
+    /// catch-all "opaque statement" arm, which swallowed any `return`/`free`/etc.
+    /// nested inside the directive: the CFG never saw them as separate statements,
+    /// so control flow appeared to fall straight through into the code that
+    /// followed the `#endif` (e.g. a `return;` guarding an early `free()` was
+    /// invisible, making MEM01-C believe the pointer was freed again by an
+    /// unconditional `free()` later in the same function).
+    fn process_preproc_conditional<'a>(&mut self, node: &Node<'a>, source: &str) {
+        let entry_block = self.current_block;
+        let condition = node.child_by_field_name("condition");
+        let condition_start = condition.map(|c| c.start_byte());
+        let is_name_bearing = matches!(node.kind(), "preproc_ifdef" | "preproc_ifndef");
+
+        let cons_block = self.new_block();
+        self.add_edge(entry_block, cons_block, CfgEdge::Fallthrough);
+        self.current_block = cons_block;
+
+        let mut alt: Option<Node<'a>> = None;
+        let mut seen_name = false;
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if condition_start == Some(child.start_byte()) {
+                    continue;
+                }
+                match child.kind() {
+                    "#ifdef" | "#ifndef" | "#if" | "#elif" | "#endif" | "comment" => continue,
+                    "identifier" if is_name_bearing && !seen_name => {
+                        // The macro name being tested, not a statement.
+                        seen_name = true;
+                    }
+                    "preproc_else" | "preproc_elif" => alt = Some(child),
+                    _ => self.process_statement(&child, source),
+                }
+            }
+        }
+        let cons_end = self.current_block;
+
+        let alt_end = if let Some(alt_node) = alt {
+            let alt_block = self.new_block();
+            self.add_edge(entry_block, alt_block, CfgEdge::Fallthrough);
+            self.current_block = alt_block;
+            match alt_node.kind() {
+                "preproc_elif" => self.process_preproc_conditional(&alt_node, source),
+                _ => {
+                    // preproc_else: no condition, just directly-nested statements.
+                    for i in 0..alt_node.child_count() {
+                        if let Some(child) = alt_node.child(i) {
+                            match child.kind() {
+                                "#else" | "comment" => continue,
+                                _ => self.process_statement(&child, source),
+                            }
+                        }
+                    }
+                }
+            }
+            self.current_block
+        } else {
+            entry_block
+        };
+
+        let join_block = self.new_block();
+        self.add_edge(cons_end, join_block, CfgEdge::Fallthrough);
+        self.add_edge(alt_end, join_block, CfgEdge::Fallthrough);
+        self.current_block = join_block;
     }
 
     fn build(mut self) -> FunctionCfg {
@@ -739,6 +814,71 @@ mod tests {
         assert!(
             cfg.block_count() >= 4,
             "goto+label should create at least 4 blocks"
+        );
+    }
+
+    #[test]
+    fn test_preproc_ifdef_return_is_a_real_exit() {
+        // task 319: a `return;` nested inside a `#ifdef`-gated block must still
+        // terminate the CFG path — it must not silently fall through into code
+        // that follows the `#endif`.
+        let code = r#"
+        void foo(int bad, char *reply) {
+        #ifdef CONFIG_CTRL_IFACE_UDP
+            if (bad) {
+                free(reply);
+                return;
+            }
+        #endif
+            free(reply);
+        }
+        "#;
+        let cfg = parse_and_build_cfg(code).unwrap();
+
+        // The block containing the inner free() must have a Return edge out of it
+        // (not a Fallthrough straight into the block with the outer free()).
+        let inner_free_byte = code.find("free(reply);\n                return").unwrap();
+        let inner_block = cfg
+            .blocks
+            .iter()
+            .find(|b| {
+                b.statements
+                    .iter()
+                    .any(|&(s, e)| inner_free_byte >= s && inner_free_byte < e)
+            })
+            .expect("inner free() should be modeled as its own statement");
+
+        let has_return_edge = cfg
+            .successors(inner_block.id)
+            .iter()
+            .any(|(_, e)| **e == CfgEdge::Return);
+        assert!(
+            has_return_edge,
+            "block containing the guarded free() must exit via Return, not fall through: {:?}",
+            cfg.edges
+        );
+
+        // The block should NOT have a Fallthrough edge directly into whatever
+        // block holds the outer, unconditional free() (the old bug's symptom).
+        let outer_free_byte = code.rfind("free(reply);").unwrap();
+        let outer_block_id = cfg
+            .blocks
+            .iter()
+            .find(|b| {
+                b.statements
+                    .iter()
+                    .any(|&(s, e)| outer_free_byte >= s && outer_free_byte < e)
+            })
+            .map(|b| b.id)
+            .expect("outer free() should be modeled as its own statement");
+        let falls_through_to_outer = cfg
+            .successors(inner_block.id)
+            .iter()
+            .any(|(id, e)| *id == outer_block_id && **e == CfgEdge::Fallthrough);
+        assert!(
+            !falls_through_to_outer,
+            "guarded free()+return must not fall through into the outer free(): {:?}",
+            cfg.edges
         );
     }
 
