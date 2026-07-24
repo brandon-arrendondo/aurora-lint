@@ -334,6 +334,16 @@ pub struct InitAnalysisConfig {
     /// `save`), so it becomes Initialized — clearing "used uninitialized" FPs on
     /// macro output arguments. Keyed by macro name; only invoked macros present.
     pub macro_output_params: HashMap<String, Vec<usize>>,
+    /// Output-parameter indices for cross-file functions, computed from the
+    /// prescan's `FunctionSummary::modifies_params` (task 195 follow-on to
+    /// task 319: un-blinding `#ifdef`-wrapped code to the CFG exposed how many
+    /// real, in-repo functions like `erp_parse_tlvs(pos, end, &tlvs, ...)`
+    /// write through a non-stdlib, non-macro pointer param that
+    /// `get_output_arg_indices`'s hardcoded stdlib table has no entry for).
+    /// When `&var` is passed at one of these positions, var is Initialized —
+    /// same effect as `macro_output_params`, but sourced from an actual
+    /// function body rather than a macro expansion.
+    pub cross_file_output_params: HashMap<String, HashSet<usize>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,6 +1070,16 @@ fn process_call_expression(
         return;
     }
 
+    // Cross-file summary says this function writes through specific params
+    // (task 195/319 follow-on). Apply the marking, but don't treat it as a
+    // complete answer: `modifies_params` is a flow-insensitive text scan that
+    // can under-count (e.g. writes via a nested helper call), so still fall
+    // through to `process_unknown_function_call`'s broader default below —
+    // marking an already-Initialized var again is a harmless no-op, and
+    // skipping that fallback here would silently drop the coverage it gives
+    // to other params on the same call that the summary missed.
+    try_process_cross_file_output_params(&func_name, node, source, state, config);
+
     // Non-initializing functions: skip (they read, not write)
     if is_non_initializing_function(&func_name) {
         return;
@@ -1176,6 +1196,45 @@ fn try_process_macro_output_params(
         }
     }
     true
+}
+
+/// Cross-file (in-repo) functions known from prescan `FunctionSummary::modifies_params`
+/// to write through a pointer param: mark `&var`/bare-pointer output args as initialized.
+/// Mirrors `try_process_known_initializing_function` but sourced from actual function
+/// bodies rather than a curated stdlib name table.
+fn try_process_cross_file_output_params(
+    func_name: &str,
+    node: &Node,
+    source: &str,
+    state: &mut InitStateMap,
+    config: &InitAnalysisConfig,
+) -> bool {
+    let Some(output_indices) = config.cross_file_output_params.get(func_name) else {
+        return false;
+    };
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut arg_idx = 0;
+    let mut matched = false;
+    for i in 0..args.child_count() {
+        let Some(arg) = args.child(i) else { continue };
+        if matches!(arg.kind(), "," | "(" | ")") {
+            continue;
+        }
+        if output_indices.contains(&arg_idx) {
+            let var_name = extract_var_from_arg(&arg, source);
+            if !var_name.is_empty() {
+                if let Some(info) = state.get_mut(&var_name) {
+                    info.state = InitState::Initialized;
+                    info.allocation_count = None;
+                    matched = true;
+                }
+            }
+        }
+        arg_idx += 1;
+    }
+    matched
 }
 
 /// Known initializing functions (exact or suffix match): mark output args as initialized.
@@ -2074,6 +2133,90 @@ mod tests {
         );
         assert!(info.is_some());
         assert!(!info.unwrap().state.is_unsafe());
+    }
+
+    #[test]
+    fn test_cross_file_output_param_marks_initialized() {
+        // task 195/319 follow-on: a cross-file (non-macro, non-stdlib) function
+        // known from FunctionSummary::modifies_params to write through param
+        // index 2 (mirrors hostap's `erp_parse_tlvs(pos, end, &tlvs, flag)`)
+        // must mark the address-of'd variable as Initialized.
+        let code = r#"
+        void foo(void) {
+            struct tlvs parse;
+            if (erp_parse_tlvs(pos, end, &parse, 1) < 0)
+                return;
+            use(parse.keyname);
+        }
+        "#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let func = tree.root_node().child(0).unwrap();
+        let body = func.child_by_field_name("body").unwrap();
+        let cfg = build_function_cfg(&func, code).unwrap();
+
+        let mut cross_file_output_params = HashMap::new();
+        cross_file_output_params.insert("erp_parse_tlvs".to_string(), HashSet::from([2usize]));
+        let config = InitAnalysisConfig {
+            cross_file_output_params,
+            ..Default::default()
+        };
+
+        let result =
+            analyze_init_states_with_statics(&cfg, &func, code, &InitStateMap::new(), &config);
+        let use_pos = code.find("parse.keyname").unwrap();
+        let info =
+            get_var_info_at_with_config(&result, &cfg, &body, code, "parse", use_pos, &config);
+        assert!(info.is_some());
+        assert!(
+            !info.unwrap().state.is_unsafe(),
+            "parse should be Initialized via the cross-file output-param call, even though the call sits inside an if-condition and 'parse' is a plain top-level declaration"
+        );
+    }
+
+    #[test]
+    fn test_cross_file_output_params_additive_not_short_circuit() {
+        // A call recognized by cross_file_output_params for ONE param must not
+        // suppress the pre-existing permissive fallback (process_unknown_function_call)
+        // for OTHER params of the same call that the flow-insensitive summary
+        // missed -- regression coverage for the short-circuit bug caught while
+        // building this fix (short-circuiting dropped coverage and increased
+        // hostap EXP33-C findings 1946->1984 before being made additive).
+        let code = r#"
+        void foo(void) {
+            int a, b;
+            writer(&a, &b);
+            use(a);
+            use(b);
+        }
+        "#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let func = tree.root_node().child(0).unwrap();
+        let body = func.child_by_field_name("body").unwrap();
+        let cfg = build_function_cfg(&func, code).unwrap();
+
+        // Summary only knows about param 0 ("a"); param 1 ("b") is undercounted
+        // by the flow-insensitive text scan, same as a real-world miss.
+        let mut cross_file_output_params = HashMap::new();
+        cross_file_output_params.insert("writer".to_string(), HashSet::from([0usize]));
+        let config = InitAnalysisConfig {
+            cross_file_output_params,
+            ..Default::default()
+        };
+
+        let result =
+            analyze_init_states_with_statics(&cfg, &func, code, &InitStateMap::new(), &config);
+        let b_use = code.find("use(b)").unwrap();
+        let info = get_var_info_at_with_config(&result, &cfg, &body, code, "b", b_use, &config);
+        assert!(info.is_some());
+        assert!(
+            !info.unwrap().state.is_unsafe(),
+            "b must still be marked Initialized via process_unknown_function_call's permissive \
+             &var fallback, even though the summary only covers param 0"
+        );
     }
 
     #[test]

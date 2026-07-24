@@ -69,6 +69,21 @@ impl Exp33C {
         }
         result
     }
+
+    /// Build the cross-file output-param map from prescan summaries: functions
+    /// that write through a pointer param, per `FunctionSummary::modifies_params`.
+    /// Complements `build_read_only_deref_fns` — where that returns the read-only
+    /// complement, this returns the write set directly (task 195/319 follow-on).
+    fn build_cross_file_output_params(&self) -> HashMap<String, HashSet<usize>> {
+        let summaries = self.cross_file_summaries.borrow();
+        let mut result = HashMap::new();
+        for (name, summary) in summaries.iter() {
+            if !summary.modifies_params.is_empty() {
+                result.insert(name.clone(), summary.modifies_params.clone());
+            }
+        }
+        result
+    }
 }
 
 impl CertRule for Exp33C {
@@ -187,6 +202,7 @@ impl CertRule for Exp33C {
                     let cond_fns = self.conditionally_init_fns.borrow();
                     let realloc_fns = self.realloc_wrapper_fns.borrow();
                     let read_only_fns = self.build_read_only_deref_fns();
+                    let cross_file_output_params = self.build_cross_file_output_params();
                     let file_constants = self.file_scope_constants.borrow();
                     let macro_out = self.macro_output_params.borrow();
                     let config = init_state::InitAnalysisConfig {
@@ -195,6 +211,7 @@ impl CertRule for Exp33C {
                         read_only_deref_fns: read_only_fns.clone(),
                         file_scope_constants: file_constants.clone(),
                         macro_output_params: macro_out.clone(),
+                        cross_file_output_params,
                     };
                     let analysis = init_state::analyze_init_states_with_statics(
                         cfg, node, source, &statics, &config,
