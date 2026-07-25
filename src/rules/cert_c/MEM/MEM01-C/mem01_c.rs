@@ -305,7 +305,9 @@ fn classify_stmt_for_ptr(node: &Node, source: &str, ptr_name: &str) -> PtrAction
         // expression_statement, so it's invisible to classify_expr_for_ptr's
         // top-level match. Recognize it directly here (task 321).
         "parenthesized_expression" => {
-            if subtree_assigns_identifier(node, source, ptr_name) {
+            if subtree_assigns_identifier(node, source, ptr_name)
+                || subtree_contains_address_of_call(node, source, ptr_name)
+            {
                 return PtrAction::Reassigned;
             }
             if subtree_contains_identifier(node, source, ptr_name) {
@@ -315,8 +317,14 @@ fn classify_stmt_for_ptr(node: &Node, source: &str, ptr_name: &str) -> PtrAction
             }
         }
         _ => {
-            // For any other statement kind, check if ptr_name appears
-            if subtree_contains_identifier(node, source, ptr_name) {
+            // For any other statement kind, check if ptr_name appears. A
+            // `&ptr_name` passed to a call nested anywhere in the statement
+            // (e.g. inside an if-condition: `if(read_pair(..., &ptr) ==
+            // NULL)`) is the output-param idiom, not a use of the old value
+            // (see the "call_expression" arm of classify_expr_for_ptr).
+            if subtree_contains_address_of_call(node, source, ptr_name) {
+                PtrAction::Reassigned
+            } else if subtree_contains_identifier(node, source, ptr_name) {
                 PtrAction::Used
             } else {
                 PtrAction::Irrelevant
@@ -352,8 +360,18 @@ fn classify_expr_for_ptr(expr: &Node, source: &str, ptr_name: &str) -> PtrAction
                     }
                 }
             }
-            // Check if ptr is passed as argument to any function
+            // `&ptr_name` passed to a call is the output-param idiom (e.g.
+            // `read_string_pair(props, id, &name, &value, false)` writing a
+            // fresh pointer through the argument) -- treat it like a
+            // reassignment rather than a use. Without this, CFG paths that
+            // reach a *different*, mutually-exclusive branch reusing the same
+            // variable name (e.g. sibling switch-case arms revisited via a
+            // loop back-edge) misclassify the output-param call as a plain
+            // "use" of the still-freed pointer.
             if let Some(args) = expr.child_by_field_name("arguments") {
+                if arg_list_contains_address_of_identifier(&args, source, ptr_name) {
+                    return PtrAction::Reassigned;
+                }
                 if arg_list_contains_identifier(&args, source, ptr_name) {
                     return PtrAction::Used;
                 }
@@ -406,12 +424,53 @@ fn subtree_assigns_identifier(node: &Node, source: &str, name: &str) -> bool {
     .is_some()
 }
 
+/// True if a call expression anywhere in the subtree passes `&ptr_name` as a
+/// top-level argument (the output-param idiom: `read_pair(..., &ptr_name)`).
+/// Catches cases where such a call is nested inside a comparison, e.g. an
+/// if/while condition (`if(read_pair(..., &ptr) == NULL)`).
+fn subtree_contains_address_of_call(node: &Node, source: &str, name: &str) -> bool {
+    query::find_first_descendant(*node, |n| {
+        if n.kind() != "call_expression" {
+            return false;
+        }
+        n.child_by_field_name("arguments")
+            .map(|args| arg_list_contains_address_of_identifier(&args, source, name))
+            .unwrap_or(false)
+    })
+    .is_some()
+}
+
 /// Check if ptr_name appears as an argument in an argument_list.
 fn arg_list_contains_identifier(args: &Node, source: &str, name: &str) -> bool {
     for i in 0..args.child_count() {
         if let Some(arg) = args.child(i) {
             if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
                 if subtree_contains_identifier(&arg, source, name) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if `&ptr_name` (address-of, no further dereference) appears as a
+/// top-level argument in an argument_list -- the output-param call idiom.
+fn arg_list_contains_address_of_identifier(args: &Node, source: &str, name: &str) -> bool {
+    for i in 0..args.child_count() {
+        if let Some(arg) = args.child(i) {
+            if arg.kind() != "pointer_expression" {
+                continue;
+            }
+            let is_address_of = arg
+                .child_by_field_name("operator")
+                .map(|op| get_node_text(&op, source) == "&")
+                .unwrap_or(false);
+            if !is_address_of {
+                continue;
+            }
+            if let Some(operand) = arg.child_by_field_name("argument") {
+                if operand.kind() == "identifier" && get_node_text(&operand, source) == name {
                     return true;
                 }
             }
