@@ -297,6 +297,23 @@ fn classify_stmt_for_ptr(node: &Node, source: &str, ptr_name: &str) -> PtrAction
             }
             PtrAction::Irrelevant
         }
+        // A while/for loop condition is stored as its header block's single
+        // statement, wrapped in a parenthesized_expression (see cfg.rs
+        // process_while/process_for). `while ((ptr = next()) != NULL)`
+        // reassigns ptr *within* the condition before any use — the assignment
+        // is nested inside a binary_expression, not a top-level
+        // expression_statement, so it's invisible to classify_expr_for_ptr's
+        // top-level match. Recognize it directly here (task 321).
+        "parenthesized_expression" => {
+            if subtree_assigns_identifier(node, source, ptr_name) {
+                return PtrAction::Reassigned;
+            }
+            if subtree_contains_identifier(node, source, ptr_name) {
+                PtrAction::Used
+            } else {
+                PtrAction::Irrelevant
+            }
+        }
         _ => {
             // For any other statement kind, check if ptr_name appears
             if subtree_contains_identifier(node, source, ptr_name) {
@@ -369,6 +386,22 @@ fn classify_expr_for_ptr(expr: &Node, source: &str, ptr_name: &str) -> PtrAction
 fn subtree_contains_identifier(node: &Node, source: &str, name: &str) -> bool {
     query::find_first_descendant(*node, |n| {
         n.kind() == "identifier" && get_node_text(&n, source) == name
+    })
+    .is_some()
+}
+
+/// True if an `assignment_expression` with `ptr_name` as its LHS appears
+/// anywhere in the subtree (e.g. nested inside a condition's
+/// parenthesized/binary wrapper: `(ptr = next()) != NULL`). See the
+/// `parenthesized_expression` case of `classify_stmt_for_ptr` (task 321).
+fn subtree_assigns_identifier(node: &Node, source: &str, name: &str) -> bool {
+    query::find_first_descendant(*node, |n| {
+        if n.kind() != "assignment_expression" {
+            return false;
+        }
+        n.child_by_field_name("left")
+            .map(|left| get_node_text(&left, source) == name)
+            .unwrap_or(false)
     })
     .is_some()
 }
