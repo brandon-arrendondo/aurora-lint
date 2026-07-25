@@ -7,6 +7,7 @@
 use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::dataflow::find_node_at_range;
 use crate::analyze::function_summary::FunctionSummary;
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tree_sitter::Node;
 
@@ -235,6 +236,17 @@ fn process_statement_for_null_state(
     declared_pointers: &mut HashSet<String>,
     summaries: &HashMap<String, FunctionSummary>,
 ) {
+    // Cross-file output params (task 195/319 follow-on to the EXP33-C fix):
+    // any call anywhere in this statement -- bare statement, assignment RHS,
+    // or nested inside an if/while condition -- that FunctionSummary::modifies_params
+    // says writes through a pointer param marks that param's address-of/bare-array
+    // argument NotNull. Applied unconditionally up front (additive, not a dispatch
+    // branch) so it doesn't depend on the statement's top-level shape the way
+    // process_expression_null's assignment-only dispatch does.
+    for call in query::find_descendants_of_kind(*node, "call_expression") {
+        apply_cross_file_output_params_null(&call, source, state, summaries);
+    }
+
     match node.kind() {
         "declaration" => {
             process_declaration_null(node, source, state, declared_pointers, summaries);
@@ -479,6 +491,69 @@ fn propagate_cast_pointee_state(var_name: &str, value: &Node, source: &str, stat
         let dst_key = format!("*{}", var_name);
         state.insert(dst_key, s);
     }
+}
+
+/// Mark `&var`/bare-array output args of `call` as NotNull, using cross-file
+/// `FunctionSummary::modifies_params` (task 195/319 follow-on to the EXP33-C
+/// fix -- see `Exp33C::build_cross_file_output_params` / `init_state.rs`'s
+/// `try_process_cross_file_output_params` for the reference implementation
+/// and its "must be additive, not a short-circuit" lesson, which does not
+/// apply here since this helper only ever *adds* a NotNull marking and never
+/// replaces or skips any other transfer logic).
+fn apply_cross_file_output_params_null(
+    call: &Node,
+    source: &str,
+    state: &mut StateMap,
+    summaries: &HashMap<String, FunctionSummary>,
+) {
+    let Some(func) = call.child_by_field_name("function") else {
+        return;
+    };
+    if func.kind() != "identifier" {
+        return;
+    }
+    let func_name = get_text(&func, source);
+    let Some(summary) = summaries.get(&func_name) else {
+        return;
+    };
+    if summary.modifies_params.is_empty() {
+        return;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut arg_idx: usize = 0;
+    for i in 0..args.child_count() {
+        let Some(arg) = args.child(i) else { continue };
+        if matches!(arg.kind(), "," | "(" | ")") {
+            continue;
+        }
+        if summary.modifies_params.contains(&arg_idx) {
+            let var_name = extract_output_arg_var(&arg, source);
+            if !var_name.is_empty() && state.contains_key(&var_name) {
+                state.insert(var_name, NullState::NotNull);
+            }
+        }
+        arg_idx += 1;
+    }
+}
+
+/// Extract the target variable name from an output-position call argument:
+/// `&var` (address-of) or a bare identifier (array-decay / already-a-pointer).
+fn extract_output_arg_var(arg: &Node, source: &str) -> String {
+    if arg.kind() == "pointer_expression" {
+        let text = get_text(arg, source);
+        if text.starts_with('&') {
+            if let Some(inner) = arg.child_by_field_name("argument") {
+                if inner.kind() == "identifier" {
+                    return get_text(&inner, source);
+                }
+            }
+        }
+    } else if arg.kind() == "identifier" {
+        return get_text(arg, source);
+    }
+    String::new()
 }
 
 fn process_expression_null(
@@ -1676,6 +1751,46 @@ void foo() {
         assert!(is_null_deref_at(
             &result, &cfg, &body, &source, "p", deref_pos, &summaries
         ));
+    }
+
+    #[test]
+    fn test_cross_file_output_param_marks_not_null() {
+        // task 195/319 follow-on: a cross-file function known from
+        // FunctionSummary::modifies_params to write through param index 0
+        // must clear NullState for the address-of'd variable, including when
+        // the call sits inside an if-condition and is not wrapped in an
+        // rc = call(); if (rc == ...) pattern.
+        let code = r#"
+void foo(void) {
+    struct thing *out = NULL;
+    if (fetch_thing(&out) < 0)
+        return;
+    use(out->field);
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let root = tree.root_node();
+        let func = (0..root.child_count())
+            .filter_map(|i| root.child(i))
+            .find(|c| c.kind() == "function_definition")
+            .unwrap();
+        let cfg = build_function_cfg(&func, code).unwrap();
+        let body = func.child_by_field_name("body").unwrap();
+
+        let mut summary = FunctionSummary::default();
+        summary.modifies_params.insert(0);
+        let mut summaries = HashMap::new();
+        summaries.insert("fetch_thing".to_string(), summary);
+
+        let result = analyze_null_states(&cfg, &func, code, &summaries);
+        let use_pos = code.find("out->field").unwrap();
+        assert!(
+            !is_null_deref_at(&result, &cfg, &body, code, "out", use_pos, &summaries),
+            "out should be NotNull via the cross-file output-param call, even though \
+             it sits inside an if-condition rather than an rc = call(); if (rc==...) pattern"
+        );
     }
 
     #[test]

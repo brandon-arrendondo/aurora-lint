@@ -1602,27 +1602,63 @@ fn check_uninitialized_array_read(node: &Node, source: &str) -> Option<RuleViola
         }
     }
 
-    if !found_write {
-        let start_point = node.start_position();
-        return Some(RuleViolation {
-            rule_id: "ARR00-C".to_string(),
-            severity: Severity::Critical,
-            message: format!(
-                "Reading from uninitialized array '{}' inside a loop. Array was declared but never initialized before being read.",
-                array_name
-            ),
-            file_path: String::new(),
-            line: start_point.row + 1,
-            column: start_point.column + 1,
-            suggestion: Some(format!(
-                "Initialize array '{}' before reading: int {}[N] = {{0}}; or assign values before use",
-                array_name, array_name
-            )),
-        ..Default::default()
-        });
+    // A function (or function-like macro) that receives the bare array name
+    // decays it to a pointer and may fill it -- e.g. `read(fd, arr, n)`,
+    // `fill_array(arr, n)`, or a macro-wrapped equivalent. The write-pattern
+    // scan above only recognizes `arr[i] = ...` subscript assignment, so any
+    // array filled through a call is otherwise a guaranteed false positive
+    // (task 195 Part A/B). Mirrors init_state.rs's process_unknown_function_call
+    // "array passed by name -> assume the callee writes it" default.
+    if found_write
+        || array_passed_to_call_before(&function_node, array_name, subscript_position, source)
+    {
+        return None;
     }
 
-    None
+    let start_point = node.start_position();
+    Some(RuleViolation {
+        rule_id: "ARR00-C".to_string(),
+        severity: Severity::Critical,
+        message: format!(
+            "Reading from uninitialized array '{}' inside a loop. Array was declared but never initialized before being read.",
+            array_name
+        ),
+        file_path: String::new(),
+        line: start_point.row + 1,
+        column: start_point.column + 1,
+        suggestion: Some(format!(
+            "Initialize array '{}' before reading: int {}[N] = {{0}}; or assign values before use",
+            array_name, array_name
+        )),
+        ..Default::default()
+    })
+}
+
+/// True if `array_name` appears as a bare-identifier argument to any call
+/// expression (ordinary function or function-like macro invocation -- both
+/// parse as `call_expression`) before `before_byte` in `function_node`.
+fn array_passed_to_call_before(
+    function_node: &Node,
+    array_name: &str,
+    before_byte: usize,
+    source: &str,
+) -> bool {
+    for call in query::find_descendants_of_kind(*function_node, "call_expression") {
+        if call.start_byte() >= before_byte {
+            continue;
+        }
+        let Some(args) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        for i in 0..args.child_count() {
+            let Some(arg) = args.child(i) else { continue };
+            if arg.kind() == "identifier" && &source[arg.start_byte()..arg.end_byte()] == array_name
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // is_inside_loop() - now imported from ast_utils
