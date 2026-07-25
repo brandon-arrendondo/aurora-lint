@@ -685,6 +685,42 @@ fn check_returns_null(body: &Node, source: &str) -> bool {
 /// a boundary-truncated slice of `body`'s source (see `analyze_function`);
 /// `collect_param_passthroughs` walks `body` itself and applies its own
 /// nested-function boundary guard independently.
+/// True if some line in `body_text` writes through `param_name` via
+/// `param_name->...` or `param_name[...]` -- i.e. the arrow/subscript access
+/// is followed by a genuine assignment operator (not `==`/`!=`/`<=`/`>=`) on
+/// the same line. A bare `param_name->field` or `param_name[i]` with no
+/// following `=` is a READ, not a write (see modifies_params call site).
+fn line_has_arrow_or_subscript_write(body_text: &str, param_name: &str) -> bool {
+    let arrow_pattern = format!("{}->", param_name);
+    let subscript_pattern = format!("{}[", param_name);
+    for line in body_text.lines() {
+        let access_pos = line
+            .find(&arrow_pattern)
+            .or_else(|| line.find(&subscript_pattern));
+        let Some(access_pos) = access_pos else {
+            continue;
+        };
+        // Find an `=` after the access that isn't part of ==, !=, <=, >=.
+        let after_access = &line[access_pos..];
+        let mut search_from = 0;
+        while let Some(rel_eq) = after_access[search_from..].find('=') {
+            let eq_pos = search_from + rel_eq;
+            let before = &after_access[..eq_pos];
+            let after = &after_access[eq_pos + 1..];
+            let is_comparison = before.ends_with('!')
+                || before.ends_with('<')
+                || before.ends_with('>')
+                || before.ends_with('=')
+                || after.starts_with('=');
+            if !is_comparison {
+                return true;
+            }
+            search_from = eq_pos + 1;
+        }
+    }
+    false
+}
+
 fn analyze_param_usage(
     body: &Node,
     source: &str,
@@ -718,10 +754,15 @@ fn analyze_param_usage(
             summary.checks_null_params.insert(idx);
         }
 
-        // Check if parameter is written through (dereferenced on left side of assignment)
+        // Check if parameter is written through (dereferenced on left side of assignment).
+        // Unlike the dereferences_params check below (a deliberate read-or-write
+        // superset), `param->field`/`param[i]` alone is NOT enough here -- that
+        // matches a plain READ too (e.g. `printIntLine(data->intOne)`), which
+        // would wrongly claim the callee initializes/writes the param. Require
+        // an actual assignment operator after the arrow/subscript on the same
+        // line, mirroring ARR00-C's own write-vs-read line scan.
         if body_text.contains(&format!("*{} =", param_name))
-            || body_text.contains(&format!("{}->", param_name))
-            || body_text.contains(&format!("{}[", param_name))
+            || line_has_arrow_or_subscript_write(body_text, param_name)
         {
             summary.modifies_params.insert(idx);
         }
@@ -1561,6 +1602,58 @@ mod tests {
         "#;
         let summaries = parse_and_summarize(code);
         let summary = summaries.get("init_struct").unwrap();
+        assert!(summary.modifies_params.contains(&0));
+    }
+
+    #[test]
+    fn test_modifies_params_excludes_read_only_arrow_access() {
+        // task 195/319 follow-on regression: a plain READ through param->field
+        // or param[i] (no assignment) must NOT count as modifies_params --
+        // confirmed as a real Juliet CWE-476 false-negative source when this
+        // was wrongly treated as a write (badSink(struct *data) { if (cond)
+        // printIntLine(data->intOne); } was credited with initializing data).
+        let code = r#"
+        void read_only_sink(struct thing *data) {
+            if (cond) {
+                printIntLine(data->intOne);
+            }
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let summary = summaries.get("read_only_sink").unwrap();
+        assert!(
+            !summary.modifies_params.contains(&0),
+            "a read-only data->field access must not be treated as a write"
+        );
+        assert!(
+            summary.dereferences_params.contains(&0),
+            "it should still count as a dereference (the read-or-write superset)"
+        );
+    }
+
+    #[test]
+    fn test_modifies_params_still_detects_arrow_write() {
+        let code = r#"
+        void write_sink(struct thing *data) {
+            data->intOne = 5;
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let summary = summaries.get("write_sink").unwrap();
+        assert!(summary.modifies_params.contains(&0));
+    }
+
+    #[test]
+    fn test_modifies_params_still_detects_subscript_write() {
+        let code = r#"
+        void fill(int *buf) {
+            for (int i = 0; i < 10; i++) {
+                buf[i] = i;
+            }
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let summary = summaries.get("fill").unwrap();
         assert!(summary.modifies_params.contains(&0));
     }
 
