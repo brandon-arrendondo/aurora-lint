@@ -94,6 +94,11 @@ struct CfgBuilder {
     current_block: BlockId,
     /// Stack of (loop_header, loop_exit) for break/continue targets.
     loop_stack: Vec<(BlockId, BlockId)>,
+    /// Stack of break targets, pushed by both loops and switch statements.
+    /// `continue` always targets the innermost *loop* (via `loop_stack`), but
+    /// `break` targets the innermost loop-or-switch, whichever is nearer
+    /// lexically -- so it needs its own stack (task 320).
+    break_stack: Vec<BlockId>,
     /// Label name → block ID mapping for goto edge wiring.
     label_blocks: HashMap<String, BlockId>,
     /// Pending goto edges: (source_block, label_name) to wire after all labels are seen.
@@ -116,6 +121,7 @@ impl CfgBuilder {
             edges: Vec::new(),
             current_block: 0,
             loop_stack: Vec::new(),
+            break_stack: Vec::new(),
             label_blocks: HashMap::new(),
             pending_gotos: Vec::new(),
             function_start_byte,
@@ -174,10 +180,7 @@ impl CfgBuilder {
             "while_statement" => self.process_while(node, source),
             "for_statement" => self.process_for(node, source),
             "do_statement" => self.process_do_while(node, source),
-            "switch_statement" => {
-                // Treat switch as a single statement for now
-                self.add_statement(node.start_byte(), node.end_byte());
-            }
+            "switch_statement" => self.process_switch(node, source),
             "return_statement" => {
                 self.add_statement(node.start_byte(), node.end_byte());
                 let exit_block = self.new_block();
@@ -186,8 +189,8 @@ impl CfgBuilder {
             }
             "break_statement" => {
                 self.add_statement(node.start_byte(), node.end_byte());
-                if let Some(&(_, loop_exit)) = self.loop_stack.last() {
-                    self.add_edge(self.current_block, loop_exit, CfgEdge::Break);
+                if let Some(&break_target) = self.break_stack.last() {
+                    self.add_edge(self.current_block, break_target, CfgEdge::Break);
                 }
                 self.current_block = self.new_block(); // Unreachable block after break
             }
@@ -340,12 +343,14 @@ impl CfgBuilder {
 
         // Process body
         self.loop_stack.push((header_block, exit_block));
+        self.break_stack.push(exit_block);
         self.current_block = body_block;
         if let Some(body) = node.child_by_field_name("body") {
             self.process_statement(&body, source);
         }
         self.add_edge(self.current_block, header_block, CfgEdge::BackEdge);
         self.loop_stack.pop();
+        self.break_stack.pop();
 
         self.current_block = exit_block;
     }
@@ -384,12 +389,14 @@ impl CfgBuilder {
 
         // Process body
         self.loop_stack.push((update_block, exit_block));
+        self.break_stack.push(exit_block);
         self.current_block = body_block;
         if let Some(body) = node.child_by_field_name("body") {
             self.process_statement(&body, source);
         }
         self.add_edge(self.current_block, update_block, CfgEdge::Fallthrough);
         self.loop_stack.pop();
+        self.break_stack.pop();
 
         // Update expression
         self.current_block = update_block;
@@ -409,11 +416,13 @@ impl CfgBuilder {
 
         // Process body first (do-while executes body before checking condition)
         self.loop_stack.push((body_block, exit_block));
+        self.break_stack.push(exit_block);
         self.current_block = body_block;
         if let Some(body) = node.child_by_field_name("body") {
             self.process_statement(&body, source);
         }
         self.loop_stack.pop();
+        self.break_stack.pop();
 
         // Condition block
         let cond_block = self.new_block();
@@ -430,6 +439,79 @@ impl CfgBuilder {
         self.add_edge(cond_block, body_block, CfgEdge::BackEdge);
         self.add_edge(cond_block, exit_block, CfgEdge::FalseBranch);
 
+        self.current_block = exit_block;
+    }
+
+    /// Model a `switch` statement with one block per `case`/`default` arm.
+    ///
+    /// Each `case_statement` node (tree-sitter-c) owns the label plus every
+    /// statement up to (not including) the next `case_statement` sibling --
+    /// so C's physical fallthrough (no `break`) is just "this block's exit
+    /// falls through to the next case block". `break` targets the switch's
+    /// join block via `break_stack` (task 320); previously the whole switch
+    /// was a single opaque leaf statement, hiding any `free()`+`return`/`break`
+    /// nested in a case arm from CFG-based rules like MEM01-C.
+    fn process_switch<'a>(&mut self, node: &Node<'a>, source: &str) {
+        let condition_block = self.current_block;
+        if let Some(condition) = node.child_by_field_name("condition") {
+            self.add_statement(condition.start_byte(), condition.end_byte());
+        }
+
+        let exit_block = self.new_block();
+        self.break_stack.push(exit_block);
+
+        let body = node.child_by_field_name("body");
+        let mut case_blocks: Vec<BlockId> = Vec::new();
+        if let Some(body) = body {
+            for i in 0..body.child_count() {
+                if let Some(child) = body.child(i) {
+                    if child.kind() == "case_statement" {
+                        let case_block = self.new_block();
+                        case_blocks.push(case_block);
+                        // Any case may match, so each arm is directly reachable
+                        // from the switch condition.
+                        self.add_edge(condition_block, case_block, CfgEdge::Fallthrough);
+                    }
+                }
+            }
+        }
+
+        // No case (or no default) matches -- falls straight through to exit.
+        self.add_edge(condition_block, exit_block, CfgEdge::Fallthrough);
+
+        if let Some(body) = body {
+            let mut case_idx = 0;
+            for i in 0..body.child_count() {
+                if let Some(child) = body.child(i) {
+                    if child.kind() != "case_statement" {
+                        continue;
+                    }
+                    let case_block = case_blocks[case_idx];
+                    case_idx += 1;
+                    self.current_block = case_block;
+
+                    let value_start = child.child_by_field_name("value").map(|v| v.start_byte());
+                    for j in 0..child.child_count() {
+                        if let Some(sub) = child.child(j) {
+                            if Some(sub.start_byte()) == value_start {
+                                continue;
+                            }
+                            match sub.kind() {
+                                "case" | "default" | ":" => continue,
+                                _ => self.process_statement(&sub, source),
+                            }
+                        }
+                    }
+
+                    // Physical fallthrough into the next case arm if this arm's
+                    // control flow didn't already break/return/continue/goto out.
+                    let next_block = case_blocks.get(case_idx).copied().unwrap_or(exit_block);
+                    self.add_edge(self.current_block, next_block, CfgEdge::Fallthrough);
+                }
+            }
+        }
+
+        self.break_stack.pop();
         self.current_block = exit_block;
     }
 
