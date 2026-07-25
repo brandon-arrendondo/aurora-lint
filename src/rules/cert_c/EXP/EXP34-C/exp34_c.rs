@@ -2,10 +2,12 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::null_state::{self, NullAnalysisResult, NullState, StateMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -19,6 +21,12 @@ pub struct Exp34C {
     /// Cross-file global pointer null states from prescan.
     /// Used to resolve `extern` pointer globals defined in other translation units.
     prescan_global_var_states: RefCell<HashMap<String, NullState>>,
+    /// Function-like macro definitions (for macro output-arg recognition).
+    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    /// Output-parameter indices (per `macro_expand::macro_writes_param_indices`)
+    /// for the function-like macros actually invoked in the current file. Task
+    /// 195 Part A: the macro analog of `FunctionSummary::modifies_params`.
+    macro_write_params: RefCell<HashMap<String, Vec<usize>>>,
 }
 
 impl Exp34C {
@@ -28,6 +36,8 @@ impl Exp34C {
             function_cfgs: RefCell::new(HashMap::new()),
             file_global_states: RefCell::new(StateMap::new()),
             prescan_global_var_states: RefCell::new(HashMap::new()),
+            function_macros: RefCell::new(HashMap::new()),
+            macro_write_params: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -56,6 +66,7 @@ impl CertRule for Exp34C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.prescan_global_var_states.borrow_mut() = context.global_var_null_states.clone();
+        *self.function_macros.borrow_mut() = context.function_macros.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -85,6 +96,22 @@ impl CertRule for Exp34C {
                 }
 
                 *self.file_global_states.borrow_mut() = globals;
+
+                // Precompute write-through-param indices for the function-like
+                // macros actually invoked in this file (task 195 Part A).
+                let macros = self.function_macros.borrow();
+                if !macros.is_empty() {
+                    let mut invoked = HashSet::new();
+                    collect_invoked_macro_names(node, source, &macros, &mut invoked);
+                    let mut write_params = HashMap::new();
+                    for name in invoked {
+                        let idx = macro_expand::macro_writes_param_indices(&macros, &name);
+                        if !idx.is_empty() {
+                            write_params.insert(name, idx);
+                        }
+                    }
+                    *self.macro_write_params.borrow_mut() = write_params;
+                }
             }
 
             if node.kind() == "function_definition" {
@@ -106,13 +133,37 @@ impl CertRule for Exp34C {
                         .child_by_field_name("declarator")
                         .and_then(|d| extract_function_name(&d, source));
 
+                    // Merge macro write-through params (task 195 Part A) into the
+                    // cross-file summaries map: any macro invoked in this file that
+                    // writes through a param gets a synthesized FunctionSummary
+                    // entry, so null_state.rs's existing `apply_cross_file_output_params_null`
+                    // (which only ever looks up by callee name) picks it up with
+                    // zero changes to null_state.rs itself. Real function summaries
+                    // always win on name collision.
+                    let macro_write_params = self.macro_write_params.borrow();
+                    let effective_summaries: Cow<HashMap<String, FunctionSummary>> =
+                        if macro_write_params.is_empty() {
+                            Cow::Borrowed(&summaries)
+                        } else {
+                            let mut merged = summaries.clone();
+                            for (name, idx) in macro_write_params.iter() {
+                                merged
+                                    .entry(name.clone())
+                                    .or_insert_with(|| FunctionSummary {
+                                        modifies_params: idx.iter().copied().collect(),
+                                        ..Default::default()
+                                    });
+                            }
+                            Cow::Owned(merged)
+                        };
+
                     // Run CFG-based null-state dataflow, seeded with global states
                     let global_states = self.file_global_states.borrow();
                     let analysis = null_state::analyze_null_states_with_globals(
                         cfg,
                         node,
                         source,
-                        &summaries,
+                        &effective_summaries,
                         &global_states,
                         func_name.as_deref(),
                     );
@@ -125,7 +176,7 @@ impl CertRule for Exp34C {
                         &analysis,
                         cfg,
                         &body,
-                        &summaries,
+                        &effective_summaries,
                         &mut violations,
                         &mut reported_vars,
                     );
@@ -1515,6 +1566,28 @@ fn merge_extern_global_states(
 }
 
 /// Extract the function name from a declarator node (handles pointer_declarator wrapping).
+/// Collect the names of function-like macros (present in `macros`) that are
+/// invoked as `call_expression`s anywhere under `node`. Mirrors EXP33-C's
+/// `collect_invoked_macro_names` — limits the output-param computation to
+/// macros actually used in the file.
+fn collect_invoked_macro_names(
+    node: &Node,
+    source: &str,
+    macros: &HashMap<String, FunctionMacro>,
+    out: &mut HashSet<String>,
+) {
+    for call in query::find_descendants_of_kind(*node, "call_expression") {
+        if let Some(func) = call.child_by_field_name("function") {
+            if func.kind() == "identifier" {
+                let name = ast_utils::get_node_text_owned(&func, source);
+                if macros.contains_key(&name) {
+                    out.insert(name);
+                }
+            }
+        }
+    }
+}
+
 fn extract_function_name(declarator: &Node, source: &str) -> Option<String> {
     match declarator.kind() {
         "identifier" => {

@@ -586,6 +586,136 @@ pub fn macro_nulls_param_indices(table: &HashMap<String, FunctionMacro>, name: &
     out
 }
 
+/// Parameter indices that a function-like macro **writes through**: either a
+/// whole-object assignment (`(param) = …`, same as
+/// [`macro_output_param_indices`]) or a write through the pointer/array itself
+/// — `param->field = …`, `param[i] = …`, `*param = …`. The latter forms are
+/// deliberately *excluded* from `macro_output_param_indices` because they
+/// presuppose `param` already holds a valid address (relevant to EXP33-C's
+/// uninitialized-*scalar* question), but they are exactly what EXP34-C
+/// (null-pointer) and ARR00-C (array-bounds) care about: successfully writing
+/// through `param` proves it was non-null / in-bounds, the same idiom
+/// `function_summary.rs::modifies_params` tracks for real (non-macro)
+/// functions via `line_has_arrow_or_subscript_write`.
+///
+/// Example: sqlite's `fts3GetVarint32(p, piVal)` expands with a deref write
+/// `*piVal = *(u8*)(p)`, so index 1 (`piVal`) is reported.
+pub fn macro_writes_param_indices(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+) -> Vec<usize> {
+    let m = match table.get(name) {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+    if m.params.is_empty() {
+        return Vec::new();
+    }
+    let sentinels: Vec<String> = (0..m.params.len())
+        .map(|i| format!("__SQC_MWR_{i}__"))
+        .collect();
+    let expanded = match expand_invocation(table, name, &sentinels) {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (i, sent) in sentinels.iter().enumerate() {
+        if is_whole_assignment_target(&expanded, sent) || writes_through_pointer(&expanded, sent) {
+            out.push(i);
+        }
+    }
+    out
+}
+
+/// True if `ident` is written through a pointer/array access in `text`:
+/// `ident->field = …`, `ident[i] = …`, or a dereference write `*ident = …` /
+/// `*(ident) = …`. Mirrors `function_summary.rs::line_has_arrow_or_subscript_write`
+/// (arrow/subscript half) plus a deref-write check for the `*ident =` form,
+/// which real-function analysis doesn't need separately (a function body's
+/// `*param = x` is textually indistinguishable from other dereferences there,
+/// but here we search the fully-expanded, sentinel-substituted macro body so
+/// a direct char scan is precise). See [`macro_writes_param_indices`].
+fn writes_through_pointer(text: &str, ident: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let id: Vec<char> = ident.chars().collect();
+    let (n, m) = (chars.len(), id.len());
+    if m == 0 {
+        return false;
+    }
+    let mut i = 0;
+    while i + m <= n {
+        if chars[i..i + m] == id[..] {
+            let prev_ok = i == 0 || !is_ident_char(chars[i - 1]);
+            let next_ok = i + m >= n || !is_ident_char(chars[i + m]);
+            if prev_ok && next_ok {
+                // Arrow/subscript write: skip wrapping `)`/whitespace after the
+                // identifier (handles `(ident)->f` / `(ident)[0]`), then check
+                // for `->`/`[` followed eventually by a genuine `=`.
+                let mut j = i + m;
+                while j < n && (chars[j].is_whitespace() || chars[j] == ')') {
+                    j += 1;
+                }
+                let is_arrow = j + 1 < n && chars[j] == '-' && chars[j + 1] == '>';
+                let is_subscript = j < n && chars[j] == '[';
+                if is_arrow || is_subscript {
+                    if let Some(eq_pos) = find_genuine_eq_after(&chars, j) {
+                        let _ = eq_pos;
+                        return true;
+                    }
+                }
+                // Deref write: `*ident =` or `*(ident) =` (wrapping parens
+                // between the `*` and the identifier).
+                let mut b = i;
+                while b > 0 && (chars[b - 1].is_whitespace() || chars[b - 1] == '(') {
+                    b -= 1;
+                }
+                if b > 0 && chars[b - 1] == '*' {
+                    let mut k = i + m;
+                    while k < n && (chars[k].is_whitespace() || chars[k] == ')') {
+                        k += 1;
+                    }
+                    if k < n && chars[k] == '=' && (k + 1 >= n || chars[k + 1] != '=') {
+                        return true;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Starting from `from` (index of `-`/`[`), find the next genuine assignment
+/// `=` (excluding `==`/`!=`/`<=`/`>=`) at or after this access, returning its
+/// index. Bounded to the same textual "access chain" by simply scanning
+/// forward — good enough for the short, sentinel-substituted macro bodies
+/// this operates on.
+fn find_genuine_eq_after(chars: &[char], from: usize) -> Option<usize> {
+    let n = chars.len();
+    let mut search_from = from;
+    while search_from < n {
+        if chars[search_from] == '=' {
+            let before = if search_from > 0 {
+                chars[search_from - 1]
+            } else {
+                ' '
+            };
+            let after = if search_from + 1 < n {
+                chars[search_from + 1]
+            } else {
+                ' '
+            };
+            let is_comparison =
+                before == '!' || before == '<' || before == '>' || before == '=' || after == '=';
+            if !is_comparison {
+                return Some(search_from);
+            }
+        }
+        search_from += 1;
+    }
+    None
+}
+
 /// Deallocation functions recognized by [`macro_frees_param_indices`].
 const DEALLOC_FUNCTIONS: &[&str] = &["free", "fclose", "close"];
 
@@ -980,6 +1110,52 @@ mod tests {
     fn output_param_unknown_macro_is_empty() {
         let t = table("#define X(a) (a)\n");
         assert!(macro_output_param_indices(&t, "NOPE").is_empty());
+    }
+
+    // ── Macro write-through-pointer detection (EXP34-C/ARR00-C) ────────────
+
+    #[test]
+    fn writes_param_includes_field_and_deref_and_subscript() {
+        // Unlike macro_output_param_indices, these ARE reported: writing
+        // through the pointer proves it's non-null / in-bounds.
+        let t = table(
+            "#define FW(p) do { (p)->f = 1; } while(0)\n\
+             #define EW(p) do { (p)[0] = 1; } while(0)\n\
+             #define DW(p) do { *(p) = 1; } while(0)\n",
+        );
+        assert_eq!(macro_writes_param_indices(&t, "FW"), vec![0]);
+        assert_eq!(macro_writes_param_indices(&t, "EW"), vec![0]);
+        assert_eq!(macro_writes_param_indices(&t, "DW"), vec![0]);
+    }
+
+    #[test]
+    fn writes_param_still_includes_whole_object_assignment() {
+        let t = table("#define SAVE(out, a, b) do { (out) = (a) + (b); } while(0)\n");
+        assert_eq!(macro_writes_param_indices(&t, "SAVE"), vec![0]);
+    }
+
+    #[test]
+    fn writes_param_fts3_getvarint32_shape() {
+        // sqlite's fts3GetVarint32(p, piVal): *piVal = *(u8*)(p) -- a deref
+        // write to the second (output) parameter.
+        let t = table("#define fts3GetVarint32(p, piVal) (*(piVal) = *(unsigned char*)(p))\n");
+        assert_eq!(macro_writes_param_indices(&t, "fts3GetVarint32"), vec![1]);
+    }
+
+    #[test]
+    fn writes_param_excludes_read_only_and_comparison() {
+        let t = table(
+            "#define READ(p) ((p)->f)\n\
+             #define CMP(p) ((p)->f == 1)\n",
+        );
+        assert!(macro_writes_param_indices(&t, "READ").is_empty());
+        assert!(macro_writes_param_indices(&t, "CMP").is_empty());
+    }
+
+    #[test]
+    fn writes_param_unknown_macro_is_empty() {
+        let t = table("#define X(a) (a)\n");
+        assert!(macro_writes_param_indices(&t, "NOPE").is_empty());
     }
 
     // ── Free-and-null (safe-free) macro detection ───────────────────────────
