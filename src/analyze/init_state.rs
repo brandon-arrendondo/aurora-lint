@@ -1556,10 +1556,27 @@ pub fn get_var_info_at_with_config(
             }
         } else {
             // Statement contains byte_offset. For switch statements, replay
-            // same-case sub-statements that precede the target.
+            // same-case sub-statements that precede the target. For
+            // if/while/for, replay earlier clauses of a still-in-progress
+            // short-circuited condition (see task 322).
             if let Some(stmt_node) = find_node_at_range(body, start, end) {
                 if stmt_node.kind() == "switch_statement" {
                     replay_within_switch_case(
+                        &stmt_node,
+                        source,
+                        &mut state,
+                        &mut tracked,
+                        config,
+                        byte_offset,
+                    );
+                } else if matches!(
+                    stmt_node.kind(),
+                    "binary_expression" | "parenthesized_expression"
+                ) {
+                    // `add_statement` records if/while/for conditions by their
+                    // own byte range (not the enclosing statement's), so the
+                    // node found here IS the condition expression itself.
+                    replay_short_circuit_operands(
                         &stmt_node,
                         source,
                         &mut state,
@@ -2046,6 +2063,55 @@ fn replay_within_switch_case(
                 break;
             }
         }
+    }
+}
+
+/// Recursively unwrap a (possibly parenthesized) short-circuit `&&`/`||`
+/// chain and process every operand that lexically precedes `byte_offset`.
+fn replay_short_circuit_operands(
+    node: &Node,
+    source: &str,
+    state: &mut InitStateMap,
+    tracked: &mut HashSet<String>,
+    config: &InitAnalysisConfig,
+    byte_offset: usize,
+) {
+    let mut n = *node;
+    while n.kind() == "parenthesized_expression" {
+        if let Some(inner) = n.child(1) {
+            n = inner;
+        } else {
+            return;
+        }
+    }
+
+    if n.kind() != "binary_expression" {
+        return;
+    }
+    let op = n
+        .child_by_field_name("operator")
+        .map(|o| o.utf8_text(source.as_bytes()).unwrap_or(""))
+        .unwrap_or("");
+    if op != "&&" && op != "||" {
+        return;
+    }
+    let (Some(left), Some(right)) = (
+        n.child_by_field_name("left"),
+        n.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+
+    if byte_offset < right.start_byte() {
+        // Target is within (or before) the left operand: recurse so any
+        // earlier clauses nested further left are replayed too.
+        replay_short_circuit_operands(&left, source, state, tracked, config, byte_offset);
+    } else {
+        // Target is within the right operand: the entire left operand has
+        // already fully evaluated, so apply all of its effects, then
+        // recurse into the right in case it is itself a nested chain.
+        find_and_process_init_expressions(&left, source, state, tracked, config);
+        replay_short_circuit_operands(&right, source, state, tracked, config, byte_offset);
     }
 }
 
