@@ -453,32 +453,85 @@ impl CfgBuilder {
     /// nested in a case arm from CFG-based rules like MEM01-C.
     fn process_switch<'a>(&mut self, node: &Node<'a>, source: &str) {
         let condition_block = self.current_block;
-        if let Some(condition) = node.child_by_field_name("condition") {
+        let switch_const = if let Some(condition) = node.child_by_field_name("condition") {
             self.add_statement(condition.start_byte(), condition.end_byte());
-        }
+            let inner = unwrap_parens_cfg(&condition);
+            resolve_constant_operand(&inner, source, &self.constants)
+        } else {
+            None
+        };
 
         let exit_block = self.new_block();
         self.break_stack.push(exit_block);
 
         let body = node.child_by_field_name("body");
-        let mut case_blocks: Vec<BlockId> = Vec::new();
+        // (block, this arm's constant case value if any, is_default)
+        let mut case_blocks: Vec<(BlockId, Option<i64>, bool)> = Vec::new();
         if let Some(body) = body {
             for i in 0..body.child_count() {
                 if let Some(child) = body.child(i) {
                     if child.kind() == "case_statement" {
                         let case_block = self.new_block();
-                        case_blocks.push(case_block);
-                        // Any case may match, so each arm is directly reachable
-                        // from the switch condition.
-                        self.add_edge(condition_block, case_block, CfgEdge::Fallthrough);
+                        let value = child.child_by_field_name("value");
+                        let is_default = value.is_none();
+                        let case_val = value.and_then(|v| {
+                            resolve_constant_operand(
+                                &unwrap_parens_cfg(&v),
+                                source,
+                                &self.constants,
+                            )
+                        });
+                        case_blocks.push((case_block, case_val, is_default));
                     }
                 }
             }
         }
+        let has_default = case_blocks.iter().any(|(_, _, is_default)| *is_default);
 
-        // No case (or no default) matches -- falls straight through to exit.
-        self.add_edge(condition_block, exit_block, CfgEdge::Fallthrough);
+        // If the switch's value is a compile-time constant, only the case(s)
+        // it actually matches (or the default, if none match) are reachable
+        // -- mirrors evaluate_constant_condition's dead-branch pruning for
+        // if/while/for. Without this, e.g. `switch(5) { case 6: ...; default:
+        // data = 5; }` looks like `data` is only conditionally initialized,
+        // even though 5 can never hit the `case 6:` arm (task 320 follow-up).
+        let reachable: Option<std::collections::HashSet<BlockId>> = switch_const.map(|sc| {
+            let matched: Vec<BlockId> = case_blocks
+                .iter()
+                .filter(|(_, v, is_default)| !is_default && *v == Some(sc))
+                .map(|(b, _, _)| *b)
+                .collect();
+            if !matched.is_empty() {
+                matched.into_iter().collect()
+            } else if let Some((default_block, _, _)) =
+                case_blocks.iter().find(|(_, _, is_default)| *is_default)
+            {
+                std::iter::once(*default_block).collect()
+            } else {
+                std::collections::HashSet::new()
+            }
+        });
 
+        for (case_block, _, _) in &case_blocks {
+            let is_reachable = reachable.as_ref().is_none_or(|r| r.contains(case_block));
+            if is_reachable {
+                self.add_edge(condition_block, *case_block, CfgEdge::Fallthrough);
+            }
+        }
+
+        // A `default:` arm always matches something, so the switch can never
+        // skip straight to exit when one is present and the value isn't a
+        // known-non-matching constant. Only add the "no case matches" edge
+        // when there's no default, or the constant switch value is known and
+        // provably matches nothing (task 320 follow-up).
+        let skips_switch_entirely = match &reachable {
+            Some(r) => r.is_empty(),
+            None => !has_default,
+        };
+        if skips_switch_entirely {
+            self.add_edge(condition_block, exit_block, CfgEdge::Fallthrough);
+        }
+
+        let case_blocks: Vec<BlockId> = case_blocks.into_iter().map(|(b, _, _)| b).collect();
         if let Some(body) = body {
             let mut case_idx = 0;
             for i in 0..body.child_count() {
