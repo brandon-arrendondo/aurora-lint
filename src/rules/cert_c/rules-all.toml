@@ -860,7 +860,7 @@ enabled = true
 
 
 [rules.cert_c.MSC01-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.MSC04-C]
