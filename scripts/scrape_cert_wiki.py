@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 """
-Scrape SEI CERT C Coding Standard from Confluence Wiki.
+Scrape the SEI CERT C Coding Standard from cmu-sei.github.io/secure-coding-standards.
+
+The standard used to live on a Confluence wiki (wiki.sei.cmu.edu); that host
+now 301-redirects to a statically-generated Nuxt/Nuxt Content site. The site
+is a fully client-rendered SPA -- the server-rendered HTML shell has no rule
+content in it at all -- but each page also serves a `_payload.json` next to
+it containing the page's Nuxt Content AST (used to hydrate the Vue app) plus
+the full site navigation tree. This script talks to that JSON API directly
+rather than scraping rendered HTML.
 
 This script:
-1. Fetches all rule and recommendation categories from the main wiki page
-2. Extracts individual items (rules/recommendations) from each category
-3. Parses each page for content and metadata
-4. Generates TOML metadata files (preserving existing files)
-5. Implements rate limiting to be respectful of the wiki
+1. Fetches the site's navigation tree (one request) to enumerate every rule
+   and recommendation ID, title, and path.
+2. Fetches each item's `_payload.json` and walks its content AST for
+   metadata (risk assessment table, CWE refs) and code examples.
+3. Generates TOML metadata files (preserving existing files -- see
+   generate_toml_metadata).
+4. Implements rate limiting to be respectful of the site.
 
 Usage:
     python3 scripts/scrape_cert_wiki.py [--delay SECONDS] [--output DIR] [--type rule|rec|all] [--force]
 """
 
 import re
-import os
 import sys
 import time
 import json
@@ -22,29 +31,22 @@ import argparse
 import requests
 import textwrap
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass, asdict
-from urllib.parse import urljoin, quote
-from bs4 import BeautifulSoup
-from datetime import datetime
+from typing import Dict, List, Tuple, Optional, Any
+from dataclasses import dataclass
 
 # Configuration
-BASE_URL = "https://wiki.sei.cmu.edu"
-WIKI_BASE = f"{BASE_URL}/confluence/display/c"
+BASE_URL = "https://cmu-sei.github.io/secure-coding-standards"
+STANDARD_PATH = "/sei-cert-c-coding-standard"
 DEFAULT_DELAY = 3.0  # Seconds between requests (conservative - no robots.txt found)
-USER_AGENT = "CERT-C-Scraper/1.0 (Educational Purpose)"
+USER_AGENT = "CERT-C-Scraper/2.0 (Educational Purpose)"
 
 # Output configuration - directly to src/rules/cert_c/
 BASE_OUTPUT_DIR = "src/rules/cert_c"
 
-# Category mapping - will be populated dynamically from wiki
-# Format: {"CAT": ("number", "Category Name")}
-CATEGORIES = {}
-
 
 @dataclass
 class ItemMetadata:
-    """Structured metadata for a rule or recommendation from wiki"""
+    """Structured metadata for a rule or recommendation from the site"""
     id: str
     item_type: str  # "rule" or "recommendation"
     category: str
@@ -59,8 +61,8 @@ class ItemMetadata:
 
     # References
     wiki_url: str = ""
-    cert_version: Optional[str] = None  # CERT C standard version from wiki
-    last_modified: Optional[str] = None  # Last modified date from wiki
+    cert_version: Optional[str] = None  # CERT C standard version
+    last_modified: Optional[str] = None  # Not exposed by the new site (see NOTE in parse_item_page)
     cwe: List[str] = None
     related_rules: List[str] = None
     related_recommendations: List[str] = None
@@ -77,14 +79,64 @@ class ItemMetadata:
             self.related_recommendations = []
 
 
+# ---------------------------------------------------------------------------
+# Nuxt payload plumbing
+# ---------------------------------------------------------------------------
+#
+# Nuxt's payload format ("devalue") is a flattened array: `data[0]` is the
+# root, and any int found where a value is expected is an index into `data`
+# to dereference (this is how it represents shared/circular references
+# compactly). `["ShallowReactive", i]` is Nuxt's Vue-reactivity wrapper and
+# just means "dereference i". `deref_payload` below resolves this back into
+# plain nested dicts/lists/strings, memoized so shared references and any
+# cycles are only visited once.
+
+
+def deref_payload(data: List[Any], index: int, memo: Dict[int, Any]) -> Any:
+    if index in memo:
+        return memo[index]
+    value = data[index]
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        memo[index] = out
+        for key, v in value.items():
+            out[key] = deref_payload(data, v, memo) if isinstance(v, int) else v
+        return out
+    if isinstance(value, list):
+        if value and value[0] == "ShallowReactive":
+            resolved = deref_payload(data, value[1], memo)
+            memo[index] = resolved
+            return resolved
+        out_list: List[Any] = []
+        memo[index] = out_list
+        for v in value:
+            out_list.append(deref_payload(data, v, memo) if isinstance(v, int) else v)
+        return out_list
+    return value
+
+
+def node_text(node: Any) -> str:
+    """Flatten a Nuxt Content AST node (or plain string) to its text content.
+
+    A node is `[tag, props, *children]`; children may themselves be nodes or
+    bare strings. Used for heading/table-cell/paragraph text where we don't
+    care about inline formatting (bold, links, etc.), only the text.
+    """
+    if isinstance(node, str):
+        return node
+    if isinstance(node, list) and len(node) >= 1 and isinstance(node[0], str):
+        return "".join(node_text(c) for c in node[2:])
+    return ""
+
+
 class WikiScraper:
-    """Scraper for CERT C Confluence wiki"""
+    """Client for the CERT C secure-coding-standards site's Nuxt payload API"""
 
     def __init__(self, delay: float = DEFAULT_DELAY):
         self.session = requests.Session()
-        self.session.headers.update({'User-Agent': USER_AGENT})
+        self.session.headers.update({"User-Agent": USER_AGENT})
         self.delay = delay
-        self.last_request_time = 0
+        self.last_request_time = 0.0
 
     def _rate_limit(self):
         """Implement rate limiting between requests"""
@@ -93,262 +145,249 @@ class WikiScraper:
             time.sleep(self.delay - elapsed)
         self.last_request_time = time.time()
 
-    def fetch_page(self, url: str) -> Optional[BeautifulSoup]:
-        """Fetch and parse a wiki page with rate limiting"""
+    def fetch_payload_root(self, path: str) -> Optional[Dict[str, Any]]:
+        """Fetch and deref `{path}/_payload.json`'s root state object (the
+        dict at `data[2]` in every Nuxt payload we've seen from this site --
+        it holds keys like `page-{path}`, `sidebar-...`, `global-navigation`).
+        """
         self._rate_limit()
-
+        url = f"{BASE_URL}{path}/_payload.json"
         try:
             print(f"  Fetching: {url}")
             response = self.session.get(url, timeout=30)
             response.raise_for_status()
-            return BeautifulSoup(response.content, 'html.parser')
-        except requests.RequestException as e:
+            data = response.json()
+            memo: Dict[int, Any] = {}
+            return deref_payload(data, 2, memo)
+        except (requests.RequestException, json.JSONDecodeError, IndexError, KeyError) as e:
             print(f"  ✗ Error fetching {url}: {e}")
             return None
 
-    def discover_categories(self) -> Dict[str, Tuple[str, str]]:
+    def discover_items(self) -> List[Tuple[str, str, str, str, str]]:
         """
-        Dynamically discover all categories from the main wiki page.
+        Enumerate every rule/recommendation from the standard's sidebar nav
+        tree (one HTTP request covers the whole site -- the old Confluence
+        scraper needed a request per category page just to list items).
 
-        Returns: Dict mapping category code to (number, name)
-        Example: {"ARR": ("06", "Arrays"), "MSC": ("48", "Miscellaneous")}
+        Returns: list of (item_id, title, item_type, category, path) tuples.
         """
-        print("Discovering categories from main wiki page...")
-        soup = self.fetch_page(WIKI_BASE)
-        if not soup:
-            print("  ✗ Failed to fetch main wiki page, using empty categories")
-            return {}
-
-        categories = {}
-
-        # Find all links that match "Rule XX" or "Rec. XX" patterns
-        # Pattern: "Rule 01. Preprocessor (PRE)" or "Rec. 01. Preprocessor (PRE)"
-        for link in soup.find_all('a', href=True):
-            link_text = link.get_text(strip=True)
-
-            # Match patterns like:
-            # "Rule 06. Arrays (ARR)"
-            # "Rec. 48. Miscellaneous (MSC)"
-            match = re.match(r'(?:Rule|Rec\.)\s+(\d+)\.\s+([^(]+)\s+\((\w+)\)', link_text)
-            if match:
-                cat_num, cat_name, cat_code = match.groups()
-                cat_name = cat_name.strip()
-
-                # Only add if we haven't seen this category code yet
-                # (rules and recommendations might both list it)
-                if cat_code not in categories:
-                    categories[cat_code] = (cat_num, cat_name)
-                    print(f"  Found category: {cat_code} = {cat_num}. {cat_name}")
-
-        print(f"✓ Discovered {len(categories)} categories")
-        return categories
-
-    def get_category_items(self, category_code: str, item_type: str) -> List[Tuple[str, str, str]]:
-        """
-        Get all items (rules or recommendations) from a category page.
-
-        Args:
-            category_code: Category code (e.g., "ARR", "MEM")
-            item_type: Either "rule" or "recommendation"
-
-        Returns: List of (item_id, item_title, item_url) tuples
-        """
-        cat_num, cat_name = CATEGORIES[category_code]
-
-        # Build URL based on type
-        if item_type == "rule":
-            prefix = "Rule"
-        else:
-            prefix = "Rec."
-
-        # URL format: Rule+06.+Arrays+(ARR)
-        cat_url = f"{WIKI_BASE}/{prefix}+{cat_num}.+{cat_name.replace(' ', '+')}+({category_code})"
-
-        soup = self.fetch_page(cat_url)
-        if not soup:
+        print("Discovering items from site navigation tree...")
+        root = self.fetch_payload_root(STANDARD_PATH)
+        if not root:
+            print("  ✗ Failed to fetch navigation tree")
             return []
 
-        items = []
-        # Find all links that match item pattern: XXX##-C
-        item_pattern = re.compile(rf'^{category_code}\d{{2}}-C')
+        sidebar_key = f"sidebar-{STANDARD_PATH.strip('/').replace('/', '-')}"
+        sidebar = root.get(sidebar_key)
+        if not sidebar:
+            print(f"  ✗ No '{sidebar_key}' key in payload root (keys: {list(root.keys())})")
+            return []
 
-        for link in soup.find_all('a', href=True):
-            text = link.get_text(strip=True)
-            if item_pattern.match(text):
-                # Extract item ID from link text
-                match = re.match(rf'({category_code}\d{{2}}-C)', text)
-                if match:
-                    item_id = match.group(1)
-                    # Get the full title (may be in following text)
-                    title = text[len(item_id):].strip('. ')
+        item_pattern = re.compile(r"^([A-Z]{3})(\d{2})-C\.?\s*(.*)$")
+        items: List[Tuple[str, str, str, str, str]] = []
+        seen_ids = set()
 
-                    # Construct full URL
-                    href = link['href']
-                    if href.startswith('/'):
-                        item_url = urljoin(BASE_URL, href)
-                    else:
-                        item_url = href
+        def walk(node: Dict[str, Any]):
+            title = node.get("title", "")
+            path = node.get("path", "")
+            match = item_pattern.match(title)
+            if match and path:
+                category, number, rest = match.groups()
+                item_id = f"{category}{number}-C"
+                if item_id not in seen_ids:
+                    seen_ids.add(item_id)
+                    item_type = "rule" if "/rules/" in path else "recommendation"
+                    items.append((item_id, rest.strip(), item_type, category, path))
+            for child in node.get("children") or []:
+                walk(child)
 
-                    items.append((item_id, title, item_url))
-                    print(f"    Found: {item_id} - {title}")
+        for top in sidebar:
+            walk(top)
 
+        print(f"✓ Discovered {len(items)} items")
         return items
 
-    def parse_item_page(self, item_id: str, item_url: str, item_type: str) -> Optional[Tuple[ItemMetadata, List[str], List[str]]]:
+    def parse_item_page(
+        self, item_id: str, path: str, item_type: str
+    ) -> Optional[Tuple[ItemMetadata, List[Tuple[str, str]], List[Tuple[str, str]]]]:
         """
         Parse an individual rule or recommendation page for all content.
 
         Returns: (ItemMetadata, non_compliant_examples, compliant_examples) or None on error
         """
-        soup = self.fetch_page(item_url)
-        if not soup:
+        root = self.fetch_payload_root(path)
+        if not root:
             return None
 
-        # Extract category and number from item ID
-        match = re.match(r'^([A-Z]{3})(\d{2})-C$', item_id)
+        page_key = f"page-{path}"
+        page = root.get(page_key)
+        if not page:
+            print(f"  ✗ No '{page_key}' key in payload root")
+            return None
+
+        match = re.match(r"^([A-Z]{3})(\d{2})-C$", item_id)
         if not match:
             return None
         category, number = match.groups()
 
-        # Initialize metadata
         item = ItemMetadata(
             id=item_id,
             item_type=item_type,
             category=category,
             number=int(number),
             title="",
-            wiki_url=item_url
+            wiki_url=f"{BASE_URL}{path}",
         )
 
-        self._extract_title(soup, item_id, item)
-        self._extract_last_modified(soup, item)
+        title = page.get("title", "")
+        item.title = re.sub(rf"^{re.escape(item_id)}\.?\s*", "", title)
 
         # cert_version will be added in the future once source is identified
-        # For now, using baseline reference from main wiki page
         item.cert_version = "2016 Edition (Wiki)"
+        # NOTE: the new site's payload doesn't expose a per-page last-modified
+        # date anywhere we've found (unlike the old Confluence footer). Left
+        # as None; generate_toml_metadata() treats a missing wiki-side date
+        # as "can't compare, skip" for existing TOML files, so this doesn't
+        # cause spurious overwrites -- it only means newly-created TOMLs get
+        # last_modified = "Unknown" until a real source is identified. See
+        # task 325.
+        item.last_modified = None
 
-        # Extract main content
-        content = soup.find('div', id='main-content')
-        if not content:
-            return (item, [], [])
+        body = page.get("body") or {}
+        body_value = body.get("value") or []
 
-        self._extract_description(content, item)
-        self._extract_risk_assessment(content, item)
-        self._extract_cwe_refs(content, item)
-        self._extract_related_items(content, item_id, item)
+        item.description = _extract_description(body_value)
+        _extract_risk_assessment(body_value, item)
+        _extract_cwe_refs(body_value, page, item)
+        _extract_related_items(body_value, item_id, item)
 
-        # Extract code examples
-        non_compliant, compliant = extract_code_examples(content, item_id)
+        non_compliant, compliant = extract_code_examples(body_value)
 
         return (item, non_compliant, compliant)
 
-    def _extract_title(self, soup, item_id: str, item: ItemMetadata) -> None:
-        """Extract the page title, stripping the leading item-ID prefix."""
-        title_elem = soup.find('h1', id='title-text')
-        if title_elem:
-            title_text = title_elem.get_text(strip=True)
-            item.title = re.sub(rf'^{item_id}\.?\s*', '', title_text)
 
-    def _extract_last_modified(self, soup, item: ItemMetadata) -> None:
-        """Extract the last-modified date from the page footer or metadata banner."""
-        # Pattern: "last modified by [User] on [Month DD, YYYY]"
-        full_text = soup.get_text()
-        modified_match = re.search(r'last\s+modified\s+by\s+[^\n]+\s+on\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4})', full_text, re.IGNORECASE)
-        if modified_match:
-            item.last_modified = modified_match.group(1)
-            return
+# ---------------------------------------------------------------------------
+# Content-AST extraction (metadata)
+# ---------------------------------------------------------------------------
 
-        # Try alternate format in metadata banner
-        page_meta = soup.find('div', id='page-metadata-banner') or soup.find('div', class_='page-metadata')
-        if not page_meta:
-            return
-        meta_text = page_meta.get_text()
-        modified_match = re.search(r'(?:Last\s+Modified|Updated):\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})', meta_text, re.IGNORECASE)
-        if modified_match:
-            item.last_modified = modified_match.group(1)
+HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5")
 
-    def _extract_description(self, content, item: ItemMetadata) -> None:
-        """Extract the description from the first few top-level paragraphs/divs."""
-        desc_parts = []
-        for elem in content.find_all(['p', 'div'], recursive=False):
-            text = elem.get_text(strip=True)
-            if text and not text.startswith('Rule') and not text.startswith('Rec'):
+
+def _is_element(node: Any) -> bool:
+    return isinstance(node, list) and len(node) >= 2 and isinstance(node[0], str)
+
+
+def _extract_description(body_value: List[Any]) -> str:
+    """Extract the description from the top-level paragraphs before the
+    first heading after the title (mirrors the old scraper's "first few
+    paragraphs" heuristic)."""
+    desc_parts = []
+    for node in body_value:
+        if not _is_element(node):
+            continue
+        if node[0] in HEADING_TAGS:
+            if desc_parts:
+                break
+            continue
+        if node[0] == "p":
+            text = node_text(node).strip()
+            if text:
                 desc_parts.append(text)
-                if len(desc_parts) >= 3:  # Get first few paragraphs
+                if len(desc_parts) >= 3:
                     break
-        item.description = '\n\n'.join(desc_parts)
+    return "\n\n".join(desc_parts)
 
-    def _extract_risk_assessment(self, content, item: ItemMetadata) -> None:
-        """Extract severity/likelihood/priority/level from the risk assessment table."""
-        for table in content.find_all('table'):
-            headers = [th.get_text(strip=True).lower() for th in table.find_all('th')]
-            if 'severity' not in headers and 'likelihood' not in headers:
-                continue
-            rows = table.find_all('tr')
-            if len(rows) <= 1:
-                continue
-            cells = rows[1].find_all(['td', 'th'])
-            for i, header in enumerate(headers):
-                if i >= len(cells):
-                    continue
-                value = cells[i].get_text(strip=True)
-                if header == 'severity':
-                    item.severity = value
-                elif header == 'likelihood':
-                    item.likelihood = value
-                elif header == 'priority':
-                    item.priority = value
-                elif header == 'level':
-                    item.level = value
 
-    def _extract_cwe_refs(self, content, item: ItemMetadata) -> None:
-        """Extract referenced CWE IDs from the page content."""
-        cwe_pattern = re.compile(r'CWE-(\d+)')
-        for match in cwe_pattern.finditer(str(content)):
-            cwe_id = f"CWE-{match.group(1)}"
+def _extract_risk_assessment(body_value: List[Any], item: ItemMetadata) -> None:
+    """Extract severity/likelihood/priority/level from the risk assessment table.
+
+    Table AST shape: ["table", {}, ["thead", {}, ["tr", {}, ["th", {}, text], ...]],
+    ["tbody", {}, ["tr", {}, ["td", {}, text-or-nested], ...]]].
+    """
+    for node in body_value:
+        if not _is_element(node) or node[0] != "table":
+            continue
+        thead = next((c for c in node[2:] if _is_element(c) and c[0] == "thead"), None)
+        tbody = next((c for c in node[2:] if _is_element(c) and c[0] == "tbody"), None)
+        if not thead or not tbody:
+            continue
+        header_row = next((c for c in thead[2:] if _is_element(c) and c[0] == "tr"), None)
+        if not header_row:
+            continue
+        headers = [node_text(c).strip().lower() for c in header_row[2:] if _is_element(c)]
+        if "severity" not in headers and "likelihood" not in headers:
+            continue
+        data_row = next((c for c in tbody[2:] if _is_element(c) and c[0] == "tr"), None)
+        if not data_row:
+            continue
+        cells = [c for c in data_row[2:] if _is_element(c)]
+        for i, header in enumerate(headers):
+            if i >= len(cells):
+                continue
+            value = node_text(cells[i]).strip()
+            if header == "severity":
+                item.severity = value
+            elif header == "likelihood":
+                item.likelihood = value
+            elif header == "priority":
+                item.priority = value
+            elif header == "level":
+                item.level = value
+        return  # only the first matching table (Risk Assessment section)
+
+
+def _extract_cwe_refs(body_value: List[Any], page: Dict[str, Any], item: ItemMetadata) -> None:
+    """Extract referenced CWE IDs from the page body text and frontmatter tags."""
+    cwe_pattern = re.compile(r"CWE-(\d+)")
+    for match in cwe_pattern.finditer(json.dumps(body_value)):
+        cwe_id = f"CWE-{match.group(1)}"
+        if cwe_id not in item.cwe:
+            item.cwe.append(cwe_id)
+    for tag in (page.get("meta") or {}).get("tags") or []:
+        tag_match = re.match(r"cwe-(\d+)$", tag, re.IGNORECASE)
+        if tag_match:
+            cwe_id = f"CWE-{tag_match.group(1)}"
             if cwe_id not in item.cwe:
                 item.cwe.append(cwe_id)
 
-    def _extract_related_items(self, content, item_id: str, item: ItemMetadata) -> None:
-        """Extract related rule/recommendation IDs from the first 'Related' section."""
-        rule_pattern = re.compile(r'\b([A-Z]{3}\d{2}-C)\b')
 
-        # Look for "Related" section (check multiple possible headings)
-        for heading in content.find_all(['h2', 'h3', 'h4']):
-            heading_text = heading.get_text(strip=True)
-            if 'related' not in heading_text.lower():
-                continue
-            # Get the next section after this heading
-            next_section = heading.find_next_sibling()
-            if next_section:
-                self._collect_related_ids(next_section.get_text(), item_id, item, rule_pattern)
-            break  # Only process first "Related" section
+def _extract_related_items(body_value: List[Any], item_id: str, item: ItemMetadata) -> None:
+    """Extract related rule/recommendation IDs from the first 'Related' section.
 
-    def _collect_related_ids(self, section_text: str, item_id: str, item: ItemMetadata,
-                             rule_pattern: re.Pattern) -> None:
-        """Classify each rule-ID match in a 'Related' section as a rule or
-        recommendation based on numbering convention and surrounding context.
-        """
-        for match in rule_pattern.finditer(section_text):
-            related_id = match.group(1)
-            if related_id == item_id:
-                continue
+    NOTE: `item.related_rules`/`related_recommendations` aren't currently
+    written to the generated TOML (generate_toml_metadata never emits them),
+    so this is best-effort and not load-bearing -- kept for parity/future use.
+    """
+    rule_pattern = re.compile(r"\b([A-Z]{3}\d{2}-C)\b")
 
-            # Try to determine if it's a rule or recommendation
-            # Rules typically have higher numbers (30+), recommendations lower (00-29)
-            related_num = int(related_id[3:5])
+    heading_idx = None
+    for i, node in enumerate(body_value):
+        if _is_element(node) and node[0] in ("h2", "h3", "h4") and "related" in node_text(node).lower():
+            heading_idx = i
+            break
+    if heading_idx is None or heading_idx + 1 >= len(body_value):
+        return
 
-            # Also check context around the match
-            start = max(0, match.start() - 50)
-            end = min(len(section_text), match.end() + 50)
-            context = section_text[start:end].lower()
+    section_text = node_text(body_value[heading_idx + 1])
+    for match in rule_pattern.finditer(section_text):
+        related_id = match.group(1)
+        if related_id == item_id:
+            continue
+        related_num = int(related_id[3:5])
+        start = max(0, match.start() - 50)
+        end = min(len(section_text), match.end() + 50)
+        context = section_text[start:end].lower()
+        if "recommendation" in context or related_num < 30:
+            if related_id not in item.related_recommendations:
+                item.related_recommendations.append(related_id)
+        else:
+            if related_id not in item.related_rules:
+                item.related_rules.append(related_id)
 
-            if 'recommendation' in context or related_num < 30:
-                if related_id not in item.related_recommendations:
-                    item.related_recommendations.append(related_id)
-            else:
-                if related_id not in item.related_rules:
-                    item.related_rules.append(related_id)
+
+# ---------------------------------------------------------------------------
+# Content-AST extraction (code examples)
+# ---------------------------------------------------------------------------
 
 
 def sanitize_code(code: str) -> str:
@@ -356,168 +395,135 @@ def sanitize_code(code: str) -> str:
     Clean invisible/non-printable characters from code.
     Removes non-breaking spaces, zero-width spaces, etc.
     """
-    # Replace non-breaking space (U+00A0) with regular space
-    code = code.replace('\u00a0', ' ')
-    # Replace zero-width space (U+200B)
-    code = code.replace('\u200b', '')
-    # Replace zero-width non-joiner (U+200C)
-    code = code.replace('\u200c', '')
-    # Replace zero-width joiner (U+200D)
-    code = code.replace('\u200d', '')
-    # Replace other common invisible characters
-    code = code.replace('\ufeff', '')  # Zero-width no-break space (BOM)
+    code = code.replace(" ", " ")
+    code = code.replace("​", "")
+    code = code.replace("‌", "")
+    code = code.replace("‍", "")
+    code = code.replace("﻿", "")  # Zero-width no-break space (BOM)
     return code
 
 
-# Prose immediately preceding a <pre> block that announces the block is
-# runtime/console output rather than another code example (e.g. "The output
-# is as follows:", "Sample output:"). Matched against sibling text nodes so
-# the walker can skip the pre block that follows, instead of ingesting it as
-# a second code example under the same heading.
-OUTPUT_ANNOUNCEMENT_RE = re.compile(
-    r'\b(?:the\s+)?(?:sample\s+|following\s+|program\s+|console\s+)?output\b.{0,20}\b(?:is\s+as\s+follows|would\s+be|were?)\b'
-    r'|\bsample\s+output\b'
-    r'|\boutput\s*:\s*$',
-    re.IGNORECASE,
-)
+def _find_pre_child(code_block_node: List[Any]) -> Optional[List[Any]]:
+    for child in code_block_node[2:]:
+        if _is_element(child) and child[0] == "pre":
+            return child
+    return None
 
 
-def is_output_announcement(text: str) -> bool:
-    """True if `text` is prose announcing that the next block is program
-    output (a console dump), not a code example."""
-    text = text.strip()
-    if not text or len(text) > 200:
-        return False
-    return bool(OUTPUT_ANNOUNCEMENT_RE.search(text))
-
-
-def looks_like_output_dump(code: str) -> bool:
+def extract_code_examples(
+    body_value: List[Any],
+) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
     """
-    Heuristic fallback for when a <pre> block is runtime/console output
-    smuggled in as a "code example" without an announcing sentence (or with
-    one we didn't match). Real C snippets always contain at least one of the
-    core syntax markers below; a block of bare numbers/labels doesn't.
+    Extract compliant and non-compliant code examples from a page's content AST.
 
-    Guards against e.g. MSC32-C's "1st run: 198682410, 2076262355, ..."
-    sample-output block being scraped as a second noncompliant/compliant
-    code example.
-    """
-    stripped = code.strip()
-    if not stripped:
-        return False
-    # Any of these appearing anywhere is strong evidence of real C code.
-    if re.search(r'[;{}#]|\b(?:if|for|while|return|void|int|char|struct)\b', stripped):
-        return False
-    # No C syntax markers at all -- now check whether it looks like a data
-    # dump: lines that are mostly digits/commas/colons/whitespace (optionally
-    # prefixed with a "1st run:"-style label).
-    lines = [ln for ln in stripped.splitlines() if ln.strip()]
-    if not lines:
-        return False
-    dump_like = sum(
-        1 for ln in lines if re.fullmatch(r'[\w\s]{0,20}:?\s*[-\d][\d,.\s-]*', ln)
-    )
-    return dump_like == len(lines)
-
-
-def extract_code_examples(content, item_id: str) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
-    """
-    Extract compliant and non-compliant code examples from page content.
+    Real code examples are wrapped by the site's Markdown pipeline in a
+    `["code-block", {"quality": "good"|"bad"}, ["pre", {"code": ...}, ...]]`
+    node. Sample/console output shown alongside an example (e.g. "The output
+    is as follows:" followed by a block of PRNG numbers) is emitted as a bare
+    sibling `["pre", {...}]` node, NOT wrapped in `code-block` -- so it's
+    structurally excluded here without needing content heuristics (contrast
+    with the old Confluence-HTML scraper, which had no such signal and had
+    to guess via prose cues / "does this look like C" heuristics; see task
+    137). The `quality` flag is also more reliable than the old heading-text
+    matching for classifying which section a code block belongs to.
 
     Returns: (non_compliant_examples, compliant_examples)
     Each tuple is (example_name, code)
     """
-    non_compliant = []
-    compliant = []
+    non_compliant: List[Tuple[str, str]] = []
+    compliant: List[Tuple[str, str]] = []
 
-    # Find all headings and their code blocks
-    for heading in content.find_all(['h2', 'h3', 'h4', 'h5']):
-        heading_text = heading.get_text(strip=True)
-        heading_lower = heading_text.lower()
+    current_bucket: Optional[str] = None
+    current_name: Optional[str] = None
+    nc_count = 0
+    c_count = 0
 
-        # Create a clean filename from heading (remove "Noncompliant Code Example", etc.)
-        clean_name = heading_text
-        for remove_phrase in ['Noncompliant Code Example', 'Compliant Solution', 'Non-Compliant Code Example']:
-            clean_name = re.sub(re.escape(remove_phrase), '', clean_name, flags=re.IGNORECASE)
-        clean_name = clean_name.strip(' :-')
+    for node in body_value:
+        if not _is_element(node):
+            continue
+        tag = node[0]
 
-        # If no descriptive name, use generic counter
-        if not clean_name or len(clean_name) < 3:
-            clean_name = None
+        if tag in ("h2", "h3", "h4", "h5"):
+            heading_text = node_text(node)
+            heading_lower = heading_text.lower()
+            clean_name = heading_text
+            for remove_phrase in [
+                "Noncompliant Code Example",
+                "Compliant Solution",
+                "Non-Compliant Code Example",
+            ]:
+                clean_name = re.sub(re.escape(remove_phrase), "", clean_name, flags=re.IGNORECASE)
+            clean_name = clean_name.strip(" :-")
+            current_name = clean_name if len(clean_name) >= 3 else None
 
-        # Check if this is a non-compliant example
-        if 'noncompliant' in heading_lower or 'non-compliant' in heading_lower:
-            # Find all code blocks after this heading until next heading
-            current = heading.find_next_sibling()
-            code_count = 0
-            skip_next_pre = False
-            while current and current.name not in ['h2', 'h3', 'h4', 'h5']:
-                if current.name == 'pre' or (current.name == 'div' and 'code' in current.get('class', [])):
-                    code = current.get_text()
-                    code = sanitize_code(code)  # Clean invisible characters
-                    was_flagged = skip_next_pre
-                    skip_next_pre = False
-                    if code.strip() and not was_flagged and not looks_like_output_dump(code):
-                        code_count += 1
-                        if clean_name:
-                            example_name = sanitize_filename(clean_name)
-                        else:
-                            example_name = f"noncompliant_{len(non_compliant) + 1}"
+            if "noncompliant" in heading_lower or "non-compliant" in heading_lower:
+                current_bucket = "noncompliant"
+                nc_count = 0
+            elif "compliant" in heading_lower and "non" not in heading_lower:
+                current_bucket = "compliant"
+                c_count = 0
+            else:
+                current_bucket = None
+            continue
 
-                        # If multiple code blocks under same heading, add suffix
-                        if code_count > 1:
-                            example_name = f"{example_name}_{code_count}"
+        if tag != "code-block":
+            continue
 
-                        non_compliant.append((example_name, code.strip()))
-                elif is_output_announcement(current.get_text()):
-                    skip_next_pre = True
-                current = current.find_next_sibling()
+        props = node[1] if isinstance(node[1], dict) else {}
+        pre_node = _find_pre_child(node)
+        if pre_node is None:
+            continue
+        pre_props = pre_node[1] if isinstance(pre_node[1], dict) else {}
+        code = sanitize_code(pre_props.get("code", ""))
+        if not code.strip():
+            continue
 
-        # Check if this is a compliant example
-        elif 'compliant' in heading_lower and 'non' not in heading_lower:
-            # Find all code blocks after this heading until next heading
-            current = heading.find_next_sibling()
-            code_count = 0
-            skip_next_pre = False
-            while current and current.name not in ['h2', 'h3', 'h4', 'h5']:
-                if current.name == 'pre' or (current.name == 'div' and 'code' in current.get('class', [])):
-                    code = current.get_text()
-                    code = sanitize_code(code)  # Clean invisible characters
-                    was_flagged = skip_next_pre
-                    skip_next_pre = False
-                    if code.strip() and not was_flagged and not looks_like_output_dump(code):
-                        code_count += 1
-                        if clean_name:
-                            example_name = sanitize_filename(clean_name)
-                        else:
-                            example_name = f"compliant_{len(compliant) + 1}"
+        quality = props.get("quality")
+        if quality == "bad":
+            bucket = "noncompliant"
+        elif quality == "good":
+            bucket = "compliant"
+        elif current_bucket is not None:
+            bucket = current_bucket  # fall back to heading context if quality is absent
+        else:
+            continue
 
-                        # If multiple code blocks under same heading, add suffix
-                        if code_count > 1:
-                            example_name = f"{example_name}_{code_count}"
-
-                        compliant.append((example_name, code.strip()))
-                elif is_output_announcement(current.get_text()):
-                    skip_next_pre = True
-                current = current.find_next_sibling()
+        if bucket == "noncompliant":
+            nc_count += 1
+            example_name = (
+                sanitize_filename(current_name) if current_name else f"noncompliant_{len(non_compliant) + 1}"
+            )
+            if nc_count > 1:
+                example_name = f"{example_name}_{nc_count}"
+            non_compliant.append((example_name, code.strip()))
+        else:
+            c_count += 1
+            example_name = sanitize_filename(current_name) if current_name else f"compliant_{len(compliant) + 1}"
+            if c_count > 1:
+                example_name = f"{example_name}_{c_count}"
+            compliant.append((example_name, code.strip()))
 
     return non_compliant, compliant
 
 
 def sanitize_filename(name: str) -> str:
     """Convert heading text to valid filename"""
-    # Replace special characters with underscores
-    name = re.sub(r'[^\w\s-]', '', name)
-    name = re.sub(r'[-\s]+', '_', name)
-    name = name.strip('_')
+    name = re.sub(r"[^\w\s-]", "", name)
+    name = re.sub(r"[-\s]+", "_", name)
+    name = name.strip("_")
     name = name.lower()
-    # Limit length
     if len(name) > 60:
         name = name[:60]
     return name
 
 
-def save_code_examples(item_id: str, category: str, non_compliant: List[Tuple[str, str]], compliant: List[Tuple[str, str]], output_dir: str):
+def save_code_examples(
+    item_id: str,
+    category: str,
+    non_compliant: List[Tuple[str, str]],
+    compliant: List[Tuple[str, str]],
+    output_dir: str,
+):
     """Save code examples as test files with proper header comments"""
     if not non_compliant and not compliant:
         return
@@ -535,7 +541,6 @@ def save_code_examples(item_id: str, category: str, non_compliant: List[Tuple[st
         filename = f"wiki_{example_name}.c"
         filepath = fail_dir / filename
 
-        # Add header comment
         header = f"""/*
  * Rule: {item_id}
  * Source: wiki
@@ -552,7 +557,6 @@ def save_code_examples(item_id: str, category: str, non_compliant: List[Tuple[st
         filename = f"wiki_{example_name}.c"
         filepath = pass_dir / filename
 
-        # Add header comment
         header = f"""/*
  * Rule: {item_id}
  * Source: wiki
@@ -571,27 +575,26 @@ def wrap_description(text: str, width: int = 80) -> str:
         return ""
 
     # Clean unicode artifacts
-    text = text.replace('\xa0', ' ')
+    text = text.replace("\xa0", " ")
 
-    paragraphs = text.split('\n\n')
+    paragraphs = text.split("\n\n")
     wrapped_paragraphs = []
 
     for para in paragraphs:
         # Remove existing line breaks within paragraph
-        para = ' '.join(para.split())
+        para = " ".join(para.split())
         # Wrap to width
         wrapped = textwrap.fill(para, width=width)
         wrapped_paragraphs.append(wrapped)
 
-    return '\n'.join(wrapped_paragraphs)
+    return "\n".join(wrapped_paragraphs)
 
 
 def parse_existing_toml_date(toml_path: Path) -> Optional[str]:
     """Extract last_modified date from existing TOML file"""
     try:
-        with open(toml_path, 'r') as f:
+        with open(toml_path, "r") as f:
             content = f.read()
-            # Look for last_modified = "..." line
             match = re.search(r'last_modified\s*=\s*"([^"]+)"', content)
             if match:
                 return match.group(1)
@@ -610,6 +613,7 @@ def compare_dates(date1: Optional[str], date2: Optional[str]) -> int:
 
     try:
         from datetime import datetime
+
         d1 = datetime.strptime(date1, "%b %d, %Y")
         d2 = datetime.strptime(date2, "%b %d, %Y")
         if d1 < d2:
@@ -618,7 +622,7 @@ def compare_dates(date1: Optional[str], date2: Optional[str]) -> int:
             return 1
         else:
             return 0
-    except:
+    except Exception:
         # If we can't parse, assume they're different to be safe
         return 0 if date1 == date2 else 1
 
@@ -698,13 +702,13 @@ def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = 
     toml_lines.append(f'id = "{item.id}"')
     toml_lines.append(f'type = "{item.item_type}"')
     toml_lines.append(f'category = "{item.category}"')
-    toml_lines.append(f'number = {item.number}')
-    toml_lines.append(f'title = {toml_inline_string(item.title)}')
+    toml_lines.append(f"number = {item.number}")
+    toml_lines.append(f"title = {toml_inline_string(item.title)}")
 
     # Description with multi-line string (literal-string-encoded so scraped
     # backslashes/quotes can't produce invalid TOML — see task 200).
     if wrapped_desc:
-        toml_lines.append('description = ' + toml_multiline_string(wrapped_desc))
+        toml_lines.append("description = " + toml_multiline_string(wrapped_desc))
     else:
         toml_lines.append('description = ""')
 
@@ -717,8 +721,8 @@ def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = 
     toml_lines.append("")
 
     # Rules section (enabled = false by default for new rules)
-    toml_lines.append(f'[rules.cert_c.{item.id}]')
-    toml_lines.append('enabled = false')
+    toml_lines.append(f"[rules.cert_c.{item.id}]")
+    toml_lines.append("enabled = false")
     toml_lines.append("")
 
     # References section
@@ -726,38 +730,35 @@ def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = 
     toml_lines.append(f'wiki = "{item.wiki_url}"')
 
     if item.cwe:
-        cwe_list = ', '.join([f'"{cwe}"' for cwe in item.cwe])
-        toml_lines.append(f'cwe = [{cwe_list}]')
+        cwe_list = ", ".join([f'"{cwe}"' for cwe in item.cwe])
+        toml_lines.append(f"cwe = [{cwe_list}]")
     else:
-        toml_lines.append('cwe = []')
+        toml_lines.append("cwe = []")
 
     toml_lines.append("")
 
     # Write to file
-    with open(output_path, 'w') as f:
-        f.write('\n'.join(toml_lines))
+    with open(output_path, "w") as f:
+        f.write("\n".join(toml_lines))
 
 
 def main():
     """Main execution function"""
-    parser = argparse.ArgumentParser(description='Scrape CERT C wiki and generate TOML metadata')
-    parser.add_argument('--delay', type=float, default=DEFAULT_DELAY,
-                        help=f'Delay between requests in seconds (default: {DEFAULT_DELAY})')
-    parser.add_argument('--output', type=str, default=BASE_OUTPUT_DIR,
-                        help=f'Output base directory (default: {BASE_OUTPUT_DIR})')
-    parser.add_argument('--categories', type=str, nargs='+',
-                        help='Specific categories to scrape (e.g., ARR MEM), default: all')
-    parser.add_argument('--type', choices=['rule', 'rec', 'all'], default='all',
-                        help='Scrape rules, recommendations, or both (default: all)')
-    parser.add_argument('--force', action='store_true',
-                        help='Force overwrite existing TOML files')
+    parser = argparse.ArgumentParser(description="Scrape CERT C secure-coding-standards site and generate TOML metadata")
+    parser.add_argument(
+        "--delay", type=float, default=DEFAULT_DELAY, help=f"Delay between requests in seconds (default: {DEFAULT_DELAY})"
+    )
+    parser.add_argument("--output", type=str, default=BASE_OUTPUT_DIR, help=f"Output base directory (default: {BASE_OUTPUT_DIR})")
+    parser.add_argument("--categories", type=str, nargs="+", help="Specific categories to scrape (e.g., ARR MEM), default: all")
+    parser.add_argument("--type", choices=["rule", "rec", "all"], default="all", help="Scrape rules, recommendations, or both (default: all)")
+    parser.add_argument("--force", action="store_true", help="Force overwrite existing TOML files")
     args = parser.parse_args()
 
     print("=" * 60)
-    print("CERT C Wiki Scraper - TOML Generation")
+    print("CERT C Standard Scraper - TOML Generation")
     print("=" * 60)
     print(f"Rate limit: {args.delay}s between requests")
-    print(f"  (Note: No robots.txt found - using conservative default)")
+    print("  (Note: No robots.txt found - using conservative default)")
     print(f"Output directory: {args.output}")
     print(f"Scraping: {args.type}")
     print(f"Force overwrite: {args.force}")
@@ -766,45 +767,24 @@ def main():
     # Create scraper
     scraper = WikiScraper(delay=args.delay)
 
-    # Discover categories dynamically from wiki
-    global CATEGORIES
-    CATEGORIES = scraper.discover_categories()
+    # Discover every rule/recommendation from the site's nav tree in one shot
+    all_discovered = scraper.discover_items()
     print()
 
-    if not CATEGORIES:
-        print("✗ No categories discovered from wiki. Exiting.")
+    if not all_discovered:
+        print("✗ No items discovered from site. Exiting.")
         return 1
 
-    # Determine which categories to scrape
-    categories_to_scrape = args.categories if args.categories else CATEGORIES.keys()
+    type_filter = {"rule": {"rule"}, "rec": {"recommendation"}, "all": {"rule", "recommendation"}}[args.type]
+    category_filter = set(args.categories) if args.categories else None
 
-    # Determine what types to scrape
-    types_to_scrape = []
-    if args.type in ['rule', 'all']:
-        types_to_scrape.append('rule')
-    if args.type in ['rec', 'all']:
-        types_to_scrape.append('recommendation')
+    all_items = [
+        (item_type, category, item_id, title, path)
+        for item_id, title, item_type, category, path in all_discovered
+        if item_type in type_filter and (category_filter is None or category in category_filter)
+    ]
 
-    # Collect all items
-    all_items = []
-
-    for item_type in types_to_scrape:
-        print(f"\n{'='*60}")
-        print(f"Collecting {item_type.upper()}S from category pages...")
-        print(f"{'='*60}")
-
-        for category_code in categories_to_scrape:
-            if category_code not in CATEGORIES:
-                print(f"  ✗ Unknown category: {category_code}")
-                continue
-
-            print(f"\n[{category_code}] Fetching {item_type} category page...")
-            items = scraper.get_category_items(category_code, item_type)
-            print(f"  ✓ Found {len(items)} {item_type}s")
-            all_items.extend([(item_type, category_code, item_id, title, url)
-                            for item_id, title, url in items])
-
-    print(f"\n✓ Total items found: {len(all_items)}")
+    print(f"✓ Total items to scrape: {len(all_items)} (of {len(all_discovered)} discovered)")
     print()
 
     # Parse each item
@@ -816,14 +796,14 @@ def main():
     new_items = []
     updated_items = []
 
-    for i, (item_type, category, item_id, title, url) in enumerate(all_items, 1):
+    for i, (item_type, category, item_id, title, path) in enumerate(all_items, 1):
         print(f"[{i}/{len(all_items)}] Parsing {item_type} {item_id}...")
 
-        result = scraper.parse_item_page(item_id, url, item_type)
+        result = scraper.parse_item_page(item_id, path, item_type)
         if result:
             item, non_compliant, compliant = result
 
-            # If title wasn't extracted from page, use the one from category page
+            # If title wasn't extracted from page, use the one from the nav tree
             if not item.title and title:
                 item.title = title
 
@@ -834,7 +814,7 @@ def main():
             rule_dir.mkdir(parents=True, exist_ok=True)
 
             # Generate TOML - filename matches rule ID
-            toml_filename = item.id + '.toml'
+            toml_filename = item.id + ".toml"
             toml_path = rule_dir / toml_filename
 
             # Track state before generation
@@ -899,4 +879,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
