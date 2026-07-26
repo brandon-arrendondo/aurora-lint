@@ -30,6 +30,7 @@ import json
 import argparse
 import requests
 import textwrap
+import tomllib
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
@@ -42,6 +43,13 @@ USER_AGENT = "CERT-C-Scraper/2.0 (Educational Purpose)"
 
 # Output configuration - directly to src/rules/cert_c/
 BASE_OUTPUT_DIR = "src/rules/cert_c"
+
+# CERT ID prefix -> repo category directory name, where they diverge.
+# CON (Concurrency) rules live under src/rules/cert_c/CONC/ to avoid a
+# directory-name collision; every other prefix matches its directory 1:1.
+CATEGORY_DIR_OVERRIDES = {
+    "CON": "CONC",
+}
 
 
 @dataclass
@@ -529,17 +537,27 @@ def save_code_examples(
         return
 
     # Create nested test directories: ARR/ARR30-C/tests/fail and ARR/ARR30-C/tests/pass
-    tests_dir = Path(output_dir) / category / item_id / "tests"
+    category_dir = CATEGORY_DIR_OVERRIDES.get(category, category)
+    tests_dir = Path(output_dir) / category_dir / item_id / "tests"
     fail_dir = tests_dir / "fail"
     pass_dir = tests_dir / "pass"
 
     fail_dir.mkdir(parents=True, exist_ok=True)
     pass_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save non-compliant examples
+    # Save non-compliant examples. Never overwrite a file that already
+    # exists: the new site's raw code-block fragments (e.g. a macro
+    # definition and its buggy usage as separate sibling blocks) don't
+    # reliably reassemble into the same self-contained, compilable fixtures
+    # the existing corpus has -- some of which were hand/AI-synthesized from
+    # the old wiki rather than literal extractions. Overwriting risks
+    # replacing a good fixture with a broken fragment; only add new ones.
     for example_name, code in non_compliant:
         filename = f"wiki_{example_name}.c"
         filepath = fail_dir / filename
+        if filepath.exists():
+            print(f"    ⊙ Skipping existing non-compliant example (never overwritten): {filepath}")
+            continue
 
         header = f"""/*
  * Rule: {item_id}
@@ -552,10 +570,13 @@ def save_code_examples(
         filepath.write_text(full_content)
         print(f"    ✓ Saved non-compliant example: {filepath}")
 
-    # Save compliant examples
+    # Save compliant examples (same never-overwrite policy as above)
     for example_name, code in compliant:
         filename = f"wiki_{example_name}.c"
         filepath = pass_dir / filename
+        if filepath.exists():
+            print(f"    ⊙ Skipping existing compliant example (never overwritten): {filepath}")
+            continue
 
         header = f"""/*
  * Rule: {item_id}
@@ -588,6 +609,21 @@ def wrap_description(text: str, width: int = 80) -> str:
         wrapped_paragraphs.append(wrapped)
 
     return "\n".join(wrapped_paragraphs)
+
+
+def is_custom_rule(toml_path: Path) -> bool:
+    """True if the existing TOML is a project-defined rule that reuses a CERT
+    ID (cert_version starts with "Custom") rather than a genuine scrape of
+    that ID's wiki page. These must never be overwritten by a re-scrape --
+    see MSC04-C/MSC07-C/POS55-C, which repurpose CERT IDs for unrelated,
+    hand-authored rules."""
+    try:
+        with open(toml_path, "r") as f:
+            content = f.read()
+            match = re.search(r'cert_version\s*=\s*["\']Custom', content)
+            return match is not None
+    except Exception:
+        return False
 
 
 def parse_existing_toml_date(toml_path: Path) -> Optional[str]:
@@ -671,6 +707,12 @@ def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = 
     If the file exists and force=False, only update if wiki content is newer.
     """
 
+    # Never clobber a project-defined "Custom" rule that reuses a CERT ID --
+    # not even with --force.
+    if output_path.exists() and is_custom_rule(output_path):
+        print(f"    ⚠ Skipping custom project rule (not a real wiki scrape target): {output_path}")
+        return
+
     # Check if file already exists
     if output_path.exists() and not force:
         # Check if wiki content is newer
@@ -694,6 +736,42 @@ def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = 
     # Wrap description for readability
     wrapped_desc = wrap_description(item.description, width=80)
 
+    # If regenerating an existing file, load its current values so that a
+    # scrape-side extraction miss (e.g. a Risk Assessment table this page's
+    # markup doesn't match) can never blank out data that was previously
+    # populated -- new value wins only when the scrape actually found one.
+    # `enabled` is never scraper-owned at all: it reflects whether the rule
+    # has been implemented in this repo, which the wiki has no concept of,
+    # so the existing value (default false only for a brand-new file) is
+    # always preserved.
+    existing_meta = {}
+    existing_cwe = []
+    existing_enabled = False
+    if output_path.exists():
+        try:
+            existing = tomllib.loads(output_path.read_text())
+            existing_meta = existing.get("metadata", {})
+            existing_cwe = existing.get("references", {}).get("cwe", [])
+            existing_enabled = existing.get("rules", {}).get("cert_c", {}).get(item.id, {}).get("enabled", False)
+        except Exception as e:
+            print(f"    ⚠ Could not parse existing TOML for field-preservation merge: {e}")
+
+    def preserved(new_value, field):
+        return new_value if new_value else existing_meta.get(field)
+
+    title = preserved(item.title, "title") or item.title
+    description = wrapped_desc if wrapped_desc else existing_meta.get("description", "")
+    severity = preserved(item.severity, "severity") or "Unknown"
+    likelihood = preserved(item.likelihood, "likelihood") or "Unknown"
+    priority = preserved(item.priority, "priority") or "Unknown"
+    level = preserved(item.level, "level") or "Unknown"
+    cert_version = preserved(item.cert_version, "cert_version") or "Unknown"
+    last_modified = preserved(item.last_modified, "last_modified") or "Unknown"
+    # Union rather than replace: CWE mappings drive Juliet CWE-matched rule
+    # selection, so a page's extraction returning a narrower set than a
+    # previous scrape found must never silently drop existing entries.
+    cwe = existing_cwe + [c for c in item.cwe if c not in existing_cwe]
+
     # Build TOML content manually for better control
     toml_lines = []
 
@@ -703,34 +781,35 @@ def generate_toml_metadata(item: ItemMetadata, output_path: Path, force: bool = 
     toml_lines.append(f'type = "{item.item_type}"')
     toml_lines.append(f'category = "{item.category}"')
     toml_lines.append(f"number = {item.number}")
-    toml_lines.append(f"title = {toml_inline_string(item.title)}")
+    toml_lines.append(f"title = {toml_inline_string(title)}")
 
     # Description with multi-line string (literal-string-encoded so scraped
     # backslashes/quotes can't produce invalid TOML — see task 200).
-    if wrapped_desc:
-        toml_lines.append("description = " + toml_multiline_string(wrapped_desc))
+    if description:
+        toml_lines.append("description = " + toml_multiline_string(description))
     else:
         toml_lines.append('description = ""')
 
-    toml_lines.append(f'severity = "{item.severity or "Unknown"}"')
-    toml_lines.append(f'likelihood = "{item.likelihood or "Unknown"}"')
-    toml_lines.append(f'priority = "{item.priority or "Unknown"}"')
-    toml_lines.append(f'level = "{item.level or "Unknown"}"')
-    toml_lines.append(f'cert_version = "{item.cert_version or "Unknown"}"')
-    toml_lines.append(f'last_modified = "{item.last_modified or "Unknown"}"')
+    toml_lines.append(f'severity = "{severity}"')
+    toml_lines.append(f'likelihood = "{likelihood}"')
+    toml_lines.append(f'priority = "{priority}"')
+    toml_lines.append(f'level = "{level}"')
+    toml_lines.append(f'cert_version = "{cert_version}"')
+    toml_lines.append(f'last_modified = "{last_modified}"')
     toml_lines.append("")
 
-    # Rules section (enabled = false by default for new rules)
+    # Rules section -- `enabled` always reflects this repo's implementation
+    # state, never the scrape (see comment above); false only for a new file.
     toml_lines.append(f"[rules.cert_c.{item.id}]")
-    toml_lines.append("enabled = false")
+    toml_lines.append(f"enabled = {'true' if existing_enabled else 'false'}")
     toml_lines.append("")
 
     # References section
     toml_lines.append("[references]")
     toml_lines.append(f'wiki = "{item.wiki_url}"')
 
-    if item.cwe:
-        cwe_list = ", ".join([f'"{cwe}"' for cwe in item.cwe])
+    if cwe:
+        cwe_list = ", ".join([f'"{c}"' for c in cwe])
         toml_lines.append(f"cwe = [{cwe_list}]")
     else:
         toml_lines.append("cwe = []")
@@ -810,7 +889,8 @@ def main():
             parsed_items.append(item)
 
             # Create directory structure: src/rules/cert_c/ARR/ARR30-C/ARR30-C.toml
-            rule_dir = Path(args.output) / item.category / item.id
+            category_dir = CATEGORY_DIR_OVERRIDES.get(item.category, item.category)
+            rule_dir = Path(args.output) / category_dir / item.id
             rule_dir.mkdir(parents=True, exist_ok=True)
 
             # Generate TOML - filename matches rule ID
@@ -836,8 +916,10 @@ def main():
             else:
                 skipped_items.append(item_id)
 
-            # Save code examples as test files (always update these)
-            if non_compliant or compliant:
+            # Save code examples as test files (always update these -- except
+            # for a custom project rule reusing this CERT ID, whose hand-
+            # authored fixtures must never be touched by wiki content).
+            if (non_compliant or compliant) and not is_custom_rule(toml_path):
                 save_code_examples(item.id, item.category, non_compliant, compliant, args.output)
         else:
             print(f"  ✗ Failed to parse {item_id}")

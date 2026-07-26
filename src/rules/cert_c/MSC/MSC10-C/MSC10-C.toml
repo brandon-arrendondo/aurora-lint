@@ -1,0 +1,29 @@
+[metadata]
+id = "MSC10-C"
+type = "recommendation"
+category = "MSC"
+number = 10
+title = 'Character encoding: UTF8-related issues'
+description = '''
+UTF-8 is a variable-width encoding for Unicode. UTF-8 uses 1 to 4 bytes per
+character, depending on the Unicode symbol. UTF-8 has the following properties:
+Generally, programs should validate UTF-8 data before performing other checks.
+The following table lists the well-formed UTF-8 byte sequences.
+Although UTF-8 originated from the Plan 9 developers [ Pike 1993 ], Plan 9's own
+support covers only the low 16-bit range. In general, many "Unicode" systems
+support only the low 16-bit range, not the full 21-bit ISO 10646 code space [
+ISO/IEC 10646:2012 ].
+'''
+severity = "Medium"
+likelihood = "Unlikely"
+priority = "P2"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC10-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc10-c"
+cwe = ["CWE-176", "CWE-116"]

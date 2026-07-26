@@ -1,0 +1,34 @@
+[metadata]
+id = "MSC14-C"
+type = "recommendation"
+category = "MSC"
+number = 14
+title = 'Do not introduce unnecessary platform dependencies'
+description = '''
+Platform dependencies may be introduced to improve performance on a particular
+platform. This can be a dangerous practice, particularly if these dependencies
+are not appropriately documented during development and addressed during
+porting. Platform dependencies that have no performance or other benefits should
+consequently be avoided because they may introduce errors during porting.
+The C Standard identifies four different kinds of nonportable behavior. Each
+section of Annex J of the C Standard enumerates distinct instances of behaviors
+of each kind.
+An example of undefined behavior is passing a null char* pointer as an argument
+to the printf function corresponding to the %s format specification. Although
+some implementations (such as the GNU C Library ) provide well-defined semantics
+for this case, others do not, causing programs that rely on this behavior to
+fail abnormally.
+'''
+severity = "Low"
+likelihood = "Unlikely"
+priority = "P1"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC14-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc14-c"
+cwe = []

@@ -1,0 +1,29 @@
+[metadata]
+id = "MSC11-C"
+type = "recommendation"
+category = "MSC"
+number = 11
+title = 'Incorporate diagnostic tests using assertions'
+description = '''
+Incorporate diagnostic tests into your program using, for example, the assert()
+macro.
+The assert macro expands to a void expression:
+When it is executed, if expression (which must have a scalar type) is false, the
+assert macro outputs information about the failed assertion (including the text
+of the argument, the name of the source file, the source line number, and the
+name of the enclosing function) on the standard error stream, in an
+implementation-defined format, and calls the abort() function.
+'''
+severity = "Low"
+likelihood = "Unlikely"
+priority = "P1"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC11-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc11-c"
+cwe = ["CWE-190"]

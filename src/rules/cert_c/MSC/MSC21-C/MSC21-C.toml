@@ -1,0 +1,26 @@
+[metadata]
+id = "MSC21-C"
+type = "recommendation"
+category = "MSC"
+number = 21
+title = 'Use robust loop termination conditions'
+description = '''
+C defines < , > , <= , and >= to be relational operators , and it defines == and
+!= to be equality operators .
+If a for or while statement uses a loop counter, than it is safer to use a
+relational operator (such as < ) to terminate the loop than to use an equality
+operator (such as != ).
+'''
+severity = "Low"
+likelihood = "Unlikely"
+priority = "P1"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC21-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc21-c"
+cwe = []

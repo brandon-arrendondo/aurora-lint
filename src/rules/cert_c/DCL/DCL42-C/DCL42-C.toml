@@ -1,0 +1,34 @@
+[metadata]
+id = "DCL42-C"
+type = "rule"
+category = "DCL"
+number = 42
+title = 'Only call functions with the unsequenced or reproducible attributes if they actually have the asserted property'
+description = '''
+C has function attributes reproducible and unsequenced that assert certain
+properties that allow compilers to optimize by changing the number of times and
+locations where such functions are called. The attribute reproducible means that
+a function is effectless and idempotent. The attribute unsequenced means that a
+function is stateless, effectless, idempotent and independent. The rigorous
+definitions of these terms can be found in the C Standard, 6.7.13.8 [ ISO/IEC
+9899:2024 ]. The paper that proposed adding these attributes to the standard [
+JTC1/SC22/WG14 N2956 ] gave these simplified versions of them:
+It is the programmer's responsibility to ensure that functions with these
+attributes actually meet all of those criteria. If they do not, calling them
+results in undefined behavior , according to the C Standard, 6.7.13.8.1,
+paragraph 3 [ ISO/IEC 9899:2024 ]:
+See also undefined behavior 83 .
+'''
+severity = "Low"
+likelihood = "Unlikely"
+priority = "P2"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.DCL42-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/rules/declarations-and-initialization-dcl/dcl42-c"
+cwe = []

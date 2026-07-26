@@ -1,0 +1,31 @@
+[metadata]
+id = "MSC05-C"
+type = "recommendation"
+category = "MSC"
+number = 5
+title = 'Do not manipulate time_t typed values directly'
+description = '''
+The type time_t is specified as an "arithmetic type capable of representing
+times." However, the way time is encoded within this arithmetic type by the
+function time() is unspecified . See unspecified behavior 48 in Annex J of the C
+Standard. Because the encoding is unspecified, there is no safe way to manually
+perform arithmetic on the type, and as a result, the values should not be
+modified directly.
+Note that POSIX specifies that the time() function must return a value of type
+time_t , representing time in seconds since the Epoch. POSIX-conforming
+applications that are not intended to be portable to other environments
+therefore may safely perform arithmetic operations on time_t objects.
+'''
+severity = "Low"
+likelihood = "Unlikely"
+priority = "P2"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC05-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc05-c"
+cwe = []

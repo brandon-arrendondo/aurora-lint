@@ -1,0 +1,36 @@
+[metadata]
+id = "MSC19-C"
+type = "recommendation"
+category = "MSC"
+number = 19
+title = 'For functions that return an array, prefer returning an empty array over a null value'
+description = '''
+Many functions have the option of returning a pointer to an object or returning
+NULL if a valid pointer cannot be produced. Some functions return arrays, which
+appear like a pointer to an object. However, if a function has the option of
+returning an array or indicating that a valid array is not possible, it should
+not return NULL . Instead, the function should return an empty array. Often,
+code that calls a function that returns an array intends merely to iterate over
+the array elements. In this case, the calling code need not change—iterating
+over the elements works correctly even if the returned array is empty, so the
+calling code need not check the return value for NULL .
+This situation is complicated by the fact that C does not keep track of the
+length of an array. However, two popular methods have emerged to emulate this
+behavior. The first is to wrap the array in a struct with an integer storing the
+length. The second is to place a sentinel value at the end of the data in the
+array. This second approach is most commonly manifested in null-terminated byte
+strings (NTBSs).
+'''
+severity = "Low"
+likelihood = "Unlikely"
+priority = "P2"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC19-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc19-c"
+cwe = []

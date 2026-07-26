@@ -1,0 +1,26 @@
+[metadata]
+id = "ENV04-C"
+type = "recommendation"
+category = "ENV"
+number = 4
+title = 'Protect programs whose behavior can be controlled by environment variables'
+description = '''
+The recommended way to use OpenMP is to specify most of the performance
+parameters in environment variables so that administrators can tweak them for
+their environment:
+For example,
+– OMP_NUM_THREADS int_literal
+'''
+severity = "Unknown"
+likelihood = "Unknown"
+priority = "Unknown"
+level = "Unknown"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.ENV04-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/environment-env/env04-c"
+cwe = []

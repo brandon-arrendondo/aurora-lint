@@ -1,0 +1,26 @@
+[metadata]
+id = "MSC00-C"
+type = "recommendation"
+category = "MSC"
+number = 0
+title = 'Compile cleanly at high warning levels'
+description = '''
+Compile code using the highest warning level available for your compiler and
+eliminate warnings by modifying the code.
+According to the C Standard, subclause 5.1.1.3 [ ISO/IEC 9899:2011 ],
+Assuming a conforming implementation , eliminating diagnostic messages will
+eliminate any syntactic or constraint violations.
+'''
+severity = "Medium"
+likelihood = "Probable"
+priority = "P4"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC00-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc00-c"
+cwe = ["CWE-563", "CWE-570", "CWE-571"]

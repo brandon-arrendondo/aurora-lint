@@ -1,0 +1,26 @@
+[metadata]
+id = "MSC20-C"
+type = "recommendation"
+category = "MSC"
+number = 20
+title = 'Do not use a switch statement to transfer control into a complex block'
+description = '''
+A switch statement can be mixed with a block of code by starting the block in
+one case label, then having another case label within the block. The block can
+be pictured as spanning more than one case statement.
+Subclause 6.8.4.2, paragraph 2, of the C Standard [ ISO/IEC 9899:2011 ] says,
+Footnote 154 says:
+'''
+severity = "Medium"
+likelihood = "Probable"
+priority = "P8"
+level = "L2"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC20-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc20-c"
+cwe = []

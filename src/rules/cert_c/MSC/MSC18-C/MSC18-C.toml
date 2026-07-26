@@ -1,0 +1,30 @@
+[metadata]
+id = "MSC18-C"
+type = "recommendation"
+category = "MSC"
+number = 18
+title = 'Be careful while handling sensitive data, such as passwords, in program code'
+description = '''
+Many applications need to handle sensitive data either in memory or on disk. If
+this sensitive data is not protected properly, it might lead to loss of secrecy
+or integrity of the data. It is very difficult (or expensive) to completely
+secure all the sensitive data. Users tend to use the same passwords everywhere.
+So even if your program is a simple game that stores the user's profile
+information and requires the user to enter a password, the user might choose the
+same password he or she uses for an online bank account for your game program.
+Now the user's bank account is only as secure as your program enables it to be.
+There are simple steps you can take to secure sensitive data in your programs.
+'''
+severity = "Medium"
+likelihood = "Probable"
+priority = "P4"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC18-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc18-c"
+cwe = ["CWE-259", "CWE-261", "CWE-311", "CWE-319", "CWE-321", "CWE-326", "CWE-798"]

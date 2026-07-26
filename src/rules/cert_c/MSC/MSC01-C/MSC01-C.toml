@@ -1,0 +1,23 @@
+[metadata]
+id = "MSC01-C"
+type = "recommendation"
+category = "MSC"
+number = 1
+title = 'Strive for logical completeness'
+description = '''
+Software vulnerabilities can result when a programmer fails to consider all
+possible data states.
+'''
+severity = "Medium"
+likelihood = "Probable"
+priority = "P4"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC01-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc01-c"
+cwe = []

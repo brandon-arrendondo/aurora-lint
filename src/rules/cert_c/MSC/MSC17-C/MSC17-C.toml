@@ -1,0 +1,28 @@
+[metadata]
+id = "MSC17-C"
+type = "recommendation"
+category = "MSC"
+number = 17
+title = 'Finish every set of statements associated with a case label with a break statement'
+description = '''
+A switch statement consists of several case labels, plus a default label. The
+default label is optional but recommended. (See MSC01-C. Strive for logical
+completeness .) A series of statements following a case label conventionally
+ends with a break statement; if omitted, control flow falls through to the next
+case in the switch statement block. Because the break statement is not required,
+omitting it does not produce compiler diagnostics. If the omission was
+unintentional, it can result in an unexpected control flow.
+'''
+severity = "Medium"
+likelihood = "Likely"
+priority = "P18"
+level = "L1"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC17-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc17-c"
+cwe = []

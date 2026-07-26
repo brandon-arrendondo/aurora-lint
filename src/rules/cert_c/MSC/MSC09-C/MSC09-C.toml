@@ -1,0 +1,35 @@
+[metadata]
+id = "MSC09-C"
+type = "recommendation"
+category = "MSC"
+number = 9
+title = 'Character encoding: Use subset of ASCII for safety'
+description = '''
+According to subclause 5.2.1 of the C Standard [ ISO/IEC 9899:2011 ],
+There are several national variants of ASCII. As a result, the original ASCII is
+often called US-ASCII. ISO/IEC 646-1991 defines a character set, similar to US-
+ASCII, but with code positions corresponding to US-ASCII characters @[]{| } as
+national use positions [ ISO/IEC 646-1991 ]. It also gives some liberties with
+particular characters (e.g., #$^`~ ). In ISO/IEC 646-1991, several national
+variants of ASCII are defined, assigning different letters and symbols to the
+national use positions. Consequently, the characters that appear in those
+positions, including those in US-ASCII, are less portable in international data
+transfer. Because of the national variants, some characters are less portable
+than others: they might be transferred or interpreted incorrectly.
+In addition to the letters of the English alphabet (A through Z and a through
+z), the digits (0 through 9), and the space, only the following characters are
+portable:
+'''
+severity = "Medium"
+likelihood = "Unlikely"
+priority = "P4"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC09-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc09-c"
+cwe = ["CWE-116"]

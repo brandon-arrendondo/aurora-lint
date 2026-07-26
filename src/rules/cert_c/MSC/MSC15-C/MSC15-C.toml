@@ -1,0 +1,28 @@
+[metadata]
+id = "MSC15-C"
+type = "recommendation"
+category = "MSC"
+number = 15
+title = 'Do not depend on undefined behavior'
+description = '''
+The C Standard, subclause 3.5.3 [ ISO/IEC 9899:2024 ], defines undefined
+behavior as
+Subclause 4 explains how the standard identifies undefined behavior (see also
+undefined behavior 1 of Annex J).
+Annex J, subclause J.2, "Undefined behavior," enumerates the circumstances under
+which the behavior of a program is undefined. This list is duplicated on the CC.
+Undefined Behavior page.
+'''
+severity = "High"
+likelihood = "Likely"
+priority = "P9"
+level = "L2"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC15-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc15-c"
+cwe = []

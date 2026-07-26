@@ -1,0 +1,31 @@
+[metadata]
+id = "MSC22-C"
+type = "recommendation"
+category = "MSC"
+number = 22
+title = 'Use the setjmp(), longjmp() facility securely'
+description = '''
+The setjmp() macro should be invoked from only one of the contexts listed in
+subclause 7.13.2.1 of the C Standard [ ISO/IEC 9899:2024 ]. Invoking setjmp()
+outside of one of these contexts results in undefined behavior . (See undefined
+behavior 125 .)
+After invoking longjmp() , non-volatile-qualified local objects should not be
+accessed if their values could have changed since the invocation of setjmp() .
+Their value in this case is considered indeterminate , and accessing them is
+undefined behavior. (See undefined behaviors 127 and 10 .)
+The longjmp() function should never be used to return control to a function that
+has terminated execution. (See undefined behavior 126 .)
+'''
+severity = "Low"
+likelihood = "Probable"
+priority = "P2"
+level = "L3"
+cert_version = "2016 Edition (Wiki)"
+last_modified = "Unknown"
+
+[rules.cert_c.MSC22-C]
+enabled = false
+
+[references]
+wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc22-c"
+cwe = []
