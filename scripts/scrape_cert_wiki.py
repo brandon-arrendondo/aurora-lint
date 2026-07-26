@@ -369,6 +369,57 @@ def sanitize_code(code: str) -> str:
     return code
 
 
+# Prose immediately preceding a <pre> block that announces the block is
+# runtime/console output rather than another code example (e.g. "The output
+# is as follows:", "Sample output:"). Matched against sibling text nodes so
+# the walker can skip the pre block that follows, instead of ingesting it as
+# a second code example under the same heading.
+OUTPUT_ANNOUNCEMENT_RE = re.compile(
+    r'\b(?:the\s+)?(?:sample\s+|following\s+|program\s+|console\s+)?output\b.{0,20}\b(?:is\s+as\s+follows|would\s+be|were?)\b'
+    r'|\bsample\s+output\b'
+    r'|\boutput\s*:\s*$',
+    re.IGNORECASE,
+)
+
+
+def is_output_announcement(text: str) -> bool:
+    """True if `text` is prose announcing that the next block is program
+    output (a console dump), not a code example."""
+    text = text.strip()
+    if not text or len(text) > 200:
+        return False
+    return bool(OUTPUT_ANNOUNCEMENT_RE.search(text))
+
+
+def looks_like_output_dump(code: str) -> bool:
+    """
+    Heuristic fallback for when a <pre> block is runtime/console output
+    smuggled in as a "code example" without an announcing sentence (or with
+    one we didn't match). Real C snippets always contain at least one of the
+    core syntax markers below; a block of bare numbers/labels doesn't.
+
+    Guards against e.g. MSC32-C's "1st run: 198682410, 2076262355, ..."
+    sample-output block being scraped as a second noncompliant/compliant
+    code example.
+    """
+    stripped = code.strip()
+    if not stripped:
+        return False
+    # Any of these appearing anywhere is strong evidence of real C code.
+    if re.search(r'[;{}#]|\b(?:if|for|while|return|void|int|char|struct)\b', stripped):
+        return False
+    # No C syntax markers at all -- now check whether it looks like a data
+    # dump: lines that are mostly digits/commas/colons/whitespace (optionally
+    # prefixed with a "1st run:"-style label).
+    lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    dump_like = sum(
+        1 for ln in lines if re.fullmatch(r'[\w\s]{0,20}:?\s*[-\d][\d,.\s-]*', ln)
+    )
+    return dump_like == len(lines)
+
+
 def extract_code_examples(content, item_id: str) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
     """
     Extract compliant and non-compliant code examples from page content.
@@ -399,11 +450,14 @@ def extract_code_examples(content, item_id: str) -> Tuple[List[Tuple[str, str]],
             # Find all code blocks after this heading until next heading
             current = heading.find_next_sibling()
             code_count = 0
+            skip_next_pre = False
             while current and current.name not in ['h2', 'h3', 'h4', 'h5']:
                 if current.name == 'pre' or (current.name == 'div' and 'code' in current.get('class', [])):
                     code = current.get_text()
                     code = sanitize_code(code)  # Clean invisible characters
-                    if code.strip():
+                    was_flagged = skip_next_pre
+                    skip_next_pre = False
+                    if code.strip() and not was_flagged and not looks_like_output_dump(code):
                         code_count += 1
                         if clean_name:
                             example_name = sanitize_filename(clean_name)
@@ -415,6 +469,8 @@ def extract_code_examples(content, item_id: str) -> Tuple[List[Tuple[str, str]],
                             example_name = f"{example_name}_{code_count}"
 
                         non_compliant.append((example_name, code.strip()))
+                elif is_output_announcement(current.get_text()):
+                    skip_next_pre = True
                 current = current.find_next_sibling()
 
         # Check if this is a compliant example
@@ -422,11 +478,14 @@ def extract_code_examples(content, item_id: str) -> Tuple[List[Tuple[str, str]],
             # Find all code blocks after this heading until next heading
             current = heading.find_next_sibling()
             code_count = 0
+            skip_next_pre = False
             while current and current.name not in ['h2', 'h3', 'h4', 'h5']:
                 if current.name == 'pre' or (current.name == 'div' and 'code' in current.get('class', [])):
                     code = current.get_text()
                     code = sanitize_code(code)  # Clean invisible characters
-                    if code.strip():
+                    was_flagged = skip_next_pre
+                    skip_next_pre = False
+                    if code.strip() and not was_flagged and not looks_like_output_dump(code):
                         code_count += 1
                         if clean_name:
                             example_name = sanitize_filename(clean_name)
@@ -438,6 +497,8 @@ def extract_code_examples(content, item_id: str) -> Tuple[List[Tuple[str, str]],
                             example_name = f"{example_name}_{code_count}"
 
                         compliant.append((example_name, code.strip()))
+                elif is_output_announcement(current.get_text()):
+                    skip_next_pre = True
                 current = current.find_next_sibling()
 
     return non_compliant, compliant
