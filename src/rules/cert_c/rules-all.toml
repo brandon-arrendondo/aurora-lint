@@ -292,7 +292,7 @@ enabled = true
 
 
 [rules.cert_c.DCL42-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.ENV01-C]
