@@ -149,7 +149,14 @@ impl Con40C {
     }
 
     /// Count references to atomic variables within an expression
-    #[allow(clippy::only_used_in_recursion)]
+    ///
+    /// Explicit-stack walk: pruning skips into call_expression subtrees
+    /// (they're separate atomic operations) while still descending full
+    /// binary/conditional-expression nesting depth, which
+    /// substrate::query::find_descendants can't express (no skip
+    /// mechanism). A plain recursive walk here can stack-overflow on
+    /// pathologically deep-nested binary-expression chains, so we thread
+    /// our own stack instead.
     fn count_var_references<'a>(
         &self,
         node: &Node<'a>,
@@ -157,26 +164,29 @@ impl Con40C {
         atomic_vars: &HashMap<String, bool>,
         var_counts: &mut HashMap<String, Vec<Node<'a>>>,
     ) {
-        // If this is an identifier, check if it's an atomic var
-        if node.kind() == "identifier" {
-            let var_name = get_node_text(node, source);
-            if atomic_vars.contains_key(var_name) {
-                var_counts
-                    .entry(var_name.to_string())
-                    .or_default()
-                    .push(*node);
+        let mut stack = vec![*node];
+
+        while let Some(current) = stack.pop() {
+            // If this is an identifier, check if it's an atomic var
+            if current.kind() == "identifier" {
+                let var_name = get_node_text(&current, source);
+                if atomic_vars.contains_key(var_name) {
+                    var_counts
+                        .entry(var_name.to_string())
+                        .or_default()
+                        .push(current);
+                }
             }
-        }
 
-        // Don't recurse into function calls - they're separate atomic operations
-        if node.kind() == "call_expression" {
-            return;
-        }
+            // Don't recurse into function calls - they're separate atomic operations
+            if current.kind() == "call_expression" {
+                continue;
+            }
 
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.count_var_references(&child, source, atomic_vars, var_counts);
+            for i in (0..current.child_count()).rev() {
+                if let Some(child) = current.child(i) {
+                    stack.push(child);
+                }
             }
         }
     }

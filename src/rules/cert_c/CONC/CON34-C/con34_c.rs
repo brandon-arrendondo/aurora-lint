@@ -691,43 +691,52 @@ impl Con34C {
         source: &str,
         vars: &mut Vec<String>,
     ) {
-        // Don't traverse into the target node itself
-        if node.start_byte() >= before_byte {
-            return;
-        }
+        // Explicit-stack walk: pruning is by byte position, not node kind, so
+        // substrate::query::find_descendants (kind-based, no positional skip)
+        // can't express this. A plain recursive walk here can stack-overflow
+        // on pathologically deep-nested statement prefixes (e.g. hostap-style
+        // nested if/else chains), so we thread our own stack instead.
+        let mut stack = vec![*node];
 
-        if node.kind() == "declaration" {
-            // Check if it's NOT static
-            let mut is_static = false;
-            let mut var_names = Vec::new();
+        while let Some(current) = stack.pop() {
+            // Don't traverse into the target node itself
+            if current.start_byte() >= before_byte {
+                continue;
+            }
 
-            for i in 0..node.child_count() {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "storage_class_specifier"
-                        && get_node_text(&child, source) == "static"
-                    {
-                        is_static = true;
-                    }
+            if current.kind() == "declaration" {
+                // Check if it's NOT static
+                let mut is_static = false;
+                let mut var_names = Vec::new();
 
-                    if child.kind() == "init_declarator" {
-                        if let Some(declarator) = child.child_by_field_name("declarator") {
-                            if let Some(name) = self.get_identifier_name(&declarator, source) {
-                                var_names.push(name);
+                for i in 0..current.child_count() {
+                    if let Some(child) = current.child(i) {
+                        if child.kind() == "storage_class_specifier"
+                            && get_node_text(&child, source) == "static"
+                        {
+                            is_static = true;
+                        }
+
+                        if child.kind() == "init_declarator" {
+                            if let Some(declarator) = child.child_by_field_name("declarator") {
+                                if let Some(name) = self.get_identifier_name(&declarator, source) {
+                                    var_names.push(name);
+                                }
                             }
                         }
                     }
                 }
+
+                if !is_static {
+                    vars.extend(var_names);
+                }
             }
 
-            if !is_static {
-                vars.extend(var_names);
-            }
-        }
-
-        // Recursively search children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_local_vars_before(&child, before_byte, source, vars);
+            // Push children in reverse so they're visited in original order
+            for i in (0..current.child_count()).rev() {
+                if let Some(child) = current.child(i) {
+                    stack.push(child);
+                }
             }
         }
     }
