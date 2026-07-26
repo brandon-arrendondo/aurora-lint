@@ -170,8 +170,11 @@ under <code class="docutils literal notranslate"><span class="pre">src/rules/cer
 </pre></div>
 </div>
 <p>Test cases are derived from patterns documented in the
-<a class="reference external" href="https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard">SEI CERT C Coding Standard wiki</a>.
-Each rule’s wiki page provides:</p>
+<a class="reference external" href="https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard">SEI CERT C Coding Standard</a>
+(formerly hosted on a Confluence wiki at wiki.sei.cmu.edu; the standard
+migrated to a static site in 2026 – <code class="docutils literal notranslate"><span class="pre">scripts/scrape_cert_wiki.py</span></code> reads
+its page-data JSON API directly rather than scraping rendered HTML).
+Each rule’s page provides:</p>
 <ul class="simple">
 <li><p><strong>Non-compliant code examples</strong>: patterns that violate the rule</p></li>
 <li><p><strong>Compliant solutions</strong>: corrected versions of the same patterns</p></li>
