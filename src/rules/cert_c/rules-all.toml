@@ -908,7 +908,7 @@ enabled = true
 
 
 [rules.cert_c.MSC17-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.MSC18-C]
