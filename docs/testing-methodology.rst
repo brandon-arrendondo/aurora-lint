@@ -66,8 +66,11 @@ Tests are auto-generated into Rust test functions from ``.c`` files — no embed
     cargo test --package sqc --lib -- rules::cert_c::mem
 
 Test cases are derived from patterns documented in the
-`SEI CERT C Coding Standard wiki <https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard>`_.
-Each rule's wiki page provides:
+`SEI CERT C Coding Standard <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard>`_
+(formerly hosted on a Confluence wiki at wiki.sei.cmu.edu; the standard
+migrated to a static site in 2026 -- ``scripts/scrape_cert_wiki.py`` reads
+its page-data JSON API directly rather than scraping rendered HTML).
+Each rule's page provides:
 
 - **Non-compliant code examples**: patterns that violate the rule
 - **Compliant solutions**: corrected versions of the same patterns

@@ -178,7 +178,7 @@ Standards & Specifications
 **[CERT-C]** Software Engineering Institute.
 "SEI CERT C Coding Standard."
 
-| https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard
+| https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard
 
 283 rules across 17 categories. The rule set implemented by SqC.
 
