@@ -900,7 +900,7 @@ enabled = true
 
 
 [rules.cert_c.MSC14-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.MSC15-C]
