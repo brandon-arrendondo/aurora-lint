@@ -868,7 +868,7 @@ enabled = true
 
 
 [rules.cert_c.MSC05-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.MSC06-C]
