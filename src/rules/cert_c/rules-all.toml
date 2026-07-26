@@ -936,7 +936,7 @@ enabled = false
 
 
 [rules.cert_c.MSC24-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.MSC25-C]
