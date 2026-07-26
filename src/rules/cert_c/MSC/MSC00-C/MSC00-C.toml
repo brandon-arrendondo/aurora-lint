@@ -19,7 +19,7 @@ cert_version = "2016 Edition (Wiki)"
 last_modified = "Unknown"
 
 [rules.cert_c.MSC00-C]
-enabled = false
+enabled = true
 
 [references]
 wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc00-c"
