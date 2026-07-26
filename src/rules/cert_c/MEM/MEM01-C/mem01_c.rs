@@ -9,7 +9,9 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
+use crate::analyze::context::ProjectContext;
 use crate::analyze::dataflow::find_node_at_range;
+use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -19,13 +21,48 @@ use tree_sitter::Node;
 
 pub struct Mem01C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    /// Cross-file function summaries from prescan (task 324 follow-on to 320/321).
+    cross_file_summaries: RefCell<HashMap<String, FunctionSummary>>,
+}
+
+/// Per-callee parameter indices confirmed to be read-only-dereferenced,
+/// derived from `FunctionSummary`. Threaded through the classification
+/// helpers so an `&ptr_name` output-param argument can be resolved precisely
+/// instead of always assumed safe (task 324). Confirmed writers and unknown
+/// callees both fall back to the existing "assume safe reassignment"
+/// behavior (see `call_address_of_action`), so only the read-only set needs
+/// tracking.
+struct AddressOfCallContext {
+    read_only_params: HashMap<String, HashSet<usize>>,
 }
 
 impl Mem01C {
     pub fn new() -> Self {
         Self {
             function_cfgs: RefCell::new(HashMap::new()),
+            cross_file_summaries: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Functions confirmed to dereference a pointer parameter WITHOUT ever
+    /// writing through it (`dereferences_params - modifies_params`). Passing
+    /// `&ptr_name` to one of these is a genuine read of the (possibly freed)
+    /// pointer value, not a safe reassignment — mirrors EXP33-C's
+    /// `build_read_only_deref_fns`.
+    fn build_read_only_params(&self) -> HashMap<String, HashSet<usize>> {
+        let summaries = self.cross_file_summaries.borrow();
+        let mut result = HashMap::new();
+        for (name, summary) in summaries.iter() {
+            let read_only: HashSet<usize> = summary
+                .dereferences_params
+                .difference(&summary.modifies_params)
+                .copied()
+                .collect();
+            if !read_only.is_empty() {
+                result.insert(name.clone(), read_only);
+            }
+        }
+        result
     }
 }
 
@@ -66,6 +103,10 @@ impl CertRule for Mem01C {
         *self.function_cfgs.borrow_mut() = cfgs.clone();
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.cross_file_summaries.borrow_mut() = context.function_summaries.clone();
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_node(node, source, violations);
     }
@@ -90,6 +131,10 @@ impl Mem01C {
             None => return,
         };
 
+        let addr_ctx = AddressOfCallContext {
+            read_only_params: self.build_read_only_params(),
+        };
+
         // Get pre-built CFG or build one on the fly
         let cfgs = self.function_cfgs.borrow();
         let inline_cfg;
@@ -106,7 +151,7 @@ impl Mem01C {
         let free_calls = self.collect_free_calls(&body, source);
 
         for (ptr_name, free_byte, line, column) in free_calls {
-            if self.ptr_has_post_free_use(cfg, &body, source, &ptr_name, free_byte) {
+            if self.ptr_has_post_free_use(cfg, &body, source, &ptr_name, free_byte, &addr_ctx) {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: Severity::High,
@@ -166,6 +211,7 @@ impl Mem01C {
         source: &str,
         ptr_name: &str,
         free_byte: usize,
+        addr_ctx: &AddressOfCallContext,
     ) -> bool {
         let containing_block = match find_block_containing(cfg, free_byte) {
             Some(b) => b,
@@ -173,7 +219,14 @@ impl Mem01C {
         };
 
         // Scan remaining statements in the containing block after the free
-        match self.scan_block_from(containing_block, body, source, ptr_name, free_byte) {
+        match self.scan_block_from(
+            containing_block,
+            body,
+            source,
+            ptr_name,
+            free_byte,
+            addr_ctx,
+        ) {
             Some(PtrAction::FreedAgain) | Some(PtrAction::Used) => return true,
             Some(PtrAction::Reassigned) => return false,
             _ => {} // fall through to BFS
@@ -199,7 +252,7 @@ impl Mem01C {
             };
 
             // Scan all statements in this block from the start
-            match self.scan_block_all(block, body, source, ptr_name) {
+            match self.scan_block_all(block, body, source, ptr_name, addr_ctx) {
                 Some(PtrAction::FreedAgain) | Some(PtrAction::Used) => return true,
                 Some(PtrAction::Reassigned) => continue, // safe on this path
                 _ => {
@@ -223,13 +276,14 @@ impl Mem01C {
         source: &str,
         ptr_name: &str,
         after_byte: usize,
+        addr_ctx: &AddressOfCallContext,
     ) -> Option<PtrAction> {
         for &(start, end) in &block.statements {
             if start <= after_byte {
                 continue;
             }
             if let Some(stmt_node) = find_node_at_range(body, start, end) {
-                let action = classify_stmt_for_ptr(&stmt_node, source, ptr_name);
+                let action = classify_stmt_for_ptr(&stmt_node, source, ptr_name, addr_ctx);
                 if action != PtrAction::Irrelevant {
                     return Some(action);
                 }
@@ -245,10 +299,11 @@ impl Mem01C {
         body: &Node,
         source: &str,
         ptr_name: &str,
+        addr_ctx: &AddressOfCallContext,
     ) -> Option<PtrAction> {
         for &(start, end) in &block.statements {
             if let Some(stmt_node) = find_node_at_range(body, start, end) {
-                let action = classify_stmt_for_ptr(&stmt_node, source, ptr_name);
+                let action = classify_stmt_for_ptr(&stmt_node, source, ptr_name, addr_ctx);
                 if action != PtrAction::Irrelevant {
                     return Some(action);
                 }
@@ -263,11 +318,16 @@ impl Mem01C {
 // ---------------------------------------------------------------------------
 
 /// Classify what a statement does to ptr_name.
-fn classify_stmt_for_ptr(node: &Node, source: &str, ptr_name: &str) -> PtrAction {
+fn classify_stmt_for_ptr(
+    node: &Node,
+    source: &str,
+    ptr_name: &str,
+    addr_ctx: &AddressOfCallContext,
+) -> PtrAction {
     match node.kind() {
         "expression_statement" => {
             if let Some(expr) = node.child(0) {
-                classify_expr_for_ptr(&expr, source, ptr_name)
+                classify_expr_for_ptr(&expr, source, ptr_name, addr_ctx)
             } else {
                 PtrAction::Irrelevant
             }
@@ -305,10 +365,11 @@ fn classify_stmt_for_ptr(node: &Node, source: &str, ptr_name: &str) -> PtrAction
         // expression_statement, so it's invisible to classify_expr_for_ptr's
         // top-level match. Recognize it directly here (task 321).
         "parenthesized_expression" => {
-            if subtree_assigns_identifier(node, source, ptr_name)
-                || subtree_contains_address_of_call(node, source, ptr_name)
-            {
+            if subtree_assigns_identifier(node, source, ptr_name) {
                 return PtrAction::Reassigned;
+            }
+            if let Some(action) = subtree_address_of_call_action(node, source, ptr_name, addr_ctx) {
+                return action;
             }
             if subtree_contains_identifier(node, source, ptr_name) {
                 PtrAction::Used
@@ -321,9 +382,11 @@ fn classify_stmt_for_ptr(node: &Node, source: &str, ptr_name: &str) -> PtrAction
             // `&ptr_name` passed to a call nested anywhere in the statement
             // (e.g. inside an if-condition: `if(read_pair(..., &ptr) ==
             // NULL)`) is the output-param idiom, not a use of the old value
-            // (see the "call_expression" arm of classify_expr_for_ptr).
-            if subtree_contains_address_of_call(node, source, ptr_name) {
-                PtrAction::Reassigned
+            // (see the "call_expression" arm of classify_expr_for_ptr) --
+            // unless the callee is known (task 324) to only dereference,
+            // never write, that parameter.
+            if let Some(action) = subtree_address_of_call_action(node, source, ptr_name, addr_ctx) {
+                action
             } else if subtree_contains_identifier(node, source, ptr_name) {
                 PtrAction::Used
             } else {
@@ -334,7 +397,12 @@ fn classify_stmt_for_ptr(node: &Node, source: &str, ptr_name: &str) -> PtrAction
 }
 
 /// Classify an expression for ptr_name interaction.
-fn classify_expr_for_ptr(expr: &Node, source: &str, ptr_name: &str) -> PtrAction {
+fn classify_expr_for_ptr(
+    expr: &Node,
+    source: &str,
+    ptr_name: &str,
+    addr_ctx: &AddressOfCallContext,
+) -> PtrAction {
     match expr.kind() {
         "assignment_expression" => {
             if let Some(left) = expr.child_by_field_name("left") {
@@ -363,15 +431,19 @@ fn classify_expr_for_ptr(expr: &Node, source: &str, ptr_name: &str) -> PtrAction
             // `&ptr_name` passed to a call is the output-param idiom (e.g.
             // `read_string_pair(props, id, &name, &value, false)` writing a
             // fresh pointer through the argument) -- treat it like a
-            // reassignment rather than a use. Without this, CFG paths that
-            // reach a *different*, mutually-exclusive branch reusing the same
+            // reassignment rather than a use, UNLESS the callee is known
+            // (via cross-file `FunctionSummary`, task 324) to only
+            // dereference that parameter and never write through it, in
+            // which case it's a genuine read of the (possibly freed)
+            // pointer value. Without this, CFG paths that reach a
+            // *different*, mutually-exclusive branch reusing the same
             // variable name (e.g. sibling switch-case arms revisited via a
             // loop back-edge) misclassify the output-param call as a plain
             // "use" of the still-freed pointer.
+            if let Some(action) = call_address_of_action(expr, source, ptr_name, addr_ctx) {
+                return action;
+            }
             if let Some(args) = expr.child_by_field_name("arguments") {
-                if arg_list_contains_address_of_identifier(&args, source, ptr_name) {
-                    return PtrAction::Reassigned;
-                }
                 if arg_list_contains_identifier(&args, source, ptr_name) {
                     return PtrAction::Used;
                 }
@@ -424,20 +496,54 @@ fn subtree_assigns_identifier(node: &Node, source: &str, name: &str) -> bool {
     .is_some()
 }
 
-/// True if a call expression anywhere in the subtree passes `&ptr_name` as a
-/// top-level argument (the output-param idiom: `read_pair(..., &ptr_name)`).
-/// Catches cases where such a call is nested inside a comparison, e.g. an
-/// if/while condition (`if(read_pair(..., &ptr) == NULL)`).
-fn subtree_contains_address_of_call(node: &Node, source: &str, name: &str) -> bool {
-    query::find_first_descendant(*node, |n| {
-        if n.kind() != "call_expression" {
-            return false;
+/// Find a call expression anywhere in the subtree that passes `&ptr_name` as
+/// a top-level argument (the output-param idiom: `read_pair(..., &ptr_name)`)
+/// and classify it via `call_address_of_action`. Catches cases where such a
+/// call is nested inside a comparison, e.g. an if/while condition
+/// (`if(read_pair(..., &ptr) == NULL)`).
+fn subtree_address_of_call_action(
+    node: &Node,
+    source: &str,
+    name: &str,
+    addr_ctx: &AddressOfCallContext,
+) -> Option<PtrAction> {
+    for call in query::find_descendants_of_kind(*node, "call_expression") {
+        if let Some(action) = call_address_of_action(&call, source, name, addr_ctx) {
+            return Some(action);
         }
-        n.child_by_field_name("arguments")
-            .map(|args| arg_list_contains_address_of_identifier(&args, source, name))
-            .unwrap_or(false)
-    })
-    .is_some()
+    }
+    None
+}
+
+/// Given a `call_expression`, if it passes `&name` as a top-level argument,
+/// classify the call: `Reassigned` if the callee is a known writer of that
+/// parameter, `Used` if the callee is known to only dereference it (a
+/// genuine read of the possibly-freed value), or `Reassigned` as the
+/// conservative fallback when the callee's behavior is unknown (task 324;
+/// keeps the mosquitto output-param fix as a floor when no summary exists).
+/// Returns `None` if the call does not take `&name` as an argument at all.
+fn call_address_of_action(
+    call: &Node,
+    source: &str,
+    name: &str,
+    addr_ctx: &AddressOfCallContext,
+) -> Option<PtrAction> {
+    let args = call.child_by_field_name("arguments")?;
+    let idx = address_of_arg_index(&args, source, name)?;
+    let func_name = call
+        .child_by_field_name("function")
+        .map(|f| get_node_text(&f, source).to_string())
+        .unwrap_or_default();
+    if addr_ctx
+        .read_only_params
+        .get(&func_name)
+        .is_some_and(|indices| indices.contains(&idx))
+    {
+        Some(PtrAction::Used)
+    } else {
+        // Confirmed writer, or unknown callee -- assume safe reassignment.
+        Some(PtrAction::Reassigned)
+    }
 }
 
 /// Check if ptr_name appears as an argument in an argument_list.
@@ -454,29 +560,33 @@ fn arg_list_contains_identifier(args: &Node, source: &str, name: &str) -> bool {
     false
 }
 
-/// Check if `&ptr_name` (address-of, no further dereference) appears as a
-/// top-level argument in an argument_list -- the output-param call idiom.
-fn arg_list_contains_address_of_identifier(args: &Node, source: &str, name: &str) -> bool {
+/// If `&ptr_name` (address-of, no further dereference) appears as a
+/// top-level argument in an argument_list -- the output-param call idiom --
+/// return its zero-based parameter index (punctuation tokens excluded from
+/// the count), so callers can look it up against a callee's `FunctionSummary`.
+fn address_of_arg_index(args: &Node, source: &str, name: &str) -> Option<usize> {
+    let mut idx = 0;
     for i in 0..args.child_count() {
-        if let Some(arg) = args.child(i) {
-            if arg.kind() != "pointer_expression" {
-                continue;
-            }
+        let Some(arg) = args.child(i) else { continue };
+        if matches!(arg.kind(), "(" | ")" | ",") {
+            continue;
+        }
+        if arg.kind() == "pointer_expression" {
             let is_address_of = arg
                 .child_by_field_name("operator")
                 .map(|op| get_node_text(&op, source) == "&")
                 .unwrap_or(false);
-            if !is_address_of {
-                continue;
-            }
-            if let Some(operand) = arg.child_by_field_name("argument") {
-                if operand.kind() == "identifier" && get_node_text(&operand, source) == name {
-                    return true;
+            if is_address_of {
+                if let Some(operand) = arg.child_by_field_name("argument") {
+                    if operand.kind() == "identifier" && get_node_text(&operand, source) == name {
+                        return Some(idx);
+                    }
                 }
             }
         }
+        idx += 1;
     }
-    false
+    None
 }
 
 /// Extract the declared variable name from a declaration node.
