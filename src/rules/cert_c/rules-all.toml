@@ -888,7 +888,7 @@ enabled = false
 
 
 [rules.cert_c.MSC11-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.MSC12-C]
