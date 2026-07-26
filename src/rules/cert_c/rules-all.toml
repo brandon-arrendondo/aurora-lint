@@ -692,7 +692,7 @@ enabled = true
 
 
 [rules.cert_c.FLP38-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.INT00-C]
