@@ -706,6 +706,9 @@ pub mod msc15_c;
 #[path = "MSC/MSC17-C/msc17_c.rs"]
 pub mod msc17_c;
 
+#[path = "MSC/MSC20-C/msc20_c.rs"]
+pub mod msc20_c;
+
 #[path = "POS/POS01-C/pos01_c.rs"]
 pub mod pos01_c;
 
@@ -1128,6 +1131,7 @@ impl RuleRegistry {
         registry.register(Box::new(msc14_c::Msc14C));
         registry.register(Box::new(msc15_c::Msc15C));
         registry.register(Box::new(msc17_c::Msc17C));
+        registry.register(Box::new(msc20_c::Msc20C));
         registry.register(Box::new(pos01_c::Pos01C));
         registry.register(Box::new(pos04_c::Pos04C));
         registry.register(Box::new(pos05_c::Pos05C));
