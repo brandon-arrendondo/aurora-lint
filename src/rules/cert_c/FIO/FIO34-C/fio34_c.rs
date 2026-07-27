@@ -581,8 +581,15 @@ impl Fio34C {
         // Look for patterns like: while ((c = getchar()) != EOF) without feof/ferror
         let has_eof_comparison = self.has_eof_comparison_in_loop(func_node, source);
         let has_feof_call = self.has_feof_or_ferror_call(func_node, source);
+        // CERT's "Compliant Solution (Nonportable)" track substitutes a
+        // compile-time static_assert(UCHAR_MAX < UINT_MAX, ...) for the
+        // runtime feof()/ferror() verification: it guarantees int can
+        // represent every char value plus EOF distinctly, so there's
+        // nothing left for feof/ferror to disambiguate. Verified against
+        // the live wiki's exact "Compliant Solution (Nonportable)" section.
+        let has_static_assert_guarantee = self.has_char_int_width_static_assert(func_node, source);
 
-        if has_eof_comparison && !has_feof_call {
+        if has_eof_comparison && !has_feof_call && !has_static_assert_guarantee {
             // Find the loop with EOF comparison to report
             self.find_and_report_eof_loops(func_node, source, violations);
         }
@@ -651,6 +658,23 @@ impl Fio34C {
                 }
             }
             false
+        })
+        .is_some()
+    }
+
+    /// Check for a `static_assert(UCHAR_MAX < UINT_MAX, ...)` (or the
+    /// equivalent `_Static_assert`) establishing at compile time that `int`
+    /// is strictly wider than `char`, which is CERT's nonportable-but-valid
+    /// substitute for runtime feof()/ferror() verification.
+    fn has_char_int_width_static_assert(&self, node: &Node, source: &str) -> bool {
+        query::find_first_descendant(*node, |n| {
+            if !matches!(n.kind(), "call_expression" | "declaration") {
+                return false;
+            }
+            let text = get_node_text(&n, source);
+            (text.contains("static_assert") || text.contains("_Static_assert"))
+                && text.contains("UCHAR_MAX")
+                && text.contains("UINT_MAX")
         })
         .is_some()
     }
