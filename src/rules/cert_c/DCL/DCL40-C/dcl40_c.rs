@@ -16,12 +16,23 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
+// C99/C11 minimum guaranteed significant initial characters for an
+// external identifier (6.4.2.1p2 / footnote): implementations are only
+// required to distinguish identifiers by their first 31 characters.
+const MIN_SIGNIFICANT_EXTERNAL_CHARS: usize = 31;
+
 #[derive(Debug)]
 pub struct Dcl40C {
     // Track function declarations: name -> (return_type, param_types)
     function_decls: RefCell<HashMap<String, (String, Vec<String>)>>,
     // Track object declarations: name -> type
     object_decls: RefCell<HashMap<String, String>>,
+    // Track external-linkage identifiers by their first 31 significant
+    // characters, to catch DCL40-C's "excessively long identifiers"
+    // case: two distinct external identifiers that agree in their first
+    // 31 characters may collide on conforming implementations, which is
+    // undefined behavior even though the full names differ.
+    truncated_external_decls: RefCell<HashMap<String, String>>,
 }
 
 impl Dcl40C {
@@ -29,6 +40,65 @@ impl Dcl40C {
         Dcl40C {
             function_decls: RefCell::new(HashMap::new()),
             object_decls: RefCell::new(HashMap::new()),
+            truncated_external_decls: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// True if this file-scope declaration has internal linkage (`static`)
+    /// and is therefore not subject to the external-identifier
+    /// significant-character limit.
+    fn is_static_declaration(&self, node: &Node, source: &str) -> bool {
+        let mut cursor = node.walk();
+        let result = node.children(&mut cursor).any(|child| {
+            child.kind() == "storage_class_specifier" && get_node_text(&child, source) == "static"
+        });
+        result
+    }
+
+    /// DCL40-C: two external identifiers that agree in their first 31
+    /// significant characters but differ afterward may collide on a
+    /// conforming implementation (undefined behavior 30), independent of
+    /// whether their full spellings or types match.
+    fn check_truncated_collision(
+        &self,
+        node: &Node,
+        name: &str,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        if self.is_static_declaration(node, source) {
+            return;
+        }
+        // Truncate to the guaranteed-significant prefix so that a short
+        // identifier can still be found to collide with an earlier
+        // excessively long one (and vice versa); identifiers at or under
+        // the limit truncate to themselves, so two distinct short names
+        // never spuriously collide here.
+        let truncated: String = name.chars().take(MIN_SIGNIFICANT_EXTERNAL_CHARS).collect();
+        let mut truncated_decls = self.truncated_external_decls.borrow_mut();
+        match truncated_decls.get(&truncated) {
+            Some(prev_name) if prev_name != name => {
+                violations.push(RuleViolation {
+                    rule_id: "DCL40-C".to_string(),
+                    severity: Severity::High,
+                    line: node.start_position().row + 1,
+                    column: node.start_position().column + 1,
+                    message: format!(
+                        "Identifier '{}' agrees with '{}' in its first {} significant characters; they may collide as the same external identifier on a conforming implementation",
+                        name, prev_name, MIN_SIGNIFICANT_EXTERNAL_CHARS
+                    ),
+                    file_path: String::new(),
+                    suggestion: Some(format!(
+                        "Shorten one of the identifiers so they differ within the first {} characters",
+                        MIN_SIGNIFICANT_EXTERNAL_CHARS
+                    )),
+                    requires_manual_review: Some(false),
+                });
+            }
+            Some(_) => {}
+            None => {
+                truncated_decls.insert(truncated, name.to_string());
+            }
         }
     }
 
@@ -117,6 +187,8 @@ impl Dcl40C {
                     let return_type = self.get_return_type(node, source);
                     let param_types = self.get_param_types(&declarator, source);
 
+                    self.check_truncated_collision(node, &name, source, violations);
+
                     let mut function_decls = self.function_decls.borrow_mut();
 
                     if let Some((prev_return_type, prev_param_types)) = function_decls.get(&name) {
@@ -183,6 +255,8 @@ impl Dcl40C {
             if let Some(name) = self.get_variable_name(&declarator, source) {
                 // Get type information
                 let type_info = self.get_object_type(node, &declarator, source);
+
+                self.check_truncated_collision(node, &name, source, violations);
 
                 let mut object_decls = self.object_decls.borrow_mut();
                 if let Some(prev_type) = object_decls.get(&name) {
@@ -369,6 +443,7 @@ impl CertRule for Dcl40C {
         // Clear previous state
         self.function_decls.borrow_mut().clear();
         self.object_decls.borrow_mut().clear();
+        self.truncated_external_decls.borrow_mut().clear();
         // Check the tree
         self.check_node(root_node, source, &mut violations);
         violations
