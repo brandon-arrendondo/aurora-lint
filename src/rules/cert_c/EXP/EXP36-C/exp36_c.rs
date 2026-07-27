@@ -1,7 +1,9 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
+use regex::Regex;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -30,10 +32,12 @@ impl CertRule for Exp36C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        let macros = collect_function_macros(node, source);
 
-        for descendant in
-            query::find_descendants_of_kinds(*node, &["cast_expression", "init_declarator"])
-        {
+        for descendant in query::find_descendants_of_kinds(
+            *node,
+            &["cast_expression", "init_declarator", "call_expression"],
+        ) {
             match descendant.kind() {
                 // Pattern 1: Direct casts - (int *)&c or (struct foo *)data
                 "cast_expression" => {
@@ -42,6 +46,15 @@ impl CertRule for Exp36C {
                 // Pattern 2: Init declarators with function calls returning void* from less-aligned types
                 "init_declarator" => {
                     self.check_init_declarator(&descendant, source, &mut violations);
+                }
+                // Pattern 3: Calls to function-like macros that internally cast
+                // one of their parameters to a pointer type, e.g.
+                // #define READ_UINT16(ptr) (*(uint16_t *)(ptr)) -- the cast is
+                // invisible to Pattern 1 because sqc has no preprocessor and
+                // the macro body is opaque replacement-list text, not parsed
+                // expression nodes.
+                "call_expression" => {
+                    self.check_macro_cast_invocation(&descendant, &macros, source, &mut violations);
                 }
                 _ => {}
             }
@@ -103,6 +116,226 @@ impl Exp36C {
                 }
             }
         }
+    }
+
+    /// Check a call to a (potential) function-like macro that internally
+    /// casts one of its parameters to a pointer type. If the macro's
+    /// replacement-list text contains a pattern like `(TYPE *)(param)` where
+    /// `param` is one of its declared parameters, and the actual argument at
+    /// this call site has a real declared type less strictly aligned than
+    /// TYPE, flag it the same way a direct cast would be.
+    fn check_macro_cast_invocation(
+        &self,
+        node: &Node,
+        macros: &HashMap<String, FunctionMacro>,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let Some(function_node) = node.child_by_field_name("function") else {
+            return;
+        };
+        let func_name = ast_utils::get_node_text(&function_node, source)
+            .trim()
+            .to_string();
+        let Some(macro_def) = macros.get(&func_name) else {
+            return;
+        };
+        let Some((param_idx, target_type)) = self.macro_casts_param_to_pointer(macro_def) else {
+            return;
+        };
+        let target_alignment = self.get_type_alignment(&target_type);
+        if target_alignment == 0 {
+            return;
+        }
+
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let mut cursor = arguments.walk();
+        let named_args: Vec<Node> = arguments.named_children(&mut cursor).collect();
+        let Some(arg_node) = named_args.get(param_idx) else {
+            return;
+        };
+        // Only simple identifier arguments are resolved for now (covers the
+        // common "pass a declared pointer variable into an accessor macro"
+        // pattern); anything more complex is left unflagged to avoid FPs.
+        if arg_node.kind() != "identifier" {
+            return;
+        }
+        let arg_name = ast_utils::get_node_text(arg_node, source)
+            .trim()
+            .to_string();
+        let Some((base_type, is_pointer, _)) = self.resolve_declared_type(&arg_name, node, source)
+        else {
+            return;
+        };
+        if !is_pointer {
+            return;
+        }
+        let source_type = format!("{} *", base_type);
+        let source_alignment = self.get_type_alignment(&source_type);
+
+        if target_alignment > source_alignment && source_alignment > 0 {
+            let start_point = node.start_position();
+            violations.push(RuleViolation {
+                rule_id: "EXP36-C".to_string(),
+                severity: Severity::Low,
+                message: format!(
+                    "Macro '{}' casts argument '{}' from {} (alignment {}) to {} (alignment {}), which may cause alignment issues",
+                    func_name, arg_name, source_type, source_alignment, target_type, target_alignment
+                ),
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some(
+                    "Ensure the argument's underlying storage is properly aligned before passing it to this macro".to_string()
+                ),
+                ..Default::default()
+            });
+        }
+    }
+
+    /// If `m`'s replacement-list text casts one of its own parameters to a
+    /// pointer type (e.g. `(*(uint16_t *)(ptr))`), return that parameter's
+    /// index and the cast-to pointer type text (e.g. `"uint16_t *"`).
+    fn macro_casts_param_to_pointer(&self, m: &FunctionMacro) -> Option<(usize, String)> {
+        let re = Regex::new(
+            r"\(\s*([A-Za-z_][A-Za-z0-9_ ]*?)\s*\*\s*\)\s*\(?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)?",
+        )
+        .ok()?;
+        for cap in re.captures_iter(&m.body) {
+            let target_type = cap[1].trim().to_string();
+            let arg_name = &cap[2];
+            if let Some(idx) = m.params.iter().position(|p| p == arg_name) {
+                return Some((idx, format!("{} *", target_type)));
+            }
+        }
+        None
+    }
+
+    /// Resolve the real declared type of a simple identifier by walking up
+    /// to the enclosing function's parameters and local declarations, rather
+    /// than guessing from the identifier's spelling. Returns
+    /// `(base_type, is_declared_pointer, alignas_type)` where `alignas_type`
+    /// is the type named in an `alignas(...)`/`_Alignas(...)` qualifier on
+    /// the declaration, if present.
+    fn resolve_declared_type(
+        &self,
+        name: &str,
+        node: &Node,
+        source: &str,
+    ) -> Option<(String, bool, Option<String>)> {
+        let mut current = node.parent();
+        while let Some(n) = current {
+            if n.kind() == "function_definition" {
+                if let Some(declarator) = n.child_by_field_name("declarator") {
+                    if let Some(params) = self.find_parameter_list(&declarator) {
+                        let mut cursor = params.walk();
+                        for p in params.named_children(&mut cursor) {
+                            if p.kind() != "parameter_declaration" {
+                                continue;
+                            }
+                            if let Some(d) = p.child_by_field_name("declarator") {
+                                if self.declarator_name_matches(&d, source, name) {
+                                    let type_text = p
+                                        .child_by_field_name("type")
+                                        .map(|t| {
+                                            ast_utils::get_node_text(&t, source).trim().to_string()
+                                        })
+                                        .unwrap_or_default();
+                                    return Some((
+                                        type_text,
+                                        self.has_pointer_declarator(&d),
+                                        None,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(body) = n.child_by_field_name("body") {
+                    for decl in query::find_descendants_of_kind(body, "declaration") {
+                        if decl.start_byte() > node.start_byte() {
+                            continue;
+                        }
+                        let mut cursor = decl.walk();
+                        for child in decl.children(&mut cursor) {
+                            let declarator_opt = if child.kind() == "init_declarator" {
+                                child.child_by_field_name("declarator")
+                            } else if matches!(
+                                child.kind(),
+                                "identifier" | "pointer_declarator" | "array_declarator"
+                            ) {
+                                Some(child)
+                            } else {
+                                None
+                            };
+                            if let Some(d) = declarator_opt {
+                                if self.declarator_name_matches(&d, source, name) {
+                                    let type_text = decl
+                                        .child_by_field_name("type")
+                                        .map(|t| {
+                                            ast_utils::get_node_text(&t, source).trim().to_string()
+                                        })
+                                        .unwrap_or_default();
+                                    let alignas_type = self.declaration_alignas_type(&decl, source);
+                                    return Some((
+                                        type_text,
+                                        self.has_pointer_declarator(&d),
+                                        alignas_type,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                return None;
+            }
+            current = n.parent();
+        }
+        None
+    }
+
+    /// Find the `function_declarator`'s `parameters` field, unwrapping any
+    /// pointer-return `pointer_declarator` wrapper.
+    fn find_parameter_list<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
+        match node.kind() {
+            "function_declarator" => node.child_by_field_name("parameters"),
+            "pointer_declarator" => node
+                .child_by_field_name("declarator")
+                .and_then(|d| self.find_parameter_list(&d)),
+            _ => None,
+        }
+    }
+
+    /// True if `declarator` (an `identifier`, or a nested
+    /// pointer/array declarator wrapping one) is named `name`.
+    fn declarator_name_matches(&self, declarator: &Node, source: &str, name: &str) -> bool {
+        match declarator.kind() {
+            "identifier" => ast_utils::get_node_text(declarator, source).trim() == name,
+            "pointer_declarator" | "array_declarator" => declarator
+                .child_by_field_name("declarator")
+                .map(|d| self.declarator_name_matches(&d, source, name))
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// If `declaration` carries an `alignas`/`_Alignas` qualifier, return the
+    /// type named inside it (e.g. `alignas(int) char c;` -> `Some("int")`).
+    fn declaration_alignas_type(&self, declaration: &Node, source: &str) -> Option<String> {
+        // alignas_qualifier is nested inside a type_qualifier wrapper, not a
+        // direct child of declaration, so search all descendants (safe here:
+        // a declaration node never contains nested statements).
+        for qualifier in query::find_descendants_of_kind(*declaration, "alignas_qualifier") {
+            let mut inner_cursor = qualifier.walk();
+            for inner in qualifier.named_children(&mut inner_cursor) {
+                if inner.kind() == "type_descriptor" {
+                    return Some(ast_utils::get_node_text(&inner, source).trim().to_string());
+                }
+            }
+        }
+        None
     }
 
     /// Check init declarators for indirect casts through void*
@@ -233,11 +466,25 @@ impl Exp36C {
                 "unknown *".to_string()
             }
             "pointer_expression" => {
-                // Pattern: &c where c is char
-                // Get the argument and infer its type
+                // Pattern: &c -- taking the address of a (non-pointer)
+                // variable produces a pointer whose alignment is the
+                // variable's own alignment, which may have been raised by
+                // an `alignas`/`_Alignas` qualifier on its declaration.
                 if let Some(arg) = node.child_by_field_name("argument") {
+                    if arg.kind() == "identifier" {
+                        let name = ast_utils::get_node_text(&arg, source).trim().to_string();
+                        if let Some((base_type, is_pointer, alignas_type)) =
+                            self.resolve_declared_type(&name, node, source)
+                        {
+                            if !is_pointer {
+                                let effective_type = alignas_type.unwrap_or(base_type);
+                                return format!("{} *", effective_type);
+                            }
+                        }
+                    }
+                    // Fall back to the name-based heuristic when the
+                    // declaration couldn't be resolved.
                     let arg_text = ast_utils::get_node_text(&arg, source);
-                    // Simple heuristic: if variable name suggests type
                     if arg_text.contains("char") || arg_text == "c" {
                         return "char *".to_string();
                     }
