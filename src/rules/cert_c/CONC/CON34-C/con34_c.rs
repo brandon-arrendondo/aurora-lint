@@ -244,12 +244,29 @@ impl Con34C {
     }
 
     fn is_address_of_local_var(&self, node: &Node, source: &str, context: &Node) -> bool {
-        // Check if this is a unary_expression with & operator
-        if node.kind() == "unary_expression" {
+        // Address-of (`&x`) is a "pointer_expression" in this tree-sitter-c
+        // grammar (distinct from "unary_expression", which covers !, -, ~,
+        // etc.) — check both so this doesn't silently break again if the
+        // grammar version changes.
+        if matches!(node.kind(), "unary_expression" | "pointer_expression") {
             if let Some(operator) = node.child_by_field_name("operator") {
                 if get_node_text(&operator, source) == "&" {
                     if let Some(argument) = node.child_by_field_name("argument") {
                         let var_name = get_node_text(&argument, source).to_string();
+
+                        // A local thrd_t (thread-handle) variable passed
+                        // this way is the standard, unavoidable idiom for
+                        // tracking a nested thread's ID -- thrd_create is
+                        // the only way to obtain one, and CERT's own
+                        // compliant example does exactly this (main joins
+                        // on it before returning, so the storage is
+                        // guaranteed live for as long as it matters). This
+                        // is categorically different from sharing ordinary
+                        // local DATA (e.g. `int val`) across the thread
+                        // boundary, which is what this rule targets.
+                        if self.is_thrd_t_variable(&var_name, context, source) {
+                            return false;
+                        }
 
                         // Check if this variable is a local (automatic) variable
                         return self.is_local_variable(&var_name, context, source);
@@ -442,6 +459,47 @@ impl Con34C {
             }
 
             false
+        })
+        .is_some()
+    }
+
+    /// True if `var_name` is declared with type `thrd_t` in the function
+    /// enclosing `context`.
+    fn is_thrd_t_variable(&self, var_name: &str, context: &Node, source: &str) -> bool {
+        let Some(function) = self.find_enclosing_function(context) else {
+            return false;
+        };
+        let Some(body) = function.child_by_field_name("body") else {
+            return false;
+        };
+
+        query::find_first_descendant(body, |n| {
+            if n.kind() != "declaration" {
+                return false;
+            }
+
+            let declares_var = (0..n.child_count()).any(|i| {
+                n.child(i)
+                    .map(|c| match c.kind() {
+                        "identifier" => get_node_text(&c, source) == var_name,
+                        "init_declarator" => c
+                            .child_by_field_name("declarator")
+                            .and_then(|d| self.get_identifier_name(&d, source))
+                            .map(|name| name == var_name)
+                            .unwrap_or(false),
+                        _ => false,
+                    })
+                    .unwrap_or(false)
+            });
+            if !declares_var {
+                return false;
+            }
+
+            (0..n.child_count()).any(|i| {
+                n.child(i)
+                    .map(|c| c.kind() == "type_identifier" && get_node_text(&c, source) == "thrd_t")
+                    .unwrap_or(false)
+            })
         })
         .is_some()
     }
