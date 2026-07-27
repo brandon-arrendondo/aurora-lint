@@ -87,6 +87,17 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Keep the distributed rules_templates/ manifests (the CLI's embedded
+    // built-in default, and the real-world benchmark's manifest) in sync
+    // with src/rules/cert_c/rules-all.toml. Without this, newly added rules
+    // silently never run for end users or in the real-world benchmark even
+    // though they build and pass their own tests -- this exact drift went
+    // unnoticed from v0.3.51 through v0.4.139 (26 rules missing).
+    if let Err(e) = sync_rules_templates() {
+        eprintln!("Error syncing rules_templates manifests: {}", e);
+        std::process::exit(1);
+    }
+
     // Generate integration tests from C test files
     if let Err(e) = generate_integration_tests() {
         eprintln!("Error generating integration tests: {}", e);
@@ -309,6 +320,63 @@ fn generate_rules_all_toml() -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+/// Rules disabled specifically in the real-world benchmark manifest because
+/// they're too noisy on real (non-Juliet) codebases to be useful signal
+/// there, while remaining enabled in the CLI's default manifest. Keep this
+/// list in sync with any manual curation of rules_templates/rules-benchmark.toml.
+const BENCHMARK_NOISE_DISABLED: &[&str] = &[
+    "DCL04-C", "DCL06-C", "DCL08-C", "EXP02-C", "EXP10-C", "EXP12-C", "EXP14-C", "EXP19-C",
+    "INT01-C", "INT02-C", "INT16-C", "INT17-C", "PRE31-C",
+];
+
+/// Regenerate `rules_templates/rules-all.toml` (embedded into the sqc binary
+/// via `include_str!` as its built-in default manifest) and
+/// `rules_templates/rules-benchmark.toml` (used by the real-world benchmark)
+/// from the just-generated `src/rules/cert_c/rules-all.toml`, so both stay
+/// current with every rule addition/removal instead of requiring a manual
+/// resync step that's easy to forget.
+fn sync_rules_templates() -> Result<()> {
+    let src_path = PathBuf::from("src/rules/cert_c/rules-all.toml");
+    let src_content = fs::read_to_string(&src_path)
+        .with_context(|| format!("Failed to read {}", src_path.display()))?;
+
+    let body_start = src_content.find("[rules.").ok_or_else(|| {
+        anyhow::anyhow!("{} has no [rules.*] section to extract", src_path.display())
+    })?;
+    let body = &src_content[body_start..];
+
+    const HEADER: &str = "[metadata]\nname = \"CERT C Rules Configuration\"\nversion = \"1.0.0\"\ndescription = \"Configuration for CERT C coding standards compliance checking\"\ncert_version = \"2016\"\n\n";
+
+    // rules_templates/rules-all.toml: verbatim body under the existing header.
+    let all_path = PathBuf::from("rules_templates/rules-all.toml");
+    let all_content = format!("{}{}", HEADER, body);
+    fs::write(&all_path, &all_content)
+        .with_context(|| format!("Failed to write {}", all_path.display()))?;
+
+    // rules_templates/rules-benchmark.toml: same body, with the noise-disabled
+    // rules' `enabled = true` flipped to `enabled = false`.
+    let mut bench_content = all_content;
+    for rule_id in BENCHMARK_NOISE_DISABLED {
+        let marker = format!("[rules.cert_c.{}]\nenabled = true", rule_id);
+        let replacement = format!("[rules.cert_c.{}]\nenabled = false", rule_id);
+        if bench_content.contains(&marker) {
+            bench_content = bench_content.replace(&marker, &replacement);
+        } else {
+            eprintln!(
+                "Warning: benchmark-noise rule '{}' not found in generated manifest (renamed/removed?)",
+                rule_id
+            );
+        }
+    }
+    let bench_path = PathBuf::from("rules_templates/rules-benchmark.toml");
+    fs::write(&bench_path, &bench_content)
+        .with_context(|| format!("Failed to write {}", bench_path.display()))?;
+
+    println!("cargo:rerun-if-changed={}", src_path.display());
+    println!("Synced rules_templates/rules-all.toml and rules-benchmark.toml");
     Ok(())
 }
 
