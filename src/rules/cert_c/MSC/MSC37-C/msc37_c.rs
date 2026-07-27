@@ -55,7 +55,13 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::collections::HashSet;
 use tree_sitter::Node;
+
+/// Standard/POSIX functions that never return to their caller, so a call to
+/// one of them as a function's last statement satisfies MSC37-C the same
+/// way an explicit return would (control can't fall off the end).
+const STDLIB_NORETURN_FUNCTIONS: &[&str] = &["exit", "_Exit", "abort", "quick_exit", "longjmp"];
 
 pub struct Msc37C;
 
@@ -118,6 +124,71 @@ impl Msc37C {
         query::find_first_descendant(*node, |n| n.kind() == "return_statement").is_some()
     }
 
+    /// Collect names of functions declared or defined `_Noreturn` anywhere
+    /// in the translation unit, so a trailing call to one of them can be
+    /// recognized as equivalent to a return (MSC37-C's own compliant
+    /// example: a switch covering all enum values followed by a call to a
+    /// `_Noreturn` fallback function, with no return after it).
+    fn collect_noreturn_function_names(root: &Node, source: &str) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for node in query::find_descendants_of_kinds(*root, &["declaration", "function_definition"])
+        {
+            let mut cursor = node.walk();
+            let is_noreturn = node.children(&mut cursor).any(|c| {
+                c.kind() == "type_qualifier" && get_node_text(&c, source).trim() == "_Noreturn"
+            });
+            if !is_noreturn {
+                continue;
+            }
+            if let Some(declarator) = node.child_by_field_name("declarator") {
+                if let Some(func_declarator) = Self::find_function_declarator_static(&declarator) {
+                    if let Some(name_node) = func_declarator.child_by_field_name("declarator") {
+                        names.insert(get_node_text(&name_node, source).trim().to_string());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// Non-method variant of `find_function_declarator` (needed in a
+    /// static/associated-function context above).
+    fn find_function_declarator_static<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+        if node.kind() == "function_declarator" {
+            return Some(*node);
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if let Some(found) = Self::find_function_declarator_static(&child) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    /// True if `node` is an `expression_statement` wrapping a call to a
+    /// known-noreturn function (stdlib or `_Noreturn`-declared in this
+    /// file).
+    fn is_noreturn_call_statement(
+        &self,
+        node: &Node,
+        source: &str,
+        noreturn_names: &HashSet<String>,
+    ) -> bool {
+        if node.kind() != "expression_statement" {
+            return false;
+        }
+        let Some(call) = node.child(0).filter(|c| c.kind() == "call_expression") else {
+            return false;
+        };
+        let Some(function) = call.child_by_field_name("function") else {
+            return false;
+        };
+        let name = get_node_text(&function, source).trim().to_string();
+        STDLIB_NORETURN_FUNCTIONS.contains(&name.as_str()) || noreturn_names.contains(&name)
+    }
+
     /// Check if the last statement in a compound statement is a return
     /// (possibly through nested if/switch branches that all return).
     ///
@@ -132,11 +203,16 @@ impl Msc37C {
     /// them together, so this uses the classic stack-machine technique
     /// (push `Eval` work, push an `And` combinator that pops two already-
     /// computed results) rather than a plain node-only stack.
-    fn ends_with_return(&self, compound_stmt: &Node) -> bool {
-        self.stmt_returns(compound_stmt)
+    fn ends_with_return(
+        &self,
+        compound_stmt: &Node,
+        source: &str,
+        noreturn_names: &HashSet<String>,
+    ) -> bool {
+        self.stmt_returns(compound_stmt, source, noreturn_names)
     }
 
-    fn stmt_returns(&self, root: &Node) -> bool {
+    fn stmt_returns(&self, root: &Node, source: &str, noreturn_names: &HashSet<String>) -> bool {
         enum Op<'a> {
             Eval(Node<'a>),
             And,
@@ -170,6 +246,15 @@ impl Msc37C {
                             }
                         }
                         match last_stmt {
+                            Some(stmt)
+                                if self.is_noreturn_call_statement(
+                                    &stmt,
+                                    source,
+                                    noreturn_names,
+                                ) =>
+                            {
+                                values.push(true);
+                            }
                             Some(stmt) => ops.push(Op::Eval(stmt)),
                             None => values.push(false),
                         }
@@ -221,6 +306,7 @@ impl Msc37C {
         &self,
         node: &Node,
         source: &str,
+        noreturn_names: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
         if node.kind() != "function_definition" {
@@ -287,7 +373,7 @@ impl Msc37C {
         }
 
         // Check if function body ends with return or all branches return
-        if !self.ends_with_return(&body) {
+        if !self.ends_with_return(&body, source, noreturn_names) {
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
                 severity: self.severity(),
@@ -332,9 +418,10 @@ impl CertRule for Msc37C {
 
 impl Msc37C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let noreturn_names = Self::collect_noreturn_function_names(node, source);
         // Check function definitions
         for func in query::find_descendants_of_kind(*node, "function_definition") {
-            self.check_function_definition(&func, source, violations);
+            self.check_function_definition(&func, source, &noreturn_names, violations);
         }
     }
 }
