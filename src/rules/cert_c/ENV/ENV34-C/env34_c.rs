@@ -10,6 +10,7 @@
 //! - `localeconv()` - locale information
 //! - `setlocale()` - locale settings
 //! - `strerror()` - error message string
+//! - `localtime()`, `gmtime()`, `ctime()` - time-conversion functions (C Standard 7.29.3)
 //!
 //! ## Examples:
 //!
@@ -248,7 +249,16 @@ impl Env34C {
     fn is_affected_function(&self, name: &str) -> bool {
         matches!(
             name,
-            "getenv" | "asctime" | "localeconv" | "setlocale" | "strerror"
+            "getenv"
+                | "asctime"
+                | "localeconv"
+                | "setlocale"
+                | "strerror"
+                // Time-conversion functions from C Standard 7.29.3 also
+                // return pointers to internal/static storage.
+                | "localtime"
+                | "gmtime"
+                | "ctime"
         )
     }
 }

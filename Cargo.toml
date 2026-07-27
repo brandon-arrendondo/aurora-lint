@@ -1,6 +1,6 @@
 [package]
 name = "sqc"
-version = "0.4.151"
+version = "0.4.152"
 edition = "2021"
 description = "Software Code Quality - CERT C compliance checker"
 authors = ["Eric Buehler <eric.buehler@bissell.com>", "Brandon Arrendondo <brandon.arrendondo@bissell.com>"]
@@ -86,3 +86,10 @@ walkdir = "2.5"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 anyhow = "1.0"
+
+[profile.dev]
+# Full debug info (the cargo default) embeds symbols for the whole
+# dependency tree (git2, tree-sitter, rayon, ...) into every incremental
+# build artifact. Line-tables-only keeps backtraces/line numbers useful
+# for `cargo test`/`cargo build` while cutting target/ growth drastically.
+debug = "line-tables-only"
