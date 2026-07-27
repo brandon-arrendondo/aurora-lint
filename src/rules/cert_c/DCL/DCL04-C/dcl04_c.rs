@@ -61,6 +61,16 @@ impl Dcl04C {
             return None;
         }
 
+        // DCL04-C-EX2: "Multiple, simple variable declarations can be
+        // declared on the same line given that there are no
+        // initializations" — e.g. `int i, j, k;`. Only plain (non-pointer,
+        // non-array), uninitialized declarators qualify; a mix like
+        // `int *p, q, r;` or `int i, j = 1;` still has the type/init
+        // ambiguity this rule targets.
+        if self.is_uninitialized_simple_multi_declaration(&node) {
+            return None;
+        }
+
         let declarator_count = self.count_declarators(&node);
 
         if declarator_count > 1 {
@@ -87,6 +97,33 @@ impl Dcl04C {
 
         None
     }
+    /// DCL04-C-EX2: true if every direct declarator child is a plain,
+    /// uninitialized `identifier` (no init_declarator, pointer_declarator,
+    /// or array_declarator among them) and there is more than one.
+    fn is_uninitialized_simple_multi_declaration(&self, declaration_node: &Node) -> bool {
+        let mut identifier_count = 0;
+        for i in 0..declaration_node.child_count() {
+            let Some(child) = declaration_node.child(i) else {
+                continue;
+            };
+            match child.kind() {
+                "identifier" if self.is_direct_declarator(&child, declaration_node) => {
+                    identifier_count += 1;
+                }
+                "init_declarator"
+                | "pointer_declarator"
+                | "array_declarator"
+                | "function_declarator" => {
+                    // Any non-plain or initialized declarator disqualifies
+                    // the whole declaration from EX2.
+                    return false;
+                }
+                _ => {}
+            }
+        }
+        identifier_count > 1
+    }
+
     /// Check if this declaration is part of a for loop (exception to the rule)
     fn is_for_loop_declaration(&self, node: &Node) -> bool {
         if let Some(parent) = node.parent() {
