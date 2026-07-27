@@ -77,6 +77,36 @@ impl Msc12C {
                         return;
                     }
                 }
+                // A MISSING `;` is a parser error-recovery placeholder, not
+                // real source text (e.g. a labeled_statement inside an
+                // #ifdef block whose body lives past the matching #endif —
+                // tree-sitter has no preprocessor, so it can't see the body
+                // and synthesizes a token to complete the grammar).
+                if let Some(semi) = node.child(0) {
+                    if semi.is_missing() {
+                        return;
+                    }
+                }
+                // A `;` immediately after an ERROR node that itself
+                // contains a function_declarator is typically the tail of
+                // a malformed declaration tree-sitter couldn't parse (e.g.
+                // an attribute-style macro after a function prototype:
+                // `void f(...) PRINTF_FORMAT(2, 3);` — the declaration +
+                // macro call become an ERROR node and the real `;` is left
+                // as an orphan sibling), not code a human wrote as a
+                // standalone statement. Scoped to function_declarator
+                // specifically (not any ERROR) so a genuinely no-effect
+                // expression that also fails to parse at file scope
+                // (`a == b;` outside a function) still gets flagged via
+                // its own orphaned `;`.
+                if let Some(prev) = node.prev_sibling() {
+                    if prev.kind() == "ERROR"
+                        && query::find_first_descendant(prev, |n| n.kind() == "function_declarator")
+                            .is_some()
+                    {
+                        return;
+                    }
+                }
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: self.severity(),
@@ -625,19 +655,36 @@ impl Msc12C {
                     }
                 }
 
-                // A bare label with no statements at all, immediately
-                // followed by another case/default label, is a grouped
-                // case label sharing the next label's body — not empty.
-                if own_statement_count == 0 {
-                    let falls_through_to_label = case_indices
-                        .get(pos + 1)
-                        .map(|&next_i| {
-                            // allow intervening comments between labels
-                            ((i + 1)..next_i).all(|k| {
-                                body.child(k).map(|c| c.kind() == "comment").unwrap_or(true)
-                            })
-                        })
-                        .unwrap_or(false);
+                // tree-sitter-c's case_statement grammar doesn't accept a
+                // leading preprocessor directive as a body child at all —
+                // `case X:\n#ifdef Y\n  stmt;\n#endif\n  more;` parses with
+                // the #ifdef block AND everything after it as SIBLINGS of
+                // the case_statement in the switch body, not children of
+                // it. Scan the sibling gap up to the next case/default (or
+                // the end of the switch body) for such spillover.
+                let next_i = case_indices
+                    .get(pos + 1)
+                    .copied()
+                    .unwrap_or(body.child_count());
+                let mut spillover_has_content = false;
+                for k in (i + 1)..next_i {
+                    if let Some(sib) = body.child(k) {
+                        if !matches!(sib.kind(), "comment" | "}") {
+                            spillover_has_content = true;
+                            break;
+                        }
+                    }
+                }
+                if spillover_has_content {
+                    has_real_code = true;
+                }
+
+                // A bare label with no statements at all (own body or
+                // spillover), immediately followed by another case/default
+                // label, is a grouped case label sharing the next label's
+                // body — not empty.
+                if own_statement_count == 0 && !spillover_has_content {
+                    let falls_through_to_label = case_indices.get(pos + 1).is_some();
                     if falls_through_to_label {
                         continue;
                     }
