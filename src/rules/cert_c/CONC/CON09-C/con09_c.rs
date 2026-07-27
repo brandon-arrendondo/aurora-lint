@@ -94,11 +94,15 @@ impl Con09C {
             return;
         };
 
-        // Check if function has mutex protection
-        let has_mutex_lock = self.has_mutex_lock(&body, source);
+        // Check if function has mutex protection, or uses hazard pointers —
+        // CERT's own compliant solution for this rule protects lock-free
+        // CAS operations with hazard pointers INSTEAD of a mutex (using a
+        // mutex here would defeat the purpose of lock-free programming).
+        let is_protected =
+            self.has_mutex_lock(&body, source) || self.has_hazard_pointer_protection(&body, source);
 
         // Find all compare-exchange operations and report violations immediately
-        self.find_and_check_cas_operations(&body, source, has_mutex_lock, violations);
+        self.find_and_check_cas_operations(&body, source, is_protected, violations);
     }
 
     fn has_mutex_lock(&self, node: &Node, source: &str) -> bool {
@@ -112,6 +116,25 @@ impl Con09C {
             };
             let func_name = get_node_text(&func_node, source);
             self.is_lock_function(&func_name)
+        })
+        .is_some()
+    }
+
+    /// Hazard pointers have no standardized C API (unlike mtx_lock/
+    /// pthread_mutex_lock) — CERT's own wiki example names its macros
+    /// HAZARD_SET/LF_HAZARD_SET/LF_HAZARD_UNSET, a project-defined
+    /// convention. Match generically on "hazard" in the called name
+    /// rather than that exact macro set.
+    fn has_hazard_pointer_protection(&self, node: &Node, source: &str) -> bool {
+        query::find_first_descendant(*node, |n| {
+            if n.kind() != "call_expression" {
+                return false;
+            }
+            let Some(func_node) = n.child_by_field_name("function") else {
+                return false;
+            };
+            let func_name = get_node_text(&func_node, source);
+            func_name.to_lowercase().contains("hazard")
         })
         .is_some()
     }
