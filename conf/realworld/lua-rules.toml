@@ -1144,4 +1144,81 @@ enabled = true
 [rules.cert_c.WIN30-C]
 enabled = true
 
+[rules.cert_c.DCL42-C]
+enabled = true
+
+[rules.cert_c.ENV04-C]
+enabled = false
+
+[rules.cert_c.FLP38-C]
+enabled = true
+
+[rules.cert_c.MSC00-C]
+enabled = true
+
+[rules.cert_c.MSC01-C]
+enabled = true
+
+[rules.cert_c.MSC05-C]
+enabled = true
+
+[rules.cert_c.MSC06-C]
+enabled = true
+
+[rules.cert_c.MSC09-C]
+enabled = true
+
+[rules.cert_c.MSC10-C]
+enabled = false
+
+[rules.cert_c.MSC11-C]
+enabled = true
+
+[rules.cert_c.MSC12-C]
+enabled = true
+
+[rules.cert_c.MSC13-C]
+enabled = true
+
+[rules.cert_c.MSC14-C]
+enabled = true
+
+[rules.cert_c.MSC15-C]
+enabled = true
+
+[rules.cert_c.MSC17-C]
+enabled = true
+
+[rules.cert_c.MSC18-C]
+enabled = false
+
+[rules.cert_c.MSC19-C]
+enabled = false
+
+[rules.cert_c.MSC20-C]
+enabled = true
+
+[rules.cert_c.MSC21-C]
+enabled = true
+
+[rules.cert_c.MSC22-C]
+enabled = true
+
+[rules.cert_c.MSC23-C]
+enabled = false
+
+[rules.cert_c.MSC24-C]
+enabled = true
+
+[rules.cert_c.MSC25-C]
+enabled = false
+
+[rules.cert_c.MSC42-C]
+enabled = true
+
+[rules.cert_c.POS55-C]
+enabled = true
+
+[rules.cert_c.WIN05-C]
+enabled = true
 
