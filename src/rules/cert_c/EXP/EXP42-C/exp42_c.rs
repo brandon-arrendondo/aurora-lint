@@ -81,7 +81,9 @@ impl CertRule for Exp42C {
                 // Check if this is memcmp or similar comparison functions
                 if func_name == "memcmp" || func_name == "memcmp_s" {
                     // Analyze arguments to detect struct comparison
-                    if is_struct_comparison(&args, source) {
+                    if is_struct_comparison(&args, source)
+                        && !is_packed_struct_comparison(node, &args, source)
+                    {
                         let start_pos = call.start_position();
 
                         violations.push(RuleViolation {
@@ -146,6 +148,63 @@ fn is_struct_comparison(args_node: &Node, source: &str) -> bool {
     }
 
     false
+}
+
+/// EXP42-C's own exception: if the struct type being compared was defined
+/// under `#pragma pack(push, 1)` / `#pragma pack(1)` (with no intervening
+/// `#pragma pack(pop)`/reset before the definition), the compiler emits no
+/// inter-member padding, so a memcmp() over the whole struct is safe.
+fn is_packed_struct_comparison(root: &Node, args_node: &Node, source: &str) -> bool {
+    let Some(struct_name) = extract_struct_type_name(args_node, source) else {
+        return false;
+    };
+    let Some(struct_def) = query::find_first_descendant(*root, |n| {
+        n.kind() == "struct_specifier"
+            && n.child_by_field_name("body").is_some()
+            && n.child_by_field_name("name")
+                .map(|name| get_node_text(&name, source) == struct_name)
+                .unwrap_or(false)
+    }) else {
+        return false;
+    };
+    is_pack_one_active_before(root, struct_def.start_byte(), source)
+}
+
+/// Find the struct type name referenced by a memcmp() argument list, either
+/// via `sizeof(struct NAME)` or a `(struct NAME *)`/`const struct NAME *`
+/// pointer argument.
+fn extract_struct_type_name(args_node: &Node, source: &str) -> Option<String> {
+    query::find_first_descendant(*args_node, |n| n.kind() == "struct_specifier").and_then(
+        |struct_ref| {
+            struct_ref
+                .child_by_field_name("name")
+                .map(|name| get_node_text(&name, source).to_string())
+        },
+    )
+}
+
+/// Scan `#pragma pack` directives (as `preproc_call` nodes) that appear
+/// before `byte_pos`, tracking whether a pack-to-1 is currently active.
+/// Approximates the push/pop stack as a single flag, which is sufficient
+/// for the common (non-nested) `#pragma pack(push, 1) ... #pragma pack(pop)`
+/// idiom.
+fn is_pack_one_active_before(root: &Node, byte_pos: usize, source: &str) -> bool {
+    let mut active = false;
+    for pc in query::find_descendants_of_kind(*root, "preproc_call") {
+        if pc.start_byte() >= byte_pos {
+            break;
+        }
+        let text = get_node_text(&pc, source);
+        if !text.contains("pack") {
+            continue;
+        }
+        if text.contains("pop") {
+            active = false;
+        } else if text.contains('1') {
+            active = true;
+        }
+    }
+    active
 }
 
 /// Checks if a node contains sizeof with a struct type
