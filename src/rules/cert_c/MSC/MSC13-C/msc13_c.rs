@@ -196,34 +196,17 @@ impl Msc13C {
                 }
                 true
             }
-            // Field expression: data.field — check if it's on the left of assignment
-            "field_expression" => {
-                // If this field_expression is on the left of an assignment,
-                // the base variable is being written to, not read
-                if let Some(grandparent) = parent.parent() {
-                    if grandparent.kind() == "assignment_expression" {
-                        if let Some(left) = grandparent.child_by_field_name("left") {
-                            if left.id() == parent.id() {
-                                return false; // data.field = value → write
-                            }
-                        }
-                    }
-                }
-                true
-            }
-            // Subscript expression: data[i] — similar to field_expression
-            "subscript_expression" => {
-                if let Some(grandparent) = parent.parent() {
-                    if grandparent.kind() == "assignment_expression" {
-                        if let Some(left) = grandparent.child_by_field_name("left") {
-                            if left.id() == parent.id() {
-                                return false; // data[i] = value → write
-                            }
-                        }
-                    }
-                }
-                true
-            }
+            // Field expression: data.field / data->field. Even when this
+            // whole field_expression is an assignment's LHS (`data.field =
+            // value`), the base `data` identifier is still read — its
+            // pointer/struct value is needed to locate the field being
+            // written. Only the field name itself (a field_identifier, not
+            // an identifier, so never reaches this function) is a pure write.
+            "field_expression" => true,
+            // Subscript expression: data[i] = value still reads both the
+            // base pointer `data` (needed to compute the write address) and
+            // the index `i` — neither is a pure write target.
+            "subscript_expression" => true,
             // Update expression (x++, ++x) — this is a read+write
             "update_expression" => true,
             // Address-of in a call argument: func(&x) — treat as read
@@ -321,141 +304,212 @@ impl Msc13C {
         }
 
         // Dead store detection: variable assigned, then overwritten before read
-        self.check_dead_stores(body, source, &local_vars, violations);
+        self.check_dead_stores(body, source, violations);
     }
 
     /// Detect dead stores: an assignment whose value is overwritten before being read.
     /// Pattern: `data = 'C'; data = 'Z'; use(data);` — first assignment is dead.
-    fn check_dead_stores(
-        &self,
-        body: &Node,
-        source: &str,
-        local_vars: &[(String, usize, bool)],
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        // Collect all assignment sites for each local variable
-        let var_names: std::collections::HashSet<_> =
-            local_vars.iter().map(|(n, _, _)| n.as_str()).collect();
-
-        let mut assignments: Vec<(String, usize, usize)> = Vec::new(); // (name, line, byte_offset)
-        self.collect_all_assignments(body, source, &var_names, &mut assignments);
-
-        // Also add init_declarator assignments
-        for (name, line, has_init) in local_vars {
-            if *has_init {
-                // Find the byte offset for this init_declarator
-                // Use line as approximate ordering
-                assignments.push((name.clone(), *line, 0));
-            }
-        }
-
-        // Sort by byte position (line number as proxy)
-        assignments.sort_by_key(|a| (a.1, a.2));
-
-        // For each assignment, check if the value is read before the next assignment
-        // to the same variable. Simple approach: find next assignment to same var,
-        // check if any read exists between this assignment and the next one.
-        for i in 0..assignments.len() {
-            let (ref name, line, _) = assignments[i];
-
-            // Find next assignment to same variable
-            let next_assign_line = assignments[i + 1..]
-                .iter()
-                .find(|(n, _, _)| n == name)
-                .map(|(_, l, _)| *l);
-
-            if let Some(next_line) = next_assign_line {
-                // Check if any read of this variable exists between line and next_line
-                if !self.has_read_between(body, source, name, line, next_line) {
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: self.severity(),
-                        message: format!(
-                            "Value assigned to '{}' is overwritten before being read.",
-                            name
-                        ),
-                        file_path: String::new(),
-                        line,
-                        column: 1,
-                        suggestion: Some(
-                            "Remove the dead assignment or use its value before reassigning"
-                                .to_string(),
-                        ),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
+    ///
+    /// Deliberately conservative: a pairwise "sort all assignments to this
+    /// variable in the whole function by line number, flag consecutive
+    /// pairs with no read between them" approach is unsound, because
+    /// "consecutive by line number" does not mean "consecutive on any
+    /// executable path" — e.g. assignments in mutually exclusive
+    /// if/else-if branches, an assignment inside a loop paired against its
+    /// own next-iteration read in the loop's condition, or an assignment
+    /// before a `goto` paired against an unrelated later assignment when
+    /// the real read is at the jump target. Only pairs assignments that
+    /// are direct siblings within the same straight-line block (no
+    /// branch/loop/label/goto between them), which is exactly the pattern
+    /// CERT-C's own examples show.
+    fn check_dead_stores(&self, body: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.check_dead_stores_in_blocks(body, source, violations);
     }
 
-    /// Collect all assignment sites for variables in the var_names set
-    fn collect_all_assignments(
+    /// Recurse to every compound_statement (function body, if/loop/switch
+    /// bodies, bare nested blocks) and run the direct-sibling dead-store
+    /// scan on each independently.
+    fn check_dead_stores_in_blocks(
         &self,
         node: &Node,
         source: &str,
-        var_names: &std::collections::HashSet<&str>,
-        assignments: &mut Vec<(String, usize, usize)>,
+        violations: &mut Vec<RuleViolation>,
     ) {
-        if node.kind() == "assignment_expression" {
-            // Only collect simple assignments (=), not compound (+=, -=, etc.)
-            // Compound assignments read the LHS, so they aren't pure overwrites
-            let is_simple = node
-                .child_by_field_name("operator")
-                .is_none_or(|op| get_node_text(&op, source) == "=");
-            if is_simple {
-                if let Some(left) = node.child_by_field_name("left") {
-                    if left.kind() == "identifier" {
-                        let name = get_node_text(&left, source);
-                        if var_names.contains(name) {
-                            assignments.push((
-                                name.to_string(),
-                                node.start_position().row + 1,
-                                node.start_byte(),
-                            ));
-                        }
-                    }
-                }
-            }
+        if node.kind() == "compound_statement" {
+            self.scan_block_direct_children(node, source, violations);
         }
-
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 if child.kind() != "function_definition" {
-                    self.collect_all_assignments(&child, source, var_names, assignments);
+                    self.check_dead_stores_in_blocks(&child, source, violations);
                 }
             }
         }
     }
 
-    /// Check if there's a read of var_name between start_line and end_line
-    fn has_read_between(
+    /// Extract every `(name, line)` write if `stmt` is a simple (`=`, not
+    /// compound) assignment or an initialized declaration (possibly with
+    /// multiple comma-separated declarators, e.g. `char *a = NULL, *b = NULL;`),
+    /// at this statement's top level.
+    fn simple_writes(&self, stmt: &Node, source: &str) -> Vec<(String, usize)> {
+        match stmt.kind() {
+            "expression_statement" => {
+                let Some(expr) = stmt.child(0) else {
+                    return Vec::new();
+                };
+                if expr.kind() != "assignment_expression" {
+                    return Vec::new();
+                }
+                let is_simple = expr
+                    .child_by_field_name("operator")
+                    .is_none_or(|op| get_node_text(&op, source) == "=");
+                if !is_simple {
+                    return Vec::new();
+                }
+                let Some(left) = expr.child_by_field_name("left") else {
+                    return Vec::new();
+                };
+                if left.kind() != "identifier" {
+                    return Vec::new();
+                }
+                vec![(
+                    get_node_text(&left, source).to_string(),
+                    stmt.start_position().row + 1,
+                )]
+            }
+            "declaration" => {
+                let line = stmt.start_position().row + 1;
+                let mut writes = Vec::new();
+                for i in 0..stmt.child_count() {
+                    if let Some(c) = stmt.child(i) {
+                        if c.kind() == "init_declarator" {
+                            if let Some(declarator) = c.child_by_field_name("declarator") {
+                                if let Some(name) = self.get_identifier_name(&declarator, source) {
+                                    writes.push((name, line));
+                                }
+                            }
+                        }
+                    }
+                }
+                writes
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Scan the direct (top-level) statement children of one block in
+    /// source order, pairing a write with an immediately-following
+    /// same-block write to the same variable when nothing between them
+    /// reads it — and treating any other statement kind (branch, loop,
+    /// switch, label, goto, bare nested block, return, ...) as a boundary:
+    /// if it mentions the pending variable at all, stop tracking it rather
+    /// than risk a false pair across control flow we don't model here.
+    fn scan_block_direct_children(
         &self,
-        node: &Node,
+        block: &Node,
         source: &str,
-        var_name: &str,
-        start_line: usize,
-        end_line: usize,
-    ) -> bool {
-        if node.kind() == "identifier" {
-            let line = node.start_position().row + 1;
-            if line > start_line && line < end_line {
-                let text = get_node_text(node, source);
-                if text == var_name && self.is_read_context(node, source) {
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let mut pending: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        for i in 0..block.child_count() {
+            let Some(stmt) = block.child(i) else { continue };
+            if matches!(stmt.kind(), "{" | "}") {
+                continue;
+            }
+
+            let writes = self.simple_writes(&stmt, source);
+            if !writes.is_empty() {
+                let written_names: std::collections::HashSet<&str> =
+                    writes.iter().map(|(n, _)| n.as_str()).collect();
+                // Any OTHER pending var mentioned anywhere in this statement
+                // (e.g. on an initializer's RHS) is now read.
+                for other in pending.keys().cloned().collect::<Vec<_>>() {
+                    if !written_names.contains(other.as_str())
+                        && self.mentions_identifier(&stmt, source, &other)
+                    {
+                        pending.remove(&other);
+                    }
+                }
+                for (name, line) in writes {
+                    if let Some(&prev_line) = pending.get(&name) {
+                        violations.push(RuleViolation {
+                            rule_id: self.rule_id().to_string(),
+                            severity: self.severity(),
+                            message: format!(
+                                "Value assigned to '{}' is overwritten before being read.",
+                                name
+                            ),
+                            file_path: String::new(),
+                            line: prev_line,
+                            column: 1,
+                            suggestion: Some(
+                                "Remove the dead assignment or use its value before reassigning"
+                                    .to_string(),
+                            ),
+                            ..Default::default()
+                        });
+                    }
+                    pending.insert(name, line);
+                }
+                continue;
+            }
+
+            // A goto or label, anywhere in this statement's subtree (not
+            // just at its top level — e.g. `if (err) { ...; goto out; }`),
+            // means control can jump past "the next same-block write" to
+            // reach code where the value we're tracking is still read (a
+            // shared cleanup label). Drop everything pending rather than
+            // risk pairing across a jump we can't see the target of.
+            if matches!(stmt.kind(), "goto_statement" | "labeled_statement")
+                || self.contains_goto_or_label(&stmt)
+            {
+                pending.clear();
+                continue;
+            }
+
+            // Not a recognized simple write: a boundary. Clear any pending
+            // var this statement mentions at all (read or write) rather
+            // than reason about its internal control flow.
+            for name in pending.keys().cloned().collect::<Vec<_>>() {
+                if self.mentions_identifier(&stmt, source, &name) {
+                    pending.remove(&name);
+                }
+            }
+        }
+    }
+
+    /// Whether `goto`/a label appears anywhere in this subtree.
+    fn contains_goto_or_label(&self, node: &Node) -> bool {
+        if matches!(node.kind(), "goto_statement" | "labeled_statement") {
+            return true;
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() != "function_definition" && self.contains_goto_or_label(&child) {
                     return true;
                 }
             }
         }
+        false
+    }
 
+    /// Whether `var_name` appears anywhere in this subtree (as any kind of
+    /// identifier reference), regardless of read/write context.
+    fn mentions_identifier(&self, node: &Node, source: &str, var_name: &str) -> bool {
+        if node.kind() == "identifier" && get_node_text(node, source) == var_name {
+            return true;
+        }
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 if child.kind() != "function_definition"
-                    && self.has_read_between(&child, source, var_name, start_line, end_line)
+                    && self.mentions_identifier(&child, source, var_name)
                 {
                     return true;
                 }
             }
         }
-
         false
     }
 }
