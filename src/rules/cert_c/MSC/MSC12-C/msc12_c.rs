@@ -581,49 +581,80 @@ impl Msc12C {
     ) {
         // Find all case_statement children inside the switch body
         if let Some(body) = node.child_by_field_name("body") {
-            for i in 0..body.child_count() {
-                if let Some(case_node) = body.child(i) {
-                    if case_node.kind() == "case_statement" {
-                        // Check if the case only has: "case" expr ":" break_statement
-                        let mut has_real_code = false;
-                        for j in 0..case_node.child_count() {
-                            if let Some(child) = case_node.child(j) {
-                                let kind = child.kind();
-                                if kind != "case"
-                                    && kind != ":"
-                                    && kind != "break_statement"
-                                    && kind != "comment"
-                                    && kind != "{"
-                                    && kind != "}"
-                                    && !kind.starts_with("number_literal")
-                                    && !kind.starts_with("char_literal")
-                                {
-                                    // Skip the case value expression
-                                    if child.prev_named_sibling().is_none()
-                                        || child.prev_named_sibling().map(|s| s.kind())
-                                            == Some("case")
-                                    {
-                                        continue;
-                                    }
-                                    has_real_code = true;
-                                    break;
-                                }
-                            }
+            // Collect indices of case_statement children (siblings in the
+            // switch body) so we can tell whether a case falls straight
+            // through into the next case/default label (grouped case
+            // labels, e.g. `case 'D': case 'd': foo(); break;`) — that's a
+            // standard idiom, not dead code, and each label's own
+            // case_statement node has no children of its own to inspect.
+            let case_indices: Vec<usize> = (0..body.child_count())
+                .filter(|&i| {
+                    body.child(i)
+                        .map(|c| c.kind() == "case_statement")
+                        .unwrap_or(false)
+                })
+                .collect();
+
+            for (pos, &i) in case_indices.iter().enumerate() {
+                let case_node = match body.child(i) {
+                    Some(c) => c,
+                    None => continue,
+                };
+
+                // Any statement/declaration in this case's own body, beyond
+                // "case"/":"/the case value expression?
+                let value_id = case_node.child_by_field_name("value").map(|v| v.id());
+                let mut own_statement_count = 0usize;
+                let mut has_real_code = false;
+                for j in 0..case_node.child_count() {
+                    if let Some(child) = case_node.child(j) {
+                        let kind = child.kind();
+                        if kind == "case" || kind == "default" || kind == ":" || kind == "comment" {
+                            continue;
                         }
-                        if !has_real_code {
-                            let _ = source;
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                severity: self.severity(),
-                                message: "Empty case statement has no effect.".to_string(),
-                                file_path: String::new(),
-                                line: case_node.start_position().row + 1,
-                                column: case_node.start_position().column + 1,
-                                suggestion: Some("Add code to the case or remove it".to_string()),
-                                ..Default::default()
-                            });
+                        // Skip the case value expression itself (`case X:`
+                        // has no body children before it; `default:` has no
+                        // value at all, so this only ever matches the value).
+                        if Some(child.id()) == value_id {
+                            continue;
+                        }
+                        own_statement_count += 1;
+                        if kind != "break_statement" {
+                            has_real_code = true;
                         }
                     }
+                }
+
+                // A bare label with no statements at all, immediately
+                // followed by another case/default label, is a grouped
+                // case label sharing the next label's body — not empty.
+                if own_statement_count == 0 {
+                    let falls_through_to_label = case_indices
+                        .get(pos + 1)
+                        .map(|&next_i| {
+                            // allow intervening comments between labels
+                            ((i + 1)..next_i).all(|k| {
+                                body.child(k).map(|c| c.kind() == "comment").unwrap_or(true)
+                            })
+                        })
+                        .unwrap_or(false);
+                    if falls_through_to_label {
+                        continue;
+                    }
+                }
+
+                if !has_real_code {
+                    let _ = source;
+                    violations.push(RuleViolation {
+                        rule_id: self.rule_id().to_string(),
+                        severity: self.severity(),
+                        message: "Empty case statement has no effect.".to_string(),
+                        file_path: String::new(),
+                        line: case_node.start_position().row + 1,
+                        column: case_node.start_position().column + 1,
+                        suggestion: Some("Add code to the case or remove it".to_string()),
+                        ..Default::default()
+                    });
                 }
             }
         }
