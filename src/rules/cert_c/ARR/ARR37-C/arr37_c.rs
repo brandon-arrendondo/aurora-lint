@@ -104,11 +104,25 @@ impl Arr37C {
                         if self.is_pointer_arithmetic(&left, &right, source, analyzer) {
                             let pointer_name = self.get_pointer_name(&left, source);
 
+                            // ARR37-C-EX1: "Any non-array object in memory
+                            // can be considered an array consisting of one
+                            // element." A non-array pointer plus exactly 1
+                            // computes the well-defined one-past-the-end
+                            // address (e.g. the classic malloc(sizeof(T) +
+                            // extra) trailing-allocation idiom) — only
+                            // applies to `+`, not `-`, and only offset 1.
+                            let is_ex1_offset =
+                                operator.as_str() == "+" && is_literal_one(&right, source);
+
                             // Skip ambiguous parameters and unknown pointers - can't determine statically
                             if analyzer.is_ambiguous_parameter(&pointer_name)
                                 || analyzer.is_unknown_pointer(&pointer_name)
                             {
                                 // Don't flag - could be arrays or single objects
+                            } else if analyzer.is_trailing_allocation_pointer(&pointer_name)
+                                && is_ex1_offset
+                            {
+                                // ARR37-C-EX1 applies
                             } else if analyzer.is_struct_member_pointer(&pointer_name) {
                                 let start_point = node.start_position();
                                 violations.push(RuleViolation {
@@ -160,11 +174,18 @@ impl Arr37C {
             let start_point = node.start_position();
             let op_text = &source[node.start_byte()..node.end_byte()];
 
+            // ARR37-C-EX1: `ptr++`/`++ptr` on a non-array pointer computes
+            // the well-defined one-past-the-end address (offset exactly
+            // 1) — `ptr--`/`--ptr` is not covered (goes out of bounds).
+            let is_ex1_offset = op_text.contains("++");
+
             // Skip ambiguous parameters and unknown pointers - can't determine statically
             if analyzer.is_ambiguous_parameter(&pointer_name)
                 || analyzer.is_unknown_pointer(&pointer_name)
             {
                 // Don't flag - could be arrays or single objects
+            } else if analyzer.is_trailing_allocation_pointer(&pointer_name) && is_ex1_offset {
+                // ARR37-C-EX1 applies
             } else if analyzer.is_struct_member_pointer(&pointer_name) {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
@@ -207,7 +228,7 @@ impl Arr37C {
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check for patterns like: ptr += n, ptr -= n
-        if let (Some(left), Some(_right)) = (
+        if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
         ) {
@@ -218,11 +239,17 @@ impl Arr37C {
                 let start_point = node.start_position();
                 let op_text = &source[node.start_byte()..node.end_byte()];
 
+                // ARR37-C-EX1: `ptr += 1` on a non-array pointer computes
+                // the well-defined one-past-the-end address.
+                let is_ex1_offset = full_text.contains("+=") && is_literal_one(&right, source);
+
                 // Skip ambiguous parameters and unknown pointers - can't determine statically
                 if analyzer.is_ambiguous_parameter(&pointer_name)
                     || analyzer.is_unknown_pointer(&pointer_name)
                 {
                     // Don't flag - could be arrays or single objects
+                } else if analyzer.is_trailing_allocation_pointer(&pointer_name) && is_ex1_offset {
+                    // ARR37-C-EX1 applies
                 } else if analyzer.is_struct_member_pointer(&pointer_name) {
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
@@ -387,6 +414,13 @@ struct NonArrayPointerAnalyzer {
 enum VariableType {
     Array,
     NonArray,
+    // A non-array pointer from `malloc(sizeof(T) + extra)` — the classic
+    // flexible-trailing-allocation idiom. ARR37-C-EX1 permits exactly a
+    // `+1` offset on this pointer (the well-defined one-past-the-end
+    // address used to reach the trailing bytes); anything else is still a
+    // violation. Kept distinct from plain NonArray (e.g. `&stack_var`) so
+    // EX1 doesn't blanket-exempt ordinary single-object pointer misuse.
+    TrailingAllocation,
     StructMemberPointer,
     AmbiguousParameter,
     Unknown,
@@ -612,12 +646,16 @@ impl NonArrayPointerAnalyzer {
                 "malloc" | "realloc" => {
                     // malloc(sizeof(T)) -> NonArray (single object)
                     // malloc(N * sizeof(T)) -> Array
+                    // malloc(sizeof(T) + extra) -> TrailingAllocation
+                    // (ARR37-C-EX1 flexible trailing-allocation idiom)
                     if let Some(arguments) = node.child_by_field_name("arguments") {
                         let arg_text =
                             source[arguments.start_byte()..arguments.end_byte()].to_string();
                         // If there's multiplication or multiple sizeof calls, it's an array
                         if arg_text.contains('*') {
                             VariableType::Array
+                        } else if arg_text.contains("sizeof") && arg_text.contains('+') {
+                            VariableType::TrailingAllocation
                         } else {
                             // Single sizeof -> single object
                             VariableType::NonArray
@@ -671,7 +709,14 @@ impl NonArrayPointerAnalyzer {
     fn is_non_array_pointer(&self, var_name: &str) -> bool {
         matches!(
             self.variable_types.get(var_name),
-            Some(VariableType::NonArray)
+            Some(VariableType::NonArray) | Some(VariableType::TrailingAllocation)
+        )
+    }
+
+    fn is_trailing_allocation_pointer(&self, var_name: &str) -> bool {
+        matches!(
+            self.variable_types.get(var_name),
+            Some(VariableType::TrailingAllocation)
         )
     }
 
@@ -700,6 +745,12 @@ impl NonArrayPointerAnalyzer {
     fn is_pointer_variable(&self, var_name: &str) -> bool {
         self.variable_types.contains_key(var_name)
     }
+}
+
+/// True if `node` is the integer literal `1` (used for ARR37-C-EX1: a
+/// non-array pointer plus exactly one element is well-defined).
+fn is_literal_one(node: &Node, source: &str) -> bool {
+    node.kind() == "number_literal" && source[node.start_byte()..node.end_byte()].trim() == "1"
 }
 
 fn get_operator(node: &Node, source: &str) -> Option<String> {
