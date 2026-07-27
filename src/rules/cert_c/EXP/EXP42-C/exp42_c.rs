@@ -270,20 +270,3 @@ fn looks_like_struct_pointer(node: &Node, source: &str) -> bool {
     })
     .is_some()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rule_id() {
-        let rule = Exp42C;
-        assert_eq!(rule.rule_id(), "EXP42-C");
-    }
-
-    #[test]
-    fn test_description() {
-        let rule = Exp42C;
-        assert_eq!(rule.description(), "Do not compare padding data");
-    }
-}

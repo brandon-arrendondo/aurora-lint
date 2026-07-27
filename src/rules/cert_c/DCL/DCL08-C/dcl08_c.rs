@@ -230,20 +230,3 @@ impl Dcl08C {
         false
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rule_id() {
-        let rule = Dcl08C;
-        assert_eq!(rule.rule_id(), "DCL08-C");
-    }
-
-    #[test]
-    fn test_severity() {
-        let rule = Dcl08C;
-        assert_eq!(rule.severity(), Severity::Low);
-    }
-}

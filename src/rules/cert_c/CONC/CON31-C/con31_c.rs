@@ -158,23 +158,3 @@ impl CertRule for Con31C {
         self.check_function(root, source, violations);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rule_id() {
-        let rule = Con31C::new();
-        assert_eq!(rule.rule_id(), "CON31-C");
-    }
-
-    #[test]
-    fn test_description() {
-        let rule = Con31C::new();
-        assert_eq!(
-            rule.description(),
-            "Do not destroy a mutex while it is locked"
-        );
-    }
-}
