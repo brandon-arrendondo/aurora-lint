@@ -96,7 +96,7 @@ impl Int34C {
         &self,
         node: &Node,
         source: &str,
-        operator: &str,
+        _operator: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
         let left = node.child_by_field_name("left");
@@ -150,13 +150,17 @@ impl Int34C {
                 }
             }
 
-            // Check if this is an unsigned type operation
-            // Unsigned shifts have defined behavior in most cases
+            // Check if this is an unsigned type operation. Unsigned shifts
+            // avoid the signed-overflow hazard that makes `<<` on signed
+            // types especially dangerous, but the shift COUNT itself being
+            // negative or >= the operand's bit width is undefined behavior
+            // regardless of direction or signedness (C11 6.5.7p3) --
+            // verified against CERT's own "Compliant Solution (Right
+            // Shift)" example, which adds the same PRECISION() bound check
+            // to an unsigned `>>`. So both operators require validation
+            // for both signed and unsigned operands.
             if self.is_likely_unsigned(left_text, &left_node, source) {
-                // For unsigned types, be more lenient
-                // Only require validation for left-shifts (which can cause issues)
-                // Right-shifts on unsigned are generally safe
-                if operator == "<<" && !self.is_shift_amount_validated(node, &right_node, source) {
+                if !self.is_shift_amount_validated(node, &right_node, source) {
                     self.report_violation(
                         node,
                         left_text.to_string(),

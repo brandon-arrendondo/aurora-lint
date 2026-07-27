@@ -1,10 +1,14 @@
 /*
  * Rule: INT34-C
  * Source: testcases
- * Status: PASS - Unsigned right shifts detected via parameter type declarations
+ * Status: FAIL - Should trigger INT34-C violation. Unsigned right-shift is
+ * NOT automatically safe: the shift count being negative or >= the
+ * operand's bit width is undefined behavior regardless of direction or
+ * signedness (C11 6.5.7p3), and none of these shift amounts are bounded.
+ * Previously mislabeled PASS on the mistaken premise that right-shift on
+ * unsigned types needs no validation.
  */
 
-/* Unsigned type inferred from parameter declaration — right shift safe */
 unsigned int right_shift_basic(unsigned int val, unsigned int amt) {
     return val >> amt;
 }
