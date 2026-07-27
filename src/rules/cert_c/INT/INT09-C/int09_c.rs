@@ -85,10 +85,16 @@ impl Int09C {
             name: String,
             value: i64,
             is_explicit: bool,
+            // True when the explicit value is a direct reference to a
+            // prior enumerator's NAME (e.g. `violet = indigo`), rather than
+            // a numeric literal. Aliasing by name can't happen by accident
+            // the way a numeric-literal collision can, so it's unambiguous
+            // intentional duplication (CERT INT09-C's own exception).
+            is_name_alias: bool,
             node: Node<'static>,
         }
 
-        let mut enumerators = Vec::new();
+        let mut enumerators: Vec<EnumValue> = Vec::new();
         let mut current_value: i64 = 0;
 
         // Parse all enumerators
@@ -101,13 +107,22 @@ impl Int09C {
                         continue;
                     };
 
-                    let (value, is_explicit) =
+                    let (value, is_explicit, is_name_alias) =
                         if let Some(value_node) = child.child_by_field_name("value") {
                             let value_text = get_node_text(&value_node, source);
-                            let parsed_value = self.parse_constant_value(value_text);
-                            (parsed_value, true)
+                            let trimmed = value_text.trim();
+                            // An explicit value may reference a prior
+                            // enumerator by name (e.g. `violet = indigo`)
+                            // rather than a numeric literal; resolve it
+                            // against what's been parsed so far before
+                            // falling back to numeric parsing.
+                            if let Some(aliased) = enumerators.iter().find(|e| e.name == trimmed) {
+                                (aliased.value, true, true)
+                            } else {
+                                (self.parse_constant_value(trimmed), true, false)
+                            }
                         } else {
-                            (current_value, false)
+                            (current_value, false, false)
                         };
 
                     // SAFETY: We're storing the node which has the same lifetime as the source
@@ -119,6 +134,7 @@ impl Int09C {
                         name: name.to_string(),
                         value,
                         is_explicit,
+                        is_name_alias,
                         node: static_node,
                     });
 
@@ -140,8 +156,13 @@ impl Int09C {
             if enum_list.len() > 1 {
                 // Check if at least one is implicit (unintentional duplicate)
                 let has_implicit = enum_list.iter().any(|e| !e.is_explicit);
+                // A direct by-name alias (e.g. `violet = indigo`) can't be
+                // an accidental collision -- it's unambiguous intentional
+                // duplication, regardless of whether the aliased value
+                // happened to be implicit.
+                let has_name_alias = enum_list.iter().any(|e| e.is_name_alias);
 
-                if has_implicit {
+                if has_implicit && !has_name_alias {
                     // Report violation for all duplicates
                     for enumerator in enum_list {
                         let explicit_status = if enumerator.is_explicit {
