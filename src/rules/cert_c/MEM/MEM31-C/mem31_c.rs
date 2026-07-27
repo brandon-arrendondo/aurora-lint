@@ -97,6 +97,13 @@ struct MemoryLeakAnalyzer<'a> {
     // function's own fresh allocation, not a borrowed caller struct, so it
     // stays a leak candidate.
     deref_allocated_params: HashSet<String>,
+    // Local variables declared `static` (function-static storage
+    // duration): CERT's own MEM31-C-EX2 exempts memory that's kept alive
+    // for the remaining lifetime of the program, and a function-static
+    // pointer used as a lazily-initialized cache (allocate once, reuse
+    // across calls, never freed) is exactly that pattern -- not a leak
+    // just because the function returns without freeing it.
+    static_variables: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +211,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             function_summaries,
             function_params: HashSet::new(),
             deref_allocated_params: HashSet::new(),
+            static_variables: HashSet::new(),
         }
     }
 
@@ -218,6 +226,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .into_iter()
                 .filter(|n| !n.is_empty())
                 .collect();
+            self.static_variables = Self::collect_static_variable_names(&body, source);
 
             // Pre-analysis: collect what variables are freed at each label
             self.collect_label_frees(&body, source);
@@ -306,6 +315,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                                 if self.escaped_memory.contains(var_name)
                                     || self.freed_memory.contains_key(var_name)
                                     || self.null_variables.contains(var_name)
+                                    || self.static_variables.contains(var_name)
                                     || var_name.contains('@')
                                 {
                                     continue;
@@ -333,6 +343,45 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 }
             }
         }
+    }
+
+    /// Collect the names of local variables declared `static` within this
+    /// function body -- their storage persists for the program's lifetime,
+    /// so not freeing them before the function returns isn't a leak
+    /// (MEM31-C-EX2).
+    fn collect_static_variable_names(body: &Node, source: &str) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for decl in query::find_descendants_of_kind(*body, "declaration") {
+            let mut cursor = decl.walk();
+            let is_static = decl.children(&mut cursor).any(|c| {
+                c.kind() == "storage_class_specifier"
+                    && ast_utils::get_node_text(&c, source) == "static"
+            });
+            if !is_static {
+                continue;
+            }
+            let mut cursor = decl.walk();
+            for child in decl.children(&mut cursor) {
+                let declarator = match child.kind() {
+                    "init_declarator" => child.child_by_field_name("declarator"),
+                    "pointer_declarator" | "identifier" | "array_declarator" => Some(child),
+                    _ => None,
+                };
+                if let Some(mut d) = declarator {
+                    // Unwrap pointer_declarator layers to reach the identifier.
+                    while d.kind() == "pointer_declarator" {
+                        match d.child_by_field_name("declarator") {
+                            Some(inner) => d = inner,
+                            None => break,
+                        }
+                    }
+                    if d.kind() == "identifier" {
+                        names.insert(ast_utils::get_node_text(&d, source).to_string());
+                    }
+                }
+            }
+        }
+        names
     }
 
     /// Pre-analyze function to find what variables are freed at each labeled statement
@@ -817,6 +866,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if self.escaped_memory.contains(var_name)
                 || self.freed_memory.contains_key(var_name)
                 || self.null_variables.contains(var_name)
+                || self.static_variables.contains(var_name)
                 || var_name.contains('@')
             {
                 continue;
@@ -879,6 +929,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // Skip variables that shouldn't be checked
             if self.escaped_memory.contains(var_name)
                 || saved_null.contains(var_name)
+                || self.static_variables.contains(var_name)
                 || var_name.contains('@')
             {
                 continue;
@@ -1184,6 +1235,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if self.escaped_memory.contains(var_name)
                 || self.freed_memory.contains_key(var_name)
                 || self.null_variables.contains(var_name)
+                || self.static_variables.contains(var_name)
                 || var_name.contains('@')
             {
                 continue;
@@ -1450,10 +1502,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         // Check for leaks at this return point
         for (var_name, alloc_info) in &self.allocated_memory {
-            // Skip variables that are escaped, freed, null, or contain @ (leaked marker)
+            // Skip variables that are escaped, freed, null, static, or contain @ (leaked marker)
             if self.escaped_memory.contains(var_name)
                 || self.freed_memory.contains_key(var_name)
                 || self.null_variables.contains(var_name)
+                || self.static_variables.contains(var_name)
                 || var_name.contains('@')
             {
                 continue;
@@ -1703,7 +1756,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     fn detect_leaks(&self, violations: &mut Vec<RuleViolation>) {
         for (var_name, alloc_info) in &self.allocated_memory {
-            if !self.freed_memory.contains_key(var_name) && !self.escaped_memory.contains(var_name)
+            if !self.freed_memory.contains_key(var_name)
+                && !self.escaped_memory.contains(var_name)
+                && !self.static_variables.contains(var_name)
             {
                 violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
