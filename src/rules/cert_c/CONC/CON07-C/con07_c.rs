@@ -225,11 +225,6 @@ impl Con07C {
             return;
         }
 
-        // Skip functions that use atomic operations (compliant)
-        if self.uses_atomic_operations(function_node, source) {
-            return;
-        }
-
         // Get function body
         let body = match function_node.child_by_field_name("body") {
             Some(b) => b,
@@ -239,13 +234,28 @@ impl Con07C {
         // Check for compound operations on static variables
         let static_var_accesses = self.find_static_var_accesses(&body, source, static_vars);
 
+        // A single atomic operation spanning ALL the shared state involved
+        // (e.g. one atomic_load/atomic_store on an _Atomic struct, or a
+        // single atomic RMW on one variable) is compliant — that's exactly
+        // why it collapses to a single tracked variable name here. But
+        // wrapping each variable's access in its own SEPARATE atomic_*
+        // call does NOT make combining them atomic (CERT's own "Addition
+        // of Atomic Integers" noncompliant example) — so, unlike a lone
+        // atomic variable, this blanket exemption must not apply once
+        // multiple distinct shared variables are involved.
+        if static_var_accesses.len() == 1 && self.uses_atomic_operations(function_node, source) {
+            return;
+        }
+
         // If function performs a compound write on multiple static variables, flag it.
         // Pure reads of multiple statics are not a compound-operation violation.
         if static_var_accesses.len() > 1 {
             let has_compound_write = static_var_accesses
                 .iter()
                 .any(|v| self.has_compound_operation_on_var(&body, source, v));
-            if has_compound_write {
+            let combines_reads = self.combines_multiple_vars(&body, source, &static_var_accesses);
+            let writes_multiple = self.writes_multiple_vars(&body, source, &static_var_accesses);
+            if has_compound_write || combines_reads || writes_multiple {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: Severity::Medium,
@@ -422,5 +432,76 @@ impl Con07C {
             false
         })
         .is_some()
+    }
+
+    /// Names from `vars` referenced anywhere in `node`'s subtree.
+    fn vars_referenced_in(
+        &self,
+        node: &Node,
+        source: &str,
+        vars: &[String],
+    ) -> std::collections::HashSet<String> {
+        let mut found = std::collections::HashSet::new();
+        for id_node in query::find_descendants_of_kind(*node, "identifier") {
+            let name = get_node_text(&id_node, source);
+            if vars.iter().any(|v| v == name) {
+                found.insert(name.to_string());
+            }
+        }
+        found
+    }
+
+    /// True if any single expression (e.g. `a + b`, or
+    /// `atomic_load(&a) + atomic_load(&b)`) combines reads of two or more
+    /// distinct shared variables — each read may individually be atomic,
+    /// but the combination isn't (CERT's "Addition of Atomic Integers"
+    /// noncompliant example).
+    fn combines_multiple_vars(&self, body: &Node, source: &str, vars: &[String]) -> bool {
+        query::find_descendants_of_kind(*body, "binary_expression")
+            .into_iter()
+            .any(|expr| self.vars_referenced_in(&expr, source, vars).len() > 1)
+    }
+
+    /// True if two or more distinct shared variables are each individually
+    /// written (plain assignment or an atomic store/exchange/init call)
+    /// somewhere in this function — writing correlated shared state one
+    /// variable at a time is not atomic as a whole, even if each
+    /// individual write is.
+    fn writes_multiple_vars(&self, body: &Node, source: &str, vars: &[String]) -> bool {
+        let mut written = std::collections::HashSet::new();
+
+        for assign in query::find_descendants_of_kind(*body, "assignment_expression") {
+            if let Some(left) = assign.child_by_field_name("left") {
+                let left_text = get_node_text(&left, source);
+                if vars.iter().any(|v| v == left_text) {
+                    written.insert(left_text.to_string());
+                }
+            }
+        }
+
+        for call in query::find_descendants_of_kind(*body, "call_expression") {
+            let Some(func) = call.child_by_field_name("function") else {
+                continue;
+            };
+            let func_name = get_node_text(&func, source);
+            if !matches!(
+                func_name,
+                "atomic_store"
+                    | "atomic_store_explicit"
+                    | "atomic_exchange"
+                    | "atomic_exchange_explicit"
+                    | "atomic_init"
+            ) {
+                continue;
+            }
+            let Some(args) = call.child_by_field_name("arguments") else {
+                continue;
+            };
+            if let Some(first_arg) = args.named_child(0) {
+                written.extend(self.vars_referenced_in(&first_arg, source, vars));
+            }
+        }
+
+        written.len() > 1
     }
 }
