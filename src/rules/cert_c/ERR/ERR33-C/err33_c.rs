@@ -253,16 +253,22 @@ impl Err33C {
                 // This applies to both stdout/stderr and file output:
                 // serialization code (e.g., config writers) calls fprintf
                 // hundreds of times; checking each is infeasible.
+                //
+                // snprintf/vsnprintf are NOT included here: unlike the rest
+                // of the family, their return value doesn't just signal a
+                // rare I/O error -- it signals whether the destination
+                // buffer was truncated (return >= size), which is the
+                // specific hazard ERR33-C calls out for these two
+                // functions (e.g. attacker-controlled width/precision
+                // producing a wider result than the buffer can hold).
                 if matches!(
                     function_name,
                     "printf"
                         | "fprintf"
                         | "sprintf"
-                        | "snprintf"
                         | "vprintf"
                         | "vfprintf"
                         | "vsprintf"
-                        | "vsnprintf"
                         | "puts"
                         | "putchar"
                         | "fputs"
