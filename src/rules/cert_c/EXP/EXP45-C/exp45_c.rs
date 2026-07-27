@@ -127,9 +127,15 @@ impl Exp45C {
         violations: &mut Vec<RuleViolation>,
     ) {
         for n in query::find_descendants_of_kind(*node, "assignment_expression") {
-            // Check if this assignment is part of a comparison (EX1 exception)
-            // or in the first operand of a comma expression (allowed)
-            if !self.is_assignment_in_comparison(&n) && !self.is_in_first_comma_operand(&n) {
+            // Check if this assignment is part of a comparison (EX1), the
+            // sole double-parenthesized primary expression (EX2), inside a
+            // function-call argument or array subscript (EX3), or in the
+            // first operand of a comma expression (allowed).
+            if !self.is_assignment_in_comparison(&n)
+                && !self.is_in_first_comma_operand(&n)
+                && !self.is_double_parenthesized_primary(&n)
+                && !self.is_in_function_arg_or_subscript(&n)
+            {
                 let line = n.start_position().row + 1;
                 let column = n.start_position().column + 1;
                 let assignment_text = get_node_text(&n, source);
@@ -201,6 +207,65 @@ impl Exp45C {
             }
             // Recursively check if we're nested in a comma expression's first operand
             return self.is_in_first_comma_operand(&parent);
+        }
+        false
+    }
+
+    /// EXP45-C-EX2: "Assignment can be used where the expression consists of
+    /// a single primary expression" -- e.g. `if ((x = y))`. The assignment,
+    /// wrapped in exactly one explicit parenthesization, must be the entire
+    /// condition; combining it with any operator (e.g. `if ((v = w) && flag)`)
+    /// is still noncompliant.
+    fn is_double_parenthesized_primary(&self, assignment_node: &Node) -> bool {
+        // The grammar always wraps a selection statement's condition field
+        // in a mandatory `parenthesized_expression`, whether or not the
+        // user wrote extra parens (`while (x = y)`'s condition is already a
+        // parenthesized_expression). So "double parenthesized" genuinely
+        // means two NESTED parenthesized_expression layers: the mandatory
+        // one plus the user's explicit extra pair.
+        let Some(inner_parens) = assignment_node.parent() else {
+            return false;
+        };
+        if inner_parens.kind() != "parenthesized_expression" {
+            return false;
+        }
+        let Some(outer_parens) = inner_parens.parent() else {
+            return false;
+        };
+        if outer_parens.kind() != "parenthesized_expression" {
+            return false;
+        }
+        let Some(statement) = outer_parens.parent() else {
+            return false;
+        };
+        matches!(
+            statement.kind(),
+            "if_statement"
+                | "while_statement"
+                | "do_statement"
+                | "switch_statement"
+                | "for_statement"
+        ) && statement
+            .child_by_field_name("condition")
+            .map(|c| c.id() == outer_parens.id())
+            .unwrap_or(false)
+    }
+
+    /// EXP45-C-EX3: "Assignment can be used in a function argument or array
+    /// index" -- e.g. `if (foo(x = y))`. Walks up from the assignment; if a
+    /// function-call argument list or array subscript is reached before the
+    /// enclosing selection statement, the assignment isn't itself
+    /// controlling the branch decision.
+    fn is_in_function_arg_or_subscript(&self, assignment_node: &Node) -> bool {
+        let mut current = assignment_node.parent();
+        while let Some(p) = current {
+            match p.kind() {
+                "argument_list" | "subscript_expression" => return true,
+                "if_statement" | "while_statement" | "do_statement" | "switch_statement"
+                | "for_statement" => return false,
+                _ => {}
+            }
+            current = p.parent();
         }
         false
     }
