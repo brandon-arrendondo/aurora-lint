@@ -1175,7 +1175,7 @@ enabled = false
 enabled = true
 
 [rules.cert_c.MSC12-C]
-enabled = true
+enabled = false  # empty-body-by-design is pervasive real-world C idiom (commented no-ops, stub functions, no-op scan loops); categorical policy exclusion, not FP suppression -- see data/precision_audit/msc12_msc13_0.4.141/README.md
 
 [rules.cert_c.MSC13-C]
 enabled = true
