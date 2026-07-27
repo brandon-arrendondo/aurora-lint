@@ -69,7 +69,7 @@ impl CertRule for Api01C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         for struct_node in query::find_descendants_of_kind(*node, "struct_specifier") {
-            self.check_struct_layout(&struct_node, source, &mut violations);
+            self.check_struct_layout(&struct_node, node, source, &mut violations);
         }
         violations
     }
@@ -79,6 +79,7 @@ impl Api01C {
     fn check_struct_layout(
         &self,
         struct_node: &Node,
+        root: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -104,6 +105,16 @@ impl Api01C {
                 // Check if any subsequent field is a pointer
                 for j in (i + 1)..fields.len() {
                     if self.is_pointer_field(&fields[j], source) {
+                        // API01-C-EX1: permitted when the struct is only
+                        // ever instantiated as a fixed-size array (e.g.
+                        // `struct node_s list[10];`), not individually
+                        // malloc'd/linked nodes — array indexing, not
+                        // pointer-chasing, is the access pattern, so
+                        // corrupting an unused trailing pointer field via
+                        // overflow can't be leveraged the same way.
+                        if self.has_array_declaration(struct_node, root, source) {
+                            break;
+                        }
                         self.report_violation(
                             &fields[i],
                             &fields[j],
@@ -116,6 +127,59 @@ impl Api01C {
                 }
             }
         }
+    }
+
+    /// True if `struct_node` is declared (or, via its tag name, used
+    /// elsewhere in the translation unit) as an array — see API01-C-EX1.
+    fn has_array_declaration(&self, struct_node: &Node, root: &Node, source: &str) -> bool {
+        // `struct node_s { ... } list[10];` — array declarator alongside
+        // the struct definition itself.
+        if Self::sibling_array_declarator(struct_node) {
+            return true;
+        }
+
+        // `struct node_s { ... };` elsewhere followed by a separate
+        // `struct node_s list[10];` use-reference.
+        let tag_name = match struct_node.child_by_field_name("name") {
+            Some(n) => get_node_text(&n, source).trim().to_string(),
+            None => return false,
+        };
+        if tag_name.is_empty() {
+            return false;
+        }
+
+        query::find_descendants_of_kind(*root, "struct_specifier")
+            .into_iter()
+            .filter(|other| other.id() != struct_node.id())
+            .filter(|other| other.child_by_field_name("body").is_none())
+            .filter(|other| {
+                other
+                    .child_by_field_name("name")
+                    .map(|n| get_node_text(&n, source).trim() == tag_name)
+                    .unwrap_or(false)
+            })
+            .any(|other| Self::sibling_array_declarator(&other))
+    }
+
+    /// True if any sibling of `node` (within its enclosing declaration) is
+    /// an `array_declarator`.
+    fn sibling_array_declarator(node: &Node) -> bool {
+        let parent = match node.parent() {
+            Some(p) => p,
+            None => return false,
+        };
+        if !matches!(
+            parent.kind(),
+            "declaration" | "field_declaration" | "parameter_declaration"
+        ) {
+            return false;
+        }
+        (0..parent.child_count()).any(|i| {
+            parent
+                .child(i)
+                .map(|c| c.kind() == "array_declarator")
+                .unwrap_or(false)
+        })
     }
 
     /// Check if a field is a char array (e.g., char name[20])
