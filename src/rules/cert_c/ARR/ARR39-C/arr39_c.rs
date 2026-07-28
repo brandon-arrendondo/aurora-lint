@@ -1,5 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use crate::utility::cert_c::ast_utils::{self, get_identifier_from_declarator, get_node_text};
+use crate::utility::cert_c::declarator_utils::{is_array_declarator, is_pointer_declarator};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -48,20 +50,20 @@ impl Arr39C {
         for matched in matches {
             match matched.kind() {
                 "binary_expression" => {
-                    self.check_pointer_arithmetic(&matched, source, violations, node);
+                    self.check_pointer_arithmetic(&matched, source, violations);
                 }
                 "assignment_expression" => {
-                    self.check_assignment_arithmetic(&matched, source, violations, node);
+                    self.check_assignment_arithmetic(&matched, source, violations);
                 }
                 "call_expression" => {
                     self.check_function_call_scaling(&matched, source, violations);
                 }
                 "while_statement" | "for_statement" => {
-                    self.check_loop_pointer_arithmetic(&matched, source, violations, node);
+                    self.check_loop_pointer_arithmetic(&matched, source, violations);
                 }
                 "subscript_expression" => {
                     // Check for violations in array subscript like ptr[scaled_value]
-                    self.check_subscript_scaling(&matched, source, violations, node);
+                    self.check_subscript_scaling(&matched, source, violations);
                 }
                 _ => {}
             }
@@ -73,7 +75,6 @@ impl Arr39C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        root: &Node,
     ) {
         if let Some(operator) = self.get_operator(node, source) {
             if operator == "+" || operator == "-" {
@@ -82,7 +83,7 @@ impl Arr39C {
                     node.child_by_field_name("right"),
                 ) {
                     // Check if this is pointer + scaled_integer or pointer - scaled_integer
-                    if self.is_pointer_scaled_arithmetic(&left, &right, source, root) {
+                    if self.is_pointer_scaled_arithmetic(&left, &right, source) {
                         let start_point = node.start_position();
                         let expr_text = &source[node.start_byte()..node.end_byte()];
 
@@ -110,7 +111,6 @@ impl Arr39C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        root: &Node,
     ) {
         if let Some(operator) = self.get_assignment_operator(node, source) {
             if operator == "+=" || operator == "-=" {
@@ -123,7 +123,7 @@ impl Arr39C {
                     // Check if this is pointer += scaled_integer
                     if self.is_scaled_integer_expression(&right, source)
                         && self.looks_like_pointer(&left, source)
-                        && !self.is_char_pointer(&left, source, root)  // Char pointers are allowed
+                        && !self.is_char_pointer(&left, source)  // Char pointers are allowed
                         && !left_text.to_lowercase().contains("byte")
                     // Byte pointers are allowed
                     {
@@ -154,7 +154,6 @@ impl Arr39C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        root: &Node,
     ) {
         // Check for ptr[sizeof_value] pattern
         if let (Some(argument), Some(index)) = (
@@ -166,7 +165,7 @@ impl Arr39C {
             // Check if index is a scaled value (from sizeof or byte-related variable)
             if self.is_scaled_integer_expression(&index, source)
                 && self.looks_like_pointer_node(&argument, source)
-                && !self.is_char_pointer(&argument, source, root)
+                && !self.is_char_pointer(&argument, source)
                 && !arg_text.to_lowercase().contains("byte")
             // Byte pointers are allowed
             {
@@ -224,7 +223,6 @@ impl Arr39C {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-        root: &Node,
     ) {
         // Check if loop condition uses sizeof(array) as upper bound
         // Pattern: for (i = 0; i < sizeof(data); i++) { ptr[i] or *(ptr+i) }
@@ -236,7 +234,7 @@ impl Arr39C {
                 // Find the loop body
                 if let Some(body) = self.find_loop_body(node) {
                     // Check if body uses pointer arithmetic or subscripting
-                    if self.has_pointer_operations_in_loop(&body, source, root) {
+                    if self.has_pointer_operations_in_loop(&body, source) {
                         let start_point = condition.start_position();
 
                         violations.push(RuleViolation {
@@ -289,20 +287,19 @@ impl Arr39C {
         }
     }
 
-    fn has_pointer_operations_in_loop(&self, body: &Node, source: &str, root: &Node) -> bool {
+    fn has_pointer_operations_in_loop(&self, body: &Node, source: &str) -> bool {
         // Check for pointer arithmetic (ptr + i, ptr - i) or subscripting (ptr[i])
-        query::find_first_descendant(*body, |node| self.node_is_pointer_op(&node, source, root))
-            .is_some()
+        query::find_first_descendant(*body, |node| self.node_is_pointer_op(&node, source)).is_some()
     }
 
-    fn node_is_pointer_op(&self, node: &Node, source: &str, root: &Node) -> bool {
+    fn node_is_pointer_op(&self, node: &Node, source: &str) -> bool {
         match node.kind() {
             "subscript_expression" => {
                 // Found ptr[i] pattern
                 if let Some(argument) = node.child_by_field_name("argument") {
                     // Check if the argument looks like a pointer (not char*)
                     if self.looks_like_pointer_node(&argument, source)
-                        && !self.is_char_pointer(&argument, source, root)
+                        && !self.is_char_pointer(&argument, source)
                     {
                         return true;
                     }
@@ -315,7 +312,7 @@ impl Arr39C {
                     if op == "+" || op == "-" {
                         if let Some(left) = node.child_by_field_name("left") {
                             if self.looks_like_pointer_node(&left, source)
-                                && !self.is_char_pointer(&left, source, root)
+                                && !self.is_char_pointer(&left, source)
                             {
                                 return true;
                             }
@@ -448,13 +445,7 @@ impl Arr39C {
         }
     }
 
-    fn is_pointer_scaled_arithmetic(
-        &self,
-        left: &Node,
-        right: &Node,
-        source: &str,
-        root: &Node,
-    ) -> bool {
+    fn is_pointer_scaled_arithmetic(&self, left: &Node, right: &Node, source: &str) -> bool {
         let left_text = &source[left.start_byte()..left.end_byte()];
         let right_text = &source[right.start_byte()..right.end_byte()];
 
@@ -485,8 +476,7 @@ impl Arr39C {
             || right_text.contains("sizeof(signed char)");
         if left_is_pointer
             && !scaled_by_char_size
-            && (self.is_char_pointer(left, source, root)
-                || left_text.to_lowercase().contains("byte"))
+            && (self.is_char_pointer(left, source) || left_text.to_lowercase().contains("byte"))
         {
             return false;
         }
@@ -552,7 +542,7 @@ impl Arr39C {
             || lower.contains("append")
     }
 
-    fn is_char_pointer(&self, node: &Node, source: &str, root: &Node) -> bool {
+    fn is_char_pointer(&self, node: &Node, source: &str) -> bool {
         // Check if this is a char-type pointer (which is allowed to use byte arithmetic)
 
         // For an identifier, we need to look at its declaration or most recent cast
@@ -582,12 +572,32 @@ impl Arr39C {
         // No cast in the ancestor chain (e.g. `charPointer` used bare, several
         // statements after `char *charPointer = (char *)intArray;`). Fall back
         // to the variable's actual declared type instead of relying on a cast
-        // to be present at every use site.
+        // to be present at every use site. Uses the same scope/shadowing-aware
+        // lookup as the rest of the codebase (ast_utils), not a flat whole-file
+        // scan -- two different functions with same-named locals of different
+        // types must not be conflated.
         if node.kind() == "identifier" {
             let name = &source[node.start_byte()..node.end_byte()];
-            if let Some((type_text, is_pointer)) = self.find_declared_type(root, name, source) {
-                if is_pointer && Self::is_byte_type(&type_text) {
-                    return true;
+
+            if let Some(decl) =
+                ast_utils::find_enclosing_declaration_for_identifier(node, name, source)
+            {
+                if let Some((type_text, is_pointer)) =
+                    Self::declaration_type_for_name(&decl, name, source)
+                {
+                    if is_pointer && Self::is_byte_type(&type_text) {
+                        return true;
+                    }
+                }
+            } else if let Some(func) = ast_utils::find_containing_function(node) {
+                // Not a local declaration -- check whether it's a parameter.
+                if let Some(params) = ast_utils::get_function_parameters(&func, source) {
+                    if let Some((_, param_type)) = params.iter().find(|(n, _)| n == name) {
+                        if ast_utils::is_pointer_type(param_type) && Self::is_byte_type(param_type)
+                        {
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -595,64 +605,41 @@ impl Arr39C {
         false
     }
 
-    /// Find the declared type and pointer-ness of `var_name` by scanning
-    /// `root` for a matching `declaration` or `parameter_declaration`.
-    /// Returns `(type_text, is_pointer_or_array)`.
-    fn find_declared_type(
-        &self,
-        root: &Node,
-        var_name: &str,
-        source: &str,
-    ) -> Option<(String, bool)> {
-        for decl in
-            query::find_descendants_of_kinds(*root, &["declaration", "parameter_declaration"])
-        {
-            let type_text: String = (0..decl.child_count())
-                .filter_map(|i| decl.child(i))
-                .take_while(|c| {
-                    !matches!(
-                        c.kind(),
-                        "identifier"
-                            | "init_declarator"
-                            | "pointer_declarator"
-                            | "array_declarator"
-                            | ";"
-                    )
-                })
-                .map(|c| source[c.start_byte()..c.end_byte()].to_string())
-                .collect::<Vec<_>>()
-                .join(" ");
+    /// Given a `declaration` node known to bind `name` (per
+    /// `ast_utils::find_enclosing_declaration_for_identifier`), return its
+    /// type text and whether that specific declarator is a pointer/array.
+    /// Handles comma-separated multi-declarator declarations (`char *a, b;`)
+    /// where declarators can differ in pointer-ness.
+    fn declaration_type_for_name(decl: &Node, name: &str, source: &str) -> Option<(String, bool)> {
+        let type_text: String = (0..decl.child_count())
+            .filter_map(|i| decl.child(i))
+            .take_while(|c| {
+                !matches!(
+                    c.kind(),
+                    "identifier" | "init_declarator" | "pointer_declarator" | "array_declarator"
+                )
+            })
+            .map(|c| get_node_text(&c, source))
+            .collect::<Vec<_>>()
+            .join(" ");
 
-            for i in 0..decl.child_count() {
-                let Some(child) = decl.child(i) else { continue };
-                if let Some((name, is_pointer)) = Self::declarator_name_and_pointer(&child, source)
-                {
-                    if name == var_name {
-                        return Some((type_text, is_pointer));
-                    }
-                }
+        for i in 0..decl.child_count() {
+            let Some(child) = decl.child(i) else { continue };
+            let declarator = match child.kind() {
+                "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
+                "identifier"
+                | "pointer_declarator"
+                | "array_declarator"
+                | "function_declarator" => child,
+                _ => continue,
+            };
+            if get_identifier_from_declarator(&declarator, source) == name {
+                let is_pointer =
+                    is_pointer_declarator(&declarator) || is_array_declarator(&declarator);
+                return Some((type_text, is_pointer));
             }
         }
         None
-    }
-
-    /// Recursively resolve a declarator to its bound name and whether the
-    /// chain passed through a `pointer_declarator`/`array_declarator`.
-    fn declarator_name_and_pointer(node: &Node, source: &str) -> Option<(String, bool)> {
-        match node.kind() {
-            "identifier" => Some((
-                source[node.start_byte()..node.end_byte()].to_string(),
-                false,
-            )),
-            "init_declarator" => node
-                .child_by_field_name("declarator")
-                .and_then(|d| Self::declarator_name_and_pointer(&d, source)),
-            "pointer_declarator" | "array_declarator" => node
-                .child_by_field_name("declarator")
-                .and_then(|d| Self::declarator_name_and_pointer(&d, source))
-                .map(|(name, _)| (name, true)),
-            _ => None,
-        }
     }
 
     /// Returns true for single-byte pointer types: char*, unsigned char*, u8*, uint8_t*, etc.
