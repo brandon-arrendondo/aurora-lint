@@ -66,8 +66,9 @@
 //! - Check for absence of atomic operations or mutex locks
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::cfg;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -149,7 +150,8 @@ impl Con07C {
                         "init_declarator" => {
                             // Case: static int a = 0;
                             if let Some(declarator) = child.child_by_field_name("declarator") {
-                                if let Some(name) = self.get_identifier_name(&declarator, source) {
+                                let name = get_identifier_from_declarator(&declarator, source);
+                                if !name.is_empty() {
                                     var_names.push(name);
                                 }
                             }
@@ -168,22 +170,6 @@ impl Con07C {
                 static_vars.extend(var_names);
             }
         }
-    }
-
-    fn get_identifier_name(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "identifier" {
-            return Some(get_node_text(node, source).to_string());
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(name) = self.get_identifier_name(&child, source) {
-                    return Some(name);
-                }
-            }
-        }
-
-        None
     }
 
     fn check_node(
@@ -211,9 +197,9 @@ impl Con07C {
         static_vars: &[String],
         violations: &mut Vec<RuleViolation>,
     ) {
-        let func_name = self
-            .get_function_name(function_node, source)
-            .unwrap_or_else(|| "<unknown>".to_string());
+        let func_name = cfg::get_function_name(function_node, source)
+            .unwrap_or("<unknown>")
+            .to_string();
 
         // Skip initialization functions (they run before threading typically)
         if func_name.to_lowercase().contains("init") {
@@ -294,19 +280,6 @@ impl Con07C {
                 });
             }
         }
-    }
-
-    fn get_function_name(&self, function_node: &Node, source: &str) -> Option<String> {
-        for i in 0..function_node.child_count() {
-            if let Some(child) = function_node.child(i) {
-                if child.kind() == "function_declarator" {
-                    if let Some(name) = self.get_identifier_name(&child, source) {
-                        return Some(name);
-                    }
-                }
-            }
-        }
-        None
     }
 
     fn uses_mutex_lock(&self, node: &Node, source: &str) -> bool {
