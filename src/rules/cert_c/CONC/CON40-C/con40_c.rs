@@ -13,6 +13,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
@@ -26,33 +27,72 @@ impl Con40C {
         Con40C
     }
 
-    /// Check a node and all its descendants for violations
+    /// Check a node and all its descendants for violations.
+    ///
+    /// Atomic-variable tracking is scoped per function: a flat,
+    /// whole-translation-unit map would conflate two different functions'
+    /// same-named locals (one atomic, one not), producing both false
+    /// positives (an unrelated non-atomic local treated as atomic) and false
+    /// negatives (a shadowed re-declaration suppressing a real violation).
+    /// File-scope (outside any function) atomic declarations form a base set
+    /// visible to every function; each function then gets its own map seeded
+    /// from that base plus its own local atomic declarations.
     fn check_node<'a>(
         &self,
         node: &Node<'a>,
         source: &'a str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Track atomic variables in scope
-        let mut atomic_vars = HashMap::new();
-        self.collect_atomic_vars(node, source, &mut atomic_vars);
+        // File-scope atomic declarations (outside any function).
+        let mut global_atomic_vars = HashMap::new();
+        self.collect_atomic_vars_filtered(node, source, &mut global_atomic_vars, &|decl| {
+            ast_utils::find_containing_function(decl).is_none()
+        });
 
-        // Check expressions for multiple references to same atomic var
-        self.check_expressions(node, source, &atomic_vars, violations);
+        // Check file-scope expressions (rare) using only the global set,
+        // restricted to expressions with no enclosing function -- ones
+        // inside functions are handled in the per-function pass below.
+        self.check_expressions_filtered(node, source, &global_atomic_vars, violations, &|expr| {
+            ast_utils::find_containing_function(expr).is_none()
+        });
 
-        // Check for load-modify-store patterns
-        self.check_load_modify_store(node, source, &atomic_vars, violations);
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            let mut atomic_vars = global_atomic_vars.clone();
+            self.collect_atomic_vars(&func, source, &mut atomic_vars);
+
+            // Check expressions for multiple references to same atomic var,
+            // scoped to this function only.
+            self.check_expressions(&func, source, &atomic_vars, violations);
+
+            // Check for load-modify-store patterns, scoped to this function.
+            self.check_load_modify_store_in_function(&func, source, &atomic_vars, violations);
+        }
     }
 
-    /// Collect all atomic variable declarations
+    /// Collect all atomic variable declarations under `node`.
     fn collect_atomic_vars<'a>(
         &self,
         node: &Node<'a>,
         source: &'a str,
         atomic_vars: &mut HashMap<String, bool>,
     ) {
+        self.collect_atomic_vars_filtered(node, source, atomic_vars, &|_| true);
+    }
+
+    /// Like [`Self::collect_atomic_vars`], but only processes declarations
+    /// for which `filter` returns true.
+    fn collect_atomic_vars_filtered<'a>(
+        &self,
+        node: &Node<'a>,
+        source: &'a str,
+        atomic_vars: &mut HashMap<String, bool>,
+        filter: &dyn Fn(&Node) -> bool,
+    ) {
         // Check if this is an atomic variable declaration
         for decl in query::find_descendants_of_kind(*node, "declaration") {
+            if !filter(&decl) {
+                continue;
+            }
             if let Some(type_node) = decl.child_by_field_name("type") {
                 let type_text = get_node_text(&type_node, source);
 
@@ -109,6 +149,19 @@ impl Con40C {
         atomic_vars: &HashMap<String, bool>,
         violations: &mut Vec<RuleViolation>,
     ) {
+        self.check_expressions_filtered(node, source, atomic_vars, violations, &|_| true);
+    }
+
+    /// Like [`Self::check_expressions`], but only considers expressions for
+    /// which `filter` returns true.
+    fn check_expressions_filtered<'a>(
+        &self,
+        node: &Node<'a>,
+        source: &'a str,
+        atomic_vars: &HashMap<String, bool>,
+        violations: &mut Vec<RuleViolation>,
+        filter: &dyn Fn(&Node) -> bool,
+    ) {
         let expr_kinds = [
             "binary_expression",
             "assignment_expression",
@@ -119,6 +172,9 @@ impl Con40C {
         ];
 
         for expr in query::find_descendants_of_kinds(*node, &expr_kinds) {
+            if !filter(&expr) {
+                continue;
+            }
             // Count references to each atomic variable in this expression
             let mut var_counts: HashMap<String, Vec<Node>> = HashMap::new();
             self.count_var_references(&expr, source, atomic_vars, &mut var_counts);
@@ -216,46 +272,45 @@ impl Con40C {
             || query::find_ancestor(*node, |n| is_compound_assignment_on_var(&n)).is_some()
     }
 
-    /// Check for load-modify-store patterns using atomic_load/atomic_store
-    fn check_load_modify_store<'a>(
+    /// Check for load-modify-store patterns using atomic_load/atomic_store,
+    /// scoped to a single function (and its own function-scoped
+    /// `atomic_vars` map, seeded with file-scope atomics by the caller).
+    fn check_load_modify_store_in_function<'a>(
         &self,
-        node: &Node<'a>,
+        func: &Node<'a>,
         source: &'a str,
         atomic_vars: &HashMap<String, bool>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Check every function definition (including nested ones)
-        for func in query::find_descendants_of_kind(*node, "function_definition") {
-            // Get the function body
-            let Some(body) = func.child_by_field_name("body") else {
-                continue;
-            };
+        // Get the function body
+        let Some(body) = func.child_by_field_name("body") else {
+            return;
+        };
 
-            // Look for atomic_load calls followed by atomic_store on the same variable
-            let mut loads: HashMap<String, Node> = HashMap::new();
-            let mut stores: HashMap<String, Node> = HashMap::new();
+        // Look for atomic_load calls followed by atomic_store on the same variable
+        let mut loads: HashMap<String, Node> = HashMap::new();
+        let mut stores: HashMap<String, Node> = HashMap::new();
 
-            self.collect_atomic_operations(&body, source, atomic_vars, &mut loads, &mut stores);
+        self.collect_atomic_operations(&body, source, atomic_vars, &mut loads, &mut stores);
 
-            // Check if any variable has both load and store in the same function
-            for (var_name, load_node) in &loads {
-                if stores.contains_key(var_name) {
-                    // This is a potential load-modify-store pattern
-                    // Report violation at the load site
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        line: load_node.start_position().row + 1,
-                        column: load_node.start_position().column + 1,
-                        message: format!(
-                            "Non-atomic load-modify-store pattern detected on atomic variable '{}' - use atomic operations or mutex protection",
-                            var_name
-                        ),
-                        severity: self.severity(),
-                        file_path: String::new(),
-                        suggestion: Some("Consider using atomic_fetch_* operations or wrap with mutex locks".to_string()),
-                        requires_manual_review: None,
-                    });
-                }
+        // Check if any variable has both load and store in the same function
+        for (var_name, load_node) in &loads {
+            if stores.contains_key(var_name) {
+                // This is a potential load-modify-store pattern
+                // Report violation at the load site
+                violations.push(RuleViolation {
+                    rule_id: self.rule_id().to_string(),
+                    line: load_node.start_position().row + 1,
+                    column: load_node.start_position().column + 1,
+                    message: format!(
+                        "Non-atomic load-modify-store pattern detected on atomic variable '{}' - use atomic operations or mutex protection",
+                        var_name
+                    ),
+                    severity: self.severity(),
+                    file_path: String::new(),
+                    suggestion: Some("Consider using atomic_fetch_* operations or wrap with mutex locks".to_string()),
+                    requires_manual_review: None,
+                });
             }
         }
     }
