@@ -21,8 +21,13 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
+use crate::analyze::dataflow::{
+    compute_reaching_definitions, extract_definitions, find_node_at_range,
+};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Msc13C;
@@ -260,7 +265,7 @@ impl Msc13C {
     fn check_functions(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if node.kind() == "function_definition" {
             if let Some(body) = node.child_by_field_name("body") {
-                self.check_function_body(&body, source, violations);
+                self.check_function_body(node, &body, source, violations);
             }
         }
 
@@ -277,7 +282,13 @@ impl Msc13C {
         }
     }
 
-    fn check_function_body(&self, body: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_function_body(
+        &self,
+        func_node: &Node,
+        body: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         // Collect all local variable declarations
         let local_vars = self.collect_local_vars(body, source);
 
@@ -303,27 +314,168 @@ impl Msc13C {
             }
         }
 
-        // Dead store detection: variable assigned, then overwritten before read
-        self.check_dead_stores(body, source, violations);
+        // Dead store detection: an assignment whose value never reaches a
+        // read on any executable path before being overwritten or the
+        // function exiting.
+        self.check_dead_stores(func_node, body, source, violations);
     }
 
-    /// Detect dead stores: an assignment whose value is overwritten before being read.
-    /// Pattern: `data = 'C'; data = 'Z'; use(data);` — first assignment is dead.
+    /// Detect dead stores using the real CFG + reaching-definitions
+    /// analysis (`src/analyze/dataflow.rs`), falling back to the
+    /// conservative straight-line sibling scan only when a CFG can't be
+    /// built for this function (e.g. malformed body).
     ///
-    /// Deliberately conservative: a pairwise "sort all assignments to this
-    /// variable in the whole function by line number, flag consecutive
-    /// pairs with no read between them" approach is unsound, because
-    /// "consecutive by line number" does not mean "consecutive on any
-    /// executable path" — e.g. assignments in mutually exclusive
-    /// if/else-if branches, an assignment inside a loop paired against its
-    /// own next-iteration read in the loop's condition, or an assignment
-    /// before a `goto` paired against an unrelated later assignment when
-    /// the real read is at the jump target. Only pairs assignments that
-    /// are direct siblings within the same straight-line block (no
-    /// branch/loop/label/goto between them), which is exactly the pattern
-    /// CERT-C's own examples show.
-    fn check_dead_stores(&self, body: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        self.check_dead_stores_in_blocks(body, source, violations);
+    /// Per-definition liveness: for each write, does ITS specific value
+    /// reach any read before being killed by a later write on that path,
+    /// or the function returning? A name-based "is the variable read
+    /// again anywhere later" check (as used by the unused-variable pass
+    /// above) is unsound for this — e.g. CERT's own canonical example:
+    ///
+    /// ```c
+    /// p1 = foo();
+    /// p2 = bar();          // dead: bar()'s result is never read on any path
+    /// if (baz()) {
+    ///     return p1;        // p2 never touched, never read
+    /// } else {
+    ///     p2 = p1;          // p2 overwritten before any read
+    /// }
+    /// return p2;            // only ever reads the p1-derived value
+    /// ```
+    ///
+    /// `p2` IS referenced again later, so a name-based check calls it
+    /// "used" — but bar()'s specific definition is dead on every path.
+    fn check_dead_stores(
+        &self,
+        func_node: &Node,
+        body: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        match cfg_mod::build_function_cfg(func_node, source) {
+            Some(cfg) => self.check_dead_stores_cfg(func_node, &cfg, body, source, violations),
+            None => self.check_dead_stores_in_blocks(body, source, violations),
+        }
+    }
+
+    /// Per-definition liveness via reaching-definitions. For every write
+    /// (declaration-with-initializer or simple `=` assignment) inside the
+    /// function body, walk each CFG block's statements in source order,
+    /// tracking which definition of each variable is currently "active"
+    /// at that point in the block. A read marks the currently active
+    /// definition live — resolved locally if this block already wrote the
+    /// variable, otherwise via the block's `reaching_in` set (which
+    /// correctly folds in predecessor blocks across branches, loops, and
+    /// goto edges, because it's derived from the actual CFG rather than a
+    /// text heuristic). Any write whose definition is never marked live is
+    /// a dead store.
+    fn check_dead_stores_cfg(
+        &self,
+        func_node: &Node,
+        cfg: &FunctionCfg,
+        body: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let definitions = extract_definitions(cfg, func_node, source);
+        let reaching = compute_reaching_definitions(cfg, definitions);
+
+        // (block_id, statement_index) -> definition indices written there.
+        let mut writes_at: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+        for (idx, def) in reaching.definitions.iter().enumerate() {
+            writes_at
+                .entry((def.block_id, def.statement_index))
+                .or_default()
+                .push(idx);
+        }
+
+        let mut live: HashSet<usize> = HashSet::new();
+
+        for block in &cfg.blocks {
+            let mut active: HashMap<String, usize> = HashMap::new();
+            for (stmt_idx, &(start, end)) in block.statements.iter().enumerate() {
+                let Some(stmt_node) = find_node_at_range(body, start, end) else {
+                    continue;
+                };
+
+                let mut reads = HashSet::new();
+                self.collect_reads_in_node(&stmt_node, source, &mut reads);
+                for var in &reads {
+                    if let Some(&def_idx) = active.get(var) {
+                        live.insert(def_idx);
+                    } else if let Some(in_set) = reaching.reaching_in.get(&block.id) {
+                        for &idx in in_set {
+                            if &reaching.definitions[idx].variable == var {
+                                live.insert(idx);
+                            }
+                        }
+                    }
+                }
+
+                if let Some(idxs) = writes_at.get(&(block.id, stmt_idx)) {
+                    for &idx in idxs {
+                        active.insert(reaching.definitions[idx].variable.clone(), idx);
+                    }
+                }
+            }
+        }
+
+        for (idx, def) in reaching.definitions.iter().enumerate() {
+            if live.contains(&idx) {
+                continue;
+            }
+            // Parameters live in the function declarator, before the body
+            // — unused parameters are out of scope for this rule.
+            if def.byte_offset < body.start_byte() {
+                continue;
+            }
+            // A variable never read anywhere in the function is already
+            // reported by the unused-variable pass above; don't
+            // double-report the same root cause per definition.
+            if self.count_reads(body, source, &def.variable) == 0 {
+                continue;
+            }
+            let line = Self::line_for_byte(source, def.byte_offset);
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: self.severity(),
+                message: format!(
+                    "Value assigned to '{}' is never read on any execution path before being overwritten or the function returning.",
+                    def.variable
+                ),
+                file_path: String::new(),
+                line,
+                column: 1,
+                suggestion: Some(
+                    "Remove the dead assignment or use its value before it is overwritten"
+                        .to_string(),
+                ),
+                ..Default::default()
+            });
+        }
+    }
+
+    fn line_for_byte(source: &str, byte_offset: usize) -> usize {
+        source.as_bytes()[..byte_offset.min(source.len())]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+            + 1
+    }
+
+    /// Collect the set of variable names read anywhere in `node`'s
+    /// subtree, reusing `is_read_context` to exclude pure write targets
+    /// (declaration names, simple-assignment LHS, etc.).
+    fn collect_reads_in_node(&self, node: &Node, source: &str, out: &mut HashSet<String>) {
+        if node.kind() == "identifier" && self.is_read_context(node, source) {
+            out.insert(get_node_text(node, source).to_string());
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() != "function_definition" {
+                    self.collect_reads_in_node(&child, source, out);
+                }
+            }
+        }
     }
 
     /// Recurse to every compound_statement (function body, if/loop/switch
