@@ -66,7 +66,10 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{
+    self, find_containing_function, get_function_parameters, get_identifier_from_declarator,
+    get_node_text, is_function_parameter, is_pointer_type,
+};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -116,6 +119,19 @@ const THREAD_UNSAFE_FUNCTIONS: &[(&str, &str)] = &[
     ("gethostbyname", "getaddrinfo"),
     ("gethostbyaddr", "getnameinfo"),
 ];
+
+/// `ast_utils::get_identifier_from_declarator` as an `Option`, matching the
+/// call shape the rest of this file wants. NOT the same as
+/// `ast_utils::find_identifier_in_declarator`: that function only searches a
+/// declarator's *children* for an identifier, so it misses the extremely
+/// common case where the declarator field itself already IS a bare
+/// `identifier` node (`int j = 0;`, no pointer/array wrapper) --
+/// `get_identifier_from_declarator` handles that case by matching on the
+/// node's own kind first.
+fn declarator_identifier(declarator: &Node, source: &str) -> Option<String> {
+    let name = get_identifier_from_declarator(declarator, source);
+    (!name.is_empty()).then_some(name)
+}
 
 impl Con34C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
@@ -174,7 +190,7 @@ impl Con34C {
                         && !self.is_allocated_pointer(arg_text, call_node, source)
                         && !self.is_likely_allocated_param(arg_text))
                     || (arg_node.kind() == "identifier"
-                        && !self.is_static_variable(arg_text, call_node, source)
+                        && !self.is_static_variable(&arg_node, arg_text, source)
                         && !self.is_allocated_pointer(arg_text, call_node, source)
                         && !self.is_likely_allocated_param(arg_text)
                         && !arg_text.starts_with("&"));
@@ -217,7 +233,7 @@ impl Con34C {
         // ONLY if the value being set is not retrieved with tss_get before passing to the thread
 
         // Find the enclosing function
-        if let Some(function) = self.find_enclosing_function(call_node) {
+        if let Some(function) = find_containing_function(call_node) {
             // Check if this function also creates threads
             if self.function_creates_threads(&function, source) {
                 // Check if there's a tss_get between tss_set and thrd_create
@@ -269,7 +285,7 @@ impl Con34C {
                         }
 
                         // Check if this variable is a local (automatic) variable
-                        return self.is_local_variable(&var_name, context, source);
+                        return self.is_local_variable(&argument, &var_name, source);
                     }
                 }
             }
@@ -284,9 +300,13 @@ impl Con34C {
 
         if let Some(var_name) = var_name {
             // Find the enclosing function
-            if let Some(function) = self.find_enclosing_function(context) {
+            if let Some(function) = find_containing_function(context) {
                 // Check if this is a pointer parameter
-                return self.is_pointer_param_of_function(&function, &var_name, source);
+                if let Some(params) = get_function_parameters(&function, source) {
+                    return params
+                        .iter()
+                        .any(|(name, ptype)| name == &var_name && is_pointer_type(ptype));
+                }
             }
         }
 
@@ -332,7 +352,7 @@ impl Con34C {
 
     fn is_allocated_pointer(&self, var_name: &str, context: &Node, source: &str) -> bool {
         // Check if this pointer was assigned from malloc/calloc in the current function
-        if let Some(function) = self.find_enclosing_function(context) {
+        if let Some(function) = find_containing_function(context) {
             if let Some(body) = function.child_by_field_name("body") {
                 return self.find_malloc_assignment(&body, var_name, source);
             }
@@ -340,12 +360,60 @@ impl Con34C {
         false
     }
 
-    fn is_static_variable(&self, var_name: &str, _context: &Node, source: &str) -> bool {
-        // This is a simplified check - ideally we'd search the whole tree
-        // For now, just check if the variable name suggests it's a static/global
-        source.contains(&format!("static {} ", var_name))
-            || source.contains(&format!("static int *{}", var_name))
-            || source.contains(&format!("static void *{}", var_name))
+    /// True if `ident_node` (occurrence of `var_name`) resolves to a `static`
+    /// declaration -- either the enclosing function's local static, or a
+    /// file-scope global. Uses `ast_utils::find_enclosing_declaration_for_identifier`
+    /// (scope/shadowing-aware) instead of a raw text search, which could
+    /// match an unrelated declaration of the same name in a different
+    /// function, or an ordinary comment/string mentioning "static name".
+    fn is_static_variable(&self, ident_node: &Node, var_name: &str, source: &str) -> bool {
+        if let Some(decl) =
+            ast_utils::find_enclosing_declaration_for_identifier(ident_node, var_name, source)
+        {
+            return Self::declaration_is_static(&decl, source);
+        }
+        Self::global_declaration_is_static(ident_node, var_name, source)
+    }
+
+    /// True if a `declaration` node carries the `static` storage-class specifier.
+    fn declaration_is_static(decl: &Node, source: &str) -> bool {
+        (0..decl.child_count()).any(|i| {
+            decl.child(i).is_some_and(|c| {
+                c.kind() == "storage_class_specifier" && get_node_text(&c, source) == "static"
+            })
+        })
+    }
+
+    /// Fallback for file-scope (global) declarations, which
+    /// `find_enclosing_declaration_for_identifier` intentionally does not
+    /// resolve to (it only walks enclosing `compound_statement` blocks).
+    fn global_declaration_is_static(ident_node: &Node, var_name: &str, source: &str) -> bool {
+        let mut top = *ident_node;
+        while let Some(p) = top.parent() {
+            top = p;
+        }
+        (0..top.child_count()).any(|i| {
+            top.child(i).is_some_and(|decl| {
+                decl.kind() == "declaration"
+                    && Self::declaration_is_static(&decl, source)
+                    && Self::declaration_binds_name(&decl, var_name, source)
+            })
+        })
+    }
+
+    /// True if a `declaration` node binds `name` via a direct declarator or
+    /// an `init_declarator`, including comma-separated multi-declarators.
+    fn declaration_binds_name(decl: &Node, name: &str, source: &str) -> bool {
+        (0..decl.child_count()).any(|i| {
+            decl.child(i).is_some_and(|child| {
+                let declarator = match child.kind() {
+                    "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
+                    "identifier" | "pointer_declarator" | "array_declarator" => child,
+                    _ => return false,
+                };
+                declarator_identifier(&declarator, source).as_deref() == Some(name)
+            })
+        })
     }
 
     fn is_likely_allocated_param(&self, var_name: &str) -> bool {
@@ -375,7 +443,7 @@ impl Con34C {
 
             if n.kind() == "init_declarator" {
                 if let Some(declarator) = n.child_by_field_name("declarator") {
-                    if let Some(name) = self.get_identifier_name(&declarator, source) {
+                    if let Some(name) = declarator_identifier(&declarator, source) {
                         if name == var_name {
                             return true;
                         }
@@ -418,55 +486,10 @@ impl Con34C {
         false
     }
 
-    fn is_pointer_param_of_function(
-        &self,
-        function: &Node,
-        param_name: &str,
-        source: &str,
-    ) -> bool {
-        // Find the parameter list
-        for i in 0..function.child_count() {
-            if let Some(child) = function.child(i) {
-                if child.kind() == "function_declarator" {
-                    if let Some(params) = child.child_by_field_name("parameters") {
-                        return self.find_pointer_parameter(&params, param_name, source);
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    fn find_pointer_parameter(&self, node: &Node, param_name: &str, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| {
-            if n.kind() != "parameter_declaration" {
-                return false;
-            }
-
-            // Get the full text of the parameter declaration
-            let param_text = get_node_text(&n, source);
-
-            // Simple heuristic: if it contains * and the param name, it's likely a pointer parameter
-            if param_text.contains('*') && param_text.contains(param_name) {
-                // Double-check by finding the declarator
-                if let Some(declarator) = n.child_by_field_name("declarator") {
-                    if let Some(name) = self.get_identifier_name(&declarator, source) {
-                        if name == param_name {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            false
-        })
-        .is_some()
-    }
-
     /// True if `var_name` is declared with type `thrd_t` in the function
     /// enclosing `context`.
     fn is_thrd_t_variable(&self, var_name: &str, context: &Node, source: &str) -> bool {
-        let Some(function) = self.find_enclosing_function(context) else {
+        let Some(function) = find_containing_function(context) else {
             return false;
         };
         let Some(body) = function.child_by_field_name("body") else {
@@ -484,7 +507,7 @@ impl Con34C {
                         "identifier" => get_node_text(&c, source) == var_name,
                         "init_declarator" => c
                             .child_by_field_name("declarator")
-                            .and_then(|d| self.get_identifier_name(&d, source))
+                            .and_then(|d| declarator_identifier(&d, source))
                             .map(|name| name == var_name)
                             .unwrap_or(false),
                         _ => false,
@@ -504,108 +527,28 @@ impl Con34C {
         .is_some()
     }
 
-    fn is_local_variable(&self, var_name: &str, context: &Node, source: &str) -> bool {
-        // Find the enclosing function
-        if let Some(function) = self.find_enclosing_function(context) {
-            // Look for variable declaration within this function
-            if let Some(body) = function.child_by_field_name("body") {
-                return self.find_local_declaration(&body, var_name, source);
-            }
+    /// True if `ident_node` (occurrence of `var_name`) has automatic
+    /// (local/stack) storage duration: declared without `static` in the
+    /// enclosing function, or a plain function parameter. Uses
+    /// `ast_utils::find_enclosing_declaration_for_identifier`
+    /// (scope/shadowing-aware) rather than a flat function-body scan --
+    /// this rule's entire purpose is telling automatic-duration objects
+    /// apart from static/heap ones, so scope-correctness here matters more
+    /// than almost anywhere else in the codebase.
+    fn is_local_variable(&self, ident_node: &Node, var_name: &str, source: &str) -> bool {
+        if let Some(decl) =
+            ast_utils::find_enclosing_declaration_for_identifier(ident_node, var_name, source)
+        {
+            return !Self::declaration_is_static(&decl, source);
+        }
 
-            // Check function parameters
-            if self.is_function_parameter(&function, var_name, source) {
+        if let Some(function) = find_containing_function(ident_node) {
+            if is_function_parameter(&function, var_name, source) {
                 return true;
             }
         }
 
         false
-    }
-
-    fn find_local_declaration(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| {
-            if n.kind() != "declaration" {
-                return false;
-            }
-
-            // Check if it's NOT static
-            let mut is_static = false;
-            let mut has_var = false;
-
-            for i in 0..n.child_count() {
-                if let Some(child) = n.child(i) {
-                    if child.kind() == "storage_class_specifier"
-                        && get_node_text(&child, source) == "static"
-                    {
-                        is_static = true;
-                    }
-
-                    if child.kind() == "init_declarator" {
-                        if let Some(declarator) = child.child_by_field_name("declarator") {
-                            if let Some(name) = self.get_identifier_name(&declarator, source) {
-                                if name == var_name {
-                                    has_var = true;
-                                }
-                            }
-                        }
-                    } else if child.kind() == "identifier"
-                        && get_node_text(&child, source) == var_name
-                    {
-                        has_var = true;
-                    }
-                }
-            }
-
-            // It's a local variable if it's declared here and NOT static
-            has_var && !is_static
-        })
-        .is_some()
-    }
-
-    fn is_function_parameter(&self, function: &Node, var_name: &str, source: &str) -> bool {
-        // Find the parameter list
-        for i in 0..function.child_count() {
-            if let Some(child) = function.child(i) {
-                if child.kind() == "function_declarator" {
-                    if let Some(params) = child.child_by_field_name("parameters") {
-                        return self.find_parameter_name(&params, var_name, source);
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    fn find_parameter_name(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        query::find_first_descendant(*node, |n| {
-            if n.kind() != "parameter_declaration" {
-                return false;
-            }
-            n.child_by_field_name("declarator")
-                .and_then(|declarator| self.get_identifier_name(&declarator, source))
-                .map(|name| name == var_name)
-                .unwrap_or(false)
-        })
-        .is_some()
-    }
-
-    fn get_identifier_name(&self, node: &Node, source: &str) -> Option<String> {
-        query::find_first_descendant(*node, |n| n.kind() == "identifier")
-            .map(|n| get_node_text(&n, source).to_string())
-    }
-
-    fn find_enclosing_function<'a>(&self, node: &'a Node) -> Option<Node<'a>> {
-        let mut current = *node;
-
-        loop {
-            if current.kind() == "function_definition" {
-                return Some(current);
-            }
-
-            match current.parent() {
-                Some(parent) => current = parent,
-                None => return None,
-            }
-        }
     }
 
     fn function_creates_threads(&self, function: &Node, source: &str) -> bool {
@@ -699,7 +642,7 @@ impl Con34C {
         // For simplicity, look for common patterns like j++ in loops
 
         // Get the function containing this region
-        if let Some(function) = self.find_enclosing_function(region) {
+        if let Some(function) = find_containing_function(region) {
             // Get function-local variables
             let local_vars = self.find_local_vars_before_node(&function, region, source);
 
@@ -777,7 +720,7 @@ impl Con34C {
 
                         if child.kind() == "init_declarator" {
                             if let Some(declarator) = child.child_by_field_name("declarator") {
-                                if let Some(name) = self.get_identifier_name(&declarator, source) {
+                                if let Some(name) = declarator_identifier(&declarator, source) {
                                     var_names.push(name);
                                 }
                             }
