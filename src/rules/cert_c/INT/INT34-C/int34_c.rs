@@ -278,6 +278,41 @@ impl Int34C {
             return true;
         }
 
+        // Scope/shadowing-aware resolution: when `node` is a plain
+        // identifier reference, resolve its actual binding (nearest
+        // enclosing block declaration, correctly disambiguating shadowed
+        // re-declarations of the same name in sibling/nested blocks) rather
+        // than shallow-scanning only the function's top-level body, which
+        // could misattribute across two nested blocks with a same-named
+        // local of a different type.
+        if node.kind() == "identifier" {
+            if let Some(decl) =
+                ast_utils::find_enclosing_declaration_for_identifier(node, var_name, source)
+            {
+                return self.decl_has_unsigned_var(&decl, var_name, source);
+            }
+            if let Some(func) = ast_utils::find_containing_function(node) {
+                if ast_utils::is_function_parameter(&func, var_name, source) {
+                    if let Some(param_list) = self.find_parameter_list(&func) {
+                        for i in 0..param_list.child_count() {
+                            if let Some(param) = param_list.child(i) {
+                                if param.kind() == "parameter_declaration"
+                                    && self.decl_has_unsigned_var(&param, var_name, source)
+                                {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+        }
+
+        // Fallback for non-identifier operands (e.g. `arr[i] << n`, where
+        // the left text isn't a bare identifier so the scoped lookup above
+        // doesn't apply): the previous shallow scan over the function's
+        // parameters and top-level body declarations.
         if let Some(func) = ast_utils::find_containing_function(node) {
             // Check function parameters via function_declarator → parameter_list
             if let Some(param_list) = self.find_parameter_list(&func) {
@@ -332,7 +367,7 @@ impl Int34C {
                 match child.kind() {
                     "sized_type_specifier" => {
                         let text = ast_utils::get_node_text(&child, source);
-                        if text.contains("unsigned") {
+                        if ast_utils::is_unsigned_type(text) {
                             has_unsigned = true;
                         }
                     }
