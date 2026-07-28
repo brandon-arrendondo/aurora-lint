@@ -1045,7 +1045,7 @@ impl RuleRegistry {
         registry.register(Box::new(fio20_c::Fio20C));
         registry.register(Box::new(fio21_c::Fio21C));
         registry.register(Box::new(fio22_c::Fio22C));
-        registry.register(Box::new(fio42_c::Fio42C));
+        registry.register(Box::new(fio42_c::Fio42C::new()));
         registry.register(Box::new(fio45_c::Fio45C));
         registry.register(Box::new(fio46_c::Fio46C));
         registry.register(Box::new(fio47_c::Fio47C));

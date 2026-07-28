@@ -97,6 +97,15 @@ pub struct FunctionSummary {
     /// cross-function goodG2BSink false positives (Juliet variants 41+).
     #[serde(default)]
     pub callsite_param_buffer_size: HashMap<usize, usize>,
+    /// Parameter indices that this function closes (e.g., `fclose(param)`,
+    /// `close(param)`, `CloseHandle(param)`). Mirrors `frees_params` but for
+    /// FIO42-C's file/descriptor/handle resources instead of heap memory.
+    /// Propagated transitively through `param_passthroughs` by
+    /// `propagate_transitive_closes`, so a resource opened in one function and
+    /// closed by a sink helper it's passed to (directly or through a chain of
+    /// forwarding wrappers) is recognized as closed (task 146).
+    #[serde(default)]
+    pub closes_params: HashSet<usize>,
 }
 
 /// Names of functions that read externally-controlled data into their
@@ -741,6 +750,18 @@ fn analyze_param_usage(
             summary.frees_params.insert(idx);
         }
 
+        // Check if parameter is closed as a file/descriptor/handle resource
+        // (FIO42-C) BEFORE it is ever reassigned. A plain "closer(param)"
+        // text scan can't tell Juliet's goodB2GSink shape (close old handle,
+        // *then* reassign) apart from its badSink twin (reassign to a new
+        // handle, then close *that*, leaking the original) — both bodies
+        // contain the literal substring `fclose(data)`. Only the "closes
+        // first" ordering is a real, provable close of the value the caller
+        // handed in (task 146).
+        if closes_param_before_reassignment(body, source, param_name) {
+            summary.closes_params.insert(idx);
+        }
+
         // Check if parameter is null-checked.
         // Handles all spacings and both NULL/0/nullptr literals since C
         // allows any of these to denote the null pointer.
@@ -786,6 +807,63 @@ fn analyze_param_usage(
     // free((*param)->field) (the double-pointer-deref idiom used by
     // `void destroy(T **param)` style destructors).
     collect_frees_param_fields(body, source, params, function_macros, summary);
+}
+
+/// True if `body` calls `fclose`/`close`/`CloseHandle` with `param_name` as
+/// its sole argument at a source position strictly before the first plain
+/// reassignment `param_name = ...`. If `param_name` is never reassigned, any
+/// closing call anywhere in the body counts. Order-sensitive by design (see
+/// call site in `analyze_param_usage`): a body that reassigns before closing
+/// only ever closes the *new* value, never the one the caller passed in, so
+/// that shape must NOT be credited.
+fn closes_param_before_reassignment(body: &Node, source: &str, param_name: &str) -> bool {
+    use lang_parsing_substrate::query;
+
+    let first_reassign = query::find_descendants_of_kind(*body, "assignment_expression")
+        .into_iter()
+        .filter(|n| {
+            n.child_by_field_name("left")
+                .map(|l| {
+                    l.kind() == "identifier" && query::node_text(l, source.as_bytes()) == param_name
+                })
+                .unwrap_or(false)
+        })
+        .map(|n| n.start_byte())
+        .min();
+
+    let first_close = query::find_descendants_of_kind(*body, "call_expression")
+        .into_iter()
+        .filter(|call| {
+            call.child_by_field_name("function")
+                .map(|f| {
+                    matches!(
+                        query::node_text(f, source.as_bytes()),
+                        "fclose" | "close" | "CloseHandle"
+                    )
+                })
+                .unwrap_or(false)
+        })
+        .filter(|call| {
+            call.child_by_field_name("arguments")
+                .map(|args| {
+                    let real: Vec<_> = (0..args.child_count())
+                        .filter_map(|i| args.child(i))
+                        .filter(|a| a.is_named())
+                        .collect();
+                    real.len() == 1
+                        && real[0].kind() == "identifier"
+                        && query::node_text(real[0], source.as_bytes()) == param_name
+                })
+                .unwrap_or(false)
+        })
+        .map(|n| n.start_byte())
+        .min();
+
+    match (first_close, first_reassign) {
+        (Some(close), Some(reassign)) => close < reassign,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
 }
 
 /// Scan for `free(...)`-shaped calls whose argument is a field access rooted
@@ -1209,6 +1287,40 @@ pub fn propagate_transitive_frees(summaries: &mut HashMap<String, FunctionSummar
                             && !summary.frees_params.contains(caller_idx)
                         {
                             summary.frees_params.insert(*caller_idx);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Propagate transitive closes through param pass-through chains.
+///
+/// If function B passes param 0 to callee C at param 0, and C closes param 0
+/// (fclose/close/CloseHandle), then B transitively closes param 0. Mirrors
+/// `propagate_transitive_frees` for FIO42-C's resource-close tracking.
+pub fn propagate_transitive_closes(summaries: &mut HashMap<String, FunctionSummary>) {
+    for _pass in 0..10 {
+        let mut changed = false;
+        let closes_snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.closes_params.clone()))
+            .collect();
+
+        for summary in summaries.values_mut() {
+            for (caller_idx, callees) in &summary.param_passthroughs {
+                for (callee_name, callee_idx) in callees {
+                    if let Some(callee_closes) = closes_snapshot.get(callee_name) {
+                        if callee_closes.contains(callee_idx)
+                            && !summary.closes_params.contains(caller_idx)
+                        {
+                            summary.closes_params.insert(*caller_idx);
                             changed = true;
                         }
                     }

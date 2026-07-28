@@ -33,13 +33,25 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Fio42C;
+#[derive(Default)]
+pub struct Fio42C {
+    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+}
+
+impl Fio42C {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 impl CertRule for Fio42C {
     fn rule_id(&self) -> &'static str {
@@ -62,12 +74,17 @@ impl CertRule for Fio42C {
         "FIO42-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        let summaries = self.function_summaries.borrow();
 
         // Track file resources across the AST
         let mut tracker = FileResourceTracker::new();
-        tracker.analyze_node(node, source, &mut violations);
+        tracker.analyze_node(node, source, &summaries, &mut violations);
 
         violations
     }
@@ -111,10 +128,16 @@ impl FileResourceTracker {
         }
     }
 
-    fn analyze_node(&mut self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn analyze_node(
+        &mut self,
+        node: &Node,
+        source: &str,
+        summaries: &HashMap<String, FunctionSummary>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         // Find all function definitions to analyze
         for func in query::find_descendants_of_kind(*node, "function_definition") {
-            self.analyze_function(&func, source, violations);
+            self.analyze_function(&func, source, summaries, violations);
         }
     }
 
@@ -122,6 +145,7 @@ impl FileResourceTracker {
         &mut self,
         func_node: &Node,
         source: &str,
+        summaries: &HashMap<String, FunctionSummary>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Reset tracking for this function scope
@@ -138,12 +162,76 @@ impl FileResourceTracker {
             // Collect all resource deallocations
             self.collect_closes(&body, source);
 
+            // Interprocedural: a resource passed by value to a sink function
+            // that closes the corresponding parameter (directly, or
+            // transitively through a chain of forwarding helpers) is closed
+            // as far as this function's scope is concerned, even though the
+            // `fclose`/`close`/`CloseHandle` call itself lives in the
+            // callee's body (task 146; e.g. Juliet CWE-773 variants 21/22/
+            // 41/42/45/51-54/63-66, where a goodB2GSink helper closes the
+            // FILE* it's handed).
+            self.collect_passthrough_closes(&body, source, summaries);
+
             // Check for unclosed resources
             self.check_unclosed_resources(violations);
 
             // CWE-459: check for temp file creation without cleanup
             self.check_temp_file_cleanup(&body, source, violations);
         }
+    }
+
+    /// Scan call sites in `body` for a tracked resource variable passed
+    /// (verbatim, by identifier) as an argument. If the callee's
+    /// `FunctionSummary` says it closes that parameter position, mark the
+    /// resource closed in this function's scope too.
+    fn collect_passthrough_closes(
+        &mut self,
+        body: &Node,
+        source: &str,
+        summaries: &HashMap<String, FunctionSummary>,
+    ) {
+        if summaries.is_empty() {
+            return;
+        }
+        for call in query::find_descendants_of_kind(*body, "call_expression") {
+            let Some(function) = call.child_by_field_name("function") else {
+                continue;
+            };
+            let callee_name = get_node_text(&function, source).trim().to_string();
+            let Some(summary) = summaries.get(&callee_name) else {
+                continue;
+            };
+            if summary.closes_params.is_empty() {
+                continue;
+            }
+            let Some(arguments) = call.child_by_field_name("arguments") else {
+                continue;
+            };
+            let mut arg_idx = 0usize;
+            for i in 0..arguments.child_count() {
+                let Some(arg) = arguments.child(i) else {
+                    continue;
+                };
+                if matches!(arg.kind(), "," | "(" | ")") {
+                    continue;
+                }
+                if arg.kind() == "identifier" {
+                    let var_name = get_node_text(&arg, source).to_string();
+                    if summary.closes_params.contains(&arg_idx)
+                        && self.is_tracked_resource(&var_name)
+                    {
+                        self.closed_resources.insert(var_name);
+                    }
+                }
+                arg_idx += 1;
+            }
+        }
+    }
+
+    fn is_tracked_resource(&self, var_name: &str) -> bool {
+        self.file_pointers.contains_key(var_name)
+            || self.file_descriptors.contains_key(var_name)
+            || self.file_handles.contains_key(var_name)
     }
 
     fn collect_resources(&mut self, node: &Node, source: &str) {
