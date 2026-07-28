@@ -836,10 +836,13 @@ fn resolve_array_decay(
     }
     let rhs_name = right.utf8_text(source.as_bytes()).unwrap_or("");
     state.get(rhs_name).and_then(|rhs| {
-        // Only apply to non-char arrays (int/double/struct).
-        // Char arrays (CWE-665: strcat pattern) are flagged
-        // at the assignment itself as the detection point.
-        if rhs.is_array && rhs.state.is_unsafe() && !rhs.is_char_type {
+        // Applies to any uninitialized array (char or not): the decay itself
+        // only takes the address, so the pointer's *content* is unsafe until
+        // a subsequent write (subscript/memset/strcpy/etc.) initializes it.
+        // Content reads are then caught at the actual use site — a subscript
+        // read, a dereference, or (for char buffers) an append-style call
+        // like strcat/wcscat — not at the decay assignment itself.
+        if rhs.is_array && rhs.state.is_unsafe() {
             Some(rhs.allocation_count)
         } else {
             None

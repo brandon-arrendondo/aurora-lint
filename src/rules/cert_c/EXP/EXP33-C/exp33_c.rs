@@ -230,6 +230,17 @@ impl CertRule for Exp33C {
                         &config,
                     );
 
+                    check_append_call_reads(
+                        &body,
+                        source,
+                        &analysis,
+                        cfg,
+                        &body,
+                        &mut violations,
+                        &mut reported,
+                        &config,
+                    );
+
                     // Check for cross-file calls passing &uninit_var to functions
                     // that read through the pointer (variant 63/64 pattern).
                     if !read_only_fns.is_empty() {
@@ -356,6 +367,87 @@ fn is_function_macro_output_arg(
         }
     }
     false
+}
+
+/// Append-style functions that both read (find the existing null terminator)
+/// and write their first argument. `get_output_arg_indices` models arg 0 as
+/// pure output so ordinary reads of it don't false-positive elsewhere; this
+/// check restores the read half specifically for the case that matters:
+/// content that is still unsafe (e.g. `dst = uninit_array;` decay, or
+/// `malloc` without a subsequent write) at the point it's appended to.
+const APPEND_FUNCTIONS: &[&str] = &["strcat", "strncat", "wcscat", "wcsncat"];
+
+/// Check calls to append-style functions (`strcat(dst, src)`) whose
+/// destination argument is still content-unsafe — the append needs an
+/// existing null terminator that was never written.
+fn check_append_call_reads(
+    node: &Node,
+    source: &str,
+    analysis: &InitAnalysisResult,
+    cfg: &FunctionCfg,
+    body: &Node,
+    violations: &mut Vec<RuleViolation>,
+    reported: &mut HashSet<String>,
+    config: &init_state::InitAnalysisConfig,
+) {
+    for call in query::find_descendants_of_kind(*node, "call_expression") {
+        let Some(func) = call.child_by_field_name("function") else {
+            continue;
+        };
+        if func.kind() != "identifier" {
+            continue;
+        }
+        let func_name = get_node_text(&func, source);
+        if !APPEND_FUNCTIONS.contains(&func_name) {
+            continue;
+        }
+        let Some(args) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let Some(first_arg) = (0..args.child_count())
+            .filter_map(|i| args.child(i))
+            .find(|c| !matches!(c.kind(), "," | "(" | ")"))
+        else {
+            continue;
+        };
+        if first_arg.kind() != "identifier" {
+            continue;
+        }
+        let var_name = get_node_text(&first_arg, source).to_string();
+        if !analysis.tracked_vars.contains(&var_name) || reported.contains(&var_name) {
+            continue;
+        }
+        let Some(info) = init_state::get_var_info_at_with_config(
+            analysis,
+            cfg,
+            body,
+            source,
+            &var_name,
+            call.start_byte(),
+            config,
+        ) else {
+            continue;
+        };
+        if matches!(info.state, InitState::MallocUninitialized) && !info.is_unsigned_char {
+            reported.insert(var_name.clone());
+            violations.push(RuleViolation {
+                rule_id: "EXP33-C".to_string(),
+                severity: Severity::High,
+                message: format!(
+                    "'{}' passed to '{}' without prior initialization (append requires an existing null terminator)",
+                    var_name, func_name
+                ),
+                file_path: String::new(),
+                line: call.start_position().row + 1,
+                column: call.start_position().column + 1,
+                suggestion: Some(format!(
+                    "Initialize '{}' (e.g., null-terminate it) before appending to it",
+                    var_name
+                )),
+                ..Default::default()
+            });
+        }
+    }
 }
 
 /// Check for calls that pass `&uninit_var` to cross-file functions that read
@@ -533,10 +625,11 @@ fn check_identifier_read(
     if info.is_array {
         if let Some(parent) = node.parent() {
             // Array-to-pointer decay: `ptr = arr` where arr is on the RHS.
-            // Taking the address of a non-char array is not a content read —
-            // suppress and detect later at subscript access (check_subscript_read).
-            // Char arrays are kept (strcat/wcscat pattern: reads the null terminator).
-            if parent.kind() == "assignment_expression" && !info.is_char_type {
+            // Taking the address of an array (char or not) is not itself a
+            // content read — suppress here and detect later at the actual
+            // use site (subscript access, dereference, or an append-style
+            // call like strcat/wcscat via check_append_call_reads).
+            if parent.kind() == "assignment_expression" {
                 if let Some(right) = parent.child_by_field_name("right") {
                     if right.id() == node.id() {
                         return;
@@ -939,8 +1032,18 @@ fn is_read_in_pointer_expression(parent: &Node, source: &str) -> bool {
 }
 
 /// `obj.field` is not a read of `obj` when it is the LHS of an assignment.
+/// Walks up through chained field expressions (`a.b.c = val` — `a`'s
+/// immediate parent is `a.b`, not `a.b.c`) to find the outermost field
+/// access, since only that one can be the assignment's actual LHS.
 fn is_read_in_field_expression(parent: &Node) -> bool {
-    let Some(grandparent) = parent.parent() else {
+    let mut outer = *parent;
+    while let Some(next) = outer.parent() {
+        if next.kind() != "field_expression" {
+            break;
+        }
+        outer = next;
+    }
+    let Some(grandparent) = outer.parent() else {
         return true;
     };
     if grandparent.kind() != "assignment_expression" {
@@ -949,7 +1052,7 @@ fn is_read_in_field_expression(parent: &Node) -> bool {
     let Some(left) = grandparent.child_by_field_name("left") else {
         return true;
     };
-    left.id() != parent.id() // obj.field = val — obj is not "read"
+    left.id() != outer.id() // obj.field = val — obj is not "read"
 }
 
 /// `__asm("..." : "=r"(var) ...)` is misparsed by tree-sitter as
