@@ -13,7 +13,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::dataflow::find_node_at_range;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -613,24 +613,11 @@ fn find_declarator_name(decl: &Node, source: &str) -> Option<String> {
 
 /// Drill into nested declarators (pointer_declarator, array_declarator) to find the identifier.
 fn extract_identifier_from_declarator(node: &Node, source: &str) -> Option<String> {
-    match node.kind() {
-        "identifier" => Some(get_node_text(node, source).to_string()),
-        "pointer_declarator" | "array_declarator" => {
-            if let Some(d) = node.child_by_field_name("declarator") {
-                extract_identifier_from_declarator(&d, source)
-            } else {
-                // Walk children looking for identifier
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if let Some(name) = extract_identifier_from_declarator(&child, source) {
-                            return Some(name);
-                        }
-                    }
-                }
-                None
-            }
-        }
-        _ => None,
+    let name = ast_utils::get_identifier_from_declarator(node, source);
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
     }
 }
 
