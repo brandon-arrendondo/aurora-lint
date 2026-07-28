@@ -52,7 +52,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -136,16 +136,50 @@ impl Env34C {
         }
     }
 
-    /// Check if assignment is to a const char* variable
+    /// Check if assignment is to a const char* variable.
+    ///
+    /// Resolves the identifier's actual declaration via the same
+    /// scope/shadowing-aware lookup used elsewhere in the codebase (rather
+    /// than guessing const-ness from the variable's spelling, e.g. `tmp`
+    /// or `ptr`) and checks it for a `const` type qualifier, mirroring
+    /// `is_const_pointer_declarator`'s check for the init-declarator case.
     fn is_const_variable_assignment(&self, left_node: &Node, source: &str) -> bool {
-        // For assignment expressions, we need to find if the variable was declared as const
-        // This is a simplified heuristic - we look for common patterns
-        // In practice, full type analysis would be needed
+        if left_node.kind() != "identifier" {
+            return false;
+        }
         let var_name = get_node_text(left_node, source);
 
-        // Common pattern: variables named 'temp', 'tmp', 'ptr' are often const temporary variables
-        // This is a heuristic, but aligns with common coding patterns
-        matches!(var_name, "temp" | "tmp" | "ptr" | "p")
+        if let Some(decl) =
+            ast_utils::find_enclosing_declaration_for_identifier(left_node, var_name, source)
+        {
+            return Self::declaration_has_const_qualifier(&decl, source);
+        }
+
+        // Not a local declaration -- check whether it's a `const`-qualified
+        // parameter instead.
+        if let Some(func) = ast_utils::find_containing_function(left_node) {
+            if let Some(params) = ast_utils::get_function_parameters(&func, source) {
+                if let Some((_, param_type)) = params.iter().find(|(n, _)| n == var_name) {
+                    return param_type.contains("const");
+                }
+            }
+        }
+
+        false
+    }
+
+    /// True if a `declaration` node carries a `const` type qualifier among
+    /// its direct children (same pattern as `is_const_pointer_declarator`
+    /// below, which checks the init-declarator's parent declaration).
+    fn declaration_has_const_qualifier(decl: &Node, source: &str) -> bool {
+        for i in 0..decl.child_count() {
+            if let Some(child) = decl.child(i) {
+                if child.kind() == "type_qualifier" && get_node_text(&child, source) == "const" {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Check variable initialization for storing pointers from affected functions
