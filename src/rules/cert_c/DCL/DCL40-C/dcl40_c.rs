@@ -11,7 +11,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -289,37 +289,18 @@ impl Dcl40C {
 
     /// Get variable name from declarator
     fn get_variable_name(&self, declarator: &Node, source: &str) -> Option<String> {
-        match declarator.kind() {
-            "identifier" => Some(get_node_text(declarator, source).to_string()),
-            "pointer_declarator" | "array_declarator" | "init_declarator" => {
-                if let Some(inner) = declarator.child_by_field_name("declarator") {
-                    self.get_variable_name(&inner, source)
-                } else {
-                    // Try to find identifier child
-                    for i in 0..declarator.child_count() {
-                        if let Some(child) = declarator.child(i) {
-                            if child.kind() == "identifier" {
-                                return Some(get_node_text(&child, source).to_string());
-                            }
-                            if let Some(name) = self.get_variable_name(&child, source) {
-                                return Some(name);
-                            }
-                        }
-                    }
-                    None
-                }
-            }
-            _ => {
-                // Search for identifier in children
-                for i in 0..declarator.child_count() {
-                    if let Some(child) = declarator.child(i) {
-                        if child.kind() == "identifier" {
-                            return Some(get_node_text(&child, source).to_string());
-                        }
-                    }
-                }
-                None
-            }
+        let target = if declarator.kind() == "init_declarator" {
+            declarator
+                .child_by_field_name("declarator")
+                .unwrap_or(*declarator)
+        } else {
+            *declarator
+        };
+        let name = get_identifier_from_declarator(&target, source);
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
         }
     }
 
