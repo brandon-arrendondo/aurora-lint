@@ -253,38 +253,41 @@ impl Exp36C {
                         }
                     }
                 }
-                if let Some(body) = n.child_by_field_name("body") {
-                    for decl in query::find_descendants_of_kind(body, "declaration") {
-                        if decl.start_byte() > node.start_byte() {
-                            continue;
-                        }
-                        let mut cursor = decl.walk();
-                        for child in decl.children(&mut cursor) {
-                            let declarator_opt = if child.kind() == "init_declarator" {
-                                child.child_by_field_name("declarator")
-                            } else if matches!(
-                                child.kind(),
-                                "identifier" | "pointer_declarator" | "array_declarator"
-                            ) {
-                                Some(child)
-                            } else {
-                                None
-                            };
-                            if let Some(d) = declarator_opt {
-                                if self.declarator_name_matches(&d, source, name) {
-                                    let type_text = decl
-                                        .child_by_field_name("type")
-                                        .map(|t| {
-                                            ast_utils::get_node_text(&t, source).trim().to_string()
-                                        })
-                                        .unwrap_or_default();
-                                    let alignas_type = self.declaration_alignas_type(&decl, source);
-                                    return Some((
-                                        type_text,
-                                        self.has_pointer_declarator(&d),
-                                        alignas_type,
-                                    ));
-                                }
+                // Local-variable case: use the scope- and shadowing-aware
+                // lookup (nearest enclosing block, walking outward) instead
+                // of a flat scan of every declaration in the function body —
+                // that flat scan couldn't distinguish two same-named locals
+                // declared in sibling blocks (e.g. an if/else with different
+                // types for `x` in each branch).
+                if let Some(decl) =
+                    ast_utils::find_enclosing_declaration_for_identifier(node, name, source)
+                {
+                    let mut cursor = decl.walk();
+                    for child in decl.children(&mut cursor) {
+                        let declarator_opt = if child.kind() == "init_declarator" {
+                            child.child_by_field_name("declarator")
+                        } else if matches!(
+                            child.kind(),
+                            "identifier" | "pointer_declarator" | "array_declarator"
+                        ) {
+                            Some(child)
+                        } else {
+                            None
+                        };
+                        if let Some(d) = declarator_opt {
+                            if self.declarator_name_matches(&d, source, name) {
+                                let type_text = decl
+                                    .child_by_field_name("type")
+                                    .map(|t| {
+                                        ast_utils::get_node_text(&t, source).trim().to_string()
+                                    })
+                                    .unwrap_or_default();
+                                let alignas_type = self.declaration_alignas_type(&decl, source);
+                                return Some((
+                                    type_text,
+                                    self.has_pointer_declarator(&d),
+                                    alignas_type,
+                                ));
                             }
                         }
                     }
