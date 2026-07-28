@@ -26,7 +26,7 @@ use crate::analyze::dataflow::{
     compute_reaching_definitions, extract_definitions, find_node_at_range,
 };
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -84,7 +84,8 @@ impl Msc13C {
         match node.kind() {
             "init_declarator" => {
                 if let Some(declarator) = node.child_by_field_name("declarator") {
-                    if let Some(name) = self.get_identifier_name(&declarator, source) {
+                    let name = get_identifier_from_declarator(&declarator, source);
+                    if !name.is_empty() {
                         vars.push((name, node.start_position().row + 1, true));
                     }
                 }
@@ -96,33 +97,14 @@ impl Msc13C {
             }
             // Pointer/array declarator without init: `int *p;`, `int arr[10];`
             "pointer_declarator" | "array_declarator" => {
-                if let Some(name) = self.get_identifier_name(node, source) {
+                let name = get_identifier_from_declarator(node, source);
+                if !name.is_empty() {
                     vars.push((name, node.start_position().row + 1, false));
                 }
             }
             // Skip function_declarator (function declarations, not variables)
             "function_declarator" => {}
             _ => {}
-        }
-    }
-
-    fn get_identifier_name(&self, node: &Node, source: &str) -> Option<String> {
-        match node.kind() {
-            "identifier" => Some(get_node_text(node, source).to_string()),
-            "pointer_declarator" | "array_declarator" => node
-                .child_by_field_name("declarator")
-                .and_then(|d| self.get_identifier_name(&d, source)),
-            _ => {
-                // Try to find identifier child
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "identifier" {
-                            return Some(get_node_text(&child, source).to_string());
-                        }
-                    }
-                }
-                None
-            }
         }
     }
 
@@ -536,7 +518,8 @@ impl Msc13C {
                     if let Some(c) = stmt.child(i) {
                         if c.kind() == "init_declarator" {
                             if let Some(declarator) = c.child_by_field_name("declarator") {
-                                if let Some(name) = self.get_identifier_name(&declarator, source) {
+                                let name = get_identifier_from_declarator(&declarator, source);
+                                if !name.is_empty() {
                                     writes.push((name, line));
                                 }
                             }
