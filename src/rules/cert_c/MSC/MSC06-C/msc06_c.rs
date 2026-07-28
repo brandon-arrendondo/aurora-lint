@@ -156,7 +156,7 @@ impl Msc06C {
             }
 
             let var_name = ast_utils::get_node_text(&inner, source).to_string();
-            if self.is_declared_volatile(root, &var_name, source) {
+            if self.is_declared_volatile(&inner, source) {
                 continue;
             }
 
@@ -180,18 +180,40 @@ impl Msc06C {
         }
     }
 
-    fn is_declared_volatile(&self, root: &Node, var_name: &str, source: &str) -> bool {
-        for decl in query::find_descendants_of_kind(*root, "declaration") {
-            let has_name = query::find_descendants_of_kind(decl, "identifier")
-                .iter()
-                .any(|n| ast_utils::get_node_text(n, source) == var_name);
-            if !has_name {
+    /// True if `decl`'s tokens include a `volatile` type qualifier.
+    fn decl_has_volatile(decl: &Node, source: &str) -> bool {
+        query::find_descendants_of_kind(*decl, "type_qualifier")
+            .iter()
+            .any(|n| ast_utils::get_node_text(n, source) == "volatile")
+    }
+
+    /// Resolve whether the loop-controlling identifier at this use site is
+    /// declared `volatile`. Scope- and shadowing-aware via
+    /// `find_enclosing_declaration_for_identifier` for locals; falls back to
+    /// a file-scope (global) declaration scan, since that helper
+    /// intentionally only walks enclosing `compound_statement` blocks and
+    /// never resolves to file-scope declarations.
+    fn is_declared_volatile(&self, ident: &Node, source: &str) -> bool {
+        let name = ast_utils::get_node_text(ident, source);
+        if let Some(decl) =
+            ast_utils::find_enclosing_declaration_for_identifier(ident, name, source)
+        {
+            return Self::decl_has_volatile(&decl, source);
+        }
+
+        let mut top = *ident;
+        while let Some(p) = top.parent() {
+            top = p;
+        }
+        for i in 0..top.child_count() {
+            let Some(decl) = top.child(i) else { continue };
+            if decl.kind() != "declaration" {
                 continue;
             }
-            let has_volatile = query::find_descendants_of_kind(decl, "type_qualifier")
+            let has_name = query::find_descendants_of_kind(decl, "identifier")
                 .iter()
-                .any(|n| ast_utils::get_node_text(n, source) == "volatile");
-            if has_volatile {
+                .any(|n| ast_utils::get_node_text(n, source) == name);
+            if has_name && Self::decl_has_volatile(&decl, source) {
                 return true;
             }
         }
