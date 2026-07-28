@@ -19,7 +19,10 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::ast_utils::{
+    find_containing_function, find_enclosing_declaration_for_identifier, get_function_parameters,
+    get_node_text, is_function_parameter,
+};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -310,53 +313,99 @@ impl Fio34C {
     }
 
     /// Helper: Check if a variable is of char type
+    ///
+    /// Resolves the identifier's actual declaration via the scope- and
+    /// shadowing-aware `find_enclosing_declaration_for_identifier` lookup
+    /// (falling back to the function's parameter list) instead of a
+    /// substring search over the enclosing scope's text. The old substring
+    /// approach (`scope_text.contains("char c")`) false-positived on any
+    /// unrelated declaration whose text happens to contain that substring,
+    /// e.g. a variable `c` would spuriously match a sibling declaration
+    /// `char cx` (since "char cx" contains "char c").
     fn is_char_type_variable(&self, node: &Node, source: &str) -> bool {
-        // This is a simplified check - in production, would need proper type analysis
-        // Check if the variable was declared as char
+        if node.kind() != "identifier" {
+            return false;
+        }
         let var_name = get_node_text(node, source);
+        let var_name = var_name.trim();
 
-        // Walk up to find the declaration
-        let mut current = node.parent();
-        while let Some(parent) = current {
-            if parent.kind() == "function_definition" || parent.kind() == "compound_statement" {
-                // Sanitized so a comment/string literal in this scope can't
-                // spoof a "char <var>" declaration pattern and spuriously
-                // trigger a violation.
-                let scope_text = get_sanitized_node_text(&parent, source);
-                if scope_text.contains(&format!("char {}", var_name))
-                    || scope_text.contains(&format!("char *{}", var_name))
-                    || scope_text.contains(&format!("unsigned char {}", var_name))
-                    || scope_text.contains(&format!("signed char {}", var_name))
-                {
-                    return true;
+        if let Some(decl) = find_enclosing_declaration_for_identifier(node, var_name, source) {
+            return Self::declaration_type_is_char(&decl, source);
+        }
+        if let Some(func) = find_containing_function(node) {
+            if is_function_parameter(&func, var_name, source) {
+                if let Some(params) = get_function_parameters(&func, source) {
+                    if let Some((_, param_type)) = params.iter().find(|(n, _)| n == var_name) {
+                        return Self::type_text_is_char(param_type);
+                    }
                 }
-                break;
             }
-            current = parent.parent();
         }
         false
     }
 
     /// Helper: Check if a variable is of wchar_t type (should be wint_t for getwc)
+    ///
+    /// Same AST-based resolution as `is_char_type_variable`, avoiding the
+    /// analogous substring false-positive for wchar_t declarations.
     fn is_wchar_type_variable(&self, node: &Node, source: &str) -> bool {
+        if node.kind() != "identifier" {
+            return false;
+        }
         let var_name = get_node_text(node, source);
+        let var_name = var_name.trim();
 
-        // Walk up to find the declaration
-        let mut current = node.parent();
-        while let Some(parent) = current {
-            if parent.kind() == "function_definition" || parent.kind() == "compound_statement" {
-                // Sanitized so a comment/string literal in this scope can't
-                // spoof a "wchar_t <var>" declaration pattern and spuriously
-                // trigger a violation.
-                let scope_text = get_sanitized_node_text(&parent, source);
-                if scope_text.contains(&format!("wchar_t {}", var_name)) {
-                    return true;
+        if let Some(decl) = find_enclosing_declaration_for_identifier(node, var_name, source) {
+            return Self::declaration_type_is_wchar(&decl, source);
+        }
+        if let Some(func) = find_containing_function(node) {
+            if is_function_parameter(&func, var_name, source) {
+                if let Some(params) = get_function_parameters(&func, source) {
+                    if let Some((_, param_type)) = params.iter().find(|(n, _)| n == var_name) {
+                        return Self::type_text_is_wchar(param_type);
+                    }
                 }
-                break;
             }
-            current = parent.parent();
         }
         false
+    }
+
+    /// Extract the type-specifier text of a `declaration` node (everything
+    /// before the declarator), e.g. `char c;` -> `"char"`, `unsigned char
+    /// *p;` -> `"unsigned char"`. Mirrors the pattern used by ARR39-C's
+    /// `declaration_type_for_name`.
+    fn declaration_type_text(decl: &Node, source: &str) -> String {
+        (0..decl.child_count())
+            .filter_map(|i| decl.child(i))
+            .take_while(|c| {
+                !matches!(
+                    c.kind(),
+                    "identifier" | "init_declarator" | "pointer_declarator" | "array_declarator"
+                )
+            })
+            .map(|c| get_node_text(&c, source))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// True if the type text is `char`/`unsigned char`/`signed char` (and
+    /// not `wchar_t`, which also contains the substring "char").
+    fn type_text_is_char(type_text: &str) -> bool {
+        let normalized = type_text.trim();
+        normalized.contains("char") && !normalized.contains("wchar_t")
+    }
+
+    /// True if the type text is `wchar_t`.
+    fn type_text_is_wchar(type_text: &str) -> bool {
+        type_text.trim().contains("wchar_t")
+    }
+
+    fn declaration_type_is_char(decl: &Node, source: &str) -> bool {
+        Self::type_text_is_char(&Self::declaration_type_text(decl, source))
+    }
+
+    fn declaration_type_is_wchar(decl: &Node, source: &str) -> bool {
+        Self::type_text_is_wchar(&Self::declaration_type_text(decl, source))
     }
 
     /// Check for casts to char of character input function results
