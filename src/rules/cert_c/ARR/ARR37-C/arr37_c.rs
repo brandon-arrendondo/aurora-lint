@@ -30,13 +30,45 @@ impl CertRule for Arr37C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        let mut analyzer = NonArrayPointerAnalyzer::new();
 
-        // First pass: collect variable declarations and their types
-        analyzer.collect_variable_info(node, source);
+        // File-scope (outside any function) declarations/assignments form a
+        // base map visible to every function. Scoped strictly to nodes with
+        // no enclosing function so a global's type never gets shadowed by
+        // some unrelated function's local of the same name.
+        let mut global_analyzer = NonArrayPointerAnalyzer::new();
+        for decl in query::find_descendants_of_kind(*node, "declaration") {
+            if ast_utils::find_containing_function(&decl).is_none() {
+                global_analyzer.process_declaration(&decl, source);
+            }
+        }
+        for assign in query::find_descendants_of_kind(*node, "assignment_expression") {
+            if ast_utils::find_containing_function(&assign).is_none() {
+                global_analyzer.process_assignment(&assign, source);
+            }
+        }
 
-        // Second pass: check for violations
-        self.check_node(node, source, &analyzer, &mut violations);
+        // Check any file-scope code (rare) using only the global map, and
+        // only for nodes that aren't inside a function (those are handled
+        // per-function below).
+        self.check_node_filtered(node, source, &global_analyzer, &mut violations, &|n| {
+            ast_utils::find_containing_function(n).is_none()
+        });
+
+        // Analyze each function independently: a fresh variable-type map per
+        // function (seeded with the file-scope globals) so that two
+        // functions with a same-named local of different types are never
+        // conflated into one global entry.
+        for function in query::find_descendants_of_kind(*node, "function_definition") {
+            let mut analyzer = NonArrayPointerAnalyzer::new();
+            analyzer.variable_types = global_analyzer.variable_types.clone();
+            analyzer.struct_member_pointers = global_analyzer.struct_member_pointers.clone();
+
+            // Collect this function's own declarations/assignments/params.
+            analyzer.collect_variable_info(&function, source);
+
+            // Check for violations within this function only.
+            self.check_node(&function, source, &analyzer, &mut violations);
+        }
 
         violations
     }
@@ -50,6 +82,17 @@ impl Arr37C {
         analyzer: &NonArrayPointerAnalyzer,
         violations: &mut Vec<RuleViolation>,
     ) {
+        self.check_node_filtered(node, source, analyzer, violations, &|_| true);
+    }
+
+    fn check_node_filtered(
+        &self,
+        node: &Node,
+        source: &str,
+        analyzer: &NonArrayPointerAnalyzer,
+        violations: &mut Vec<RuleViolation>,
+        filter: &dyn Fn(&Node) -> bool,
+    ) {
         let matches = query::find_descendants_of_kinds(
             *node,
             &[
@@ -61,6 +104,9 @@ impl Arr37C {
             ],
         );
         for n in matches {
+            if !filter(&n) {
+                continue;
+            }
             let node_text = &source[n.start_byte()..n.end_byte()];
 
             match n.kind() {
