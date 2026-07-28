@@ -89,10 +89,28 @@ impl Flp38C {
     }
 
     /// Build a map of variable name -> declared floating-type spelling, for
-    /// every declaration in the file (scope-insensitive; good enough to
-    /// resolve simple identifier arguments to a type-generic macro call).
+    /// every declaration found under `root`. Callers scope `root` to a
+    /// single `function_definition` (or to file-scope-only declarations) so
+    /// that same-named locals in different functions are never conflated
+    /// into one entry -- see [`Self::traverse`].
     fn collect_var_types(&self, root: &Node, source: &str, out: &mut HashMap<String, String>) {
+        self.collect_var_types_filtered(root, source, out, &|_| true);
+    }
+
+    /// Like [`Self::collect_var_types`], but only processes declarations for
+    /// which `filter` returns true. Used to build the file-scope-only map
+    /// (declarations with no enclosing function).
+    fn collect_var_types_filtered(
+        &self,
+        root: &Node,
+        source: &str,
+        out: &mut HashMap<String, String>,
+        filter: &dyn Fn(&Node) -> bool,
+    ) {
         for decl in query::find_descendants_of_kind(*root, "declaration") {
+            if !filter(&decl) {
+                continue;
+            }
             let Some(type_text) = self.declared_type_text(&decl, source) else {
                 continue;
             };
@@ -157,11 +175,21 @@ impl Flp38C {
         )
     }
 
-    fn traverse(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        let mut var_types = HashMap::new();
-        self.collect_var_types(root, source, &mut var_types);
-
-        for call in query::find_descendants_of_kind(*root, "call_expression") {
+    /// Check every `call_expression` found under `scope` against `var_types`,
+    /// optionally further restricted by `filter` (used to keep file-scope
+    /// calls from double-checking calls already covered by a function pass).
+    fn check_calls(
+        &self,
+        scope: &Node,
+        source: &str,
+        var_types: &HashMap<String, String>,
+        filter: &dyn Fn(&Node) -> bool,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        for call in query::find_descendants_of_kind(*scope, "call_expression") {
+            if !filter(&call) {
+                continue;
+            }
             let Some(func) = call.child_by_field_name("function") else {
                 continue;
             };
@@ -212,6 +240,37 @@ impl Flp38C {
                     requires_manual_review: Some(false),
                 });
             }
+        }
+    }
+
+    fn traverse(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        // File-scope (outside any function) floating declarations form a
+        // base map visible to every function.
+        let mut global_var_types = HashMap::new();
+        self.collect_var_types_filtered(root, source, &mut global_var_types, &|decl| {
+            ast_utils::find_containing_function(decl).is_none()
+        });
+
+        // Check file-scope call sites (rare, e.g. global initializers) using
+        // only the global map, restricted to calls with no enclosing
+        // function -- calls inside functions are handled in the per-function
+        // pass below with that function's own scoped map.
+        self.check_calls(
+            root,
+            source,
+            &global_var_types,
+            &|call| ast_utils::find_containing_function(call).is_none(),
+            violations,
+        );
+
+        // Analyze each function independently: a fresh variable-type map per
+        // function (seeded with the file-scope globals) so that two
+        // functions with a same-named local of a different floating type are
+        // never conflated into one entry.
+        for function in query::find_descendants_of_kind(*root, "function_definition") {
+            let mut var_types = global_var_types.clone();
+            self.collect_var_types(&function, source, &mut var_types);
+            self.check_calls(&function, source, &var_types, &|_| true, violations);
         }
     }
 }
