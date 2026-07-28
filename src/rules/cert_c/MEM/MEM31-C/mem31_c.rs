@@ -1013,6 +1013,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     saw_deref = true;
                     current = current.child_by_field_name("argument")?;
                 }
+                "pointer_expression" => {
+                    // `*p` and `&p` both parse as `pointer_expression` in
+                    // this tree-sitter-c grammar (see points_to.rs), but
+                    // `&p` can never appear as (part of) an lvalue chain --
+                    // only `*p` can be assigned through -- so any
+                    // pointer_expression reached while walking an
+                    // assignment's LHS here is unambiguously a dereference.
+                    saw_deref = true;
+                    current = current.child_by_field_name("argument")?;
+                }
                 "parenthesized_expression" => {
                     current = current.named_child(0)?;
                 }
@@ -1079,7 +1089,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
         ) {
-            if left.kind() == "unary_expression" {
+            // `*out = malloc(...)` parses as "pointer_expression" in this
+            // tree-sitter-c grammar, not "unary_expression" -- without this
+            // arm, record_deref_allocated_param's out-parameter tracking
+            // (task 306) never fired for the real dereference-assignment
+            // pattern it exists to detect.
+            if matches!(left.kind(), "unary_expression" | "pointer_expression") {
                 self.record_deref_allocated_param(&left, &right, source);
                 return;
             }
