@@ -21,7 +21,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 const ALLOC_FUNCS: &[&str] = &["malloc", "calloc", "realloc", "strdup"];
@@ -87,11 +87,13 @@ impl Msc11C {
     }
 
     fn traverse(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        let mut alloc_vars = HashSet::new();
-        self.collect_alloc_vars(root, source, &mut alloc_vars);
-        if alloc_vars.is_empty() {
-            return;
-        }
+        // Cache the alloc-var set per enclosing function (keyed by the
+        // function node's start byte) so it's computed once per function
+        // rather than once per assert(), while keeping the set scoped to
+        // that function instead of the whole file -- two functions with a
+        // same-named local assigned from malloc() in one and something else
+        // in the other must not be conflated.
+        let mut alloc_vars_by_func: HashMap<usize, HashSet<String>> = HashMap::new();
 
         for call in query::find_descendants_of_kind(*root, "call_expression") {
             let Some(func) = call.child_by_field_name("function") else {
@@ -100,6 +102,19 @@ impl Msc11C {
             if func.kind() != "identifier" || ast_utils::get_node_text(&func, source) != "assert" {
                 continue;
             }
+
+            let scope = ast_utils::find_containing_function(&call).unwrap_or(*root);
+            let alloc_vars = alloc_vars_by_func
+                .entry(scope.start_byte())
+                .or_insert_with(|| {
+                    let mut vars = HashSet::new();
+                    self.collect_alloc_vars(&scope, source, &mut vars);
+                    vars
+                });
+            if alloc_vars.is_empty() {
+                continue;
+            }
+
             let Some(args) = call.child_by_field_name("arguments") else {
                 continue;
             };
