@@ -5,6 +5,24 @@ SqC supports suppressing false positives via inline source comments or an extern
 TOML file. Each suppression includes a SHA-256 hash of the violation line, ensuring
 suppressions break automatically when the underlying code changes.
 
+Design intent: surface, don't silence
+--------------------------------------
+
+SqC's job is to correctly surface every violation of a rule as the rule is written
+-- not to guess which violations a given team will care about. Whether a correctly
+detected finding is worth acting on, is a deliberate style choice, or applies to a
+particular codebase at all is a per-project judgment call, and this suppression
+system (plus per-project rule manifests, see :doc:`configuration`) is where that
+judgment belongs -- not inside the rule's detection logic.
+
+Concretely: if a rule check is *correct* (every reported finding is a real instance
+of what the rule's text describes) but *noisy* for a given project or produces more
+findings than expected after a detection improvement, the fix is a suppression
+entry or a manifest change, with a justification -- not softening the rule so it
+stops finding things. A rule that under-reports to avoid noise is failing at its
+one job; a rule that over-reports on a project that doesn't want it is a
+configuration problem, and configuration problems have a config-file answer.
+
 Inline Comment Suppression
 --------------------------
 
