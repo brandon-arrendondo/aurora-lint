@@ -127,22 +127,19 @@ impl Msc22C {
         }
     }
 
-    fn is_declared_volatile(&self, func: &Node, var_name: &str, source: &str) -> bool {
-        for decl in query::find_descendants_of_kind(*func, "declaration") {
-            let has_name = query::find_descendants_of_kind(decl, "identifier")
-                .iter()
-                .any(|n| ast_utils::get_node_text(n, source) == var_name);
-            if !has_name {
-                continue;
-            }
-            let has_volatile = query::find_descendants_of_kind(decl, "type_qualifier")
-                .iter()
-                .any(|n| ast_utils::get_node_text(n, source) == "volatile");
-            if has_volatile {
-                return true;
-            }
-        }
-        false
+    /// Resolves `ident`'s binding via the scope/shadowing-aware declaration
+    /// lookup (not a flat function-body scan, which could conflate two
+    /// nested blocks with a shadowed name of the same spelling) and checks
+    /// whether that declaration's type text mentions `volatile`.
+    fn is_declared_volatile(&self, ident: &Node, var_name: &str, source: &str) -> bool {
+        let Some(decl) =
+            ast_utils::find_enclosing_declaration_for_identifier(ident, var_name, source)
+        else {
+            return false;
+        };
+        query::find_descendants_of_kind(decl, "type_qualifier")
+            .iter()
+            .any(|n| ast_utils::get_node_text(n, source) == "volatile")
     }
 
     fn reassigned_outside(
@@ -208,7 +205,7 @@ impl Msc22C {
                     if flagged.contains(&name) {
                         continue;
                     }
-                    if self.is_declared_volatile(func, &name, source) {
+                    if self.is_declared_volatile(&ident, &name, source) {
                         continue;
                     }
                     if !self.reassigned_outside(func, &name, &if_stmt, source) {
