@@ -1,5 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::FunctionMacro;
 use crate::analyze::points_to::{lvalue_of, resolve_canonical, AliasMap, LValue};
 use crate::manifest::{RuleCategory, Severity};
@@ -15,6 +16,13 @@ pub struct Mem30C {
     /// engine). Used to recognize "safe free" macros that free AND null their
     /// argument (e.g. curl `Curl_safefree`).
     function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    /// Cross-file function summaries from prescan. When a callee's `frees_params`
+    /// is known from real analysis of its body, that's authoritative over the
+    /// "does the function's NAME contain FREE" heuristic below — the name
+    /// heuristic false-positives on functions like hostap's `plink_free_count`
+    /// (a pure counter, no free at all) and misattributes multi-arg frees to
+    /// the wrong parameter (task 396).
+    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
 }
 
 impl Mem30C {
@@ -46,6 +54,7 @@ impl CertRule for Mem30C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
+        *self.function_summaries.borrow_mut() = context.function_summaries.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -90,7 +99,11 @@ impl CertRule for Mem30C {
         collect_union_typedef_names(node, source, &mut union_typedef_names);
 
         // Second pass: per-function analysis
-        let mut analyzer = MemoryAnalyzer::new(macro_null_params, union_typedef_names);
+        let mut analyzer = MemoryAnalyzer::new(
+            macro_null_params,
+            union_typedef_names,
+            self.function_summaries.borrow().clone(),
+        );
         analyzer.analyze_node(node, source, &mut violations);
 
         violations
@@ -1350,12 +1363,17 @@ struct MemoryAnalyzer {
     // poison `data->state` / other `data->*` fields (task 181). Repopulated per
     // function in `analyze_function`.
     union_typed_vars: HashSet<String>,
+    // Cross-file function summaries from prescan. When a callee's real
+    // `frees_params` is known, it overrides the name-based free heuristic
+    // below (task 396) — see `process_call_expression`.
+    function_summaries: HashMap<String, FunctionSummary>,
 }
 
 impl MemoryAnalyzer {
     fn new(
         macro_null_params: HashMap<String, Vec<usize>>,
         union_typedef_names: HashSet<String>,
+        function_summaries: HashMap<String, FunctionSummary>,
     ) -> Self {
         Self {
             freed_vars: HashSet::new(),
@@ -1369,6 +1387,7 @@ impl MemoryAnalyzer {
             macro_null_params,
             union_typedef_names,
             union_typed_vars: HashSet::new(),
+            function_summaries,
         }
     }
 
@@ -1382,6 +1401,7 @@ impl MemoryAnalyzer {
             let mut func_analyzer = MemoryAnalyzer::new(
                 self.macro_null_params.clone(),
                 self.union_typedef_names.clone(),
+                self.function_summaries.clone(),
             );
             func_analyzer.analyze_function(node, source, violations);
             return; // Don't recurse further - function handled completely
@@ -1970,6 +1990,29 @@ impl MemoryAnalyzer {
                     self.track_realloc_old_pointer(node, source);
                 }
                 _ => {
+                    // A cross-file FunctionSummary (real analysis of the callee's
+                    // body) is authoritative over the name-based heuristic below —
+                    // it fixes both false positives (e.g. hostap's
+                    // `plink_free_count`, a pure counter whose name happens to
+                    // contain "FREE") and misattribution (freeing the wrong
+                    // parameter of a multi-arg call like `ap_free_sta(hapd, sta)`,
+                    // task 396). Only fall back to the name heuristic when we have
+                    // no summary for this callee (library/system function, or no
+                    // -d cross-file scan).
+                    if let Some(summary) = self.function_summaries.get(function_name).cloned() {
+                        if !summary.frees_params.is_empty() {
+                            self.process_summary_free_call(
+                                node,
+                                source,
+                                &summary.frees_params,
+                                violations,
+                            );
+                        } else {
+                            self.check_function_args_for_freed(node, source, violations);
+                        }
+                        return;
+                    }
+
                     // Check for common free-related macros
                     let upper_name = function_name.to_uppercase();
                     if upper_name.contains("FREE")
@@ -2033,7 +2076,52 @@ impl MemoryAnalyzer {
         let Some(arg) = arg_nodes.last().copied() else {
             return;
         };
+        self.mark_arg_freed(node, arg, source, violations);
+    }
 
+    /// Mark the SPECIFIC parameter positions a cross-file `FunctionSummary`
+    /// determined this callee actually frees (task 396). Unlike
+    /// `process_free_call`'s "assume it's the last argument" heuristic —
+    /// needed when all we have is the callee's *name* — this is driven by
+    /// real analysis of the callee's body, so it correctly frees e.g. the
+    /// 2nd argument of `ap_free_sta(hapd, sta)` without the leading `hapd`
+    /// handle ever being touched.
+    fn process_summary_free_call(
+        &mut self,
+        node: &Node,
+        source: &str,
+        param_indices: &HashSet<usize>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let mut arg_nodes = Vec::new();
+        for i in 0..arguments.child_count() {
+            if let Some(arg) = arguments.child(i) {
+                if arg.kind() != "," && arg.kind() != "(" && arg.kind() != ")" {
+                    arg_nodes.push(arg);
+                }
+            }
+        }
+        for &idx in param_indices {
+            if let Some(&arg) = arg_nodes.get(idx) {
+                self.mark_arg_freed(node, arg, source, violations);
+            }
+        }
+    }
+
+    /// Shared "mark this argument's lvalue as freed" logic — double-free
+    /// check, union-member propagation, alias propagation — factored out of
+    /// `process_free_call` so `process_summary_free_call` can drive it with
+    /// summary-resolved argument positions instead of a name-based guess.
+    fn mark_arg_freed(
+        &mut self,
+        node: &Node,
+        arg: Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         // For pointer dereference expressions like free(*ptr),
         // the memory pointed to by *ptr is freed, not ptr itself.
         // Skip tracking for these complex patterns to avoid false positives.
