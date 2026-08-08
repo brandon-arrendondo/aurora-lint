@@ -2301,12 +2301,19 @@ impl MemoryAnalyzer {
                     // task 396). Only fall back to the name heuristic when we have
                     // no summary for this callee (library/system function, or no
                     // -d cross-file scan).
+                    //
+                    // Uses `unconditional_frees_params`, NOT the broader (MAY-free)
+                    // `frees_params`: a callee that only frees its argument on some
+                    // conditional path (e.g. an error branch) doesn't definitely
+                    // free it at every call site, and marking it as freed
+                    // unconditionally here caused cascading false UAF/double-free
+                    // reports at callers who took a different path (task 401).
                     if let Some(summary) = self.function_summaries.get(function_name).cloned() {
-                        if !summary.frees_params.is_empty() {
+                        if !summary.unconditional_frees_params.is_empty() {
                             self.process_summary_free_call(
                                 node,
                                 source,
-                                &summary.frees_params,
+                                &summary.unconditional_frees_params,
                                 violations,
                             );
                         } else {

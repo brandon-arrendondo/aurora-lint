@@ -13,7 +13,22 @@ use tree_sitter::Node;
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct FunctionSummary {
     /// Parameter indices that this function frees (e.g., free(param[0])).
+    /// This is a MAY-free fact: the free can be nested inside a conditional
+    /// (if/switch/loop/ternary), so it does not mean every call reaches it.
     pub frees_params: HashSet<usize>,
+    /// Parameter indices that this function UNCONDITIONALLY frees — the free
+    /// is not nested inside any conditional construct, so it executes
+    /// whenever the function itself is entered (modulo an early return
+    /// before it, which the AST-position check already accounts for since
+    /// it only asks "is this call inside a conditional", not "could an
+    /// earlier statement return first"). Subset of `frees_params`. This is
+    /// the MUST-free fact rules like MEM30-C need to safely mark an argument
+    /// as definitely freed after a call — trusting the MAY-free set for that
+    /// purpose caused cascading false UAF/double-free reports when a helper
+    /// only frees its argument on an error path a given caller didn't take
+    /// (task 401).
+    #[serde(default)]
+    pub unconditional_frees_params: HashSet<usize>,
     /// Whether this function can return NULL.
     pub can_return_null: bool,
     /// Whether this function returns dynamically allocated memory.
@@ -49,6 +64,13 @@ pub struct FunctionSummary {
     /// Used for transitive free propagation (MEM31-C).
     #[serde(default)]
     pub param_passthroughs: HashMap<usize, Vec<(String, usize)>>,
+    /// Subset of `param_passthroughs` whose forwarding CALL SITE is itself
+    /// unconditional (not nested inside an if/switch/loop/ternary). Used to
+    /// propagate `unconditional_frees_params` transitively — a passthrough
+    /// at a conditional call site can't make the caller's free
+    /// unconditional even if the callee's own free is (task 401).
+    #[serde(default)]
+    pub unconditional_param_passthroughs: HashMap<usize, Vec<(String, usize)>>,
     /// Struct field names freed directly off a parameter within this function's
     /// body, e.g. `free(param->name)` or `free((*param)->name)`. Maps
     /// param_idx → set of field names. Lets MEM31-C credit a custom
@@ -730,6 +752,81 @@ fn line_has_arrow_or_subscript_write(body_text: &str, param_name: &str) -> bool 
     false
 }
 
+/// True if `node` is unconditionally reached whenever `body` (the enclosing
+/// function's own compound_statement) is entered — i.e. no ancestor between
+/// `node` and `body` is a construct that might not execute (an `if`/`switch`
+/// arm, a loop body that could run zero times, a ternary branch, or a
+/// preprocessor conditional). Plain nested `{ }` scoping blocks are
+/// transparent (still unconditional). Used to distinguish a MUST-free from
+/// a merely-possible MAY-free (task 401).
+fn is_unconditionally_reached(node: &Node, body: &Node) -> bool {
+    let mut current = *node;
+    loop {
+        let Some(parent) = current.parent() else {
+            return true;
+        };
+        if parent.id() == body.id() {
+            return true;
+        }
+        if matches!(
+            parent.kind(),
+            "if_statement"
+                | "switch_statement"
+                | "case_statement"
+                | "conditional_expression"
+                | "for_statement"
+                | "while_statement"
+                | "do_statement"
+        ) || parent.kind().starts_with("preproc_if")
+        {
+            return false;
+        }
+        current = parent;
+    }
+}
+
+/// Credit `summary.frees_params` (MAY-free) and `summary.
+/// unconditional_frees_params` (MUST-free) for every `free(param)` call in
+/// `body` whose sole argument is exactly one of `params` by simple
+/// identifier — AST-based rather than the old text-substring scan so
+/// `is_unconditionally_reached` can be checked per call site (task 401).
+fn credit_frees_params(
+    body: &Node,
+    source: &str,
+    params: &[String],
+    summary: &mut FunctionSummary,
+) {
+    use lang_parsing_substrate::query;
+
+    for call in query::find_descendants_of_kind(*body, "call_expression") {
+        let Some(function) = call.child_by_field_name("function") else {
+            continue;
+        };
+        if function.utf8_text(source.as_bytes()).unwrap_or("") != "free" {
+            continue;
+        }
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let mut cursor = arguments.walk();
+        let real: Vec<Node> = arguments.named_children(&mut cursor).collect();
+        let [arg] = real.as_slice() else {
+            continue;
+        };
+        if arg.kind() != "identifier" {
+            continue;
+        }
+        let arg_name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+        let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) else {
+            continue;
+        };
+        summary.frees_params.insert(idx);
+        if is_unconditionally_reached(&call, body) {
+            summary.unconditional_frees_params.insert(idx);
+        }
+    }
+}
+
 fn analyze_param_usage(
     body: &Node,
     source: &str,
@@ -738,16 +835,11 @@ fn analyze_param_usage(
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     summary: &mut FunctionSummary,
 ) {
+    credit_frees_params(body, source, params, summary);
+
     for (idx, param_name) in params.iter().enumerate() {
         if param_name.is_empty() {
             continue;
-        }
-
-        // Check if parameter is freed
-        if body_text.contains(&format!("free({})", param_name))
-            || body_text.contains(&format!("free( {} )", param_name))
-        {
-            summary.frees_params.insert(idx);
         }
 
         // Check if parameter is closed as a file/descriptor/handle resource
@@ -801,7 +893,7 @@ fn analyze_param_usage(
     }
 
     // Detect param pass-through: when a parameter is forwarded to a callee
-    collect_param_passthroughs(body, source, params, summary);
+    collect_param_passthroughs(body, body, source, params, summary);
 
     // Detect direct field frees off a parameter: free(param->field) or
     // free((*param)->field) (the double-pointer-deref idiom used by
@@ -1212,9 +1304,14 @@ fn body_matches_alias_null_check(body_text: &str, param_name: &str) -> bool {
 }
 
 /// Detect param pass-through patterns: when a function parameter is directly
-/// forwarded as an argument to a callee. Used for transitive free propagation.
+/// forwarded as an argument to a callee. Used for transitive free
+/// propagation. `body` is the enclosing function's own compound_statement,
+/// threaded through unchanged across the recursion (distinct from `node`,
+/// the recursive traversal cursor) so `is_unconditionally_reached` can be
+/// checked against it at each call site (task 401).
 fn collect_param_passthroughs(
     node: &Node,
+    body: &Node,
     source: &str,
     params: &[String],
     summary: &mut FunctionSummary,
@@ -1228,6 +1325,7 @@ fn collect_param_passthroughs(
             // Skip free/realloc — already handled by frees_params
             if !callee_name.is_empty() && callee_name != "free" && callee_name != "realloc" {
                 if let Some(arguments) = node.child_by_field_name("arguments") {
+                    let unconditional = is_unconditionally_reached(node, body);
                     let mut callee_idx = 0usize;
                     for i in 0..arguments.child_count() {
                         if let Some(arg) = arguments.child(i) {
@@ -1243,6 +1341,13 @@ fn collect_param_passthroughs(
                                             .entry(param_idx)
                                             .or_default()
                                             .push((callee_name.clone(), callee_idx));
+                                        if unconditional {
+                                            summary
+                                                .unconditional_param_passthroughs
+                                                .entry(param_idx)
+                                                .or_default()
+                                                .push((callee_name.clone(), callee_idx));
+                                        }
                                     }
                                 }
                             }
@@ -1261,7 +1366,7 @@ fn collect_param_passthroughs(
             if is_real_nested_function_definition(&child, source) {
                 continue;
             }
-            collect_param_passthroughs(&child, source, params, summary);
+            collect_param_passthroughs(&child, body, source, params, summary);
         }
     }
 }
@@ -1287,6 +1392,39 @@ pub fn propagate_transitive_frees(summaries: &mut HashMap<String, FunctionSummar
                             && !summary.frees_params.contains(caller_idx)
                         {
                             summary.frees_params.insert(*caller_idx);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    // Same fixpoint, restricted to the MUST-free (unconditional) subset: a
+    // transitive free is only trustworthy for MEM30-C/MEM31-C's "mark as
+    // definitely freed" purposes when BOTH the callee's own free and the
+    // forwarding call site in each hop of the chain are unconditional
+    // (task 401) — otherwise a helper that only frees its argument on an
+    // error path gets treated as always freeing it at every call site.
+    for _pass in 0..10 {
+        let mut changed = false;
+        let unconditional_snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.unconditional_frees_params.clone()))
+            .collect();
+
+        for summary in summaries.values_mut() {
+            for (caller_idx, callees) in &summary.unconditional_param_passthroughs {
+                for (callee_name, callee_idx) in callees {
+                    if let Some(callee_frees) = unconditional_snapshot.get(callee_name) {
+                        if callee_frees.contains(callee_idx)
+                            && !summary.unconditional_frees_params.contains(caller_idx)
+                        {
+                            summary.unconditional_frees_params.insert(*caller_idx);
                             changed = true;
                         }
                     }

@@ -224,7 +224,19 @@ pub fn prescan_directories(
                 .extend(r.function_summaries.keys().cloned());
         }
 
-        // OR-merge taint/summary bits; first definition wins for all other fields
+        // OR-merge taint/summary bits and free/close detection facts; first
+        // definition wins for all other fields.
+        //
+        // Free/close facts are unioned (not "first wins") because a function
+        // like hostap's os_free() has multiple platform-variant bodies
+        // (os_unix.c / os_internal.c / os_none.c, ifdef-selected at build
+        // time) — sqc has no preprocessor, so it scans ALL of them under -d,
+        // and "first wins" would let an arbitrary parallel-processing-order
+        // pick of the WRONG variant (e.g. os_unix.c's debug-tracing body,
+        // which frees a locally-derived pointer rather than the parameter
+        // itself) silently blind every rule that consults frees_params for
+        // this function name across the entire codebase — a much larger
+        // regression than the false positive the union avoids (task 401).
         for (name, summary) in r.function_summaries {
             match function_summaries.get_mut(&name) {
                 Some(existing) => {
@@ -234,6 +246,32 @@ pub fn prescan_directories(
                     existing
                         .returns_from_callees
                         .extend(summary.returns_from_callees);
+                    existing.frees_params.extend(summary.frees_params);
+                    existing
+                        .unconditional_frees_params
+                        .extend(summary.unconditional_frees_params);
+                    existing.closes_params.extend(summary.closes_params);
+                    for (idx, fields) in summary.frees_param_fields {
+                        existing
+                            .frees_param_fields
+                            .entry(idx)
+                            .or_default()
+                            .extend(fields);
+                    }
+                    for (idx, callees) in summary.param_passthroughs {
+                        existing
+                            .param_passthroughs
+                            .entry(idx)
+                            .or_default()
+                            .extend(callees);
+                    }
+                    for (idx, callees) in summary.unconditional_param_passthroughs {
+                        existing
+                            .unconditional_param_passthroughs
+                            .entry(idx)
+                            .or_default()
+                            .extend(callees);
+                    }
                 }
                 None => {
                     function_summaries.insert(name, summary);
