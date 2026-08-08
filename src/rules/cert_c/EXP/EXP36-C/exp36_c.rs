@@ -1,13 +1,35 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use regex::Regex;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Exp36C;
+pub struct Exp36C {
+    /// Struct/typedef names known to be `__attribute__((packed))` (or the
+    /// project's packed-struct macro) across ALL scanned files, from
+    /// prescan (task 395). Needed because the struct's *definition* usually
+    /// lives in a header, not the file containing the cast being checked.
+    packed_structs: RefCell<HashSet<String>>,
+}
+
+impl Exp36C {
+    pub fn new() -> Self {
+        Self {
+            packed_structs: RefCell::new(HashSet::new()),
+        }
+    }
+}
+
+impl Default for Exp36C {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CertRule for Exp36C {
     fn rule_id(&self) -> &'static str {
@@ -30,6 +52,10 @@ impl CertRule for Exp36C {
         "EXP36-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.packed_structs.borrow_mut() = context.packed_structs.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         let macros = collect_function_macros(node, source);
@@ -41,7 +67,7 @@ impl CertRule for Exp36C {
             match descendant.kind() {
                 // Pattern 1: Direct casts - (int *)&c or (struct foo *)data
                 "cast_expression" => {
-                    self.check_cast_expression(&descendant, source, &mut violations);
+                    self.check_cast_expression(&descendant, node, source, &mut violations);
                 }
                 // Pattern 2: Init declarators with function calls returning void* from less-aligned types
                 "init_declarator" => {
@@ -54,7 +80,13 @@ impl CertRule for Exp36C {
                 // the macro body is opaque replacement-list text, not parsed
                 // expression nodes.
                 "call_expression" => {
-                    self.check_macro_cast_invocation(&descendant, &macros, source, &mut violations);
+                    self.check_macro_cast_invocation(
+                        &descendant,
+                        node,
+                        &macros,
+                        source,
+                        &mut violations,
+                    );
                 }
                 _ => {}
             }
@@ -69,6 +101,7 @@ impl Exp36C {
     fn check_cast_expression(
         &self,
         node: &Node,
+        root: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -82,7 +115,7 @@ impl Exp36C {
                 return;
             }
 
-            let target_alignment = self.get_type_alignment(target_type);
+            let target_alignment = self.effective_type_alignment(target_type, root, source);
 
             // Get the value being cast
             if let Some(value_node) = node.child_by_field_name("value") {
@@ -127,6 +160,7 @@ impl Exp36C {
     fn check_macro_cast_invocation(
         &self,
         node: &Node,
+        root: &Node,
         macros: &HashMap<String, FunctionMacro>,
         source: &str,
         violations: &mut Vec<RuleViolation>,
@@ -143,7 +177,7 @@ impl Exp36C {
         let Some((param_idx, target_type)) = self.macro_casts_param_to_pointer(macro_def) else {
             return;
         };
-        let target_alignment = self.get_type_alignment(&target_type);
+        let target_alignment = self.effective_type_alignment(&target_type, root, source);
         if target_alignment == 0 {
             return;
         }
@@ -519,6 +553,59 @@ impl Exp36C {
             }
             _ => "unknown *".to_string(),
         }
+    }
+
+    /// Alignment of `type_str`, adjusted for `__attribute__((packed))` /
+    /// `STRUCT_PACKED`-style struct definitions: a packed struct's actual
+    /// alignment is 1 regardless of its members, so a cast into it can never
+    /// be an alignment-*increasing* cast. Checks the struct's definition in
+    /// this file's own AST first (covers single-TU test fixtures), then
+    /// falls back to the cross-file `packed_structs` set gathered by
+    /// prescan (covers the common case where the struct is defined in a
+    /// header, not the file containing the cast).
+    fn effective_type_alignment(&self, type_str: &str, root: &Node, source: &str) -> usize {
+        let mut normalized = type_str.trim().trim_end_matches('*').trim();
+        loop {
+            let stripped = ["const ", "volatile "]
+                .iter()
+                .find_map(|q| normalized.strip_prefix(q));
+            match stripped {
+                Some(rest) => normalized = rest.trim(),
+                None => break,
+            }
+        }
+        if let Some(struct_name) = normalized.strip_prefix("struct ") {
+            let struct_name = struct_name.trim();
+            if let Some(def) = self.find_struct_definition(root, struct_name, source) {
+                if ast_utils::struct_specifier_is_packed(&def, source) {
+                    return 1;
+                }
+            } else if self.packed_structs.borrow().contains(struct_name) {
+                return 1;
+            }
+        }
+        self.get_type_alignment(type_str)
+    }
+
+    /// Find the (defining, i.e. has a body) `struct_specifier` for `name`
+    /// anywhere in the translation unit.
+    fn find_struct_definition<'a>(
+        &self,
+        root: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        for s in query::find_descendants_of_kind(*root, "struct_specifier") {
+            if s.child_by_field_name("body").is_none() {
+                continue;
+            }
+            if let Some(n) = s.child_by_field_name("name") {
+                if ast_utils::get_node_text(&n, source).trim() == name {
+                    return Some(s);
+                }
+            }
+        }
+        None
     }
 
     /// Get alignment requirements for a type

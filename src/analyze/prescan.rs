@@ -22,6 +22,9 @@ struct FilePrescanResult {
     macro_aliases: HashMap<String, String>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     struct_field_types: HashMap<String, HashMap<String, String>>,
+    packed_structs: HashSet<String>,
+    packed_struct_candidates: Vec<(String, String)>,
+    packed_macro_names: HashSet<String>,
     global_constants: HashMap<String, i64>,
     global_var_null_states: HashMap<String, NullState>,
     global_writers: HashMap<String, HashSet<String>>,
@@ -44,6 +47,9 @@ impl FilePrescanResult {
             macro_aliases: HashMap::new(),
             function_macros: HashMap::new(),
             struct_field_types: HashMap::new(),
+            packed_structs: HashSet::new(),
+            packed_struct_candidates: Vec::new(),
+            packed_macro_names: HashSet::new(),
             global_constants: HashMap::new(),
             global_var_null_states: HashMap::new(),
             global_writers: HashMap::new(),
@@ -106,6 +112,16 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         result.macro_aliases.extend(file_aliases);
 
         collect_struct_definitions(&root, &source, &mut result.struct_field_types);
+        collect_packed_structs(
+            &root,
+            &source,
+            &mut result.packed_structs,
+            &mut result.packed_struct_candidates,
+        );
+        crate::utility::cert_c::ast_utils::collect_packed_macro_names(
+            &source,
+            &mut result.packed_macro_names,
+        );
 
         collect_global_constants(&root, &source, &mut result.global_constants);
         collect_constant_return_functions(&root, &source, &mut result.global_constants);
@@ -182,6 +198,9 @@ pub fn prescan_directories(
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
         HashMap::new();
     let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut packed_structs: HashSet<String> = HashSet::new();
+    let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
+    let mut packed_macro_names: HashSet<String> = HashSet::new();
     let mut global_constants: HashMap<String, i64> = HashMap::new();
     let mut global_var_null_states: HashMap<String, NullState> = HashMap::new();
     let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
@@ -232,6 +251,9 @@ pub fn prescan_directories(
             function_macros.entry(name).or_insert(m);
         }
         struct_field_types.extend(r.struct_field_types);
+        packed_structs.extend(r.packed_structs);
+        packed_struct_candidates.extend(r.packed_struct_candidates);
+        packed_macro_names.extend(r.packed_macro_names);
         global_constants.extend(r.global_constants);
         global_var_null_states.extend(r.global_var_null_states);
 
@@ -306,6 +328,16 @@ pub fn prescan_directories(
     function_summary::propagate_transitive_closes(&mut function_summaries);
     function_summary::propagate_return_taint(&mut function_summaries);
 
+    // Resolve trailing-macro packed-struct candidates against the
+    // project-wide macro-name set now that every file has been scanned —
+    // the struct definition and the macro's #define commonly live in
+    // different headers (task 395).
+    for (struct_name, macro_name) in packed_struct_candidates {
+        if packed_macro_names.contains(&macro_name) {
+            packed_structs.insert(struct_name);
+        }
+    }
+
     if let Some(reporter) = progress {
         reporter.report_prescan_complete(known_functions.len());
     }
@@ -319,6 +351,7 @@ pub fn prescan_directories(
         macro_aliases,
         function_macros,
         struct_field_types,
+        packed_structs,
         global_constants,
         global_var_null_states,
         global_writers,
@@ -414,6 +447,21 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
 
     let mut struct_field_types = HashMap::new();
     collect_struct_definitions(root, source, &mut struct_field_types);
+    let mut packed_structs = HashSet::new();
+    let mut packed_struct_candidates = Vec::new();
+    collect_packed_structs(
+        root,
+        source,
+        &mut packed_structs,
+        &mut packed_struct_candidates,
+    );
+    let mut packed_macro_names = HashSet::new();
+    crate::utility::cert_c::ast_utils::collect_packed_macro_names(source, &mut packed_macro_names);
+    for (struct_name, macro_name) in packed_struct_candidates {
+        if packed_macro_names.contains(&macro_name) {
+            packed_structs.insert(struct_name);
+        }
+    }
 
     let mut file_statics: HashSet<String> = HashSet::new();
     collect_static_pointer_globals(root, source, &mut file_statics);
@@ -426,6 +474,7 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         macro_constants: macros,
         function_macros,
         struct_field_types,
+        packed_structs,
         global_writers,
         ..ProjectContext::default()
     }
@@ -3079,6 +3128,118 @@ fn collect_from_typedef(
     }
 }
 
+/// Walk `node` recording every struct (and typedef alias) definition's
+/// packed-attribute signal — mirrors `collect_struct_definitions`'
+/// traversal shape but only cares about packed-ness (task 395: EXP36-C
+/// needs this cross-file since the struct definition is usually in a
+/// header, not the file containing the cast).
+///
+/// `packed` receives names resolved directly from this file alone (a real
+/// `__attribute__((packed))`). `candidates` receives `(struct_name,
+/// macro_name)` pairs for the trailing-bare-identifier case (e.g. hostap's
+/// `STRUCT_PACKED`), since that macro's `#define` may live in a different
+/// file than the struct — the caller resolves these against a project-wide
+/// packed-macro-name set once all files have been scanned.
+pub(crate) fn collect_packed_structs(
+    node: &Node,
+    source: &str,
+    packed: &mut HashSet<String>,
+    candidates: &mut Vec<(String, String)>,
+) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "struct_specifier" => {
+                    record_packed_signal(&child, source, packed, candidates);
+                }
+                "type_definition" => {
+                    let mut struct_spec = None;
+                    let mut typedef_name = None;
+                    for j in 0..child.child_count() {
+                        if let Some(gc) = child.child(j) {
+                            if gc.kind() == "struct_specifier" {
+                                struct_spec = Some(gc);
+                            }
+                            if gc.kind() == "type_identifier" {
+                                typedef_name =
+                                    Some(gc.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                            }
+                        }
+                    }
+                    if let Some(spec) = struct_spec {
+                        let names: Vec<String> = spec
+                            .child_by_field_name("name")
+                            .map(|n| n.utf8_text(source.as_bytes()).unwrap_or("").to_string())
+                            .into_iter()
+                            .chain(typedef_name)
+                            .filter(|n| !n.is_empty())
+                            .collect();
+                        match crate::utility::cert_c::ast_utils::struct_specifier_packed_signal(
+                            &spec, source,
+                        ) {
+                            crate::utility::cert_c::ast_utils::PackedSignal::Direct => {
+                                packed.extend(names);
+                            }
+                            crate::utility::cert_c::ast_utils::PackedSignal::MacroCandidate(m) => {
+                                for n in names {
+                                    candidates.push((n, m.clone()));
+                                }
+                            }
+                            crate::utility::cert_c::ast_utils::PackedSignal::No => {}
+                        }
+                    }
+                }
+                "declaration" => {
+                    for j in 0..child.child_count() {
+                        if let Some(gc) = child.child(j) {
+                            if gc.kind() == "struct_specifier" {
+                                record_packed_signal(&gc, source, packed, candidates);
+                            }
+                        }
+                    }
+                }
+                kind if kind.starts_with("preproc_")
+                    || kind == "linkage_specification"
+                    || kind == "declaration_list" =>
+                {
+                    collect_packed_structs(&child, source, packed, candidates);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn record_packed_signal(
+    struct_specifier: &Node,
+    source: &str,
+    packed: &mut HashSet<String>,
+    candidates: &mut Vec<(String, String)>,
+) {
+    if struct_specifier.child_by_field_name("body").is_none() {
+        return;
+    }
+    let Some(name_node) = struct_specifier.child_by_field_name("name") else {
+        return;
+    };
+    let name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
+    if name.is_empty() {
+        return;
+    }
+    match crate::utility::cert_c::ast_utils::struct_specifier_packed_signal(
+        struct_specifier,
+        source,
+    ) {
+        crate::utility::cert_c::ast_utils::PackedSignal::Direct => {
+            packed.insert(name.to_string());
+        }
+        crate::utility::cert_c::ast_utils::PackedSignal::MacroCandidate(m) => {
+            candidates.push((name.to_string(), m));
+        }
+        crate::utility::cert_c::ast_utils::PackedSignal::No => {}
+    }
+}
+
 /// Extract field name → type text from a `field_declaration_list` node.
 ///
 /// Anonymous `struct`/`union` members inside the body have their inner fields
@@ -3230,6 +3391,9 @@ pub fn resolve_includes(
         }
     }
 
+    let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
+    let mut packed_macro_names: HashSet<String> = HashSet::new();
+
     // Process queue: resolve each header, parse it, and enqueue its transitive includes
     while let Some((include_path, source_dir)) = queue.pop() {
         if let Some(resolved) = resolve_header(&include_path, source_dir.as_deref(), include_paths)
@@ -3288,6 +3452,16 @@ pub fn resolve_includes(
 
                 // Collect struct field types from resolved headers
                 collect_struct_definitions(&root, &hsource, &mut context.struct_field_types);
+                collect_packed_structs(
+                    &root,
+                    &hsource,
+                    &mut context.packed_structs,
+                    &mut packed_struct_candidates,
+                );
+                crate::utility::cert_c::ast_utils::collect_packed_macro_names(
+                    &hsource,
+                    &mut packed_macro_names,
+                );
 
                 // Enqueue transitive includes from this header
                 let header_dir = resolved.parent().map(|p| p.to_path_buf());
@@ -3295,6 +3469,16 @@ pub fn resolve_includes(
                     queue.push((inc, header_dir.clone()));
                 }
             }
+        }
+    }
+
+    // Resolve trailing-macro packed-struct candidates against the
+    // macro names seen across ALL resolved headers (the macro's #define and
+    // the struct's definition may live in different headers, e.g. hostap's
+    // STRUCT_PACKED in utils/common.h vs. structs in common/ieee802_11_defs.h).
+    for (struct_name, macro_name) in packed_struct_candidates {
+        if packed_macro_names.contains(&macro_name) {
+            context.packed_structs.insert(struct_name);
         }
     }
 

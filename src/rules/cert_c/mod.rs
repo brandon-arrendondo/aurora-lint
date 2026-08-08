@@ -1014,7 +1014,7 @@ impl RuleRegistry {
         registry.register(Box::new(exp33_c::Exp33C::new()));
         registry.register(Box::new(exp34_c::Exp34C::new()));
         registry.register(Box::new(exp35_c::Exp35C));
-        registry.register(Box::new(exp36_c::Exp36C));
+        registry.register(Box::new(exp36_c::Exp36C::new()));
         registry.register(Box::new(exp10_c::Exp10C));
         registry.register(Box::new(exp11_c::Exp11C));
         registry.register(Box::new(exp12_c::Exp12C));

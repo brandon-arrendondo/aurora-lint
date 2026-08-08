@@ -714,6 +714,106 @@ pub fn resolve_field_expression_type(
         .cloned()
 }
 
+/// Result of inspecting a `struct_specifier` for packed-ness.
+pub enum PackedSignal {
+    /// Not packed (or no signal found).
+    No,
+    /// Directly `__attribute__((packed))` on the specifier — resolved
+    /// without needing any other file's context.
+    Direct,
+    /// A trailing bare identifier between the closing brace and the
+    /// terminating `;`/field name (e.g. `struct foo { ... } STRUCT_PACKED;`)
+    /// that *might* be a packed-attribute macro — its `#define` may live in
+    /// a different file (a header this one doesn't textually include in
+    /// sqc's no-preprocessor model), so the caller must resolve the name
+    /// against a project-wide macro-name set.
+    MacroCandidate(String),
+}
+
+/// Inspect `struct_specifier` (a struct *definition*, with a body) for a
+/// packed-attribute signal. Some C parsers have no preprocessor, so a
+/// trailing macro token like hostap's `STRUCT_PACKED` gets parsed as if it
+/// were a declarator/field name rather than an attribute — the caller
+/// resolves that candidate name against `#define`s collected project-wide
+/// (see `macro_expands_to_packed`), which keeps this codebase-independent
+/// rather than a hardcoded name heuristic.
+pub fn struct_specifier_packed_signal(s: &Node, source: &str) -> PackedSignal {
+    for attr in query::find_descendants_of_kind(*s, "attribute_specifier") {
+        if get_node_text(&attr, source).contains("packed") {
+            return PackedSignal::Direct;
+        }
+    }
+    let Some(parent) = s.parent() else {
+        return PackedSignal::No;
+    };
+    if !matches!(
+        parent.kind(),
+        "declaration" | "field_declaration" | "type_definition"
+    ) {
+        return PackedSignal::No;
+    }
+    let parent_text = get_node_text(&parent, source);
+    let struct_text = get_node_text(s, source);
+    let Some(tail) = parent_text.strip_prefix(struct_text) else {
+        return PackedSignal::No;
+    };
+    let Ok(ident_re) = regex::Regex::new(r"[A-Za-z_][A-Za-z0-9_]*") else {
+        return PackedSignal::No;
+    };
+    match ident_re.find(tail) {
+        Some(m) => PackedSignal::MacroCandidate(m.as_str().to_string()),
+        None => PackedSignal::No,
+    }
+}
+
+/// True if `struct_specifier` is packed, resolving any trailing-macro
+/// candidate against `#define`s in this SAME `source` text only. Used by
+/// the single-file/intra-file prescan path (test fixtures); the cross-file
+/// prescan path resolves `MacroCandidate`s against a project-wide macro-name
+/// set instead (see `analyze::prescan::collect_packed_structs`).
+pub fn struct_specifier_is_packed(s: &Node, source: &str) -> bool {
+    match struct_specifier_packed_signal(s, source) {
+        PackedSignal::Direct => true,
+        PackedSignal::MacroCandidate(name) => macro_expands_to_packed(&name, source),
+        PackedSignal::No => false,
+    }
+}
+
+/// True if `#define name ...` appears in `source` and its replacement text
+/// contains "packed" (e.g. `#define STRUCT_PACKED __attribute__
+/// ((packed))`).
+pub fn macro_expands_to_packed(name: &str, source: &str) -> bool {
+    let Ok(re) = regex::Regex::new(&format!(
+        r"(?m)^\s*#\s*define\s+{}\b.*$",
+        regex::escape(name)
+    )) else {
+        return false;
+    };
+    re.find(source)
+        .map(|m| m.as_str().contains("packed"))
+        .unwrap_or(false)
+}
+
+/// Collect every `#define NAME ...` object-macro name in `source` whose
+/// replacement text contains "packed" (e.g. hostap's `#define STRUCT_PACKED
+/// __attribute__ ((packed))`). Plain regex over raw text, not AST-based —
+/// deliberately independent of any single file's struct definitions so it
+/// can be merged project-wide and used to resolve `PackedSignal::MacroCandidate`s
+/// found in *other* files.
+pub fn collect_packed_macro_names(source: &str, out: &mut std::collections::HashSet<String>) {
+    let Ok(re) = regex::Regex::new(r"(?m)^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b.*$") else {
+        return;
+    };
+    for cap in re.captures_iter(source) {
+        let line = cap.get(0).map(|m| m.as_str()).unwrap_or("");
+        if line.contains("packed") {
+            if let Some(name) = cap.get(1) {
+                out.insert(name.as_str().to_string());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

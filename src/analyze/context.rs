@@ -28,6 +28,13 @@ pub struct ProjectContext {
     /// Struct field types: maps `struct_name -> field_name -> type_text`.
     /// Enables resolving types of `field_expression` nodes (e.g., `s->count` → "int").
     pub struct_field_types: HashMap<String, HashMap<String, String>>,
+    /// Names of struct (and typedef-aliased) types declared
+    /// `__attribute__((packed))` (directly or via a macro like
+    /// `STRUCT_PACKED` whose `#define` expands to packed) across all scanned
+    /// files, incl. headers. A packed struct's actual alignment is 1, so
+    /// EXP36-C must not treat a cast into it as alignment-increasing.
+    #[serde(default)]
+    pub packed_structs: HashSet<String>,
     /// Global constants: `[const] TYPE NAME = VALUE;` from across all scanned files.
     /// Used by init-state analysis for dead-branch elimination.
     #[serde(default)]
