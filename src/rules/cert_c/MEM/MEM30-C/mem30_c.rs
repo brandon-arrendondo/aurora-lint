@@ -1492,6 +1492,25 @@ impl MemoryAnalyzer {
                 then_state: BranchState,
                 then_returns: bool,
             },
+            /// `switch` statement whose condition has just been visited —
+            /// forks the pre-switch state and starts the first case arm
+            /// (task 398).
+            StartSwitchCases {
+                cases: Vec<Node<'a>>,
+            },
+            /// A `case`/`default` arm's own statements have just been
+            /// visited — record its exit state + whether it unconditionally
+            /// diverges (break/return/goto/continue), then either start the
+            /// next arm (from a FRESH copy of `pre_state`, unioned with this
+            /// arm's exit state if it fell through) or, if this was the last
+            /// arm, merge all non-diverging arms' states back onto the
+            /// analyzer.
+            SwitchCaseDone {
+                cases: Vec<Node<'a>>,
+                idx: usize,
+                pre_state: BranchState,
+                exit_states: Vec<(BranchState, bool)>,
+            },
         }
 
         fn push_children<'a>(stack: &mut Vec<Frame<'a>>, node: &Node<'a>, source: &str) {
@@ -1502,6 +1521,112 @@ impl MemoryAnalyzer {
                         continue;
                     }
                     stack.push(Frame::Visit(child));
+                }
+            }
+        }
+
+        /// The top-level `case_statement` children of a `switch` statement's
+        /// body, in source order.
+        fn collect_switch_cases<'a>(switch_node: &Node<'a>) -> Vec<Node<'a>> {
+            let mut cases = Vec::new();
+            if let Some(body) = switch_node.child_by_field_name("body") {
+                let mut cursor = body.walk();
+                for child in body.named_children(&mut cursor) {
+                    if child.kind() == "case_statement" {
+                        cases.push(child);
+                    }
+                }
+            }
+            cases
+        }
+
+        /// Handle a `Frame::StartSwitchCases` frame: fork the pre-switch
+        /// state and kick off the first arm (or do nothing for an empty
+        /// switch body).
+        fn handle_start_switch_cases<'a>(
+            analyzer: &mut MemoryAnalyzer,
+            stack: &mut Vec<Frame<'a>>,
+            source: &str,
+            cases: Vec<Node<'a>>,
+        ) {
+            if cases.is_empty() {
+                return;
+            }
+            let pre_state = BranchState::fork(analyzer);
+            push_switch_case(analyzer, stack, source, cases, 0, pre_state, Vec::new());
+        }
+
+        /// Handle a `Frame::SwitchCaseDone` frame: record the arm just
+        /// finished, then either start the next arm or, if this was the
+        /// last, merge every arm's contribution back onto the analyzer.
+        fn handle_switch_case_done<'a>(
+            analyzer: &mut MemoryAnalyzer,
+            stack: &mut Vec<Frame<'a>>,
+            source: &str,
+            cases: Vec<Node<'a>>,
+            idx: usize,
+            pre_state: BranchState,
+            mut exit_states: Vec<(BranchState, bool)>,
+        ) {
+            let exit_state = BranchState::fork(analyzer);
+            let diverges = analyzer.case_arm_diverges(&cases[idx]);
+            exit_states.push((exit_state, diverges));
+            let next_idx = idx + 1;
+            if next_idx < cases.len() {
+                push_switch_case(
+                    analyzer,
+                    stack,
+                    source,
+                    cases,
+                    next_idx,
+                    pre_state,
+                    exit_states,
+                );
+            } else {
+                MemoryAnalyzer::merge_switch_arms(analyzer, &pre_state, &cases, &exit_states);
+            }
+        }
+
+        /// Reset analyzer state to `pre_state`, union in the previous arm's
+        /// exit state if it fell through (fallthrough means the previous
+        /// arm's state is ALSO reachable at the top of this one, in addition
+        /// to a direct jump from the switch dispatch, which only ever sees
+        /// `pre_state`), then push this case's own statements (excluding the
+        /// `case`/`default` keyword and value) onto the stack followed by a
+        /// `SwitchCaseDone` continuation (task 398).
+        fn push_switch_case<'a>(
+            analyzer: &mut MemoryAnalyzer,
+            stack: &mut Vec<Frame<'a>>,
+            source: &str,
+            cases: Vec<Node<'a>>,
+            idx: usize,
+            pre_state: BranchState,
+            exit_states: Vec<(BranchState, bool)>,
+        ) {
+            pre_state.restore(analyzer);
+            if let Some((prev_state, prev_diverges)) = exit_states.last() {
+                if !prev_diverges {
+                    analyzer.union_state_from(prev_state);
+                }
+            }
+
+            let case_node = cases[idx];
+            stack.push(Frame::SwitchCaseDone {
+                cases: cases.clone(),
+                idx,
+                pre_state,
+                exit_states,
+            });
+            let value_id = case_node.child_by_field_name("value").map(|v| v.id());
+            let stmts: Vec<Node<'a>> = (0..case_node.child_count())
+                .filter_map(|i| case_node.child(i))
+                .filter(|c| {
+                    !matches!(c.kind(), "case" | "default" | ":") && Some(c.id()) != value_id
+                })
+                .collect();
+            for stmt in stmts.into_iter().rev() {
+                if !is_preproc_if_zero(&stmt, source) {
+                    stack.push(Frame::Visit(stmt));
                 }
             }
         }
@@ -1520,6 +1645,19 @@ impl MemoryAnalyzer {
                             alternative,
                         });
                         if let Some(condition) = condition {
+                            stack.push(Frame::Visit(condition));
+                        }
+                    }
+                    "switch_statement" => {
+                        // Each `case`/`default` arm is mutually exclusive with
+                        // its siblings — a free in one arm must not poison a
+                        // later arm's use of the same variable (task 398).
+                        // Collect the arms first, then visit the condition
+                        // before starting the first arm.
+                        stack.push(Frame::StartSwitchCases {
+                            cases: collect_switch_cases(&n),
+                        });
+                        if let Some(condition) = n.child_by_field_name("condition") {
                             stack.push(Frame::Visit(condition));
                         }
                     }
@@ -1656,8 +1794,111 @@ impl MemoryAnalyzer {
                         else_returns,
                     );
                 }
+                Frame::StartSwitchCases { cases } => {
+                    handle_start_switch_cases(self, &mut stack, source, cases);
+                }
+                Frame::SwitchCaseDone {
+                    cases,
+                    idx,
+                    pre_state,
+                    exit_states,
+                } => {
+                    handle_switch_case_done(
+                        self,
+                        &mut stack,
+                        source,
+                        cases,
+                        idx,
+                        pre_state,
+                        exit_states,
+                    );
+                }
             }
         }
+    }
+
+    /// Union `other`'s tracked sets into the analyzer's current state
+    /// (used for switch-arm fallthrough — the state carried in from the
+    /// previous arm is possible IN ADDITION TO whatever this arm's own
+    /// statements do, not instead of it).
+    fn union_state_from(&mut self, other: &BranchState) {
+        self.freed_vars.extend(other.freed_vars.iter().cloned());
+        self.nullified_vars
+            .extend(other.nullified_vars.iter().cloned());
+        self.realloc_invalidated
+            .extend(other.realloc_invalidated.iter().cloned());
+        self.realloc_updated
+            .extend(other.realloc_updated.iter().cloned());
+        for (k, v) in other.aliases.iter() {
+            self.aliases.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+
+    /// Merge every arm's exit state that actually reaches the code after the
+    /// `switch` back onto `analyzer`, mirroring `merge_if_branches`'
+    /// semantics generalized to N arms: union freed/nullified/
+    /// realloc-tracked sets across all such arms, except a variable
+    /// nullified in EVERY live arm is not considered freed. Liveness here is
+    /// `case_reaches_after_switch` (return/goto/continue truly skip past the
+    /// switch; a `break`, unlike in `case_arm_diverges`'s fallthrough sense,
+    /// does NOT — it's exactly how an arm reaches the code after the switch)
+    /// — using `case_arm_diverges` here instead was task 398's bug: it
+    /// treated a free-then-`break` arm as "unreachable after the switch"
+    /// and silently dropped the free from the merged state. If the switch
+    /// has no `default` arm, a value that matches none of the cases falls
+    /// through untouched, so `pre_state` itself is always one of the live
+    /// possibilities. If no arm reaches the code after the switch, it's
+    /// unreachable — keep `pre_state`, matching `merge_if_branches`' "both
+    /// branches return" case. `aliases` is left as whatever the
+    /// last-processed arm set it to, mirroring `merge_if_branches`'
+    /// documented aliases quirk.
+    fn merge_switch_arms(
+        analyzer: &mut Self,
+        pre_state: &BranchState,
+        cases: &[Node],
+        exit_states: &[(BranchState, bool)],
+    ) {
+        let has_default = cases
+            .iter()
+            .any(|c| c.child_by_field_name("value").is_none());
+
+        let mut live: Vec<&BranchState> = cases
+            .iter()
+            .zip(exit_states.iter())
+            .filter(|(case_node, _)| Self::case_reaches_after_switch(case_node))
+            .map(|(_, (s, _))| s)
+            .collect();
+        if !has_default {
+            live.push(pre_state);
+        }
+
+        if live.is_empty() {
+            pre_state.restore(analyzer);
+            return;
+        }
+
+        let mut freed_vars = HashSet::new();
+        let mut nullified_vars = HashSet::new();
+        let mut realloc_invalidated = HashSet::new();
+        let mut realloc_updated = HashSet::new();
+        for s in &live {
+            freed_vars.extend(s.freed_vars.iter().cloned());
+            nullified_vars.extend(s.nullified_vars.iter().cloned());
+            realloc_invalidated.extend(s.realloc_invalidated.iter().cloned());
+            realloc_updated.extend(s.realloc_updated.iter().cloned());
+        }
+        // A variable nullified in EVERY live arm was safely NULL-guarded
+        // everywhere it could have been freed — don't treat it as freed
+        // after the switch (mirrors merge_if_branches' both-branches check).
+        for var in pre_state.nullified_vars.iter() {
+            if live.iter().all(|s| s.nullified_vars.contains(var)) {
+                freed_vars.remove(var);
+            }
+        }
+        analyzer.freed_vars = freed_vars;
+        analyzer.nullified_vars = nullified_vars;
+        analyzer.realloc_invalidated = realloc_invalidated;
+        analyzer.realloc_updated = realloc_updated;
     }
 
     /// Merge post-then/post-else state back onto `analyzer` after an
@@ -1742,12 +1983,26 @@ impl MemoryAnalyzer {
     /// error branches free-then-`goto cleanup` / free-then-`break` (task 181
     /// pattern 2). The merge only recognized `return` before.
     fn unconditionally_diverges(&self, node: &Node) -> bool {
+        Self::control_flow_diverges(node, true)
+    }
+
+    /// Core of `unconditionally_diverges`, parameterized on whether a bare
+    /// `break_statement` counts as diverging. Two callers need different
+    /// answers to "does control fall through to the code right after this
+    /// construct": for an `if`-branch nested inside a `switch`/loop, `break`
+    /// jumps OUT of that enclosing construct, so it correctly counts as
+    /// diverging relative to the code after the `if` (this is
+    /// `unconditionally_diverges`'s existing, unchanged behavior). But for a
+    /// `switch` ARM itself, `break` is exactly how control reaches the code
+    /// after the *switch* — the opposite of diverging past it — while
+    /// `return`/`goto`/`continue` still skip past it entirely (task 398; see
+    /// `case_reaches_after_switch`).
+    fn control_flow_diverges(node: &Node, break_diverges: bool) -> bool {
         // Explicit work/result stacks instead of native recursion (task 295):
-        // a chain of else-less nested `if`s (each testing `unconditionally_
-        // diverges` on its own consequence) recurses once per nesting level
-        // here too, independent of `analyze_function_body`'s own conversion,
-        // so it needs the same treatment to stay stack-safe on deeply nested
-        // input.
+        // a chain of else-less nested `if`s (each testing this function on
+        // its own consequence) recurses once per nesting level here too,
+        // independent of `analyze_function_body`'s own conversion, so it
+        // needs the same treatment to stay stack-safe on deeply nested input.
         enum Frame<'a> {
             Eval(Node<'a>),
             /// No node to evaluate (e.g. an `if` with no `else`) — contributes
@@ -1790,9 +2045,11 @@ impl MemoryAnalyzer {
                 Frame::Eval(n) => match resolve(n) {
                     None => results.push(false),
                     Some(resolved) => match resolved.kind() {
-                        "return_statement" | "goto_statement" | "break_statement"
-                        | "continue_statement" => {
+                        "return_statement" | "goto_statement" | "continue_statement" => {
                             results.push(true);
+                        }
+                        "break_statement" => {
+                            results.push(break_diverges);
                         }
                         "if_statement" => {
                             // An if-statement unconditionally diverges only if
@@ -1813,6 +2070,51 @@ impl MemoryAnalyzer {
             }
         }
         results.pop().unwrap_or(false)
+    }
+
+    /// True if a `case`/`default` arm unconditionally diverges — i.e. it
+    /// doesn't fall through into the next arm — by checking whether its
+    /// LAST statement diverges (`break`/`return`/`goto`/`continue`, or an
+    /// `if` whose both branches do), same simplification level as
+    /// `unconditionally_diverges` itself. An arm with no statements at all
+    /// (a bare grouped `case` label, e.g. `case B:` immediately followed by
+    /// `case C:`) trivially falls through.
+    fn case_arm_diverges(&self, case_node: &Node) -> bool {
+        match Self::case_last_statement(case_node) {
+            Some(stmt) => Self::control_flow_diverges(&stmt, true),
+            None => false,
+        }
+    }
+
+    /// True if control can reach the code AFTER THE WHOLE `switch` from this
+    /// arm — the complement of "diverges past the switch". Unlike
+    /// `case_arm_diverges` (which asks "does this arm avoid falling through
+    /// to the NEXT arm", where `break` counts the same as `return`/`goto`/
+    /// `continue`), a `break` here is exactly how an arm normally reaches
+    /// the code after the switch, so it must NOT be treated the same as
+    /// `return`/`goto`/`continue` (which really do skip past it). Getting
+    /// this wrong made a free-then-break arm look "unreachable after the
+    /// switch" and silently drop the free from the merged post-switch state
+    /// (task 398).
+    fn case_reaches_after_switch(case_node: &Node) -> bool {
+        match Self::case_last_statement(case_node) {
+            Some(stmt) => !Self::control_flow_diverges(&stmt, false),
+            // No statements at all (a bare grouped case label, e.g. `case
+            // B:` immediately followed by `case C:`) always falls through
+            // to the next arm rather than reaching the code after the
+            // switch on its own — whatever that next arm (or the arm it
+            // eventually falls into) contributes is already counted there.
+            None => false,
+        }
+    }
+
+    /// The last real statement child of a `case`/`default` arm, excluding
+    /// the `case`/`default` keyword, `:`, and the case value expression.
+    fn case_last_statement<'a>(case_node: &Node<'a>) -> Option<Node<'a>> {
+        let value_id = case_node.child_by_field_name("value").map(|v| v.id());
+        (0..case_node.child_count())
+            .filter_map(|i| case_node.child(i))
+            .rfind(|c| !matches!(c.kind(), "case" | "default" | ":") && Some(c.id()) != value_id)
     }
 
     /// Detect if an if-statement's condition tests a realloc result variable.
