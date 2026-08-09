@@ -1933,6 +1933,11 @@ impl MemoryAnalyzer {
                 freed_vars.remove(var);
             }
         }
+        // A var carried into nullified_vars from an arm that never freed it
+        // (e.g. an untaken arm's stale pre-switch state) must not mask a
+        // real free hit from another arm — freed and nullified are mutually
+        // exclusive terminal states for the same var on the same path.
+        nullified_vars.retain(|var| !freed_vars.contains(var));
         analyzer.freed_vars = freed_vars;
         analyzer.nullified_vars = nullified_vars;
         analyzer.realloc_invalidated = realloc_invalidated;
@@ -1986,11 +1991,17 @@ impl MemoryAnalyzer {
             }
             analyzer.freed_vars = freed_vars;
 
-            // Union of nullified
+            // Union of nullified, minus anything that ends up freed above —
+            // freed and nullified are mutually exclusive terminal states for
+            // the same var on the same path, and a var nullified in only one
+            // branch (e.g. carried over from stale pre-if state) must not
+            // mask a real free hit from the other branch via is_freed()'s
+            // nullified-checked-first ordering.
             let mut nullified_vars = then_state.nullified_vars.clone();
             for var in else_state.nullified_vars.iter() {
                 nullified_vars.insert(var.clone());
             }
+            nullified_vars.retain(|var| !analyzer.freed_vars.contains(var));
             analyzer.nullified_vars = nullified_vars;
 
             // For realloc_invalidated: use union (if invalidated in either branch, could be invalid)
