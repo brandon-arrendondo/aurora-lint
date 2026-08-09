@@ -46,6 +46,7 @@
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Suppression System</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#design-intent-surface-don-t-silence">Design intent: surface, don’t silence</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#inline-comment-suppression">Inline Comment Suppression</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#external-suppression-file">External Suppression File</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#wildcard-suppression">Wildcard Suppression</a></li>
@@ -95,6 +96,22 @@
 <p>SqC supports suppressing false positives via inline source comments or an external
 TOML file. Each suppression includes a SHA-256 hash of the violation line, ensuring
 suppressions break automatically when the underlying code changes.</p>
+<section id="design-intent-surface-don-t-silence">
+<h2>Design intent: surface, don’t silence<a class="headerlink" href="#design-intent-surface-don-t-silence" title="Link to this heading"></a></h2>
+<p>SqC’s job is to correctly surface every violation of a rule as the rule is written
+– not to guess which violations a given team will care about. Whether a correctly
+detected finding is worth acting on, is a deliberate style choice, or applies to a
+particular codebase at all is a per-project judgment call, and this suppression
+system (plus per-project rule manifests, see <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a>) is where that
+judgment belongs – not inside the rule’s detection logic.</p>
+<p>Concretely: if a rule check is <em>correct</em> (every reported finding is a real instance
+of what the rule’s text describes) but <em>noisy</em> for a given project or produces more
+findings than expected after a detection improvement, the fix is a suppression
+entry or a manifest change, with a justification – not softening the rule so it
+stops finding things. A rule that under-reports to avoid noise is failing at its
+one job; a rule that over-reports on a project that doesn’t want it is a
+configuration problem, and configuration problems have a config-file answer.</p>
+</section>
 <section id="inline-comment-suppression">
 <h2>Inline Comment Suppression<a class="headerlink" href="#inline-comment-suppression" title="Link to this heading"></a></h2>
 <div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="c1">// Line-before style (most common):</span>
