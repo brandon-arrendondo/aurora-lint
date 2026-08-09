@@ -1513,15 +1513,52 @@ impl MemoryAnalyzer {
             },
         }
 
-        fn push_children<'a>(stack: &mut Vec<Frame<'a>>, node: &Node<'a>, source: &str) {
+        // `skip_ids` names argument nodes a just-processed call_expression
+        // already marked freed (task 400's `freed_arg_ids`) — the free's own
+        // target isn't a use of the pointer it just freed, so re-walking it
+        // as one would misreport "accessing freed memory" at the free
+        // call's own line. Empty for every non-call_expression caller.
+        // Separately, a `sizeof` operand is never evaluated in C (barring
+        // the rare VLA case), so it's never a real use of whatever it names
+        // either — skipped unconditionally.
+        fn push_children<'a>(
+            stack: &mut Vec<Frame<'a>>,
+            node: &Node<'a>,
+            source: &str,
+            skip_ids: &HashSet<usize>,
+        ) {
             let count = node.child_count();
             for i in (0..count).rev() {
-                if let Some(child) = node.child(i) {
-                    if is_preproc_if_zero(&child, source) {
-                        continue;
-                    }
-                    stack.push(Frame::Visit(child));
+                let Some(child) = node.child(i) else { continue };
+                if is_preproc_if_zero(&child, source) || child.kind() == "sizeof_expression" {
+                    continue;
                 }
+                if child.kind() == "argument_list" && !skip_ids.is_empty() {
+                    push_call_args(stack, &child, source, skip_ids);
+                    continue;
+                }
+                stack.push(Frame::Visit(child));
+            }
+        }
+
+        fn push_call_args<'a>(
+            stack: &mut Vec<Frame<'a>>,
+            args_node: &Node<'a>,
+            source: &str,
+            skip_ids: &HashSet<usize>,
+        ) {
+            let count = args_node.child_count();
+            for i in (0..count).rev() {
+                let Some(arg) = args_node.child(i) else {
+                    continue;
+                };
+                if is_preproc_if_zero(&arg, source)
+                    || skip_ids.contains(&arg.id())
+                    || arg.kind() == "sizeof_expression"
+                {
+                    continue;
+                }
+                stack.push(Frame::Visit(arg));
             }
         }
 
@@ -1631,6 +1668,7 @@ impl MemoryAnalyzer {
             }
         }
 
+        let no_skip: HashSet<usize> = HashSet::new();
         let mut stack: Vec<Frame> = vec![Frame::Visit(*node)];
         while let Some(frame) = stack.pop() {
             match frame {
@@ -1662,21 +1700,21 @@ impl MemoryAnalyzer {
                         }
                     }
                     "call_expression" => {
-                        self.process_call_expression(&n, source, violations);
-                        push_children(&mut stack, &n, source);
+                        let freed_arg_ids = self.process_call_expression(&n, source, violations);
+                        push_children(&mut stack, &n, source, &freed_arg_ids);
                     }
                     "assignment_expression" => {
                         self.process_assignment(&n, source, violations);
-                        push_children(&mut stack, &n, source);
+                        push_children(&mut stack, &n, source, &no_skip);
                     }
                     "init_declarator" => {
                         self.process_init_declarator(&n, source, violations);
-                        push_children(&mut stack, &n, source);
+                        push_children(&mut stack, &n, source, &no_skip);
                     }
                     "pointer_expression" => {
                         // Check for dereference of freed memory (*ptr)
                         self.check_pointer_dereference(&n, source, violations);
-                        push_children(&mut stack, &n, source);
+                        push_children(&mut stack, &n, source, &no_skip);
                     }
                     "subscript_expression" => {
                         // Check for array access on freed memory (arr[i]).
@@ -1688,25 +1726,25 @@ impl MemoryAnalyzer {
                     "binary_expression" => {
                         // Check for pointer arithmetic on freed memory (ptr + n)
                         self.check_binary_expression(&n, source, violations);
-                        push_children(&mut stack, &n, source);
+                        push_children(&mut stack, &n, source, &no_skip);
                     }
                     "return_statement" => {
                         // Check for returning freed memory
                         self.check_return_statement(&n, source, violations);
-                        push_children(&mut stack, &n, source);
+                        push_children(&mut stack, &n, source, &no_skip);
                     }
                     "for_statement" => {
                         // Check for dangerous loop free patterns
                         self.check_for_loop_pattern(&n, source, violations);
-                        push_children(&mut stack, &n, source);
+                        push_children(&mut stack, &n, source, &no_skip);
                     }
                     "field_expression" => {
                         // Check for field access on freed memory (ptr->field)
                         self.check_field_access(&n, source, violations);
-                        push_children(&mut stack, &n, source);
+                        push_children(&mut stack, &n, source, &no_skip);
                     }
                     _ => {
-                        push_children(&mut stack, &n, source);
+                        push_children(&mut stack, &n, source, &no_skip);
                     }
                 },
                 Frame::AfterCondition {
@@ -2270,26 +2308,32 @@ impl MemoryAnalyzer {
     }
 
     /// Process function calls - free(), malloc(), printf(), etc.
+    /// Returns the node ids of arguments this call just marked freed (task
+    /// 400) — the call site that passes a pointer to be freed must not be
+    /// re-walked as a "use" of that same pointer, or the free call's own
+    /// argument gets flagged as accessing freed memory at its own line.
     fn process_call_expression(
         &mut self,
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-    ) {
+    ) -> HashSet<usize> {
         if let Some(function_node) = node.child_by_field_name("function") {
             let function_name = get_node_text(&function_node, source);
 
             match function_name {
                 "free" => {
-                    self.process_free_call(node, source, violations);
+                    return self.process_free_call(node, source, violations);
                 }
                 "malloc" | "calloc" => {
                     // Allocation will be tracked via assignment
+                    return HashSet::new();
                 }
                 "realloc" => {
                     // For realloc, the original pointer may become invalid
                     // Track the old pointer as invalidated in case it's used
                     self.track_realloc_old_pointer(node, source);
+                    return HashSet::new();
                 }
                 _ => {
                     // A cross-file FunctionSummary (real analysis of the callee's
@@ -2310,7 +2354,7 @@ impl MemoryAnalyzer {
                     // reports at callers who took a different path (task 401).
                     if let Some(summary) = self.function_summaries.get(function_name).cloned() {
                         if !summary.unconditional_frees_params.is_empty() {
-                            self.process_summary_free_call(
+                            return self.process_summary_free_call(
                                 node,
                                 source,
                                 &summary.unconditional_frees_params,
@@ -2319,7 +2363,7 @@ impl MemoryAnalyzer {
                         } else {
                             self.check_function_args_for_freed(node, source, violations);
                         }
-                        return;
+                        return HashSet::new();
                     }
 
                     // Check for common free-related macros
@@ -2331,7 +2375,7 @@ impl MemoryAnalyzer {
                         || upper_name == "DELETE"
                     {
                         // Treat as free() call
-                        self.process_free_call(node, source, violations);
+                        let freed_arg_ids = self.process_free_call(node, source, violations);
                         // "Safe free" macros (curl Curl_safefree, mosquitto
                         // mosquitto_FREE, …) also set the argument to NULL inside
                         // the macro body — invisible to us without expansion. If
@@ -2341,6 +2385,7 @@ impl MemoryAnalyzer {
                         if let Some(indices) = self.macro_null_params.get(function_name).cloned() {
                             self.clear_freed_for_nulled_args(node, source, &indices);
                         }
+                        return freed_arg_ids;
                     } else if upper_name.contains("REALLOC") {
                         // Treat as realloc() call - track old pointer as invalidated
                         // Don't check args for freed - realloc expects a possibly-allocated pointer
@@ -2352,6 +2397,7 @@ impl MemoryAnalyzer {
                 }
             }
         }
+        HashSet::new()
     }
 
     /// Process free() call - mark variable as freed
@@ -2360,9 +2406,9 @@ impl MemoryAnalyzer {
         node: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-    ) {
+    ) -> HashSet<usize> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
-            return;
+            return HashSet::new();
         };
 
         // Collect the real (non-punctuation) argument nodes.
@@ -2383,9 +2429,11 @@ impl MemoryAnalyzer {
         // every argument as freed was the dominant MEM30-C false-positive source on
         // real-world C (the live db handle was flagged as use-after-free / double-free).
         let Some(arg) = arg_nodes.last().copied() else {
-            return;
+            return HashSet::new();
         };
-        self.mark_arg_freed(node, arg, source, violations);
+        self.mark_arg_freed(node, arg, source, violations)
+            .into_iter()
+            .collect()
     }
 
     /// Mark the SPECIFIC parameter positions a cross-file `FunctionSummary`
@@ -2401,9 +2449,9 @@ impl MemoryAnalyzer {
         source: &str,
         param_indices: &HashSet<usize>,
         violations: &mut Vec<RuleViolation>,
-    ) {
+    ) -> HashSet<usize> {
         let Some(arguments) = node.child_by_field_name("arguments") else {
-            return;
+            return HashSet::new();
         };
         let mut arg_nodes = Vec::new();
         for i in 0..arguments.child_count() {
@@ -2413,11 +2461,15 @@ impl MemoryAnalyzer {
                 }
             }
         }
+        let mut freed_arg_ids = HashSet::new();
         for &idx in param_indices {
             if let Some(&arg) = arg_nodes.get(idx) {
-                self.mark_arg_freed(node, arg, source, violations);
+                if let Some(id) = self.mark_arg_freed(node, arg, source, violations) {
+                    freed_arg_ids.insert(id);
+                }
             }
         }
+        freed_arg_ids
     }
 
     /// Shared "mark this argument's lvalue as freed" logic — double-free
@@ -2430,13 +2482,13 @@ impl MemoryAnalyzer {
         arg: Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
-    ) {
+    ) -> Option<usize> {
         // For pointer dereference expressions like free(*ptr),
         // the memory pointed to by *ptr is freed, not ptr itself.
         // Skip tracking for these complex patterns to avoid false positives.
         if arg.kind() == "pointer_expression" {
             // We're freeing *ptr, not ptr. Skip tracking.
-            return;
+            return None;
         }
 
         // For subscript expressions like free(arr[i]),
@@ -2444,7 +2496,7 @@ impl MemoryAnalyzer {
         // Skip tracking to avoid false positives.
         if arg.kind() == "subscript_expression" {
             // We're freeing arr[i], not arr. Skip tracking.
-            return;
+            return None;
         }
 
         // For cast expressions like free((type)ptr), extract the inner value
@@ -2465,11 +2517,9 @@ impl MemoryAnalyzer {
         // `&x`/`*x`, which `lvalue_of` would otherwise happily unwrap) is
         // skipped to avoid false positives, matching the original behavior.
         if actual_arg.kind() != "identifier" && actual_arg.kind() != "field_expression" {
-            return;
+            return None;
         }
-        let Some(lv) = lvalue_of(&actual_arg, source) else {
-            return;
-        };
+        let lv = lvalue_of(&actual_arg, source)?;
         // For union support: also track the base variable — when
         // free(u.member1) is called, u.member2 also becomes invalid.
         let base_var = lv.is_field().then(|| lv.root_var().to_string());
@@ -2549,6 +2599,12 @@ impl MemoryAnalyzer {
         for alias in aliases_to_free {
             self.freed_vars.insert(alias);
         }
+
+        // Report this argument's node id so callers can skip re-walking it
+        // as a "use" of the pointer it just marked freed — the call site
+        // that passes a pointer to be freed isn't itself a use-after-free
+        // (task 400).
+        Some(arg.id())
     }
 
     /// For a "safe free" macro call (frees AND nulls its argument), clear the
