@@ -580,11 +580,26 @@ detection contribute 0 TP.}
 
 \Cref{tab:perfect-cwes} lists the 48 CWEs with 100\% precision.  These
 represent vulnerability classes where SqC produces zero false
-positives---every reported violation is a true defect.  Notably,
-CWE-190 (integer overflow) now joins this list: the opt-in
-provenance-gated rewrite of the INT rules
+positives on Juliet---every reported violation is a true defect on
+this benchmark.  Notably, CWE-190 (integer overflow) now joins this
+list: the opt-in provenance-gated rewrite of the INT rules
 (\cref{sec:provenance-frontier}) eliminated its remaining Juliet false
 positives as a side effect of the real-world-motivated redesign.
+
+A 100\% Juliet precision figure is a claim about the synthetic
+benchmark only, not a guarantee that generalizes to real-world code.
+CWE-690 is the clearest cautionary case: 100\% on Juliet
+(\cref{tab:perfect-cwes}) but 0.66\% on the adjudicated real-world
+oracle (\cref{sec:realworld-results}). CWE-78 (ENV33-C, ENV03-C,
+STR02-C) has not received the same breadth of real-world auditing---only
+12 labeled findings, all from raylib---but even that thin sample is
+inconsistent across the three contributing rules: ENV33-C is 4/4 TP,
+while ENV03-C and STR02-C are 0/4 TP (all FP). We report the Juliet
+number as measured and do not claim it generalizes; readers should
+weight per-CWE 100\% figures by the corresponding real-world evidence
+in \cref{sec:realworld-results} where available, and treat CWEs
+without that evidence (like CWE-78) as unvalidated rather than
+confirmed.
 
 \begin{table}[t]
 \centering
@@ -666,7 +681,17 @@ v0.4.22: the opt-in provenance-gated INT rewrite
 tuning pushed the rate to 83.2\% by v0.4.46, after which it plateaued
 --- v0.4.116 sits at 83.8\%, within 0.6 points of the v0.4.46 figure
 despite dozens of intervening releases, consistent with the
-diminishing-returns pattern of \cref{sec:fp-reduction}.
+diminishing-returns pattern of \cref{sec:fp-reduction}. The plateau
+continues through v0.4.175 (85.5\%): a soundness fix to MEM30-C's
+branch-merge logic (a stale-nullified-state bug that had been
+silently masking real use-after-free/double-free hits since before
+v0.4.116, unrelated to any FP-reduction effort) recovered
+CWE-416's TP rate from 86.7\% to 91.3\% and CWE-415's from 58.6\% to
+62.8\% at zero added false positives, but because both CWEs are a
+small share of the full 79-CWE suite, the aggregate move is only
++0.1 points (85.4\%$\to$85.5\%) --- a reminder that a real,
+zero-cost correctness fix can be nearly invisible in an aggregate
+rate dominated by high-volume CWEs.
 
 \begin{figure}[t]
 \centering
@@ -678,7 +703,7 @@ diminishing-returns pattern of \cref{sec:fp-reduction}.
     ylabel={TP Rate (\%)},
     ymin=40, ymax=90,
     xtick=data,
-    xticklabels={v0.2.1, v0.2.7, v0.2.23, v0.3.20, v0.3.37, v0.3.53, v0.3.75, v0.3.84, v0.3.99, v0.3.119, v0.4.5, v0.4.9, v0.4.22, v0.4.38, v0.4.46, v0.4.116},
+    xticklabels={v0.2.1, v0.2.7, v0.2.23, v0.3.20, v0.3.37, v0.3.53, v0.3.75, v0.3.84, v0.3.99, v0.3.119, v0.4.5, v0.4.9, v0.4.22, v0.4.38, v0.4.46, v0.4.116, v0.4.175},
     xticklabel style={rotate=45, anchor=east, font=\footnotesize},
     ylabel style={font=\footnotesize},
     xlabel style={font=\footnotesize},
@@ -690,15 +715,19 @@ diminishing-returns pattern of \cref{sec:fp-reduction}.
     grid style={dashed, gray!30},
 ]
 \addplot[color=blue, mark=*, thick] coordinates {
-    (1, 41.1) (2, 44.5) (3, 44.6) (4, 45.8) (5, 48.4) (6, 52.0) (7, 56.3) (8, 60.2) (9, 63.6) (10, 67.5) (11, 69.4) (12, 70.4) (13, 72.7) (14, 80.0) (15, 83.2) (16, 83.8)
+    (1, 41.1) (2, 44.5) (3, 44.6) (4, 45.8) (5, 48.4) (6, 52.0) (7, 56.3) (8, 60.2) (9, 63.6) (10, 67.5) (11, 69.4) (12, 70.4) (13, 72.7) (14, 80.0) (15, 83.2) (16, 83.8) (17, 85.5)
 };
 \end{axis}
 \end{tikzpicture}
 \caption{TP rate progression from baseline (v0.2.1) through current
-(v0.4.116).  The gap between v0.2.23 and v0.3.20 reflects the switch
+(v0.4.175).  The gap between v0.2.23 and v0.3.20 reflects the switch
 from full-suite to fast-mode benchmarking.  The rate plateaus after
 v0.4.46 despite continued FP-reduction work, reflecting the
-diminishing-returns dynamic of \cref{sec:fp-reduction}.}
+diminishing-returns dynamic of \cref{sec:fp-reduction}.  The v0.4.175
+point reflects a MEM30-C soundness fix that recovered CWE-416/415 TP
+rate by 4--5 points each at zero added FP, but moves the aggregate
+rate by only +0.1 points since both CWEs are a small share of the
+79-CWE suite.}
 \label{fig:tp-rate-progression}
 \end{figure}
 
@@ -926,8 +955,14 @@ fundamental tradeoff between coverage and precision that different
 users will weight differently, and the adjudicated oracle
 (\cref{sec:limitations}) quantifies its cost: even after a
 22$\times$ volume reduction, EXP34-C's measured precision across the
-audited projects is 0.9\% (16 TP / 1{,}740 labeled), so most remaining
-EXP34-C findings on real-world code are still false positives.
+six audited projects (curl, hostap, lua, mosquitto, raylib, sqlite) is
+0.66\% (15 TP / 2{,}264 labeled), so the overwhelming majority of
+EXP34-C findings on real-world code are still false positives ---
+starkly at odds with CWE-690's 100\% precision on Juliet
+(\cref{tab:perfect-cwes}); EXP34-C also covers CWE-476, so its own
+Juliet-wide FP rate is a more modest 13\% (\cref{tab:top-rules}), but
+even that headline number does not survive contact with real-world
+code.
 
 \subsection{A Defect Class Juliet Cannot Surface}
 \label{sec:juliet-blindspot}
