@@ -64,8 +64,6 @@ impl CertRule for Dcl39C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Track structure variables and their initialization status
-        let mut struct_vars: HashMap<String, StructVarInfo> = HashMap::new();
         let mut safe_struct_types: HashSet<String> = HashSet::new();
 
         // Find packed structs and structs with explicit padding
@@ -73,14 +71,46 @@ impl CertRule for Dcl39C {
         // assignments can leak data through padding bits
         self.find_safe_struct_types(node, source, &mut safe_struct_types);
 
-        // Second pass: find structure declarations and trust boundary calls
-        self.analyze_structures(
-            node,
-            source,
-            &mut struct_vars,
-            &safe_struct_types,
-            &mut violations,
-        );
+        // File-scope struct variable declarations (direct children of the
+        // translation unit) are genuinely shared across every function, so
+        // it's correct to seed every function's scope with them.
+        let mut global_struct_vars: HashMap<String, StructVarInfo> = HashMap::new();
+        self.collect_top_level_struct_vars(node, source, &mut global_struct_vars);
+
+        // Each function gets its own scope: a local struct variable declared
+        // inside one function is a *different* object than a same-named
+        // local (or parameter) declared inside another function. Without
+        // this, struct_vars keyed only on variable name would let a
+        // struct declared in one function "leak" its type into an
+        // unrelated same-named variable (even a non-struct one) checked in
+        // a completely different function. Mirrors EXP39-C's per-function
+        // reset pattern.
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+
+        if functions.is_empty() {
+            // No functions at all - fall back to treating the whole
+            // translation unit as a single scope, matching pre-fix behavior
+            // for this edge case.
+            let mut struct_vars = global_struct_vars.clone();
+            self.analyze_structures(
+                node,
+                source,
+                &mut struct_vars,
+                &safe_struct_types,
+                &mut violations,
+            );
+        } else {
+            for func in functions {
+                let mut struct_vars = global_struct_vars.clone();
+                self.analyze_structures(
+                    &func,
+                    source,
+                    &mut struct_vars,
+                    &safe_struct_types,
+                    &mut violations,
+                );
+            }
+        }
 
         violations
     }
@@ -212,6 +242,36 @@ impl Dcl39C {
             }
         }
         false
+    }
+
+    /// Collect struct variable declarations that are direct children of the
+    /// translation unit (i.e. file scope, not inside any function body).
+    /// These are shared across every function, unlike function-local
+    /// declarations which must stay scoped per-function (see `check`).
+    fn collect_top_level_struct_vars(
+        &self,
+        node: &Node,
+        source: &str,
+        struct_vars: &mut HashMap<String, StructVarInfo>,
+    ) {
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "declaration" {
+                    if let Some((var_name, struct_type)) =
+                        self.extract_struct_declaration(&child, source)
+                    {
+                        struct_vars.insert(
+                            var_name.clone(),
+                            StructVarInfo {
+                                var_name,
+                                struct_type,
+                                is_zeroed: false,
+                            },
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Analyze structures for trust boundary violations
