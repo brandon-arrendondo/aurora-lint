@@ -384,8 +384,23 @@ impl Fio47C {
         }
     }
 
-    /// Get expected type category for a format specifier
-    fn get_expected_type(&self, specifier: char) -> TypeCategory {
+    /// Get expected type category for a format specifier.
+    ///
+    /// `is_scanf` distinguishes scanf-family calls (where every conversion
+    /// writes through a pointer argument, e.g. `sscanf(s, "%d", &var)`)
+    /// from printf-family calls (where numeric/char conversions take the
+    /// value by value, e.g. `printf("%d", var)`).
+    fn get_expected_type(&self, specifier: char, is_scanf: bool) -> TypeCategory {
+        if is_scanf {
+            return match specifier {
+                // Every scanf-family conversion (including %s, %[, %n) writes
+                // through a pointer argument.
+                'd' | 'i' | 'o' | 'u' | 'x' | 'X' | 'c' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G'
+                | 'a' | 'A' | 's' | 'p' | 'n' | '[' => TypeCategory::Pointer,
+                _ => TypeCategory::Unknown,
+            };
+        }
+
         match specifier {
             'd' | 'i' | 'o' | 'u' | 'x' | 'X' | 'c' => TypeCategory::Integer,
             'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A' => TypeCategory::Float,
@@ -758,9 +773,10 @@ impl Fio47C {
             // Check argument types against format specifiers
             let specifiers = self.extract_format_specifiers(format_string);
             let data_args = self.get_data_arguments(call_node, function_name);
+            let is_scanf = self.is_scanf_family(function_name);
 
             for (i, (specifier, arg)) in specifiers.iter().zip(data_args.iter()).enumerate() {
-                let expected_type = self.get_expected_type(*specifier);
+                let expected_type = self.get_expected_type(*specifier, is_scanf);
                 let actual_type = self.infer_expression_type(arg, source, var_types);
 
                 // Only flag clear mismatches (not Unknown types)
