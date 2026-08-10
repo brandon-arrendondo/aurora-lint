@@ -208,6 +208,27 @@ impl Exp30C {
             return;
         }
 
+        // For binary expressions, `&&` and `||` are sequence points (C11
+        // 6.5.13, 6.5.14): the right operand is only evaluated after the
+        // left, with a sequence point in between. So code like
+        // `!(msg = f()) || g(msg)` is well-defined C -- a modification in
+        // the left operand may safely be read in the right operand.
+        // Conflicts *within* a single operand (e.g. a nested binary_expression,
+        // assignment_expression, or call_expression on one side) are still
+        // caught -- those nodes are visited independently by the descendant
+        // walk in `check()`, so no manual recursion is needed here. We only
+        // need to avoid flagging the whole `&&`/`||` subtree as one unit.
+        // Genuinely unsequenced operators (+, -, *, /, bitwise, relational,
+        // etc.) keep the existing whole-subtree check below.
+        if node.kind() == "binary_expression" {
+            if let Some(op) = node.child_by_field_name("operator") {
+                let op_text = ast_utils::get_node_text(&op, source);
+                if op_text == "&&" || op_text == "||" {
+                    return;
+                }
+            }
+        }
+
         let modified_vars = self.find_modifications(node, source);
         let read_vars = self.find_variable_reads(node, source);
 
