@@ -70,7 +70,38 @@ impl CertRule for Str32C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Track potentially non-null-terminated arrays
+        // Each function gets its own scope: a local array (e.g. `buf`)
+        // declared inside one function is a *different* object than a
+        // same-named local declared inside another function. Tracking
+        // `unsafe_arrays`/`array_locations` across the whole translation
+        // unit let an explicit null-termination write in one function
+        // incorrectly clear the "unsafe" flag for an unrelated same-named
+        // array in a different function (false negative). Scope the
+        // three-pass analysis per `function_definition`, mirroring the
+        // per-function reset pattern used by EXP39-C/FIO42-C.
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+
+        if functions.is_empty() {
+            // No functions at all (e.g. a header-only or declarations-only
+            // snippet) - fall back to treating the whole translation unit
+            // as a single scope.
+            self.check_scope(node, source, &mut violations);
+        } else {
+            for func in functions {
+                self.check_scope(&func, source, &mut violations);
+            }
+        }
+
+        violations
+    }
+}
+
+impl Str32C {
+    /// Runs the three-pass unsafe-array analysis over a single scope
+    /// (normally one function body). Tracking state is local to this call
+    /// so same-named arrays in different scopes never interact.
+    fn check_scope(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        // Track potentially non-null-terminated arrays, scoped to this node.
         let mut unsafe_arrays: HashSet<String> = HashSet::new();
         let mut array_locations: HashMap<String, (usize, usize)> = HashMap::new();
 
@@ -81,19 +112,9 @@ impl CertRule for Str32C {
         self.find_explicit_null_termination(node, source, &mut unsafe_arrays, &array_locations);
 
         // Pass 3: Find uses of these arrays with string functions
-        self.check_unsafe_usage(
-            node,
-            source,
-            &unsafe_arrays,
-            &array_locations,
-            &mut violations,
-        );
-
-        violations
+        self.check_unsafe_usage(node, source, &unsafe_arrays, &array_locations, violations);
     }
-}
 
-impl Str32C {
     fn find_unsafe_arrays(
         &self,
         node: &Node,
