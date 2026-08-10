@@ -344,12 +344,33 @@ impl Fio50C {
         }
     }
 
-    /// Recursively traverse AST
+    /// Traverse the AST and run alternation-violation detection once per
+    /// function scope. Each `function_definition` gets its own fresh
+    /// `file_operations` map, so a same-named stream variable in two
+    /// different functions is never treated as a single merged sequence.
+    ///
+    /// `find_descendants_of_kind` includes the root node itself when it
+    /// matches, so previously matching both "function_definition" and
+    /// "translation_unit" against a translation_unit root caused
+    /// `analyze_scope` to *also* run once over the whole file as a single
+    /// merged scope (in addition to the per-function scopes), producing
+    /// cross-function false alternation findings. Mirrors the per-function
+    /// scoping fix already applied to EXP39-C and ARR30-C.
     fn traverse(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        for n in
-            query::find_descendants_of_kinds(*node, &["function_definition", "translation_unit"])
-        {
-            self.analyze_scope(&n, source, violations);
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+
+        if functions.is_empty() {
+            // No function definitions at all (e.g. a declarations-only
+            // snippet). There is no genuine file-scope-only case for stream
+            // I/O calls (all of fread/fwrite/fprintf/etc. require a function
+            // body to call from), so fall back to treating the whole
+            // translation unit as a single scope purely so a bare/incomplete
+            // fixture still gets analyzed rather than silently skipped.
+            self.analyze_scope(node, source, violations);
+        } else {
+            for func in &functions {
+                self.analyze_scope(func, source, violations);
+            }
         }
     }
 }
