@@ -31,10 +31,33 @@ impl CertRule for Fio13C {
     fn check(&self, root: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Track ungetc calls per FILE pointer
+        // Each function gets its own fresh tracking map: a stream variable
+        // named "fp" in one function is a different object than a same-named
+        // "fp" in another function, so ungetc/read timelines must never be
+        // merged across function boundaries (mirrors EXP39-C's per-function
+        // scoping fix for the same class of bug).
+        let functions = query::find_descendants_of_kind(*root, "function_definition");
+
+        if functions.is_empty() {
+            // No functions at all (e.g. a declarations-only snippet) - fall
+            // back to treating the whole translation unit as a single scope.
+            self.check_scope(root, source, &mut violations);
+        } else {
+            for func in functions {
+                self.check_scope(&func, source, &mut violations);
+            }
+        }
+
+        violations
+    }
+}
+
+impl Fio13C {
+    fn check_scope(&self, scope_node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        // Track ungetc calls per FILE pointer, scoped to this function.
         let mut file_operations: HashMap<String, Vec<FileOp>> = HashMap::new();
 
-        self.collect_operations(root, source, &mut file_operations);
+        self.collect_operations(scope_node, source, &mut file_operations);
 
         // Check for successive ungetc calls
         for (file_ptr, ops) in file_operations {
@@ -68,12 +91,8 @@ impl CertRule for Fio13C {
                 }
             }
         }
-
-        violations
     }
-}
 
-impl Fio13C {
     fn collect_operations(
         &self,
         node: &Node,
