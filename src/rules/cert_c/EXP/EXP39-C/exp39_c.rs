@@ -80,39 +80,134 @@ impl CertRule for Exp39C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // First pass: collect variable type information and layout tracking
-        let mut var_types = HashMap::new();
-        let mut struct_field_ptrs = HashSet::new();
-        let mut union_vars = HashSet::new();
-        self.collect_var_types(
+        // Collect file-scope declarations first (variables/unions declared
+        // outside any function body). These are genuinely shared across
+        // every function that references them, so it is correct to merge
+        // their accesses into a single bucket.
+        let mut global_var_types = HashMap::new();
+        let mut global_struct_field_ptrs = HashSet::new();
+        let mut global_union_vars = HashSet::new();
+        self.collect_top_level_declarations(
             node,
             source,
-            &mut var_types,
-            &mut struct_field_ptrs,
-            &mut union_vars,
+            &mut global_var_types,
+            &mut global_struct_field_ptrs,
+            &mut global_union_vars,
         );
 
-        // Second pass: check for violations and track union member accesses
-        let mut union_member_accesses: HashMap<String, Vec<(String, usize, usize, bool)>> =
-            HashMap::new();
-        self.check_node(
-            node,
-            source,
-            &mut violations,
-            &var_types,
-            &struct_field_ptrs,
-            &union_vars,
-            &mut union_member_accesses,
-        );
+        // Each function gets its own scope: a local variable/union declared
+        // inside one function is a *different* object than a same-named
+        // local declared inside another function, so per-function state
+        // (var_types, struct_field_ptrs, union_vars, and critically
+        // union_member_accesses) must never be shared across functions.
+        // Mirrors the per-function reset pattern used by FIO42-C's
+        // FileResourceTracker.
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
 
-        // Post-pass: check union type punning (CWE-188)
-        self.check_union_type_punning(&union_vars, &union_member_accesses, &mut violations);
+        if functions.is_empty() {
+            // No functions at all (e.g. a header-only or declarations-only
+            // snippet) - fall back to treating the whole translation unit as
+            // a single scope, matching pre-fix behavior for this edge case.
+            self.check_scope(
+                node,
+                source,
+                &global_var_types,
+                &global_struct_field_ptrs,
+                &global_union_vars,
+                &mut violations,
+            );
+        } else {
+            for func in functions {
+                let mut var_types = global_var_types.clone();
+                let mut struct_field_ptrs = global_struct_field_ptrs.clone();
+                let mut union_vars = global_union_vars.clone();
+                self.collect_var_types(
+                    &func,
+                    source,
+                    &mut var_types,
+                    &mut struct_field_ptrs,
+                    &mut union_vars,
+                );
+
+                self.check_scope(
+                    &func,
+                    source,
+                    &var_types,
+                    &struct_field_ptrs,
+                    &union_vars,
+                    &mut violations,
+                );
+            }
+        }
 
         violations
     }
 }
 
 impl Exp39C {
+    /// Collect variable/union declarations that are direct children of the
+    /// translation unit (i.e. file scope, not inside any function body).
+    /// These are shared across every function, unlike function-local
+    /// declarations which must stay scoped per-function (see `check`).
+    fn collect_top_level_declarations(
+        &self,
+        node: &Node,
+        source: &str,
+        var_types: &mut HashMap<String, VarTypeInfo>,
+        struct_field_ptrs: &mut HashSet<String>,
+        union_vars: &mut HashSet<String>,
+    ) {
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "declaration" {
+                    self.process_declaration(&child, source, var_types);
+                    self.check_union_declaration(&child, source, union_vars);
+                    for j in 0..child.child_count() {
+                        if let Some(grandchild) = child.child(j) {
+                            if grandchild.kind() == "init_declarator" {
+                                self.check_struct_field_ptr_init(
+                                    &grandchild,
+                                    source,
+                                    struct_field_ptrs,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run the field-expression / cast / realloc checks over a single scope
+    /// (either one function's body or, as a fallback, the whole
+    /// translation unit when there are no functions) and immediately run
+    /// the union type-punning post-pass against a union_member_accesses map
+    /// that is fresh to this scope. Keeping the tracking map scope-local is
+    /// what prevents two different functions' same-named union locals from
+    /// being aggregated into a single (spurious) type-punning finding.
+    fn check_scope(
+        &self,
+        scope_node: &Node,
+        source: &str,
+        var_types: &HashMap<String, VarTypeInfo>,
+        struct_field_ptrs: &HashSet<String>,
+        union_vars: &HashSet<String>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let mut union_member_accesses: HashMap<String, Vec<(String, usize, usize, bool)>> =
+            HashMap::new();
+        self.check_node(
+            scope_node,
+            source,
+            violations,
+            var_types,
+            struct_field_ptrs,
+            union_vars,
+            &mut union_member_accesses,
+        );
+        self.check_union_type_punning(union_vars, &union_member_accesses, violations);
+    }
+
     /// Collect variable type information from declarations
     fn collect_var_types(
         &self,
