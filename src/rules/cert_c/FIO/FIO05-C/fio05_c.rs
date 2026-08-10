@@ -91,10 +91,16 @@ impl CertRule for Fio05C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Analyze global scope (translation_unit) for file reopen violations
+        // The analysis harness always calls check() with the translation_unit
+        // root, so scope each function_definition individually with a FRESH
+        // FileReopenAnalyzer (fresh file_operations map) per function. This
+        // keeps reopen-pattern/fstat sequencing checks from merging unrelated
+        // functions' same-named FILE*/fd variables into one file-wide timeline.
         if node.kind() == "translation_unit" {
-            let mut analyzer = FileReopenAnalyzer::new();
-            analyzer.analyze_scope(node, source, &mut violations);
+            for func in query::find_descendants_of_kind(*node, "function_definition") {
+                let mut analyzer = FileReopenAnalyzer::new();
+                analyzer.analyze_scope(&func, source, &mut violations);
+            }
             return violations;
         }
 

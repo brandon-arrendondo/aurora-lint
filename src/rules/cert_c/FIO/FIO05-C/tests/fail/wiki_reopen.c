@@ -4,33 +4,31 @@
  * Status: FAIL - Should trigger FIO05-C violation
  */
 
-char *file_name;
+void reopen_example(char *file_name) {
+  FILE *fd = fopen(file_name, "w");
+  if (fd == NULL) {
+    /* Handle error */
+  }
 
-/* Initialize file_name */
+  /*... Write to file ...*/
 
-FILE *fd = fopen(file_name, "w");
-if (fd == NULL) {
-  /* Handle error */
+  fclose(fd);
+  fd = NULL;
+
+  /*
+   * A race condition here allows for an attacker
+   * to switch out the file for another.
+   */
+
+  /* ... */
+
+  fd = fopen(file_name, "r");
+  if (fd == NULL) {
+    /* Handle error */
+  }
+
+  /*... Read from file ...*/
+
+  fclose(fd);
+  fd = NULL;
 }
-
-/*... Write to file ...*/
-
-fclose(fd);
-fd = NULL;
-
-/*
- * A race condition here allows for an attacker  
- * to switch out the file for another. 
- */
-
-/* ... */
-
-fd = fopen(file_name, "r");
-if (fd == NULL) {
-  /* Handle error */
-}
-
-/*... Read from file ...*/
-
-fclose(fd);
-fd = NULL;
