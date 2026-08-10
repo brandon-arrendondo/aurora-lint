@@ -150,13 +150,27 @@ impl Int10C {
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
     ) {
+        // Scope type_map per function to avoid cross-function name collisions
+        // (e.g., a same-named variable of a different signedness in a different
+        // function). Memoized per enclosing function_definition node id so it's
+        // only computed once even though many candidates share the same function.
+        let mut fn_type_maps: HashMap<usize, HashMap<String, String>> = HashMap::new();
+
         for n in query::find_descendants_of_kind(*node, "binary_expression") {
             if let Some(operator) = n.child_by_field_name("operator") {
                 let op_text = get_node_text(&operator, source);
 
                 if op_text == "%" {
+                    let scoped_type_map: &HashMap<String, String> =
+                        match Self::enclosing_function_definition(&n) {
+                            Some(func_node) => fn_type_maps
+                                .entry(func_node.id())
+                                .or_insert_with(|| self.collect_variable_types(&func_node, source)),
+                            None => type_map,
+                        };
+
                     // Check if this is a signed modulo operation
-                    if self.is_potentially_signed_modulo(&n, source, type_map) {
+                    if self.is_potentially_signed_modulo(&n, source, scoped_type_map) {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             message: "Modulo operator used with potentially signed operands. \
@@ -297,6 +311,20 @@ impl Int10C {
         }
 
         false
+    }
+
+    /// Walk up from `node` to the nearest enclosing `function_definition`, if
+    /// any. Used to pick the correctly-scoped type map for a modulo candidate
+    /// found by a flat, whole-subtree descendant search.
+    fn enclosing_function_definition<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+        let mut current = node.parent();
+        while let Some(parent) = current {
+            if parent.kind() == "function_definition" {
+                return Some(parent);
+            }
+            current = parent.parent();
+        }
+        None
     }
 }
 
