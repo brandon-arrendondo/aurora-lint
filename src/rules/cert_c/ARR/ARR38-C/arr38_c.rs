@@ -58,22 +58,48 @@ impl CertRule for Arr38C {
         let mut size_vars: HashMap<String, String> = HashMap::new();
         let mut unused_offsets: HashMap<String, PointerOffsetInfo> = HashMap::new();
 
-        // First pass: collect buffer allocations and size variable assignments (file-wide)
+        // First pass: collect the file-scope-only buffer allocations and size
+        // variable assignments (task 410) — the safe, collision-free base every
+        // function's own tracking is layered onto below. `include_function_bodies
+        // = false` means this never descends into a `function_definition`'s body,
+        // so two functions that each declare a same-named local buffer of a
+        // *different* size (or a same-named local size_t of a different value)
+        // never share an entry here, the way the old file-wide single-pass map
+        // did (which could cite the wrong function's buffer size for a
+        // same-named local, either masking a real overflow or producing a
+        // false one).
         self.collect_buffer_info(
             node,
             source,
             &mut buffer_info,
             &mut size_vars,
             &mut unused_offsets,
+            false,
         );
 
         // Second pass: check each function independently with function-scoped resolution.
         // This prevents cross-function contamination where "data = dataBadBuffer - 8" (bad fn)
-        // and "data = dataGoodBuffer" (good fn) would share the same offset/alias entry.
+        // and "data = dataGoodBuffer" (good fn) would share the same offset/alias entry —
+        // and (task 410) where two functions each declaring their own same-named local
+        // buffer/size-var would otherwise share the same buffer_info/size_vars entry.
         let functions = self.collect_function_definitions(node);
         for func_node in &functions {
-            let aliases = self.collect_pointer_aliases(func_node, source);
+            // Layer this function's own local buffers and size vars on top of
+            // the file-scope base, scoped to just this function's own AST
+            // subtree so no other function's same-named local can leak in.
             let mut func_buffer_info = buffer_info.clone();
+            let mut func_size_vars = size_vars.clone();
+            let mut func_own_offsets: HashMap<String, PointerOffsetInfo> = HashMap::new();
+            self.collect_buffer_info(
+                func_node,
+                source,
+                &mut func_buffer_info,
+                &mut func_size_vars,
+                &mut func_own_offsets,
+                true,
+            );
+
+            let aliases = self.collect_pointer_aliases(func_node, source);
             for (alias, target) in &aliases {
                 if let Some(info) = func_buffer_info.get(target).cloned() {
                     func_buffer_info.insert(alias.clone(), info);
@@ -89,7 +115,7 @@ impl CertRule for Arr38C {
                 source,
                 &mut violations,
                 &func_buffer_info,
-                &size_vars,
+                &func_size_vars,
                 &func_pointer_offsets,
             );
         }
@@ -99,7 +125,19 @@ impl CertRule for Arr38C {
 }
 
 impl Arr38C {
-    /// First pass: collect buffer allocations, size variable assignments, and pointer offsets
+    /// First pass: collect buffer allocations, size variable assignments, and
+    /// pointer offsets from `declaration`/`expression_statement` nodes under
+    /// `node`.
+    ///
+    /// `include_function_bodies` controls whether this descends into a
+    /// `function_definition`'s body at all (task 410). Callers building the
+    /// shared file-scope base (`check`'s first pass) pass `false` so two
+    /// functions' same-named locals never land in the same map; callers
+    /// re-scanning a single function's own body (`check`'s per-function
+    /// pass, `node` = that function's node) pass `true` — since the walk is
+    /// rooted at that one function, it can never see another function's
+    /// declarations either way, but the flag still has to be `true` there so
+    /// the function's *own* body isn't skipped by the same guard.
     fn collect_buffer_info(
         &self,
         node: &Node,
@@ -107,8 +145,13 @@ impl Arr38C {
         buffer_info: &mut HashMap<String, BufferInfo>,
         size_vars: &mut HashMap<String, String>,
         pointer_offsets: &mut HashMap<String, PointerOffsetInfo>,
+        include_function_bodies: bool,
     ) {
-        for n in query::find_descendants_of_kinds(*node, &["declaration", "expression_statement"]) {
+        let mut stack = vec![*node];
+        while let Some(n) = stack.pop() {
+            if !include_function_bodies && n.kind() == "function_definition" {
+                continue;
+            }
             match n.kind() {
                 "declaration" => {
                     self.extract_declaration_info(
@@ -129,6 +172,11 @@ impl Arr38C {
                     );
                 }
                 _ => {}
+            }
+            for i in (0..n.child_count()).rev() {
+                if let Some(child) = n.child(i) {
+                    stack.push(child);
+                }
             }
         }
     }
