@@ -446,12 +446,15 @@ fn analyze_function(
     let is_void_return;
     if let Some(return_type) = func_node.child_by_field_name("type") {
         let type_text = return_type.utf8_text(source.as_bytes()).unwrap_or("");
-        // Functions returning pointer types might return NULL
-        let decl_text = func_node
+        // Functions returning pointer types might return NULL. Walk the
+        // declarator chain rather than substring-searching its text: a
+        // plain `T foo(const u8 *arg)` declarator's *text* also contains
+        // '*' (from the pointer parameter), which previously made every
+        // function taking a pointer argument look like it returns a
+        // pointer regardless of its actual return type (task 425).
+        is_pointer_return = func_node
             .child_by_field_name("declarator")
-            .map(|d| d.utf8_text(source.as_bytes()).unwrap_or(""))
-            .unwrap_or("");
-        is_pointer_return = decl_text.contains('*');
+            .is_some_and(|d| declarator_denotes_pointer_return(&d));
         is_void_return = type_text == "void";
         if is_pointer_return {
             // Could return NULL unless proven otherwise
@@ -490,11 +493,21 @@ fn analyze_function(
         // Check for never-returns patterns
         summary.never_returns = check_never_returns(body_text);
 
-        // Check for returns-allocation pattern
-        summary.returns_allocation = body_text.contains("malloc(")
-            || body_text.contains("calloc(")
-            || body_text.contains("realloc(")
-            || body_text.contains("aligned_alloc(");
+        // Check for returns-allocation pattern. Gated on the function's own
+        // declared return type actually being a pointer: a non-pointer
+        // (enum/int/u16/bool/...) function that merely calls malloc/calloc/
+        // etc. somewhere in its body -- e.g. to fill an out-param or a
+        // struct field -- does not hand a fresh allocation back to its
+        // caller via the return value, so callers assigning its result to a
+        // local must not have that local treated as owning fresh memory
+        // (task 425: MEM31-C flagging non-pointer status locals like `enum
+        // wpa_validate_result`/`u16`/`int` as leaked/double-freed because
+        // the assigning callee's body happened to contain a malloc call).
+        summary.returns_allocation = is_pointer_return
+            && (body_text.contains("malloc(")
+                || body_text.contains("calloc(")
+                || body_text.contains("realloc(")
+                || body_text.contains("aligned_alloc("));
 
         // Quick text scan for taint-source calls — used by ENV03-C to
         // classify callers as tainted/clean. Also matches any macro
@@ -568,6 +581,27 @@ pub fn collect_param_names(func_node: &Node, source: &str) -> Vec<String> {
     }
 
     params
+}
+
+/// Walk a function's top-level declarator chain to determine whether the
+/// function's *return type* is a pointer, without descending into the
+/// parameter list (where `pointer_declarator`/`*` from an argument type
+/// would otherwise be mistaken for the return type's own pointer-ness).
+/// `T *foo(...)` parses as `pointer_declarator(declarator: function_declarator(...))`;
+/// `T foo(...)` parses as a bare `function_declarator`; multi-level pointers
+/// and parenthesized declarators nest further before reaching either.
+fn declarator_denotes_pointer_return(declarator: &Node) -> bool {
+    let mut node = *declarator;
+    loop {
+        match node.kind() {
+            "pointer_declarator" => return true,
+            "function_declarator" => return false,
+            _ => match node.child_by_field_name("declarator") {
+                Some(inner) => node = inner,
+                None => return false,
+            },
+        }
+    }
 }
 
 fn collect_params_recursive(node: &Node, source: &str, params: &mut Vec<String>) {
@@ -2578,7 +2612,7 @@ int sqlite3Init(sqlite3 *db, char **pzErrMsg){
   return SQLITE_OK;
 }
 
-void extra_leak_marker(void){
+void *extra_leak_marker(void){
   void *buf = malloc(4);
   free(buf);
   abort();
