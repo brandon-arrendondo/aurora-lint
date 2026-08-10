@@ -95,7 +95,26 @@ impl CertRule for Fio24C {
 }
 
 impl Fio24C {
-    /// Walk top-level and process each function body with fresh close-tracking state.
+    /// Walk top-level functions, grouping open/close tracking state by
+    /// same-file call relationship rather than sharing it across the whole
+    /// translation unit.
+    ///
+    /// `open_files`/`file_pointers` track locals (filenames and the variable
+    /// names bound to them). Sharing them across *every* function in the
+    /// file (as before) meant an fopen() in one function could be
+    /// misreported as "already open" because of an unrelated fopen() (on a
+    /// same-named local, or an unrelated same-named file) in a completely
+    /// unrelated, never-called function (task 413).
+    ///
+    /// But wholesale resetting per function is also wrong: it would lose
+    /// the rule's own canonical CERT wiki example, where `main()` opens
+    /// "log" and then calls `do_stuff()`, which also opens "log" while
+    /// main's handle is still live — a genuine FIO24-C violation that only
+    /// shows up when tracking state flows from caller to (locally defined)
+    /// callee. So functions are grouped into connected components by direct
+    /// same-file call edges (undirected, since either the caller or the
+    /// callee may appear first in the file); each component gets its own
+    /// fresh open/close scope, shared only among the functions in it.
     fn walk_functions(
         &self,
         node: &Node,
@@ -105,19 +124,83 @@ impl Fio24C {
         file_pointers: &mut HashMap<String, String>,
         _closed_vars: &mut HashMap<String, usize>,
     ) {
-        for func in query::find_descendants_of_kind(*node, "function_definition") {
-            // Each function gets its own double-close tracking scope
-            let mut fn_closed: HashMap<String, usize> = HashMap::new();
-            if let Some(body) = func.child_by_field_name("body") {
-                self.check_node(
-                    &body,
-                    source,
-                    violations,
-                    open_files,
-                    file_pointers,
-                    &mut fn_closed,
-                );
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+
+        let mut name_to_index: HashMap<String, usize> = HashMap::new();
+        for (i, func) in functions.iter().enumerate() {
+            if let Some(name) = self.function_name(func, source) {
+                name_to_index.insert(name, i);
             }
+        }
+
+        // Union-find over function indices, unioning direct caller/callee
+        // pairs (only for calls that resolve to another function defined
+        // in this same translation unit).
+        let mut parent: Vec<usize> = (0..functions.len()).collect();
+        for (i, func) in functions.iter().enumerate() {
+            if let Some(body) = func.child_by_field_name("body") {
+                for call in query::find_descendants_of_kind(body, "call_expression") {
+                    if let Some(callee) = call.child_by_field_name("function") {
+                        let callee_name = get_node_text(&callee, source).trim().to_string();
+                        if let Some(&j) = name_to_index.get(&callee_name) {
+                            Self::union_indices(&mut parent, i, j);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Group indices by component root, keeping components ordered by
+        // the first function's position in the file.
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        for i in 0..functions.len() {
+            let root = Self::find_index(&mut parent, i);
+            groups.entry(root).or_default().push(i);
+        }
+        let mut roots: Vec<usize> = groups.keys().copied().collect();
+        roots.sort_by_key(|root| groups[root][0]);
+
+        for root in roots {
+            // Each connected component gets its own fresh open/close
+            // tracking scope, shared only among its member functions.
+            open_files.clear();
+            file_pointers.clear();
+            for &idx in &groups[&root] {
+                // Each individual function still gets its own fresh
+                // double-close tracking scope.
+                let mut fn_closed: HashMap<String, usize> = HashMap::new();
+                if let Some(body) = functions[idx].child_by_field_name("body") {
+                    self.check_node(
+                        &body,
+                        source,
+                        violations,
+                        open_files,
+                        file_pointers,
+                        &mut fn_closed,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Extract a `function_definition`'s declared name, if any.
+    fn function_name(&self, func: &Node, source: &str) -> Option<String> {
+        let declarator = func.child_by_field_name("declarator")?;
+        self.extract_identifier(&declarator, source)
+    }
+
+    fn find_index(parent: &mut [usize], x: usize) -> usize {
+        if parent[x] != x {
+            parent[x] = Self::find_index(parent, parent[x]);
+        }
+        parent[x]
+    }
+
+    fn union_indices(parent: &mut [usize], a: usize, b: usize) {
+        let ra = Self::find_index(parent, a);
+        let rb = Self::find_index(parent, b);
+        if ra != rb {
+            parent[ra] = rb;
         }
     }
 
