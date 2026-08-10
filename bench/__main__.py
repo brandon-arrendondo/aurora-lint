@@ -283,19 +283,35 @@ def cmd_realworld_score(args):
             print(f"  ({o['labeled_uncertain']} matched labels are 'uncertain', "
                   "excluded from precision)")
         print(f"  Label coverage: {o['labeled_total']} of "
-              f"{o['run_findings']} findings labeled")
+              f"{o['run_findings']} findings labeled "
+              f"({pct(100 - (o['unlabeled_fraction'] or 0) * 100)} labeled, "
+              f"{o['unlabeled_count']} unlabeled)")
         print()
 
         print(f"{'Rule':<12} {'Prec':>7} {'TP':>4} {'FP':>4} {'Unc':>4} "
-              f"{'Recall':>7} {'Detect':>8} {'Run#':>8}")
-        print("-" * 62)
+              f"{'Recall':>7} {'Detect':>8} {'Run#':>8} {'Unlbl':>6}")
+        print("-" * 70)
+        high_unlabeled = []
         for r in result["per_rule"]:
             detect = f"{r['tp_detected']}/{r['tp_labels']}"
+            unlbl_frac = r["unlabeled_fraction"]
+            flag = "!" if unlbl_frac is not None and unlbl_frac > 0.5 else " "
             print(f"{r['rule_id']:<12} {pct(r['precision_pct']):>7} "
                   f"{r['labeled_tp']:>4} {r['labeled_fp']:>4} "
                   f"{r['labeled_uncertain']:>4} {pct(r['recall_pct']):>7} "
-                  f"{detect:>8} {r['run_findings']:>8,}")
+                  f"{detect:>8} {r['run_findings']:>8,} "
+                  f"{pct((unlbl_frac or 0) * 100):>5}{flag}")
+            if unlbl_frac is not None and unlbl_frac > 0.5:
+                high_unlabeled.append(r)
         print()
+
+        if high_unlabeled:
+            print("Rules with >50% of this run's findings unlabeled "
+                  "(precision/recall above are computed on a shrinking slice):")
+            for r in high_unlabeled:
+                print(f"  ! {r['rule_id']}: {r['unlabeled_count']}/"
+                      f"{r['run_findings']} unlabeled ({pct(r['unlabeled_fraction'] * 100)})")
+            print()
 
     if result["warnings"]:
         print("Warnings:")

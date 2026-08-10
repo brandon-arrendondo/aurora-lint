@@ -1082,13 +1082,30 @@ class BenchDB:
         target_rules = {r["rule_id"]: r["count"]
                         for r in self.get_realworld_rule_summary(target_run_id, project)}
 
+        # Labeled totals per rule (from ground_truth), so a raw finding-count
+        # swing that ISN'T reflected in the labeled/precision numbers is
+        # visible without manually cross-referencing ground_truth by hand.
+        # See task 423.
+        target_labeled = {r["rule_id"]: r["labeled_total"]
+                          for r in self.score_realworld_run(
+                              target_run_id, only_project=project)
+                          .get("per_rule", [])}
+
         all_rules = sorted(set(base_rules) | set(target_rules))
         deltas = []
         for rid in all_rules:
             b = base_rules.get(rid, 0)
             t = target_rules.get(rid, 0)
             if b != t:
-                deltas.append({"rule_id": rid, "base": b, "target": t, "delta": t - b})
+                t_labeled = target_labeled.get(rid, 0)
+                unlabeled_count = max(t - t_labeled, 0)
+                deltas.append({
+                    "rule_id": rid, "base": b, "target": t, "delta": t - b,
+                    "target_labeled_total": t_labeled,
+                    "target_unlabeled_count": unlabeled_count,
+                    "target_unlabeled_fraction": (round(unlabeled_count / t, 3)
+                                                   if t else None),
+                })
         deltas.sort(key=lambda x: x["delta"])
 
         base_total = sum(base_rules.values())
@@ -1490,7 +1507,8 @@ class BenchDB:
         return keys
 
     def score_realworld_run(self, run_id: int,
-                            restrict_files: dict | None = None) -> dict:
+                            restrict_files: dict | None = None,
+                            only_project: str | None = None) -> dict:
         """Measure precision/recall of a run against the ground-truth oracle.
 
         Joins the run's findings to ground_truth labels for the *same*
@@ -1507,13 +1525,18 @@ class BenchDB:
         restrict_files: optional {project: set(relpath)} to score only labels
         and findings within those files (used by the audited-file corpus). When
         None, scores the whole labeled corpus (legacy behavior).
+
+        only_project: optional project name to scope scoring to a single
+        project (e.g. when comparing one codebase's rule deltas against
+        ground_truth rather than the whole multi-project run).
         """
         run = self.get_realworld_run(run_id)
         if not run:
             return {"error": f"Run {run_id} not found"}
 
         results = [r for r in self.get_realworld_results(run_id)
-                   if r["tool"] == "sqc"]
+                   if r["tool"] == "sqc"
+                   and (only_project is None or r["project"] == only_project)]
         run_keys = self._run_violation_keys(run_id)
         if restrict_files is not None:
             run_keys = {
@@ -1600,29 +1623,42 @@ class BenchDB:
             prec = round(r["tp"] / denom * 100, 1) if denom else None
             rec = (round(r["tp_detected"] / r["tp_labels"] * 100, 1)
                    if r["tp_labels"] else None)
+            run_findings = rule_run_counts.get(rid, 0)
+            labeled_total = r["tp"] + r["fp"] + r["uncertain"]
+            unlabeled_count = max(run_findings - labeled_total, 0)
+            unlabeled_fraction = (round(unlabeled_count / run_findings, 3)
+                                   if run_findings else None)
             per_rule.append({
                 "rule_id": rid,
                 "labeled_tp": r["tp"], "labeled_fp": r["fp"],
                 "labeled_uncertain": r["uncertain"],
-                "labeled_total": r["tp"] + r["fp"] + r["uncertain"],
+                "labeled_total": labeled_total,
                 "precision_pct": prec,
                 "tp_labels": r["tp_labels"], "tp_detected": r["tp_detected"],
                 "recall_pct": rec,
-                "run_findings": rule_run_counts.get(rid, 0),
+                "run_findings": run_findings,
+                "unlabeled_count": unlabeled_count,
+                "unlabeled_fraction": unlabeled_fraction,
             })
             tot_tp += r["tp"]; tot_fp += r["fp"]; tot_unc += r["uncertain"]
             tot_tp_labels += r["tp_labels"]; tot_tp_detected += r["tp_detected"]
 
         denom = tot_tp + tot_fp
+        overall_run_findings = sum(len(s) for s in run_keys.values())
+        overall_labeled_total = tot_tp + tot_fp + tot_unc
+        overall_unlabeled_count = max(overall_run_findings - overall_labeled_total, 0)
         overall = {
             "labeled_tp": tot_tp, "labeled_fp": tot_fp,
             "labeled_uncertain": tot_unc,
-            "labeled_total": tot_tp + tot_fp + tot_unc,
+            "labeled_total": overall_labeled_total,
             "precision_pct": round(tot_tp / denom * 100, 1) if denom else None,
             "tp_labels": tot_tp_labels, "tp_detected": tot_tp_detected,
             "recall_pct": (round(tot_tp_detected / tot_tp_labels * 100, 1)
                            if tot_tp_labels else None),
-            "run_findings": sum(len(s) for s in run_keys.values()),
+            "run_findings": overall_run_findings,
+            "unlabeled_count": overall_unlabeled_count,
+            "unlabeled_fraction": (round(overall_unlabeled_count / overall_run_findings, 3)
+                                   if overall_run_findings else None),
         }
         per_rule.sort(key=lambda x: x["labeled_total"], reverse=True)
         return {
