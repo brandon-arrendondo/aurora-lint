@@ -171,6 +171,37 @@ hidden. See ``conf/realworld/README.md`` for the per-codebase audit workflow.
 ``libcrc`` is fully audited (every enabled-rule finding labelled); the four
 large codebases grow their labels incrementally.
 
+Per-Codebase Scan Scope
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each codebase's ``CODEBASES[<name>]["sqc"]["extra_args"]`` entry in
+``mcp_servers/realworld_server.py`` also carries ``--exclude`` globs that
+scope the scan to the *shipped product*, not the whole checked-out repo —
+test harnesses, build tooling, vendored/bundled code, and companion tools
+(fuzzers, example plugins, separate CLI utilities) are excluded so they don't
+inflate the violation count or dilute the precision/recall denominator.
+These globs are derived from each codebase's ground-truth oracle scope
+(``data/precision_audit/<codebase>/README.md``), which documents exactly
+which directories were ruled in/out during that codebase's adjudication
+sweep and why.
+
+.. important::
+
+    ``-d``/``--directories`` in a codebase's ``extra_args`` does **not**
+    restrict the scan — it only adds cross-file pre-scan context (see
+    :doc:`cli-usage`). A codebase's primary scan root is the whole repo
+    whenever ``scan_path`` is ``None``, regardless of any ``-d`` entries in
+    ``extra_args``. To actually narrow scope, use ``--exclude`` globs (or set
+    ``scan_path`` to a single subdirectory, as ``raylib`` does for
+    ``{path}/src``).
+
+When adding a new real-world codebase or revisiting an existing one's
+ground-truth audit, check whether its scope notes call for new
+``--exclude`` entries here — a mismatch between the oracle's labeled scope
+and the live scan's actual scope means dashboard numbers include findings
+that were never meant to be measured (or, more subtly, that the ground-truth
+denominator no longer matches what's being scanned).
+
 Auto-Scoring
 ~~~~~~~~~~~~~
 
@@ -213,7 +244,17 @@ CLI::
   subset of the run's findings (a sampled estimate; "Label coverage" shows how
   much of the run is labeled);
 - **recall** = known-TPs flagged / known-TPs --- a known true bug that stops
-  being flagged drops recall, seeding regression detection.
+  being flagged drops recall, seeding regression detection;
+- **unlabeled_count** / **unlabeled_fraction** (overall and per rule) ---
+  ``run_findings - labeled_total``, i.e. how much of this run's findings
+  never got adjudicated. Precision/recall are only computed over the labeled
+  slice, so a rule with a high unlabeled fraction can have a precision number
+  that looks stable while its *raw* finding count swings heavily underneath
+  it. The CLI text view flags any rule above 50% unlabeled; ``compare_runs``
+  surfaces the same fields (``target_labeled_total`` /
+  ``target_unlabeled_count`` / ``target_unlabeled_fraction``) per rule delta
+  so a raw-count regression that outpaces adjudication is visible without
+  manually cross-referencing ``ground_truth``.
 
 A run whose ``codebase_commit`` has no labels is warned about, not scored.
 

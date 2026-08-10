@@ -108,6 +108,22 @@ Only report violations at or above this severity level.
 \fB\-\-rules\fR \fIRULE1\fR,\fIRULE2\fR,...
 Only report violations from the specified rules. Comma-separated list of
 CERT C rule identifiers (e.g., \fBARR30\-C,MEM31\-C,STR32\-C\fR).
+.TP
+\fB\-\-exclude\fR \fIGLOB\fR
+Exclude files matching this path glob from analysis. May be specified
+multiple times. Useful for checked-in amalgamations, vendored code, test
+harnesses, or build tooling that isn't part of the shipped product. Globs
+are matched against each file's path relative to the scan root and are
+merged with any patterns from the project's own
+.I toolchain.toml
+.B [ignore].paths .
+Unlike
+.BR \-d ,
+.B \-\-exclude
+is the only flag that actually removes files from the scan;
+.B \-d
+only adds cross-file pre-scan context and never restricts which files are
+analyzed.
 .SS "Exit Code Control"
 .TP
 \fB\-\-fail\-on\-violation\fR
@@ -245,6 +261,14 @@ Parallel analysis using 8 threads:
 .RS
 .nf
 sqc -j 8 -d src/ -d lib/ src/
+.fi
+.RE
+.PP
+Exclude vendored code and test harnesses from a scan:
+.PP
+.RS
+.nf
+sqc . --exclude "tests/**" --exclude "vendor/**" --exclude "**/onelua.c"
 .fi
 .RE
 .PP

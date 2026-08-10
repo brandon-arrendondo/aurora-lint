@@ -79,6 +79,16 @@ sqc /path/to/project --fail-on-severity High
 sqc /path/to/repo --diff
 ```
 
+### Exclude files from a scan
+
+```bash
+# Drop vendored code, test harnesses, or generated/amalgamated files
+sqc /path/to/repo --exclude "tests/**" --exclude "vendor/**" --exclude "**/onelua.c"
+```
+
+`--exclude` is the only flag that removes files from the scan — `-d` only adds
+directories for cross-file context and never restricts what gets analyzed.
+
 ### Use a custom rules manifest
 
 ```bash

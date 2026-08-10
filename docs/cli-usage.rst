@@ -28,6 +28,9 @@ Full Command Reference
           --min-severity <LEVEL>       Only report violations at or above this severity
                                        [Low, Medium, High, Critical]
           --rules <RULE1,RULE2,...>    Only report violations from these rules (comma-separated)
+          --exclude <GLOB>             Exclude files matching this path glob from analysis
+                                       (repeatable, e.g. --exclude '**/onelua.c'
+                                       --exclude 'testes/**')
           --diff                       Only analyze modified/new C files (requires git repo)
           --suppress-file <FILE>       Path to .sqc-suppress.toml file
                                        (auto-detected in project root if not specified;
@@ -86,6 +89,46 @@ The pre-scan collects:
 - **Struct field types**: struct definitions for type resolution (INT32-C, INT30-C)
 - **Global constants**: file-scope ``const`` variables for dead-branch elimination
 - **Global pointer null states**: cross-file ``extern`` pointer tracking (EXP34-C)
+
+
+File Exclusion
+--------------
+
+``--exclude`` drops files matching a path glob from the scan (and from the
+precision/recall denominator), for checked-in amalgamations, vendored code,
+test harnesses, or build tooling that isn't part of the shipped product.
+Repeatable; each occurrence adds one more glob:
+
+::
+
+    # Drop a single generated/amalgamated file
+    sqc /path/to/project --exclude '**/onelua.c'
+
+    # Drop a whole subtree
+    sqc /path/to/project --exclude 'tests/**' --exclude 'vendor/**'
+
+    # Combine multiple globs to scope down to just the shipped product
+    sqc /path/to/repo \
+        --exclude 'tests/**' --exclude 'docs/**' --exclude 'scripts/**'
+
+Globs are matched against each file's path relative to the scan root (same
+semantics as a project's own ``toolchain.toml`` ``[ignore].paths``, which are
+merged in automatically if present — ``--exclude`` only needs to name
+patterns that aren't already covered there). A pattern like ``tests/**``
+matches anywhere a ``tests`` directory sits at that depth; use a leading
+``**/`` (e.g. ``**/ltests.c``) to match a filename regardless of its
+directory.
+
+.. important::
+
+    ``--exclude`` is the only flag that removes files from the scan.
+    ``-d``/``--directories`` does the opposite: it *adds* directories to
+    pre-scan for cross-file context (function summaries, macro aliases, ...)
+    and has no effect on which files are actually analyzed and reported on.
+    Passing ``-d some/dir`` does **not** restrict analysis to ``some/dir`` —
+    if you want a scan restricted to a subset of a larger tree, either point
+    the ``PATH`` argument at that subdirectory or exclude everything else
+    with ``--exclude``.
 
 
 Export Formats
