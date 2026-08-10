@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
@@ -29,7 +30,77 @@ impl CertRule for Fio01C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        let mut cursor = node.walk();
+
+        // Each function gets its own file_name_vars map: a FILE*/fd variable
+        // opened in one function and a same-named variable operated on by
+        // name in an unrelated function are different objects, so their
+        // operation timelines must never be merged. Mirrors the per-function
+        // scoping fix applied to EXP39-C/ARR30-C for the same class of bug.
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+
+        if functions.is_empty() {
+            // No functions at all (e.g. a declarations/statements-only
+            // snippet, as used by this rule's own test fixtures) - fall back
+            // to treating the whole translation unit as a single scope,
+            // matching pre-fix behavior for this edge case.
+            self.check_scope(node, source, &mut violations);
+        } else {
+            for func in functions {
+                self.check_scope(&func, source, &mut violations);
+            }
+        }
+
+        violations
+    }
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct FileOp {
+    op_type: FileOpType,
+    func_name: String,
+    var_name: String,
+    line: usize,
+    column: usize,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+enum FileOpType {
+    FileOpen,    // fopen
+    FileClose,   // fclose
+    Remove,      // remove
+    Chmod,       // chmod
+    Open,        // open (POSIX)
+    FdChmod,     // fchmod (safe)
+    AccessCheck, // access/stat/lstat — TOCTOU check
+    PosixOpen,   // open after check — TOCTOU use
+}
+
+impl FileOpType {
+    fn name(&self) -> &str {
+        match self {
+            FileOpType::FileOpen => "fopen",
+            FileOpType::FileClose => "fclose",
+            FileOpType::Remove => "remove",
+            FileOpType::Chmod => "chmod",
+            FileOpType::Open => "open",
+            FileOpType::FdChmod => "fchmod",
+            FileOpType::AccessCheck => "access/stat",
+            FileOpType::PosixOpen => "open",
+        }
+    }
+}
+
+impl Fio01C {
+    /// Run the TOCTOU detection over a single scope (either one function's
+    /// body or, as a fallback, the whole translation unit when there are no
+    /// functions) using a file_name_vars map that is fresh to this scope.
+    /// Keeping the tracking map scope-local is what prevents two different
+    /// functions' same-named FILE*/fd variables from being aggregated into a
+    /// single (spurious) TOCTOU finding.
+    fn check_scope(&self, scope_node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let mut cursor = scope_node.walk();
 
         // Track file operations by variable name
         let mut file_name_vars: HashMap<String, Vec<FileOp>> = HashMap::new();
@@ -37,7 +108,7 @@ impl CertRule for Fio01C {
 
         // First pass: collect all file operations
         self.collect_file_operations(
-            *node,
+            *scope_node,
             source,
             &mut file_name_vars,
             &mut file_descriptors,
@@ -106,50 +177,8 @@ impl CertRule for Fio01C {
                 }
             }
         }
-
-        violations
     }
-}
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct FileOp {
-    op_type: FileOpType,
-    func_name: String,
-    var_name: String,
-    line: usize,
-    column: usize,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-enum FileOpType {
-    FileOpen,    // fopen
-    FileClose,   // fclose
-    Remove,      // remove
-    Chmod,       // chmod
-    Open,        // open (POSIX)
-    FdChmod,     // fchmod (safe)
-    AccessCheck, // access/stat/lstat — TOCTOU check
-    PosixOpen,   // open after check — TOCTOU use
-}
-
-impl FileOpType {
-    fn name(&self) -> &str {
-        match self {
-            FileOpType::FileOpen => "fopen",
-            FileOpType::FileClose => "fclose",
-            FileOpType::Remove => "remove",
-            FileOpType::Chmod => "chmod",
-            FileOpType::Open => "open",
-            FileOpType::FdChmod => "fchmod",
-            FileOpType::AccessCheck => "access/stat",
-            FileOpType::PosixOpen => "open",
-        }
-    }
-}
-
-impl Fio01C {
     fn collect_file_operations<'a>(
         &self,
         node: Node<'a>,
