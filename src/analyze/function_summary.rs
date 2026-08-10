@@ -503,11 +503,16 @@ fn analyze_function(
         // (task 425: MEM31-C flagging non-pointer status locals like `enum
         // wpa_validate_result`/`u16`/`int` as leaked/double-freed because
         // the assigning callee's body happened to contain a malloc call).
+        // Comments are stripped first (task 427): a borrowed-accessor
+        // function whose body has no allocator call at all but a doc
+        // comment merely *mentioning* one -- e.g. sqlite3_column_blob()'s
+        // "might need to call malloc() to expand..." -- must not count.
+        let body_text_no_comments = strip_comments_multiline(body_text);
         summary.returns_allocation = is_pointer_return
-            && (body_text.contains("malloc(")
-                || body_text.contains("calloc(")
-                || body_text.contains("realloc(")
-                || body_text.contains("aligned_alloc("));
+            && (body_text_no_comments.contains("malloc(")
+                || body_text_no_comments.contains("calloc(")
+                || body_text_no_comments.contains("realloc(")
+                || body_text_no_comments.contains("aligned_alloc("));
 
         // Quick text scan for taint-source calls — used by ENV03-C to
         // classify callers as tainted/clean. Also matches any macro
@@ -627,6 +632,41 @@ fn collect_params_recursive(node: &Node, source: &str, params: &mut Vec<String>)
             }
         }
     }
+}
+
+/// Strip `/* ... */` and `// ...` comments from a (possibly multi-line)
+/// function body before a plain substring scan. Without this, a comment
+/// merely *mentioning* an allocator call -- e.g. sqlite's own
+/// `sqlite3_column_blob`, whose body has no `malloc()` call at all but a
+/// doc comment reading "might need to call malloc() to expand the result of
+/// a zeroblob()" -- makes `returns_allocation`'s substring check below
+/// misfire on a borrowed-accessor function that never allocates anything
+/// (task 427). Unlike `macro_expand::strip_comments` (single-line macro
+/// replacement lists, where hitting `//` means "rest of the line is gone"),
+/// this must span a whole multi-line function body: a `//` only blanks out
+/// to the next newline, not to the end of the text.
+fn strip_comments_multiline(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            i += 2;
+            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            i = (i + 2).min(chars.len());
+            out.push(' ');
+        } else if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Check if a function body always calls abort/exit/longjmp (never returns normally).
