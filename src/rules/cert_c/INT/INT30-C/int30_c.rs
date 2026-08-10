@@ -235,19 +235,36 @@ impl Int30C {
                 "update_expression",
             ],
         );
+
+        // Scope type_map per function to avoid cross-function name collisions
+        // (e.g., a same-named variable of a different type declared in a
+        // different function producing a wrong verdict). Mirrors INT32-C's
+        // fn_type_maps fix. Memoized per enclosing function_definition node
+        // id so it's only computed once even though many candidates share
+        // the same function.
+        let mut fn_type_maps: HashMap<usize, HashMap<String, String>> = HashMap::new();
+
         for matched in matches {
+            let scoped_type_map: &HashMap<String, String> =
+                match ast_utils::find_containing_function(&matched) {
+                    Some(func_node) => fn_type_maps
+                        .entry(func_node.id())
+                        .or_insert_with(|| self.collect_variable_types(&func_node, source)),
+                    None => type_map,
+                };
+
             match matched.kind() {
                 "binary_expression" => {
-                    self.check_binary_operation(&matched, source, violations, type_map);
+                    self.check_binary_operation(&matched, source, violations, scoped_type_map);
                 }
                 "assignment_expression" => {
-                    self.check_assignment_operation(&matched, source, violations, type_map);
+                    self.check_assignment_operation(&matched, source, violations, scoped_type_map);
                 }
                 "call_expression" => {
                     self.check_function_call(&matched, source, violations);
                 }
                 "update_expression" => {
-                    self.check_increment_decrement(&matched, source, violations, type_map);
+                    self.check_increment_decrement(&matched, source, violations, scoped_type_map);
                 }
                 _ => {}
             }
