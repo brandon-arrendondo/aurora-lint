@@ -66,20 +66,80 @@ impl CertRule for Con04C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Find all thread creations and join/detach operations
-        let mut thread_creations: HashMap<String, Vec<ThreadCreation>> = HashMap::new();
-        let mut joined_or_detached: HashSet<String> = HashSet::new();
-        let mut detach_current_found = false;
-
+        // A `thrd_t`/`pthread_t` local variable is scoped to the function it
+        // is declared in. Two different functions can each declare a local
+        // named e.g. `t` - those are distinct objects, so thread-creation and
+        // join/detach bookkeeping must not be shared across function bodies
+        // (that would let a join in one function mask a real leak of a
+        // same-named thread variable in another). Analyze each function
+        // definition independently. Mirrors the per-function scoping pattern
+        // used by EXP39-C.
+        // `thrd_detach(thrd_current())` / `pthread_detach(pthread_self())`
+        // is a self-detach: the *thread's own function* detaches itself,
+        // which is necessarily a different function than the one calling
+        // `thrd_create`/`pthread_create` (see this rule's own "Compliant"
+        // doc example above: `message_print` self-detaches, `main` creates
+        // the threads). So unlike thread-variable name tracking, whether
+        // *any* thread function in this translation unit self-detaches is
+        // legitimately a whole-file signal, not a per-function one. Compute
+        // it once globally; scope everything else (creations/joins, which
+        // are keyed by variable name and must not leak across functions)
+        // per function below.
+        let mut global_self_detach = false;
+        let mut discard_creations = HashMap::new();
+        let mut discard_joined = HashSet::new();
         self.analyze_thread_operations(
             node,
             source,
-            &mut thread_creations,
-            &mut joined_or_detached,
-            &mut detach_current_found,
+            &mut discard_creations,
+            &mut discard_joined,
+            &mut global_self_detach,
         );
 
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+
+        if functions.is_empty() {
+            // No functions at all - fall back to treating the whole
+            // translation unit as a single scope (e.g. file-scope-only
+            // snippets), matching pre-fix behavior for this edge case.
+            self.check_scope(node, source, global_self_detach, &mut violations);
+        } else {
+            for func in functions {
+                self.check_scope(&func, source, global_self_detach, &mut violations);
+            }
+        }
+
+        violations
+    }
+}
+
+impl Con04C {
+    /// Run the thread-creation/join/detach analysis over a single scope
+    /// (one function body, or the whole translation unit as a fallback) and
+    /// append any violations found within that scope.
+    fn check_scope(
+        &self,
+        scope: &Node,
+        source: &str,
+        global_self_detach: bool,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let mut thread_creations: HashMap<String, Vec<ThreadCreation>> = HashMap::new();
+        let mut joined_or_detached: HashSet<String> = HashSet::new();
+        let mut local_self_detach = false;
+
+        self.analyze_thread_operations(
+            scope,
+            source,
+            &mut thread_creations,
+            &mut joined_or_detached,
+            &mut local_self_detach,
+        );
+
+        let detach_current_found = global_self_detach || local_self_detach;
+
         // Check for violations: threads created but not joined or detached
+        // within this scope.
         for (var_name, creations) in &thread_creations {
             // If thrd_detach(thrd_current()) is found, assume threads self-detach
             if !detach_current_found && !joined_or_detached.contains(var_name) {
@@ -104,12 +164,8 @@ impl CertRule for Con04C {
                 }
             }
         }
-
-        violations
     }
-}
 
-impl Con04C {
     /// Analyze the AST for thread operations
     fn analyze_thread_operations(
         &self,
