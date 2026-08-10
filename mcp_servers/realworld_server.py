@@ -106,7 +106,22 @@ CODEBASES = {
                 "-I", "/usr/include",           # openssl, zlib, sqlite3
                 "-I", "/usr/include/tcl8.6",    # Tcl (test infrastructure)
             ],
-            "extra_args": [],
+            # Scope = shipped engine (src/) + shipped extensions (ext/), matching
+            # the precision oracle (data/precision_audit/sqlite/README.md).
+            # `-d` doesn't restrict the scan (it only adds cross-file pre-scan
+            # context; the primary scan root is still the whole repo when
+            # scan_path is None), so out-of-scope trees are dropped via
+            # --exclude instead: autosetup/ (vendored Jim Tcl), tool/ (lemon
+            # parser-gen, build tools), test/ + src/test*.c (Tcl test glue),
+            # and ext/jni + ext/wasm (language bindings, not the engine).
+            "extra_args": [
+                "--exclude", "autosetup/**",
+                "--exclude", "tool/**",
+                "--exclude", "test/**",
+                "--exclude", "src/test*.c",
+                "--exclude", "ext/jni/**",
+                "--exclude", "ext/wasm/**",
+            ],
         },
         "cppcheck": {
             "includes": ["-I", "{path}/src"],
@@ -127,7 +142,24 @@ CODEBASES = {
                 "-I", "/usr/include",           # openssl, CUnit, sqlite3
                 "-I", "/usr/include/cjson",     # cJSON
             ],
-            "extra_args": [],
+            # Scope = shipped product (lib/ libmosquitto client + src/ broker
+            # daemon), matching the precision oracle
+            # (data/precision_audit/mosquitto/README.md). `-d` doesn't restrict
+            # the scan (it only adds cross-file pre-scan context; the primary
+            # scan root is still the whole repo when scan_path is None), so
+            # out-of-scope trees are dropped via --exclude instead: deps/
+            # (vendored picohttpparser), test/, client/, apps/, plugins/
+            # (example plugins), common/ and libcommon/ (shared helpers, pulled
+            # in only as cross-file context).
+            "extra_args": [
+                "--exclude", "deps/**",
+                "--exclude", "test/**",
+                "--exclude", "client/**",
+                "--exclude", "apps/**",
+                "--exclude", "plugins/**",
+                "--exclude", "common/**",
+                "--exclude", "libcommon/**",
+            ],
         },
         "cppcheck": {
             "includes": [
@@ -154,7 +186,24 @@ CODEBASES = {
                 "-I", "/usr/include",           # openssl, mbedtls, gnutls, zlib
                 "-I", "{path}/lib",             # internal curlx headers
             ],
-            "extra_args": [],
+            # Scope = shipped product (lib/ libcurl + src/ curl CLI), matching
+            # the precision oracle (data/precision_audit/curl/README.md).
+            # `-d` doesn't restrict the scan (it only adds cross-file pre-scan
+            # context; the primary scan root is still the whole repo when
+            # scan_path is None), so out-of-scope trees are dropped via
+            # --exclude instead: tests/, docs/ (incl. docs/examples/*.c
+            # snippets), scripts/, CMake/, projects/ (vendored/build tooling).
+            # Does NOT exclude the WIN_MAC files (14 files under lib/vtls,
+            # lib/curlx) — those stay in the scan since the oracle treats them
+            # as a distinct build-config boundary, excluded only from
+            # *scoring*, not from the scan itself.
+            "extra_args": [
+                "--exclude", "tests/**",
+                "--exclude", "docs/**",
+                "--exclude", "scripts/**",
+                "--exclude", "CMake/**",
+                "--exclude", "projects/**",
+            ],
         },
         "cppcheck": {
             "includes": [
@@ -182,9 +231,23 @@ CODEBASES = {
                 "-I", "/usr/include/libnl3",       # netlink (nla_, nlmsg_, nl_)
                 "-I", "/usr/include/dbus-1.0",     # D-Bus
             ],
+            # Scope = shipped hostapd (AP) + wpa_supplicant (station) daemons
+            # and their shared library, matching the precision oracle
+            # (data/precision_audit/hostap/README.md, task 159): src/ +
+            # wpa_supplicant/ + hostapd/. `-d` doesn't restrict the scan (it
+            # only adds cross-file pre-scan context; the primary scan root is
+            # still the whole repo when scan_path is None), so out-of-scope
+            # trees are dropped via --exclude instead: tests/, wlantest/
+            # (separate test/monitoring tool), eap_example/, hs20/,
+            # radius_example/, wpaspy/ — none of these ship as part of either
+            # daemon.
             "extra_args": [
-                "-d", "{path}/src",
-                "-d", "{path}/wpa_supplicant",
+                "--exclude", "tests/**",
+                "--exclude", "wlantest/**",
+                "--exclude", "eap_example/**",
+                "--exclude", "hs20/**",
+                "--exclude", "radius_example/**",
+                "--exclude", "wpaspy/**",
             ],
         },
         "cppcheck": {
@@ -213,7 +276,7 @@ CODEBASES = {
             "manifest": "conf/realworld/lua-rules.toml",
             "includes": ["-I", "{path}"],
             # Exclude the checked-in amalgamation (onelua.c #includes every
-            # other .c), the internal test/debug harness (ltests.c) and the
+            # other .c), the internal test/debug harness (ltests.c/.h) and the
             # C test fixtures under testes/. Scope = shipping library + the
             # lua.c interpreter main. sqc parses raw (no preprocessor) so
             # onelua.c wouldn't double-count, but excluding keeps the scanned
@@ -221,6 +284,7 @@ CODEBASES = {
             "extra_args": [
                 "--exclude", "**/onelua.c",
                 "--exclude", "**/ltests.c",
+                "--exclude", "**/ltests.h",
                 "--exclude", "testes/**",
             ],
         },
