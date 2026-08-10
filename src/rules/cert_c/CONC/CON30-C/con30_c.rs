@@ -67,21 +67,70 @@ impl CertRule for Con30C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Track TSS operations
+        // A `tss_t key;` declared at file scope is genuinely shared by every
+        // function that touches it, so those keys are correctly analyzed by
+        // aggregating call sites across the whole translation unit.
+        let global_keys = self.collect_global_tss_key_names(node, source);
+
         let mut tss_keys: HashMap<String, TssKeyInfo> = HashMap::new();
         let mut tss_set_calls: HashSet<String> = HashSet::new();
         let mut tss_get_freed: HashSet<String> = HashSet::new();
-
         self.analyze_tss_operations(
             node,
             source,
             &mut tss_keys,
             &mut tss_set_calls,
             &mut tss_get_freed,
+            Some(&global_keys),
         );
+        self.collect_violations(&tss_keys, &tss_set_calls, &tss_get_freed, &mut violations);
 
-        // Check for violations: keys with tss_set but no destructor and no explicit free
-        for (key_name, key_info) in &tss_keys {
+        // A `tss_t key;` declared *inside* a function is a distinct object
+        // from a same-named local in another function. Give each function
+        // its own fresh scope so that one function's proper cleanup
+        // (tss_create/tss_set/free(tss_get(...))) can never mask a real
+        // leak of a same-named key local to a different function.
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            let mut local_keys: HashMap<String, TssKeyInfo> = HashMap::new();
+            let mut local_set_calls: HashSet<String> = HashSet::new();
+            let mut local_get_freed: HashSet<String> = HashSet::new();
+            self.analyze_tss_operations(
+                &func,
+                source,
+                &mut local_keys,
+                &mut local_set_calls,
+                &mut local_get_freed,
+                None,
+            );
+            // Keys that are actually file-scope were already handled above
+            // by the whole-translation-unit pass; don't double-report them.
+            local_keys.retain(|k, _| !global_keys.contains(k));
+            local_set_calls.retain(|k| !global_keys.contains(k));
+            local_get_freed.retain(|k| !global_keys.contains(k));
+            self.collect_violations(
+                &local_keys,
+                &local_set_calls,
+                &local_get_freed,
+                &mut violations,
+            );
+        }
+
+        violations
+    }
+}
+
+impl Con30C {
+    /// Generate violations for keys with tss_set but no destructor and no
+    /// explicit free. Shared between the file-scope (global keys) pass and
+    /// the per-function (local keys) passes in `check`.
+    fn collect_violations(
+        &self,
+        tss_keys: &HashMap<String, TssKeyInfo>,
+        tss_set_calls: &HashSet<String>,
+        tss_get_freed: &HashSet<String>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        for (key_name, key_info) in tss_keys {
             // If tss_set was called for this key
             if tss_set_calls.contains(key_name) {
                 // And no destructor was registered
@@ -111,13 +160,62 @@ impl CertRule for Con30C {
                 }
             }
         }
-
-        violations
     }
-}
 
-impl Con30C {
-    /// Analyze the AST for TSS operations
+    /// Collect the names of `tss_t` variables declared directly at file
+    /// scope (i.e. direct children of the translation unit, not inside any
+    /// function body). These are genuinely shared across every function
+    /// that references them, so it's correct to aggregate their call sites
+    /// across the whole translation unit. Locals declared inside a function
+    /// body are a different object per function and must not be merged
+    /// with this set.
+    fn collect_global_tss_key_names(&self, node: &Node, source: &str) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() != "declaration" {
+                    continue;
+                }
+                let is_tss_t = child
+                    .child_by_field_name("type")
+                    .map(|t| get_node_text(&t, source).trim() == "tss_t")
+                    .unwrap_or(false);
+                if !is_tss_t {
+                    continue;
+                }
+                for j in 0..child.child_count() {
+                    if child.field_name_for_child(j as u32) == Some("declarator") {
+                        if let Some(declarator) = child.child(j) {
+                            if let Some(name) = self.declarator_identifier(&declarator, source) {
+                                names.insert(name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// Recover the identifier being declared by a (possibly wrapped)
+    /// declarator node, e.g. `key` in `tss_t key;` or `tss_t key =
+    /// TSS_DTOR_ITERATIONS;`.
+    fn declarator_identifier(&self, node: &Node, source: &str) -> Option<String> {
+        if node.kind() == "identifier" {
+            return Some(get_node_text(node, source).to_string());
+        }
+        if let Some(inner) = node.child_by_field_name("declarator") {
+            return self.declarator_identifier(&inner, source);
+        }
+        query::find_first_descendant(*node, |n| n.kind() == "identifier")
+            .map(|n| get_node_text(&n, source).to_string())
+    }
+
+    /// Analyze the AST for TSS operations. When `allowed` is `Some(set)`,
+    /// only keys whose name is in `set` are recorded (used for the
+    /// file-scope pass so it stays limited to genuinely-global keys); when
+    /// `None`, every key encountered under `node` is recorded (used for a
+    /// single function's own scope).
     fn analyze_tss_operations(
         &self,
         node: &Node,
@@ -125,7 +223,10 @@ impl Con30C {
         tss_keys: &mut HashMap<String, TssKeyInfo>,
         tss_set_calls: &mut HashSet<String>,
         tss_get_freed: &mut HashSet<String>,
+        allowed: Option<&HashSet<String>>,
     ) {
+        let is_allowed = |key_name: &str| allowed.is_none_or(|set| set.contains(key_name));
+
         for call in query::find_descendants_of_kind(*node, "call_expression") {
             if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
@@ -135,29 +236,35 @@ impl Con30C {
                     if let Some((key_name, has_destructor)) =
                         self.extract_tss_create_info(&call, source)
                     {
-                        tss_keys.insert(
-                            key_name.clone(),
-                            TssKeyInfo {
-                                key_name,
-                                has_destructor,
-                                create_line: call.start_position().row + 1,
-                                create_column: call.start_position().column + 1,
-                            },
-                        );
+                        if is_allowed(&key_name) {
+                            tss_keys.insert(
+                                key_name.clone(),
+                                TssKeyInfo {
+                                    key_name,
+                                    has_destructor,
+                                    create_line: call.start_position().row + 1,
+                                    create_column: call.start_position().column + 1,
+                                },
+                            );
+                        }
                     }
                 }
 
                 // Check for tss_set
                 if func_name == "tss_set" {
                     if let Some(key_name) = self.extract_tss_key_name(&call, source) {
-                        tss_set_calls.insert(key_name);
+                        if is_allowed(&key_name) {
+                            tss_set_calls.insert(key_name);
+                        }
                     }
                 }
 
                 // Check for free(tss_get(key))
                 if func_name == "free" {
                     if let Some(key_name) = self.check_tss_get_in_free(&call, source) {
-                        tss_get_freed.insert(key_name);
+                        if is_allowed(&key_name) {
+                            tss_get_freed.insert(key_name);
+                        }
                     }
                 }
             }
