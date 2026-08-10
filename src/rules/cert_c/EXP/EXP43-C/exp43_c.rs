@@ -42,25 +42,130 @@ impl CertRule for Exp43C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Track restrict-qualified pointer variables
-        let mut restrict_vars: HashSet<String> = HashSet::new();
-        // Track pointer aliasing (var -> base it points to)
-        let mut pointer_bases: HashMap<String, String> = HashMap::new();
+        // restrict_vars and pointer_bases must be scoped per function: a local
+        // pointer named "p" in one function is a completely different object
+        // than a same-named local "p" in another function, and resolving
+        // aliasing bases through a whole-translation-unit map lets an
+        // assignment in one function silently pollute the alias resolution of
+        // an unrelated call in a different function (e.g. `p = w;` in `f`
+        // making `strcpy(p, w)` in an unrelated `g(char *p, char *w)` look
+        // aliased). Mirrors the per-function reset pattern used by EXP39-C.
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
 
-        // First pass: find restrict pointer declarations and track pointer bases
-        self.find_restrict_declarations(node, source, &mut restrict_vars, &mut pointer_bases);
+        if functions.is_empty() {
+            // No functions at all (e.g. a header-only or declarations-only
+            // snippet) - fall back to treating the whole translation unit as
+            // a single scope, matching pre-fix behavior for this edge case.
+            self.check_scope(
+                node,
+                source,
+                &HashSet::new(),
+                &HashMap::new(),
+                &mut violations,
+            );
+        } else {
+            // File-scope (translation-unit-level, outside any function body)
+            // restrict declarations are genuinely shared by every function
+            // that references them (e.g. `int *restrict a; int *restrict b;`
+            // at file scope, aliased inside `main`), so seed every function's
+            // scope with this file-scope-only base. Collected from direct
+            // children of the translation unit only, so it never reaches
+            // into a function body and re-introduces the per-function
+            // conflation this fix removes.
+            let mut global_restrict_vars: HashSet<String> = HashSet::new();
+            let mut global_pointer_bases: HashMap<String, String> = HashMap::new();
+            self.collect_top_level_restrict(
+                node,
+                source,
+                &mut global_restrict_vars,
+                &mut global_pointer_bases,
+            );
 
-        // Second pass: find assignments/initializations between restrict pointers
-        self.find_restrict_violations(node, source, &restrict_vars, &mut violations);
-
-        // Third pass: find function calls with potentially overlapping restrict params
-        self.find_overlapping_restrict_calls(node, source, &pointer_bases, &mut violations);
+            for func in &functions {
+                self.check_scope(
+                    func,
+                    source,
+                    &global_restrict_vars,
+                    &global_pointer_bases,
+                    &mut violations,
+                );
+            }
+        }
 
         violations
     }
 }
 
 impl Exp43C {
+    /// Collect restrict-qualified declarations and pointer-base assignments
+    /// that are direct children of the translation unit (i.e. file scope,
+    /// not inside any function body). These are shared across every
+    /// function, unlike function-local declarations which must stay scoped
+    /// per-function (see `check`).
+    fn collect_top_level_restrict(
+        &self,
+        node: &Node,
+        source: &str,
+        restrict_vars: &mut HashSet<String>,
+        pointer_bases: &mut HashMap<String, String>,
+    ) {
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                match child.kind() {
+                    "declaration" => {
+                        let decl_text = get_node_text(&child, source);
+                        if decl_text.contains("restrict") {
+                            if let Some(var_name) = self.extract_var_name(&child, source) {
+                                restrict_vars.insert(var_name);
+                            }
+                        }
+                    }
+                    "assignment_expression" => {
+                        if let (Some(left), Some(right)) = (
+                            child.child_by_field_name("left"),
+                            child.child_by_field_name("right"),
+                        ) {
+                            let left_text = get_node_text(&left, source).to_string();
+                            let right_text = get_node_text(&right, source);
+                            let base = self.extract_base_pointer(right_text);
+                            if !base.is_empty() {
+                                pointer_bases.insert(left_text, base);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Run all three passes over a single scope (one function's body, or, as
+    /// a fallback, the whole translation unit when there are no functions).
+    /// `restrict_vars`/`pointer_bases` start from the given file-scope-only
+    /// seed and are then extended with this scope's own declarations, so
+    /// same-named locals in different functions never get conflated with
+    /// each other (only genuinely file-scope declarations are shared).
+    fn check_scope(
+        &self,
+        scope_node: &Node,
+        source: &str,
+        seed_restrict_vars: &HashSet<String>,
+        seed_pointer_bases: &HashMap<String, String>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let mut restrict_vars: HashSet<String> = seed_restrict_vars.clone();
+        let mut pointer_bases: HashMap<String, String> = seed_pointer_bases.clone();
+
+        // First pass: find restrict pointer declarations and track pointer bases
+        self.find_restrict_declarations(scope_node, source, &mut restrict_vars, &mut pointer_bases);
+
+        // Second pass: find assignments/initializations between restrict pointers
+        self.find_restrict_violations(scope_node, source, &restrict_vars, violations);
+
+        // Third pass: find function calls with potentially overlapping restrict params
+        self.find_overlapping_restrict_calls(scope_node, source, &pointer_bases, violations);
+    }
+
     /// Find restrict-qualified pointer declarations and track pointer bases
     fn find_restrict_declarations(
         &self,
