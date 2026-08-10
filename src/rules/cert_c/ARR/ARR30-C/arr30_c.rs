@@ -56,7 +56,7 @@ use tree_sitter::Node;
 use crate::utility::cert_c::ast_utils::{
     find_containing_for_loop, find_containing_function, find_containing_if_statement,
     find_enclosing_declaration_for_identifier, find_identifier_in_declarator,
-    get_identifier_from_declarator, is_function_parameter,
+    get_identifier_from_declarator,
 };
 
 pub struct Arr30C {
@@ -89,6 +89,19 @@ pub struct Arr30C {
     /// passes a tainted pointer (+offset) with no length argument. Built once per
     /// file; `None` until the root pass populates it. Cleared per file.
     helper_overread_summary: RefCell<Option<HashMap<String, Vec<usize>>>>,
+    /// File-scope-only buffer bindings (globals, struct/union member
+    /// arrays, typedef-array members) — see `analyze_global_scope_buffers`.
+    /// Computed once per file at the root `check()` call and used as the
+    /// reset base for each function's own buffer tracking in
+    /// `check_with_buffer_info`'s `function_definition` arm, so two
+    /// functions with a same-named local buffer never conflate each
+    /// other's size/allocation_line (task 389). Cleared per file.
+    global_scope_buffers: RefCell<HashMap<String, BufferInfo>>,
+    /// Typedef-array-size table for the current file (`analyze_typedefs`),
+    /// cached alongside `global_scope_buffers` so re-scanning each
+    /// function's own locals doesn't re-run the whole-file regex scan once
+    /// per function. Cleared per file.
+    cached_typedefs: RefCell<HashMap<String, usize>>,
 }
 
 /// Represents an index value that can be constant or variable
@@ -199,6 +212,12 @@ impl CertRule for Arr30C {
                 Some(self.build_helper_overread_summary(node, source));
             let buffer_info = self.analyze_buffer_allocations(source);
             let pointer_aliases = self.analyze_pointer_aliases(source, &buffer_info);
+            // Task 389: the file-scope-only base each function's own buffer
+            // tracking resets to in `check_with_buffer_info`'s
+            // `function_definition` arm, plus the typedef table it's built
+            // from, cached so it isn't recomputed per function.
+            *self.global_scope_buffers.borrow_mut() = self.analyze_global_scope_buffers(source);
+            *self.cached_typedefs.borrow_mut() = self.analyze_typedefs(source);
             // Shared file-local function-like macro collection
             // (`crate::analyze::macro_expand`) — replaces ARR30's former private
             // extractor. Same per-file scope; deletes a duplicate of the engine
@@ -235,6 +254,8 @@ impl Arr30C {
             param_decode_buf_cache: RefCell::new(HashMap::new()),
             param_decode_reported: RefCell::new(HashSet::new()),
             helper_overread_summary: RefCell::new(None),
+            global_scope_buffers: RefCell::new(HashMap::new()),
+            cached_typedefs: RefCell::new(HashMap::new()),
         }
     }
 
@@ -262,7 +283,19 @@ impl Arr30C {
         )
     }
 
-    /// Analyze all buffer allocations in the source code using AST traversal
+    /// Analyze all buffer allocations in the source code using AST traversal.
+    ///
+    /// This is a *whole-file, name-keyed* map: it deliberately also walks
+    /// into every function body, so two different functions that happen to
+    /// declare a same-named local buffer will conflate — whichever
+    /// declaration is encountered last in source order wins the map entry.
+    /// That's harmless for this map's one remaining purpose (feeding
+    /// `analyze_pointer_aliases`, which only ever does an existence check —
+    /// `buffers.contains_key(name)` — to decide whether an identifier is a
+    /// *tracked buffer at all*, never reading its size or allocation_line).
+    /// It is NOT safe to use for size/line-sensitive violation checks across
+    /// function boundaries; see `analyze_global_scope_buffers` and its use
+    /// in `check_with_buffer_info`'s `function_definition` arm (task 389).
     fn analyze_buffer_allocations(&self, source: &str) -> HashMap<String, BufferInfo> {
         let mut buffers = HashMap::new();
 
@@ -289,14 +322,61 @@ impl Arr30C {
         // Analyze struct member arrays declared with typedefs
         self.analyze_struct_typedef_members(source, &typedefs, &mut buffers);
 
-        // Traverse AST to find all declarations
-        self.extract_buffers_from_ast(&root_node, source, &mut buffers, &typedefs, &macros);
+        // Traverse AST to find all declarations, including those nested in
+        // function bodies.
+        self.extract_buffers_from_ast(&root_node, source, &mut buffers, &typedefs, &macros, true);
+
+        buffers
+    }
+
+    /// Like `analyze_buffer_allocations`, but scoped to *file scope only*:
+    /// globals, struct/union member arrays, and typedef-array members —
+    /// never a local declared inside a function body. This is the safe,
+    /// collision-free base that every function starts its own buffer
+    /// tracking from in `check_with_buffer_info`'s `function_definition`
+    /// arm (task 389): each function then layers its own locals on top via
+    /// a fresh `extract_buffers_from_ast` call scoped to just that
+    /// function's body, so two functions with a same-named local buffer
+    /// (different size, different declaration line) never see each other's
+    /// entry.
+    fn analyze_global_scope_buffers(&self, source: &str) -> HashMap<String, BufferInfo> {
+        let mut buffers = HashMap::new();
+
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&crate::parser::c_language())
+            .expect("Error loading C grammar");
+
+        let tree = match parser.parse(source, None) {
+            Some(t) => t,
+            None => return buffers,
+        };
+
+        let root_node = tree.root_node();
+
+        let macros = self.collect_constants(&root_node, source);
+        let typedefs = self.analyze_typedefs(source);
+
+        self.analyze_struct_typedef_members(source, &typedefs, &mut buffers);
+
+        // `include_function_bodies = false`: do not descend into any
+        // function_definition's body here.
+        self.extract_buffers_from_ast(&root_node, source, &mut buffers, &typedefs, &macros, false);
 
         buffers
     }
 
     /// Extract function-like macros from preprocessor directives
-    /// Recursively extract buffer allocations from AST
+    /// Recursively extract buffer allocations from AST.
+    ///
+    /// `include_function_bodies` controls whether this descends into a
+    /// `function_definition`'s body at all. Callers building the shared
+    /// file-scope base (`analyze_global_scope_buffers`, task 389) pass
+    /// `false` so function-local buffers from different functions never
+    /// land in the same name-keyed map; callers that need every buffer in
+    /// the file regardless of scope (`analyze_buffer_allocations`, whose
+    /// only remaining consumer just does a name-existence check for
+    /// pointer-alias detection) pass `true`.
     fn extract_buffers_from_ast(
         &self,
         node: &Node,
@@ -304,7 +384,12 @@ impl Arr30C {
         buffers: &mut HashMap<String, BufferInfo>,
         typedefs: &HashMap<String, usize>,
         macros: &HashMap<String, i64>,
+        include_function_bodies: bool,
     ) {
+        if !include_function_bodies && node.kind() == "function_definition" {
+            return;
+        }
+
         // Check if this node is a declaration
         if node.kind() == "declaration" {
             if let Some(mut buffer) =
@@ -389,7 +474,14 @@ impl Arr30C {
         // Recursively process children
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                self.extract_buffers_from_ast(&child, source, buffers, typedefs, macros);
+                self.extract_buffers_from_ast(
+                    &child,
+                    source,
+                    buffers,
+                    typedefs,
+                    macros,
+                    include_function_bodies,
+                );
             }
         }
     }
@@ -2195,6 +2287,40 @@ impl Arr30C {
     /// parameter, build the "unvalidated function parameter index"
     /// violation directly (bypassing buffer-size tracking, since this
     /// applies even when the buffer isn't tracked at all).
+    /// Like `ast_utils::is_function_parameter`, but correctly locates the
+    /// `function_declarator` even when the function's return type wraps it
+    /// in a `pointer_declarator` (e.g. `const char *GetGamepadName(int
+    /// gamepad)`). `ast_utils::is_function_parameter` only looks for
+    /// `function_declarator` as a *direct* child of the function_definition,
+    /// so for a pointer-returning function it silently finds nothing and
+    /// reports "not a parameter" — regardless of whether `var_name` really
+    /// is one. That made ARR30-C's unvalidated-param-index detection depend
+    /// on the *return type* of the enclosing function rather than on the
+    /// index expression itself: `CORE.Input.Gamepad.axisCount[gamepad]`
+    /// (enclosing function returns `int`) was flagged while the
+    /// structurally identical `CORE.Input.Gamepad.name[gamepad]` (enclosing
+    /// function returns `char *`) was missed (task 239). Reuses
+    /// `find_function_declarator`, which already unwraps one level of
+    /// `pointer_declarator` for exactly this reason (see its use in
+    /// `check_return_pointer_arith_binary_expr`).
+    fn is_function_parameter_any_return(
+        &self,
+        func_node: &Node,
+        var_name: &str,
+        source: &str,
+    ) -> bool {
+        let Some(declarator) = self.find_function_declarator(func_node) else {
+            return false;
+        };
+        let Some(param_list) = find_param_list_node(&declarator) else {
+            return false;
+        };
+        let param_text = &source[param_list.start_byte()..param_list.end_byte()];
+        param_text
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|w| w == var_name)
+    }
+
     fn check_unvalidated_param_index(
         &self,
         node: &Node,
@@ -2205,7 +2331,7 @@ impl Arr30C {
             return None;
         };
         let func_node = find_containing_function(node)?;
-        if !is_function_parameter(&func_node, var, source) {
+        if !self.is_function_parameter_any_return(&func_node, var, source) {
             return None;
         }
         // Static functions whose index param is a user-defined type (e.g. an
@@ -2353,7 +2479,7 @@ impl Arr30C {
             return true;
         }
         if let Some(func_node) = find_containing_function(node) {
-            if is_function_parameter(&func_node, var, source)
+            if self.is_function_parameter_any_return(&func_node, var, source)
                 && !(Self::is_static_function(&func_node, source)
                     && Self::param_has_user_defined_type(&func_node, var, source))
             {
@@ -3641,48 +3767,6 @@ impl Arr30C {
         violations
     }
 
-    /// Pre-scan a function body to find all buffer declarations and malloc assignments,
-    /// including those in nested scopes (if-blocks, loops, compound statements).
-    /// This ensures that `data = (char *)malloc(50)` inside `if(1) { ... }` is visible
-    /// to memcpy checks in sibling scopes.
-    fn prescan_function_buffers(
-        &self,
-        node: &Node,
-        source: &str,
-        buffers: &mut HashMap<String, BufferInfo>,
-    ) {
-        // Check declarations (char buf[100], char *p = malloc(n))
-        if node.kind() == "declaration" {
-            if let Some(new_buffer) = self.extract_buffer_from_declaration(node, source) {
-                buffers.insert(new_buffer.name.clone(), new_buffer);
-            }
-        }
-
-        // Check assignment expressions (data = (char *)malloc(50))
-        let assign_node = if node.kind() == "assignment_expression" {
-            Some(*node)
-        } else if node.kind() == "expression_statement" {
-            node.child(0)
-                .filter(|c| c.kind() == "assignment_expression")
-        } else {
-            None
-        };
-
-        if let Some(assign) = assign_node {
-            if let Some((buf_name, buf_info)) = self.extract_buffer_from_assignment(&assign, source)
-            {
-                buffers.insert(buf_name, buf_info);
-            }
-        }
-
-        // Recurse into all children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.prescan_function_buffers(&child, source, buffers);
-            }
-        }
-    }
-
     /// Check for malloc/calloc/realloc calls without proper NULL checks before pointer arithmetic
     /// Detects patterns where malloc() result is used in pointer arithmetic without NULL validation
     fn check_malloc_null_pointer_arithmetic(
@@ -4376,11 +4460,30 @@ impl Arr30C {
                 violations.extend(self.check_param_decode_overread(node, source));
             }
             "function_definition" => {
-                // Pre-scan entire function body for buffer declarations and malloc
-                // assignments. This ensures buffers allocated in nested scopes (if-blocks,
-                // loops) are visible to sibling scopes for overflow checks.
+                // Task 389: reset to the file-scope-only base (globals,
+                // struct/union member arrays, typedef-array members) rather
+                // than additively prescanning onto whatever buffer state
+                // was inherited from the parent scope — that inherited
+                // state may hold a *different* function's same-named local
+                // buffer (e.g. two functions each with their own `char
+                // buf[N]` of different sizes), which would otherwise leak
+                // into this function's violation messages (wrong size,
+                // wrong allocation_line). Then pre-scan just this
+                // function's own body for its own buffer declarations and
+                // malloc assignments, so buffers allocated in nested scopes
+                // (if-blocks, loops) are visible to sibling scopes for
+                // overflow checks — scoped to this function alone.
+                local_buffers = self.global_scope_buffers.borrow().clone();
                 if let Some(body) = node.child_by_field_name("body") {
-                    self.prescan_function_buffers(&body, source, &mut local_buffers);
+                    let typedefs = self.cached_typedefs.borrow();
+                    self.extract_buffers_from_ast(
+                        &body,
+                        source,
+                        &mut local_buffers,
+                        &typedefs,
+                        macro_constants,
+                        true,
+                    );
                 }
                 // Check for malloc/calloc/realloc without proper NULL checks
                 violations.extend(self.check_malloc_null_pointer_arithmetic(node, source));
