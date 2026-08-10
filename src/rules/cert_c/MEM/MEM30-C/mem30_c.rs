@@ -3358,6 +3358,29 @@ impl MemoryAnalyzer {
             for i in 0..args.child_count() {
                 if let Some(arg) = args.child(i) {
                     if arg.kind() != "(" && arg.kind() != ")" && arg.kind() != "," {
+                        // For an out-param idiom like `realloc(*out, n)` or
+                        // `realloc(out[i], n)` — the double/triple-pointer
+                        // shape used by e.g. `get_if_names(char ***out)` —
+                        // the argument is the *pointee* `*out`/`out[i]`, not
+                        // `out` itself. `lvalue_of` unwraps derefs/subscripts
+                        // down to the base identifier (by design, for
+                        // field-sensitivity elsewhere — see points_to.rs), so
+                        // without this guard the base variable `out` would
+                        // be recorded as invalidated even though `out` the
+                        // pointer variable was never freed; only the buffer
+                        // it pointed to was. That false invalidation then
+                        // self-triggers on this very same argument node when
+                        // the generic traversal re-visits it as a plain
+                        // dereference (`*out` is a `pointer_expression`,
+                        // independently checked by `check_pointer_dereference`),
+                        // reporting a UAF on the realloc call's own old-pointer
+                        // read. `mark_arg_freed` already declines to track a
+                        // `free(*ptr)`/`free(arr[i])` argument for the same
+                        // reason (task: MEM30-C false UAF on triple-pointer
+                        // out-params) — mirror that here for realloc.
+                        if matches!(arg.kind(), "pointer_expression" | "subscript_expression") {
+                            break;
+                        }
                         // For field expressions (like im->clip->list), track the full
                         // field path since only that specific field becomes invalid;
                         // `lvalue_of` already gives exactly that for a top-level
