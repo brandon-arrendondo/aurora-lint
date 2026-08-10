@@ -57,6 +57,36 @@ python -m bench runs
    implement changes → bump version → commit → build release → run benchmark → wait → analyze
    ```
 
+6. **Delta-adjudicate before citing precision/recall for a changed rule (CRITICAL)**:
+   `ground_truth` is keyed on exact `(project, commit, file, line, rule)` tuples,
+   adjudicated at a specific past audit's snapshot. When a rule's detection logic
+   changes (any commit touching `src/rules/cert_c/**/*.rs` that alters what it
+   flags — not a pure refactor), its new findings land at `(file, line)` pairs
+   that were **never adjudicated**, so they're silently excluded from the
+   precision/recall denominator in either direction. A raw-count jump or a
+   flat "precision held" number computed only over the labeled sample can
+   both look clean while the real picture is unmeasured underneath. Before
+   writing "precision improved/held" or "FP reduced" into a commit message,
+   task note, or the paper for a changed rule:
+   - Pull the new unlabeled findings for that rule only:
+     `bench realworld-unlabeled RUN --rule RULE_ID --project P --json`
+     (repeat per affected project, or omit `--project` and split after).
+   - **Derive each project's in-scope file predicate from its own
+     `data/precision_audit/<project>/README.md` BEFORE batching** — not
+     after. Task 420's delta-adjudication found 2,548 of 4,026 (63%) raw
+     unlabeled findings were out-of-scope noise (test harnesses, vendored
+     deps, language bindings) that should never have been batched; mosquitto
+     alone was 73% contamination. Scoping after the fact means redoing
+     already-completed adjudication batches.
+   - Batch (~110-150 findings/batch), adjudicate, and import via
+     `bench realworld-import-labels` — same workflow as a fresh oracle build.
+     See `data/precision_audit/DELTA_MEM31_TASK420.md` for a fully worked
+     example (6 projects, 14 batches, 1,478 findings, 0.7% delta precision —
+     a very different number than the aggregate raw-count comparison
+     suggested).
+   - Only after that pass is ground_truth updated for the new lines should a
+     precision/recall claim about the changed rule be published.
+
 ### Querying Results
 
 The MCP tools (`get_results`, `get_cwe_detail`, `compare_runs`, `list_runs`) query

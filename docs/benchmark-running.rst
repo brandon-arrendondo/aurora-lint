@@ -269,6 +269,51 @@ Incremental adjudication loop (need not be one-shot):
 
 The first 200 labels were seeded from ``data/precision_audit/adjudication_0.4.22.csv``.
 
+Delta-Adjudication Gate
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. important::
+
+    Before citing a precision/recall claim ("precision held", "FP reduced",
+    a paper table row) for a rule whose detection logic just changed, **run
+    a delta-adjudication pass on that rule's new findings first.**
+
+``ground_truth`` labels are snapshotted at `(project, commit, file, line,
+rule)`. When a rule's logic changes (any commit touching
+``src/rules/cert_c/**/*.rs`` that alters what it flags, not a pure refactor),
+its new findings land on ``(file, line)`` pairs that were never adjudicated —
+they're silently excluded from the precision/recall denominator regardless
+of direction. A flat precision number computed only over the pre-existing
+labeled sample, or a raw finding-count comparison via ``compare_runs``, can
+both look clean while the real picture underneath is unmeasured. This is not
+hypothetical: a 21-rule sweep in this project once nearly got reported as a
+clean net-positive on aggregate raw-count deltas alone before someone
+actually adjudicated the new findings.
+
+Procedure:
+
+1. Pull the rule's new unlabeled findings (repeat per project, or split
+   after)::
+
+       python -m bench realworld-unlabeled RUN --rule RULE_ID --project P --json
+
+2. **Derive each project's in-scope file predicate from its own**
+   ``data/precision_audit/<project>/README.md`` **before batching, not
+   after.** One delta-adjudication pass found 2,548 of 4,026 (63%) raw
+   unlabeled findings were out-of-scope noise (test harnesses, vendored
+   deps, language bindings) — mosquitto alone was 73% contamination.
+   Scoping after batches are already generated means redoing completed
+   adjudication work.
+3. Batch (~110-150 findings/batch), adjudicate, and import with
+   ``realworld-import-labels`` — the same workflow as building a fresh
+   oracle.
+4. Only after ``ground_truth`` reflects the new lines is a precision/recall
+   claim about the changed rule safe to publish.
+
+See ``data/precision_audit/DELTA_MEM31_TASK420.md`` for a fully worked
+example: 6 projects, 14 batches, 1,478 findings, 0.7% delta precision — a
+very different number than the aggregate raw-count comparison suggested.
+
 Comparing Across Runs
 ---------------------
 
