@@ -519,6 +519,53 @@ suite by several multiples in line count, it is anticipated as a
 precision (true/false-positive) target with a module-scoped audit rather
 than a whole-tree recall audit.
 
+\subsection{Ground-Truth Adjudication Is a Snapshot, Not an Asymptote}
+\label{sec:ground-truth-snapshot}
+
+The real-world precision and recall figures in this paper
+(\cref{sec:realworld-results,sec:provenance-frontier}) come from a
+ground-truth oracle: individual findings manually labeled TP or FP and
+stored keyed on the exact tuple (project, commit, file, line, rule).
+Three properties of how that oracle is built limit what its numbers
+can be read to mean.
+
+First, adjudication is finding-based and incremental, never an
+exhaustive re-derivation of every possible defect in a file. An audit
+labels the findings a specific tool version actually emitted; it does
+not independently enumerate every true vulnerability the file
+contains.
+
+Second, false-negative hunting during an audit is scoped to whatever
+bug categories that audit's brief called out, not to every rule sqc
+implements. For example, the hostap audit brief targets resource
+leaks, unchecked allocations, unclosed file descriptors, and
+unvalidated wire-length fields; it does not target double-free
+detection. Across 30 audit batches and a full source read-through of
+\texttt{ieee802\_11.c}, zero MEM31-C false negatives were ever
+recorded for that file---not because the file has none, but because
+double-free was never in that read-through's scope. A rule's absence
+from a file's recorded false negatives is evidence about audit scope,
+not evidence the rule has no misses there.
+
+Third, and as a consequence of the first two, reported precision and
+recall should be read as ``measured against ground-truth snapshot $Y$
+as adjudicated,'' not as an asymptotic property of the rule. When a
+rule's detection logic changes, its new findings do not automatically
+inherit labels from the old ones: they fall outside the labeled set
+and are excluded from the precision/recall denominator---in either
+direction---until re-adjudicated. This can make a metric look flat
+while the unlabeled coverage underneath it silently narrows. Concretely,
+during the v0.4.176 session that motivated this caveat, a MEM31-C
+scoping fix roughly doubled the rule's raw finding count in the
+labeled-sample subset (2,206 $\to$ 4,429) while the reported
+precision/recall for that rule appeared unchanged, because none of the
+$\sim$2,244 new findings had yet been adjudicated into the denominator.
+Any historical progression-table row (\cref{fig:tp-rate-progression})
+for a rule whose detection logic changed since its last full
+adjudication pass should therefore be treated as provisional pending
+delta-adjudication, not as a confirmed measurement at the newer
+version.
+
 %% ============================================================
 \section{Results}
 \label{sec:results}
