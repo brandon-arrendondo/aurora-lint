@@ -45,18 +45,60 @@ impl CertRule for Mem02C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        let mut var_types: HashMap<String, String> = HashMap::new();
 
-        // First pass: collect variable declarations and their types
-        self.collect_var_types(node, source, &mut var_types);
+        // Collect file-scope declarations first (variables declared outside
+        // any function body). These are genuinely shared across every
+        // function that references them, so it is correct to seed each
+        // function's map with them.
+        let mut global_var_types: HashMap<String, String> = HashMap::new();
+        self.collect_top_level_declarations(node, source, &mut global_var_types);
 
-        // Second pass: check for violations
-        self.check_node(node, source, &mut violations, &var_types);
+        // Each function gets its own scope: a local variable declared inside
+        // one function is a *different* object than a same-named local
+        // declared inside another function, so per-function var_types must
+        // never be shared across functions (mirrors the EXP39-C fix for the
+        // analogous "declared type per variable name" tracking pattern).
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+
+        if functions.is_empty() {
+            // No functions at all (e.g. a header-only or declarations-only
+            // snippet) - fall back to treating the whole translation unit as
+            // a single scope, matching pre-fix behavior for this edge case.
+            let mut var_types = global_var_types.clone();
+            self.collect_var_types(node, source, &mut var_types);
+            self.check_node(node, source, &mut violations, &var_types);
+        } else {
+            for func in functions {
+                let mut var_types = global_var_types.clone();
+                self.collect_var_types(&func, source, &mut var_types);
+                self.check_node(&func, source, &mut violations, &var_types);
+            }
+        }
+
         violations
     }
 }
 
 impl Mem02C {
+    /// Collect variable declarations that are direct children of the
+    /// translation unit (i.e. file scope, not inside any function body).
+    /// These are shared across every function, unlike function-local
+    /// declarations which must stay scoped per-function (see `check`).
+    fn collect_top_level_declarations(
+        &self,
+        node: &Node,
+        source: &str,
+        var_types: &mut HashMap<String, String>,
+    ) {
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "declaration" {
+                    self.record_declaration_types(&child, source, var_types);
+                }
+            }
+        }
+    }
+
     fn collect_var_types(
         &self,
         node: &Node,
@@ -65,15 +107,22 @@ impl Mem02C {
     ) {
         // Look for declarations to track pointer types
         for node in query::find_descendants_of_kind(*node, "declaration") {
-            if let Some(decl_type) = self.extract_declaration_type(&node, source) {
-                // Get declarators
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if let Some(var_name) =
-                            self.extract_var_name_from_declarator(&child, source)
-                        {
-                            var_types.insert(var_name, decl_type.clone());
-                        }
+            self.record_declaration_types(&node, source, var_types);
+        }
+    }
+
+    fn record_declaration_types(
+        &self,
+        node: &Node,
+        source: &str,
+        var_types: &mut HashMap<String, String>,
+    ) {
+        if let Some(decl_type) = self.extract_declaration_type(node, source) {
+            // Get declarators
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if let Some(var_name) = self.extract_var_name_from_declarator(&child, source) {
+                        var_types.insert(var_name, decl_type.clone());
                     }
                 }
             }
