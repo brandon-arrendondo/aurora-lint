@@ -1727,6 +1727,23 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 {
                     return true;
                 }
+
+                // Inter-procedural: a user-defined wrapper whose body was
+                // seen to malloc/calloc/realloc/aligned_alloc and return the
+                // result (FunctionSummary.returns_allocation) is just as much
+                // a fresh allocation as the literal/heuristic cases above.
+                // Without this, reassigning through such a wrapper after a
+                // free (e.g. `txt = octet_string_str(hash);`) never clears
+                // freed_memory, so the next free(txt) is flagged as a false
+                // double-free against stale state (task: MEM31-C wrapper
+                // reassignment).
+                if self
+                    .function_summaries
+                    .get(&func_name)
+                    .is_some_and(|summary| summary.returns_allocation)
+                {
+                    return true;
+                }
             }
         }
         false
