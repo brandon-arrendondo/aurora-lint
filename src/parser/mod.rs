@@ -26,6 +26,13 @@ impl CParser {
     pub fn parse_file(&mut self, file_path: &str) -> Result<(Tree, String)> {
         let source = fs::read_to_string(file_path)
             .with_context(|| format!("Failed to read file: {}", file_path))?;
+        // Task 435: blank empty WINAPI/RLAPI-style export-specifier macros
+        // before parsing -- tree-sitter-c's grammar can't parse a bare
+        // identifier immediately before a declaration's type, and the
+        // resulting ERROR-node recovery can swallow unrelated content later
+        // in the file. Length-preserving, so all positions below are
+        // unaffected by this substitution.
+        let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
 
         let tree = self
             .parser
@@ -37,8 +44,9 @@ impl CParser {
 
     #[allow(dead_code)]
     pub fn parse_source(&mut self, source: &str) -> Result<Tree> {
+        let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(source);
         self.parser
-            .parse(source, None)
+            .parse(&source, None)
             .context("Failed to parse source code")
     }
 }

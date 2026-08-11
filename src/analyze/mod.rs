@@ -3,6 +3,7 @@ pub mod cfg;
 pub mod const_eval;
 pub mod context;
 pub mod dataflow;
+pub mod empty_macro_blank;
 pub mod function_summary;
 pub mod init_state;
 pub mod macro_expand;
