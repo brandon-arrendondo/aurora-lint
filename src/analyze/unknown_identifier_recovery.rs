@@ -29,6 +29,14 @@
 //! finds no more single-token identifier ERROR nodes, whether or not
 //! `has_error()` has fully cleared (some files may have unrelated parse
 //! issues this pass isn't meant to touch).
+//!
+//! Task 438 added a second, differently-shaped recovery target to the same
+//! loop: a lone `{`/`}` ERROR-wrapped inside a `#if defined(__cplusplus)`
+//! (or `#ifdef`/`#elif`) conditional -- the dual-C/C++-header idiom for
+//! guarding an `extern "C"` block's open/close brace. See
+//! [`find_blankable_preproc_brace_error`] for why this one small, locally
+//! contained defect was observed cascading into a file-spanning ERROR node
+//! on raylib's rlgl.h.
 
 use tree_sitter::{Node, Parser, Tree};
 
@@ -144,11 +152,81 @@ fn find_blankable_identifier_error(node: &Node, source: &str) -> Option<(usize, 
 fn blank_range(source: &str, start: usize, end: usize) -> String {
     let mut bytes = source.as_bytes().to_vec();
     for b in bytes.iter_mut().take(end).skip(start) {
-        *b = b' ';
+        // Newlines are preserved even inside a blanked range (task 438's
+        // preproc-brace recovery blanks a whole directive line, including
+        // the newline that separates it from the brace) so line numbers
+        // downstream never shift.
+        if *b != b'\n' && *b != b'\r' {
+            *b = b' ';
+        }
     }
     // Safe: only ASCII identifier bytes (already validated by
     // `is_bare_identifier`) are replaced with ASCII spaces.
     String::from_utf8(bytes).unwrap_or_else(|_| source.to_string())
+}
+
+/// Depth-first search for a `preproc_if`/`preproc_ifdef`/`preproc_elif`-style
+/// conditional node whose entire guarded content is a single ERROR-wrapped
+/// bare brace (`{` or `}`). This is the dual-C/C++-header idiom for
+/// conditionally opening/closing an `extern "C"` block:
+/// ```c
+/// #if defined(__cplusplus)
+/// extern "C" {
+/// #endif
+/// ...
+/// #if defined(__cplusplus)
+/// }
+/// #endif
+/// ```
+/// tree-sitter-c's grammar doesn't accept a lone `}` (or `{`) as valid
+/// preproc-conditional content in this position -- confirmed on raylib's
+/// rlgl.h (task 438): the resulting ERROR, though itself small and locally
+/// contained, made the GLR parser's global cost-based recovery flatten the
+/// ENTIRE enclosing `#ifndef` header guard (differently-parsed and clean in
+/// isolation) into one giant ERROR node spanning almost the whole file.
+///
+/// Unlike [`find_blankable_identifier_error`], this never removes the brace
+/// itself (real, structurally load-bearing code) -- only the surrounding
+/// `#if`/`#ifdef`/`#elif`-style condition line and its matching `#endif`
+/// token, which is what the grammar can't place, are blanked. Returns the
+/// two byte ranges to blank.
+fn find_blankable_preproc_brace_error(
+    node: &Node,
+    source: &str,
+) -> Option<((usize, usize), (usize, usize))> {
+    if matches!(
+        node.kind(),
+        "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef"
+    ) {
+        let mut error_child = None;
+        let mut endif_child = None;
+        for i in 0..node.child_count() {
+            if let Some(c) = node.child(i) {
+                if c.is_error() {
+                    let trimmed = source[c.start_byte()..c.end_byte()].trim();
+                    if trimmed == "{" || trimmed == "}" {
+                        error_child = Some(c);
+                    }
+                } else if !c.is_named() && c.kind() == "#endif" {
+                    endif_child = Some(c);
+                }
+            }
+        }
+        if let (Some(err), Some(endif)) = (error_child, endif_child) {
+            return Some((
+                (node.start_byte(), err.start_byte()),
+                (endif.start_byte(), endif.end_byte()),
+            ));
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if let Some(found) = find_blankable_preproc_brace_error(&child, source) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 /// Parse `source`, then iteratively blank and re-parse away any single-token
@@ -167,10 +245,16 @@ pub fn parse_with_recovery(parser: &mut Parser, source: String) -> Option<(Tree,
         if !tree.root_node().has_error() {
             break;
         }
-        let Some((start, end)) = find_blankable_identifier_error(&tree.root_node(), &text) else {
+        if let Some((start, end)) = find_blankable_identifier_error(&tree.root_node(), &text) {
+            text = blank_range(&text, start, end);
+        } else if let Some(((s1, e1), (s2, e2))) =
+            find_blankable_preproc_brace_error(&tree.root_node(), &text)
+        {
+            text = blank_range(&text, s1, e1);
+            text = blank_range(&text, s2, e2);
+        } else {
             break;
-        };
-        text = blank_range(&text, start, end);
+        }
         tree = parser.parse(&text, None)?;
     }
 
@@ -238,6 +322,44 @@ mod tests {
         let (has_error, text) = recover(src);
         assert!(!has_error);
         assert_eq!(text, src);
+    }
+
+    #[test]
+    fn recovers_cplusplus_guarded_extern_c_brace() {
+        // Task 438: raylib rlgl.h's dual-C/C++ extern "C" guard idiom closes
+        // the block with `#if defined(__cplusplus) } #endif` -- a lone brace
+        // as the guarded content. tree-sitter-c can't place that bare `}`
+        // (it isolates it as a leaf ERROR node inside an otherwise-clean
+        // `preproc_if`), reproducible minimally as any declaration directly
+        // followed by this idiom -- no `extern "C"` wrapper needed to
+        // trigger it. On the real file (verified directly against raylib's
+        // rlgl.h, not reproducible in a small snippet -- tree-sitter's GLR
+        // disambiguation is a *global*, file-size-sensitive cost comparison)
+        // this one small, locally contained defect made the parser flatten
+        // the entire enclosing `#ifndef` header guard into one
+        // file-spanning ERROR node.
+        //
+        // This snippet's bare `}` has no matching unguarded `{` (that's
+        // rlgl.h's `extern "C" {`, elided here), so it stays a genuine,
+        // unrelated "unmatched brace" error even after recovery -- what
+        // this test asserts is narrower: recovery must find and blank
+        // exactly the surrounding `#if`/`#endif` pair (the part tree-sitter
+        // can't place), leaving the brace itself untouched.
+        let src = "int x;\n#if defined(__cplusplus)\n}\n#endif\n";
+        let (_, text) = recover(src);
+        assert!(!text.contains("__cplusplus"));
+        assert!(text.contains('}'));
+    }
+
+    #[test]
+    fn preproc_brace_recovery_preserves_byte_length_and_line_count() {
+        let src = "int x;\n#if defined(__cplusplus)\n}\n#endif\nint y;\n";
+        let (_, text) = recover(src);
+        assert_eq!(text.len(), src.len());
+        assert_eq!(text.matches('\n').count(), src.matches('\n').count());
+        let pos_orig = src.find("int y;").unwrap();
+        let pos_out = text.find("int y;").unwrap();
+        assert_eq!(pos_orig, pos_out);
     }
 
     #[test]
