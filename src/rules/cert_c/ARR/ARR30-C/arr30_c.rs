@@ -358,12 +358,54 @@ impl Arr30C {
         let typedefs = self.analyze_typedefs(source);
 
         self.analyze_struct_typedef_members(source, &typedefs, &mut buffers);
+        self.analyze_struct_field_array_buffers(
+            &root_node,
+            source,
+            &typedefs,
+            &macros,
+            &mut buffers,
+        );
 
         // `include_function_bodies = false`: do not descend into any
         // function_definition's body here.
         self.extract_buffers_from_ast(&root_node, source, &mut buffers, &typedefs, &macros, false);
 
         buffers
+    }
+
+    /// Track array-typed struct/union member fields (e.g. `Matrix
+    /// stack[RL_MAX_MATRIX_STACK_SIZE];` inside a struct body) as buffers.
+    ///
+    /// `extract_buffers_from_ast` only walks top-level `declaration` nodes,
+    /// but a struct member is a `field_declaration` node in tree-sitter-c's
+    /// grammar -- a declaration directly inside a struct/union body was
+    /// never seen at all, so an access like `RLGL.State.stack[idx]` had no
+    /// buffer size to check against and silently produced no violation,
+    /// regardless of whether `idx` was validated (task 235; real example:
+    /// raylib's rlgl.h `RLGL.State.stack[RL_MAX_MATRIX_STACK_SIZE]`).
+    /// `field_declaration` reuses the same declarator grammar as
+    /// `declaration`, so the existing extractor works unmodified once
+    /// pointed at the right node kind.
+    fn analyze_struct_field_array_buffers(
+        &self,
+        root: &Node,
+        source: &str,
+        typedefs: &HashMap<String, usize>,
+        macros: &HashMap<String, i64>,
+        buffers: &mut HashMap<String, BufferInfo>,
+    ) {
+        for field in query::find_descendants_of_kind(*root, "field_declaration") {
+            if let Some(mut buffer) =
+                self.extract_buffer_from_declaration_with_typedefs(&field, source, typedefs)
+            {
+                if let BufferSize::Symbolic(ref sym) = buffer.size {
+                    if let Some(&value) = macros.get(sym) {
+                        buffer.size = BufferSize::Static(value as usize);
+                    }
+                }
+                buffers.entry(buffer.name.clone()).or_insert(buffer);
+            }
+        }
     }
 
     /// Extract function-like macros from preprocessor directives
@@ -4931,7 +4973,19 @@ impl Arr30C {
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 match child.kind() {
-                    "identifier" => {
+                    // `field_identifier` is the same declarator-name position
+                    // as `identifier`, but that's the node kind tree-sitter-c
+                    // uses for a struct/union member's own name (a
+                    // `field_declaration`'s array_declarator, e.g. `Matrix
+                    // stack[N];` inside a struct body) -- distinct from a
+                    // top-level `declaration`'s plain `identifier`. Without
+                    // this, the member's name was never captured, and if the
+                    // array size was itself a bare identifier (a macro name,
+                    // not yet expanded here), IT got misread as the "name"
+                    // instead, silently dropping the buffer entirely
+                    // (task 235; real example: raylib's rlgl.h `Matrix
+                    // stack[RL_MAX_MATRIX_STACK_SIZE];`).
+                    "identifier" | "field_identifier" => {
                         if var_name.is_none() {
                             var_name =
                                 Some(source[child.start_byte()..child.end_byte()].to_string());
