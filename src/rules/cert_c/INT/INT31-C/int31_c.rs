@@ -578,6 +578,11 @@ const WIDE_TYPES: &[&str] = &[
     "int64_t",
     "uint64_t",
     "size_t",
+    // Bare "int64"/"uint64" substring (not just the "_t"-suffixed stdint
+    // form) catches project-specific 64-bit typedefs like sqlite3_int64/
+    // sqlite3_uint64 and the older sqlite_int64 alias (task 174).
+    "int64",
+    "uint64",
 ];
 
 impl CertRule for Int31C {
@@ -1006,16 +1011,167 @@ impl Int31C {
                     var_types,
                     validated_vars,
                 );
+                self.check_narrow_accessor_before_alloc(node, source, violations);
             }
         }
+    }
+
+    /// Known accessor functions that return a narrower type than a same-family
+    /// sibling exists for -- specifically the sqlite3_value_*/sqlite3_column_*
+    /// "int" variants, which return a 32-bit `int` even though the underlying
+    /// storage may hold a full 64-bit value, and a `..._int64` sibling exists
+    /// for exactly that reason (task 174; real example: sqlite
+    /// ext/misc/sqlar.c's sqlarUncompressFunc uses `sqlite3_value_int()` on an
+    /// attacker-controlled archive-entry size, then passes the truncated
+    /// result as an allocation size to `sqlite3_malloc()`).
+    fn narrow_accessor_wide_sibling(func_name: &str) -> bool {
+        matches!(func_name, "sqlite3_value_int" | "sqlite3_column_int")
+    }
+
+    /// True if `var_name` is later passed (textually after `after`, within
+    /// `body`) as one of the size-parameter positions of a known allocation
+    /// call, using the same dominant-identifier resolution as
+    /// `check_call_argument_conversion`.
+    fn var_flows_to_alloc_size_arg(
+        body: &Node,
+        var_name: &str,
+        source: &str,
+        after: &Node,
+    ) -> bool {
+        for call in query::find_descendants_of_kind(*body, "call_expression") {
+            if call.start_byte() <= after.start_byte() {
+                continue;
+            }
+            let Some(func) = call.child_by_field_name("function") else {
+                continue;
+            };
+            let func_name = get_node_text(&func, source);
+            let Some(positions) = Self::get_size_t_param_positions(func_name) else {
+                continue;
+            };
+            let Some(args) = call.child_by_field_name("arguments") else {
+                continue;
+            };
+            let mut arg_nodes = Vec::new();
+            for i in 0..args.child_count() {
+                if let Some(child) = args.child(i) {
+                    if child.kind() != "," && child.kind() != "(" && child.kind() != ")" {
+                        arg_nodes.push(child);
+                    }
+                }
+            }
+            for &idx in positions {
+                let Some(arg) = arg_nodes.get(idx) else {
+                    continue;
+                };
+                let ident = if arg.kind() == "identifier" {
+                    get_node_text(arg, source).to_string()
+                } else {
+                    Self::extract_dominant_identifier(arg, source)
+                };
+                if ident == var_name {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Flag `x = sqlite3_value_int(...)` (or `sqlite3_column_int`) when `x`
+    /// later flows into an allocation call's size argument -- the 32-bit
+    /// accessor truncates a value that may need the full 64-bit range, and a
+    /// `..._int64` sibling exists precisely for that case (task 174).
+    fn check_narrow_accessor_before_alloc(
+        &self,
+        node: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let (lhs_name, rhs_node) = match node.kind() {
+            "assignment_expression" => {
+                let left = match node.child_by_field_name("left") {
+                    Some(l) => l,
+                    None => return,
+                };
+                if left.kind() != "identifier" {
+                    return;
+                }
+                let right = match node.child_by_field_name("right") {
+                    Some(r) => r,
+                    None => return,
+                };
+                (get_node_text(&left, source).trim().to_string(), right)
+            }
+            "init_declarator" => {
+                let declarator = match node.child_by_field_name("declarator") {
+                    Some(d) => d,
+                    None => return,
+                };
+                let value = match node.child_by_field_name("value") {
+                    Some(v) => v,
+                    None => return,
+                };
+                (Self::extract_var_name(&declarator, source), value)
+            }
+            _ => return,
+        };
+        if lhs_name.is_empty() || rhs_node.kind() != "call_expression" {
+            return;
+        }
+        let Some(func) = rhs_node.child_by_field_name("function") else {
+            return;
+        };
+        let func_name = get_node_text(&func, source);
+        if !Self::narrow_accessor_wide_sibling(func_name) {
+            return;
+        }
+
+        let Some(container) = ast_utils::find_containing_function(node) else {
+            return;
+        };
+        let Some(body) = container.child_by_field_name("body") else {
+            return;
+        };
+        if !Self::var_flows_to_alloc_size_arg(&body, &lhs_name, source, node) {
+            return;
+        }
+
+        // Opt-in provenance gate (mirrors the rest of this rule): only flag
+        // when the accessor's own source (the sqlite3_value/column argument)
+        // is untrusted/unbounded input.
+        if let Some(args) = rhs_node.child_by_field_name("arguments") {
+            if let Some(arg0) = args.named_child(0) {
+                if !self.converted_value_is_risky(&arg0, source) {
+                    return;
+                }
+            }
+        }
+
+        let pos = node.start_position();
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: Severity::High,
+            message: format!(
+                "'{}' from {}() truncated to 32 bits, then used as an allocation size",
+                lhs_name, func_name
+            ),
+            file_path: String::new(),
+            line: pos.row + 1,
+            column: pos.column + 1,
+            suggestion: Some(format!(
+                "Use {}64() to preserve the full range before it reaches the allocation size",
+                func_name
+            )),
+            ..Default::default()
+        });
     }
 
     /// Returns the parameter indices that expect size_t for known standard library functions.
     fn get_size_t_param_positions(func_name: &str) -> Option<&'static [usize]> {
         match func_name {
-            "malloc" => Some(&[0]),
+            "malloc" | "sqlite3_malloc" | "sqlite3_malloc64" => Some(&[0]),
             "calloc" => Some(&[0, 1]),
-            "realloc" => Some(&[1]),
+            "realloc" | "sqlite3_realloc" | "sqlite3_realloc64" => Some(&[1]),
             "aligned_alloc" => Some(&[0, 1]),
             "memcpy" | "memmove" | "memset" | "memcmp" => Some(&[2]),
             "strncpy" | "strncat" | "strncmp" => Some(&[2]),
@@ -1279,7 +1435,25 @@ impl Int31C {
         }
 
         // Get source type if known
-        let source_type = var_types.get(&source_expr).cloned().unwrap_or_default();
+        let mut source_expr = source_expr;
+        let mut source_type = var_types.get(&source_expr).cloned().unwrap_or_default();
+        if source_type.is_empty() {
+            // The cast operand may be a compound expression rather than a bare
+            // variable, e.g. `(char)(nWord + 100)` -- the raw operand text
+            // ("nWord + 100") never matches a var_types key. Resolve the
+            // dominant identifier inside the operand (same helper used for
+            // call-argument narrowing below) so a wide value narrowed via an
+            // arithmetic expression is still caught (task 174; real example:
+            // sqlite ext/misc/amatch.c `nBuf = (char)(nWord + 100);` where
+            // nBuf/nWord are sqlite3_int64 and the result feeds a realloc).
+            if let Some(op) = self.get_cast_operand_node(node) {
+                let dominant = Self::extract_dominant_identifier(&op, source);
+                if let Some(t) = var_types.get(&dominant) {
+                    source_expr = dominant;
+                    source_type = t.clone();
+                }
+            }
+        }
         if source_type.is_empty() {
             // Even without a resolved source type, detect narrowing when the cast
             // operand is a shift expression (e.g., `(uint8_t)(val >> 8)`). A right-shift
