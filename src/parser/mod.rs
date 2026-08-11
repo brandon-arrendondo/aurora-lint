@@ -34,10 +34,16 @@ impl CParser {
         // unaffected by this substitution.
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
 
-        let tree = self
-            .parser
-            .parse(&source, None)
-            .with_context(|| format!("Failed to parse file: {}", file_path))?;
+        // Task 437: if a parse error remains (e.g. an externally-defined
+        // attribute macro with no local #define for the pass above to
+        // find), iteratively blank single-token unknown-identifier ERROR
+        // nodes and re-parse. Length-preserving and bounded; a no-op reparse
+        // when the first parse already has no error.
+        let (tree, source) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
+            &mut self.parser,
+            source,
+        )
+        .with_context(|| format!("Failed to parse file: {}", file_path))?;
 
         Ok((tree, source))
     }
@@ -45,9 +51,12 @@ impl CParser {
     #[allow(dead_code)]
     pub fn parse_source(&mut self, source: &str) -> Result<Tree> {
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(source);
-        self.parser
-            .parse(&source, None)
-            .context("Failed to parse source code")
+        let (tree, _) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
+            &mut self.parser,
+            source,
+        )
+        .context("Failed to parse source code")?;
+        Ok(tree)
     }
 }
 

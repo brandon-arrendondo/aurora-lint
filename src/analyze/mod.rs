@@ -13,6 +13,7 @@ pub mod points_to;
 pub mod prescan;
 pub mod relevance;
 pub mod suppression;
+pub mod unknown_identifier_recovery;
 pub mod value_range;
 pub mod vra_access;
 
