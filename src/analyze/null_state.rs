@@ -1622,6 +1622,14 @@ pub fn is_nullable_function(func_name: &str, summaries: &HashMap<String, Functio
         "malloc"
             | "calloc"
             | "realloc"
+            // sqlite's own allocator wrappers (ext/misc/vfstrace.c:895-class FN,
+            // task 173): sqlite3_malloc/sqlite3_malloc64 return NULL on OOM just
+            // like the stdlib functions they wrap, but aren't in FunctionSummary
+            // unless the whole sqlite3 source tree is in the -d prescan set.
+            | "sqlite3_malloc"
+            | "sqlite3_malloc64"
+            | "sqlite3_realloc"
+            | "sqlite3_realloc64"
             | "strstr"
             | "strchr"
             | "strrchr"
