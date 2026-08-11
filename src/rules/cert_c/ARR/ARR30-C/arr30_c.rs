@@ -1133,6 +1133,23 @@ impl Arr30C {
         if depth > MAX_DEPTH {
             return None;
         }
+        let value_node = self.find_last_assigned_value_expr(name, position_node, source)?;
+        self.resolve_value_expr(&value_node, source, depth)
+    }
+
+    /// Find the value expression most recently assigned to `name` before
+    /// `position_node`, scope-correctly (disambiguating shadowed
+    /// re-declarations in sibling/nested blocks via
+    /// `find_enclosing_declaration_for_identifier`), without resolving it
+    /// further. Shared by `resolve_value_of_identifier_at` (which resolves
+    /// the result to a constant) and `is_bounded_by_read_call_length`
+    /// (which instead checks whether it's a `recv()`/`read()`-family call).
+    fn find_last_assigned_value_expr<'a>(
+        &self,
+        name: &str,
+        position_node: &Node<'a>,
+        source: &str,
+    ) -> Option<Node<'a>> {
         let decl = find_enclosing_declaration_for_identifier(position_node, name, source)?;
         let block = decl.parent()?;
 
@@ -1155,8 +1172,7 @@ impl Arr30C {
             }
         }
 
-        let value_node = last_value_expr?;
-        self.resolve_value_expr(&value_node, source, depth)
+        last_value_expr
     }
 
     /// Resolve a value EXPRESSION node to a constant: a numeric literal
@@ -2265,6 +2281,7 @@ impl Arr30C {
                         buffer_info,
                         effective_size,
                         macro_constants,
+                        &array_name,
                     );
 
                     if is_violation {
@@ -2388,11 +2405,18 @@ impl Arr30C {
         buffer_info: &BufferInfo,
         effective_size: usize,
         macro_constants: &HashMap<String, i64>,
+        buffer_name: &str,
     ) -> bool {
         match &buffer_info.size {
-            BufferSize::Static(_) | BufferSize::DynamicCalculated(_) => {
-                self.is_fixed_size_violation(node, source, index, effective_size, macro_constants)
-            }
+            BufferSize::Static(_) | BufferSize::DynamicCalculated(_) => self
+                .is_fixed_size_violation(
+                    node,
+                    source,
+                    index,
+                    effective_size,
+                    macro_constants,
+                    buffer_name,
+                ),
             BufferSize::Symbolic(size_var) => self.is_symbolic_size_violation(index, size_var),
             BufferSize::Dynamic(_) => match index {
                 IndexValue::Variable(_) | IndexValue::Expression(_, None) => {
@@ -2412,6 +2436,7 @@ impl Arr30C {
         index: &IndexValue,
         effective_size: usize,
         macro_constants: &HashMap<String, i64>,
+        buffer_name: &str,
     ) -> bool {
         match index {
             IndexValue::Constant(idx) => {
@@ -2432,6 +2457,7 @@ impl Arr30C {
                 var,
                 effective_size,
                 macro_constants,
+                buffer_name,
             ),
             IndexValue::Unknown => false,
         }
@@ -2447,6 +2473,7 @@ impl Arr30C {
         var: &str,
         effective_size: usize,
         macro_constants: &HashMap<String, i64>,
+        buffer_name: &str,
     ) -> bool {
         // VRA suppression: if VRA proves index in [0, size-1], safe.
         let vra_safe = self
@@ -2475,6 +2502,23 @@ impl Arr30C {
         if alias_safe {
             return false;
         }
+        // recv()/read()-family return-value proof (task 434): a third proof
+        // source alongside VRA and alias resolution above, for the Juliet
+        // CWE-789 boilerplate idiom `recvResult = recv(sock, inputBuffer,
+        // CHAR_ARRAY_SIZE - 1, 0); ... inputBuffer[recvResult] = '\0';`. The
+        // return value of a bounded-read call against a given buffer and
+        // length argument can never exceed that length -- safe by
+        // construction, not by a runtime check VRA/alias resolution could see.
+        if self.is_bounded_by_read_call_length(
+            var,
+            node,
+            source,
+            buffer_name,
+            effective_size,
+            macro_constants,
+        ) {
+            return false;
+        }
         if self.has_recursive_index_modification(node, var, source, effective_size) {
             return true;
         }
@@ -2487,6 +2531,81 @@ impl Arr30C {
             }
         }
         !self.has_proper_bounds_check(node, source, effective_size, macro_constants)
+    }
+
+    /// True if `var`'s value is provably bounded by a same-buffer
+    /// `recv()`/`read()`-family call's own length argument:
+    /// `var = recv(fd, buf, len_expr, flags)` (or `read(fd, buf, len_expr)`)
+    /// where `buf` is textually the same buffer being indexed and
+    /// `len_expr` evaluates to a constant `<= effective_size`. Such a
+    /// call's return value can never exceed the length it was given
+    /// against that exact buffer (task 434).
+    ///
+    /// Searches the whole enclosing function (not just `var`'s own
+    /// declaration-scope block, unlike `find_last_assigned_value_expr`):
+    /// Juliet's `do { ... recvResult = recv(...); ... } while (0);`
+    /// idiom assigns inside a nested compound statement one level below
+    /// `recvResult`'s own declaration block, which a same-block-only scan
+    /// would never see.
+    fn is_bounded_by_read_call_length(
+        &self,
+        var: &str,
+        node: &Node,
+        source: &str,
+        buffer_name: &str,
+        effective_size: usize,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        const BOUNDED_RETURN_CALLS: &[&str] = &["recv", "read", "recvfrom", "pread"];
+
+        let Some(func_node) = find_containing_function(node) else {
+            return false;
+        };
+
+        let mut found = false;
+        Self::for_each_descendant(&func_node, &mut |n| {
+            if found || n.kind() != "assignment_expression" || n.start_byte() >= node.start_byte() {
+                return;
+            }
+            let Some(left) = n.child_by_field_name("left") else {
+                return;
+            };
+            if left.kind() != "identifier" || &source[left.start_byte()..left.end_byte()] != var {
+                return;
+            }
+            let Some(value_node) = n.child_by_field_name("right") else {
+                return;
+            };
+            if value_node.kind() != "call_expression" {
+                return;
+            }
+            let Some(function_node) = value_node.child_by_field_name("function") else {
+                return;
+            };
+            let func_name = source[function_node.start_byte()..function_node.end_byte()].trim();
+            if !BOUNDED_RETURN_CALLS.contains(&func_name) {
+                return;
+            }
+            let Some(arguments) = value_node.child_by_field_name("arguments") else {
+                return;
+            };
+            let mut cursor = arguments.walk();
+            let args: Vec<Node> = arguments.named_children(&mut cursor).collect();
+            // recv(fd, buf, len, flags) / read(fd, buf, len) / recvfrom(fd,
+            // buf, len, flags, addr, addrlen) / pread(fd, buf, len, offset)
+            // -- the buffer is always arg 1, the length is always arg 2.
+            let (Some(buf_arg), Some(len_arg)) = (args.get(1), args.get(2)) else {
+                return;
+            };
+            let buf_text = source[buf_arg.start_byte()..buf_arg.end_byte()].trim();
+            if buf_text != buffer_name {
+                return;
+            }
+            found = const_eval::try_evaluate_expr(len_arg, source, macro_constants)
+                .map(|v| v >= 0 && (v as usize) <= effective_size)
+                .unwrap_or(false);
+        });
+        found
     }
 
     /// VLA-with-symbolic-size bounds check: only catches provably
