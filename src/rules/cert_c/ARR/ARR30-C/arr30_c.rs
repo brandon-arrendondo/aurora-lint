@@ -1004,13 +1004,35 @@ impl Arr30C {
     }
 
     /// Get the subscript index value (constant or variable)
-    fn get_subscript_index_value(&self, node: &Node, source: &str) -> Option<IndexValue> {
+    fn get_subscript_index_value(
+        &self,
+        node: &Node,
+        source: &str,
+        macro_constants: &HashMap<String, i64>,
+    ) -> Option<IndexValue> {
         let index_node = self.get_subscript_index(node)?;
         let index_text = &source[index_node.start_byte()..index_node.end_byte()];
 
         // Try to parse as simple constant (now supports negative indices)
         if let Ok(const_val) = index_text.trim().parse::<isize>() {
             return Some(IndexValue::Constant(const_val));
+        }
+
+        // A bare name that's a known compile-time constant -- most commonly
+        // a C `enum` constant (e.g. `MOUSE_BUTTON_LEFT = 0`) used to index a
+        // fixed-size lookup table (`buttonState[MOUSE_BUTTON_LEFT]`). Unlike
+        // a `#define`, tree-sitter never substitutes an enumerator's value
+        // inline, so without this lookup every such index looks like an
+        // unbounded runtime variable even though its value is fixed at
+        // compile time (task 443). `collect_macro_constants` already folds
+        // enum constants into this same map (see `Arr30C::collect_constants`
+        // doc comment) -- restricted to a bare identifier (no `.`/`->`/
+        // arithmetic) so this can't misfire on a struct field or expression
+        // that merely shares a macro's name as a substring.
+        if index_node.kind() == "identifier" {
+            if let Some(&value) = macro_constants.get(index_text.trim()) {
+                return Some(IndexValue::Constant(value as isize));
+            }
         }
 
         // Try to evaluate as expression
@@ -1669,7 +1691,7 @@ impl Arr30C {
 
         // Check conditional bounds checking
         if let Some(if_node) = find_containing_if_statement(node) {
-            if self.check_if_bounds_against_size(&if_node, source, buffer_size) {
+            if self.check_if_bounds_against_size(&if_node, source, buffer_size, macro_constants) {
                 return true;
             }
         }
@@ -1886,7 +1908,13 @@ impl Arr30C {
     }
 
     /// Check if statement bounds against specific buffer size
-    fn check_if_bounds_against_size(&self, if_node: &Node, source: &str, size: usize) -> bool {
+    fn check_if_bounds_against_size(
+        &self,
+        if_node: &Node,
+        source: &str,
+        size: usize,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
         // Extract just the condition from the if-statement, not the full body
         let condition_text = match self.extract_if_condition_text(if_node, source) {
             Some(text) => text,
@@ -1895,6 +1923,22 @@ impl Arr30C {
                 source[if_node.start_byte()..if_node.end_byte()].to_string()
             }
         };
+
+        // A single-sided `idx < MACRO_NAME` (or a bare `idx < 10`) is just as
+        // much a proper bounds guard as the `>=0 && <SOMETHING` pattern below
+        // — it doesn't need a paired lower-bound check to be safe against an
+        // *upper*-bound overrun, which is all ARR30-C's static-buffer check
+        // cares about here. Resolve the macro (or literal) and compare
+        // against the real buffer size, exactly like the for-loop path
+        // (task 436/443): a `touchSlot < MAX_TOUCH_POINTS` guard on a
+        // 10-element buffer is safe whether `touchSlot` is a plain local or
+        // a struct field — `extract_and_resolve_macro_from_condition` never
+        // looks at the left-hand side, so it already handles both shapes.
+        if let Some(bound) =
+            self.extract_and_resolve_macro_from_condition(&condition_text, macro_constants)
+        {
+            return bound <= size as i64;
+        }
 
         // Look for patterns like: if (idx < SIZE) or if (idx < 3)
         if condition_text.contains(&format!("< {}", size)) {
@@ -2163,7 +2207,9 @@ impl Arr30C {
                 {
                     if let Some(inner_buffer) = buffers.get(&inner_buffer_name) {
                         // Step 3: Check the outer index against the inner buffer's size
-                        if let Some(outer_index) = self.get_subscript_index_value(node, source) {
+                        if let Some(outer_index) =
+                            self.get_subscript_index_value(node, source, macro_constants)
+                        {
                             let is_violation = match &inner_buffer.size {
                                 BufferSize::Static(size) | BufferSize::DynamicCalculated(size) => {
                                     match &outer_index {
@@ -2295,7 +2341,7 @@ impl Arr30C {
         }
 
         if let Some(array_name) = self.get_array_name_from_subscript(node, source) {
-            if let Some(index) = self.get_subscript_index_value(node, source) {
+            if let Some(index) = self.get_subscript_index_value(node, source, macro_constants) {
                 // Check for function parameter violations FIRST, even if buffer not tracked
                 // This handles cases like: void func(int arr[], int index) { arr[index]; }
                 if let Some(violation) = self.check_unvalidated_param_index(node, source, &index) {
