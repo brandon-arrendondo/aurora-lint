@@ -2344,7 +2344,9 @@ impl Arr30C {
             if let Some(index) = self.get_subscript_index_value(node, source, macro_constants) {
                 // Check for function parameter violations FIRST, even if buffer not tracked
                 // This handles cases like: void func(int arr[], int index) { arr[index]; }
-                if let Some(violation) = self.check_unvalidated_param_index(node, source, &index) {
+                if let Some(violation) =
+                    self.check_unvalidated_param_index(node, source, &index, &array_name)
+                {
                     violations.push(violation);
                     return violations;
                 }
@@ -2431,6 +2433,7 @@ impl Arr30C {
         node: &Node,
         source: &str,
         index: &IndexValue,
+        array_name: &str,
     ) -> Option<RuleViolation> {
         let IndexValue::Variable(ref var) = index else {
             return None;
@@ -2450,6 +2453,9 @@ impl Arr30C {
         if self.has_function_parameter_bounds_check(&func_node, var, source) {
             return None;
         }
+        if Self::index_is_bounded_by_alloc_roundup(&func_node, array_name, var, source) {
+            return None;
+        }
         let start_point = node.start_position();
         Some(RuleViolation {
             rule_id: self.rule_id().to_string(),
@@ -2467,6 +2473,322 @@ impl Arr30C {
             ),
             ..Default::default()
         })
+    }
+
+    /// Is `array_name[var]` provably in-bounds because `array_name` was
+    /// allocated to a size that's a "round `var` up to a multiple of `D`,
+    /// plus padding" expression of `var` itself (task 446)?
+    ///
+    /// This is the classic MD5/SHA1-style hash padding idiom:
+    /// ```c
+    /// int newDataSize = ((((dataSize + K1) / D) + C) * D) - K2;
+    /// unsigned char *msg = RL_CALLOC(newDataSize + K_OUTER, 1);
+    /// msg[dataSize] = 128;
+    /// ```
+    /// sqc has no preprocessor and doesn't track `RL_CALLOC`/similar aliases
+    /// as allocation calls at all, so `msg` was never a tracked buffer and
+    /// this rule fell through to the generic "unvalidated function parameter
+    /// index" check, which knows nothing about the allocation. Rather than
+    /// widen buffer tracking to arbitrary macro-aliased allocators (a much
+    /// bigger, riskier change), this proves the specific inequality that
+    /// makes the access safe: for any non-negative integer `var`,
+    /// `floor((var + K1) / D) * D` is always strictly greater than
+    /// `var + K1 - D`, so the surrounding `+ C`, `* D`, `- K2`, `+ K_OUTER`
+    /// terms are safe exactly when `K1 + D*(C-1) + K_OUTER >= K2` — see the
+    /// derivation in `match_roundup_formula`'s doc comment. Any allocation
+    /// shape that doesn't match this exact algebraic pattern returns `false`
+    /// (still flagged), so this can only suppress, never miss, a violation.
+    fn index_is_bounded_by_alloc_roundup(
+        func_node: &Node,
+        array_name: &str,
+        var: &str,
+        source: &str,
+    ) -> bool {
+        let Some(size_arg) = Self::find_alloc_size_arg_for_var(func_node, array_name, source)
+        else {
+            return false;
+        };
+        let Some((top_ident, k_outer)) = Self::split_ident_plus_const(&size_arg, source) else {
+            return false;
+        };
+        if top_ident == var {
+            // Direct subterm case: `calloc(var + k_outer, ...)` -- safe iff
+            // the padding is strictly positive.
+            return k_outer >= 1;
+        }
+        let Some(inner_expr) = Self::find_local_init_expr(func_node, &top_ident, source) else {
+            return false;
+        };
+        let Some((k1, d, c, k2)) = Self::match_roundup_formula(&inner_expr, var, source) else {
+            return false;
+        };
+        if d <= 0 {
+            return false;
+        }
+        k1 + d * (c - 1) + k_outer >= k2
+    }
+
+    /// Find the size argument of the allocation call that initializes
+    /// `array_name` somewhere in `func_node` (init_declarator or plain
+    /// assignment, optionally through a pointer cast). Matches any call
+    /// whose function name contains "alloc"/"ALLOC" -- this is intentionally
+    /// broad (covers `malloc`/`calloc`/`realloc`/`alloca` and macro aliases
+    /// like `RL_MALLOC`/`RL_CALLOC` that sqc has no preprocessor to resolve)
+    /// since an accidental match on an unrelated function only feeds into
+    /// `match_roundup_formula`'s exact algebraic pattern match, which will
+    /// simply fail to match and change nothing.
+    fn find_alloc_size_arg_for_var<'a>(
+        func_node: &Node<'a>,
+        array_name: &str,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        let mut result = None;
+        Self::walk_for_alloc_size_arg(func_node, array_name, source, &mut result);
+        result
+    }
+
+    fn walk_for_alloc_size_arg<'a>(
+        node: &Node<'a>,
+        array_name: &str,
+        source: &str,
+        result: &mut Option<Node<'a>>,
+    ) {
+        if result.is_some() {
+            return;
+        }
+        let lhs_name = match node.kind() {
+            "init_declarator" => node
+                .child_by_field_name("declarator")
+                .map(|d| get_identifier_from_declarator(&d, source)),
+            "assignment_expression" => node
+                .child_by_field_name("left")
+                .filter(|l| l.kind() == "identifier")
+                .map(|l| source[l.start_byte()..l.end_byte()].to_string()),
+            _ => None,
+        };
+        if lhs_name.as_deref() == Some(array_name) {
+            if let Some(value) = node
+                .child_by_field_name("value")
+                .or_else(|| node.child_by_field_name("right"))
+            {
+                let call = if value.kind() == "call_expression" {
+                    Some(value)
+                } else if value.kind() == "cast_expression" {
+                    Self::unwrap_cast_to_call(&value)
+                } else {
+                    None
+                };
+                if let Some(call) = call {
+                    if let Some(size_arg) = Self::alloc_call_size_arg(&call, source) {
+                        *result = Some(size_arg);
+                        return;
+                    }
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::walk_for_alloc_size_arg(&child, array_name, source, result);
+                if result.is_some() {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Pick out the argument of an alloc-like call that represents the total
+    /// byte count, given its arity/name: `malloc(size)`/`alloca(size)` ->
+    /// the sole argument; `realloc(ptr, size)` -> the 2nd argument;
+    /// `calloc(count, elem_size)` -> the count, but only when `elem_size` is
+    /// the literal `1` (otherwise the byte count isn't `count` alone, and
+    /// this is out of scope).
+    fn alloc_call_size_arg<'a>(call: &Node<'a>, source: &str) -> Option<Node<'a>> {
+        let func_name_node = call.child(0)?;
+        if func_name_node.kind() != "identifier" {
+            return None;
+        }
+        let func_name = &source[func_name_node.start_byte()..func_name_node.end_byte()];
+        if !func_name.to_ascii_uppercase().contains("ALLOC") {
+            return None;
+        }
+        let arg_list = call.child_by_field_name("arguments")?;
+        let args: Vec<Node> = (0..arg_list.child_count())
+            .filter_map(|i| arg_list.child(i))
+            .filter(|c| !matches!(c.kind(), "(" | ")" | ","))
+            .collect();
+        match args.len() {
+            1 => Some(args[0]),
+            2 if func_name.to_ascii_uppercase().contains("REALLOC") => Some(args[1]),
+            2 => {
+                let elem_text = source[args[1].start_byte()..args[1].end_byte()].trim();
+                (elem_text == "1").then_some(args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// Find `name`'s own initializer expression from a local declaration
+    /// inside `func_node` (one level of variable indirection).
+    fn find_local_init_expr<'a>(
+        func_node: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        let mut result = None;
+        Self::walk_for_local_init_expr(func_node, name, source, &mut result);
+        result
+    }
+
+    fn walk_for_local_init_expr<'a>(
+        node: &Node<'a>,
+        name: &str,
+        source: &str,
+        result: &mut Option<Node<'a>>,
+    ) {
+        if result.is_some() {
+            return;
+        }
+        if node.kind() == "init_declarator" {
+            if let Some(declarator) = node.child_by_field_name("declarator") {
+                if get_identifier_from_declarator(&declarator, source) == name {
+                    *result = node.child_by_field_name("value");
+                    if result.is_some() {
+                        return;
+                    }
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::walk_for_local_init_expr(&child, name, source, result);
+                if result.is_some() {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Strip redundant `parenthesized_expression` wrappers.
+    fn strip_parens<'a>(node: &Node<'a>) -> Node<'a> {
+        let mut n = *node;
+        while n.kind() == "parenthesized_expression" {
+            let Some(inner) = (0..n.child_count())
+                .filter_map(|i| n.child(i))
+                .find(|c| !matches!(c.kind(), "(" | ")"))
+            else {
+                break;
+            };
+            n = inner;
+        }
+        n
+    }
+
+    /// Match `IDENT`, `IDENT + K`, `K + IDENT`, or `IDENT - K` -> `(IDENT, K)`
+    /// (with `K = 0` for the bare-identifier case).
+    fn split_ident_plus_const(node: &Node, source: &str) -> Option<(String, i64)> {
+        let node = Self::strip_parens(node);
+        if node.kind() == "identifier" {
+            return Some((source[node.start_byte()..node.end_byte()].to_string(), 0));
+        }
+        if node.kind() != "binary_expression" {
+            return None;
+        }
+        let op = node.child_by_field_name("operator")?;
+        let op_text = &source[op.start_byte()..op.end_byte()];
+        if op_text != "+" && op_text != "-" {
+            return None;
+        }
+        let lhs = Self::strip_parens(&node.child_by_field_name("left")?);
+        let rhs = Self::strip_parens(&node.child_by_field_name("right")?);
+        if lhs.kind() == "identifier" {
+            let k = Self::parse_int_literal(&rhs, source)?;
+            let k = if op_text == "-" { -k } else { k };
+            return Some((source[lhs.start_byte()..lhs.end_byte()].to_string(), k));
+        }
+        if op_text == "+" && rhs.kind() == "identifier" {
+            let k = Self::parse_int_literal(&lhs, source)?;
+            return Some((source[rhs.start_byte()..rhs.end_byte()].to_string(), k));
+        }
+        None
+    }
+
+    fn parse_int_literal(node: &Node, source: &str) -> Option<i64> {
+        if node.kind() != "number_literal" {
+            return None;
+        }
+        source[node.start_byte()..node.end_byte()]
+            .trim()
+            .parse::<i64>()
+            .ok()
+    }
+
+    /// Match a `binary_expression` with operator `op` where one side is an
+    /// integer literal, returning `(other_side, literal_value)`. For `+`/`*`
+    /// (commutative) either side may hold the literal; for `-`/`/`
+    /// (`rhs_only`), only the right-hand side may, since `X - K` and `K - X`
+    /// (likewise `X / K` vs `K / X`) are not interchangeable.
+    fn match_binary_with_const<'a>(
+        node: &Node<'a>,
+        op: &str,
+        rhs_only: bool,
+        source: &str,
+    ) -> Option<(Node<'a>, i64)> {
+        if node.kind() != "binary_expression" {
+            return None;
+        }
+        let op_node = node.child_by_field_name("operator")?;
+        if &source[op_node.start_byte()..op_node.end_byte()] != op {
+            return None;
+        }
+        let lhs = Self::strip_parens(&node.child_by_field_name("left")?);
+        let rhs = Self::strip_parens(&node.child_by_field_name("right")?);
+        if let Some(k) = Self::parse_int_literal(&rhs, source) {
+            return Some((lhs, k));
+        }
+        if !rhs_only {
+            if let Some(k) = Self::parse_int_literal(&lhs, source) {
+                return Some((rhs, k));
+            }
+        }
+        None
+    }
+
+    /// Match the round-up-to-a-multiple allocation-size idiom against `var`:
+    /// `( ( (var [+ K1]) / D ) [+ C] ) * D  [- K2]` -> `(K1, D, C, K2)`
+    /// (`K1`/`C`/`K2` default to 0 when the corresponding term is absent).
+    ///
+    /// Soundness argument: floor division means `(var + K1) / D * D` is
+    /// always in `(var + K1 - D, var + K1]`, so
+    /// `((var + K1) / D + C) * D` is always in
+    /// `(var + K1 - D + C*D, var + K1 + C*D]`. Subtracting `K2` and adding
+    /// the caller's own `K_OUTER` (from `split_ident_plus_const` on the
+    /// allocation's top-level size argument) shifts that lower bound to
+    /// `var + K1 - D + C*D - K2 + K_OUTER` (exclusive), which strictly
+    /// exceeds `var` exactly when `K1 + D*(C-1) + K_OUTER >= K2` -- the
+    /// condition checked by the caller.
+    fn match_roundup_formula(node: &Node, var: &str, source: &str) -> Option<(i64, i64, i64, i64)> {
+        let node = Self::strip_parens(node);
+        let (mul_part, k2) = match Self::match_binary_with_const(&node, "-", true, source) {
+            Some((lhs, k)) => (lhs, k),
+            None => (node, 0),
+        };
+        let mul_part = Self::strip_parens(&mul_part);
+        let (mid, d) = Self::match_binary_with_const(&mul_part, "*", false, source)?;
+        let mid = Self::strip_parens(&mid);
+        let (div_part, c) = match Self::match_binary_with_const(&mid, "+", false, source) {
+            Some((other, k)) => (other, k),
+            None => (mid, 0),
+        };
+        let div_part = Self::strip_parens(&div_part);
+        let (numer, d2) = Self::match_binary_with_const(&div_part, "/", true, source)?;
+        if d2 != d {
+            return None;
+        }
+        let (ident, k1) = Self::split_ident_plus_const(&numer, source)?;
+        if ident != var {
+            return None;
+        }
+        Some((k1, d, c, k2))
     }
 
     /// Convert a tracked buffer's byte/element size into the effective
