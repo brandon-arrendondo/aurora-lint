@@ -164,8 +164,13 @@ impl Msc13C {
                 }
                 true
             }
-            // Init declarator — this is the declaration itself, not a read
-            "init_declarator" => false,
+            // Init declarator: `type name = value;`. The declarator name is
+            // the declaration itself (not a read), but the initializer VALUE
+            // — when it's a bare identifier, e.g. `int y = x;` — is a read of
+            // that identifier's prior value.
+            "init_declarator" => parent
+                .child_by_field_name("value")
+                .is_some_and(|value| value.id() == node.id()),
             // Declaration — not a read
             "declaration" => false,
             // Pointer declarator, array declarator in a declaration — not a read
