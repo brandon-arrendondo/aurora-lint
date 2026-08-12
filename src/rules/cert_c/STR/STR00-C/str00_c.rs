@@ -48,24 +48,93 @@ impl CertRule for Str00C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Track variable types to detect inappropriate usage
-        let mut char_vars = HashMap::new();
-        let mut wchar_vars = HashMap::new();
-        let mut int_vars = HashMap::new();
+        // These checks look only at a single declaration/parameter/field
+        // node in isolation (no name-keyed cross-referencing), so they're
+        // safe to run once over the whole file regardless of scope.
+        for n in query::find_descendants(*node, |_| true) {
+            match n.kind() {
+                "declaration" => {
+                    self.check_signed_unsigned_char_constants(&n, source, &mut violations)
+                }
+                "parameter_declaration" => {
+                    self.check_function_parameter_types(&n, source, &mut violations)
+                }
+                "field_declaration" => self.check_struct_field_types(&n, source, &mut violations),
+                _ => {}
+            }
+        }
 
-        self.collect_char_variables(node, source, &mut char_vars);
-        self.collect_wchar_variables(node, source, &mut wchar_vars);
-        self.collect_int_variables(node, source, &mut int_vars);
+        // The remaining checks match a variable *use* against its
+        // *declared type* by name via a HashMap. That lookup must not
+        // cross function boundaries: two unrelated functions in the same
+        // file commonly reuse a local name like `ret`/`pos` with different
+        // types, and a file-wide map would misattribute one function's
+        // type onto the other's identically-named variable (task 394).
+        // File-scope (global) declarations are collected separately,
+        // without descending into any function body, and are visible to
+        // every function as well as to file-scope code itself.
+        let mut global_char_vars = HashMap::new();
+        let mut global_wchar_vars = HashMap::new();
+        let mut global_int_vars = HashMap::new();
+        let mut global_decls = Vec::new();
+        collect_outside_functions(*node, "declaration", &mut global_decls);
+        for decl in &global_decls {
+            self.collect_char_variables(decl, source, &mut global_char_vars);
+            self.collect_wchar_variables(decl, source, &mut global_wchar_vars);
+            self.collect_int_variables(decl, source, &mut global_int_vars);
+        }
 
-        self.check_node(
-            node,
-            source,
-            &char_vars,
-            &wchar_vars,
-            &int_vars,
-            &mut violations,
-        );
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() != "function_definition" {
+                    self.check_node(
+                        &child,
+                        source,
+                        &global_char_vars,
+                        &global_wchar_vars,
+                        &global_int_vars,
+                        &mut violations,
+                    );
+                }
+            }
+        }
+
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            let mut char_vars = global_char_vars.clone();
+            let mut wchar_vars = global_wchar_vars.clone();
+            let mut int_vars = global_int_vars.clone();
+
+            self.collect_char_variables(&func, source, &mut char_vars);
+            self.collect_wchar_variables(&func, source, &mut wchar_vars);
+            self.collect_int_variables(&func, source, &mut int_vars);
+
+            self.check_node(
+                &func,
+                source,
+                &char_vars,
+                &wchar_vars,
+                &int_vars,
+                &mut violations,
+            );
+        }
         violations
+    }
+}
+
+/// Collect descendants of `kind` that lie outside every function body —
+/// i.e. true file/global scope, possibly nested under preprocessor
+/// conditionals but never inside a `function_definition`.
+fn collect_outside_functions<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<'a>>) {
+    if node.kind() == "function_definition" {
+        return;
+    }
+    if node.kind() == kind {
+        out.push(node);
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_outside_functions(child, kind, out);
+        }
     }
 }
 
@@ -245,21 +314,6 @@ impl Str00C {
             // Check for char used as array index
             if node.kind() == "subscript_expression" {
                 self.check_char_array_index(node, source, char_vars, violations);
-            }
-
-            // Check for signed/unsigned char with character constants
-            if node.kind() == "declaration" {
-                self.check_signed_unsigned_char_constants(node, source, violations);
-            }
-
-            // Check for signed/unsigned char function parameters
-            if node.kind() == "parameter_declaration" {
-                self.check_function_parameter_types(node, source, violations);
-            }
-
-            // Check for signed/unsigned char struct members
-            if node.kind() == "field_declaration" {
-                self.check_struct_field_types(node, source, violations);
             }
 
             // Check for narrow char constants assigned to wchar_t

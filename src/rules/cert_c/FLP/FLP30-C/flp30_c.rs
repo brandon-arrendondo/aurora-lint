@@ -24,6 +24,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::float_typing;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -102,14 +103,26 @@ impl Flp30C {
 
         // Check for assignment expression (e.g., "x = 0.1f")
         if init.kind() == "assignment_expression" {
-            let init_text = get_node_text(init, source);
-            // Check if assigning a floating-point literal
-            if init_text.contains(".") && (init_text.contains("f") || init_text.contains("F")) {
-                return self.extract_assigned_var_name(init, source);
+            if let Some(right) = init.child_by_field_name("right") {
+                if self.is_floating_point_literal(&right, source) {
+                    return self.extract_assigned_var_name(init, source);
+                }
             }
         }
 
         None
+    }
+
+    /// True if `node` is a `number_literal` whose text is a C floating
+    /// constant. Delegates to the shared `float_typing` literal classifier
+    /// (also used by INT33-C/FLP06-C) rather than the previous inline
+    /// `contains(".") && contains("f")` text scan, which false-fired on any
+    /// expression whose text happened to contain both characters — e.g. a
+    /// field access like `*wpa_auth->conf.r1kh_list` ("conf" contains an
+    /// 'f', ".r1kh_list" contains a '.') was misread as a float literal.
+    fn is_floating_point_literal(&self, node: &Node, source: &str) -> bool {
+        node.kind() == "number_literal"
+            && float_typing::is_float_literal(get_node_text(node, source))
     }
 
     /// Check if a declaration has float or double type

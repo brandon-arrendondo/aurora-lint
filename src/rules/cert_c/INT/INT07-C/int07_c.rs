@@ -52,16 +52,55 @@ impl CertRule for Int07C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Track plain char variables (name -> declaration location)
-        let mut plain_char_vars: HashMap<String, (usize, usize)> = HashMap::new();
+        // Variable name -> declared-type lookup must stay scoped to a
+        // single function: two unrelated functions in the same file
+        // commonly reuse a local name (e.g. `ret`, `pos`) with different
+        // types, and a file-wide map would misattribute one function's
+        // char-typed variable onto the other's identically-named
+        // int/pointer variable (task 394). File-scope (global) plain-char
+        // declarations are collected separately, without descending into
+        // any function body, and are visible to every function as well as
+        // to file-scope code itself (e.g. the CERT wiki example, which
+        // declares and uses `char c` outside any function).
+        let mut global_decls = Vec::new();
+        collect_outside_functions(*node, "declaration", &mut global_decls);
+        let mut global_vars: HashMap<String, (usize, usize)> = HashMap::new();
+        for decl in &global_decls {
+            self.find_plain_char_vars(decl, source, &mut global_vars);
+        }
 
-        // Find all plain char variable declarations
-        self.find_plain_char_vars(node, source, &mut plain_char_vars);
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() != "function_definition" {
+                    self.find_numeric_uses(&child, source, &global_vars, &mut violations);
+                }
+            }
+        }
 
-        // Find uses of plain char variables in numeric contexts
-        self.find_numeric_uses(node, source, &plain_char_vars, &mut violations);
+        for func in query::find_descendants_of_kind(*node, "function_definition") {
+            let mut plain_char_vars = global_vars.clone();
+            self.find_plain_char_vars(&func, source, &mut plain_char_vars);
+            self.find_numeric_uses(&func, source, &plain_char_vars, &mut violations);
+        }
 
         violations
+    }
+}
+
+/// Collect descendants of `kind` that lie outside every function body —
+/// i.e. true file/global scope, possibly nested under preprocessor
+/// conditionals but never inside a `function_definition`.
+fn collect_outside_functions<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<'a>>) {
+    if node.kind() == "function_definition" {
+        return;
+    }
+    if node.kind() == kind {
+        out.push(node);
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_outside_functions(child, kind, out);
+        }
     }
 }
 
