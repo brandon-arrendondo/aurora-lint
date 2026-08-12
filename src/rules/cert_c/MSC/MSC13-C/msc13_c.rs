@@ -45,6 +45,56 @@ impl Msc13C {
         vars
     }
 
+    /// Names of variables whose reaching-definitions liveness can be judged
+    /// from a single call: declared locally in this function body, and NOT
+    /// `static`. A `static` local's lifetime (and its read-set -- classic
+    /// ring-buffer-average or lazy-init-guard idioms read the value written
+    /// on the *previous* call, at the top of this one) spans every call, so
+    /// per-invocation reaching-definitions is the wrong tool for it: a write
+    /// with no read before this call returns isn't dead, it's read on the
+    /// next call. A name that isn't declared in this body at all (a
+    /// file-scope global or another function's `static`) has the same
+    /// problem for the same reason. Both are excluded from dead-store
+    /// checking entirely by simply never appearing in this set.
+    fn collect_single_invocation_locals(&self, body: &Node, source: &str) -> HashSet<String> {
+        let mut names = HashSet::new();
+        self.walk_for_single_invocation_locals(body, source, &mut names);
+        names
+    }
+
+    fn walk_for_single_invocation_locals(
+        &self,
+        node: &Node,
+        source: &str,
+        names: &mut HashSet<String>,
+    ) {
+        if node.kind() == "declaration" {
+            let decl_text = get_node_text(node, source);
+            let is_static = (0..node.child_count()).any(|i| {
+                node.child(i).is_some_and(|c| {
+                    c.kind() == "storage_class_specifier" && get_node_text(&c, source) == "static"
+                })
+            });
+            if !decl_text.contains("extern ") && !decl_text.contains("typedef ") && !is_static {
+                let mut vars = Vec::new();
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        self.extract_declared_names(&child, source, &mut vars);
+                    }
+                }
+                names.extend(vars.into_iter().map(|(name, _, _)| name));
+            }
+        }
+
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() != "function_definition" {
+                    self.walk_for_single_invocation_locals(&child, source, names);
+                }
+            }
+        }
+    }
+
     fn walk_for_declarations(
         &self,
         node: &Node,
@@ -365,6 +415,7 @@ impl Msc13C {
     ) {
         let definitions = extract_definitions(cfg, func_node, source);
         let reaching = compute_reaching_definitions(cfg, definitions);
+        let single_invocation_locals = self.collect_single_invocation_locals(body, source);
 
         // (block_id, statement_index) -> definition indices written there.
         let mut writes_at: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
@@ -413,6 +464,15 @@ impl Msc13C {
             // Parameters live in the function declarator, before the body
             // — unused parameters are out of scope for this rule.
             if def.byte_offset < body.start_byte() {
+                continue;
+            }
+            // `static` locals and file-scope globals have a lifetime and
+            // read-set spanning every call, not just this one — a write with
+            // no read on THIS invocation's paths may still be read at the
+            // top of the NEXT call (ring-buffer/lazy-init idioms). This
+            // per-call reaching-definitions analysis can't see across calls,
+            // so it isn't the right tool for either; skip them entirely.
+            if !single_invocation_locals.contains(&def.variable) {
                 continue;
             }
             // A variable never read anywhere in the function is already
