@@ -48,7 +48,7 @@ impl Str34C {
     ) {
         if node.kind() == "function_definition" {
             // Collect char variables scoped to this function
-            let mut char_vars: HashMap<String, (usize, bool)> = HashMap::new();
+            let mut char_vars: HashMap<String, (usize, bool, usize)> = HashMap::new();
             self.collect_char_variables(node, source, &mut char_vars);
             self.check_node(node, source, &char_vars, violations);
             return; // Don't recurse further into this function
@@ -57,7 +57,7 @@ impl Str34C {
         // For non-function nodes, also check with file-scope char_vars
         // (handles global declarations)
         if node.kind() == "translation_unit" {
-            let mut file_char_vars: HashMap<String, (usize, bool)> = HashMap::new();
+            let mut file_char_vars: HashMap<String, (usize, bool, usize)> = HashMap::new();
             // Collect only file-scope declarations (not inside functions)
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
@@ -85,7 +85,7 @@ impl Str34C {
         &self,
         node: &Node,
         source: &str,
-        char_vars: &mut HashMap<String, (usize, bool)>,
+        char_vars: &mut HashMap<String, (usize, bool, usize)>,
     ) {
         for n in query::find_descendants(*node, |_| true) {
             if n.kind() == "declaration" {
@@ -113,9 +113,10 @@ impl Str34C {
                                             if let Some(var_name) =
                                                 self.get_declarator_name(&declarator, source)
                                             {
+                                                let depth = self.declarator_depth(&declarator);
                                                 char_vars.insert(
                                                     var_name,
-                                                    (n.start_position().row, is_signed_char),
+                                                    (n.start_position().row, is_signed_char, depth),
                                                 );
                                             }
                                         }
@@ -124,9 +125,10 @@ impl Str34C {
                                     // Plain declarator without initialization
                                     if let Some(var_name) = self.get_declarator_name(&child, source)
                                     {
+                                        let depth = self.declarator_depth(&child);
                                         char_vars.insert(
                                             var_name,
-                                            (n.start_position().row, is_signed_char),
+                                            (n.start_position().row, is_signed_char, depth),
                                         );
                                     }
                                 }
@@ -165,14 +167,49 @@ impl Str34C {
                                 if let Some(var_name) =
                                     self.get_declarator_name(&declarator, source)
                                 {
-                                    char_vars
-                                        .insert(var_name, (n.start_position().row, is_signed_char));
+                                    let depth = self.declarator_depth(&declarator);
+                                    char_vars.insert(
+                                        var_name,
+                                        (n.start_position().row, is_signed_char, depth),
+                                    );
                                 }
                             }
                         }
                     }
                 }
             }
+        }
+    }
+
+    /// True when `name` is a tracked char-pointer/array variable at exactly
+    /// one level of indirection -- the only depth at which a single
+    /// `*name`/`name[i]` dereference actually yields a scalar `char`. At
+    /// depth > 1 (`char **`, `char ***`, ...) the same syntax yields another
+    /// pointer, not a char (task 430).
+    fn is_single_indirection_char(
+        &self,
+        char_vars: &HashMap<String, (usize, bool, usize)>,
+        name: &str,
+    ) -> bool {
+        char_vars.get(name).is_some_and(|&(_, _, depth)| depth == 1)
+    }
+
+    /// Count levels of pointer/array indirection in a declarator chain (e.g.
+    /// `***if_names` is depth 3, `*str` is depth 1, `buf[]` is depth 1).
+    /// A single `*`/`[]` on the tracked variable only reaches a scalar
+    /// `char` when depth is exactly 1 -- at depth > 1 it yields another
+    /// pointer, so treating it as a char-widening site misclassifies e.g.
+    /// `char **`/`char ***` as plain `char` (task 430).
+    fn declarator_depth(&self, node: &Node) -> usize {
+        match node.kind() {
+            "pointer_declarator" | "array_declarator" => {
+                let inner_depth = node
+                    .child_by_field_name("declarator")
+                    .map(|inner| self.declarator_depth(&inner))
+                    .unwrap_or(0);
+                1 + inner_depth
+            }
+            _ => 0,
         }
     }
 
@@ -203,7 +240,7 @@ impl Str34C {
         &self,
         node: &Node,
         source: &str,
-        char_vars: &HashMap<String, (usize, bool)>,
+        char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
         for n in query::find_descendants(*node, |_| true) {
@@ -239,7 +276,7 @@ impl Str34C {
         &self,
         node: &Node,
         source: &str,
-        char_vars: &HashMap<String, (usize, bool)>,
+        char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(_declarator) = node.child_by_field_name("declarator") {
@@ -268,7 +305,7 @@ impl Str34C {
         &self,
         node: &Node,
         source: &str,
-        char_vars: &HashMap<String, (usize, bool)>,
+        char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(_left) = node.child_by_field_name("left") {
@@ -290,14 +327,14 @@ impl Str34C {
         &self,
         node: &Node,
         source: &str,
-        char_vars: &HashMap<String, (usize, bool)>,
+        char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check if this is a pointer expression (*ptr)
         if node.kind() == "pointer_expression" {
             if let Some(argument) = node.child_by_field_name("argument") {
                 if let Some(base_name) = self.extract_identifier(&argument, source) {
-                    if char_vars.contains_key(&base_name) {
+                    if self.is_single_indirection_char(char_vars, &base_name) {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             severity: Severity::Medium,
@@ -332,7 +369,7 @@ impl Str34C {
         &self,
         node: &Node,
         source: &str,
-        char_vars: &HashMap<String, (usize, bool)>,
+        char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(index) = node.child_by_field_name("index") {
@@ -365,7 +402,7 @@ impl Str34C {
         &self,
         node: &Node,
         source: &str,
-        char_vars: &HashMap<String, (usize, bool)>,
+        char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check if pointer dereference is of a char pointer
@@ -375,7 +412,7 @@ impl Str34C {
             // Check if it's a char pointer variable (ends with _str, _ptr, etc. or is tracked)
             if let Some(base_name) = self.extract_identifier(&argument, source) {
                 // Look for char pointer types
-                if char_vars.contains_key(&base_name) {
+                if self.is_single_indirection_char(char_vars, &base_name) {
                     // Check if this dereference is being assigned to a larger type
                     if let Some(parent) = node.parent() {
                         if parent.kind() == "init_declarator"
@@ -409,7 +446,7 @@ impl Str34C {
         &self,
         node: &Node,
         source: &str,
-        char_vars: &HashMap<String, (usize, bool)>,
+        char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Get the type being cast to
@@ -427,7 +464,7 @@ impl Str34C {
                     if value.kind() == "pointer_expression" {
                         if let Some(argument) = value.child_by_field_name("argument") {
                             if let Some(base_name) = self.extract_identifier(&argument, source) {
-                                if char_vars.contains_key(&base_name) {
+                                if self.is_single_indirection_char(char_vars, &base_name) {
                                     violations.push(RuleViolation {
                                         rule_id: self.rule_id().to_string(),
                                         severity: Severity::Medium,
@@ -459,7 +496,7 @@ impl Str34C {
                     if value.kind() == "pointer_expression" {
                         if let Some(argument) = value.child_by_field_name("argument") {
                             if let Some(base_name) = self.extract_identifier(&argument, source) {
-                                if char_vars.contains_key(&base_name) {
+                                if self.is_single_indirection_char(char_vars, &base_name) {
                                     violations.push(RuleViolation {
                                         rule_id: self.rule_id().to_string(),
                                         severity: Severity::Medium,
@@ -487,7 +524,7 @@ impl Str34C {
         &self,
         node: &Node,
         source: &str,
-        char_vars: &HashMap<String, (usize, bool)>,
+        char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Once a node is inside an unsigned-char cast, all its descendants are
@@ -497,7 +534,17 @@ impl Str34C {
             // Check for identifiers that are char variables
             if n.kind() == "identifier" {
                 let var_name = get_node_text(&n, source);
-                if char_vars.contains_key(var_name) {
+                // char_vars only ever tracks pointer/array-typed names (see
+                // collect_char_variables), so a bare identifier match here
+                // would be a *pointer value* flowing into a wider integer --
+                // a real type mismatch, but not the char-widening sign-
+                // extension issue this branch's message describes. Gate on
+                // depth 0 (never true for a tracked entry) rather than
+                // deleting the dead branch outright.
+                if char_vars
+                    .get(var_name)
+                    .is_some_and(|&(_, _, depth)| depth == 0)
+                {
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: Severity::Medium,
@@ -518,7 +565,7 @@ impl Str34C {
             if n.kind() == "pointer_expression" {
                 if let Some(argument) = n.child_by_field_name("argument") {
                     if let Some(base_name) = self.extract_identifier(&argument, source) {
-                        if char_vars.contains_key(&base_name) {
+                        if self.is_single_indirection_char(char_vars, &base_name) {
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
                                 severity: Severity::Medium,
