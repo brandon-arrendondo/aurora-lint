@@ -465,26 +465,22 @@ impl CfgBuilder {
         self.break_stack.push(exit_block);
 
         let body = node.child_by_field_name("body");
+        // Descend through any `#if`/`#ifdef`/`#elif`/`#else` wrappers around a
+        // case arm (task 445) -- sqc has no preprocessor, so every branch is
+        // modeled as reachable, same as process_preproc_conditional.
+        let case_statement_nodes: Vec<Node> = body
+            .map(|b| Self::collect_case_statements_in_switch_body(&b))
+            .unwrap_or_default();
         // (block, this arm's constant case value if any, is_default)
         let mut case_blocks: Vec<(BlockId, Option<i64>, bool)> = Vec::new();
-        if let Some(body) = body {
-            for i in 0..body.child_count() {
-                if let Some(child) = body.child(i) {
-                    if child.kind() == "case_statement" {
-                        let case_block = self.new_block();
-                        let value = child.child_by_field_name("value");
-                        let is_default = value.is_none();
-                        let case_val = value.and_then(|v| {
-                            resolve_constant_operand(
-                                &unwrap_parens_cfg(&v),
-                                source,
-                                &self.constants,
-                            )
-                        });
-                        case_blocks.push((case_block, case_val, is_default));
-                    }
-                }
-            }
+        for child in &case_statement_nodes {
+            let case_block = self.new_block();
+            let value = child.child_by_field_name("value");
+            let is_default = value.is_none();
+            let case_val = value.and_then(|v| {
+                resolve_constant_operand(&unwrap_parens_cfg(&v), source, &self.constants)
+            });
+            case_blocks.push((case_block, case_val, is_default));
         }
         let has_default = case_blocks.iter().any(|(_, _, is_default)| *is_default);
 
@@ -532,40 +528,56 @@ impl CfgBuilder {
         }
 
         let case_blocks: Vec<BlockId> = case_blocks.into_iter().map(|(b, _, _)| b).collect();
-        if let Some(body) = body {
-            let mut case_idx = 0;
-            for i in 0..body.child_count() {
-                if let Some(child) = body.child(i) {
-                    if child.kind() != "case_statement" {
+        for (case_idx, child) in case_statement_nodes.iter().enumerate() {
+            let case_block = case_blocks[case_idx];
+            self.current_block = case_block;
+
+            let value_start = child.child_by_field_name("value").map(|v| v.start_byte());
+            for j in 0..child.child_count() {
+                if let Some(sub) = child.child(j) {
+                    if Some(sub.start_byte()) == value_start {
                         continue;
                     }
-                    let case_block = case_blocks[case_idx];
-                    case_idx += 1;
-                    self.current_block = case_block;
-
-                    let value_start = child.child_by_field_name("value").map(|v| v.start_byte());
-                    for j in 0..child.child_count() {
-                        if let Some(sub) = child.child(j) {
-                            if Some(sub.start_byte()) == value_start {
-                                continue;
-                            }
-                            match sub.kind() {
-                                "case" | "default" | ":" => continue,
-                                _ => self.process_statement(&sub, source),
-                            }
-                        }
+                    match sub.kind() {
+                        "case" | "default" | ":" => continue,
+                        _ => self.process_statement(&sub, source),
                     }
-
-                    // Physical fallthrough into the next case arm if this arm's
-                    // control flow didn't already break/return/continue/goto out.
-                    let next_block = case_blocks.get(case_idx).copied().unwrap_or(exit_block);
-                    self.add_edge(self.current_block, next_block, CfgEdge::Fallthrough);
                 }
             }
+
+            // Physical fallthrough into the next case arm if this arm's
+            // control flow didn't already break/return/continue/goto out.
+            let next_block = case_blocks.get(case_idx + 1).copied().unwrap_or(exit_block);
+            self.add_edge(self.current_block, next_block, CfgEdge::Fallthrough);
         }
 
         self.break_stack.pop();
         self.current_block = exit_block;
+    }
+
+    /// Flatten every `case_statement`/`default` arm in a switch body into
+    /// document order, transparently descending into `#if`/`#ifdef`/`#elif`/
+    /// `#else` wrappers (task 445). Without this, a case label split across a
+    /// preprocessor guard -- e.g. raylib's per-codec `#if SUPPORT_FILEFORMAT_*`
+    /// arms in `UpdateMusicStream` -- was invisible to the CFG: its direct-child
+    /// scan only matched bare `case_statement` siblings, so the reads/writes
+    /// inside a guarded arm were never modeled, producing phantom dead-store
+    /// false positives.
+    fn collect_case_statements_in_switch_body<'a>(node: &Node<'a>) -> Vec<Node<'a>> {
+        let mut out = Vec::new();
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                match child.kind() {
+                    "case_statement" => out.push(child),
+                    "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef"
+                    | "preproc_else" => {
+                        out.extend(Self::collect_case_statements_in_switch_body(&child));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out
     }
 
     /// Model a `#ifdef`/`#ifndef`/`#if`/`#elif` conditional block.
