@@ -171,6 +171,37 @@ hidden. See ``conf/realworld/README.md`` for the per-codebase audit workflow.
 ``libcrc`` is fully audited (every enabled-rule finding labelled); the four
 large codebases grow their labels incrementally.
 
+Per-Codebase Scan Scope
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each codebase's ``CODEBASES[<name>]["sqc"]["extra_args"]`` entry in
+``mcp_servers/realworld_server.py`` also carries ``--exclude`` globs that
+scope the scan to the *shipped product*, not the whole checked-out repo —
+test harnesses, build tooling, vendored/bundled code, and companion tools
+(fuzzers, example plugins, separate CLI utilities) are excluded so they don't
+inflate the violation count or dilute the precision/recall denominator.
+These globs are derived from each codebase's ground-truth oracle scope
+(``data/precision_audit/<codebase>/README.md``), which documents exactly
+which directories were ruled in/out during that codebase's adjudication
+sweep and why.
+
+.. important::
+
+    ``-d``/``--directories`` in a codebase's ``extra_args`` does **not**
+    restrict the scan — it only adds cross-file pre-scan context (see
+    :doc:`cli-usage`). A codebase's primary scan root is the whole repo
+    whenever ``scan_path`` is ``None``, regardless of any ``-d`` entries in
+    ``extra_args``. To actually narrow scope, use ``--exclude`` globs (or set
+    ``scan_path`` to a single subdirectory, as ``raylib`` does for
+    ``{path}/src``).
+
+When adding a new real-world codebase or revisiting an existing one's
+ground-truth audit, check whether its scope notes call for new
+``--exclude`` entries here — a mismatch between the oracle's labeled scope
+and the live scan's actual scope means dashboard numbers include findings
+that were never meant to be measured (or, more subtly, that the ground-truth
+denominator no longer matches what's being scanned).
+
 Auto-Scoring
 ~~~~~~~~~~~~~
 
@@ -213,7 +244,17 @@ CLI::
   subset of the run's findings (a sampled estimate; "Label coverage" shows how
   much of the run is labeled);
 - **recall** = known-TPs flagged / known-TPs --- a known true bug that stops
-  being flagged drops recall, seeding regression detection.
+  being flagged drops recall, seeding regression detection;
+- **unlabeled_count** / **unlabeled_fraction** (overall and per rule) ---
+  ``run_findings - labeled_total``, i.e. how much of this run's findings
+  never got adjudicated. Precision/recall are only computed over the labeled
+  slice, so a rule with a high unlabeled fraction can have a precision number
+  that looks stable while its *raw* finding count swings heavily underneath
+  it. The CLI text view flags any rule above 50% unlabeled; ``compare_runs``
+  surfaces the same fields (``target_labeled_total`` /
+  ``target_unlabeled_count`` / ``target_unlabeled_fraction``) per rule delta
+  so a raw-count regression that outpaces adjudication is visible without
+  manually cross-referencing ``ground_truth``.
 
 A run whose ``codebase_commit`` has no labels is warned about, not scored.
 
@@ -227,6 +268,51 @@ Incremental adjudication loop (need not be one-shot):
    skipped unless ``--update`` re-adjudicates them).
 
 The first 200 labels were seeded from ``data/precision_audit/adjudication_0.4.22.csv``.
+
+Delta-Adjudication Gate
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. important::
+
+    Before citing a precision/recall claim ("precision held", "FP reduced",
+    a paper table row) for a rule whose detection logic just changed, **run
+    a delta-adjudication pass on that rule's new findings first.**
+
+``ground_truth`` labels are snapshotted at `(project, commit, file, line,
+rule)`. When a rule's logic changes (any commit touching
+``src/rules/cert_c/**/*.rs`` that alters what it flags, not a pure refactor),
+its new findings land on ``(file, line)`` pairs that were never adjudicated —
+they're silently excluded from the precision/recall denominator regardless
+of direction. A flat precision number computed only over the pre-existing
+labeled sample, or a raw finding-count comparison via ``compare_runs``, can
+both look clean while the real picture underneath is unmeasured. This is not
+hypothetical: a 21-rule sweep in this project once nearly got reported as a
+clean net-positive on aggregate raw-count deltas alone before someone
+actually adjudicated the new findings.
+
+Procedure:
+
+1. Pull the rule's new unlabeled findings (repeat per project, or split
+   after)::
+
+       python -m bench realworld-unlabeled RUN --rule RULE_ID --project P --json
+
+2. **Derive each project's in-scope file predicate from its own**
+   ``data/precision_audit/<project>/README.md`` **before batching, not
+   after.** One delta-adjudication pass found 2,548 of 4,026 (63%) raw
+   unlabeled findings were out-of-scope noise (test harnesses, vendored
+   deps, language bindings) — mosquitto alone was 73% contamination.
+   Scoping after batches are already generated means redoing completed
+   adjudication work.
+3. Batch (~110-150 findings/batch), adjudicate, and import with
+   ``realworld-import-labels`` — the same workflow as building a fresh
+   oracle.
+4. Only after ``ground_truth`` reflects the new lines is a precision/recall
+   claim about the changed rule safe to publish.
+
+See ``data/precision_audit/DELTA_MEM31_TASK420.md`` for a fully worked
+example: 6 projects, 14 batches, 1,478 findings, 0.7% delta precision — a
+very different number than the aggregate raw-count comparison suggested.
 
 Comparing Across Runs
 ---------------------

@@ -68,10 +68,14 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#real-world-benchmark-tools">Real-World Benchmark Tools</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#per-codebase-rule-configs">Per-Codebase Rule Configs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#per-codebase-scan-scope">Per-Codebase Scan Scope</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#auto-scoring">Auto-Scoring</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="#real-world-ground-truth-oracle-measured-precision-recall">Real-World Ground-Truth Oracle (measured precision/recall)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#real-world-ground-truth-oracle-measured-precision-recall">Real-World Ground-Truth Oracle (measured precision/recall)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#delta-adjudication-gate">Delta-Adjudication Gate</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#comparing-across-runs">Comparing Across Runs</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#juliet">Juliet</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#real-world">Real-World</a></li>
@@ -346,6 +350,35 @@ hidden. See <code class="docutils literal notranslate"><span class="pre">conf/re
 <code class="docutils literal notranslate"><span class="pre">libcrc</span></code> is fully audited (every enabled-rule finding labelled); the four
 large codebases grow their labels incrementally.</p>
 </section>
+<section id="per-codebase-scan-scope">
+<h3>Per-Codebase Scan Scope<a class="headerlink" href="#per-codebase-scan-scope" title="Link to this heading"></a></h3>
+<p>Each codebase’s <code class="docutils literal notranslate"><span class="pre">CODEBASES[&lt;name&gt;][&quot;sqc&quot;][&quot;extra_args&quot;]</span></code> entry in
+<code class="docutils literal notranslate"><span class="pre">mcp_servers/realworld_server.py</span></code> also carries <code class="docutils literal notranslate"><span class="pre">--exclude</span></code> globs that
+scope the scan to the <em>shipped product</em>, not the whole checked-out repo —
+test harnesses, build tooling, vendored/bundled code, and companion tools
+(fuzzers, example plugins, separate CLI utilities) are excluded so they don’t
+inflate the violation count or dilute the precision/recall denominator.
+These globs are derived from each codebase’s ground-truth oracle scope
+(<code class="docutils literal notranslate"><span class="pre">data/precision_audit/&lt;codebase&gt;/README.md</span></code>), which documents exactly
+which directories were ruled in/out during that codebase’s adjudication
+sweep and why.</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><code class="docutils literal notranslate"><span class="pre">-d</span></code>/<code class="docutils literal notranslate"><span class="pre">--directories</span></code> in a codebase’s <code class="docutils literal notranslate"><span class="pre">extra_args</span></code> does <strong>not</strong>
+restrict the scan — it only adds cross-file pre-scan context (see
+<a class="reference internal" href="cli-usage.html"><span class="doc">Advanced CLI Usage</span></a>). A codebase’s primary scan root is the whole repo
+whenever <code class="docutils literal notranslate"><span class="pre">scan_path</span></code> is <code class="docutils literal notranslate"><span class="pre">None</span></code>, regardless of any <code class="docutils literal notranslate"><span class="pre">-d</span></code> entries in
+<code class="docutils literal notranslate"><span class="pre">extra_args</span></code>. To actually narrow scope, use <code class="docutils literal notranslate"><span class="pre">--exclude</span></code> globs (or set
+<code class="docutils literal notranslate"><span class="pre">scan_path</span></code> to a single subdirectory, as <code class="docutils literal notranslate"><span class="pre">raylib</span></code> does for
+<code class="docutils literal notranslate"><span class="pre">{path}/src</span></code>).</p>
+</div>
+<p>When adding a new real-world codebase or revisiting an existing one’s
+ground-truth audit, check whether its scope notes call for new
+<code class="docutils literal notranslate"><span class="pre">--exclude</span></code> entries here — a mismatch between the oracle’s labeled scope
+and the live scan’s actual scope means dashboard numbers include findings
+that were never meant to be measured (or, more subtly, that the ground-truth
+denominator no longer matches what’s being scanned).</p>
+</section>
 <section id="auto-scoring">
 <h3>Auto-Scoring<a class="headerlink" href="#auto-scoring" title="Link to this heading"></a></h3>
 <p>When a real-world run completes, <code class="docutils literal notranslate"><span class="pre">get_status()</span></code> ingests it and <strong>auto-scores</strong>
@@ -386,7 +419,17 @@ are appended over time, never tied to a single run.</p>
 subset of the run’s findings (a sampled estimate; “Label coverage” shows how
 much of the run is labeled);</p></li>
 <li><p><strong>recall</strong> = known-TPs flagged / known-TPs — a known true bug that stops
-being flagged drops recall, seeding regression detection.</p></li>
+being flagged drops recall, seeding regression detection;</p></li>
+<li><p><strong>unlabeled_count</strong> / <strong>unlabeled_fraction</strong> (overall and per rule) —
+<code class="docutils literal notranslate"><span class="pre">run_findings</span> <span class="pre">-</span> <span class="pre">labeled_total</span></code>, i.e. how much of this run’s findings
+never got adjudicated. Precision/recall are only computed over the labeled
+slice, so a rule with a high unlabeled fraction can have a precision number
+that looks stable while its <em>raw</em> finding count swings heavily underneath
+it. The CLI text view flags any rule above 50% unlabeled; <code class="docutils literal notranslate"><span class="pre">compare_runs</span></code>
+surfaces the same fields (<code class="docutils literal notranslate"><span class="pre">target_labeled_total</span></code> /
+<code class="docutils literal notranslate"><span class="pre">target_unlabeled_count</span></code> / <code class="docutils literal notranslate"><span class="pre">target_unlabeled_fraction</span></code>) per rule delta
+so a raw-count regression that outpaces adjudication is visible without
+manually cross-referencing <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code>.</p></li>
 </ul>
 <p>A run whose <code class="docutils literal notranslate"><span class="pre">codebase_commit</span></code> has no labels is warned about, not scored.</p>
 <p>Incremental adjudication loop (need not be one-shot):</p>
@@ -399,6 +442,50 @@ with no label yet (reproducible sample);</p></li>
 skipped unless <code class="docutils literal notranslate"><span class="pre">--update</span></code> re-adjudicates them).</p></li>
 </ol>
 <p>The first 200 labels were seeded from <code class="docutils literal notranslate"><span class="pre">data/precision_audit/adjudication_0.4.22.csv</span></code>.</p>
+<section id="delta-adjudication-gate">
+<h3>Delta-Adjudication Gate<a class="headerlink" href="#delta-adjudication-gate" title="Link to this heading"></a></h3>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p>Before citing a precision/recall claim (“precision held”, “FP reduced”,
+a paper table row) for a rule whose detection logic just changed, <strong>run
+a delta-adjudication pass on that rule’s new findings first.</strong></p>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> labels are snapshotted at <cite>(project, commit, file, line,
+rule)</cite>. When a rule’s logic changes (any commit touching
+<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/**/*.rs</span></code> that alters what it flags, not a pure refactor),
+its new findings land on <code class="docutils literal notranslate"><span class="pre">(file,</span> <span class="pre">line)</span></code> pairs that were never adjudicated —
+they’re silently excluded from the precision/recall denominator regardless
+of direction. A flat precision number computed only over the pre-existing
+labeled sample, or a raw finding-count comparison via <code class="docutils literal notranslate"><span class="pre">compare_runs</span></code>, can
+both look clean while the real picture underneath is unmeasured. This is not
+hypothetical: a 21-rule sweep in this project once nearly got reported as a
+clean net-positive on aggregate raw-count deltas alone before someone
+actually adjudicated the new findings.</p>
+<p>Procedure:</p>
+<ol class="arabic">
+<li><p>Pull the rule’s new unlabeled findings (repeat per project, or split
+after):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">python</span> <span class="o">-</span><span class="n">m</span> <span class="n">bench</span> <span class="n">realworld</span><span class="o">-</span><span class="n">unlabeled</span> <span class="n">RUN</span> <span class="o">--</span><span class="n">rule</span> <span class="n">RULE_ID</span> <span class="o">--</span><span class="n">project</span> <span class="n">P</span> <span class="o">--</span><span class="n">json</span>
+</pre></div>
+</div>
+</li>
+<li><p><strong>Derive each project’s in-scope file predicate from its own</strong>
+<code class="docutils literal notranslate"><span class="pre">data/precision_audit/&lt;project&gt;/README.md</span></code> <strong>before batching, not
+after.</strong> One delta-adjudication pass found 2,548 of 4,026 (63%) raw
+unlabeled findings were out-of-scope noise (test harnesses, vendored
+deps, language bindings) — mosquitto alone was 73% contamination.
+Scoping after batches are already generated means redoing completed
+adjudication work.</p></li>
+<li><p>Batch (~110-150 findings/batch), adjudicate, and import with
+<code class="docutils literal notranslate"><span class="pre">realworld-import-labels</span></code> — the same workflow as building a fresh
+oracle.</p></li>
+<li><p>Only after <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> reflects the new lines is a precision/recall
+claim about the changed rule safe to publish.</p></li>
+</ol>
+<p>See <code class="docutils literal notranslate"><span class="pre">data/precision_audit/DELTA_MEM31_TASK420.md</span></code> for a fully worked
+example: 6 projects, 14 batches, 1,478 findings, 0.7% delta precision — a
+very different number than the aggregate raw-count comparison suggested.</p>
+</section>
 </section>
 <section id="comparing-across-runs">
 <h2>Comparing Across Runs<a class="headerlink" href="#comparing-across-runs" title="Link to this heading"></a></h2>

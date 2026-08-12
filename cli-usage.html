@@ -47,6 +47,7 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Advanced CLI Usage</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#full-command-reference">Full Command Reference</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#cross-file-analysis">Cross-File Analysis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#file-exclusion">File Exclusion</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#export-formats">Export Formats</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#severity-filtering">Severity Filtering</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#rule-filtering">Rule Filtering</a></li>
@@ -120,6 +121,9 @@ Options:
       --min-severity &lt;LEVEL&gt;       Only report violations at or above this severity
                                    [Low, Medium, High, Critical]
       --rules &lt;RULE1,RULE2,...&gt;    Only report violations from these rules (comma-separated)
+      --exclude &lt;GLOB&gt;             Exclude files matching this path glob from analysis
+                                   (repeatable, e.g. --exclude &#39;**/onelua.c&#39;
+                                   --exclude &#39;testes/**&#39;)
       --diff                       Only analyze modified/new C files (requires git repo)
       --suppress-file &lt;FILE&gt;       Path to .sqc-suppress.toml file
                                    (auto-detected in project root if not specified;
@@ -177,6 +181,42 @@ per parameter for inter-procedural null propagation</p></li>
 <li><p><strong>Global constants</strong>: file-scope <code class="docutils literal notranslate"><span class="pre">const</span></code> variables for dead-branch elimination</p></li>
 <li><p><strong>Global pointer null states</strong>: cross-file <code class="docutils literal notranslate"><span class="pre">extern</span></code> pointer tracking (EXP34-C)</p></li>
 </ul>
+</section>
+<section id="file-exclusion">
+<h2>File Exclusion<a class="headerlink" href="#file-exclusion" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">--exclude</span></code> drops files matching a path glob from the scan (and from the
+precision/recall denominator), for checked-in amalgamations, vendored code,
+test harnesses, or build tooling that isn’t part of the shipped product.
+Repeatable; each occurrence adds one more glob:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Drop a single generated/amalgamated file</span>
+<span class="n">sqc</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;**/onelua.c&#39;</span>
+
+<span class="c1"># Drop a whole subtree</span>
+<span class="n">sqc</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;tests/**&#39;</span> <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;vendor/**&#39;</span>
+
+<span class="c1"># Combine multiple globs to scope down to just the shipped product</span>
+<span class="n">sqc</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">repo</span> \
+    <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;tests/**&#39;</span> <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;docs/**&#39;</span> <span class="o">--</span><span class="n">exclude</span> <span class="s1">&#39;scripts/**&#39;</span>
+</pre></div>
+</div>
+<p>Globs are matched against each file’s path relative to the scan root (same
+semantics as a project’s own <code class="docutils literal notranslate"><span class="pre">toolchain.toml</span></code> <code class="docutils literal notranslate"><span class="pre">[ignore].paths</span></code>, which are
+merged in automatically if present — <code class="docutils literal notranslate"><span class="pre">--exclude</span></code> only needs to name
+patterns that aren’t already covered there). A pattern like <code class="docutils literal notranslate"><span class="pre">tests/**</span></code>
+matches anywhere a <code class="docutils literal notranslate"><span class="pre">tests</span></code> directory sits at that depth; use a leading
+<code class="docutils literal notranslate"><span class="pre">**/</span></code> (e.g. <code class="docutils literal notranslate"><span class="pre">**/ltests.c</span></code>) to match a filename regardless of its
+directory.</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><code class="docutils literal notranslate"><span class="pre">--exclude</span></code> is the only flag that removes files from the scan.
+<code class="docutils literal notranslate"><span class="pre">-d</span></code>/<code class="docutils literal notranslate"><span class="pre">--directories</span></code> does the opposite: it <em>adds</em> directories to
+pre-scan for cross-file context (function summaries, macro aliases, …)
+and has no effect on which files are actually analyzed and reported on.
+Passing <code class="docutils literal notranslate"><span class="pre">-d</span> <span class="pre">some/dir</span></code> does <strong>not</strong> restrict analysis to <code class="docutils literal notranslate"><span class="pre">some/dir</span></code> —
+if you want a scan restricted to a subset of a larger tree, either point
+the <code class="docutils literal notranslate"><span class="pre">PATH</span></code> argument at that subdirectory or exclude everything else
+with <code class="docutils literal notranslate"><span class="pre">--exclude</span></code>.</p>
+</div>
 </section>
 <section id="export-formats">
 <h2>Export Formats<a class="headerlink" href="#export-formats" title="Link to this heading"></a></h2>
