@@ -1538,6 +1538,9 @@ class BenchDB:
                    if r["tool"] == "sqc"
                    and (only_project is None or r["project"] == only_project)]
         run_keys = self._run_violation_keys(run_id)
+        if only_project is not None:
+            run_keys = {proj: keys for proj, keys in run_keys.items()
+                        if proj == only_project}
         if restrict_files is not None:
             run_keys = {
                 proj: {k for k in keys
