@@ -31,59 +31,157 @@ impl CertRule for Exp40C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Collect const-qualified variable names across the whole file
-        let mut const_vars = HashSet::new();
-        collect_const_vars(node, source, &mut const_vars);
+        // Global (true file-scope) const vars are visible from every function,
+        // but locals must stay scoped to the function they're declared in --
+        // otherwise a const-qualified local in one function conflates with a
+        // same-named non-const local in another (same bug class as task 389's
+        // EXP39-C/ARR30-C and the follow-on sweep of 7 other rules).
+        let mut global_const_vars = HashSet::new();
+        collect_top_level_const_vars(node, source, &mut global_const_vars);
 
-        // Check for assignments that might remove const qualification
-        check_node_recursive(node, source, &const_vars, &mut violations);
+        // Check assignments/declarations that live outside any function body
+        // using only the global set.
+        check_node_recursive_pruned(node, source, &global_const_vars, &mut violations);
+
+        // Check each function independently, seeded with the global consts
+        // plus that function's own locals/parameters.
+        for function in collect_function_definitions(node) {
+            let mut const_vars = global_const_vars.clone();
+            collect_const_vars(&function, source, &mut const_vars);
+            check_node_recursive(&function, source, &const_vars, &mut violations);
+        }
 
         violations
     }
 }
 
+/// Collect all `function_definition` nodes from the AST. Uses an explicit
+/// stack instead of recursion; pruning at nested `function_definition`
+/// boundaries (which can't occur in C, but keeps the shape consistent with
+/// the other rules in this family) keeps this shallow in practice.
+fn collect_function_definitions<'a>(node: &Node<'a>) -> Vec<Node<'a>> {
+    let mut functions = Vec::new();
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "function_definition" {
+            functions.push(n);
+            continue;
+        }
+        for i in (0..n.child_count()).rev() {
+            if let Some(child) = n.child(i) {
+                stack.push(child);
+            }
+        }
+    }
+    functions
+}
+
+/// Collect const-qualified variable names declared outside any function body
+/// (true file scope), pruning descent at `function_definition` boundaries so
+/// function-local declarations aren't mistaken for globals.
+fn collect_top_level_const_vars(node: &Node, source: &str, const_vars: &mut HashSet<String>) {
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "function_definition" {
+            continue;
+        }
+        collect_const_vars_from_node(&n, source, const_vars);
+        for i in (0..n.child_count()).rev() {
+            if let Some(child) = n.child(i) {
+                stack.push(child);
+            }
+        }
+    }
+}
+
+/// Same traversal shape as [`collect_function_definitions`]/
+/// [`collect_top_level_const_vars`]: check assignment/declaration nodes that
+/// live outside any function body, pruning descent at `function_definition`
+/// boundaries so per-function checks (run separately, with per-function
+/// scoped `const_vars`) don't get duplicated here.
+fn check_node_recursive_pruned(
+    node: &Node,
+    source: &str,
+    const_vars: &HashSet<String>,
+    violations: &mut Vec<RuleViolation>,
+) {
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "function_definition" {
+            continue;
+        }
+        match n.kind() {
+            "assignment_expression" => {
+                check_assignment(&n, source, const_vars, violations);
+            }
+            "init_declarator" => {
+                check_init_declarator(&n, source, const_vars, violations);
+            }
+            "pointer_declarator" => {
+                check_pointer_assignment(&n, source, violations);
+            }
+            _ => {}
+        }
+        for i in (0..n.child_count()).rev() {
+            if let Some(child) = n.child(i) {
+                stack.push(child);
+            }
+        }
+    }
+}
+
 /// Collect all const-qualified variable names from declarations and parameters
+/// anywhere in `node`'s subtree (callers scope `node` to a single function to
+/// keep locals from conflating across functions).
 fn collect_const_vars(node: &Node, source: &str, const_vars: &mut HashSet<String>) {
     for descendant in
         query::find_descendants_of_kinds(*node, &["declaration", "parameter_declaration"])
     {
-        match descendant.kind() {
-            "declaration" => {
-                // Check if declaration has const qualifier
-                let decl_text = get_node_text(&descendant, source);
-                if decl_text.contains("const") {
-                    // Extract variable names from this declaration
-                    for i in 0..descendant.child_count() {
-                        if let Some(child) = descendant.child(i) {
-                            if child.kind() == "init_declarator" {
-                                if let Some(declarator) = child.child_by_field_name("declarator") {
-                                    if let Some(name) = extract_var_name(&declarator, source) {
-                                        const_vars.insert(name);
-                                    }
-                                }
-                            } else if child.kind() == "pointer_declarator"
-                                || child.kind() == "identifier"
-                            {
-                                if let Some(name) = extract_var_name(&child, source) {
+        collect_const_vars_from_node(&descendant, source, const_vars);
+    }
+}
+
+/// Same per-node matching as [`collect_const_vars`], but applied to a single
+/// node rather than a whole subtree -- used by the pruned stack walk in
+/// [`collect_top_level_const_vars`], which needs to skip descent at
+/// `function_definition` boundaries.
+fn collect_const_vars_from_node(node: &Node, source: &str, const_vars: &mut HashSet<String>) {
+    match node.kind() {
+        "declaration" => {
+            // Check if declaration has const qualifier
+            let decl_text = get_node_text(node, source);
+            if decl_text.contains("const") {
+                // Extract variable names from this declaration
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if child.kind() == "init_declarator" {
+                            if let Some(declarator) = child.child_by_field_name("declarator") {
+                                if let Some(name) = extract_var_name(&declarator, source) {
                                     const_vars.insert(name);
                                 }
+                            }
+                        } else if child.kind() == "pointer_declarator"
+                            || child.kind() == "identifier"
+                        {
+                            if let Some(name) = extract_var_name(&child, source) {
+                                const_vars.insert(name);
                             }
                         }
                     }
                 }
             }
-            "parameter_declaration" => {
-                let param_text = get_node_text(&descendant, source);
-                if param_text.contains("const") {
-                    if let Some(declarator) = descendant.child_by_field_name("declarator") {
-                        if let Some(name) = extract_var_name(&declarator, source) {
-                            const_vars.insert(name);
-                        }
+        }
+        "parameter_declaration" => {
+            let param_text = get_node_text(node, source);
+            if param_text.contains("const") {
+                if let Some(declarator) = node.child_by_field_name("declarator") {
+                    if let Some(name) = extract_var_name(&declarator, source) {
+                        const_vars.insert(name);
                     }
                 }
             }
-            _ => {}
         }
+        _ => {}
     }
 }
 
