@@ -34,6 +34,15 @@ impl CParser {
         // unaffected by this substitution.
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
 
+        // Task 441: blank #if/#ifdef/#ifndef + #endif directive pairs that
+        // wrap a dangling `else` fragment (an if/else-if chain split across
+        // a build-time feature guard) -- tree-sitter-c's grammar has no
+        // production for that incomplete-statement shape and can misparse
+        // it into a bogus nested construct rather than a small, isolated
+        // ERROR node. Purely text-level and length-preserving, so it runs
+        // unconditionally rather than gated on a parse error being present.
+        let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
+
         // Task 437: if a parse error remains (e.g. an externally-defined
         // attribute macro with no local #define for the pass above to
         // find), iteratively blank single-token unknown-identifier ERROR
@@ -51,6 +60,7 @@ impl CParser {
     #[allow(dead_code)]
     pub fn parse_source(&mut self, source: &str) -> Result<Tree> {
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(source);
+        let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
         let (tree, _) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
             &mut self.parser,
             source,

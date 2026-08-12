@@ -10,6 +10,7 @@ pub mod macro_expand;
 pub mod macro_semantics;
 pub mod null_state;
 pub mod points_to;
+pub mod preproc_dangling_else;
 pub mod prescan;
 pub mod relevance;
 pub mod suppression;
