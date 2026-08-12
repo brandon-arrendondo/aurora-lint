@@ -333,8 +333,14 @@ impl Dcl30C {
                         if self.declaration_has_alloc_initializer(&child, source) {
                             return true;
                         }
-                        // If initialized to NULL, check for later alloc assignment
-                        if self.declaration_has_null_initializer(&child, source) {
+                        // If left uninitialized or initialized to NULL, the variable's
+                        // real value comes from a later assignment — check that instead.
+                        // "No initializer at all" must be treated the same as "NULL"
+                        // here: `char **nnames;` declared bare and only ever set via
+                        // `nnames = os_realloc_array(...)` inside a loop is the standard
+                        // realloc-into-local idiom and is just as heap-derived as an
+                        // explicit `= NULL` placeholder.
+                        if self.declaration_var_uninitialized_or_null(&child, var_name, source) {
                             if self.has_alloc_assignment_in_body(body, var_name, source) {
                                 return true;
                             }
@@ -357,15 +363,37 @@ impl Dcl30C {
         false
     }
 
-    /// Check if a declaration initializes the variable to NULL.
-    fn declaration_has_null_initializer(&self, decl: &Node, source: &str) -> bool {
+    /// Check whether `var_name`'s own declarator in `decl` (a declaration may
+    /// comma-list several, e.g. `char *if_name, *tmp, **nnames;`) has either
+    /// no initializer at all, or a NULL initializer. Both leave the variable's
+    /// real provenance to a later assignment, which the caller checks next.
+    fn declaration_var_uninitialized_or_null(
+        &self,
+        decl: &Node,
+        var_name: &str,
+        source: &str,
+    ) -> bool {
         for i in 0..decl.child_count() {
             if let Some(child) = decl.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        let text = ast_utils::get_node_text(&value, source);
-                        return text == "NULL" || text == "0" || text == "nullptr";
+                match child.kind() {
+                    "init_declarator"
+                        if self.contains_identifier_by_name(&child, var_name, source) =>
+                    {
+                        return match child.child_by_field_name("value") {
+                            Some(value) => {
+                                let text = ast_utils::get_node_text(&value, source);
+                                text == "NULL" || text == "0" || text == "nullptr"
+                            }
+                            None => true,
+                        };
                     }
+                    "pointer_declarator" | "array_declarator" | "identifier"
+                        if self.contains_identifier_by_name(&child, var_name, source) =>
+                    {
+                        // Plain declarator, no initializer at all.
+                        return true;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -615,6 +643,15 @@ impl Dcl30C {
                     if !self.local_var_is_pointer_or_array(&right, &right_var, source) {
                         return None;
                     }
+                    // Same heap/static exemptions as the return-statement case: copying
+                    // a heap-derived or static-derived pointer VALUE through the
+                    // out-param doesn't escape any local's storage.
+                    if self.local_var_is_heap_allocated(&right, &right_var, source) {
+                        return None;
+                    }
+                    if self.local_ptr_points_to_static(&right, &right_var, source) {
+                        return None;
+                    }
                     let start_point = assignment_node.start_position();
                     return Some(RuleViolation {
                         rule_id: "DCL30-C".to_string(),
@@ -639,6 +676,12 @@ impl Dcl30C {
                         // Assigning a scalar value (e.g., global_int = local_int)
                         // just copies the value — no dangling reference is created.
                         if !self.local_var_is_pointer_or_array(&right, &right_var, source) {
+                            return None;
+                        }
+                        if self.local_var_is_heap_allocated(&right, &right_var, source) {
+                            return None;
+                        }
+                        if self.local_ptr_points_to_static(&right, &right_var, source) {
                             return None;
                         }
 
