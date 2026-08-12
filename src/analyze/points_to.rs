@@ -1,5 +1,6 @@
 use crate::utility::cert_c::ast_utils::get_node_text;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use tree_sitter::Node;
 
 /// A structurally-canonical lvalue: a bare variable, or a field access
@@ -19,8 +20,11 @@ pub enum LValue {
     /// A bare identifier's canonical text (e.g. "p").
     Var(String),
     /// A field access on some base lvalue (e.g. `Field(Var("p"), "buf")` for
-    /// both `p->buf` and `(*p).buf`).
-    Field(Box<LValue>, String),
+    /// both `p->buf` and `(*p).buf`). `Rc` rather than `Box` because
+    /// `BranchState::fork`/`restore` (MEM30-C) clone `HashSet<LValue>`s on
+    /// every if/else branch — with `Box` that walks and re-allocates the
+    /// whole field chain per clone; `Rc` makes it a refcount bump.
+    Field(Rc<LValue>, String),
 }
 
 impl LValue {
@@ -55,7 +59,7 @@ pub fn lvalue_of(node: &Node, source: &str) -> Option<LValue> {
             let base = lvalue_of(&base_node, source)?;
             let field_node = node.child_by_field_name("field")?;
             let field_name = get_node_text(&field_node, source).to_string();
-            Some(LValue::Field(Box::new(base), field_name))
+            Some(LValue::Field(Rc::new(base), field_name))
         }
         // *p and &p both parse as pointer_expression in this grammar; both
         // are a pure identity-preserving unwrap for our purposes.
@@ -142,7 +146,7 @@ mod tests {
         assert_eq!(lv1, lv2);
         assert_eq!(
             lv1,
-            LValue::Field(Box::new(LValue::Var("p".to_string())), "buf".to_string())
+            LValue::Field(Rc::new(LValue::Var("p".to_string())), "buf".to_string())
         );
     }
 
