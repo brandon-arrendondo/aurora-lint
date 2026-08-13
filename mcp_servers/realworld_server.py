@@ -185,14 +185,26 @@ CODEBASES = {
             "includes": [
                 "-I", "/usr/include",           # openssl, mbedtls, gnutls, zlib
                 "-I", "{path}/lib",             # internal curlx headers
+                "-I", "{path}/include",         # public API headers (curl/curl.h et al.)
             ],
             # Scope = shipped product (lib/ libcurl + src/ curl CLI), matching
-            # the precision oracle (data/precision_audit/curl/README.md).
+            # the precision oracle (data/precision_audit/curl/README.md). The
+            # oracle explicitly excludes include/ (public API headers aren't
+            # "shipped product" in the lib/+src/ sense) -- task 431 found 218
+            # findings coming from include/ alone, none of which are or can be
+            # in ground_truth, silently inflating totals outside the audited
+            # denominator.
             # `-d` doesn't restrict the scan (it only adds cross-file pre-scan
             # context; the primary scan root is still the whole repo when
             # scan_path is None), so out-of-scope trees are dropped via
             # --exclude instead: tests/, docs/ (incl. docs/examples/*.c
-            # snippets), scripts/, CMake/, projects/ (vendored/build tooling).
+            # snippets), scripts/, CMake/, projects/, include/ (vendored/build
+            # tooling + public API headers). Excluding include/ from the
+            # target list doesn't lose type/macro resolution for lib/+src/ --
+            # the `-d {path}` full-repo prescan walk (added automatically
+            # whenever extra_args has no explicit `-d`) already indexes
+            # include/'s macros/enums/types independently of --exclude, which
+            # only filters which files get reported, not which get parsed.
             # Does NOT exclude the WIN_MAC files (14 files under lib/vtls,
             # lib/curlx) — those stay in the scan since the oracle treats them
             # as a distinct build-config boundary, excluded only from
@@ -203,6 +215,7 @@ CODEBASES = {
                 "--exclude", "scripts/**",
                 "--exclude", "CMake/**",
                 "--exclude", "projects/**",
+                "--exclude", "include/**",
             ],
         },
         "cppcheck": {
