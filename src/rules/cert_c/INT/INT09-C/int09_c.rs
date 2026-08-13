@@ -26,6 +26,9 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval::{
+    collect_macro_constants, try_evaluate_text_public, MacroConstantMap,
+};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -84,12 +87,19 @@ impl Int09C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
+        let macros = collect_macro_constants(node, source);
         for n in query::find_descendants_of_kind(*node, "enum_specifier") {
-            self.analyze_enum(&n, source, violations);
+            self.analyze_enum(&n, source, &macros, violations);
         }
     }
 
-    fn analyze_enum(&self, enum_node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn analyze_enum(
+        &self,
+        enum_node: &Node,
+        source: &str,
+        macros: &MacroConstantMap,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         // Find the enumerator_list
         let enumerator_list = match Self::find_enumerator_list(enum_node) {
             Some(list) => list,
@@ -124,6 +134,12 @@ impl Int09C {
                                 self.try_eval_enum_arith(trimmed, &enumerators)
                             {
                                 (v, true, used_enum_ref)
+                            } else if let Some(v) = try_evaluate_text_public(trimmed, macros) {
+                                // Handles arithmetic on plain `#define` macros
+                                // (e.g. curl's `CURLINFO_STRING + 1` idiom),
+                                // which aren't prior enumerators so
+                                // try_eval_enum_arith can't resolve them.
+                                (v, true, false)
                             } else {
                                 (self.parse_constant_value(trimmed), true, false)
                             }
