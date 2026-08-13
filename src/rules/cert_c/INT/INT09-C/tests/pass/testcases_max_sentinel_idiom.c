@@ -1,0 +1,23 @@
+/*
+ * Rule: INT09-C
+ * Status: PASS - MAX-sentinel idiom (Linux kernel uapi header style)
+ */
+
+enum nl80211_commands {
+	NL80211_CMD_UNSPEC,
+	NL80211_CMD_GET_WIPHY,
+	NL80211_CMD_SET_WIPHY,
+
+	/* keep last */
+	__NL80211_CMD_AFTER_LAST,
+	NL80211_CMD_MAX = __NL80211_CMD_AFTER_LAST - 1
+};
+
+enum nl80211_attrs {
+	NL80211_ATTR_UNSPEC,
+	NL80211_ATTR_WIPHY,
+
+	__NL80211_ATTR_AFTER_LAST,
+	NUM_NL80211_ATTR = __NL80211_ATTR_AFTER_LAST,
+	NL80211_ATTR_MAX = __NL80211_ATTR_AFTER_LAST - 1
+};

@@ -32,6 +32,23 @@ use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
+// Track enumerator values and whether they're explicit.
+#[derive(Debug)]
+struct EnumValue {
+    name: String,
+    value: i64,
+    is_explicit: bool,
+    // True when the explicit value is derived from a prior enumerator's
+    // NAME, either directly (`violet = indigo`) or through arithmetic on it
+    // (`FOO_MAX = __FOO_AFTER_LAST - 1`, the standard MAX-sentinel idiom,
+    // which by construction duplicates the last real member's value on
+    // purpose). Referencing a named enumerator can't collide by accident
+    // the way a numeric-literal collision can, so it's unambiguous
+    // intentional duplication (CERT INT09-C's own exception).
+    is_name_alias: bool,
+    node: Node<'static>,
+}
+
 pub struct Int09C;
 
 impl CertRule for Int09C {
@@ -79,21 +96,6 @@ impl Int09C {
             None => return,
         };
 
-        // Track enumerator values and whether they're explicit
-        #[derive(Debug)]
-        struct EnumValue {
-            name: String,
-            value: i64,
-            is_explicit: bool,
-            // True when the explicit value is a direct reference to a
-            // prior enumerator's NAME (e.g. `violet = indigo`), rather than
-            // a numeric literal. Aliasing by name can't happen by accident
-            // the way a numeric-literal collision can, so it's unambiguous
-            // intentional duplication (CERT INT09-C's own exception).
-            is_name_alias: bool,
-            node: Node<'static>,
-        }
-
         let mut enumerators: Vec<EnumValue> = Vec::new();
         let mut current_value: i64 = 0;
 
@@ -118,6 +120,10 @@ impl Int09C {
                             // falling back to numeric parsing.
                             if let Some(aliased) = enumerators.iter().find(|e| e.name == trimmed) {
                                 (aliased.value, true, true)
+                            } else if let Some((v, used_enum_ref)) =
+                                self.try_eval_enum_arith(trimmed, &enumerators)
+                            {
+                                (v, true, used_enum_ref)
                             } else {
                                 (self.parse_constant_value(trimmed), true, false)
                             }
@@ -202,6 +208,56 @@ impl Int09C {
                     return Some(child);
                 }
             }
+        }
+        None
+    }
+
+    /// Try to evaluate a simple `LHS (+|-) RHS` expression where either side
+    /// may be a numeric literal or the name of a prior enumerator in the
+    /// same enum (e.g. `NUM_FOO - 1`, `__FOO_AFTER_LAST - 1`). Returns the
+    /// computed value plus whether either operand was a named-enumerator
+    /// reference (as opposed to two plain numeric literals).
+    ///
+    /// Scans for the operator right-to-left so the split lands on the
+    /// top-level `+`/`-` for the single-operator idiom this rule cares
+    /// about; it does not attempt general expression parsing (precedence,
+    /// parens, multiple operators).
+    fn try_eval_enum_arith(&self, text: &str, enumerators: &[EnumValue]) -> Option<(i64, bool)> {
+        for (idx, ch) in text.char_indices().rev() {
+            if (ch == '+' || ch == '-') && idx != 0 {
+                let left = text[..idx].trim();
+                let right = text[idx + ch.len_utf8()..].trim();
+                if left.is_empty() || right.is_empty() {
+                    continue;
+                }
+                if let (Some((lval, lref)), Some((rval, rref))) = (
+                    self.resolve_enum_operand(left, enumerators),
+                    self.resolve_enum_operand(right, enumerators),
+                ) {
+                    let result = if ch == '+' { lval + rval } else { lval - rval };
+                    return Some((result, lref || rref));
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve one operand of an enum-initializer arithmetic expression:
+    /// either a prior enumerator's name (returns its value, `true`) or a
+    /// numeric literal (returns its value, `false`).
+    fn resolve_enum_operand(&self, text: &str, enumerators: &[EnumValue]) -> Option<(i64, bool)> {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        if let Some(e) = enumerators.iter().find(|e| e.name == text) {
+            return Some((e.value, true));
+        }
+        if text.starts_with("0x") || text.starts_with("0X") {
+            return i64::from_str_radix(&text[2..], 16).ok().map(|v| (v, false));
+        }
+        if text.chars().all(|c| c.is_ascii_digit()) {
+            return text.parse::<i64>().ok().map(|v| (v, false));
         }
         None
     }
