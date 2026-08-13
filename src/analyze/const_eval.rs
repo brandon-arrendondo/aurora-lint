@@ -383,7 +383,29 @@ fn collect_preproc_defs(node: &Node, source: &str, defs: &mut Vec<(String, Strin
                         }
                     }
                 }
-                kind if kind.starts_with("preproc_") => {
+                // Recurse into nested preproc constructs (#if/#ifdef bodies),
+                // ERROR nodes, and extern "C" linkage blocks:
+                //
+                // - ERROR: a single unrelated syntax error elsewhere in a
+                //   large #ifndef-guarded block can make tree-sitter-c fall
+                //   back to one giant ERROR node wrapping the rest of the
+                //   file -- the `preproc_def` children underneath are still
+                //   individually well-formed and worth collecting even
+                //   though their ancestor is an error-recovery node.
+                // - linkage_specification/declaration_list: the standard
+                //   `#ifdef __cplusplus extern "C" { #endif ... }` C/C++
+                //   interop idiom (virtually every public C header) parses
+                //   as a `linkage_specification` whose body is a
+                //   `declaration_list` -- without recursing into these, EVERY
+                //   #define inside that near-universal wrapper (i.e. most of
+                //   the file, in practice) was invisible to macro-constant
+                //   collection (task 453, found via curl.h's CURLINFO_*
+                //   macros all sitting inside its `extern "C" { ... }` block).
+                kind if kind.starts_with("preproc_")
+                    || kind == "ERROR"
+                    || kind == "linkage_specification"
+                    || kind == "declaration_list" =>
+                {
                     collect_preproc_defs(&child, source, defs);
                 }
                 _ => {}

@@ -30,7 +30,6 @@ use crate::analyze::const_eval::{
     collect_macro_constants, try_evaluate_text_public, MacroConstantMap,
 };
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -49,7 +48,8 @@ struct EnumValue {
     // the way a numeric-literal collision can, so it's unambiguous
     // intentional duplication (CERT INT09-C's own exception).
     is_name_alias: bool,
-    node: Node<'static>,
+    line: usize,
+    column: usize,
 }
 
 pub struct Int09C;
@@ -88,8 +88,9 @@ impl Int09C {
         violations: &mut Vec<RuleViolation>,
     ) {
         let macros = collect_macro_constants(node, source);
+        let line_starts = Self::build_line_starts(source);
         for n in query::find_descendants_of_kind(*node, "enum_specifier") {
-            self.analyze_enum(&n, source, &macros, violations);
+            self.analyze_enum(&n, source, &macros, &line_starts, violations);
         }
     }
 
@@ -98,6 +99,7 @@ impl Int09C {
         enum_node: &Node,
         source: &str,
         macros: &MacroConstantMap,
+        line_starts: &[usize],
         violations: &mut Vec<RuleViolation>,
     ) {
         // Find the enumerator_list
@@ -106,63 +108,76 @@ impl Int09C {
             None => return,
         };
 
+        // Re-derive each enumerator from the raw source text between the
+        // list's braces, splitting on top-level commas, rather than relying
+        // on tree-sitter's `enumerator`/`value` node fields directly. A
+        // trailing attribute-position macro with call syntax between an
+        // enumerator's name and its `=` initializer (e.g. curl's
+        // `NAME CURL_DEPRECATED(ver, "msg") = EXPR`) produces ERROR nodes
+        // that fragment the AST into extra phantom `enumerator` siblings
+        // with no `value` field (task 453) -- operating on raw text instead
+        // sidesteps that corrupted structure entirely.
+        let list_start = enumerator_list.start_byte();
+        let list_end = enumerator_list.end_byte();
+        let inner_start = list_start + 1; // skip '{'
+        let inner_end = list_end.saturating_sub(1); // skip '}'
+        if inner_end <= inner_start || inner_end > source.len() {
+            return;
+        }
+        let list_text = &source[inner_start..inner_end];
+
         let mut enumerators: Vec<EnumValue> = Vec::new();
         let mut current_value: i64 = 0;
 
-        // Parse all enumerators
-        for i in 0..enumerator_list.child_count() {
-            if let Some(child) = enumerator_list.child(i) {
-                if child.kind() == "enumerator" {
-                    let name = if let Some(name_node) = child.child_by_field_name("name") {
-                        get_node_text(&name_node, source)
+        for (rel_start, rel_end) in Self::split_top_level_commas(list_text) {
+            let raw_entry = &list_text[rel_start..rel_end];
+            let stripped = Self::strip_comments(raw_entry);
+            let Some(name) = Self::extract_name(&stripped) else {
+                continue;
+            };
+            let name = name.to_string();
+
+            let (value, is_explicit, is_name_alias) = match Self::find_top_level_value(&stripped) {
+                Some(value_text) => {
+                    let trimmed = value_text.trim();
+                    // An explicit value may reference a prior
+                    // enumerator by name (e.g. `violet = indigo`)
+                    // rather than a numeric literal; resolve it
+                    // against what's been parsed so far before
+                    // falling back to numeric parsing.
+                    if let Some(aliased) = enumerators.iter().find(|e| e.name == trimmed) {
+                        (aliased.value, true, true)
+                    } else if let Some((v, used_enum_ref)) =
+                        self.try_eval_enum_arith(trimmed, &enumerators)
+                    {
+                        (v, true, used_enum_ref)
+                    } else if let Some(v) = try_evaluate_text_public(trimmed, macros) {
+                        // Handles arithmetic on plain `#define` macros
+                        // (e.g. curl's `CURLINFO_STRING + 1` idiom),
+                        // which aren't prior enumerators so
+                        // try_eval_enum_arith can't resolve them.
+                        (v, true, false)
                     } else {
-                        continue;
-                    };
-
-                    let (value, is_explicit, is_name_alias) =
-                        if let Some(value_node) = child.child_by_field_name("value") {
-                            let value_text = get_node_text(&value_node, source);
-                            let trimmed = value_text.trim();
-                            // An explicit value may reference a prior
-                            // enumerator by name (e.g. `violet = indigo`)
-                            // rather than a numeric literal; resolve it
-                            // against what's been parsed so far before
-                            // falling back to numeric parsing.
-                            if let Some(aliased) = enumerators.iter().find(|e| e.name == trimmed) {
-                                (aliased.value, true, true)
-                            } else if let Some((v, used_enum_ref)) =
-                                self.try_eval_enum_arith(trimmed, &enumerators)
-                            {
-                                (v, true, used_enum_ref)
-                            } else if let Some(v) = try_evaluate_text_public(trimmed, macros) {
-                                // Handles arithmetic on plain `#define` macros
-                                // (e.g. curl's `CURLINFO_STRING + 1` idiom),
-                                // which aren't prior enumerators so
-                                // try_eval_enum_arith can't resolve them.
-                                (v, true, false)
-                            } else {
-                                (self.parse_constant_value(trimmed), true, false)
-                            }
-                        } else {
-                            (current_value, false, false)
-                        };
-
-                    // SAFETY: We're storing the node which has the same lifetime as the source
-                    // The violations vec will be used within the same scope
-                    let static_node: Node<'static> =
-                        unsafe { std::mem::transmute::<Node, Node<'static>>(child) };
-
-                    enumerators.push(EnumValue {
-                        name: name.to_string(),
-                        value,
-                        is_explicit,
-                        is_name_alias,
-                        node: static_node,
-                    });
-
-                    current_value = value + 1;
+                        (self.parse_constant_value(trimmed), true, false)
+                    }
                 }
-            }
+                None => (current_value, false, false),
+            };
+
+            let name_offset_in_entry = raw_entry.find(name.as_str()).unwrap_or(0);
+            let abs_offset = inner_start + rel_start + name_offset_in_entry;
+            let (line, column) = Self::line_col_from_starts(line_starts, abs_offset);
+
+            enumerators.push(EnumValue {
+                name,
+                value,
+                is_explicit,
+                is_name_alias,
+                line,
+                column,
+            });
+
+            current_value = value + 1;
         }
 
         // Check for duplicates where at least one is implicit (unintentional)
@@ -202,8 +217,8 @@ impl Int09C {
                                 enumerator.name, value, explicit_status
                             ),
                             severity: self.severity(),
-                            line: enumerator.node.start_position().row + 1,
-                            column: enumerator.node.start_position().column + 1,
+                            line: enumerator.line,
+                            column: enumerator.column,
                             file_path: String::new(),
                             suggestion: Some(
                                 "Either use all implicit values, or make all assignments explicit"
@@ -226,6 +241,190 @@ impl Int09C {
             }
         }
         None
+    }
+
+    /// Split `text` into byte ranges delimited by top-level commas --
+    /// commas inside `()`/`[]`/`{}` nesting, string/char literals, or
+    /// `/* */`/`//` comments don't count as separators. This is what lets a
+    /// malformed attribute-macro call (e.g. `CURL_DEPRECATED(7.55, "a, b")`)
+    /// stay part of the same enumerator entry instead of splitting on its
+    /// internal comma.
+    fn split_top_level_commas(text: &str) -> Vec<(usize, usize)> {
+        let mut entries = Vec::new();
+        let mut depth = 0i32;
+        let mut in_str: Option<u8> = None;
+        let mut start = 0usize;
+        let bytes = text.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if let Some(q) = in_str {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    in_str = None;
+                }
+                i += 1;
+                continue;
+            }
+            if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            match c {
+                b'"' | b'\'' => {
+                    in_str = Some(c);
+                    i += 1;
+                }
+                b'(' | b'[' | b'{' => {
+                    depth += 1;
+                    i += 1;
+                }
+                b')' | b']' | b'}' => {
+                    depth -= 1;
+                    i += 1;
+                }
+                b',' if depth == 0 => {
+                    entries.push((start, i));
+                    start = i + 1;
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+        entries.push((start, bytes.len()));
+        entries
+    }
+
+    /// Remove `/* */` and `//` comments from `text`, preserving everything
+    /// else verbatim (including string/char literal contents).
+    fn strip_comments(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '/' && chars.peek() == Some(&'*') {
+                chars.next();
+                let mut prev = '\0';
+                for c2 in chars.by_ref() {
+                    if prev == '*' && c2 == '/' {
+                        break;
+                    }
+                    prev = c2;
+                }
+            } else if c == '/' && chars.peek() == Some(&'/') {
+                for c2 in chars.by_ref() {
+                    if c2 == '\n' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Extract the leading C identifier from `text` (after trimming leading
+    /// whitespace) -- an enumerator entry's name always comes first.
+    fn extract_name(text: &str) -> Option<&str> {
+        let trimmed = text.trim_start();
+        let mut end = 0usize;
+        for (i, c) in trimmed.char_indices() {
+            if i == 0 {
+                if !(c.is_ascii_alphabetic() || c == '_') {
+                    return None;
+                }
+            } else if !(c.is_ascii_alphanumeric() || c == '_') {
+                break;
+            }
+            end = i + c.len_utf8();
+        }
+        if end == 0 {
+            None
+        } else {
+            Some(&trimmed[..end])
+        }
+    }
+
+    /// Find the value-initializer text after the last top-level `=` in
+    /// `text` (depth-0, outside string/char literals, and not part of a
+    /// `==`/`!=`/`<=`/`>=` comparison operator). Returns `None` when there's
+    /// no explicit initializer -- including when the only `=` found is
+    /// buried inside a malformed attribute-macro call's parens, which this
+    /// depth tracking correctly ignores.
+    fn find_top_level_value(text: &str) -> Option<&str> {
+        let bytes = text.as_bytes();
+        let mut depth = 0i32;
+        let mut in_str: Option<u8> = None;
+        let mut last_eq: Option<usize> = None;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if let Some(q) = in_str {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    in_str = None;
+                }
+                i += 1;
+                continue;
+            }
+            match c {
+                b'"' | b'\'' => in_str = Some(c),
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                b'=' if depth == 0 => {
+                    let prev = if i > 0 { bytes[i - 1] } else { 0 };
+                    let next = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+                    if next != b'=' && prev != b'=' && prev != b'!' && prev != b'<' && prev != b'>'
+                    {
+                        last_eq = Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        last_eq.map(|pos| text[pos + 1..].trim())
+    }
+
+    /// Byte offsets of the start of each line in `source` (index 0 is
+    /// always line 1's start at offset 0).
+    fn build_line_starts(source: &str) -> Vec<usize> {
+        let mut starts = vec![0usize];
+        for (i, b) in source.bytes().enumerate() {
+            if b == b'\n' {
+                starts.push(i + 1);
+            }
+        }
+        starts
+    }
+
+    /// Convert a byte offset into 1-based (line, column), using the
+    /// precomputed `line_starts` table.
+    fn line_col_from_starts(line_starts: &[usize], offset: usize) -> (usize, usize) {
+        let idx = match line_starts.binary_search(&offset) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        let line_start = line_starts.get(idx).copied().unwrap_or(0);
+        (idx + 1, offset.saturating_sub(line_start) + 1)
     }
 
     /// Try to evaluate a simple `LHS (+|-) RHS` expression where either side
