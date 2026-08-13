@@ -25,6 +25,7 @@ struct FilePrescanResult {
     packed_structs: HashSet<String>,
     packed_struct_candidates: Vec<(String, String)>,
     packed_macro_names: HashSet<String>,
+    defined_macro_names: HashSet<String>,
     global_constants: HashMap<String, i64>,
     global_var_null_states: HashMap<String, NullState>,
     global_writers: HashMap<String, HashSet<String>>,
@@ -50,6 +51,7 @@ impl FilePrescanResult {
             packed_structs: HashSet::new(),
             packed_struct_candidates: Vec::new(),
             packed_macro_names: HashSet::new(),
+            defined_macro_names: HashSet::new(),
             global_constants: HashMap::new(),
             global_var_null_states: HashMap::new(),
             global_writers: HashMap::new(),
@@ -121,6 +123,10 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         crate::utility::cert_c::ast_utils::collect_packed_macro_names(
             &source,
             &mut result.packed_macro_names,
+        );
+        crate::utility::cert_c::ast_utils::collect_defined_macro_names(
+            &source,
+            &mut result.defined_macro_names,
         );
 
         collect_global_constants(&root, &source, &mut result.global_constants);
@@ -201,6 +207,7 @@ pub fn prescan_directories(
     let mut packed_structs: HashSet<String> = HashSet::new();
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
     let mut packed_macro_names: HashSet<String> = HashSet::new();
+    let mut defined_macro_names: HashSet<String> = HashSet::new();
     let mut global_constants: HashMap<String, i64> = HashMap::new();
     let mut global_var_null_states: HashMap<String, NullState> = HashMap::new();
     let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
@@ -292,6 +299,7 @@ pub fn prescan_directories(
         packed_structs.extend(r.packed_structs);
         packed_struct_candidates.extend(r.packed_struct_candidates);
         packed_macro_names.extend(r.packed_macro_names);
+        defined_macro_names.extend(r.defined_macro_names);
         global_constants.extend(r.global_constants);
         global_var_null_states.extend(r.global_var_null_states);
 
@@ -390,6 +398,7 @@ pub fn prescan_directories(
         function_macros,
         struct_field_types,
         packed_structs,
+        defined_macro_names,
         global_constants,
         global_var_null_states,
         global_writers,
@@ -3499,6 +3508,10 @@ pub fn resolve_includes(
                 crate::utility::cert_c::ast_utils::collect_packed_macro_names(
                     &hsource,
                     &mut packed_macro_names,
+                );
+                crate::utility::cert_c::ast_utils::collect_defined_macro_names(
+                    &hsource,
+                    &mut context.defined_macro_names,
                 );
 
                 // Enqueue transitive includes from this header

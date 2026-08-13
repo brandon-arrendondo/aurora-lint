@@ -1275,7 +1275,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "sqc"
-version = "0.4.198"
+version = "0.4.199"
 dependencies = [
  "anyhow",
  "bincode",

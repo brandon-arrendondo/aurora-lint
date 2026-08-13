@@ -814,6 +814,43 @@ pub fn collect_packed_macro_names(source: &str, out: &mut std::collections::Hash
     }
 }
 
+/// True if `#define name ...` appears anywhere in `source`, regardless of
+/// what it expands to. Used to recognize a trailing bare identifier right
+/// after a struct/union/enum body (e.g. `struct foo { ... } SOME_MACRO;`) as
+/// an attribute-position macro invocation rather than a genuine object
+/// declaration: sqc has no preprocessor, so such a macro is parsed as if it
+/// were the declared object's name, but a real C identifier can never
+/// collide with an in-scope `#define` name (the preprocessor would have
+/// substituted it first) — so if the name is a known macro, this can't be a
+/// real declaration (DCL40-C task 432).
+pub fn is_defined_macro_name(name: &str, source: &str) -> bool {
+    let Ok(re) = regex::Regex::new(&format!(r"(?m)^\s*#\s*define\s+{}\b", regex::escape(name)))
+    else {
+        return false;
+    };
+    re.is_match(source)
+}
+
+/// Collect every `#define NAME ...` object-macro name in `source`,
+/// regardless of what it expands to. Plain regex over raw text, not
+/// AST-based — deliberately independent of any single file's declarations
+/// so it can be merged project-wide and used to resolve a trailing bare
+/// identifier found in *other* files against the macro's actual `#define`
+/// (which commonly lives in a different header, e.g. hostap's
+/// `STRUCT_PACKED` in `utils/common.h` vs. structs in
+/// `common/ieee802_11_defs.h`). Generalizes `collect_packed_macro_names` to
+/// any macro name, not just packed-attribute ones — see `is_defined_macro_name`.
+pub fn collect_defined_macro_names(source: &str, out: &mut std::collections::HashSet<String>) {
+    let Ok(re) = regex::Regex::new(r"(?m)^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b") else {
+        return;
+    };
+    for cap in re.captures_iter(source) {
+        if let Some(name) = cap.get(1) {
+            out.insert(name.as_str().to_string());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

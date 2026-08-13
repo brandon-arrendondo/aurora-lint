@@ -10,10 +10,13 @@
 //! https://wiki.sei.cmu.edu/confluence/display/c/DCL40-C.+Do+not+create+incompatible+declarations+of+the+same+function+or+object
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
+use crate::utility::cert_c::ast_utils::{
+    get_identifier_from_declarator, get_node_text, is_defined_macro_name,
+};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 // C99/C11 minimum guaranteed significant initial characters for an
@@ -33,6 +36,11 @@ pub struct Dcl40C {
     // 31 characters may collide on conforming implementations, which is
     // undefined behavior even though the full names differ.
     truncated_external_decls: RefCell<HashMap<String, String>>,
+    // Names of #define macros collected cross-file during pre-scan (task
+    // 432): a struct's trailing attribute-position macro (e.g. hostap's
+    // STRUCT_PACKED) commonly has its #define in a different file than the
+    // struct definition itself.
+    cross_file_macro_names: RefCell<HashSet<String>>,
 }
 
 impl Dcl40C {
@@ -41,7 +49,34 @@ impl Dcl40C {
             function_decls: RefCell::new(HashMap::new()),
             object_decls: RefCell::new(HashMap::new()),
             truncated_external_decls: RefCell::new(HashMap::new()),
+            cross_file_macro_names: RefCell::new(HashSet::new()),
         }
+    }
+
+    /// True if `name` is a known `#define` macro — either textually present
+    /// in this same file's `source`, or collected cross-file during
+    /// pre-scan. A real C object declaration can never share a name with an
+    /// in-scope macro (the preprocessor would substitute it first), so this
+    /// is a reliable, name-independent signal that a trailing bare
+    /// identifier after a struct/union/enum body is an attribute-position
+    /// macro invocation, not a genuine declared object.
+    fn is_known_macro(&self, name: &str, source: &str) -> bool {
+        is_defined_macro_name(name, source) || self.cross_file_macro_names.borrow().contains(name)
+    }
+
+    /// True if `decl_node`'s `type` field is a struct/union/enum specifier
+    /// that carries its own body (i.e. this declaration also *defines* the
+    /// type, not merely references an existing tag) — the shape sqc's
+    /// preprocessor-less parser misreads a trailing attribute macro into
+    /// (`struct foo { ... } SOME_MACRO;`).
+    fn type_field_is_definition_with_body(decl_node: &Node) -> bool {
+        let Some(type_node) = decl_node.child_by_field_name("type") else {
+            return false;
+        };
+        matches!(
+            type_node.kind(),
+            "struct_specifier" | "union_specifier" | "enum_specifier"
+        ) && type_node.child_by_field_name("body").is_some()
     }
 
     /// True if this file-scope declaration has internal linkage (`static`)
@@ -251,6 +286,21 @@ impl Dcl40C {
                 return;
             }
 
+            // A bare identifier declarator directly on a struct/union/enum
+            // *definition* (not a reference to an existing tag) that happens
+            // to match a known #define is sqc's preprocessor-less parser
+            // misreading a trailing attribute-position macro (e.g. hostap's
+            // `struct foo { ... } STRUCT_PACKED;`) as if it declared an
+            // object named after the macro — it never does, and every such
+            // struct in the file would otherwise "redeclare" that same name
+            // with a different (real) type (task 432).
+            if declarator.kind() == "identifier"
+                && Self::type_field_is_definition_with_body(node)
+                && self.is_known_macro(&get_node_text(&declarator, source), source)
+            {
+                return;
+            }
+
             // Get variable name
             if let Some(name) = self.get_variable_name(&declarator, source) {
                 // Get type information
@@ -417,6 +467,10 @@ impl CertRule for Dcl40C {
 
     fn cert_id(&self) -> &'static str {
         "DCL40-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.cross_file_macro_names.borrow_mut() = context.defined_macro_names.clone();
     }
 
     fn check(&self, root_node: &Node, source: &str) -> Vec<RuleViolation> {

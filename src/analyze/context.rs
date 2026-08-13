@@ -60,6 +60,15 @@ pub struct ProjectContext {
     /// variadics are intentionally excluded (see `macro_expand`).
     #[serde(default)]
     pub function_macros: HashMap<String, FunctionMacro>,
+    /// Names of every `#define NAME ...` object-like macro collected across
+    /// all scanned files (incl. headers), regardless of what they expand to.
+    /// Used by DCL40-C to recognize a trailing bare identifier after a
+    /// struct/union/enum body (e.g. hostap's `struct foo { ... }
+    /// STRUCT_PACKED;`) as an attribute-position macro invocation rather
+    /// than a genuine object declaration — the `#define` commonly lives in a
+    /// different file than the struct (task 432).
+    #[serde(default)]
+    pub defined_macro_names: HashSet<String>,
 }
 
 impl ProjectContext {
