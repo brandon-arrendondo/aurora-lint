@@ -57,8 +57,9 @@ impl Dcl00C {
         // but only if the variable is not actually modified later in
         // its enclosing scope (reassignment, compound-assign, ++/--,
         // address-of, or member/element write).
+        let is_array = declarator.kind() == "array_declarator";
         if should_be_const(&parent_decl, &declarator, &value, &var_name, source)
-            && !is_modified_in_scope(&parent_decl, &var_name, source)
+            && !is_modified_in_scope(&parent_decl, &var_name, source, is_array)
         {
             let start_point = parent_decl.start_position();
             return Some(RuleViolation {
@@ -386,12 +387,12 @@ fn should_be_const(
 /// later — including in if/else branches, loop bodies, and member writes that
 /// the name-heuristic patterns above cannot see. The declaration's own
 /// initializer is not an `assignment_expression`, so it is never counted.
-fn is_modified_in_scope(decl_node: &Node, var_name: &str, source: &str) -> bool {
+fn is_modified_in_scope(decl_node: &Node, var_name: &str, source: &str, is_array: bool) -> bool {
     let scope = match enclosing_scope(decl_node) {
         Some(s) => s,
         None => return false,
     };
-    scope_has_mutation(&scope, var_name, source)
+    scope_has_mutation(&scope, var_name, source, is_array)
 }
 
 /// Walk up to the innermost enclosing block (`compound_statement`) for a local
@@ -412,7 +413,7 @@ fn enclosing_scope<'a>(node: &'a Node<'a>) -> Option<Node<'a>> {
     topmost
 }
 
-fn scope_has_mutation(node: &Node, var_name: &str, source: &str) -> bool {
+fn scope_has_mutation(node: &Node, var_name: &str, source: &str, is_array: bool) -> bool {
     query::find_first_descendant(*node, |n| match n.kind() {
         // Covers `=` and all compound assignments (`+=`, `<<=`, ...).
         "assignment_expression" => n
@@ -434,9 +435,68 @@ fn scope_has_mutation(node: &Node, var_name: &str, source: &str) -> bool {
             }
             false
         }
+        // An array variable decays to a pointer with no `&` needed, so
+        // passing it bare (or cast) as a call argument can write through
+        // it just like `&scalar_var` does for a scalar — unlike a scalar
+        // passed by value, which the callee can never write back through.
+        // Conservatively assume any non-whitelisted callee may write
+        // (task 391: hostap's `radius_msg_get_attr(msg, ATTR, (u8*)nas_id,
+        // ...)`, an out-param write via `(u8*)buf`, not `&buf`).
+        "call_expression" if is_array => n.child_by_field_name("arguments").is_some_and(|args| {
+            (0..args.child_count())
+                .filter_map(|i| args.child(i))
+                .any(|arg| {
+                    call_arg_is_array_decay(&arg, var_name, source)
+                        && !is_read_only_call(&n, source)
+                })
+        }),
         _ => false,
     })
     .is_some()
+}
+
+/// Is `node` (a call argument) the bare array variable `var_name`, possibly
+/// wrapped in a cast or parentheses (`nas_id`, `(u8 *) nas_id`)?
+fn call_arg_is_array_decay(node: &Node, var_name: &str, source: &str) -> bool {
+    match node.kind() {
+        "identifier" => &source[node.start_byte()..node.end_byte()] == var_name,
+        "cast_expression" => node
+            .child_by_field_name("value")
+            .is_some_and(|v| call_arg_is_array_decay(&v, var_name, source)),
+        "parenthesized_expression" => (0..node.child_count())
+            .filter_map(|i| node.child(i))
+            .any(|c| call_arg_is_array_decay(&c, var_name, source)),
+        _ => false,
+    }
+}
+
+/// Functions known to only read through their pointer/array arguments —
+/// narrow on purpose so a common idiom like `printf("%s", buf)` doesn't
+/// suppress a genuine const-qualification opportunity for `buf`.
+const READ_ONLY_ARRAY_CALLS: &[&str] = &[
+    "printf",
+    "fprintf",
+    "sprintf",
+    "snprintf",
+    "puts",
+    "fputs",
+    "strlen",
+    "strcmp",
+    "strncmp",
+    "strchr",
+    "strrchr",
+    "strstr",
+    "memcmp",
+    "wpa_printf",
+    "wpa_hexdump",
+    "wpa_hexdump_ascii",
+    "wpa_hexdump_key",
+];
+
+fn is_read_only_call(call_node: &Node, source: &str) -> bool {
+    call_node
+        .child_by_field_name("function")
+        .is_some_and(|f| READ_ONLY_ARRAY_CALLS.contains(&&source[f.start_byte()..f.end_byte()]))
 }
 
 /// True if the base object of an lvalue is `var_name`, descending through
