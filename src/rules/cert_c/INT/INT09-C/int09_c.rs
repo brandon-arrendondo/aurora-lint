@@ -31,7 +31,7 @@ use crate::analyze::const_eval::{
 };
 use crate::manifest::{RuleCategory, Severity};
 use lang_parsing_substrate::query;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 // Track enumerator values and whether they're explicit.
@@ -89,8 +89,30 @@ impl Int09C {
     ) {
         let macros = collect_macro_constants(node, source);
         let line_starts = Self::build_line_starts(source);
+        // Names of every enumerator in the whole file, not just the current
+        // enum -- some codebases (e.g. hostap/QCA's netlink-attribute
+        // headers) bound one enum's MAX sentinel against a *different*
+        // enum's member (`_MAX = OUTER_ENUM_ATTR - 1`, a deliberate
+        // "this attribute's own container slot" convention), which is just
+        // as unambiguously intentional as the same-enum `violet = indigo`
+        // case CERT's exception already covers.
+        let all_enum_names: HashSet<String> = query::find_descendants_of_kind(*node, "enumerator")
+            .into_iter()
+            .filter_map(|e| {
+                e.child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    .map(|s| s.to_string())
+            })
+            .collect();
         for n in query::find_descendants_of_kind(*node, "enum_specifier") {
-            self.analyze_enum(&n, source, &macros, &line_starts, violations);
+            self.analyze_enum(
+                &n,
+                source,
+                &macros,
+                &all_enum_names,
+                &line_starts,
+                violations,
+            );
         }
     }
 
@@ -99,6 +121,7 @@ impl Int09C {
         enum_node: &Node,
         source: &str,
         macros: &MacroConstantMap,
+        all_enum_names: &HashSet<String>,
         line_starts: &[usize],
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -153,10 +176,17 @@ impl Int09C {
                         (v, true, used_enum_ref)
                     } else if let Some(v) = try_evaluate_text_public(trimmed, macros) {
                         // Handles arithmetic on plain `#define` macros
-                        // (e.g. curl's `CURLINFO_STRING + 1` idiom),
-                        // which aren't prior enumerators so
-                        // try_eval_enum_arith can't resolve them.
-                        (v, true, false)
+                        // (e.g. curl's `CURLINFO_STRING + 1` idiom), which
+                        // aren't prior enumerators so try_eval_enum_arith
+                        // can't resolve them. If the expression also
+                        // references another enumerator's name -- from this
+                        // enum or (unlike try_eval_enum_arith) any other
+                        // enum in the file -- treat it as an intentional
+                        // name-derived duplicate, same as the same-enum case
+                        // above.
+                        let is_name_ref =
+                            Self::text_references_known_enum_name(trimmed, all_enum_names);
+                        (v, true, is_name_ref)
                     } else {
                         (self.parse_constant_value(trimmed), true, false)
                     }
@@ -358,6 +388,29 @@ impl Int09C {
         } else {
             Some(&trimmed[..end])
         }
+    }
+
+    /// True if any identifier token in `text` matches a known enumerator
+    /// name (from anywhere in the file). Used to recognize a cross-enum
+    /// name reference as intentional, not just cross-enum arithmetic that
+    /// happens to numerically collide.
+    fn text_references_known_enum_name(text: &str, known_names: &HashSet<String>) -> bool {
+        let bytes = text.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                if known_names.contains(&text[start..i]) {
+                    return true;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        false
     }
 
     /// Find the value-initializer text after the last top-level `=` in
