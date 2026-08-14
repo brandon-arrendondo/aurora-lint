@@ -423,6 +423,20 @@ fn is_write_through_param(node: &Node, param_name: &str, source: &str) -> bool {
                 if text == param_name {
                     return true;
                 }
+                // `*param++`/`*param--` (or prefix `*++param`/`*--param`) —
+                // the dereference's operand is the `update_expression`
+                // itself (`param++`), not a bare identifier, so the text
+                // match above never fires even though this is a genuine
+                // write through `param` (task 391: hostap's
+                // `*d++ ^= *s++;` xor idiom).
+                if argument.kind() == "update_expression" {
+                    if let Some(inner) = argument.child_by_field_name("argument") {
+                        let inner_text = ast_utils::get_node_text(&inner, source);
+                        if inner_text == param_name {
+                            return true;
+                        }
+                    }
+                }
             }
         }
         "field_expression" => {
@@ -567,6 +581,50 @@ fn arg_is_param(node: &Node, param_name: &str, source: &str) -> bool {
     }
 }
 
+/// Is `node` a chain of pointer-arithmetic offsets rooted at `param_name`
+/// (`param + K`, `K + param`, `param - K`, or nested combinations like
+/// `param + K1 - K2`)? Unlike `arg_is_param`'s deliberately-narrow "direct
+/// usage only" scope, an offset expression still points into the same
+/// object `param` points to, so a callee that writes through it (e.g.
+/// hostap's `WPA_PUT_BE32(block + AES_BLOCK_SIZE - 4, val)`, which parses as
+/// `(block + AES_BLOCK_SIZE) - 4`) modifies memory owned by `param`'s
+/// pointee just as directly as passing `param` itself would (task 391).
+fn arg_is_param_pointer_offset(node: &Node, param_name: &str, source: &str) -> bool {
+    match node.kind() {
+        "identifier" => ast_utils::get_node_text(node, source) == param_name,
+        "parenthesized_expression" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() != "(" && child.kind() != ")" {
+                        return arg_is_param_pointer_offset(&child, param_name, source);
+                    }
+                }
+            }
+            false
+        }
+        "binary_expression" => {
+            let Some(op) = node.child_by_field_name("operator") else {
+                return false;
+            };
+            let op_text = ast_utils::get_node_text(&op, source);
+            if op_text != "+" && op_text != "-" {
+                return false;
+            }
+            let left_matches = node
+                .child_by_field_name("left")
+                .is_some_and(|l| arg_is_param_pointer_offset(&l, param_name, source));
+            if left_matches {
+                return true;
+            }
+            op_text == "+"
+                && node
+                    .child_by_field_name("right")
+                    .is_some_and(|r| arg_is_param_pointer_offset(&r, param_name, source))
+        }
+        _ => false,
+    }
+}
+
 /// Check if a pointer parameter is passed to a function that may modify it.
 ///
 /// Returns true if the param (or an expression rooted in it) appears as an
@@ -588,6 +646,7 @@ fn is_param_passed_to_modifying_call(call_node: &Node, param_name: &str, source:
             }
             if arg_is_param(&arg, param_name, source)
                 || arg_addresses_param_member(&arg, param_name, source)
+                || arg_is_param_pointer_offset(&arg, param_name, source)
             {
                 param_is_arg = true;
                 break;

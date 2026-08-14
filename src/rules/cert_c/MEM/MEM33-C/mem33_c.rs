@@ -1,5 +1,8 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use crate::utility::cert_c::ast_utils::{
+    find_containing_function, find_enclosing_declaration_for_identifier,
+};
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -1776,13 +1779,71 @@ impl FlexibleArrayAnalyzer {
         false
     }
 
-    fn is_flexible_struct_dereference(&self, node: &Node, _source: &str) -> bool {
-        // Check if this is a dereference of what might be a flexible array struct
-        if node.kind() == "pointer_expression" {
-            // This is a simple heuristic - in a full implementation we'd need type analysis
-            return true;
+    /// Is `node` a `*ident` dereference whose `ident` is actually declared
+    /// (locally or as a parameter) with a type this file has recorded as a
+    /// genuine flexible-array-member struct? Previously any `pointer_expression`
+    /// at all counted, so e.g. `*d ^= *s` on a plain `u32 *` (no struct, let
+    /// alone a flexible-array one, anywhere in sight) misfired MEM33-C
+    /// (task 391).
+    fn is_flexible_struct_dereference(&self, node: &Node, source: &str) -> bool {
+        if node.kind() != "pointer_expression" {
+            return false;
         }
-        false
+        let Some(operand) = node.child_by_field_name("argument") else {
+            return false;
+        };
+        if operand.kind() != "identifier" {
+            return false;
+        }
+        let Some(type_name) = self.identifier_declared_type_name(&operand, source) else {
+            return false;
+        };
+        self.flexible_structs.contains_key(&type_name)
+    }
+
+    /// Resolve `ident`'s declared base type (pointer/array qualifiers
+    /// stripped), checking its nearest local declaration first, then falling
+    /// back to the enclosing function's parameter list.
+    fn identifier_declared_type_name(&self, ident: &Node, source: &str) -> Option<String> {
+        let name = source[ident.start_byte()..ident.end_byte()].to_string();
+        if let Some(decl) = find_enclosing_declaration_for_identifier(ident, &name, source) {
+            if let Some(type_name) = self.extract_declared_type(&decl, source) {
+                return Some(type_name);
+            }
+        }
+        let func = find_containing_function(ident)?;
+        let declarator = func.child_by_field_name("declarator")?;
+        let param_list = Self::find_descendant_kind(&declarator, "parameter_list")?;
+        for i in 0..param_list.child_count() {
+            let Some(param) = param_list.child(i) else {
+                continue;
+            };
+            if param.kind() != "parameter_declaration" {
+                continue;
+            }
+            let param_text = &source[param.start_byte()..param.end_byte()];
+            let is_match = param_text
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|w| w == name);
+            if is_match {
+                return self.extract_parameter_type(&param, source);
+            }
+        }
+        None
+    }
+
+    fn find_descendant_kind<'a>(node: &Node<'a>, kind: &str) -> Option<Node<'a>> {
+        if node.kind() == kind {
+            return Some(*node);
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if let Some(found) = Self::find_descendant_kind(&child, kind) {
+                    return Some(found);
+                }
+            }
+        }
+        None
     }
 
     fn is_pointer_parameter(&self, param: &Node, _source: &str) -> bool {
