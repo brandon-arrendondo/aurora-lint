@@ -302,6 +302,52 @@ const READ_ONLY_FUNCTIONS: &[&str] = &[
     "write", "open", "close", "perror", "access", "stat", "lstat",
 ];
 
+/// Functions whose first argument is a write destination. Passing
+/// `param->field`/`param[i]` (not just bare `param`) as that argument still
+/// writes through memory `param` points to, even though the general
+/// argument-derivation check (`arg_is_param`) intentionally treats
+/// `param->field` as "by value, doesn't modify param" for everything else
+/// (task 391: hostap's `os_memcpy(pasn->own_addr, addr, ETH_ALEN)`, where
+/// `own_addr` is a fixed-size array field, decays to a pointer into `pasn`'s
+/// own memory).
+const WRITE_DEST_FIRST_ARG_FUNCTIONS: &[&str] = &[
+    "memcpy",
+    "os_memcpy",
+    "memmove",
+    "os_memmove",
+    "memset",
+    "os_memset",
+    "strcpy",
+    "os_strlcpy",
+    "strncpy",
+];
+
+/// Does `call_node` invoke a known write-destination function
+/// (`WRITE_DEST_FIRST_ARG_FUNCTIONS`) with an expression derived from
+/// `param_name` (`param`, `param->field`, `param[i]`, `param + K`, ...) as
+/// its first argument?
+fn call_writes_into_param_field(call_node: &Node, param_name: &str, source: &str) -> bool {
+    let Some(func) = call_node.child_by_field_name("function") else {
+        return false;
+    };
+    let func_name = ast_utils::get_node_text(&func, source);
+    if !WRITE_DEST_FIRST_ARG_FUNCTIONS.contains(&func_name) {
+        return false;
+    }
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let Some(first_arg) = (0..args.child_count())
+        .filter_map(|i| args.child(i))
+        .find(|c| !matches!(c.kind(), "," | "(" | ")"))
+    else {
+        return false;
+    };
+    arg_is_param(&first_arg, param_name, source)
+        || expr_derives_from_param(&first_arg, param_name, source)
+        || arg_is_param_pointer_offset(&first_arg, param_name, source)
+}
+
 /// Check if a pointer parameter is modified in the function body
 fn is_pointer_param_modified(body: &Node, param_name: &str, source: &str) -> bool {
     query::find_first_descendant(*body, |node| {
@@ -336,7 +382,8 @@ fn is_pointer_param_modified(body: &Node, param_name: &str, source: &str) -> boo
 
         // Check if param is passed to a function that may modify it
         if node.kind() == "call_expression"
-            && is_param_passed_to_modifying_call(&node, param_name, source)
+            && (is_param_passed_to_modifying_call(&node, param_name, source)
+                || call_writes_into_param_field(&node, param_name, source))
         {
             return true;
         }

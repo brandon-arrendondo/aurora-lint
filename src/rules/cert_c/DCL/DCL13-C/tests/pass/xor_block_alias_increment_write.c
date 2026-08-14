@@ -47,3 +47,28 @@ static void inc32(u8 *block)
     val++;
     WPA_PUT_BE32(block + AES_BLOCK_SIZE - 4, val);
 }
+
+/*
+ * Reason (task 391, hostap's pasn_common.c `pasn_set_own_addr`): `pasn` is
+ * genuinely modified via `os_memcpy(pasn->own_addr, addr, ETH_ALEN)` --
+ * `own_addr` is a fixed-size array field, so passing it (no `&` needed,
+ * arrays decay) as a known write-destination function's first argument
+ * writes through memory `pasn` points to. Previously `param->field` as a
+ * bare call argument was never treated as "derived from param" for this
+ * purpose (only `&(param->field)` was), so this setter's own struct-field
+ * write went unrecognized.
+ */
+
+#define ETH_ALEN 6
+void os_memcpy(void *dest, const void *src, unsigned long n);
+
+struct pasn_data {
+    u8 own_addr[ETH_ALEN];
+};
+
+void pasn_set_own_addr(struct pasn_data *pasn, const u8 *addr)
+{
+    if (!pasn || !addr)
+        return;
+    os_memcpy(pasn->own_addr, addr, ETH_ALEN);
+}
