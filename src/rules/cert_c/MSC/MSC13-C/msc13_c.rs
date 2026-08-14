@@ -23,7 +23,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
 use crate::analyze::dataflow::{
-    compute_reaching_definitions, extract_definitions, find_node_at_range,
+    compute_reaching_definitions, extract_definitions, find_node_at_range, DefinitionKind,
 };
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
@@ -459,6 +459,21 @@ impl Msc13C {
 
         for (idx, def) in reaching.definitions.iter().enumerate() {
             if live.contains(&idx) {
+                continue;
+            }
+            // `extract_definitions` also emits a synthetic `FreeCall`
+            // pseudo-definition at every `free(var)` call site, for the
+            // null/use-after-free tracking MEM30-C/MEM31-C need. It isn't a
+            // value-producing write at all -- there's nothing for a later
+            // statement to "read" back -- so treating it like a real
+            // definition made MSC13-C flag the *previous* genuine
+            // assignment as a dead store whenever its only reads happened
+            // before the variable was freed (task 391: hostap's rfkill.c
+            // `found = os_strcmp(phy, rfk_phy) == 0; free(rfk_phy);` --
+            // `rfk_phy`'s real read is the `os_strcmp` call, but the
+            // `free()` pseudo-definition right after it had no read of its
+            // own and got reported instead).
+            if def.kind == DefinitionKind::FreeCall {
                 continue;
             }
             // Parameters live in the function declarator, before the body

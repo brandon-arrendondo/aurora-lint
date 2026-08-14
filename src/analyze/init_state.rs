@@ -245,7 +245,14 @@ pub fn get_output_arg_indices(func_name: &str) -> Vec<usize> {
         "memset" | "memcpy" | "memmove" | "strcpy" | "strncpy" | "sprintf" | "snprintf"
         | "strcat" | "strncat" | "bzero" => vec![0],
         "fgets" | "gets" => vec![0],
-        "fread" | "read" | "recv" => vec![0],
+        "fread" => vec![0],
+        // `read(fd, buf, count)`/`recv(sockfd, buf, len, flags)`: the
+        // output buffer is argument 1, not 0 (unlike `fread(ptr, ...)`,
+        // whose buffer really is argument 0) -- task 391, hostap's
+        // `read(rfkill->fd, &event, sizeof(event))` was never recognized
+        // as initializing `event` because `rfkill->fd` (index 0) was
+        // checked instead.
+        "read" | "recv" => vec![1],
         "scanf" | "fscanf" | "sscanf" => vec![],
         "gettimeofday" => vec![0],
         "getaddrinfo" => vec![3],
