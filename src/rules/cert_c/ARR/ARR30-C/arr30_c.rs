@@ -2519,13 +2519,176 @@ impl Arr30C {
         let Some(inner_expr) = Self::find_local_init_expr(func_node, &top_ident, source) else {
             return false;
         };
-        let Some((k1, d, c, k2)) = Self::match_roundup_formula(&inner_expr, var, source) else {
+        if let Some((k1, d, c, k2)) = Self::match_roundup_formula(&inner_expr, var, source) {
+            if d <= 0 {
+                return false;
+            }
+            return k1 + d * (c - 1) + k_outer >= k2;
+        }
+        // Fall back to the two-statement mod-based round-up idiom (task 448),
+        // e.g. SHA-256-style padding, which `match_roundup_formula` can't
+        // match since it's a single-expression div-mul pattern.
+        k_outer >= 0
+            && Self::expr_is_var_plus_nonneg(&inner_expr, var, source)
+            && Self::has_mod_roundup_followup(func_node, &top_ident, source)
+    }
+
+    /// Does `expr` reduce to `var`, `var + K` (a literal `K >= 0`), or
+    /// `var + sizeof(...)` (any `sizeof` is always `>= 1`, so its exact
+    /// value doesn't matter for the non-negativity proof this feeds)?
+    fn expr_is_var_plus_nonneg(node: &Node, var: &str, source: &str) -> bool {
+        let node = Self::strip_parens(node);
+        let is_var =
+            |n: &Node| n.kind() == "identifier" && &source[n.start_byte()..n.end_byte()] == var;
+        if is_var(&node) {
+            return true;
+        }
+        if node.kind() != "binary_expression" {
+            return false;
+        }
+        let Some(op) = node.child_by_field_name("operator") else {
+            return false;
+        };
+        if &source[op.start_byte()..op.end_byte()] != "+" {
+            return false;
+        }
+        let Some(lhs) = node.child_by_field_name("left") else {
+            return false;
+        };
+        let Some(rhs) = node.child_by_field_name("right") else {
+            return false;
+        };
+        let lhs = Self::strip_parens(&lhs);
+        let rhs = Self::strip_parens(&rhs);
+        let is_nonneg_const = |n: &Node| match n.kind() {
+            "sizeof_expression" => true,
+            _ => Self::parse_int_literal(n, source).is_some_and(|k| k >= 0),
+        };
+        (is_var(&lhs) && is_nonneg_const(&rhs)) || (is_var(&rhs) && is_nonneg_const(&lhs))
+    }
+
+    /// Find, anywhere in `func_node`, a `tmp += (D - (tmp % D))` or
+    /// `tmp = tmp + (D - (tmp % D))` statement for `tmp` -- the mod-based
+    /// round-up-to-a-multiple-of-`D` idiom. `D - (tmp % D)` is always in
+    /// `[1, D]` (when `tmp % D == 0`, the full `D` is added, never `0`), so
+    /// matching this shape proves the statement always strictly increases
+    /// `tmp`, regardless of `D`'s concrete value.
+    fn has_mod_roundup_followup(func_node: &Node, tmp: &str, source: &str) -> bool {
+        let mut found = false;
+        Self::walk_for_mod_roundup_followup(func_node, tmp, source, &mut found);
+        found
+    }
+
+    fn walk_for_mod_roundup_followup(node: &Node, tmp: &str, source: &str, found: &mut bool) {
+        if *found {
+            return;
+        }
+        if node.kind() == "assignment_expression" {
+            if let (Some(left), Some(op), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("operator"),
+                node.child_by_field_name("right"),
+            ) {
+                let op_text = &source[op.start_byte()..op.end_byte()];
+                let left_is_tmp = left.kind() == "identifier"
+                    && &source[left.start_byte()..left.end_byte()] == tmp;
+                if left_is_tmp {
+                    let addend = match op_text {
+                        "+=" => Some(right),
+                        "=" => Self::extract_self_addend(&right, tmp, source),
+                        _ => None,
+                    };
+                    if let Some(addend) = addend {
+                        if Self::is_mod_roundup_addend(&addend, tmp, source) {
+                            *found = true;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::walk_for_mod_roundup_followup(&child, tmp, source, found);
+                if *found {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Match `tmp + X` or `X + tmp` -> `X` (the non-`tmp` addend), for the
+    /// `tmp = tmp + X` self-reassignment form.
+    fn extract_self_addend<'a>(node: &Node<'a>, tmp: &str, source: &str) -> Option<Node<'a>> {
+        let node = Self::strip_parens(node);
+        if node.kind() != "binary_expression" {
+            return None;
+        }
+        let op = node.child_by_field_name("operator")?;
+        if &source[op.start_byte()..op.end_byte()] != "+" {
+            return None;
+        }
+        let lhs = Self::strip_parens(&node.child_by_field_name("left")?);
+        let rhs = Self::strip_parens(&node.child_by_field_name("right")?);
+        let is_tmp =
+            |n: &Node| n.kind() == "identifier" && &source[n.start_byte()..n.end_byte()] == tmp;
+        if is_tmp(&lhs) {
+            return Some(rhs);
+        }
+        if is_tmp(&rhs) {
+            return Some(lhs);
+        }
+        None
+    }
+
+    /// Does `addend` match `D - (tmp % D)` for some positive integer literal
+    /// `D`?
+    fn is_mod_roundup_addend(addend: &Node, tmp: &str, source: &str) -> bool {
+        let addend = Self::strip_parens(addend);
+        if addend.kind() != "binary_expression" {
+            return false;
+        }
+        let Some(op) = addend.child_by_field_name("operator") else {
+            return false;
+        };
+        if &source[op.start_byte()..op.end_byte()] != "-" {
+            return false;
+        }
+        let Some(lhs) = addend.child_by_field_name("left") else {
+            return false;
+        };
+        let Some(rhs) = addend.child_by_field_name("right") else {
+            return false;
+        };
+        let Some(d) = Self::parse_int_literal(&Self::strip_parens(&lhs), source) else {
             return false;
         };
         if d <= 0 {
             return false;
         }
-        k1 + d * (c - 1) + k_outer >= k2
+        let rhs = Self::strip_parens(&rhs);
+        if rhs.kind() != "binary_expression" {
+            return false;
+        }
+        let Some(mod_op) = rhs.child_by_field_name("operator") else {
+            return false;
+        };
+        if &source[mod_op.start_byte()..mod_op.end_byte()] != "%" {
+            return false;
+        }
+        let Some(mod_lhs) = rhs.child_by_field_name("left") else {
+            return false;
+        };
+        let Some(mod_rhs) = rhs.child_by_field_name("right") else {
+            return false;
+        };
+        let mod_lhs = Self::strip_parens(&mod_lhs);
+        if mod_lhs.kind() != "identifier"
+            || &source[mod_lhs.start_byte()..mod_lhs.end_byte()] != tmp
+        {
+            return false;
+        }
+        Self::parse_int_literal(&Self::strip_parens(&mod_rhs), source) == Some(d)
     }
 
     /// Find the size argument of the allocation call that initializes
@@ -2621,7 +2784,17 @@ impl Arr30C {
             2 if func_name.to_ascii_uppercase().contains("REALLOC") => Some(args[1]),
             2 => {
                 let elem_text = source[args[1].start_byte()..args[1].end_byte()].trim();
-                (elem_text == "1").then_some(args[0])
+                // `sizeof(char)`/`sizeof(unsigned char)`/`sizeof(signed char)`
+                // are also always 1, same as a literal `1` (task 448).
+                let is_size_one = elem_text == "1"
+                    || matches!(
+                        elem_text
+                            .strip_prefix("sizeof(")
+                            .and_then(|s| s.strip_suffix(')'))
+                            .map(str::trim),
+                        Some("char") | Some("unsigned char") | Some("signed char")
+                    );
+                is_size_one.then_some(args[0])
             }
             _ => None,
         }
