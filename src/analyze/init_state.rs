@@ -449,6 +449,16 @@ fn process_declaration(
 
                     // Has initializer — determine what kind
                     if let Some(value) = child.child_by_field_name("value") {
+                        // Process the initializer for side effects first (e.g.
+                        // `int rc = sqlite3_prepare_v2(db, sql, -1, &pStmt, 0);`
+                        // writes through `&pStmt` via the call's output
+                        // argument). Mirrors `process_assignment_init`, which
+                        // does the same for the RHS of a plain assignment —
+                        // without this, a call embedded in a declaration's
+                        // initializer was invisible to the output-parameter
+                        // write recognition that already existed for
+                        // assignment-statement form.
+                        process_expression(&value, source, state, tracked_vars, config);
                         let init_state = classify_initializer(&value, source, config);
                         let is_array = is_array_declarator(&child);
                         let mut info = VarInfo::new(init_state);
