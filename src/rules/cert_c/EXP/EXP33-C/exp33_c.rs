@@ -904,6 +904,20 @@ fn is_read_context(node: &Node, source: &str) -> bool {
         return false;
     }
 
+    // The declared name of a declaration is never itself a read, whether or
+    // not it has an initializer — `Foo *pCaller;` and `Mem *pMem = expr;`
+    // both just bring storage into existence at that point. The direct
+    // "declaration" | "init_declarator" arm below only catches unwrapped
+    // scalars (`int x;`); a pointer or array declarator wraps the identifier
+    // one or more levels deeper (`pointer_declarator`/`array_declarator`),
+    // which fell through to the catch-all `_ => true` and misflagged the
+    // declaration line itself as a read (task 391's "plain declaration
+    // statements misflagged as reads" category — real-world sqlite examples:
+    // vdbe.c `VdbeOp *pCaller;` and `Mem *pMem = p->pResultRow;`).
+    if is_declarator_name_of_declaration(node) {
+        return false;
+    }
+
     let parent = match node.parent() {
         Some(p) => p,
         None => return true,
@@ -955,6 +969,32 @@ fn is_read_context(node: &Node, source: &str) -> bool {
         // GNU asm output operands are writes ("=r"(var)) — not reads
         "gnu_asm_output_operand" => false,
         _ => true,
+    }
+}
+
+/// True if `node` is the declared identifier of a declaration statement —
+/// reached from the identifier by walking up through zero or more
+/// `pointer_declarator`/`array_declarator` wrapping layers (each followed
+/// only via its own `declarator` field, so an array's `size` expression is
+/// never mistaken for the declared name) to a `declaration` (no initializer)
+/// or `init_declarator` (has one) node. Either way, the identifier there
+/// names storage coming into existence, not a value being read.
+fn is_declarator_name_of_declaration(node: &Node) -> bool {
+    let mut cur = *node;
+    loop {
+        let Some(parent) = cur.parent() else {
+            return false;
+        };
+        match parent.kind() {
+            "pointer_declarator" | "array_declarator" => {
+                if parent.child_by_field_name("declarator").map(|d| d.id()) != Some(cur.id()) {
+                    return false; // e.g. an array_declarator's `size` field
+                }
+                cur = parent;
+            }
+            "declaration" | "init_declarator" => return true,
+            _ => return false,
+        }
     }
 }
 
