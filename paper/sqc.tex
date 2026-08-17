@@ -1546,6 +1546,28 @@ that the audit methodology, not just the rule set, is part of what the
 tool delivers, and a concrete direction for a new rule: an unguarded
 write alongside a bounds-checked sibling branch in the same function.
 
+The complementary case came directly from the rule set.  sqc's INT32-C
+provenance gate flagged \texttt{fts5SegmentSize()} in
+\texttt{ext/fts5/fts5\_index.c}: \texttt{1 + pSeg->pgnoLast -
+pSeg->pgnoFirst}, where both fields are decoded straight from an
+on-disk \texttt{\%\_data} shadow-table structure record via
+\texttt{fts5GetVarint32()}.  The only validation on decode is
+\texttt{pgnoLast < pgnoFirst}, which rejects an out-of-order pair but
+places no upper bound on \texttt{pgnoLast} itself, so a crafted or
+corrupted structure record can drive the subtraction to a signed
+integer overflow (\texttt{pgnoFirst = 0}, \texttt{pgnoLast = INT\_MAX}
+reproduces it under UBSan).  Adjudication during the 220-file census
+confirmed this as a genuine true positive rather than a suppressed
+false alarm.  We reported it
+upstream\footnote{\url{https://sqlite.org/bugs/info/2026-08-17T20:07:33Z}},
+and it was likewise fixed the same day (check-in
+\texttt{c97a940ceb}).  Unlike the kvvfsDecode finding above, this one
+is squarely inside what the rule set is designed to catch---an
+untrusted-provenance operand reaching an unguarded arithmetic
+sink---and its same-day confirmation and fix is direct external
+validation of an opt-in INT32-C true positive, not just of the audit
+process that surrounds the tool.
+
 %% ============================================================
 \section{Worked Example: Null Dereference Detection}
 \label{sec:worked-example}
