@@ -717,6 +717,20 @@ fn check_deref_read(
         return;
     }
 
+    // `sizeof(*ptr)` — the operand of sizeof is unevaluated per C11 6.5.3.4,
+    // so this is not a dereference of ptr's (possibly not-yet-set) value,
+    // just a compile-time size computation from ptr's static pointee type.
+    // check_identifier_read/is_read_context already exempts sizeof via
+    // has_sizeof_or_alignof_ancestor, but that path is never reached here:
+    // check_reads visits `*ptr` itself as its own pointer_expression node
+    // (real-world FPs: sqlite's `pRhs = sqlite3_malloc64(sizeof(*pRhs))`,
+    // hostap's `vhdr` in `while (left >= sizeof(*vhdr))`, task 391).
+    if let Some(parent) = node.parent() {
+        if has_sizeof_or_alignof_ancestor(parent) {
+            return;
+        }
+    }
+
     let info = match init_state::get_var_info_at_with_config(
         analysis,
         cfg,
@@ -808,6 +822,14 @@ fn check_subscript_read(
     // Skip non-read contexts
     if !is_subscript_read_context(node) {
         return;
+    }
+
+    // `sizeof(arr[i])` — the operand of sizeof is unevaluated per C11
+    // 6.5.3.4; the subscript access itself is not actually performed.
+    if let Some(parent) = node.parent() {
+        if has_sizeof_or_alignof_ancestor(parent) {
+            return;
+        }
     }
 
     let info = match init_state::get_var_info_at_with_config(
@@ -998,9 +1020,14 @@ fn is_declarator_name_of_declaration(node: &Node) -> bool {
     }
 }
 
-/// Walk up through `parenthesized_expression` wrappers (max 5 hops) to check
-/// whether the nearest non-parenthesized ancestor is a `sizeof`/`_Alignof`
-/// context: `sizeof(x)` → `sizeof_expression` > `parenthesized_expression` > `identifier`.
+/// Walk up through wrapping-expression ancestors (max 5 hops) to check
+/// whether the nearest "real" ancestor is a `sizeof`/`_Alignof` context:
+/// `sizeof(x)` → `sizeof_expression` > `parenthesized_expression` > `identifier`.
+/// Also passes through `pointer_expression`/`subscript_expression`/
+/// `field_expression` wrapping, so `sizeof(*p)`, `sizeof(arr[i])`, and
+/// `sizeof(p->field)` are recognized too — the identifier read one of these
+/// composes (`p`, `i`, `p`) is just as unevaluated as a bare `sizeof(x)`,
+/// since sizeof's whole operand is unevaluated per C11 6.5.3.4.
 fn has_sizeof_or_alignof_ancestor(parent: Node) -> bool {
     let mut ancestor = Some(parent);
     let mut depth = 0;
@@ -1011,7 +1038,10 @@ fn has_sizeof_or_alignof_ancestor(parent: Node) -> bool {
         }
         match anc.kind() {
             "sizeof_expression" | "_Alignof" => return true,
-            "parenthesized_expression" => {
+            "parenthesized_expression"
+            | "pointer_expression"
+            | "subscript_expression"
+            | "field_expression" => {
                 ancestor = anc.parent();
                 continue;
             }
