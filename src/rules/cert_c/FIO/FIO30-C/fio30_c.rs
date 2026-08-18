@@ -20,10 +20,13 @@
 //! - Variables assigned from user input sources
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::{const_eval, init_state};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -32,9 +35,27 @@ use tree_sitter::Node;
 /// only guards against pathological inputs.
 const MAX_TAINT_ITERATIONS: usize = 16;
 
-pub struct Fio30C;
+#[derive(Default)]
+pub struct Fio30C {
+    /// Project-wide function summaries from prescan (`-d` directory mode),
+    /// used to resolve cross-file wrapper calls: Juliet's CWE-134 b/c/d/e
+    /// flow variants put a sink helper (`badSink`/`goodG2BSink`) in a
+    /// different file than its single caller, so this is the only way to
+    /// know whether that caller passed tainted or literal data (task 201).
+    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+}
+
+impl Fio30C {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 impl CertRule for Fio30C {
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+    }
+
     fn rule_id(&self) -> &'static str {
         "FIO30-C"
     }
@@ -61,6 +82,7 @@ impl CertRule for Fio30C {
         // At translation_unit level, do full inter-procedural analysis
         if node.kind() == "translation_unit" {
             let mut analyzer = FormatStringAnalyzer::new();
+            analyzer.function_summaries = self.function_summaries.borrow().clone();
 
             // Collect macro aliases (e.g., #define GETENV getenv)
             analyzer.macro_aliases = const_eval::collect_macro_aliases(node, source);
@@ -80,6 +102,7 @@ impl CertRule for Fio30C {
         // For non-translation_unit nodes, use simpler per-function analysis
         for func in query::find_descendants_of_kind(*node, "function_definition") {
             let mut analyzer = FormatStringAnalyzer::new();
+            analyzer.function_summaries = self.function_summaries.borrow().clone();
             analyzer.analyze_function(&func, source, &mut violations);
         }
 
@@ -128,6 +151,11 @@ struct FormatStringAnalyzer {
     // unit. Used to distinguish locally-called wrappers (where caller taint is
     // observable) from cross-TU sinks (where it is not).
     called_function_names: HashSet<String>,
+    // Project-wide function summaries from prescan, keyed by function name.
+    // `callsite_param_tainted`/`callsite_param_taint_observed` let this
+    // analyzer resolve whether ANY caller anywhere in the project (not just
+    // this translation unit) passes tainted data to a given parameter.
+    function_summaries: HashMap<String, FunctionSummary>,
 }
 
 impl FormatStringAnalyzer {
@@ -144,6 +172,7 @@ impl FormatStringAnalyzer {
             tainted_globals: HashSet::new(),
             file_scope_constants: HashMap::new(),
             called_function_names: HashSet::new(),
+            function_summaries: HashMap::new(),
         }
     }
 
@@ -1164,6 +1193,20 @@ impl FormatStringAnalyzer {
                 // pattern) — treat it as safe. Cross-TU sinks, whose callers live
                 // in another file and are therefore unobservable, stay conservative.
                 if self.function_parameters.contains(&var_name) {
+                    if let Some(&param_idx) = self.param_positions.get(&var_name) {
+                        if let Some(summary) = self.function_summaries.get(&self.current_function) {
+                            // Cross-file: the project-wide prescan already
+                            // recorded every call site to this function
+                            // across every scanned file. When at least one
+                            // was observed at this exact parameter position,
+                            // trust that fact outright instead of falling
+                            // back to the intra-TU heuristic below, which can
+                            // only ever see callers in this same file.
+                            if summary.callsite_param_taint_observed.contains(&param_idx) {
+                                return summary.callsite_param_tainted.contains(&param_idx);
+                            }
+                        }
+                    }
                     let has_local_caller =
                         self.called_function_names.contains(&self.current_function);
                     if has_local_caller && !self.param_is_interproc_tainted(&var_name) {

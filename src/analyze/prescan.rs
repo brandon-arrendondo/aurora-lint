@@ -34,6 +34,7 @@ struct FilePrescanResult {
     callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>>,
     callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>>,
     callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>>,
+    callsite_taint_args: HashMap<String, Vec<Vec<bool>>>,
     source_path: Option<PathBuf>,
 }
 
@@ -60,6 +61,7 @@ impl FilePrescanResult {
             callsite_pointee_args: HashMap::new(),
             callsite_int_args: HashMap::new(),
             callsite_buf_args: HashMap::new(),
+            callsite_taint_args: HashMap::new(),
             source_path: None,
         }
     }
@@ -148,6 +150,12 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             );
             collect_callsite_int_args_from_tree(&root, &source, &mut result.callsite_int_args);
             collect_callsite_buf_args_from_tree(&root, &source, &mut result.callsite_buf_args);
+            collect_callsite_taint_args_from_tree(
+                &root,
+                &source,
+                &result.macro_aliases,
+                &mut result.callsite_taint_args,
+            );
             result.source_path = Some(file_path.to_path_buf());
         }
     }
@@ -217,6 +225,7 @@ pub fn prescan_directories(
     let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
     let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
     let mut callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
+    let mut callsite_taint_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
     let mut source_files: Vec<PathBuf> = Vec::new();
     let mut file_functions: HashMap<PathBuf, Vec<String>> = HashMap::new();
 
@@ -324,6 +333,9 @@ pub fn prescan_directories(
         for (callee, args) in r.callsite_buf_args {
             callsite_buf_args.entry(callee).or_default().extend(args);
         }
+        for (callee, args) in r.callsite_taint_args {
+            callsite_taint_args.entry(callee).or_default().extend(args);
+        }
 
         if let Some(path) = r.source_path {
             source_files.push(path);
@@ -350,6 +362,16 @@ pub fn prescan_directories(
 
     aggregate_callsite_buf_args(
         &callsite_buf_args,
+        &mut function_summaries,
+        &header_declared_functions,
+    );
+
+    aggregate_callsite_taint_args(
+        &callsite_taint_args,
+        &mut function_summaries,
+        &header_declared_functions,
+    );
+    function_summary::propagate_transitive_param_taint(
         &mut function_summaries,
         &header_declared_functions,
     );
@@ -473,6 +495,7 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
     let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
     let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
     let mut callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
+    let mut callsite_taint_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
     collect_callsite_args_from_tree(
         root,
         source,
@@ -482,6 +505,7 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
     );
     collect_callsite_int_args_from_tree(root, source, &mut callsite_int_args);
     collect_callsite_buf_args_from_tree(root, source, &mut callsite_buf_args);
+    collect_callsite_taint_args_from_tree(root, source, &aliases, &mut callsite_taint_args);
 
     let empty_headers = HashSet::new();
     aggregate_callsite_null_states(&callsite_args, &mut function_summaries, &empty_headers);
@@ -489,6 +513,12 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
     aggregate_callsite_pointee_null_states(&callsite_pointee_args, &mut function_summaries);
     aggregate_callsite_int_args(&callsite_int_args, &mut function_summaries, &empty_headers);
     aggregate_callsite_buf_args(&callsite_buf_args, &mut function_summaries, &empty_headers);
+    aggregate_callsite_taint_args(
+        &callsite_taint_args,
+        &mut function_summaries,
+        &empty_headers,
+    );
+    function_summary::propagate_transitive_param_taint(&mut function_summaries, &empty_headers);
 
     let known_functions: HashSet<String> = function_summaries.keys().cloned().collect();
 
@@ -1219,6 +1249,397 @@ pub(crate) fn aggregate_callsite_buf_args(
                         summary.callsite_param_buffer_size.insert(param_idx, sz);
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Aggregate per-call-site taint facts into `callsite_param_tainted` /
+/// `callsite_param_taint_observed`.
+///
+/// For each parameter index, `callsite_param_taint_observed` is set whenever
+/// at least one call site within the project passed an argument at that
+/// position (regardless of taintedness); `callsite_param_tainted` is set
+/// additionally when ANY such call site's argument was recognized as
+/// tainted. Consulting both lets a rule tell "every observed caller passed
+/// clean data" apart from "no caller was ever observed" — the latter must
+/// stay conservative (e.g. a function only reachable through a function
+/// pointer, or one with no callers visible in the scanned directories).
+/// Header-declared functions are skipped, matching the other `callsite_*`
+/// aggregations: external callers are unknowable.
+pub(crate) fn aggregate_callsite_taint_args(
+    callsite_taint_args: &HashMap<String, Vec<Vec<bool>>>,
+    summaries: &mut HashMap<String, FunctionSummary>,
+    header_declared: &HashSet<String>,
+) {
+    for (callee_name, call_sites) in callsite_taint_args {
+        if header_declared.contains(callee_name) {
+            continue;
+        }
+        if let Some(summary) = summaries.get_mut(callee_name) {
+            let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
+            for param_idx in 0..max_params {
+                let mut any_site = false;
+                let mut any_tainted = false;
+                for site in call_sites {
+                    if let Some(&tainted) = site.get(param_idx) {
+                        any_site = true;
+                        any_tainted |= tainted;
+                    }
+                }
+                if any_site {
+                    summary.callsite_param_taint_observed.insert(param_idx);
+                    if any_tainted {
+                        summary.callsite_param_tainted.insert(param_idx);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Real (non-punctuation) arguments of a call's `arguments` node, in order.
+fn real_call_args<'a>(arguments: &Node<'a>) -> Vec<Node<'a>> {
+    (0..arguments.child_count())
+        .filter_map(|i| arguments.child(i))
+        .filter(|a| !matches!(a.kind(), "," | "(" | ")"))
+        .collect()
+}
+
+/// Extract the base variable name from a destination expression, unwrapping
+/// casts/parens/binary-offset/address-of/deref — mirrors
+/// `fio30_c::FormatStringAnalyzer::get_base_variable`, needed here because
+/// prescan has no access to that per-rule analyzer.
+fn taint_dest_base_var(node: &Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" => Some(node.utf8_text(source.as_bytes()).unwrap_or("").to_string()),
+        "cast_expression" => node
+            .child_by_field_name("value")
+            .and_then(|v| taint_dest_base_var(&v, source)),
+        "parenthesized_expression" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if !matches!(child.kind(), "(" | ")") {
+                        return taint_dest_base_var(&child, source);
+                    }
+                }
+            }
+            None
+        }
+        "binary_expression" => node
+            .child_by_field_name("left")
+            .and_then(|l| taint_dest_base_var(&l, source)),
+        "subscript_expression" | "pointer_expression" | "unary_expression" => {
+            if let Some(base) = node.child(0) {
+                if base.kind() == "&" || base.kind() == "*" {
+                    if let Some(actual) = node.child(1) {
+                        return taint_dest_base_var(&actual, source);
+                    }
+                }
+                taint_dest_base_var(&base, source)
+            } else if let Some(arg) = node.child_by_field_name("argument") {
+                taint_dest_base_var(&arg, source)
+            } else {
+                None
+            }
+        }
+        _ => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "identifier" {
+                        return Some(child.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Resolve a function name through file-scope macro aliases (e.g.
+/// `#define GETENV getenv`), matching `fio30_c::FormatStringAnalyzer::
+/// resolve_func_name`. Without this, Juliet's `GETENV`-aliased taint sources
+/// (used throughout the CWE-134 "environment" source variants) never match
+/// `ENV03_TAINT_SOURCE_FUNCTIONS`, silently losing taint at the source.
+fn resolve_taint_func_name<'a>(name: &'a str, aliases: &'a HashMap<String, String>) -> &'a str {
+    aliases.get(name).map(|s| s.as_str()).unwrap_or(name)
+}
+
+/// True if `node` resolves to data tracked as tainted: a variable already in
+/// `tainted`, the literal `argv` array/identifier, or a direct call to a
+/// known taint-source function (resolved through `aliases`). Recurses into
+/// other expression shapes to find a tainted sub-expression.
+fn taint_arg_is_tainted(
+    node: &Node,
+    source: &str,
+    aliases: &HashMap<String, String>,
+    tainted: &HashSet<String>,
+) -> bool {
+    match node.kind() {
+        "identifier" => {
+            let name = node.utf8_text(source.as_bytes()).unwrap_or("");
+            tainted.contains(name) || name == "argv"
+        }
+        "call_expression" => node
+            .child_by_field_name("function")
+            .map(|f| {
+                let raw = f.utf8_text(source.as_bytes()).unwrap_or("");
+                let name = resolve_taint_func_name(raw, aliases);
+                function_summary::ENV03_TAINT_SOURCE_FUNCTIONS.contains(&name)
+            })
+            .unwrap_or(false),
+        "subscript_expression" => {
+            if let Some(base) = node.child(0) {
+                if base.kind() == "identifier" {
+                    let name = base.utf8_text(source.as_bytes()).unwrap_or("");
+                    return tainted.contains(name) || name == "argv";
+                }
+            }
+            false
+        }
+        _ => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if taint_arg_is_tainted(&child, source, aliases, tainted) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Record taint facts implied by a single call expression into `tainted`:
+/// input functions that write through a destination argument (fgets/recv/
+/// scanf family), and string-copy/format functions that propagate taint from
+/// a source argument into the destination. Mirrors
+/// `fio30_c::FormatStringAnalyzer::process_string_manipulation_call`.
+fn mark_taint_from_call(
+    call: &Node,
+    source: &str,
+    aliases: &HashMap<String, String>,
+    tainted: &mut HashSet<String>,
+) {
+    let Some(function) = call.child_by_field_name("function") else {
+        return;
+    };
+    if function.kind() != "identifier" {
+        return;
+    }
+    let raw_name = function.utf8_text(source.as_bytes()).unwrap_or("");
+    let func_name = resolve_taint_func_name(raw_name, aliases);
+    let Some(arguments) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    let args = real_call_args(&arguments);
+
+    match func_name {
+        "fgets" | "fgetws" | "gets" | "getline" | "fread" | "read" => {
+            if let Some(dest) = args.first() {
+                if let Some(name) = taint_dest_base_var(dest, source) {
+                    tainted.insert(name);
+                }
+            }
+        }
+        "recv" | "recvfrom" | "recvmsg" => {
+            if let Some(dest) = args.get(1) {
+                if let Some(name) = taint_dest_base_var(dest, source) {
+                    tainted.insert(name);
+                }
+            }
+        }
+        "scanf" | "fscanf" | "sscanf" | "wscanf" | "fwscanf" | "swscanf" => {
+            let start = if matches!(func_name, "sscanf" | "swscanf") {
+                2
+            } else {
+                1
+            };
+            for arg in args.iter().skip(start) {
+                if let Some(name) = taint_dest_base_var(arg, source) {
+                    tainted.insert(name);
+                }
+            }
+        }
+        "strcpy" | "strcat" | "sprintf" | "snprintf" | "strncpy" | "strncat" | "wcscpy"
+        | "wcscat" | "wcsncpy" | "wcsncat" | "swprintf" | "_snwprintf"
+            if !args.is_empty() =>
+        {
+            let any_source_tainted = args
+                .iter()
+                .skip(1)
+                .any(|a| taint_arg_is_tainted(a, source, aliases, tainted));
+            if any_source_tainted {
+                if let Some(name) = taint_dest_base_var(&args[0], source) {
+                    tainted.insert(name);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Record taint implied by a plain assignment/initialization: if the RHS is
+/// itself tainted (per `taint_arg_is_tainted`), the LHS variable becomes
+/// tainted too. Handles both `assignment_expression` and `init_declarator`.
+fn mark_taint_from_assignment_like(
+    node: &Node,
+    source: &str,
+    aliases: &HashMap<String, String>,
+    tainted: &mut HashSet<String>,
+) {
+    let (lhs, rhs) = match node.kind() {
+        "assignment_expression" => (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ),
+        "init_declarator" => (
+            node.child_by_field_name("declarator"),
+            node.child_by_field_name("value"),
+        ),
+        _ => return,
+    };
+    let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
+        return;
+    };
+    let Some(name) = taint_dest_base_var(&lhs, source) else {
+        return;
+    };
+    if taint_arg_is_tainted(&rhs, source, aliases, tainted) {
+        tainted.insert(name);
+    }
+}
+
+/// Single traversal pass recording every taint fact directly visible in
+/// `node`'s subtree into `tainted`. Not flow-sensitive (matches the rest of
+/// prescan's local-variable heuristics, e.g. `collect_local_var_int_values`):
+/// facts are gathered regardless of statement order, then
+/// `collect_local_tainted_vars` reruns this to a small fixpoint so a short
+/// chain (`x = fgets(...); y = x; sink(y);`) resolves within a few passes.
+fn collect_taint_pass(
+    node: &Node,
+    source: &str,
+    aliases: &HashMap<String, String>,
+    tainted: &mut HashSet<String>,
+) {
+    match node.kind() {
+        "call_expression" => mark_taint_from_call(node, source, aliases, tainted),
+        "assignment_expression" | "init_declarator" => {
+            mark_taint_from_assignment_like(node, source, aliases, tainted)
+        }
+        _ => {}
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_taint_pass(&child, source, aliases, tainted);
+        }
+    }
+}
+
+/// Maximum taint-propagation passes per function body when resolving local
+/// taint chains for cross-file call-site taint collection. Small bound: this
+/// is intra-function only (no wrapper-call chasing), so short chains
+/// converge in 2-3 passes; the cap is a safety net.
+const MAX_LOCAL_TAINT_PASSES: usize = 4;
+
+/// Compute the set of local variable names within `body` that are tainted by
+/// a known taint source (fgets/recv/scanf/getenv/... or `argv`), including
+/// short propagation chains through plain assignment and string-copy/format
+/// calls. Scoped to a single function body — this feeds
+/// `collect_callsite_taint_args_from_tree`'s per-call-site taint check, not a
+/// standalone taint model.
+fn collect_local_tainted_vars(
+    body: &Node,
+    source: &str,
+    aliases: &HashMap<String, String>,
+) -> HashSet<String> {
+    let mut tainted = HashSet::new();
+    for _ in 0..MAX_LOCAL_TAINT_PASSES {
+        let before = tainted.len();
+        collect_taint_pass(body, source, aliases, &mut tainted);
+        if tainted.len() == before {
+            break;
+        }
+    }
+    tainted
+}
+
+/// Walk call expressions in a function body, recording per-argument taint
+/// facts (via `tainted_vars`, already resolved for this function) keyed by
+/// callee name. Mirrors `collect_int_calls_in_node`/`collect_buf_calls_in_node`.
+fn collect_taint_calls_in_node(
+    node: &Node,
+    source: &str,
+    aliases: &HashMap<String, String>,
+    tainted_vars: &HashSet<String>,
+    callsite_taint_args: &mut HashMap<String, Vec<Vec<bool>>>,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(function) = node.child_by_field_name("function") {
+            if function.kind() == "identifier" {
+                let callee = function.utf8_text(source.as_bytes()).unwrap_or("");
+                if !callee.is_empty() {
+                    if let Some(args_node) = node.child_by_field_name("arguments") {
+                        let args = real_call_args(&args_node);
+                        if !args.is_empty() {
+                            let arg_taint: Vec<bool> = args
+                                .iter()
+                                .map(|a| taint_arg_is_tainted(a, source, aliases, tainted_vars))
+                                .collect();
+                            callsite_taint_args
+                                .entry(callee.to_string())
+                                .or_default()
+                                .push(arg_taint);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_taint_calls_in_node(&child, source, aliases, tainted_vars, callsite_taint_args);
+        }
+    }
+}
+
+/// Collect per-call-site taint facts from a translation unit, keyed by callee
+/// name. Mirrors `collect_callsite_int_args_from_tree`: for each function
+/// definition, resolves the function's own locally-tainted variables first
+/// (`collect_local_tainted_vars`), then walks its calls recording, for each
+/// argument, whether it resolves to tainted data. `aliases` resolves
+/// file-scope macro function aliases (e.g. `#define GETENV getenv`) so
+/// macro-wrapped taint sources are still recognized.
+pub(crate) fn collect_callsite_taint_args_from_tree(
+    node: &Node,
+    source: &str,
+    aliases: &HashMap<String, String>,
+    callsite_taint_args: &mut HashMap<String, Vec<Vec<bool>>>,
+) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "function_definition" => {
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let tainted_vars = collect_local_tainted_vars(&body, source, aliases);
+                        collect_taint_calls_in_node(
+                            &body,
+                            source,
+                            aliases,
+                            &tainted_vars,
+                            callsite_taint_args,
+                        );
+                    }
+                }
+                kind if kind.starts_with("preproc_") => {
+                    collect_callsite_taint_args_from_tree(
+                        &child,
+                        source,
+                        aliases,
+                        callsite_taint_args,
+                    );
+                }
+                _ => {}
             }
         }
     }

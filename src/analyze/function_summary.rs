@@ -128,6 +128,24 @@ pub struct FunctionSummary {
     /// forwarding wrappers) is recognized as closed (task 146).
     #[serde(default)]
     pub closes_params: HashSet<usize>,
+    /// Parameter indices where at least one call site within the project
+    /// passes an argument recognized as tainted (a known user-input source,
+    /// `argv`, or data traced back to one via a direct assignment/string-copy
+    /// chain within the caller). Paired with `callsite_param_taint_observed`
+    /// so an absent index can be told apart from "definitely never tainted":
+    /// only trust an index as taint-free when `callsite_param_taint_observed`
+    /// also contains it. Used by FIO30-C to extend its intra-file wrapper
+    /// taint fixpoint across files — Juliet's CWE-134 b/c/d/e flow variants
+    /// put the sink helper (e.g. `badSink`/`goodG2BSink`) in a different file
+    /// than its single caller, so a per-translation-unit analysis can never
+    /// observe whether that caller passed a literal or tainted value (task 201).
+    #[serde(default)]
+    pub callsite_param_tainted: HashSet<usize>,
+    /// Parameter indices for which at least one call site within the project
+    /// was observed at all (regardless of taintedness). See
+    /// `callsite_param_tainted` for why this companion set exists.
+    #[serde(default)]
+    pub callsite_param_taint_observed: HashSet<usize>,
 }
 
 /// Names of functions that read externally-controlled data into their
@@ -1502,6 +1520,75 @@ pub fn propagate_transitive_frees(summaries: &mut HashMap<String, FunctionSummar
                             changed = true;
                         }
                     }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Propagate `callsite_param_tainted`/`callsite_param_taint_observed` through
+/// param pass-through chains.
+///
+/// The base aggregation (`prescan::aggregate_callsite_taint_args`) only sees
+/// taint at the *direct* call site — it can't tell that a forwarding
+/// wrapper's own parameter is externally tainted, since that wrapper's body
+/// contains no taint source, just `callee(param)`. If function B is proven
+/// to receive tainted (or proven-clean) data at param `p` and B forwards `p`
+/// straight through to callee C at param `q`, then C's call site at `q` is
+/// tainted (or clean) too. Iterates to fixpoint for deep chains — Juliet's
+/// CWE-134 flow variants nest up to 5 files deep (variant 54). Skips
+/// header-declared callees: their external callers are unknowable, so
+/// nothing here should assert their call sites are conclusively observed.
+pub fn propagate_transitive_param_taint(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    header_declared: &HashSet<String>,
+) {
+    for _pass in 0..10 {
+        let mut changed = false;
+
+        // Snapshot every forwarding edge (is the source param observed/
+        // tainted, and which callee/param does it feed) before mutating —
+        // the callee being written may be a different map entry than the
+        // caller being read, so this can't be done through a single
+        // `values_mut()` pass like `propagate_transitive_frees`.
+        let edges: Vec<(bool, bool, String, usize)> = summaries
+            .values()
+            .flat_map(|s| {
+                let observed = s.callsite_param_taint_observed.clone();
+                let tainted = s.callsite_param_tainted.clone();
+                s.param_passthroughs
+                    .iter()
+                    .flat_map(move |(caller_idx, callees)| {
+                        let is_observed = observed.contains(caller_idx);
+                        let is_tainted = tainted.contains(caller_idx);
+                        callees
+                            .iter()
+                            .map(move |(callee_name, callee_idx)| {
+                                (is_observed, is_tainted, callee_name.clone(), *callee_idx)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        for (is_observed, is_tainted, callee_name, callee_idx) in edges {
+            if !is_observed || header_declared.contains(&callee_name) {
+                continue;
+            }
+            if let Some(callee_summary) = summaries.get_mut(&callee_name) {
+                if callee_summary
+                    .callsite_param_taint_observed
+                    .insert(callee_idx)
+                {
+                    changed = true;
+                }
+                if is_tainted && callee_summary.callsite_param_tainted.insert(callee_idx) {
+                    changed = true;
                 }
             }
         }
