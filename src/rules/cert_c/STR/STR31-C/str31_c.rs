@@ -348,8 +348,8 @@ impl Str31C {
             if idx < fn_start || idx > fn_end {
                 continue;
             }
-            if line.contains(var_name)
-                && line.contains('=')
+            let assigns_here = Self::line_assigns_to(line, var_name);
+            if assigns_here
                 && (line.contains("malloc") || line.contains("calloc"))
                 && line.contains("strlen")
                 && line.contains("+ 1")
@@ -360,7 +360,7 @@ impl Str31C {
             // strlen_var was assigned from strlen() — safe byte-string allocation.
             // Only matches when element size is 1 byte to distinguish from
             // calloc(strlen_var+1, sizeof(wchar_t)) which is a real bug.
-            if line.contains(var_name) && line.contains('=') && line.contains("calloc") {
+            if assigns_here && line.contains("calloc") {
                 if let Some(caps) = calloc_narrow_re.as_ref().and_then(|re| re.captures(line)) {
                     if assigned_from_len_fn(&caps[1], false) {
                         return Some(usize::MAX);
@@ -376,7 +376,7 @@ impl Str31C {
                 }
             }
             // malloc(strlen_var+1) — implied byte-sized element
-            if line.contains(var_name) && line.contains('=') && line.contains("malloc") {
+            if assigns_here && line.contains("malloc") {
                 if let Some(caps) = malloc_indirect_re.as_ref().and_then(|re| re.captures(line)) {
                     if assigned_from_len_fn(&caps[1], false) {
                         return Some(usize::MAX);
@@ -385,6 +385,24 @@ impl Str31C {
             }
         }
         None
+    }
+
+    /// True if `line` contains an assignment whose LHS is exactly `var_name`
+    /// (word-boundary on both sides, so `data` does not match `dataBuffer`),
+    /// followed by a plain `=` (not `==`).
+    ///
+    /// Several of the line-scan finders below used to gate on a bare
+    /// `line.contains(var_name)`, which spuriously matched `dataBuffer =
+    /// malloc(...)` when resolving a variable named `data` — Juliet's own
+    /// `X`/`XBuffer`/`XGoodBuffer`/`XBadBuffer` naming convention makes this
+    /// collision common. That falsely attributed another variable's
+    /// allocation to `data`, masking real overflows reached only through
+    /// `find_buffer_size`'s alias-chasing paths (task 203).
+    fn line_assigns_to(line: &str, var_name: &str) -> bool {
+        let pattern = format!(r"\b{}\b\s*=[^=]", regex::escape(var_name));
+        regex::Regex::new(&pattern)
+            .map(|re| re.is_match(line))
+            .unwrap_or(false)
     }
 
     /// Look for malloc/calloc assignments with specific numeric sizes.
@@ -408,8 +426,7 @@ impl Str31C {
             if idx < fn_start || idx > fn_end {
                 continue;
             }
-            if !(line.contains(var_name)
-                && line.contains('=')
+            if !(Self::line_assigns_to(line, var_name)
                 && (line.contains("malloc") || line.contains("calloc")))
             {
                 continue;
@@ -453,8 +470,7 @@ impl Str31C {
             if idx < fn_start || idx > fn_end {
                 continue;
             }
-            if line.contains(var_name)
-                && line.contains('=')
+            if Self::line_assigns_to(line, var_name)
                 && line.contains("realloc")
                 && line.contains("strlen")
                 && (line.contains('+') || line.contains("new_size"))
@@ -583,7 +599,20 @@ impl Str31C {
         var_name: &str,
         source: &str,
     ) -> Option<String> {
-        let (start_line, end_line) = Self::find_enclosing_function_lines(call_node)?;
+        let fn_range = Self::find_enclosing_function_lines(call_node)?;
+        Self::resolve_pointer_alias_in_range(var_name, fn_range, source)
+    }
+
+    /// Line-range-based core of [`Self::resolve_pointer_alias_in_function`],
+    /// usable when the caller already has a `(start_line, end_line)` range
+    /// instead of a tree-sitter node to derive one from (e.g.
+    /// [`Self::find_global_buffer_size`], which locates the range of a
+    /// DIFFERENT function than the one performing the copy).
+    fn resolve_pointer_alias_in_range(
+        var_name: &str,
+        (start_line, end_line): (usize, usize),
+        source: &str,
+    ) -> Option<String> {
         let lines: Vec<&str> = source.lines().collect();
 
         // Match: var_name = identifier; (with optional cast)
@@ -598,16 +627,16 @@ impl Str31C {
         for line in &lines[start_line..=end] {
             if let Some(caps) = re.captures(line) {
                 let target = &caps[1];
-                // Skip self-assignment, NULL, and numeric literals
+                // Skip self-assignment, NULL, and numeric literals. (A
+                // genuine call-shaped RHS like `ALLOCA(...)`/`malloc(...)`
+                // can never match `(\w+)\s*;` in the first place — the `(`
+                // right after the bare word breaks the match — so no
+                // separate "looks like a call" text check is needed here;
+                // one used to substring-match "alloca" against the whole
+                // line, which false-skipped Juliet's alloca-variant tests
+                // whose *identifier names themselves* contain "alloca" as a
+                // substring, e.g. `..._alloca_cpy_45_badData`.)
                 if target == var_name || target == "NULL" || target == "0" {
-                    continue;
-                }
-                // Skip if it looks like a function call (ALLOCA, malloc, etc.)
-                if line.contains("ALLOCA")
-                    || line.contains("alloca")
-                    || line.contains("malloc")
-                    || line.contains("calloc")
-                {
                     continue;
                 }
                 return Some(target.to_string());
@@ -633,9 +662,76 @@ impl Str31C {
         if let Some(alias_target) =
             Self::resolve_pointer_alias_in_function(call_node, var_name, source)
         {
-            return self.find_buffer_size(&alias_target, root, source, fn_range);
+            if let Some(size) = self.find_buffer_size(&alias_target, root, source, fn_range) {
+                return Some(size);
+            }
+            // Juliet flow variant 45 passes the destination buffer through a
+            // file-scope `static` global instead of a parameter or a local
+            // alias: `bad()` allocates a buffer and stores it into a global,
+            // then a DIFFERENT function in the same file (`badSink()`) reads
+            // the global and performs the copy. The alias target here is
+            // that global, but `find_buffer_size` above only searched
+            // `badSink()`'s own line range, where no allocation exists.
+            return self.find_global_buffer_size(&alias_target, root, source);
         }
         None
+    }
+
+    /// Resolve `global_name`'s buffer size by scanning every assignment to it
+    /// across the WHOLE file, each resolved within ITS OWN enclosing
+    /// function's line range (not the reader's) — the allocation and the
+    /// read/copy live in different functions (Juliet variant 45: `bad()`
+    /// allocates and stores into a global; `badSink()` reads it). Returns the
+    /// minimum resolvable size across every assignment site found, and `None`
+    /// if no assignment resolves (stays conservative rather than guessing).
+    fn find_global_buffer_size(
+        &self,
+        global_name: &str,
+        root: &Node,
+        source: &str,
+    ) -> Option<usize> {
+        let pattern = format!(
+            r"\b{}\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*;",
+            regex::escape(global_name)
+        );
+        let re = regex::Regex::new(&pattern).ok()?;
+        let lines: Vec<&str> = source.lines().collect();
+
+        let mut min_size: Option<usize> = None;
+        for (idx, line) in lines.iter().enumerate() {
+            let Some(caps) = re.captures(line) else {
+                continue;
+            };
+            let target = &caps[1];
+            if target == global_name || target == "NULL" || target == "0" {
+                continue;
+            }
+            let fn_range = Self::function_range_containing_line(root, idx)?;
+            // `target` is often itself just a local alias for the real
+            // allocation within the writer function (Juliet variant 45:
+            // `data = dataGoodBuffer; ...; GLOBAL = data;` — the global is
+            // assigned from `data`, which is in turn assigned from the
+            // actual `ALLOCA`'d buffer). One more hop of alias resolution,
+            // scoped to the writer's own range, covers this.
+            let size = match self.find_buffer_size(target, root, source, Some(fn_range)) {
+                Some(size) => size,
+                None => {
+                    let alias2 = Self::resolve_pointer_alias_in_range(target, fn_range, source)?;
+                    self.find_buffer_size(&alias2, root, source, Some(fn_range))?
+                }
+            };
+            min_size = Some(min_size.map_or(size, |m: usize| m.min(size)));
+        }
+        min_size
+    }
+
+    /// Find the `function_definition` node (by line range) that contains
+    /// `line` (0-indexed), if any.
+    fn function_range_containing_line(root: &Node, line: usize) -> Option<(usize, usize)> {
+        query::find_descendants_of_kind(*root, "function_definition")
+            .into_iter()
+            .map(|f| (f.start_position().row, f.end_position().row))
+            .find(|(start, end)| line >= *start && line <= *end)
     }
 
     /// Check if there was a prior safe realloc for this variable
@@ -998,17 +1094,31 @@ impl Str31C {
                 // For buffers >= 20, analyze the concatenation more carefully
                 if buffer_size >= 20 {
                     // ENHANCED: Estimate total string length after concatenation
-                    if let Some(total_length) =
-                        self.estimate_strcat_total_length(dest, arguments, source)
-                    {
-                        if buffer_size > total_length {
-                            return true; // Safe concatenation
+                    match self.estimate_strcat_total_length(dest, arguments, source) {
+                        Some(total_length) => {
+                            // `total_length` already counts the null
+                            // terminator (see `estimate_strcat_total_length`),
+                            // so a buffer of exactly that size is sufficient
+                            // — not one byte larger.
+                            if buffer_size >= total_length {
+                                return true; // Safe concatenation
+                            }
+                            // Estimation succeeded and found the buffer too
+                            // small — do NOT fall through to the "assume
+                            // safe for large buffers" heuristic below; that
+                            // heuristic exists only for when no estimate was
+                            // possible at all, not to override a conclusive
+                            // unsafe estimate (previously it ran
+                            // unconditionally here, silently swallowing any
+                            // buffer >= 50 that WAS provably too small).
                         }
-                    }
-
-                    // Fallback: if we can't estimate but buffer is reasonably large
-                    if buffer_size >= 50 {
-                        return true; // Conservative: assume safe for large buffers
+                        None => {
+                            // Fallback: no estimate was possible, but the
+                            // buffer is reasonably large.
+                            if buffer_size >= 50 {
+                                return true; // Conservative: assume safe for large buffers
+                            }
+                        }
                     }
                 }
 
@@ -1966,22 +2076,35 @@ impl Str31C {
         }
 
         if let Some(src_name) = src_arg {
-            // First try to get current length from direct assignment
+            // Current destination content length: direct string-literal init,
+            // else a prior strcpy's source length, else memset-filled
+            // content, else assume empty. "Assume empty when unknown" matches
+            // `get_initial_buffer_content_length`'s own convention elsewhere
+            // in this file, and is what lets a `data[0] = '\0';` (explicitly
+            // empty) destination — Juliet's badSink/goodG2BSink cat pattern —
+            // fall through to the source-length-only estimate below instead
+            // of being treated as "can't estimate, assume safe".
             let mut dest_current_length = self
                 .get_string_length_from_context(Some(dest_var), source)
                 .unwrap_or(0);
-
-            // If we can't find direct assignment, look for strcpy operations that may have filled the buffer
             if dest_current_length == 0 {
                 dest_current_length = self.find_strcpy_source_length(dest_var, source);
             }
+            if dest_current_length == 0 {
+                dest_current_length = self
+                    .get_memset_content_length(dest_var, source, arguments)
+                    .unwrap_or(0);
+            }
 
+            // Source content length: string literal, else memset-filled
+            // content (e.g. `memset(source, 'C', 100-1); source[99]='\0';`).
             let src_length = self
                 .get_string_length_from_context(Some(src_name), source)
+                .or_else(|| self.get_memset_content_length(src_name, source, arguments))
                 .unwrap_or(0);
 
             // For strcat_safe.c: "Hello" (5) + " World" (6) + null (1) = 12
-            if dest_current_length > 0 && src_length > 0 {
+            if src_length > 0 {
                 return Some(dest_current_length + src_length + 1);
             }
         }
