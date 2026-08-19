@@ -4,6 +4,7 @@ use super::function_summary::{self, FunctionSummary};
 use crate::analyze::null_state::NullState;
 use crate::parser::CParser;
 use crate::progress::ProgressReporter;
+use crate::utility::cert_c::ast_utils;
 
 use anyhow::Result;
 use rayon::prelude::*;
@@ -1991,10 +1992,87 @@ fn collect_buf_calls_in_node(
     local_bufs: &HashMap<String, usize>,
     callsite_buf_args: &mut HashMap<String, Vec<Vec<Option<usize>>>>,
 ) {
+    let funcptr_bindings = collect_funcptr_bindings(node, source);
+    collect_buf_calls_in_node_with_bindings(
+        node,
+        source,
+        local_bufs,
+        &funcptr_bindings,
+        callsite_buf_args,
+    );
+}
+
+/// Build a map of local variable → function name for variables bound to a
+/// function (via declaration initializer or plain assignment), so a call
+/// through a function pointer (`funcPtr(data)` after `funcPtr = badSink;`)
+/// resolves to the real callee name instead of the pointer variable's own
+/// name. Juliet flow variant 44 routes sink invocation through exactly this
+/// pattern; without it, the call is recorded under "funcPtr" and never
+/// merges into the real sink's `callsite_param_buffer_size`.
+fn collect_funcptr_bindings(node: &Node, source: &str) -> HashMap<String, String> {
+    let mut bindings = HashMap::new();
+    collect_funcptr_bindings_in_node(node, source, &mut bindings);
+    bindings
+}
+
+fn collect_funcptr_bindings_in_node(
+    node: &Node,
+    source: &str,
+    bindings: &mut HashMap<String, String>,
+) {
+    match node.kind() {
+        "init_declarator" => {
+            if let (Some(decl), Some(value)) = (
+                node.child_by_field_name("declarator"),
+                node.child_by_field_name("value"),
+            ) {
+                if value.kind() == "identifier" {
+                    let name = ast_utils::get_identifier_from_declarator(&decl, source);
+                    let target = value.utf8_text(source.as_bytes()).unwrap_or("");
+                    if !name.is_empty() && !target.is_empty() {
+                        bindings.insert(name, target.to_string());
+                    }
+                }
+            }
+        }
+        "assignment_expression" => {
+            if let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                if left.kind() == "identifier" && right.kind() == "identifier" {
+                    let name = left.utf8_text(source.as_bytes()).unwrap_or("");
+                    let target = right.utf8_text(source.as_bytes()).unwrap_or("");
+                    if !name.is_empty() && !target.is_empty() {
+                        bindings.insert(name.to_string(), target.to_string());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_funcptr_bindings_in_node(&child, source, bindings);
+        }
+    }
+}
+
+fn collect_buf_calls_in_node_with_bindings(
+    node: &Node,
+    source: &str,
+    local_bufs: &HashMap<String, usize>,
+    funcptr_bindings: &HashMap<String, String>,
+    callsite_buf_args: &mut HashMap<String, Vec<Vec<Option<usize>>>>,
+) {
     if node.kind() == "call_expression" {
         if let Some(function) = node.child_by_field_name("function") {
             if function.kind() == "identifier" {
-                let callee = function.utf8_text(source.as_bytes()).unwrap_or("");
+                let raw_callee = function.utf8_text(source.as_bytes()).unwrap_or("");
+                let callee = funcptr_bindings
+                    .get(raw_callee)
+                    .map(String::as_str)
+                    .unwrap_or(raw_callee);
                 if !callee.is_empty() {
                     if let Some(args_node) = node.child_by_field_name("arguments") {
                         let mut arg_sizes = Vec::new();
@@ -2025,7 +2103,13 @@ fn collect_buf_calls_in_node(
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            collect_buf_calls_in_node(&child, source, local_bufs, callsite_buf_args);
+            collect_buf_calls_in_node_with_bindings(
+                &child,
+                source,
+                local_bufs,
+                funcptr_bindings,
+                callsite_buf_args,
+            );
         }
     }
 }
