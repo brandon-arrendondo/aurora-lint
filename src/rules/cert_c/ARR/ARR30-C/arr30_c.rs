@@ -5203,63 +5203,12 @@ impl Arr30C {
         // This ensures declarations are visible to subsequent siblings
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                // Extract declarations from this child if it's a declaration node
-                if child.kind() == "declaration" {
-                    if let Some(new_buffer) = self.extract_buffer_from_declaration(&child, source) {
-                        // Only insert if not already tracked (line-based analysis takes precedence for realloc tracking)
-                        if !local_buffers.contains_key(&new_buffer.name) {
-                            local_buffers.insert(new_buffer.name.clone(), new_buffer);
-                        }
-                    }
-                    if let Some(new_alias) =
-                        self.extract_alias_from_declaration(&child, source, &local_buffers)
-                    {
-                        local_aliases.insert(new_alias.alias_name.clone(), new_alias);
-                    }
-                }
-
-                // Track malloc/realloc assignments (e.g., matrix[i] = malloc(...) or ptr = realloc(ptr, size))
-                // Check both assignment_expression nodes and their parents (expression_statement)
-                let assignment_node = if child.kind() == "assignment_expression" {
-                    Some(child)
-                } else if child.kind() == "expression_statement" {
-                    // Look for assignment_expression child
-                    child
-                        .child(0)
-                        .filter(|c| c.kind() == "assignment_expression")
-                } else {
-                    None
-                };
-
-                if let Some(assign_node) = assignment_node {
-                    if let Some((buf_name, buf_info)) =
-                        self.extract_buffer_from_assignment(&assign_node, source)
-                    {
-                        // Insert or update the buffer entry
-                        local_buffers.insert(buf_name, buf_info);
-                    }
-
-                    // Track pointer aliases from simple assignments: data = dataBadBuffer
-                    if let (Some(left), Some(right)) = (
-                        assign_node.child_by_field_name("left"),
-                        assign_node.child_by_field_name("right"),
-                    ) {
-                        if left.kind() == "identifier" && right.kind() == "identifier" {
-                            let lhs = &source[left.start_byte()..left.end_byte()];
-                            let rhs = &source[right.start_byte()..right.end_byte()];
-                            if local_buffers.contains_key(rhs) {
-                                local_aliases.insert(
-                                    lhs.to_string(),
-                                    PointerAlias {
-                                        alias_name: lhs.to_string(),
-                                        original_buffer: rhs.to_string(),
-                                        element_size_bytes: None,
-                                    },
-                                );
-                            }
-                        }
-                    }
-                }
+                self.update_local_state_from_child(
+                    &child,
+                    source,
+                    &mut local_buffers,
+                    &mut local_aliases,
+                );
 
                 // Recursively check this child with the accumulated context
                 violations.extend(self.check_with_buffer_info(
@@ -5275,6 +5224,75 @@ impl Arr30C {
         }
 
         violations
+    }
+
+    /// Update `local_buffers`/`local_aliases` with any declaration, malloc/realloc
+    /// assignment, or simple pointer-alias assignment carried by `child`, so a
+    /// sibling visited later in the same `check_with_buffer_info` recursion sees it.
+    fn update_local_state_from_child(
+        &self,
+        child: &Node,
+        source: &str,
+        local_buffers: &mut HashMap<String, BufferInfo>,
+        local_aliases: &mut HashMap<String, PointerAlias>,
+    ) {
+        // Extract declarations from this child if it's a declaration node
+        if child.kind() == "declaration" {
+            if let Some(new_buffer) = self.extract_buffer_from_declaration(child, source) {
+                // Only insert if not already tracked (line-based analysis takes precedence for realloc tracking)
+                if !local_buffers.contains_key(&new_buffer.name) {
+                    local_buffers.insert(new_buffer.name.clone(), new_buffer);
+                }
+            }
+            if let Some(new_alias) =
+                self.extract_alias_from_declaration(child, source, local_buffers)
+            {
+                local_aliases.insert(new_alias.alias_name.clone(), new_alias);
+            }
+        }
+
+        // Track malloc/realloc assignments (e.g., matrix[i] = malloc(...) or ptr = realloc(ptr, size))
+        // Check both assignment_expression nodes and their parents (expression_statement)
+        let assignment_node = if child.kind() == "assignment_expression" {
+            Some(*child)
+        } else if child.kind() == "expression_statement" {
+            // Look for assignment_expression child
+            child
+                .child(0)
+                .filter(|c| c.kind() == "assignment_expression")
+        } else {
+            None
+        };
+
+        if let Some(assign_node) = assignment_node {
+            if let Some((buf_name, buf_info)) =
+                self.extract_buffer_from_assignment(&assign_node, source)
+            {
+                // Insert or update the buffer entry
+                local_buffers.insert(buf_name, buf_info);
+            }
+
+            // Track pointer aliases from simple assignments: data = dataBadBuffer
+            if let (Some(left), Some(right)) = (
+                assign_node.child_by_field_name("left"),
+                assign_node.child_by_field_name("right"),
+            ) {
+                if left.kind() == "identifier" && right.kind() == "identifier" {
+                    let lhs = &source[left.start_byte()..left.end_byte()];
+                    let rhs = &source[right.start_byte()..right.end_byte()];
+                    if local_buffers.contains_key(rhs) {
+                        local_aliases.insert(
+                            lhs.to_string(),
+                            PointerAlias {
+                                alias_name: lhs.to_string(),
+                                original_buffer: rhs.to_string(),
+                                element_size_bytes: None,
+                            },
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Extract buffer information from a declaration AST node (with typedef support)
