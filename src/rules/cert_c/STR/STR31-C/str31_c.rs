@@ -956,6 +956,22 @@ impl Str31C {
             }
         }
 
+        // Cross-function: source is a parameter, so its size is unknown
+        // locally (`find_buffer_size_with_alias` above only resolves local
+        // declarations/globals). Mirror of `param_dest_bounded_by_caller`
+        // for the destination side: consult the smallest statically-sized
+        // buffer any caller passes at this parameter position (Juliet
+        // CWE-127 split-file source flows). A caller buffer no larger than
+        // `dest` cannot overflow it; one larger than `dest` can, and is a
+        // genuine STR31-C finding rather than a suppression.
+        if self.is_function_parameter(src_name, source) {
+            if let Some(caller_src_buf) =
+                self.caller_min_buffer_for_param(src_name, arguments, source)
+            {
+                return Some(buffer_size >= caller_src_buf);
+            }
+        }
+
         // Check for variables that are clearly larger arrays
         if self.is_larger_array_variable(src_name, buffer_size, source) {
             return Some(false); // Source array is larger than destination
