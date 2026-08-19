@@ -368,6 +368,69 @@ pub fn memset_content_length_in_range(
     best_size
 }
 
+/// Resolve a simple pointer alias within an explicit `[start, end]` row
+/// range: the target of the first `var_name = otherIdentifier;` assignment
+/// found (optionally cast), skipping self-assignment, `NULL`, and numeric
+/// literals. An arithmetic-offset or call-shaped RHS (`var - 8`,
+/// `malloc(...)`) never matches — the pattern requires a bare identifier
+/// immediately before the `;`.
+pub fn resolve_bare_alias_in_range(
+    var_name: &str,
+    source: &str,
+    start: usize,
+    end: usize,
+) -> Option<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    let pattern = format!(
+        r"\b{}\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*;",
+        regex::escape(var_name)
+    );
+    let re = regex::Regex::new(&pattern).ok()?;
+    let end = end.min(lines.len().saturating_sub(1));
+    for line in &lines[start..=end] {
+        if let Some(caps) = re.captures(line) {
+            let target = &caps[1];
+            if target == var_name || target == "NULL" || target == "0" {
+                continue;
+            }
+            return Some(target.to_string());
+        }
+    }
+    None
+}
+
+/// Element-count buffer size of the largest `malloc`/`calloc`/`realloc`/
+/// `alloca`-family allocation directly assigned to `var_name` within an
+/// explicit `[start, end]` row range (worst case across multiple assignments
+/// — e.g. one per dead-code branch). Does not resolve aliases; pair with
+/// [`resolve_bare_alias_in_range`] for `var_name = other; other = malloc(...)`.
+pub fn resolve_alloc_assigned_in_range(
+    var_name: &str,
+    source: &str,
+    start: usize,
+    end: usize,
+) -> Option<usize> {
+    let lines: Vec<&str> = source.lines().collect();
+    let pattern = format!(
+        r"\b{}\s*=\s*(?:\([^)]*\)\s*)?({})\s*\(([^;]*)\)",
+        regex::escape(var_name),
+        ALLOC_FUNCTIONS.join("|")
+    );
+    let re = regex::Regex::new(&pattern).ok()?;
+    let end = end.min(lines.len().saturating_sub(1));
+    let mut best: Option<usize> = None;
+    for line in &lines[start..=end] {
+        let Some(caps) = re.captures(line) else {
+            continue;
+        };
+        let Some(size) = alloc_call_element_count(&caps[1], &caps[2]) else {
+            continue;
+        };
+        best = Some(best.map_or(size, |b: usize| b.max(size)));
+    }
+    best
+}
+
 /// Evaluate a parenthesised allocation-size arithmetic capture of the form
 /// `(N op M)` (or a bare `N`), as produced by the malloc/alloca size regexes.
 /// `op` is `Some("+"|"-"|"*")` with both operands present, or `None` for a

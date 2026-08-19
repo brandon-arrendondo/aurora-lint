@@ -119,6 +119,19 @@ pub struct FunctionSummary {
     /// cross-function goodG2BSink false positives (Juliet variants 41+).
     #[serde(default)]
     pub callsite_param_buffer_size: HashMap<usize, usize>,
+    /// Maximum element-count buffer size or memset-fill content length this
+    /// function itself writes into a parameter (via a direct/aliased
+    /// malloc-family allocation assigned to it, or a `memset` fill followed
+    /// by an explicit null terminator on it) before returning. The opposite
+    /// direction of `callsite_param_buffer_size`: that records what CALLERS
+    /// pass in, this records what THIS function PRODUCES for its own
+    /// parameter. Lets STR31-C resolve a same-file-or-cross-file "source
+    /// relay" pattern — `data = someSource(data)`, where `someSource`
+    /// conditionally allocates or content-fills its own parameter and
+    /// returns it (Juliet flow variants 21/22) — without needing the
+    /// callee's AST in the current file, the way the same-file case does.
+    #[serde(default)]
+    pub produces_param_buffer_size: HashMap<usize, usize>,
     /// Parameter indices that this function closes (e.g., `fclose(param)`,
     /// `close(param)`, `CloseHandle(param)`). Mirrors `frees_params` but for
     /// FIO42-C's file/descriptor/handle resources instead of heap memory.
@@ -590,9 +603,64 @@ fn analyze_function(
         if compute_return_ranges && !is_void_return && !is_pointer_return {
             summary.return_range = compute_return_range(&body, source, macros);
         }
+
+        // Only a pointer-returning function can hand a written-into
+        // parameter back to its caller by value (Juliet's "source relay"
+        // pattern: `data = someSource(data)`) — a void function's writes
+        // to a parameter are visible through the pointer itself, not this
+        // summary.
+        if is_pointer_return {
+            summary.produces_param_buffer_size =
+                compute_produces_param_buffer_size(&body, source, &params);
+        }
     }
 
     summary
+}
+
+/// For each parameter, the largest buffer size or memset-fill content length
+/// this function itself writes into it — directly, or through one local
+/// alias hop (`char *buf = malloc(...); data = buf;`) — before returning.
+/// See [`FunctionSummary::produces_param_buffer_size`].
+fn compute_produces_param_buffer_size(
+    body: &Node,
+    source: &str,
+    params: &[String],
+) -> HashMap<usize, usize> {
+    let start = body.start_position().row;
+    let end = body.end_position().row;
+    let mut result = HashMap::new();
+    for (idx, param_name) in params.iter().enumerate() {
+        if let Some(size) = produced_size_for_var(param_name, source, start, end) {
+            result.insert(idx, size);
+            continue;
+        }
+        if let Some(alias) =
+            crate::analyze::buffer_size::resolve_bare_alias_in_range(param_name, source, start, end)
+        {
+            if let Some(size) = produced_size_for_var(&alias, source, start, end) {
+                result.insert(idx, size);
+            }
+        }
+    }
+    result
+}
+
+/// Combine the allocation- and memset-content-length resolvers for a single
+/// variable within an explicit row range: only one is ever meaningful for a
+/// given relay function in practice (it either allocates a differently-sized
+/// buffer or fills an existing one to a different length, never both), so
+/// whichever resolves is the answer.
+fn produced_size_for_var(var_name: &str, source: &str, start: usize, end: usize) -> Option<usize> {
+    crate::analyze::buffer_size::resolve_alloc_assigned_in_range(var_name, source, start, end)
+        .or_else(|| {
+            crate::analyze::buffer_size::memset_content_length_in_range(
+                var_name,
+                source,
+                start,
+                end + 1,
+            )
+        })
 }
 
 /// Collect parameter names from a function declaration.

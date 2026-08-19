@@ -19,6 +19,14 @@ use tree_sitter::Node;
 #[derive(Default)]
 pub struct Str31C {
     callsite_param_buffer_size: RefCell<HashMap<String, HashMap<usize, usize>>>,
+    /// Cross-file mirror of `callsite_param_buffer_size`: for each function,
+    /// the buffer size or memset content length it writes into its own
+    /// parameter before returning (see
+    /// [`crate::analyze::function_summary::FunctionSummary::produces_param_buffer_size`]).
+    /// Resolves Juliet flow-variant-22 "source relay" functions defined in a
+    /// companion file, where the current file's own AST has no definition to
+    /// inspect.
+    produces_param_buffer_size: RefCell<HashMap<String, HashMap<usize, usize>>>,
 }
 
 impl Str31C {
@@ -676,42 +684,24 @@ impl Str31C {
                 return Some(size);
             }
         }
-        // Juliet flow variants 21/22 assign through a same-file "source"
-        // relay function instead of a bare alias: `data = badSource(data)`,
-        // where `badSource` conditionally allocates its own parameter and
-        // returns it. Neither the direct lookup nor the one-hop alias above
-        // can see that — the allocation lives in a different function's
-        // line range entirely.
-        let (param_name, callee_range) =
-            self.find_relay_source_param(var_name, root, source, call_node)?;
-        if let Some(size) = self.find_buffer_size(&param_name, root, source, Some(callee_range)) {
-            return Some(size);
-        }
-        // The relay function itself allocates through a local alias rather
-        // than the parameter directly (`char *buf = malloc(...); data =
-        // buf;`) — one more alias hop, scoped to the relay function's own
-        // range. An arithmetic-offset reassignment (`data = buf - 8;`, the
-        // Juliet CWE-124 underwrite flaw) does not match this alias regex,
-        // so the flawed branch correctly stays unresolved here.
-        let alias = Self::resolve_pointer_alias_in_range(&param_name, callee_range, source)?;
-        self.find_buffer_size(&alias, root, source, Some(callee_range))
+        // Juliet flow variants 21/22 assign through a "source" relay
+        // function instead of a bare alias: `data = badSource(data)`, where
+        // `badSource` conditionally allocates (or memset-fills) its own
+        // parameter and returns it. Neither the direct lookup nor the
+        // one-hop alias above can see that — the allocation lives in a
+        // different function's line range entirely, possibly a different
+        // file (variant 22's sink/source file split).
+        self.resolve_relay_source_size(var_name, root, source, call_node)
     }
 
-    /// For a same-file "source" relay function pattern — `var_name =
-    /// calleeName(args)`, where `var_name` is one of `calleeName`'s
-    /// arguments and `calleeName` allocates or memset-fills the
-    /// corresponding parameter internally before returning it (Juliet flow
-    /// variants 21/22) — resolve the callee's parameter name and line range
-    /// so the caller can inspect what the relay function wrote into it.
-    /// Excludes direct calls to known allocation functions, which
-    /// `find_buffer_size` already resolves without this indirection.
-    fn find_relay_source_param(
-        &self,
-        var_name: &str,
-        root: &Node,
-        source: &str,
-        call_node: &Node,
-    ) -> Option<(String, (usize, usize))> {
+    /// For a "source" relay function pattern — `var_name = calleeName(args)`,
+    /// where `var_name` is one of `calleeName`'s arguments and `calleeName`
+    /// allocates or memset-fills the corresponding parameter internally
+    /// before returning it (Juliet flow variants 21/22) — find the callee
+    /// name and the argument position `var_name` occupies. Excludes direct
+    /// calls to known allocation functions, which `find_buffer_size` already
+    /// resolves without this indirection.
+    fn find_relay_call(var_name: &str, source: &str, call_node: &Node) -> Option<(String, usize)> {
         let fn_range = Self::find_enclosing_function_lines(call_node)?;
         let lines: Vec<&str> = source.lines().collect();
         let pattern = format!(
@@ -721,7 +711,7 @@ impl Str31C {
         let re = regex::Regex::new(&pattern).ok()?;
         let end = fn_range.1.min(lines.len().saturating_sub(1));
 
-        let (callee_name, arg_idx) = lines[fn_range.0..=end].iter().find_map(|line| {
+        lines[fn_range.0..=end].iter().find_map(|line| {
             let caps = re.captures(line)?;
             let callee = caps[1].to_string();
             if buffer_size::ALLOC_FUNCTIONS.contains(&callee.as_str()) {
@@ -732,42 +722,65 @@ impl Str31C {
                 .map(str::trim)
                 .position(|a| a == var_name)?;
             Some((callee, idx))
-        })?;
-
-        let callee_fn = query::find_descendants_of_kind(*root, "function_definition")
-            .into_iter()
-            .find(|f| {
-                f.child_by_field_name("declarator")
-                    .map(|d| ast_utils::get_identifier_from_declarator(&d, source) == callee_name)
-                    .unwrap_or(false)
-            })?;
-        let params = ast_utils::get_function_parameters(&callee_fn, source)?;
-        let (param_name, _) = params.get(arg_idx)?;
-        let callee_range = (callee_fn.start_position().row, callee_fn.end_position().row);
-        Some((param_name.clone(), callee_range))
+        })
     }
 
-    /// Content length that a same-file "source" relay function
-    /// (`var_name = calleeName(args)`, Juliet flow variants 21/22) writes
-    /// into `var_name` via `memset` on its own parameter before returning
-    /// it. Mirror of [`Self::get_memset_content_length`] for when the fill
-    /// lives inside a helper function rather than the copying function's
-    /// own body.
-    fn get_relay_memset_content_length(
+    /// Resolve the buffer size or memset content length that a "source"
+    /// relay function writes into `var_name` before returning it (see
+    /// [`Self::find_relay_call`]). Tries the callee's own AST first (same
+    /// file); when the callee is only forward-declared here and defined in
+    /// a different file (Juliet variant 22's sink/source file split), falls
+    /// back to the cross-file `produces_param_buffer_size` prescan summary.
+    fn resolve_relay_source_size(
         &self,
         var_name: &str,
         root: &Node,
         source: &str,
         call_node: &Node,
     ) -> Option<usize> {
-        let (param_name, callee_range) =
-            self.find_relay_source_param(var_name, root, source, call_node)?;
-        buffer_size::memset_content_length_in_range(
-            &param_name,
-            source,
-            callee_range.0,
-            callee_range.1 + 1,
-        )
+        let (callee_name, arg_idx) = Self::find_relay_call(var_name, source, call_node)?;
+
+        if let Some(callee_fn) = query::find_descendants_of_kind(*root, "function_definition")
+            .into_iter()
+            .find(|f| {
+                f.child_by_field_name("declarator")
+                    .map(|d| ast_utils::get_identifier_from_declarator(&d, source) == callee_name)
+                    .unwrap_or(false)
+            })
+        {
+            let params = ast_utils::get_function_parameters(&callee_fn, source)?;
+            let (param_name, _) = params.get(arg_idx)?;
+            let callee_range = (callee_fn.start_position().row, callee_fn.end_position().row);
+            if let Some(size) = self.find_buffer_size(param_name, root, source, Some(callee_range))
+            {
+                return Some(size);
+            }
+            if let Some(size) = buffer_size::memset_content_length_in_range(
+                param_name,
+                source,
+                callee_range.0,
+                callee_range.1 + 1,
+            ) {
+                return Some(size);
+            }
+            // The relay function itself allocates through a local alias
+            // rather than the parameter directly (`char *buf =
+            // malloc(...); data = buf;`) — one more alias hop, scoped to
+            // the relay function's own range. An arithmetic-offset
+            // reassignment (`data = buf - 8;`, the Juliet CWE-124
+            // underwrite flaw) does not match this alias regex, so the
+            // flawed branch correctly stays unresolved here.
+            let alias = Self::resolve_pointer_alias_in_range(param_name, callee_range, source)?;
+            return self.find_buffer_size(&alias, root, source, Some(callee_range));
+        }
+
+        // Callee not defined in this file — consult the cross-file prescan
+        // summary of what the callee itself produces for that parameter.
+        self.produces_param_buffer_size
+            .borrow()
+            .get(&callee_name)?
+            .get(&arg_idx)
+            .copied()
     }
 
     /// Resolve `global_name`'s buffer size by scanning every assignment to it
@@ -1041,12 +1054,11 @@ impl Str31C {
         }
 
         // Same as above, but for a Juliet flow-variant-21/22 "source" relay
-        // function: the memset fill lives inside a same-file helper that
-        // `src_name` was just assigned from (`data = badSource(data)`),
-        // not in this function's own body, so `get_memset_content_length`
-        // above can't see it.
-        if let Some(content_len) =
-            self.get_relay_memset_content_length(src_name, root, source, arguments)
+        // function: the memset fill (or allocation) lives inside a helper
+        // that `src_name` was just assigned from (`data = badSource(data)`),
+        // possibly in a different file, not in this function's own body, so
+        // `get_memset_content_length` above can't see it.
+        if let Some(content_len) = self.resolve_relay_source_size(src_name, root, source, arguments)
         {
             if buffer_size > content_len {
                 return Some(true); // Buffer has room for memset content + null terminator
@@ -2303,6 +2315,15 @@ impl CertRule for Str31C {
         for (name, summary) in &context.function_summaries {
             if !summary.callsite_param_buffer_size.is_empty() {
                 map.insert(name.clone(), summary.callsite_param_buffer_size.clone());
+            }
+        }
+        drop(map);
+
+        let mut produces = self.produces_param_buffer_size.borrow_mut();
+        produces.clear();
+        for (name, summary) in &context.function_summaries {
+            if !summary.produces_param_buffer_size.is_empty() {
+                produces.insert(name.clone(), summary.produces_param_buffer_size.clone());
             }
         }
     }
