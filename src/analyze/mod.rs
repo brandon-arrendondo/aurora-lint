@@ -1,6 +1,8 @@
 pub mod buffer_size;
 pub mod cfg;
 pub mod const_eval;
+/// Cross-file project context ([`context::ProjectContext`]) gathered by the
+/// pre-scan phase and injected into rules that need whole-project data.
 pub mod context;
 pub mod dataflow;
 pub mod empty_macro_blank;
@@ -9,10 +11,15 @@ pub mod init_state;
 pub mod macro_expand;
 pub mod macro_semantics;
 pub mod null_state;
+/// Points-to/alias analysis: resolving an lvalue expression to the set of
+/// storage locations it may refer to.
 pub mod points_to;
 pub mod preproc_dangling_else;
+/// The pre-scan phase: a first pass over the project (and sibling headers)
+/// that builds the [`context::ProjectContext`] later rule passes consume.
 pub mod prescan;
 pub mod relevance;
+/// Inline `SQC-SUPPRESS` comment parsing and suppression-file matching.
 pub mod suppression;
 pub mod unknown_identifier_recovery;
 pub mod value_range;
@@ -33,16 +40,25 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A violation that was suppressed by an inline SQC-SUPPRESS comment.
 pub struct SuppressedViolation {
+    /// The violation that would have fired without the suppression.
     pub violation: RuleViolation,
+    /// The justification text from the suppression comment/file.
     pub justification: String,
 }
 
 /// Results from project analysis, containing both active and suppressed violations.
 pub struct AnalysisResults {
+    /// Violations that were not suppressed.
     pub violations: Vec<RuleViolation>,
+    /// Violations suppressed by an inline comment or suppression file.
     pub suppressed: Vec<SuppressedViolation>,
 }
 
+/// Run every enabled rule over `project_source`, returning active and
+/// suppressed violations. `directories`/`include_paths`/`excludes` scope
+/// which files are analyzed; `diff_only` limits analysis to changed files;
+/// `save_prescan`/`load_prescan` cache the cross-file pre-scan phase across
+/// runs; `jobs` bounds parallelism.
 pub fn analyze_project(
     project_source: &ProjectSource,
     manifest: &RuleManifest,
@@ -528,6 +544,8 @@ fn analyze_one_file(
     (file_violations, file_suppressed)
 }
 
+/// Print a suppression-comment snippet for `spec` (`FILE:LINE:RULE`), for a
+/// user to paste inline rather than hand-writing the comment syntax.
 pub fn handle_generate_suppression(spec: &str) -> Result<()> {
     // Parse the specification: FILE:LINE:RULE
     let parts: Vec<&str> = spec.splitn(3, ':').collect();
@@ -733,6 +751,8 @@ fn collect_function_cfgs_with_constants(
     }
 }
 
+/// The trimmed source text of `line_number` in `file_path`, or a placeholder
+/// string if the line is out of range.
 pub fn get_code_snippet(file_path: &str, line_number: usize) -> Result<String> {
     let content = fs::read_to_string(file_path)?;
     let lines: Vec<&str> = content.lines().collect();

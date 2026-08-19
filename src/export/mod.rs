@@ -13,6 +13,9 @@ use sarif::export_all_violations_to_sarif;
 
 use anyhow::Result;
 
+/// Write `violations` (and, where the format supports it, `suppressed`) to
+/// `export_path`, dispatching on its extension: `.sarif.json`/`.sarif` for
+/// SARIF 2.1.0, `.xlsx` for Excel, `.csv`, or `.json`.
 pub fn export_all_violations(
     violations: &[RuleViolation],
     suppressed: &[SuppressedViolation],

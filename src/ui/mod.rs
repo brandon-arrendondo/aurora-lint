@@ -129,6 +129,8 @@ struct ViolationSuppression {
     hash: String,
 }
 
+/// The interactive terminal UI's full state: violations, suppressions,
+/// config editing, and the currently active tab/dialog.
 pub struct TerminalUI {
     repo_path: String,
     manifest: RuleManifest,
@@ -174,6 +176,8 @@ pub struct TerminalUI {
 }
 
 impl TerminalUI {
+    /// Build the UI's initial state (config items, empty violation lists)
+    /// for `repo_path`; the actual scan happens once [`Self::run`] starts.
     pub fn new(
         repo_path: &str,
         manifest: RuleManifest,
@@ -316,6 +320,8 @@ impl TerminalUI {
         visible
     }
 
+    /// Run the interactive terminal UI's main loop. Errors if stdout isn't
+    /// a terminal.
     pub fn run(&mut self) -> Result<()> {
         // Check if stdout is a terminal before attempting to use interactive mode
         if !io::stdout().is_tty() {

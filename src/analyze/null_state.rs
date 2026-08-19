@@ -1606,11 +1606,15 @@ fn get_text(node: &Node, source: &str) -> String {
     source[node.start_byte()..node.end_byte()].to_string()
 }
 
+/// Whether trimmed `text` is a literal null spelling (`NULL`, `0`, `nullptr`).
 pub fn is_null_value(text: &str) -> bool {
     let t = text.trim();
     t == "NULL" || t == "0" || t == "nullptr"
 }
 
+/// Whether `func_name` may return NULL: either its [`FunctionSummary`] says
+/// so, or it's one of a fixed list of standard-library/POSIX/sqlite
+/// functions known to be nullable.
 pub fn is_nullable_function(func_name: &str, summaries: &HashMap<String, FunctionSummary>) -> bool {
     if let Some(summary) = summaries.get(func_name) {
         if summary.can_return_null {
@@ -1656,6 +1660,7 @@ pub fn is_nullable_function(func_name: &str, summaries: &HashMap<String, Functio
     )
 }
 
+/// Whether `node` is a cast expression whose value is a null literal (e.g. `(void*)0`).
 #[allow(dead_code)]
 pub fn is_cast_to_null(node: &Node, source: &str) -> bool {
     if node.kind() == "cast_expression" {
@@ -1667,6 +1672,7 @@ pub fn is_cast_to_null(node: &Node, source: &str) -> bool {
     false
 }
 
+/// Whether `declarator` is, or nests, a pointer or array declarator.
 pub fn is_pointer_declarator(declarator: &Node) -> bool {
     match declarator.kind() {
         "pointer_declarator" => true,

@@ -60,6 +60,7 @@ impl Default for CLIProgressReporter {
 }
 
 impl CLIProgressReporter {
+    /// A reporter at the given verbosity level (see the struct docs).
     pub fn new(verbosity: u8) -> Self {
         Self {
             verbosity,
@@ -183,14 +184,21 @@ impl ProgressReporter for CLIProgressReporter {
 /// GUI progress reporter that stores state for display in the terminal UI
 #[allow(dead_code)]
 pub struct GUIProgressReporter {
+    /// Index (1-based) of the file currently being analyzed.
     pub current_file: Arc<std::sync::Mutex<usize>>,
+    /// Total number of files being analyzed.
     pub total_files: Arc<std::sync::Mutex<usize>>,
+    /// Path of the file currently being analyzed.
     pub file_path: Arc<std::sync::Mutex<String>>,
+    /// ID of the rule currently being checked.
     pub rule_id: Arc<std::sync::Mutex<String>>,
+    /// Set to request cancellation of the in-progress analysis.
     pub cancellation: Arc<AtomicBool>,
 }
 
 impl GUIProgressReporter {
+    /// A reporter sharing `cancellation` with whatever can request analysis
+    /// be cancelled (e.g. a UI's cancel button).
     #[allow(dead_code)]
     pub fn new(cancellation: Arc<AtomicBool>) -> Self {
         Self {

@@ -6,12 +6,17 @@ use git::GitRepo;
 
 use anyhow::Result;
 
+/// Where the project's C files are being read from.
 pub enum ProjectSource {
+    /// A git repository (enables `get_modified_c_files`/diff-only scoping).
     Git(GitRepo),
+    /// A plain directory or single file, with no git history available.
     Directory(DirectorySource),
 }
 
 impl ProjectSource {
+    /// Open `path`, preferring a git repository and falling back to a plain
+    /// directory/file source if `path` isn't inside one.
     pub fn open(path: &str) -> Result<Self> {
         // First try to open as a git repository
         if let Ok(git_repo) = GitRepo::open(path) {
@@ -23,6 +28,7 @@ impl ProjectSource {
         }
     }
 
+    /// Every C file in this source.
     pub fn get_c_files(&self) -> Result<Vec<String>> {
         match self {
             ProjectSource::Git(git_repo) => git_repo.get_c_files(),
@@ -30,6 +36,8 @@ impl ProjectSource {
         }
     }
 
+    /// C files changed relative to the source's baseline (git diff for a
+    /// [`ProjectSource::Git`], all files for a [`ProjectSource::Directory`]).
     pub fn get_modified_c_files(&self) -> Result<Vec<String>> {
         match self {
             ProjectSource::Git(git_repo) => git_repo.get_modified_c_files(),
@@ -37,6 +45,7 @@ impl ProjectSource {
         }
     }
 
+    /// This source's root path.
     #[allow(dead_code)]
     pub fn get_root_path(&self) -> &str {
         match self {
@@ -57,6 +66,8 @@ impl ProjectSource {
         }
     }
 
+    /// A short label for this source's kind: `"git repository"`, `"file"`,
+    /// or `"directory"`.
     pub fn source_type(&self) -> &str {
         match self {
             ProjectSource::Git(_) => "git repository",

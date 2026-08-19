@@ -101,6 +101,8 @@ fn blank_line(out: &mut [u8], line_start: usize, line_len: usize) {
     }
 }
 
+/// Blank the preprocessor directive lines wrapping a dangling `else`
+/// fragment, per the module docs above. Length-preserving.
 pub fn blank_dangling_else_preproc(source: &str) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let mut line_starts = Vec::with_capacity(lines.len());

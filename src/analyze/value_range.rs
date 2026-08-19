@@ -23,7 +23,9 @@ use tree_sitter::Node;
 /// Type information for a variable (signedness + bit width).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarType {
+    /// Whether the type is signed.
     pub is_signed: bool,
+    /// Bit width of the type (8/16/32/64).
     pub bit_width: u32,
 }
 
@@ -53,7 +55,9 @@ impl VarType {
 /// A value range with optional type information.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedRange {
+    /// The value range itself.
     pub range: ValueRange,
+    /// The variable's type, when known.
     pub var_type: Option<VarType>,
 }
 
@@ -1212,10 +1216,11 @@ fn merge_compound_conditions(
 // Main analysis
 // ---------------------------------------------------------------------------
 
-/// Run forward value-range analysis on a function CFG.
 /// Maximum CFG blocks before skipping VRA to avoid O(N²) worst-case on huge functions.
 const VRA_BLOCK_LIMIT: usize = 150;
 
+/// Run forward value-range analysis on a function CFG. Returns an empty
+/// result without analyzing when `cfg` exceeds [`VRA_BLOCK_LIMIT`] blocks.
 pub fn analyze_value_ranges(
     cfg: &FunctionCfg,
     func_node: &Node,

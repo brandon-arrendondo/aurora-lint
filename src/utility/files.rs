@@ -1,4 +1,6 @@
 // Helper function to get relative path without borrowing self
+/// `file_path` relative to `base_path`, or just `file_path`'s final path
+/// component if it isn't under `base_path`.
 pub fn get_relative_path(file_path: &str, base_path: &str) -> String {
     use std::path::Path;
 

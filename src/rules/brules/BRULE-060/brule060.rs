@@ -22,6 +22,7 @@ const INIT_PREFIXES: &[&str] = &["init_", "setup_", "create_", "new_", "alloc_"]
 /// Exact function names that are considered initialization context.
 const INIT_NAMES: &[&str] = &["main", "init", "setup", "initialize"];
 
+/// BRULE-060: do not use dynamic memory allocation after initialization.
 pub struct Brule060;
 
 impl CertRule for Brule060 {

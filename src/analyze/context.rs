@@ -11,6 +11,7 @@ use std::path::Path;
 /// defined in other translation units.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectContext {
+    /// Every function name found in the pre-scanned `.c`/`.h` files.
     pub known_functions: HashSet<String>,
     /// Functions declared (prototyped) in `.h` header files.
     /// A function with a header prototype is public API and should not be
@@ -72,6 +73,7 @@ pub struct ProjectContext {
 }
 
 impl ProjectContext {
+    /// An empty context, as if nothing had been pre-scanned yet.
     pub fn new() -> Self {
         Self::default()
     }

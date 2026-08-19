@@ -29,9 +29,13 @@ pub enum DefinitionKind {
 /// A single variable definition at a specific point in the program.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Definition {
+    /// Name of the variable being defined.
     pub variable: String,
+    /// Block the definition occurs in.
     pub block_id: BlockId,
+    /// Index of the defining statement within its block.
     pub statement_index: usize,
+    /// What kind of value the variable is defined to.
     pub kind: DefinitionKind,
     /// Byte offset in the source where this definition occurs.
     pub byte_offset: usize,

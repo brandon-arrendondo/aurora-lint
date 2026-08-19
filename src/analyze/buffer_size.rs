@@ -18,9 +18,13 @@
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct BufferInfo {
+    /// The buffer's variable name.
     pub name: String,
+    /// The buffer's size, in whatever form it could be determined.
     pub size: BufferSize,
+    /// Textual element type (e.g. `"int"`).
     pub element_type: String,
+    /// Line the buffer was declared/allocated on.
     pub allocation_line: usize,
     /// Raw allocation byte count (for byte-level comparisons).
     pub alloc_bytes: Option<usize>,
@@ -38,6 +42,7 @@ pub enum BufferSize {
     Dynamic(String),
     /// VLA: `int arr[n]` — symbolic size
     Symbolic(String),
+    /// Size could not be determined.
     Unknown,
 }
 

@@ -9,11 +9,14 @@ pub fn c_language() -> Language {
     lang_parsing_substrate::tree_sitter_c::LANGUAGE.into()
 }
 
+/// A tree-sitter C parser, with sqc's pre-parse source-repair passes wired
+/// into `parse_file`/`parse_source`.
 pub struct CParser {
     parser: Parser,
 }
 
 impl CParser {
+    /// A parser configured with the C grammar.
     pub fn new() -> Result<Self> {
         let mut parser = Parser::new();
         parser
@@ -23,6 +26,9 @@ impl CParser {
         Ok(Self { parser })
     }
 
+    /// Read and parse `file_path`, applying the source-repair passes
+    /// documented inline below, and returning the (possibly repaired)
+    /// source alongside the parse tree.
     pub fn parse_file(&mut self, file_path: &str) -> Result<(Tree, String)> {
         let source = fs::read_to_string(file_path)
             .with_context(|| format!("Failed to read file: {}", file_path))?;
@@ -57,6 +63,8 @@ impl CParser {
         Ok((tree, source))
     }
 
+    /// Parse `source` directly (no file read), applying the same
+    /// source-repair passes as [`Self::parse_file`].
     #[allow(dead_code)]
     pub fn parse_source(&mut self, source: &str) -> Result<Tree> {
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(source);

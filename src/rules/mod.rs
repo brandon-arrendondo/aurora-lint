@@ -1,3 +1,8 @@
+//! The [`CertRule`] trait every rule implements, [`RuleViolation`] (the
+//! result of running one), and [`RuleRegistry`] (the collection every
+//! enabled rule is looked up through).
+
+/// BISSELL-specific rules (`BRULE-###`) beyond the CERT C standard set.
 pub mod brules;
 mod cert_c;
 
@@ -7,11 +12,17 @@ use crate::analyze::value_range::RangeAnalysisResult;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
+/// One CERT C rule or BISSELL-specific rule (`BRULE-###`) checker.
 pub trait CertRule {
+    /// This rule's identifier (e.g. `"ARR30-C"`).
     fn rule_id(&self) -> &'static str;
+    /// Human-readable description of what this rule checks.
     fn description(&self) -> &'static str;
+    /// This rule's default severity, absent a manifest override.
     fn severity(&self) -> crate::manifest::Severity;
+    /// This rule's default category, absent a manifest override.
     fn category(&self) -> crate::manifest::RuleCategory;
+    /// This rule's default CERT identifier, absent a manifest override.
     fn cert_id(&self) -> &'static str;
 
     /// Default `check()` for rules using the standard mut-accumulator pattern:
@@ -69,14 +80,22 @@ pub trait CertRule {
     }
 }
 
+/// One instance of a rule firing at a specific location.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RuleViolation {
+    /// Which rule produced this violation.
     pub rule_id: String,
+    /// Severity of this violation.
     pub severity: crate::manifest::Severity,
+    /// Human-readable description of what was found.
     pub message: String,
+    /// Path to the file the violation was found in.
     pub file_path: String,
+    /// 1-indexed line the violation is reported at.
     pub line: usize,
+    /// 1-indexed column the violation is reported at.
     pub column: usize,
+    /// Optional suggested fix, shown to the user alongside the message.
     pub suggestion: Option<String>,
     /// Indicates if this violation requires manual investigation by the user.
     /// Used for ambiguous cases where the tool cannot definitively determine if it's a violation.
@@ -108,6 +127,7 @@ impl RuleViolation {
     }
 }
 
+/// The collection of every registered rule, looked up by ID.
 pub struct RuleRegistry {
     rules: Vec<Box<dyn CertRule>>,
 }
@@ -118,6 +138,7 @@ impl Default for RuleRegistry {
     }
 }
 
+/// `rule_id`'s description from `registry`, or `"Unknown rule"` if unregistered.
 pub fn get_rule_description(registry: &RuleRegistry, rule_id: &str) -> String {
     if let Some(rule) = registry.get_rule(rule_id) {
         rule.description().to_string()

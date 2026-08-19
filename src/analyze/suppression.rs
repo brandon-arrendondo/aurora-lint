@@ -6,10 +6,14 @@ use std::path::Path;
 /// Maximum number of lines a suppress comment can appear before the violation it covers.
 const MAX_PROXIMITY: usize = 5;
 
+/// An inline `SQC-SUPPRESS` comment, parsed from a source file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Suppression {
+    /// The rule ID being suppressed.
     pub rule_id: String,
+    /// Hash of the suppressed line's code, for tamper detection.
     pub hash: String,
+    /// Justification text from the comment.
     pub justification: String,
     /// 1-based line number of the suppress comment in the source file.
     /// 0 means this came from a TOML file (no proximity check).
@@ -34,8 +38,10 @@ pub struct SuppressEntry {
     pub name: String,
     /// `"sqc"`, or `"*"` to apply across every tool.
     pub tool: String,
+    /// Exact rule ID this entry applies to.
     #[serde(default)]
     pub rule: Option<String>,
+    /// Exact file path this entry applies to.
     #[serde(default)]
     pub file: Option<String>,
     /// Glob pattern for file paths (e.g., `"src/vendor/**"`, `"**/*.generated.c"`).
@@ -51,6 +57,7 @@ pub struct SuppressEntry {
     /// Matches if the message contains an identifier starting with this prefix.
     #[serde(default)]
     pub function_prefix: Option<String>,
+    /// Justification text shown alongside the suppression.
     #[serde(default)]
     pub justification: String,
 }
@@ -81,6 +88,7 @@ struct CompiledWildcard {
 /// Top-level structure of `suppress.toml`.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SuppressFile {
+    /// Every `[[suppress]]` entry in the file.
     #[serde(default)]
     pub suppress: Vec<SuppressEntry>,
 }
@@ -174,6 +182,9 @@ impl Suppression {
     }
 }
 
+/// Loaded suppressions (inline comments, `suppress.toml` entries, and
+/// never-compiled dead-code ranges) and the matching logic for whether a
+/// given violation is covered by any of them.
 #[derive(Default, Clone)]
 pub struct SuppressionManager {
     /// Inline comment suppressions, keyed by full file path.
@@ -192,6 +203,7 @@ pub struct SuppressionManager {
 }
 
 impl SuppressionManager {
+    /// An empty manager with no suppressions loaded.
     pub fn new() -> Self {
         Self::default()
     }

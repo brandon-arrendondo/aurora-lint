@@ -84,9 +84,13 @@ impl InitState {
 /// Per-variable info tracked alongside InitState.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VarInfo {
+    /// This variable's current initialization state.
     pub state: InitState,
+    /// Whether the variable's element type is `unsigned char`.
     pub is_unsigned_char: bool,
+    /// Whether the variable is an array.
     pub is_array: bool,
+    /// Whether the variable has static storage duration.
     pub is_static: bool,
     /// True for `char` or `wchar_t` arrays. Used to distinguish char buffers
     /// (CWE-665: strcat reads from uninit buffer) from int/double/struct arrays
@@ -98,6 +102,8 @@ pub struct VarInfo {
 }
 
 impl VarInfo {
+    /// A new variable tracked with the given initial state and every other
+    /// flag/count at its default.
     pub fn new(state: InitState) -> Self {
         Self {
             state,
@@ -163,7 +169,9 @@ fn join_with_goto(normal_path: &InitStateMap, goto_path: &InitStateMap) -> InitS
 /// Result of init-state analysis for one function.
 #[allow(dead_code)]
 pub struct InitAnalysisResult {
+    /// Init-state map at the entry of each block.
     pub block_entry_states: HashMap<BlockId, InitStateMap>,
+    /// Init-state map at the exit of each block.
     pub block_exit_states: HashMap<BlockId, InitStateMap>,
     /// Variables tracked during analysis.
     pub tracked_vars: HashSet<String>,

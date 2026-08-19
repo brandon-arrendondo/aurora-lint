@@ -1821,6 +1821,8 @@ fn collect_return_expressions<'a>(node: &Node<'a>, source: &str, out: &mut Vec<N
     }
 }
 
+/// The declared name of a function definition node, or `None` if it can't
+/// be extracted (e.g. a malformed declarator).
 pub fn extract_function_name(func_node: &Node, source: &str) -> Option<String> {
     let declarator = func_node.child_by_field_name("declarator")?;
     let name = extract_leaf_identifier(&declarator, source);

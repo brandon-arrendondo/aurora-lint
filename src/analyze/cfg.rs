@@ -15,6 +15,7 @@ pub type BlockId = usize;
 /// A basic block: a straight-line sequence of statements.
 #[derive(Debug, Clone)]
 pub struct BasicBlock {
+    /// This block's index in the owning [`FunctionCfg`]'s `blocks` vector.
     pub id: BlockId,
     /// Byte ranges of statements in this block (start, end).
     pub statements: Vec<(usize, usize)>,
@@ -49,9 +50,13 @@ pub enum CfgEdge {
 /// A control-flow graph for a single function.
 #[derive(Debug, Clone)]
 pub struct FunctionCfg {
+    /// Every basic block, indexed by [`BlockId`].
     pub blocks: Vec<BasicBlock>,
+    /// Edges as `(from, to, kind)` triples.
     pub edges: Vec<(BlockId, BlockId, CfgEdge)>,
+    /// The function's single entry block.
     pub entry: BlockId,
+    /// Blocks with no outgoing edge.
     pub exits: Vec<BlockId>,
     /// Source code for the function (for extracting text).
     function_start_byte: usize,

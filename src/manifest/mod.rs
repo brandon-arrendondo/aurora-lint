@@ -3,46 +3,72 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 
+/// The parsed rule manifest (TOML config): which rules run, at what
+/// severity, and with what per-rule overrides.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleManifest {
+    /// Manifest-level identifying info (name, version, CERT edition).
     pub metadata: ManifestMetadata,
+    /// The rule configs themselves, namespaced by rule family.
     pub rules: RuleNamespaces,
 }
 
+/// Rule configs grouped by family.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleNamespaces {
+    /// CERT C rules (`ARR30-C`, `STR31-C`, ...), keyed by rule ID.
     pub cert_c: HashMap<String, RuleConfig>,
+    /// BISSELL-specific rules (`BRULE-###`), keyed by rule ID.
     #[serde(default)]
     pub brules: HashMap<String, RuleConfig>,
 }
 
+/// Identifying metadata for a manifest, independent of which rules it configures.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestMetadata {
+    /// Human-readable name for this rule set.
     pub name: String,
+    /// Manifest version string.
     pub version: String,
+    /// Optional free-text description of this rule set.
     pub description: Option<String>,
+    /// CERT C edition this manifest targets (e.g. `"2016"`).
     pub cert_version: String,
 }
 
+/// Per-rule configuration; every field but `enabled` is optional and falls
+/// back to the rule implementation's own default when unset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleConfig {
+    /// Whether this rule runs at all.
     pub enabled: bool,
-    pub severity: Option<Severity>, // Optional: falls back to rule's default severity if not specified
-    pub description: Option<String>, // Optional: falls back to rule's default description if not specified
-    pub category: Option<RuleCategory>, // Optional: falls back to rule's default category if not specified
-    pub cert_id: Option<String>, // Optional: falls back to rule's default cert_id if not specified
+    /// Overrides the rule's default severity.
+    pub severity: Option<Severity>,
+    /// Overrides the rule's default description.
+    pub description: Option<String>,
+    /// Overrides the rule's default category (rule vs. recommendation).
+    pub category: Option<RuleCategory>,
+    /// Overrides the rule's default CERT identifier.
+    pub cert_id: Option<String>,
+    /// Rule-specific parameters, passed through as raw strings.
     pub parameters: Option<HashMap<String, String>>,
 }
 
+/// How serious a violation of a rule is.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Severity {
+    /// Minor — style/best-practice concern.
     Low,
+    /// Worth fixing but not urgent.
     Medium,
+    /// Likely to cause real defects.
     High,
+    /// Security-relevant or likely to cause undefined behavior.
     Critical,
 }
 
 impl Severity {
+    /// Numeric ordering for this severity, `Low` (0) to `Critical` (3).
     pub fn as_level(&self) -> u8 {
         match self {
             Severity::Low => 0,
@@ -93,13 +119,18 @@ impl std::str::FromStr for Severity {
     }
 }
 
+/// Whether a CERT identifier names a mandatory rule or an advisory
+/// recommendation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RuleCategory {
+    /// A mandatory CERT rule.
     Rule,
+    /// An advisory CERT recommendation.
     Recommendation,
 }
 
 impl RuleManifest {
+    /// Read and parse `path` as a TOML rule manifest.
     pub fn load(path: &str) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read manifest file: {}", path))?;
@@ -108,11 +139,13 @@ impl RuleManifest {
             .with_context(|| format!("Failed to parse manifest file: {}", path))
     }
 
+    /// Parse `content` as a TOML rule manifest.
     pub fn from_toml_str(content: &str) -> Result<Self> {
         let manifest: RuleManifest = toml::from_str(content)?;
         Ok(manifest)
     }
 
+    /// Every rule ID/config pair across both namespaces with `enabled = true`.
     pub fn enabled_rules(&self) -> impl Iterator<Item = (&String, &RuleConfig)> {
         self.rules
             .cert_c
@@ -121,6 +154,7 @@ impl RuleManifest {
             .filter(|(_, config)| config.enabled)
     }
 
+    /// The config for `rule_id`, checked against both namespaces.
     pub fn get_rule(&self, rule_id: &str) -> Option<&RuleConfig> {
         self.rules
             .cert_c
@@ -128,6 +162,7 @@ impl RuleManifest {
             .or_else(|| self.rules.brules.get(rule_id))
     }
 
+    /// Mutable access to the config for `rule_id`, checked against both namespaces.
     pub fn get_rule_mut(&mut self, rule_id: &str) -> Option<&mut RuleConfig> {
         if self.rules.cert_c.contains_key(rule_id) {
             self.rules.cert_c.get_mut(rule_id)

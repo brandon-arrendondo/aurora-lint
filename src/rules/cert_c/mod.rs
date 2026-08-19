@@ -901,6 +901,7 @@ pub mod sig34_c;
 use super::{CertRule, RuleRegistry};
 
 impl RuleRegistry {
+    /// Build a registry with every CERT C and BISSELL rule registered.
     pub fn new() -> Self {
         let mut registry = Self { rules: Vec::new() };
 
@@ -1220,10 +1221,12 @@ impl RuleRegistry {
         registry
     }
 
+    /// Add `rule` to this registry.
     pub fn register(&mut self, rule: Box<dyn CertRule>) {
         self.rules.push(rule);
     }
 
+    /// The registered rule with ID `rule_id`, if any.
     pub fn get_rule(&self, rule_id: &str) -> Option<&dyn CertRule> {
         self.rules
             .iter()
@@ -1231,6 +1234,7 @@ impl RuleRegistry {
             .map(|rule| rule.as_ref())
     }
 
+    /// Every registered rule.
     pub fn all_rules(&self) -> &[Box<dyn CertRule>] {
         &self.rules
     }

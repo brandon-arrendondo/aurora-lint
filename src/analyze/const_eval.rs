@@ -20,31 +20,38 @@ pub type VarRangeMap = HashMap<String, ValueRange>;
 /// An integer value range [min, max].
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ValueRange {
+    /// Lower bound, inclusive.
     pub min: i64,
+    /// Upper bound, inclusive.
     pub max: i64,
 }
 
 impl ValueRange {
+    /// A range containing exactly one value.
     pub fn exact(val: i64) -> Self {
         Self { min: val, max: val }
     }
 
+    /// A range from `min` to `max`, inclusive.
     pub fn new(min: i64, max: i64) -> Self {
         Self { min, max }
     }
 
+    /// The range of `self + other`, or `None` on overflow.
     pub fn add(&self, other: &ValueRange) -> Option<Self> {
         let min = self.min.checked_add(other.min)?;
         let max = self.max.checked_add(other.max)?;
         Some(Self { min, max })
     }
 
+    /// The range of `self - other`, or `None` on overflow.
     pub fn sub(&self, other: &ValueRange) -> Option<Self> {
         let min = self.min.checked_sub(other.max)?;
         let max = self.max.checked_sub(other.min)?;
         Some(Self { min, max })
     }
 
+    /// The range of `self * other`, or `None` on overflow.
     pub fn mul(&self, other: &ValueRange) -> Option<Self> {
         // For multiplication, all four corners must be checked
         let corners = [
@@ -59,6 +66,10 @@ impl ValueRange {
         })
     }
 
+    /// The range of `self << other`, or `None` if the shift amount is out of
+    /// range or the result would overflow. Negative shift amounts are
+    /// clamped to 0 (a negative shift is UB in C, so unreachable in
+    /// correct code).
     pub fn shl(&self, other: &ValueRange) -> Option<Self> {
         if other.max > 63 || other.max < 0 {
             return None;

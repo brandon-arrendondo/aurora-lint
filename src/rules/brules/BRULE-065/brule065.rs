@@ -6,6 +6,7 @@ use tree_sitter::Node;
 /// Maximum allowed pointer indirection depth.
 const MAX_POINTER_DEPTH: usize = 2;
 
+/// BRULE-065: do not use excessive pointer indirection.
 pub struct Brule065;
 
 impl CertRule for Brule065 {
