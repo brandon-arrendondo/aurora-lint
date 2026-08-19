@@ -242,12 +242,26 @@ pub fn get_function_parameters(
     function_node: &Node,
     source: &str,
 ) -> Option<Vec<(String, String)>> {
-    // Find the parameter list
+    let declarator = find_function_declarator(function_node)?;
+    extract_parameters(&declarator, source)
+}
+
+/// Find the `function_declarator` in a function's declarator subtree. For a
+/// function returning a non-pointer type it is a direct child of the
+/// `function_definition`; for a pointer-returning function (`char *
+/// name(...)`) it is nested one level deeper inside a `pointer_declarator`,
+/// which the previous direct-children-only scan missed entirely.
+fn find_function_declarator<'a>(function_node: &Node<'a>) -> Option<Node<'a>> {
     for i in 0..function_node.child_count() {
-        if let Some(child) = function_node.child(i) {
-            if child.kind() == "function_declarator" {
-                return extract_parameters(&child, source);
+        let child = function_node.child(i)?;
+        match child.kind() {
+            "function_declarator" => return Some(child),
+            "pointer_declarator" => {
+                if let Some(found) = find_function_declarator(&child) {
+                    return Some(found);
+                }
             }
+            _ => {}
         }
     }
     None

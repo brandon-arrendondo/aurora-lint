@@ -290,14 +290,30 @@ pub fn memset_content_length(
 ) -> Option<usize> {
     let (fn_start, fn_end) = enclosing_function_lines(call_node)?;
     let call_line = call_node.start_position().row;
-    let lines: Vec<&str> = source.lines().collect();
+    memset_content_length_in_range(
+        var_name,
+        source,
+        fn_start,
+        std::cmp::min(call_line, fn_end + 1),
+    )
+}
 
+/// Like [`memset_content_length`], but scans an explicit `[start, end)` row
+/// range instead of deriving one from a call site. Lets a caller resolve the
+/// content length written into `var_name` by a DIFFERENT function than the
+/// one performing the copy — a Juliet "source" relay function such as
+/// `data = badSource(data)`, where `badSource` memsets its own parameter and
+/// returns it, so the fill lives outside the copying function's own range.
+pub fn memset_content_length_in_range(
+    var_name: &str,
+    source: &str,
+    start: usize,
+    end: usize,
+) -> Option<usize> {
+    let lines: Vec<&str> = source.lines().collect();
     let mut best_size: Option<usize> = None;
 
-    for i in fn_start..std::cmp::min(call_line, fn_end + 1) {
-        if i >= lines.len() {
-            break;
-        }
+    for i in start..std::cmp::min(end, lines.len()) {
         let trimmed = lines[i].trim();
 
         // Find wmemset( or memset( call
