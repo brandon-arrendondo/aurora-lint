@@ -1778,25 +1778,14 @@ impl Arr30C {
         // Check loop condition for safe bounds
         for i in 0..for_node.child_count() {
             if let Some(child) = for_node.child(i) {
-                if child.kind() == "binary_expression" || child.kind() == "comparison_expression" {
-                    let condition_text = &source[child.start_byte()..child.end_byte()];
-
-                    // Check for macro constants in condition (e.g., "j < ROWS")
-                    if let Some(macro_size) = self
-                        .extract_and_resolve_macro_from_condition(condition_text, macro_constants)
-                    {
-                        // Compare resolved macro value to actual buffer size
-                        // If macro value >= buffer size, this is a violation (e.g., j < 7 but buffer is 5)
-                        if macro_size > size as i64 {
-                            return false; // Bounds check exists but is WRONG - flag as violation
-                        } else {
-                            return true; // Bounds check is correct
-                        }
-                    }
-
-                    if self.condition_contains_safe_bounds(condition_text, index_text) {
-                        return true;
-                    }
+                if let Some(result) = self.condition_child_bounds_verdict(
+                    &child,
+                    source,
+                    size,
+                    macro_constants,
+                    index_text,
+                ) {
+                    return result;
                 }
             }
         }
@@ -1807,29 +1796,14 @@ impl Arr30C {
                 if child.kind() == "parenthesized_expression" {
                     for j in 0..child.child_count() {
                         if let Some(grandchild) = child.child(j) {
-                            if grandchild.kind() == "binary_expression"
-                                || grandchild.kind() == "comparison_expression"
-                            {
-                                let condition_text =
-                                    &source[grandchild.start_byte()..grandchild.end_byte()];
-
-                                // Check for macro constants
-                                if let Some(macro_size) = self
-                                    .extract_and_resolve_macro_from_condition(
-                                        condition_text,
-                                        macro_constants,
-                                    )
-                                {
-                                    if macro_size > size as i64 {
-                                        return false; // Wrong bounds
-                                    } else {
-                                        return true; // Correct bounds
-                                    }
-                                }
-
-                                if self.condition_contains_safe_bounds(condition_text, index_text) {
-                                    return true;
-                                }
+                            if let Some(result) = self.condition_child_bounds_verdict(
+                                &grandchild,
+                                source,
+                                size,
+                                macro_constants,
+                                index_text,
+                            ) {
+                                return result;
                             }
                         }
                     }
@@ -1838,6 +1812,40 @@ impl Arr30C {
         }
 
         false
+    }
+
+    /// If `child` is a `binary_expression`/`comparison_expression` bound
+    /// check against `size` (either a resolved macro constant or a
+    /// recognized safe-bounds idiom), return the verdict; `None` means
+    /// `child` doesn't carry a bounds check at all, so the caller should
+    /// keep looking at its siblings.
+    fn condition_child_bounds_verdict(
+        &self,
+        child: &Node,
+        source: &str,
+        size: usize,
+        macro_constants: &HashMap<String, i64>,
+        index_text: &str,
+    ) -> Option<bool> {
+        if child.kind() != "binary_expression" && child.kind() != "comparison_expression" {
+            return None;
+        }
+        let condition_text = &source[child.start_byte()..child.end_byte()];
+
+        // Check for macro constants in condition (e.g., "j < ROWS")
+        if let Some(macro_size) =
+            self.extract_and_resolve_macro_from_condition(condition_text, macro_constants)
+        {
+            // Compare resolved macro value to actual buffer size.
+            // If macro value >= buffer size, this is a violation (e.g., j < 7 but buffer is 5).
+            return Some(macro_size <= size as i64);
+        }
+
+        if self.condition_contains_safe_bounds(condition_text, index_text) {
+            return Some(true);
+        }
+
+        None
     }
 
     /// Extract and resolve macro constant from loop condition
@@ -2242,26 +2250,7 @@ impl Arr30C {
                                 let full_array_name =
                                     &source[inner_node.start_byte()..inner_node.end_byte()];
 
-                                let msg = match outer_index {
-                                    IndexValue::Constant(idx) => {
-                                        format!("Out-of-bounds array access at index {}", idx)
-                                    }
-                                    IndexValue::Expression(ref expr, Some(eval_idx)) => format!(
-                                        "Out-of-bounds array access: '{}' evaluates to {}",
-                                        expr, eval_idx
-                                    ),
-                                    IndexValue::Expression(ref expr, None) => format!(
-                                        "Potentially unsafe array access with expression '{}'",
-                                        expr
-                                    ),
-                                    IndexValue::Variable(ref var) => format!(
-                                        "Potentially unsafe array access with variable index '{}'",
-                                        var
-                                    ),
-                                    IndexValue::Unknown => {
-                                        "Potentially unsafe array access".to_string()
-                                    }
-                                };
+                                let msg = Self::oob_message(&outer_index);
 
                                 violations.push(self.create_violation(
                                     node,
