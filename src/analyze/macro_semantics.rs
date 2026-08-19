@@ -94,6 +94,27 @@ pub fn is_registered(name: &str) -> bool {
     macro_arg_roles(name).is_some() || is_hash_find_family(name)
 }
 
+/// Known utlist/uthash "unlink from container" macros whose name
+/// coincidentally matches deallocator-name heuristics (an `_delete` suffix,
+/// e.g. `HASH_DELETE`, `DL_DELETE`) but which only remove an element from a
+/// hash table or linked list — they never call `free()` on their argument.
+/// Misclassifying one as a deallocator causes a spurious double-free finding
+/// when the real `free()`/`mosquitto_FREE()` call immediately follows, as in
+/// the common `HASH_DELETE(hh, tbl, x); free(x);` idiom (task 426).
+pub fn is_container_unlink_macro(name: &str) -> bool {
+    matches!(
+        name,
+        "HASH_DELETE"
+            | "HASH_DELETE_BYHASHVALUE"
+            | "DL_DELETE"
+            | "DL_DELETE2"
+            | "LL_DELETE"
+            | "LL_DELETE2"
+            | "CDL_DELETE"
+            | "CDL_DELETE2"
+    )
+}
+
 /// Role of the argument at positional index `pos` for macro `name`, given a
 /// call with `nargs` positional arguments. Combines the explicit positional
 /// table with the find-family "last arg is Out" rule.

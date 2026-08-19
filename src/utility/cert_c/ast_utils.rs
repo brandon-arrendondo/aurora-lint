@@ -21,6 +21,9 @@ pub fn get_node_text<'a>(node: &Node, source: &'a str) -> &'a str {
 /// recognized consistently in both places (task 2: MEM31-C ownership model —
 /// sqc has no preprocessor, so such wrapper calls are otherwise invisible).
 pub fn is_deallocation_call_name(func_name: &str) -> bool {
+    if crate::analyze::macro_semantics::is_container_unlink_macro(func_name) {
+        return false;
+    }
     let lower_name = func_name.to_lowercase();
     lower_name.starts_with("destroy_")
         || lower_name.starts_with("free_")
