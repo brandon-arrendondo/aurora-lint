@@ -150,6 +150,26 @@ Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
 - `scripts/` - Workflow helpers, coverage gate
 - `docs/` - Developer guide (index.rst), bibliography
 
+## Code Navigation (clew)
+
+This repo is indexed by [`clew`](https://github.com/tvanfossen/clew), registered as
+the `clew` MCP server in `.mcp.json` (gitignored — each machine runs its own
+`clew init --repo-root <path-to-this-repo>` once; see the clew repo's README).
+It builds a queryable symbol database (call graph, threads, locks, requirements,
+file docs) from rustdoc + tree-sitter, served over four tools: `dossier` (everything
+about one named symbol — signature, body, callers/callees, locks held, in one call),
+`search` (find a name, or a whole layer like `corpus='locks'`/`corpus='threads'`),
+`index` (admin: `status`/`refresh`), `propose_declaration`.
+
+**Prefer `dossier`/`search` over `grep`/`Read` for "what calls X", "where is Y
+defined", "what locks does this function hold" style questions** — one call
+instead of several, and it already has the call graph resolved. Fall back to
+reading source directly for anything the index can only point at (exact comment
+text, line-by-line logic).
+
+Rebuild after non-trivial changes: `clew --output <db path from index(action='status')> --repo-root . --rebuild`.
+The MCP tools also offer to build/refresh on first use if no index exists yet.
+
 ## Build & Test
 
 ```bash
