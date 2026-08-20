@@ -1,13 +1,20 @@
 # Scoping: Project-Relevance Gating (task 216)
 
-**Status:** v1 IMPLEMENTED (2026-07-08, v0.4.86). `src/analyze/relevance.rs`
-+ the `--detect-relevance`/`--write-manifest` CLI flags ship exactly the v1
-scope below: CON*/WIN* auto-gating only. **Check `todo-sqlite-cli show 216`
-for the latest status, not this header** — v1/v2 split and the design
-narrative below predate implementation and are not kept in sync with it.
-C11/Annex-K auto-gating (detection-only today, not auto-disabled) is the
-open v2 scope. User-facing docs: `docs/cli-usage.rst` ("Project-Relevance
-Detection").
+**Status:** v1 IMPLEMENTED (2026-07-08, v0.4.86); v2 (task 300, 2026-08-19)
+did the C11/Annex-K per-rule audit §5 called for and DECIDED AGAINST
+auto-gating: none of the 14 originally-tangled rules qualified for a
+whole-rule disable (6 have C11 primitives only as one of several
+recognized *compliant* escape hatches alongside their POSIX equivalents;
+2 have C11-specific branches that are already self-limiting/inert absent
+C11 syntax; 6 turned out to be misclassified — their only C11/Annex-K
+mention was in remediation-suggestion text or an unrelated gating axis,
+not detection logic — see `C11_TANGLED_RULE_IDS`'s doc comment in
+`src/analyze/relevance.rs` for the full per-rule breakdown).
+`detect_min_c_standard`'s coverage gaps flagged below (header-only C11
+evidence, Annex-K call detection) WERE closed in task 300 as reporting
+signals for the remaining 8 genuinely-tangled rules. **Check
+`todo-sqlite-cli show 300`/`216` for the latest status, not this header.**
+User-facing docs: `docs/cli-usage.rst` ("Project-Relevance Detection").
 **Driver:** Task 151 established that per-project rule applicability is
 currently curated *by hand* in `conf/realworld/<project>-rules.toml` — each
 file hand-disables categorically-inapplicable rule classes and documents why
