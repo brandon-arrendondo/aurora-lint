@@ -27,4 +27,4 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR02-C.+Sanitize+data+passed+to+complex+subsystems"
-cwe = ["CWE-88", "CWE-78"]
+cwe = ["CWE-88", "CWE-78", "CWE-89"]

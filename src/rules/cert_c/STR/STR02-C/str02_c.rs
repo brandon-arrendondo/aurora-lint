@@ -9,6 +9,39 @@
 //! Uses intra-function taint tracking: only flags system()/popen() calls when
 //! the argument is tainted by external input sources (recv, scanf, fgets, etc.).
 //!
+//! Also covers SQL injection (CWE-89, task 8/301): `sqlite3_exec`,
+//! `mysql_query`, `mysql_real_query`, and `PQexec` build/execute a SQL
+//! statement from a single string with no separate parameter binding, so
+//! they are exactly the "complex subsystem" this rule's CERT text
+//! describes -- the same shape as `system()`/`popen()`, just a different
+//! interpreter. Deliberately excludes the parameterized-query APIs
+//! (`sqlite3_prepare_v2` + `sqlite3_bind_*`, `PQexecParams`,
+//! `mysql_stmt_prepare` + `mysql_stmt_bind_param`) since those don't build
+//! a query by string concatenation at all -- there's nothing for this rule
+//! to sanitize.
+//!
+//! `query_buffer_inputs_all_validated` recognizes one real-world defensive
+//! shape found while validating this against hostap (task 8/301): a raw
+//! tainted var explicitly checked against a project-local allow-list
+//! function (`if (!valid_db_string(x)) return NULL;`) before being
+//! `snprintf`'d into the query buffer, even though STR02-C has no way to
+//! know that validator's name in advance. **Known residual gap, not yet
+//! fixed**: a parameter that is *always* passed a string literal at every
+//! call site within the same file (e.g. hostap's `db_table_exists(sqlite3
+//! *db, const char *name)`, called only as `db_table_exists(db,
+//! "pseudonyms")` / `db_table_exists(db, "reauth")`) is still flagged,
+//! because parameters are tainted-by-default and STR02-C has no
+//! call-site-constant-argument tracking analogous to `INT32-C`/`INT30-C`'s
+//! `callsite_param_const_int` (task 115/116). Confirmed on hostap: 3 of 6
+//! post-validation-guard-fix findings are this exact FP shape (same
+//! `db_table_exists` helper reimplemented in 3 files); the other 3 look
+//! like plausible genuine SQL-injection TPs (`hlr_auc_gw.c`'s
+//! `db_update_milenage_sqn` embeds `m->imsi` -- attacker-influenced EAP-AKA
+//! identity data -- directly into an `UPDATE` statement with no validation
+//! at all). Adjudicating which is which, and building the call-site-const
+//! tracking to kill the `db_table_exists` FP class, is follow-up work, not
+//! blocking this rule shipping.
+//!
 //! ## Non-compliant example:
 //!
 //! ```c
@@ -17,11 +50,23 @@
 //! system(buffer);  // User-controlled addr can inject commands
 //! ```
 //!
+//! ```c
+//! char query[256];
+//! sprintf(query, "SELECT * FROM users WHERE name='%s'", username);
+//! sqlite3_exec(db, query, 0, 0, &errmsg);  // User-controlled username can inject SQL
+//! ```
+//!
 //! ## Compliant solution:
 //!
 //! ```c
 //! // Use execl() instead of system() to avoid shell interpretation
 //! execl("/bin/mail", "mail", addr, (char *)NULL);
+//! ```
+//!
+//! ```c
+//! // Use a parameterized query instead of building SQL from a string
+//! sqlite3_prepare_v2(db, "SELECT * FROM users WHERE name=?", -1, &stmt, NULL);
+//! sqlite3_bind_text(stmt, 1, username, -1, SQLITE_STATIC);
 //! ```
 
 use super::super::{CertRule, RuleViolation};
@@ -305,6 +350,13 @@ impl Str02C {
                         node, source, &func_name, &resolved, tainted, func_scope, violations,
                     );
                 }
+                "sqlite3_exec" | "mysql_query" | "mysql_real_query" | "PQexec" => {
+                    let arg_index = 1; // query is the 2nd argument for all four
+                    self.check_sql_injection_risk(
+                        node, source, &func_name, &resolved, arg_index, tainted, func_scope,
+                        violations,
+                    );
+                }
                 "execl" | "execle" | "execlp" | "execv" | "execvp" | "execve" | "_execl"
                 | "_execle" | "_execlp" | "_execv" | "_execvp" | "_execve" => {
                     self.check_exec_family_call(node, source, &func_name, &resolved, violations);
@@ -312,6 +364,226 @@ impl Str02C {
                 _ => {}
             }
         }
+    }
+
+    /// Check sqlite3_exec()/mysql_query()/mysql_real_query()/PQexec() calls
+    /// for SQL injection risk (CWE-89). Only flags when the query argument
+    /// (at `arg_index`) is tainted by external input -- mirrors
+    /// `check_command_injection_risk` exactly, including the cross-function
+    /// suppression, since these are the same "tainted string reaches a
+    /// complex-subsystem interpreter" shape STR02-C already models for
+    /// system()/popen().
+    fn check_sql_injection_risk(
+        &self,
+        node: &Node,
+        source: &str,
+        display_name: &str,
+        resolved_name: &str,
+        arg_index: usize,
+        tainted: &HashSet<String>,
+        func_scope: &Node,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let Some(args_node) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let args = self.collect_argument_nodes(&args_node);
+        let Some(&query_arg) = args.get(arg_index) else {
+            return;
+        };
+
+        // String literals are always safe
+        if self.is_string_literal(&query_arg) {
+            return;
+        }
+
+        let arg_text = get_node_text(&query_arg, source);
+        let base_var = extract_base_var(&arg_text);
+
+        // Only flag if the argument is tainted by external input
+        if !tainted.contains(&base_var) {
+            return;
+        }
+
+        // Cross-function suppression (Juliet helper-sink pattern): see
+        // check_command_injection_risk's identical comment.
+        if is_function_parameter(func_scope, &base_var, source)
+            && !self.scope_has_taint_source(func_scope, source)
+            && self.callers_are_all_clean(func_scope, source)
+        {
+            return;
+        }
+
+        // Intra-function allow-list validation guard: the query variable
+        // (`cmd`, `zSql`, ...) is usually a local buffer built by a
+        // sprintf/snprintf-family call from the actually-tainted source
+        // vars, not the raw tainted var itself. Real-world code (found on
+        // hostap's src/eap_server/eap_sim_db.c during task 8) commonly
+        // validates those SOURCE vars against a character allow-list
+        // (`if (!valid_db_string(pseudonym)) return NULL;`) before the
+        // snprintf that builds the query -- an unnamed, project-local
+        // sanitizer STR02-C has no way to recognize by function name, but
+        // CAN recognize by shape: an `if` whose condition calls a function
+        // with the source var as an argument, guarding an early exit,
+        // textually before this sink. If every var that fed the query
+        // buffer was guarded this way, this is exactly CERT's own
+        // "understand the data and validate it" compliant pattern, not a
+        // defect.
+        if self.query_buffer_inputs_all_validated(func_scope, source, &base_var, node.start_byte())
+        {
+            return;
+        }
+
+        let label = if display_name != resolved_name {
+            format!("{} (macro for {})", display_name, resolved_name)
+        } else {
+            resolved_name.to_string()
+        };
+
+        violations.push(RuleViolation {
+            rule_id: self.rule_id().to_string(),
+            severity: self.severity(),
+            message: format!(
+                "Call to {}() with tainted query argument '{}'. Data from external input sources must be sanitized (or passed via a parameterized query) before being used to build a SQL statement.",
+                label, arg_text.trim()
+            ),
+            file_path: String::new(),
+            line: node.start_position().row + 1,
+            column: node.start_position().column + 1,
+            suggestion: Some(format!(
+                "Use a parameterized query (sqlite3_prepare_v2+sqlite3_bind_*, PQexecParams, or mysql_stmt_prepare+mysql_stmt_bind_param) instead of building the SQL statement passed to {}() from unsanitized input.",
+                resolved_name
+            )),
+            ..Default::default()
+        });
+    }
+
+    /// True iff every raw variable that fed `dest_var` (the query buffer)
+    /// through the most recent preceding sprintf/snprintf-family call was
+    /// guarded by an earlier `if (<call using that var>) { ...early exit... }`
+    /// in `func_scope`. Conservative: any propagator call not found, or any
+    /// contributing var not validated, returns false (still flagged).
+    fn query_buffer_inputs_all_validated(
+        &self,
+        func_scope: &Node,
+        source: &str,
+        dest_var: &str,
+        before_byte: usize,
+    ) -> bool {
+        let Some(propagator) =
+            self.find_last_propagator_call(func_scope, source, dest_var, before_byte)
+        else {
+            return false;
+        };
+        let Some(args_node) = propagator.child_by_field_name("arguments") else {
+            return false;
+        };
+        let args = self.collect_arguments(&args_node, source);
+        // Skip the destination (arg 0) and format string (arg 1); check
+        // every remaining substituted value.
+        let contributors: Vec<String> = args
+            .iter()
+            .skip(2)
+            .map(|a| extract_base_var(a))
+            .filter(|v| !v.is_empty())
+            .collect();
+        if contributors.is_empty() {
+            return false;
+        }
+        contributors
+            .iter()
+            .all(|var| self.is_validated_before(func_scope, source, var, before_byte))
+    }
+
+    /// Find the last call to a `TAINT_PROPAGATORS` function (after macro
+    /// alias resolution) before `before_byte` whose first argument's base
+    /// variable is `dest_var` -- i.e. the call that most recently built
+    /// `dest_var` from other values.
+    fn find_last_propagator_call<'a>(
+        &self,
+        func_scope: &Node<'a>,
+        source: &str,
+        dest_var: &str,
+        before_byte: usize,
+    ) -> Option<Node<'a>> {
+        let mut best: Option<Node<'a>> = None;
+        for call in query::find_descendants_of_kind(*func_scope, "call_expression") {
+            if call.start_byte() >= before_byte {
+                continue;
+            }
+            let Some(function_node) = call.child_by_field_name("function") else {
+                continue;
+            };
+            let name = get_node_text(&function_node, source);
+            let resolved = self.resolve_name(&name);
+            if !TAINT_PROPAGATORS.contains(&resolved.as_str()) {
+                continue;
+            }
+            let Some(args_node) = call.child_by_field_name("arguments") else {
+                continue;
+            };
+            let args = self.collect_arguments(&args_node, source);
+            let Some(dest_arg) = args.first() else {
+                continue;
+            };
+            if extract_base_var(dest_arg) != dest_var {
+                continue;
+            }
+            if best.is_none_or(|b: Node<'a>| call.start_byte() > b.start_byte()) {
+                best = Some(call);
+            }
+        }
+        best
+    }
+
+    /// True iff `func_scope` contains an `if` statement, before
+    /// `before_byte`, whose condition calls a function with `var` as an
+    /// argument, and whose guarded branch contains an early exit
+    /// (`return`/`goto`) -- the "validate or bail out" shape.
+    fn is_validated_before(
+        &self,
+        func_scope: &Node,
+        source: &str,
+        var: &str,
+        before_byte: usize,
+    ) -> bool {
+        for if_stmt in query::find_descendants_of_kind(*func_scope, "if_statement") {
+            if if_stmt.start_byte() >= before_byte {
+                continue;
+            }
+            let Some(condition) = if_stmt.child_by_field_name("condition") else {
+                continue;
+            };
+            if !self.condition_calls_with_arg(&condition, source, var) {
+                continue;
+            }
+            let Some(consequence) = if_stmt.child_by_field_name("consequence") else {
+                continue;
+            };
+            let has_early_exit = query::find_first_descendant(consequence, |n| {
+                matches!(n.kind(), "return_statement" | "goto_statement")
+            })
+            .is_some();
+            if has_early_exit {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// True iff any `call_expression` within `condition` has `var` as one
+    /// of its arguments' base variable.
+    fn condition_calls_with_arg(&self, condition: &Node, source: &str, var: &str) -> bool {
+        for call in query::find_descendants_of_kind(*condition, "call_expression") {
+            let Some(args_node) = call.child_by_field_name("arguments") else {
+                continue;
+            };
+            let args = self.collect_arguments(&args_node, source);
+            if args.iter().any(|a| extract_base_var(a) == var) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Check system() and popen() calls for command injection risk.
@@ -428,6 +700,37 @@ impl Str02C {
                         }
                     }
                 }
+                "sqlite3_exec" | "mysql_query" | "mysql_real_query" | "PQexec" => {
+                    if let Some(args_node) = node.child_by_field_name("arguments") {
+                        let args = self.collect_argument_nodes(&args_node);
+                        if let Some(&query_arg) = args.get(1) {
+                            if !self.is_string_literal(&query_arg) {
+                                let arg_text = get_node_text(&query_arg, source);
+                                let label = if func_name != resolved {
+                                    format!("{} (macro for {})", func_name, resolved)
+                                } else {
+                                    resolved.to_string()
+                                };
+                                violations.push(RuleViolation {
+                                    rule_id: self.rule_id().to_string(),
+                                    severity: self.severity(),
+                                    message: format!(
+                                        "Call to {}() with non-literal query argument '{}' detected. This may allow SQL injection if the string contains unsanitized user input.",
+                                        label, arg_text.trim()
+                                    ),
+                                    file_path: String::new(),
+                                    line: node.start_position().row + 1,
+                                    column: node.start_position().column + 1,
+                                    suggestion: Some(format!(
+                                        "Use a parameterized query (sqlite3_prepare_v2+sqlite3_bind_*, PQexecParams, or mysql_stmt_prepare+mysql_stmt_bind_param) instead of building the SQL statement passed to {}() from unsanitized input.",
+                                        resolved
+                                    )),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                }
                 "execl" | "execle" | "execlp" | "execv" | "execvp" | "execve" | "_execl"
                 | "_execle" | "_execlp" | "_execv" | "_execvp" | "_execve" => {
                     self.check_exec_family_call(node, source, &func_name, &resolved, violations);
@@ -522,6 +825,19 @@ impl Str02C {
             current = parent;
         }
         None
+    }
+
+    /// Collect the argument nodes (in order) from an argument list node.
+    fn collect_argument_nodes<'a>(&self, args_node: &Node<'a>) -> Vec<Node<'a>> {
+        let mut args = Vec::new();
+        for i in 0..args_node.child_count() {
+            if let Some(child) = args_node.child(i) {
+                if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
+                    args.push(child);
+                }
+            }
+        }
+        args
     }
 
     /// Get the first argument from an argument list node
