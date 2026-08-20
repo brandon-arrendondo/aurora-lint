@@ -37,6 +37,7 @@ A codebase with no entry here falls back to the shared benchmark base,
 | lua       | `lua-rules.toml`      | **Full** — 5th ground-truth oracle (0 TP / 3309 FP / 2 FN). See `data/precision_audit/lua/`. |
 | raylib    | `raylib-rules.toml`   | **Full** — 6th ground-truth oracle, structural-C99 target (23/23 files, 5263 labels, 2.6% precision/87.3% recall). See `data/precision_audit/raylib/`. |
 | pureftpd  | `pureftpd-rules.toml` | Partial, scoped — SQL-client-API oracle (task 301). `src/log_mysql.c`+`log_pgsql.c`+headers fully labelled (449 findings; 25.4% precision); rest of the daemon scanned but unlabeled. See `data/precision_audit/pureftpd/`. |
+| sel4      | `sel4-rules.toml`     | Partial, scoped — 8th oracle, formally verified microkernel (task 381). Onboarded to give MSC12-C a 2nd real measurement (10.0%, 40 findings labelled); MSC12-C stays disabled here too (same busy-wait/no-op-stub/macro-hidden-effect FP families as the other 7). Rest of the codebase scanned but unlabeled. See `data/precision_audit/sel4/`. |
 
 libcrc is the worked template (small enough to read and label exhaustively).
 mosquitto/curl/hostap grow their labels incrementally; they keep using the

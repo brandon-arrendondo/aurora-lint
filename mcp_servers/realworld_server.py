@@ -388,6 +388,31 @@ CODEBASES = {
             "exclude": ["*/gui/*"],
         },
     },
+    # Onboarded task 381: candidate 8th real-world oracle, formally verified
+    # microkernel (https://sel4.systems/Contribute/style.html). A literal
+    # `if/for/while (...) {}` grep found zero hits, which looked promising as
+    # an MSC12-C (no-effect/empty-body) oracle -- but full sample adjudication
+    # (data/precision_audit/sel4/README.md) found the literal-braces grep
+    # missed the dominant real idiom: `while (cond);` busy-wait polling loops
+    # (empty body via bare `;`, not `{}`), plus commented no-op platform
+    # stubs/cases and macro-hidden lock/barrier statements -- the SAME FP
+    # families as every other oracle, at a similar ~2.8% sample precision.
+    # MSC12-C stays disabled here too (sel4-rules.toml); this is now onboarded
+    # as a general 8th oracle (novel domain: verified microkernel), not the
+    # MSC12-C-specific oracle task 381 originally set out to find. sqc-only
+    # (no cppcheck/clang-tidy config).
+    "sel4": {
+        "path": Path.home() / "toolchain" / "sel4",
+        "sqc": {
+            # Scope = the kernel proper (src/, 183 of 184 repo .c files).
+            # libsel4/ (userspace bindings), tools/, manual/, configs/ are not
+            # kernel code.
+            "scan_path": "{path}/src",
+            "manifest": "conf/realworld/sel4-rules.toml",
+            "includes": ["-I", "{path}/include", "-I", "{path}/libsel4/include"],
+            "extra_args": ["-d", "{path}/include", "-d", "{path}/libsel4/include"],
+        },
+    },
 }
 
 # ── MCP server ────────────────────────────────────────────────────────────────
