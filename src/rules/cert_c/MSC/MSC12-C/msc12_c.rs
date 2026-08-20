@@ -66,6 +66,23 @@ impl Msc12C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
+        // A malformed declaration decorated by an unexpandable
+        // attribute-style macro (e.g. `BOOT_BSS rootserver_mem_t
+        // rootserver;`, seL4's section-placement macro) can leave
+        // tree-sitter's error recovery splitting it into a `declaration`
+        // with a synthesized MISSING ";" followed by the tail identifier
+        // surfacing as its own orphan expression_statement — not code a
+        // human wrote as a standalone statement. Same family as the
+        // ERROR+function_declarator check further down (a different tree
+        // shape: a variable declaration, not a function prototype).
+        if let Some(prev) = node.prev_sibling() {
+            if prev.kind() == "declaration"
+                && query::find_first_descendant(prev, |n| n.is_missing()).is_some()
+            {
+                return;
+            }
+        }
+
         // Get the expression child (skip the trailing `;`)
         let expr = match node.child(0) {
             Some(e) if e.kind() != ";" => e,
