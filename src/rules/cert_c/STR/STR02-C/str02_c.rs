@@ -48,6 +48,23 @@
 //! narrower literal-only signal has no such failure mode: a string literal
 //! is unconditionally safe regardless of how deep the taint analysis goes.
 //!
+//! Two more FP shapes found adjudicating hostap's remaining findings
+//! (task 470), both fixed:
+//!
+//! - `is_char_loop_validated_before` recognizes an inline char-allowlist
+//!   validation loop (`for (i = 0; i < len; i++) { if (allowed) continue;
+//!   return -1; }`) as a validator alongside `is_validated_before`'s
+//!   call-shaped guard -- hostap's `eap_user_sqlite_get` validates its
+//!   identity string exactly this way before building a query from it.
+//! - `TAINT_OVERWRITE_PROPAGATORS` (the subset of `TAINT_PROPAGATORS`
+//!   that overwrite dest from scratch, e.g. `snprintf`/`strcpy`, as
+//!   opposed to append-style `strcat`) clears a variable's taint when one
+//!   of these calls rewrites it from non-tainted sources -- hostap's
+//!   `eap_user_db.c` reuses one `cmd` buffer for two queries in the same
+//!   function; the second is a pure literal, but without this fix `cmd`
+//!   stayed tainted from the first query's build for the rest of the
+//!   function.
+//!
 //! ## Non-compliant example:
 //!
 //! ```c
@@ -101,6 +118,21 @@ const TAINT_SOURCES: &[&str] = &[
 const TAINT_PROPAGATORS: &[&str] = &[
     "strcpy", "strncpy", "strcat", "strncat", "sprintf", "snprintf", "memcpy", "memmove", "wcscpy",
     "wcsncpy", "wcscat", "wcsncat", "swprintf",
+];
+
+/// The subset of `TAINT_PROPAGATORS` that *overwrite* dest from scratch
+/// (as opposed to `strcat`/`wcscat`-style append, which layers onto
+/// dest's existing content and so can't launder prior taint). When one of
+/// these calls has no tainted source arg, dest's taint from an earlier,
+/// unrelated write is stale and gets cleared (task 470): hostap's
+/// `eap_user_db.c` reuses one `cmd` buffer for two separate queries in the
+/// same function -- the first `os_snprintf` pulls in a tainted `id_str`,
+/// the second is a pure string literal with no substitutions -- and
+/// without this, `cmd` reads as permanently tainted for the rest of the
+/// function.
+const TAINT_OVERWRITE_PROPAGATORS: &[&str] = &[
+    "strcpy", "strncpy", "sprintf", "snprintf", "memcpy", "memmove", "wcscpy", "wcsncpy",
+    "swprintf",
 ];
 
 pub struct Str02C {
@@ -386,9 +418,14 @@ impl Str02C {
                 let base = extract_base_var(arg);
                 tainted.contains(&base)
             });
-            if has_tainted_source {
-                if let Some(dest) = args.first() {
-                    tainted.insert(extract_base_var(dest));
+            if let Some(dest) = args.first() {
+                let dest_base = extract_base_var(dest);
+                if has_tainted_source {
+                    tainted.insert(dest_base);
+                } else if TAINT_OVERWRITE_PROPAGATORS.contains(&func_name.as_str()) {
+                    // Clean overwrite: whatever taint `dest_base` carried
+                    // from an earlier, unrelated write no longer applies.
+                    tainted.remove(&dest_base);
                 }
             }
         }
@@ -609,9 +646,10 @@ impl Str02C {
         if contributors.is_empty() {
             return false;
         }
-        contributors
-            .iter()
-            .all(|var| self.is_validated_before(func_scope, source, var, before_byte))
+        contributors.iter().all(|var| {
+            self.is_validated_before(func_scope, source, var, before_byte)
+                || self.is_char_loop_validated_before(func_scope, source, var, before_byte)
+        })
     }
 
     /// Find the last call to a `TAINT_PROPAGATORS` function (after macro
@@ -703,6 +741,61 @@ impl Str02C {
             }
         }
         false
+    }
+
+    /// True iff `func_scope` contains a `for`/`while` loop, before
+    /// `before_byte`, that subscripts `var` by character (`var[i]`) and
+    /// denies by default: the loop body's *last* statement is an
+    /// unconditional early exit (`return`/`goto`), reached only when none
+    /// of the preceding per-character checks decided otherwise (typically
+    /// via `continue`). This is the inline char-allowlist validation
+    /// shape found on hostap's `eap_user_sqlite_get` (task 470) --
+    /// CERT's own "validate then use" pattern, just spelled as a loop
+    /// instead of the single guard call `is_validated_before` recognizes.
+    fn is_char_loop_validated_before(
+        &self,
+        func_scope: &Node,
+        source: &str,
+        var: &str,
+        before_byte: usize,
+    ) -> bool {
+        for loop_stmt in
+            query::find_descendants_of_kinds(*func_scope, &["for_statement", "while_statement"])
+        {
+            if loop_stmt.start_byte() >= before_byte {
+                continue;
+            }
+            if !Self::loop_subscripts_var(&loop_stmt, source, var) {
+                continue;
+            }
+            let Some(body) = loop_stmt.child_by_field_name("body") else {
+                continue;
+            };
+            if body.kind() != "compound_statement" {
+                continue;
+            }
+            let Some(last) = (0..body.child_count())
+                .filter_map(|i| body.child(i))
+                .rfind(|c| !matches!(c.kind(), "{" | "}"))
+            else {
+                continue;
+            };
+            if matches!(last.kind(), "return_statement" | "goto_statement") {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// True iff a `subscript_expression` with base `var` (e.g. `var[i]`)
+    /// appears anywhere within `loop_stmt`.
+    fn loop_subscripts_var(loop_stmt: &Node, source: &str, var: &str) -> bool {
+        query::find_descendants_of_kind(*loop_stmt, "subscript_expression")
+            .iter()
+            .any(|sub| {
+                sub.child_by_field_name("argument")
+                    .is_some_and(|base| get_node_text(&base, source) == var)
+            })
     }
 
     /// Check system() and popen() calls for command injection risk.
