@@ -731,6 +731,15 @@ impl Msc12C {
 
                 if !has_real_code {
                     let _ = source;
+                    // Unlike an empty function body (task 474 -- an
+                    // explanatory comment reliably means "documented
+                    // no-op"), a bare `break;` case has no comparable
+                    // signal: `case cap_asid_control_cap: break;` (deliberate
+                    // no-op for this enum value) and a genuinely forgotten
+                    // case body are structurally identical. Flag instead of
+                    // suppressing or guessing -- see
+                    // data/precision_audit/sel4/README.md (task 474) for the
+                    // measured ambiguity this is responding to.
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: self.severity(),
@@ -738,8 +747,12 @@ impl Msc12C {
                         file_path: String::new(),
                         line: case_node.start_position().row + 1,
                         column: case_node.start_position().column + 1,
-                        suggestion: Some("Add code to the case or remove it".to_string()),
-                        ..Default::default()
+                        suggestion: Some(
+                            "Add code to the case, or a comment explaining the no-op is \
+                             intentional, or remove it"
+                                .to_string(),
+                        ),
+                        requires_manual_review: Some(true),
                     });
                 }
             }
