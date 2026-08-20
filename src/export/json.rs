@@ -16,6 +16,7 @@ pub fn export_all_violations_to_json(violations: &[RuleViolation], json_path: &s
                 "line": v.line,
                 "column": v.column,
                 "suggestion": v.suggestion,
+                "requires_manual_review": v.needs_manual_review(),
             })
         })
         .collect();

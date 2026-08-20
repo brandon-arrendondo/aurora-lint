@@ -46,6 +46,16 @@ fn violation_to_sarif_result(
             }
         }]);
     }
+    if v.needs_manual_review() {
+        // SARIF's own extension point for tool-defined metadata that
+        // doesn't fit the fixed schema -- there's no first-class "this
+        // rule couldn't confidently decide" field, so a consuming SARIF
+        // viewer sees this in properties rather than losing the signal
+        // entirely (the CLI's own "severity?" marker is stdout-only).
+        result["properties"] = serde_json::json!({
+            "requiresManualReview": true
+        });
+    }
     result
 }
 

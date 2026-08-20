@@ -139,7 +139,8 @@ CREATE TABLE IF NOT EXISTS realworld_violations (
     column_num      INTEGER DEFAULT 0,
     severity        TEXT,
     message         TEXT,
-    suggestion      TEXT
+    suggestion      TEXT,
+    requires_manual_review INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS ground_truth (
@@ -270,6 +271,17 @@ class BenchDB:
             if "cache_state" not in run_cols:
                 conn.execute(
                     "ALTER TABLE runs ADD COLUMN cache_state TEXT NOT NULL DEFAULT 'cold'")
+            # realworld_violations gained requires_manual_review (task 478):
+            # sqc's JSON export now carries this per-finding confidence flag
+            # (RuleViolation.requires_manual_review), used by rules that
+            # can't structurally distinguish a real violation from an
+            # intentional idiom (e.g. MSC12-C's empty-switch-case check).
+            rv_cols = {r[1] for r in
+                       conn.execute("PRAGMA table_info(realworld_violations)")}
+            if "requires_manual_review" not in rv_cols:
+                conn.execute(
+                    "ALTER TABLE realworld_violations "
+                    "ADD COLUMN requires_manual_review INTEGER NOT NULL DEFAULT 0")
             conn.commit()
         finally:
             conn.close()
@@ -918,11 +930,12 @@ class BenchDB:
             cur.executemany("""
                 INSERT INTO realworld_violations
                     (result_id, rule_id, file_path, line, column_num,
-                     severity, message, suggestion)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     severity, message, suggestion, requires_manual_review)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [(result_id, v["rule_id"], v["file"], v["line"],
                    v.get("column", 0), v.get("severity"),
-                   v.get("message"), v.get("suggestion"))
+                   v.get("message"), v.get("suggestion"),
+                   1 if v.get("requires_manual_review") else 0)
                   for v in violations])
 
     def ingest_realworld_run(self, version_dir: str, results_path: str,
