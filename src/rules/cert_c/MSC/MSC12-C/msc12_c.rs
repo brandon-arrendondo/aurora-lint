@@ -594,7 +594,7 @@ impl Msc12C {
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(body) = node.child_by_field_name("body") {
-            if self.is_empty_body(&body) {
+            if self.is_empty_body(&body) && !self.empty_body_has_comment(&body) {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: self.severity(),
@@ -806,6 +806,34 @@ impl Msc12C {
             }
         }
         true
+    }
+
+    /// Returns true if an (empty, per `is_empty_body`) compound_statement
+    /// contains at least one comment — a deliberate "this is a documented
+    /// no-op" idiom (`/* Don't need to do anything */`, `/* Do nothing */`)
+    /// pervasive in real embedded/kernel platform-abstraction stub
+    /// functions (see data/precision_audit/sel4/README.md, task 474).
+    ///
+    /// Deliberately scoped to `check_empty_function` ONLY — the same
+    /// "lone comment in an otherwise-empty block" shape is also how CERT's
+    /// own canonical MSC12-C wiki examples illustrate an empty if/else/for
+    /// *branch* that should be flagged (`/* Handle error */`, `/* This
+    /// code is unreachable */` in tests/fail/wiki_{,non}compliant_*.c), so
+    /// applying this to check_empty_control_flow would suppress the
+    /// rule's own textbook cases. A function body being fully empty is a
+    /// different, much stronger signal (there is no "the rest of the
+    /// function's logic is untouched" surrounding context the way a
+    /// branch has) — real-world instances found here were all deliberate
+    /// no-op stubs.
+    fn empty_body_has_comment(&self, node: &Node) -> bool {
+        if node.kind() != "compound_statement" {
+            return false;
+        }
+        (0..node.child_count()).any(|i| {
+            node.child(i)
+                .map(|c| c.kind() == "comment")
+                .unwrap_or(false)
+        })
     }
 
     /// Returns true if the node or any descendant is a call_expression.

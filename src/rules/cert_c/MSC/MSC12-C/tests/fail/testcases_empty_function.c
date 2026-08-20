@@ -4,5 +4,4 @@
  */
 
 void empty_handler(int sig) {
-    /* empty function body — VIOLATION */
 }
