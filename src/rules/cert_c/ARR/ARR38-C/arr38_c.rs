@@ -1,11 +1,28 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{find_containing_function, get_node_text};
+use crate::utility::cert_c::ast_utils::{self, find_containing_function, get_node_text};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
-pub struct Arr38C;
+/// function name → parameter index → field name → minimum element-count
+/// buffer size (task 304).
+type FieldBufferSizeMap = HashMap<String, HashMap<usize, HashMap<String, usize>>>;
+
+#[derive(Default)]
+pub struct Arr38C {
+    /// Cross-file struct-field buffer sizes (task 304): for each function,
+    /// parameter index → field name → minimum element-count buffer size
+    /// every observed caller resolved that field to. Seeded from
+    /// [`crate::analyze::function_summary::FunctionSummary::callsite_param_field_buffer_size`]
+    /// in `set_project_context`. Resolves Juliet flow variant 67 ("struct
+    /// passed in a struct from one function to another, often in different
+    /// source files"), where the sink function's own body only sees
+    /// `data = myStruct.field;` with no idea what the caller set `field` to.
+    callsite_param_field_buffer_size: RefCell<FieldBufferSizeMap>,
+}
 
 /// Information about a buffer size from allocation or declaration
 #[allow(dead_code)]
@@ -50,6 +67,19 @@ impl CertRule for Arr38C {
 
     fn cert_id(&self) -> &'static str {
         "ARR38-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        let mut map = self.callsite_param_field_buffer_size.borrow_mut();
+        map.clear();
+        for (name, summary) in &context.function_summaries {
+            if !summary.callsite_param_field_buffer_size.is_empty() {
+                map.insert(
+                    name.clone(),
+                    summary.callsite_param_field_buffer_size.clone(),
+                );
+            }
+        }
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -125,6 +155,126 @@ impl CertRule for Arr38C {
 }
 
 impl Arr38C {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// If `var` was assigned, within the enclosing function, from a
+    /// struct-by-value PARAMETER's field -- either `data = myStruct.field;`
+    /// or a declaration initializer `T *data = myStruct.field;` (the
+    /// shape Juliet's own sink functions actually use) -- return that
+    /// parameter's name and the field name (task 304).
+    fn find_struct_field_param_alias(
+        &self,
+        func: &Node,
+        source: &str,
+        var: &str,
+    ) -> Option<(String, String)> {
+        let params = ast_utils::get_function_parameters(func, source)?;
+        let mut candidates: Vec<(Node, Node)> = Vec::new();
+        for assign in query::find_descendants_of_kind(*func, "assignment_expression") {
+            if let (Some(left), Some(right)) = (
+                assign.child_by_field_name("left"),
+                assign.child_by_field_name("right"),
+            ) {
+                candidates.push((left, right));
+            }
+        }
+        for init in query::find_descendants_of_kind(*func, "init_declarator") {
+            if let (Some(decl), Some(value)) = (
+                init.child_by_field_name("declarator"),
+                init.child_by_field_name("value"),
+            ) {
+                candidates.push((decl, value));
+            }
+        }
+        for (left, right) in candidates {
+            let left_name = ast_utils::get_identifier_from_declarator(&left, source);
+            if left_name.is_empty() || left_name != var {
+                continue;
+            }
+            if right.kind() != "field_expression" {
+                continue;
+            }
+            let Some(base) = right.child_by_field_name("argument") else {
+                continue;
+            };
+            let Some(field) = right.child_by_field_name("field") else {
+                continue;
+            };
+            if base.kind() != "identifier" {
+                continue;
+            }
+            let base_name = get_node_text(&base, source).to_string();
+            let field_name = get_node_text(&field, source).to_string();
+            if base_name.is_empty() || field_name.is_empty() {
+                continue;
+            }
+            if params.iter().any(|(name, _)| name == &base_name) {
+                return Some((base_name, field_name));
+            }
+        }
+        None
+    }
+
+    /// When `var` aliases a struct-by-value parameter's field within the
+    /// enclosing function, return the minimum element-count buffer size
+    /// every observed caller resolved that field to (task 304). Resolves
+    /// Juliet flow variant 67 ("struct passed in a struct from one function
+    /// to another, often in different source files"). Returns `None` when
+    /// `var` isn't such an alias, the enclosing function has no prescan
+    /// summary, or the field is unresolved/disqualified (see
+    /// `crate::analyze::prescan::aggregate_callsite_field_buffer_sizes`).
+    fn caller_min_buffer_for_struct_field(
+        &self,
+        var: &str,
+        node: &Node,
+        source: &str,
+    ) -> Option<usize> {
+        let func = find_containing_function(node)?;
+        let (param_name, field_name) = self.find_struct_field_param_alias(&func, source, var)?;
+        let declarator = func.child_by_field_name("declarator")?;
+        let func_name = ast_utils::get_identifier_from_declarator(&declarator, source);
+        if func_name.is_empty() {
+            return None;
+        }
+        let params = ast_utils::get_function_parameters(&func, source)?;
+        let param_idx = params.iter().position(|(name, _)| name == &param_name)?;
+        let map = self.callsite_param_field_buffer_size.borrow();
+        map.get(&func_name)?
+            .get(&param_idx)?
+            .get(&field_name)
+            .copied()
+    }
+
+    /// True iff `dest_arg` aliases a struct-by-value parameter's field
+    /// (task 304) whose caller-proven minimum buffer size is at least as
+    /// large as `size_arg`'s element count. Conservative: any unresolved
+    /// piece (non-identifier destination, no caller-side bound, unparsable
+    /// size) returns `false`, leaving the existing heuristics in control.
+    fn copy_bounded_by_caller_struct_field(
+        &self,
+        dest_arg: &str,
+        size_arg: &str,
+        node: &Node,
+        source: &str,
+    ) -> bool {
+        let dest_var = dest_arg.trim();
+        if !self.is_simple_identifier(dest_var) {
+            return false;
+        }
+        let Some(buf_size) = self.caller_min_buffer_for_struct_field(dest_var, node, source) else {
+            return false;
+        };
+        let Some(size_val) = self.try_parse_size(size_arg) else {
+            return false;
+        };
+        let needed = self
+            .extract_elem_count_from_byte_expr(size_arg)
+            .unwrap_or(size_val);
+        needed <= buf_size
+    }
+
     /// First pass: collect buffer allocations, size variable assignments, and
     /// pointer offsets from `declaration`/`expression_statement` nodes under
     /// `node`.
@@ -762,7 +912,8 @@ impl Arr38C {
                     }
                 } else {
                     false
-                };
+                } || self
+                    .copy_bounded_by_caller_struct_field(dest_arg, size_arg, node, source);
 
                 if !count_fits {
                     let start_point = node.start_position();
@@ -812,6 +963,13 @@ impl Arr38C {
             let dest_arg = &args[0];
             let src_arg = &args[1];
             let size_arg = &args[2];
+
+            // (task 304) Struct-by-value cross-file destination bound --
+            // see `check_buffer_size_mismatch`'s identical check for the
+            // full rationale.
+            if self.copy_bounded_by_caller_struct_field(dest_arg, size_arg, node, source) {
+                return;
+            }
 
             // Check for sizeof (byte count instead of character count)
             if self.is_byte_size_expression(size_arg) {
@@ -1015,6 +1173,13 @@ impl Arr38C {
         let dest_arg = &args[0];
         let src_arg = if args.len() >= 2 { &args[1] } else { dest_arg };
         let size_arg = &args[2];
+
+        // (task 304) Struct-by-value cross-file destination bound -- see
+        // `check_buffer_size_mismatch`'s identical check for the full
+        // rationale.
+        if self.copy_bounded_by_caller_struct_field(dest_arg, size_arg, node, source) {
+            return;
+        }
 
         // Check if size exceeds known buffer size
         if let Some(violation) = self.check_size_exceeds_buffer(
@@ -1282,6 +1447,13 @@ impl Arr38C {
         if args.len() > size_idx {
             let buf_arg = &args[buf_idx];
             let size_arg = &args[size_idx];
+
+            // (task 304) Struct-by-value cross-file destination bound --
+            // see `check_buffer_size_mismatch`'s identical check for the
+            // full rationale.
+            if self.copy_bounded_by_caller_struct_field(buf_arg, size_arg, node, source) {
+                return;
+            }
 
             // Check if size exceeds known buffer size
             if let Some(violation) = self.check_size_exceeds_buffer(
@@ -1640,6 +1812,16 @@ impl Arr38C {
     ) {
         let dest_arg = &args[0];
         let size_arg = &args[2];
+
+        // (task 304) If the destination resolves to a struct-by-value
+        // parameter's field whose buffer size every observed caller pins
+        // down, and the copy provably fits, this is the Juliet flow
+        // variant 67 goodG2BSink pattern -- the caller-side truth is
+        // authoritative, same discipline STR31-C uses for direct
+        // parameters, so skip every heuristic below entirely.
+        if self.copy_bounded_by_caller_struct_field(dest_arg, size_arg, node, source) {
+            return;
+        }
 
         // Resolve the size argument to its expression if it's a variable
         let size_arg_owned = size_arg.to_string();

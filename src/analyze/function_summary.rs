@@ -119,6 +119,24 @@ pub struct FunctionSummary {
     /// cross-function goodG2BSink false positives (Juliet variants 41+).
     #[serde(default)]
     pub callsite_param_buffer_size: HashMap<usize, usize>,
+    /// Like `callsite_param_buffer_size`, but for a struct-by-value
+    /// parameter whose FIELD (not the parameter itself) holds the buffer
+    /// pointer: maps parameter index → field name → minimum element-count
+    /// buffer size that field resolves to across every call site. A field
+    /// is present only when every call site passing a value at that
+    /// parameter position is a plain identifier AND that identifier's
+    /// caller-local tracking resolved this exact field to a known static
+    /// buffer size — a call site that passes a non-identifier expression,
+    /// or an identifier whose tracking never pins this field down,
+    /// disqualifies the field entirely rather than being skipped, mirroring
+    /// `callsite_param_buffer_size`'s "trust only when every caller
+    /// resolves" discipline at field granularity. Used by ARR38-C to
+    /// resolve Juliet flow variant 67 (`data flow: data passed in a struct
+    /// from one function to another, often in different source files`),
+    /// where the sink function's own body only sees `data = myStruct.field;`
+    /// with no idea what the caller set `field` to.
+    #[serde(default)]
+    pub callsite_param_field_buffer_size: HashMap<usize, HashMap<String, usize>>,
     /// Maximum element-count buffer size or memset-fill content length this
     /// function itself writes into a parameter (via a direct/aliased
     /// malloc-family allocation assigned to it, or a `memset` fill followed
