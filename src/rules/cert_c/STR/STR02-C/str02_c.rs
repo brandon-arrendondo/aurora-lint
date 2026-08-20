@@ -25,22 +25,28 @@
 //! tainted var explicitly checked against a project-local allow-list
 //! function (`if (!valid_db_string(x)) return NULL;`) before being
 //! `snprintf`'d into the query buffer, even though STR02-C has no way to
-//! know that validator's name in advance. **Known residual gap, not yet
-//! fixed**: a parameter that is *always* passed a string literal at every
-//! call site within the same file (e.g. hostap's `db_table_exists(sqlite3
-//! *db, const char *name)`, called only as `db_table_exists(db,
-//! "pseudonyms")` / `db_table_exists(db, "reauth")`) is still flagged,
-//! because parameters are tainted-by-default and STR02-C has no
-//! call-site-constant-argument tracking analogous to `INT32-C`/`INT30-C`'s
-//! `callsite_param_const_int` (task 115/116). Confirmed on hostap: 3 of 6
-//! post-validation-guard-fix findings are this exact FP shape (same
-//! `db_table_exists` helper reimplemented in 3 files); the other 3 look
-//! like plausible genuine SQL-injection TPs (`hlr_auc_gw.c`'s
-//! `db_update_milenage_sqn` embeds `m->imsi` -- attacker-influenced EAP-AKA
-//! identity data -- directly into an `UPDATE` statement with no validation
-//! at all). Adjudicating which is which, and building the call-site-const
-//! tracking to kill the `db_table_exists` FP class, is follow-up work, not
-//! blocking this rule shipping.
+//! know that validator's name in advance.
+//!
+//! Parameters are tainted-by-default (external input), but
+//! `collect_literal_only_static_params` (task 469) lifts that default for
+//! a `static` function's parameter when every call site *in this same
+//! file* passes a string literal at that position -- e.g. hostap's
+//! `db_table_exists(sqlite3 *db, const char *name)`, reimplemented as a
+//! `static` helper in 3 files and called only as `db_table_exists(db,
+//! "pseudonyms")` / `db_table_exists(db, "reauth")`, no longer flags
+//! `name`. Deliberately scoped to `static` functions and literal-only
+//! observations rather than reusing prescan's project-wide
+//! `callsite_param_tainted`/`callsite_param_taint_observed` bits (as
+//! FIO30-C does): those bits call an argument "tainted" only when a
+//! *recognized* taint source produced it, so a pointer parameter fed by a
+//! deeper taint chain the narrow call-site scan can't see (e.g. hostap's
+//! `db_update_milenage_sqn(struct milenage_parameters *m)`, where `m`
+//! carries an EAP-AKA IMSI read over a socket several calls upstream)
+//! would read as "observed, not tainted" and get wrongly suppressed --
+//! confirmed by a full-hostap rerun during this task's validation, which
+//! went from 3 residual findings to 0 under that broader signal. The
+//! narrower literal-only signal has no such failure mode: a string literal
+//! is unconditionally safe regardless of how deep the taint analysis goes.
 //!
 //! ## Non-compliant example:
 //!
@@ -104,6 +110,11 @@ pub struct Str02C {
     /// Reverse call graph: callee_name → set of caller names. Built from
     /// ProjectContext's forward `call_graph` in `set_project_context`.
     callers: RefCell<HashMap<String, HashSet<String>>>,
+    /// Per-file (task 469): `static` function name → parameter indices
+    /// where every in-file call site passed a string literal. Recomputed
+    /// at the start of every `check()` call by
+    /// `collect_literal_only_static_params`.
+    literal_only_params: RefCell<HashMap<String, HashSet<usize>>>,
 }
 
 impl Str02C {
@@ -113,6 +124,7 @@ impl Str02C {
             current_aliases: RefCell::new(HashMap::new()),
             function_summaries: RefCell::new(HashMap::new()),
             callers: RefCell::new(HashMap::new()),
+            literal_only_params: RefCell::new(HashMap::new()),
         }
     }
 
@@ -185,24 +197,131 @@ impl Str02C {
         self.check_sinks(func_node, source, &tainted, func_node, violations);
     }
 
-    /// Extract parameter names from a function definition and mark them as tainted.
+    /// Extract parameter names from a function definition and mark them as
+    /// tainted -- unless every call site to this (necessarily `static`)
+    /// function within this same file passes a string literal at that
+    /// parameter position (e.g. hostap's `db_table_exists(db, name)`,
+    /// always called with a literal table name; task 469). Looked up from
+    /// `literal_only_params`, populated per-file by
+    /// `collect_literal_only_static_params`.
     fn collect_param_names(&self, func_node: &Node, source: &str, tainted: &mut HashSet<String>) {
+        let literal_only = cfg::get_function_name(func_node, source)
+            .and_then(|name| self.literal_only_params.borrow().get(name).cloned());
         if let Some(declarator) = func_node.child_by_field_name("declarator") {
-            self.find_param_names(&declarator, source, tainted);
+            self.find_param_names(&declarator, source, tainted, literal_only.as_ref());
         }
     }
 
-    fn find_param_names(&self, node: &Node, source: &str, tainted: &mut HashSet<String>) {
-        for node in query::find_descendants_of_kind(*node, "parameter_declaration") {
+    fn find_param_names(
+        &self,
+        node: &Node,
+        source: &str,
+        tainted: &mut HashSet<String>,
+        literal_only: Option<&HashSet<usize>>,
+    ) {
+        for (idx, node) in query::find_descendants_of_kind(*node, "parameter_declaration")
+            .into_iter()
+            .enumerate()
+        {
             // Get the declarator child which has the parameter name
             if let Some(decl) = node.child_by_field_name("declarator") {
                 let name = get_node_text(&decl, source);
                 let base = extract_base_var(&name);
-                if !base.is_empty() {
-                    tainted.insert(base);
+                if base.is_empty() {
+                    continue;
+                }
+                if literal_only.is_some_and(|idxs| idxs.contains(&idx)) {
+                    continue;
+                }
+                tainted.insert(base);
+            }
+        }
+    }
+
+    /// For each `static` function defined in this file, the set of
+    /// parameter indices where every call site in this file passes a
+    /// string literal argument at that position. Restricted to `static`
+    /// functions specifically: that's the only case where "every call site
+    /// visible in this file" is the same as "every call site, period" -- a
+    /// non-static function could have external callers this file can't
+    /// see, so its parameters must stay conservatively tainted-by-default.
+    fn collect_literal_only_static_params(
+        &self,
+        root: &Node,
+        source: &str,
+    ) -> HashMap<String, HashSet<usize>> {
+        let mut static_fns: HashSet<String> = HashSet::new();
+        for func in query::find_descendants_of_kind(*root, "function_definition") {
+            if Self::is_static_function(&func, source) {
+                if let Some(name) = cfg::get_function_name(&func, source) {
+                    static_fns.insert(name.to_string());
                 }
             }
         }
+        if static_fns.is_empty() {
+            return HashMap::new();
+        }
+
+        let mut call_sites: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
+        for call in query::find_descendants_of_kind(*root, "call_expression") {
+            let Some(function_node) = call.child_by_field_name("function") else {
+                continue;
+            };
+            if function_node.kind() != "identifier" {
+                continue;
+            }
+            let name = get_node_text(&function_node, source);
+            let resolved = self.resolve_name(&name);
+            if !static_fns.contains(&resolved) {
+                continue;
+            }
+            let Some(args_node) = call.child_by_field_name("arguments") else {
+                continue;
+            };
+            let arg_literal: Vec<bool> = self
+                .collect_argument_nodes(&args_node)
+                .iter()
+                .map(|a| self.is_string_literal(a))
+                .collect();
+            call_sites.entry(resolved).or_default().push(arg_literal);
+        }
+
+        let mut result: HashMap<String, HashSet<usize>> = HashMap::new();
+        for (name, sites) in call_sites {
+            let max_params = sites.iter().map(|v| v.len()).max().unwrap_or(0);
+            let mut literal_idxs = HashSet::new();
+            for idx in 0..max_params {
+                let mut any_site = false;
+                let mut all_literal = true;
+                for site in &sites {
+                    match site.get(idx) {
+                        Some(true) => any_site = true,
+                        Some(false) => {
+                            any_site = true;
+                            all_literal = false;
+                        }
+                        None => {}
+                    }
+                }
+                if any_site && all_literal {
+                    literal_idxs.insert(idx);
+                }
+            }
+            if !literal_idxs.is_empty() {
+                result.insert(name, literal_idxs);
+            }
+        }
+        result
+    }
+
+    /// True if a `function_definition` node carries the `static`
+    /// storage-class specifier.
+    fn is_static_function(func: &Node, source: &str) -> bool {
+        (0..func.child_count()).any(|i| {
+            func.child(i).is_some_and(|c| {
+                c.kind() == "storage_class_specifier" && get_node_text(&c, source) == "static"
+            })
+        })
     }
 
     /// Walk a function body to find variables tainted by external input.
@@ -1034,6 +1153,8 @@ impl CertRule for Str02C {
         let mut aliases = self.project_aliases.borrow().clone();
         aliases.extend(const_eval::collect_macro_aliases(node, source));
         *self.current_aliases.borrow_mut() = aliases;
+        *self.literal_only_params.borrow_mut() =
+            self.collect_literal_only_static_params(node, source);
 
         let mut violations = Vec::new();
         self.check_functions(node, source, &mut violations);
