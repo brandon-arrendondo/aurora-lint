@@ -34,10 +34,16 @@ A codebase with no entry here falls back to the shared benchmark base,
 | mosquitto | *(base manifest)*     | Partial — v0.4.22 4-rule sample only |
 | curl      | *(base manifest)*     | Partial — v0.4.22 4-rule sample only |
 | hostap    | *(base manifest)*     | Partial — v0.4.22 4-rule sample only |
+| lua       | `lua-rules.toml`      | **Full** — 5th ground-truth oracle (0 TP / 3309 FP / 2 FN). See `data/precision_audit/lua/`. |
+| raylib    | `raylib-rules.toml`   | **Full** — 6th ground-truth oracle, structural-C99 target (23/23 files, 5263 labels, 2.6% precision/87.3% recall). See `data/precision_audit/raylib/`. |
+| pureftpd  | `pureftpd-rules.toml` | Partial, scoped — SQL-client-API oracle (task 301). `src/log_mysql.c`+`log_pgsql.c`+headers fully labelled (449 findings; 25.4% precision); rest of the daemon scanned but unlabeled. See `data/precision_audit/pureftpd/`. |
 
 libcrc is the worked template (small enough to read and label exhaustively).
-The four large codebases grow their labels incrementally; they keep using the
-base manifest until a tailored config is justified by an audit.
+mosquitto/curl/hostap grow their labels incrementally; they keep using the
+base manifest until a tailored config is justified by an audit. pureftpd is
+scoped-full: exhaustively labelled within its onboarding purpose (the
+SQL-client files), partial on the rest of the daemon by design, not by
+oversight.
 
 ## Adding / tailoring a codebase (the incremental loop)
 

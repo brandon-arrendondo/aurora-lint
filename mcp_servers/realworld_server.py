@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 MCP server for running sqc, cppcheck, and clang-tidy against real open-source
-codebases (libcrc, sqlite, mosquitto, curl, hostap) and tracking results with
-version+commit SHA tagging. Results stored in SQLite (data/benchmarks.db).
+codebases (libcrc, sqlite, mosquitto, curl, hostap, lua, raylib, pureftpd) and
+tracking results with version+commit SHA tagging. Results stored in SQLite
+(data/benchmarks.db). See CODEBASES below for the authoritative, current list.
 
 Supports local and remote execution via SSH. Remote hosts share identical paths
 (same username, same directory layout). Results are fetched back via scp.
@@ -342,6 +343,49 @@ CODEBASES = {
             "includes": ["-I", "{path}/src"],
             "source_dirs": ["{path}/src/"],
             "exclude": ["*/external/*"],
+        },
+    },
+    # Registry key deliberately "pureftpd" (no hyphen), even though the
+    # upstream project is "pure-ftpd" -- two hyphen-sensitive spots in
+    # bench/db.py silently break on it otherwise: (1) ingest_realworld_run
+    # parses result filenames as "sqc-{project}-{version}-{sha}.json" by
+    # splitting on "-" and taking index 1, so "pure-ftpd" truncates to
+    # "pure"; (2) project_relpath normalizes an absolute violation path to
+    # a portable relative one by finding "/{project}/" in it, which
+    # requires the checkout directory's basename to equal the registry key
+    # -- so the checkout at ~/toolchain is ALSO named "pureftpd" (renamed
+    # from the upstream "pure-ftpd" clone name), not just this dict key.
+    # Every other registry key so far happened to be hyphen-free with a
+    # matching checkout dir name; this is the first one that would trip
+    # either bug.
+    "pureftpd": {
+        "path": Path.home() / "toolchain" / "pureftpd",
+        "sqc": {
+            # Onboarded task 301: the suite's SQL-client-API oracle for
+            # CWE-89 (SQL injection) -- src/log_mysql.c/log_pgsql.c call
+            # mysql_real_query/PQexec as a *client*, unlike sqlite (which
+            # implements sqlite3_exec) or any other current oracle (none
+            # touch SQL at all). Scope = whole project (src/ + puredb/);
+            # gui/ is the separate, optional GTK admin GUI, not the ftpd
+            # itself.
+            "scan_path": None,
+            "manifest": "conf/realworld/pureftpd-rules.toml",
+            "includes": [],
+            "extra_args": [
+                "-d", "{path}/src",
+                "-d", "{path}/puredb",
+                "--exclude", "gui/**",
+            ],
+        },
+        "cppcheck": {
+            "includes": ["-I", "{path}/src"],
+            "source_dirs": ["{path}/src/", "{path}/puredb/"],
+            "extra_args": ["-i", "{path}/gui"],
+        },
+        "clang-tidy": {
+            "includes": ["-I", "{path}/src"],
+            "source_dirs": ["{path}/src/", "{path}/puredb/"],
+            "exclude": ["*/gui/*"],
         },
     },
 }
@@ -1087,7 +1131,8 @@ def run_analysis(tool: str, codebase: str, host: str | None = None) -> str:
 
     Args:
         tool: One of "sqc", "cppcheck", "clang-tidy"
-        codebase: One of "libcrc", "sqlite", "mosquitto", "curl", "hostap"
+        codebase: A key from CODEBASES (e.g. "libcrc", "sqlite", "mosquitto",
+              "curl", "hostap", "lua", "raylib", "pureftpd")
         host: Optional remote host IP or nickname (e.g. "10.0.0.97", "workstation-97").
               If omitted, runs locally.
 
