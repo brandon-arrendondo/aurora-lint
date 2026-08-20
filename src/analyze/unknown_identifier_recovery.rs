@@ -190,6 +190,23 @@ fn blank_range(source: &str, start: usize, end: usize) -> String {
 /// `#if`/`#ifdef`/`#elif`-style condition line and its matching `#endif`
 /// token, which is what the grammar can't place, are blanked. Returns the
 /// two byte ranges to blank.
+///
+/// Requires the ERROR-brace to be the ONLY named child between the
+/// condition and `#endif` (comments aside) -- i.e. that this conditional's
+/// entire guarded content really is just the lone brace, per the doc
+/// comment above. Task 464 found a false match on mosquitto's uthash.h:
+/// a switch/case-in-macro construct elsewhere in the file cascades into
+/// several small, unrelated single-token `{`/`}` ERROR nodes scattered as
+/// *direct children of the file's own top-level `#ifndef UTHASH_H` header
+/// guard* (which spans nearly the whole file and has hundreds of other,
+/// legitimate children in between). The old code took the *first* such
+/// ERROR child and paired it with the node's `#endif` child regardless of
+/// what stood between them -- for a whole-file header guard that `#endif`
+/// is always the real, load-bearing file-closing guard, so this blanked
+/// away the file's genuine closing `#endif` line while leaving hundreds of
+/// lines of real code in between (a large corruption of unrelated,
+/// correctly-parsed content, not the narrow single-line-pair blank the
+/// function is meant to make).
 fn find_blankable_preproc_brace_error(
     node: &Node,
     source: &str,
@@ -198,25 +215,43 @@ fn find_blankable_preproc_brace_error(
         node.kind(),
         "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef"
     ) {
-        let mut error_child = None;
-        let mut endif_child = None;
-        for i in 0..node.child_count() {
-            if let Some(c) = node.child(i) {
+        let children: Vec<Node> = (0..node.child_count())
+            .filter_map(|i| node.child(i))
+            .collect();
+        if let Some(endif_idx) = children
+            .iter()
+            .position(|c| !c.is_named() && c.kind() == "#endif")
+        {
+            // Walk backward from #endif, skipping only comments. The very
+            // next non-comment child must be the lone brace ERROR node --
+            // anything else (another ERROR, a statement, a declaration...)
+            // means this conditional's guarded content is not just the
+            // brace, so it isn't the idiom this function targets.
+            let mut idx = endif_idx;
+            let mut error_child = None;
+            while idx > 0 {
+                idx -= 1;
+                let c = &children[idx];
+                if c.kind() == "comment" {
+                    continue;
+                }
                 if c.is_error() {
                     let trimmed = source[c.start_byte()..c.end_byte()].trim();
                     if trimmed == "{" || trimmed == "}" {
-                        error_child = Some(c);
+                        error_child = Some(*c);
                     }
-                } else if !c.is_named() && c.kind() == "#endif" {
-                    endif_child = Some(c);
                 }
+                break;
             }
-        }
-        if let (Some(err), Some(endif)) = (error_child, endif_child) {
-            return Some((
-                (node.start_byte(), err.start_byte()),
-                (endif.start_byte(), endif.end_byte()),
-            ));
+            if let Some(err) = error_child {
+                return Some((
+                    (node.start_byte(), err.start_byte()),
+                    (
+                        children[endif_idx].start_byte(),
+                        children[endif_idx].end_byte(),
+                    ),
+                ));
+            }
         }
     }
     for i in 0..node.child_count() {
@@ -349,6 +384,74 @@ mod tests {
         let (_, text) = recover(src);
         assert!(!text.contains("__cplusplus"));
         assert!(text.contains('}'));
+    }
+
+    #[test]
+    fn does_not_corrupt_whole_file_header_guard_on_switch_in_macro_error() {
+        // Task 464: minimal reduction of mosquitto's deps/uthash.h. A
+        // backslash-continued do/while(0) macro containing a switch/case
+        // (HASH_SFH) makes tree-sitter-c's GLR recovery scatter several
+        // small, unrelated single-token `{`/`}` ERROR nodes as *direct
+        // children of the file's own top-level `#ifndef UTHASH_H` header
+        // guard* -- not wrapped in their own `preproc_if`, unlike the
+        // task-438 extern "C" idiom this recovery targets. The buggy
+        // version of `find_blankable_preproc_brace_error` paired the
+        // first such stray ERROR with this node's `#endif` child
+        // regardless of what stood between them; for a whole-file header
+        // guard that `#endif` is always the real, load-bearing
+        // file-closing guard, so it blanked away the real `#ifndef`
+        // /`#define` guard lines AND the real closing `#endif`, while
+        // leaving the entire macro body in between untouched garbage
+        // whitespace -- a large corruption of a file that should have
+        // been left alone (recovery has nothing legitimate to fix here;
+        // this file's only defect is the same switch-in-macro
+        // false-ERROR HASH_SFH itself, which recovery doesn't -- and
+        // shouldn't -- touch).
+        let src = concat!(
+            "#ifndef UTHASH_H\n",
+            "#define UTHASH_H\n",
+            "#define HASH_SFH(key,keylen,hashv)                                               \\\n",
+            "do {                                                                             \\\n",
+            "  unsigned const char *_sfh_key=(unsigned const char*)(key);                     \\\n",
+            "  uint32_t _sfh_tmp, _sfh_len = (uint32_t)keylen;                                \\\n",
+            "  unsigned _sfh_rem = _sfh_len & 3U;                                             \\\n",
+            "  _sfh_len >>= 2;                                                                \\\n",
+            "  hashv = 0xcafebabeu;                                                           \\\n",
+            "  for (;_sfh_len > 0U; _sfh_len--) {                                             \\\n",
+            "    hashv    += get16bits (_sfh_key);                                            \\\n",
+            "    _sfh_tmp  = ((uint32_t)(get16bits (_sfh_key+2)) << 11) ^ hashv;              \\\n",
+            "    hashv     = (hashv << 16) ^ _sfh_tmp;                                        \\\n",
+            "    _sfh_key += 2U*sizeof (uint16_t);                                            \\\n",
+            "    hashv    += hashv >> 11;                                                     \\\n",
+            "  }                                                                              \\\n",
+            "  switch (_sfh_rem) {                                                            \\\n",
+            "    case 3: hashv += get16bits (_sfh_key);                                       \\\n",
+            "            hashv ^= hashv << 16;                                                \\\n",
+            "            hashv ^= (uint32_t)(_sfh_key[sizeof (uint16_t)]) << 18;              \\\n",
+            "            hashv += hashv >> 11;                                                \\\n",
+            "            break;                                                               \\\n",
+            "    case 2: hashv += get16bits (_sfh_key);                                       \\\n",
+            "            hashv ^= hashv << 11;                                                \\\n",
+            "            hashv += hashv >> 17;                                                \\\n",
+            "            break;                                                               \\\n",
+            "    case 1: hashv += *_sfh_key;                                                  \\\n",
+            "            hashv ^= hashv << 10;                                                \\\n",
+            "            hashv += hashv >> 1;                                                 \\\n",
+            "            break;                                                               \\\n",
+            "    default: ;                                                                   \\\n",
+            "  }                                                                              \\\n",
+            "  hashv ^= hashv << 3;                                                           \\\n",
+            "  hashv += hashv >> 5;                                                           \\\n",
+            "  hashv ^= hashv << 4;                                                           \\\n",
+            "  hashv += hashv >> 17;                                                          \\\n",
+            "  hashv ^= hashv << 25;                                                          \\\n",
+            "  hashv += hashv >> 6;                                                           \\\n",
+            "} while (0)\n",
+            "int tail;\n",
+            "#endif\n",
+        );
+        let (_, text) = recover(src);
+        assert_eq!(text, src, "recovery must not alter this file at all");
     }
 
     #[test]
