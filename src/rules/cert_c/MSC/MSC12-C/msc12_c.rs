@@ -77,6 +77,19 @@ impl Msc12C {
                         return;
                     }
                 }
+                // Deliberate busy-wait polling loop (`while (cond);`, or the
+                // braced-with-a-lone-semicolon form `while (cond) { ; }`):
+                // the condition itself does the real work (reads through a
+                // pointer/field/subscript, or calls a function), so an
+                // "empty" body is the idiom, not a bug. See
+                // data/precision_audit/sel4/README.md (task 381/473) — this
+                // was the dominant MSC12-C FP family on real embedded/kernel
+                // code (UART/timer/IOMMU register polling).
+                if let Some(cond) = self.enclosing_loop_condition_for_empty_body(node) {
+                    if self.condition_indicates_polling(&cond) {
+                        return;
+                    }
+                }
                 // A MISSING `;` is a parser error-recovery placeholder, not
                 // real source text (e.g. a labeled_statement inside an
                 // #ifdef block whose body lives past the matching #endif —
@@ -526,6 +539,15 @@ impl Msc12C {
             "for_statement" | "while_statement" | "do_statement" => {
                 if let Some(body) = node.child_by_field_name("body") {
                     if self.is_empty_body(&body) {
+                        // Same busy-wait polling exception as the bare-`;`
+                        // form (see check_no_effect_expression): `while
+                        // (cond) { }` with a condition that reads through
+                        // indirection or a call is a deliberate spin-wait.
+                        if let Some(cond) = node.child_by_field_name("condition") {
+                            if self.condition_indicates_polling(&cond) {
+                                return;
+                            }
+                        }
                         let kind = node.kind().replace("_statement", "");
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
@@ -772,6 +794,75 @@ impl Msc12C {
     /// Returns true if the node or any descendant is a call_expression.
     fn contains_call(&self, node: &Node) -> bool {
         query::find_first_descendant(*node, |n| n.kind() == "call_expression").is_some()
+    }
+
+    /// Given a stray-`;` `expression_statement`, find the condition of the
+    /// enclosing while/do/for loop if this semicolon *is* that loop's body
+    /// (`while (cond);`) or is the sole statement in a body block that
+    /// otherwise only contains braces/comments (`while (cond) { ; }`).
+    /// Returns None for a `;` anywhere else (e.g. a genuinely stray
+    /// semicolon inside a real multi-statement block).
+    fn enclosing_loop_condition_for_empty_body<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
+        let parent = node.parent()?;
+        match parent.kind() {
+            "while_statement" | "do_statement" | "for_statement" => {
+                if parent.child_by_field_name("body").map(|b| b.id()) == Some(node.id()) {
+                    parent.child_by_field_name("condition")
+                } else {
+                    None
+                }
+            }
+            "compound_statement" => {
+                let only_stmt = (0..parent.child_count()).all(|i| {
+                    parent
+                        .child(i)
+                        .map(|c| matches!(c.kind(), "{" | "}" | "comment") || c.id() == node.id())
+                        .unwrap_or(true)
+                });
+                if !only_stmt {
+                    return None;
+                }
+                let grandparent = parent.parent()?;
+                if matches!(
+                    grandparent.kind(),
+                    "while_statement" | "do_statement" | "for_statement"
+                ) && grandparent.child_by_field_name("body").map(|b| b.id()) == Some(parent.id())
+                {
+                    grandparent.child_by_field_name("condition")
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// A loop condition "indicates polling" when it invokes a function
+    /// (`while (vtd_read64(...) & 1);`), or reads through indirection
+    /// (pointer dereference, `->`/`.` field access, array subscript)
+    /// *combined with* an explicit comparison/bitwise/logical operator
+    /// (`while (*UART_REG(STAT) & TXE);`, `while (timer->stat != DONE);`) —
+    /// the hallmark of a hardware/shared-state busy-wait where the real
+    /// work happens in the condition and an empty body is deliberate, not a
+    /// bug. A *bare* dereference/field-read with no operator (`while
+    /// (*flag);`, `while (!timer->stat);`) is deliberately NOT covered:
+    /// structurally that's indistinguishable from a forgotten loop body
+    /// (see tests/fail/testcases_empty_while_body.c), so it still gets
+    /// flagged, same as a bare-variable/literal condition (`while (x);`).
+    fn condition_indicates_polling(&self, cond: &Node) -> bool {
+        if query::find_first_descendant(*cond, |n| n.kind() == "call_expression").is_some() {
+            return true;
+        }
+        let has_operator =
+            query::find_first_descendant(*cond, |n| n.kind() == "binary_expression").is_some();
+        let has_indirection = query::find_first_descendant(*cond, |n| {
+            matches!(
+                n.kind(),
+                "pointer_expression" | "field_expression" | "subscript_expression"
+            )
+        })
+        .is_some();
+        has_operator && has_indirection
     }
 }
 
