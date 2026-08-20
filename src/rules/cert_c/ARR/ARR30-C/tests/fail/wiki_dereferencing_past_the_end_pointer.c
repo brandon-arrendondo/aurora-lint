@@ -5,7 +5,8 @@
  */
 
 error_status_t _RemoteActivation(
-      /* ... */, WCHAR *pwszObjectName, ... ) {
+      handle_t hRpc, WCHAR *pwszObjectName) {
+   HRESULT *phr;
    *phr = GetServerPath(
               pwszObjectName, &pwszObjectName);
     /* ... */

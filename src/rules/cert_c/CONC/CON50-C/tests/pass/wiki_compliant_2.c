@@ -2,22 +2,9 @@
  * Rule: CON50-C
  * Source: wiki
  * Status: PASS - Should NOT trigger CON50-C violation
- */
-
-#include <mutex>
-#include <thread>
-
-const size_t maxThreads = 10;
-
-void do_work(size_t i, std::mutex *pm) {
-  std::lock_guard<std::mutex> lk(*pm);
-
-  // Access data protected by the lock.
-}
-/*
- * Rule: CON50-C
- * Source: wiki
- * Status: PASS - Should NOT trigger CON50-C violation
+ *
+ * Compliant: the local mutex is joined (all waiters guaranteed done)
+ * before it is destroyed.
  */
 
 #include <pthread.h>

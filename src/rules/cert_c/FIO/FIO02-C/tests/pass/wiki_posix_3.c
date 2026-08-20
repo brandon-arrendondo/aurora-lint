@@ -5,7 +5,7 @@
  */
 
 char *realpath_res = NULL;
-char *canonical_file name = NULL;
+char *canonical_filename = NULL;
 size_t path_size = 0;
 
 /* Verify argv[1] is supplied */

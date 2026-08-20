@@ -4,18 +4,20 @@
  * Status: FAIL - Should trigger MEM04-C violation
  */
 
-size_t nsize = /* Some value, possibly user supplied */;
-char *p2;
-char *p = (char *)malloc(100);
-if (p == NULL) {
-  /* Handle error */
-}
+void *func(size_t nsize) {
+  char *p2;
+  char *p = (char *)malloc(100);
+  if (p == NULL) {
+    /* Handle error */
+  }
 
-/* ... */
+  /* ... */
 
-if ((p2 = (char *)realloc(p, nsize)) == NULL) {
-  free(p);
-  p = NULL;
-  return NULL;
+  if ((p2 = (char *)realloc(p, nsize)) == NULL) {
+    free(p);
+    p = NULL;
+    return NULL;
+  }
+  p = p2;
+  return p;
 }
-p = p2;

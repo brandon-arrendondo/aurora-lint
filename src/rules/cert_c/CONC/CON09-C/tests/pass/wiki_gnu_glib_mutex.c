@@ -62,7 +62,7 @@ gpointer queue_dequeue(Queue *q) {
   Node *next;
   gpointer data;
 
-  if (thrd_success != mtx_lock(&(q->mutex)) {
+  if (thrd_success != mtx_lock(&(q->mutex))) {
     return NULL;  /* Indicate failure */
   } else {
     head = q->head;

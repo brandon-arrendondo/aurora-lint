@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <wchar.h>
  
-enum {BUFFER_SIZE = 32 }
+enum {BUFFER_SIZE = 32 };
 
 void g(void) {
   wchar_t buf[BUFFER_SIZE];

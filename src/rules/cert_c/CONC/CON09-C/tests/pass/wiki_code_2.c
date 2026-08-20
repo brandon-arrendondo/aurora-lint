@@ -29,7 +29,7 @@ void queue_enqueue(Queue *q, gpointer data) {
       CAS(&q->tail, tail, next);
       continue;
     }
-    if (CAS(&tail->next, null, node) {
+    if (CAS(&tail->next, null, node)) {
       break;
     }
   }

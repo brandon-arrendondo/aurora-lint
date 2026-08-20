@@ -4,6 +4,8 @@
  * Status: PASS - Should NOT trigger INT02-C violation
  */
 
-int si = /* Some signed value */;
-unsigned ui = /* Some unsigned value */;
-printf("%d\n", (si < 0 || (unsigned)si < ui));
+#include <stdio.h>
+
+void func(int si, unsigned int ui) {
+  printf("%d\n", (si < 0 || (unsigned)si < ui));
+}

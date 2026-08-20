@@ -19,8 +19,10 @@ void func( void ) {
   }
 }
 
- 
-// Contents of text_file.txt
-This has
-CRLF newlines
-in it.
+
+/*
+ * Contents of text_file.txt:
+ * This has
+ * CRLF newlines
+ * in it.
+ */

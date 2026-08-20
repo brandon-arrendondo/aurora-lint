@@ -5,7 +5,7 @@
  */
 
 #include <stdlib.h>
-#include <stdio.h> 
+#include <stdio.h>
 #include <string.h>
 
 enum { OLD_SIZE = 10, NEW_SIZE = 20 };

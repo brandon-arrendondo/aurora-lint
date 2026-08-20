@@ -5,8 +5,9 @@
  */
 
 #include <stdlib.h>
-/* ... */
 
-if (/* Something really bad happened */) {
-  abort();
+void func(int something_really_bad) {
+  if (something_really_bad) {
+    abort();
+  }
 }

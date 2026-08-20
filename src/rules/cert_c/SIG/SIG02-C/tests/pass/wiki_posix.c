@@ -29,7 +29,7 @@ int wait_and_work(void) {
   if ((result = pthread_mutex_lock(&mut)) != 0) {
     /* Handle error condition */
   }
-  while (/* Condition does not hold */) {
+  while (!work_available()) {
     if ((result = pthread_cond_wait(&cond, &mut)) != 0) {
       /* Handle error condition */
     }
