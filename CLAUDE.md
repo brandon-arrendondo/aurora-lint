@@ -137,6 +137,7 @@ Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
 | `REALWORLD_RESULTS.md` | Real-world codebase results (7 projects × 3 tools) |
 | `docs/index.rst` | Developer guide: advanced usage, CI/CD, benchmarks, testing, contributing |
 | `docs/design/*.md` | Scoping docs for in-progress/completed capabilities (e.g. macro-expansion, project-relevance-gating). Not in the Sphinx toctree — read directly. **Their "Status" header goes stale once the work ships**; check `todo-sqlite-cli show <task>` for the real status before trusting the header, and check whether the feature needs a mention in `docs/cli-usage.rst`/`docs/architecture.rst` once it ships. |
+| `docs/design/internal-capability-catalog.md` | Browsable-by-concept catalog of every reusable primitive in `src/utility/cert_c/*.rs`/`src/analyze/*.rs` (macro detection, declarator resolution, lvalue/aliasing, VRA, CFG, function summaries, suppression, cross-file `ProjectContext`). Read this before writing any new AST/text heuristic — see Code Navigation below. |
 
 ---
 
@@ -170,17 +171,20 @@ text, line-by-line logic).
 Rebuild after non-trivial changes: `clew --output <db path from index(action='status')> --repo-root . --rebuild`.
 The MCP tools also offer to build/refresh on first use if no index exists yet.
 
-**Before implementing any new AST/text heuristic, verify one doesn't already
-exist** (task 479, filed after task 475 nearly re-implemented DCL40-C's
-`is_defined_macro_name`/`ProjectContext::defined_macro_names` cross-file
-macro-detection as a fresh ALL_CAPS-name heuristic — a plain keyword grep for
-"macro detection" missed it on the first pass). Until task 479 ships a proper
-capability index, treat this as mandatory due diligence, not optional: try
-`dossier`/`search` for the concept, then grep `src/utility/cert_c/` and
-`src/analyze/` directly for the primitive by what it *does* (e.g.
-`is_defined_macro_name`, `is_macro_like_name`, `lvalue_of`, `points_to`), not
-just by the term you'd naturally reach for — this has caught real scoping
-bugs before (ARR39-C task 146, CON34-C task 385).
+**Before implementing any new AST/text heuristic, check
+`docs/design/internal-capability-catalog.md` first** (task 479, filed after
+task 475 nearly re-implemented DCL40-C's `is_defined_macro_name`/
+`ProjectContext::defined_macro_names` cross-file macro-detection as a fresh
+ALL_CAPS-name heuristic — a plain keyword grep for "macro detection" missed
+it on the first pass). That catalog exists precisely because `search` does
+literal token-conjunction matching: it finds `is_defined_macro_name`
+instantly when queried with words close to its own doc comment, but returns
+nothing useful for a vague concept phrase that doesn't appear verbatim
+anywhere. If the catalog doesn't cover it, try `dossier`/`search` with
+vocabulary close to an actual function/doc-comment wording, then grep
+`src/utility/cert_c/` and `src/analyze/` directly by what the primitive
+*does* — this has caught real scoping bugs before (ARR39-C task 146,
+CON34-C task 385).
 
 ## Build & Test
 

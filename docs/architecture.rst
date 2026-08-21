@@ -112,6 +112,15 @@ Analysis Modules
   ~370 C11, POSIX, and Windows API functions recognized to suppress false
   positives on standard library calls (DCL31-C, DCL07-C).
 
+**Internal capability catalog** (``docs/design/internal-capability-catalog.md``).
+  A browsable-by-concept catalog of every reusable primitive in
+  ``src/utility/cert_c/*.rs`` and ``src/analyze/*.rs`` (macro detection,
+  declarator resolution, lvalue/aliasing, constant folding/VRA, CFG,
+  function summaries, suppression, cross-file ``ProjectContext``). Skim it
+  before writing any new AST/text heuristic in a rule file — filed as task
+  479 after a near-duplication of DCL40-C's macro-detection helpers in
+  MSC12-C task 475.
+
 **Suppression system** (``src/analyze/suppression.rs``).
   Inline ``// SQC-SUPPRESS`` comments and ``.sqc-suppress.toml`` files.
   SHA-256 hash-based point suppressions and glob/prefix wildcard suppressions.
