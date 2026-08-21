@@ -366,6 +366,25 @@ pub fn is_pointer_type(type_str: &str) -> bool {
     type_str.contains('*')
 }
 
+/// Check if a type string represents a generic (non-pointer-storage) integer
+/// type: `int`/`unsigned`/`long`/`short`/`char`/`size_t`/`ptrdiff_t`, but NOT
+/// `uintptr_t`/`intptr_t` (those are pointer-storage-safe integer types, a
+/// distinct concept from "is this an integer at all").
+pub fn is_integer_type(type_str: &str) -> bool {
+    const INTEGER_TYPES: &[&str] = &[
+        "int",
+        "unsigned",
+        "long",
+        "short",
+        "char",
+        "size_t",
+        "ptrdiff_t",
+    ];
+    INTEGER_TYPES.iter().any(|&t| {
+        type_str.contains(t) && !type_str.contains("uintptr_t") && !type_str.contains("intptr_t")
+    })
+}
+
 /// Check if a type string represents a signed integer type
 #[allow(dead_code)]
 pub fn is_signed_type(type_str: &str) -> bool {

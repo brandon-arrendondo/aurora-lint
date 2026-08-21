@@ -8,6 +8,7 @@ use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -162,7 +163,7 @@ impl CertRule for Int30C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        let type_map = self.collect_variable_types(node, source);
+        let type_map = overflow_helpers::collect_variable_types(node, source);
 
         // Merge project-level macros with per-file macros
         let mut macros = self.project_macros.borrow().clone();
@@ -247,9 +248,9 @@ impl Int30C {
         for matched in matches {
             let scoped_type_map: &HashMap<String, String> =
                 match ast_utils::find_containing_function(&matched) {
-                    Some(func_node) => fn_type_maps
-                        .entry(func_node.id())
-                        .or_insert_with(|| self.collect_variable_types(&func_node, source)),
+                    Some(func_node) => fn_type_maps.entry(func_node.id()).or_insert_with(|| {
+                        overflow_helpers::collect_variable_types(&func_node, source)
+                    }),
                     None => type_map,
                 };
 
@@ -1217,7 +1218,7 @@ impl Int30C {
     /// Check if a variable is declared as unsigned in the containing function
     fn is_variable_declared_unsigned(&self, node: &Node, source: &str, var_name: &str) -> bool {
         // Find containing function
-        let func = self.find_containing_function(node);
+        let func = ast_utils::find_containing_function(node);
         if func.is_none() {
             return false;
         }
@@ -1236,160 +1237,6 @@ impl Int30C {
         }
 
         false
-    }
-
-    /// Find the containing function definition
-    fn find_containing_function<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
-        let mut current = *node;
-        while let Some(parent) = current.parent() {
-            if parent.kind() == "function_definition" {
-                return Some(parent);
-            }
-            current = parent;
-        }
-        None
-    }
-
-    fn collect_variable_types(&self, node: &Node, source: &str) -> HashMap<String, String> {
-        let mut type_map = HashMap::new();
-
-        for func in query::find_descendants_of_kind(*node, "function_definition") {
-            // Collect from function parameters
-            if let Some(declarator) = func.child_by_field_name("declarator") {
-                self.collect_params_from_declarator(&declarator, source, &mut type_map);
-            }
-            // Collect from local declarations in the function body
-            if let Some(body) = func.child_by_field_name("body") {
-                self.collect_local_declarations(&body, source, &mut type_map);
-            }
-        }
-
-        type_map
-    }
-
-    fn collect_params_from_declarator(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        for declarator in query::find_descendants_of_kind(*node, "function_declarator") {
-            if let Some(params) = declarator.child_by_field_name("parameters") {
-                for i in 0..params.child_count() {
-                    if let Some(param) = params.child(i) {
-                        if param.kind() == "parameter_declaration" {
-                            self.extract_type_and_name(&param, source, type_map);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn collect_local_declarations(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        for decl in query::find_descendants_of_kind(*node, "declaration") {
-            self.extract_type_and_name(&decl, source, type_map);
-        }
-    }
-
-    fn extract_type_and_name(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        let mut type_text = String::new();
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "primitive_type" | "sized_type_specifier" | "type_identifier" => {
-                        type_text = get_node_text(&child, source).to_string();
-                    }
-                    "struct_specifier" => {
-                        type_text = get_node_text(&child, source).to_string();
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        if type_text.is_empty() {
-            return;
-        }
-
-        // Extract variable names from declarators
-        if let Some(declarator) = node.child_by_field_name("declarator") {
-            if let Some(name) = Self::extract_identifier_name(&declarator, source) {
-                let full_type = if Self::is_pointer_declarator(&declarator) {
-                    format!("{} *", type_text)
-                } else {
-                    type_text.clone()
-                };
-                type_map.insert(name, full_type);
-            }
-        }
-
-        // Handle init_declarator lists (e.g. `int a, b;`)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(decl) = child.child_by_field_name("declarator") {
-                        if let Some(name) = Self::extract_identifier_name(&decl, source) {
-                            let full_type = if Self::is_pointer_declarator(&decl) {
-                                format!("{} *", type_text)
-                            } else {
-                                type_text.clone()
-                            };
-                            type_map.insert(name, full_type);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Returns true if this declarator (or init_declarator wrapping it) contains
-    /// a pointer_declarator, indicating the declared variable is a pointer type.
-    fn is_pointer_declarator(node: &Node) -> bool {
-        if node.kind() == "pointer_declarator" {
-            return true;
-        }
-        // init_declarator wraps the actual declarator
-        if node.kind() == "init_declarator" {
-            if let Some(decl) = node.child_by_field_name("declarator") {
-                return decl.kind() == "pointer_declarator";
-            }
-        }
-        false
-    }
-
-    fn extract_identifier_name(node: &Node, source: &str) -> Option<String> {
-        match node.kind() {
-            "identifier" => Some(get_node_text(node, source).to_string()),
-            "pointer_declarator" | "array_declarator" | "parenthesized_declarator" => {
-                if let Some(inner) = node.child_by_field_name("declarator") {
-                    Self::extract_identifier_name(&inner, source)
-                } else {
-                    None
-                }
-            }
-            _ => {
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "identifier" {
-                            return Some(get_node_text(&child, source).to_string());
-                        }
-                    }
-                }
-                None
-            }
-        }
     }
 
     /// Returns true if this binary_expression is `opaque + small_literal` or
@@ -1437,7 +1284,9 @@ impl Int30C {
                 let var_name = get_node_text(n, source);
                 if let Some(func) = ast_utils::find_containing_function(n) {
                     if let Some(body) = func.child_by_field_name("body") {
-                        return Self::resolve_identifier_call_name(&body, var_name, source, n);
+                        return overflow_helpers::resolve_identifier_call_name(
+                            &body, var_name, source, n,
+                        );
                     }
                 }
             }
@@ -1481,94 +1330,6 @@ impl Int30C {
 
         // Default: suppress (safe for strlen, wcslen, unknown helpers)
         true
-    }
-
-    /// Resolve the callee function name for an identifier that was initialized
-    /// name instead of just a boolean.
-    ///
-    /// Uses an explicit continuation-frame stack instead of recursion: each
-    /// frame is `(scope, next_child_index)`, capturing exactly where a
-    /// native recursive call would resume its sibling loop after returning
-    /// from a nested scope. This avoids blowing the native stack on a
-    /// deeply nested if/while/for chain (the same hostap-style shape that
-    /// motivated task 153) while preserving the original left-to-right,
-    /// depth-first match order — a nested scope is fully explored before
-    /// its later siblings are considered, exactly as the recursive call
-    /// would (call-then-continue), rather than deferring nested scopes
-    /// until after all direct siblings are checked.
-    fn resolve_identifier_call_name(
-        scope: &Node,
-        var_name: &str,
-        source: &str,
-        usage_node: &Node,
-    ) -> Option<String> {
-        let usage_row = usage_node.start_position().row;
-        let mut frames: Vec<(Node, usize)> = vec![(*scope, 0)];
-
-        while let Some((cur_scope, start_idx)) = frames.pop() {
-            let mut i = start_idx;
-            while i < cur_scope.named_child_count() {
-                let Some(child) = cur_scope.named_child(i) else {
-                    i += 1;
-                    continue;
-                };
-                if child.start_position().row >= usage_row {
-                    break;
-                }
-                if child.kind() == "declaration" {
-                    if let Some(declarator) = child.child_by_field_name("declarator") {
-                        if declarator.kind() == "init_declarator" {
-                            let decl_name = declarator
-                                .child_by_field_name("declarator")
-                                .map(|d| get_node_text(&d, source));
-                            let init = declarator.child_by_field_name("value");
-                            if decl_name == Some(var_name) {
-                                if let Some(init_node) = init {
-                                    if init_node.kind() == "call_expression" {
-                                        return init_node
-                                            .child_by_field_name("function")
-                                            .and_then(|f| f.utf8_text(source.as_bytes()).ok())
-                                            .map(|s| s.trim().to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if child.kind() == "expression_statement" {
-                    if let Some(expr) = child.named_child(0) {
-                        if expr.kind() == "assignment_expression" {
-                            let lhs = expr.child_by_field_name("left");
-                            let rhs = expr.child_by_field_name("right");
-                            if let (Some(l), Some(r)) = (lhs, rhs) {
-                                if get_node_text(&l, source) == var_name
-                                    && r.kind() == "call_expression"
-                                {
-                                    return r
-                                        .child_by_field_name("function")
-                                        .and_then(|f| f.utf8_text(source.as_bytes()).ok())
-                                        .map(|s| s.trim().to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-                if child.kind().starts_with("preproc_")
-                    || child.kind() == "compound_statement"
-                    || child.kind() == "if_statement"
-                    || child.kind() == "switch_statement"
-                    || child.kind() == "case_statement"
-                    || child.kind() == "for_statement"
-                    || child.kind() == "while_statement"
-                {
-                    frames.push((cur_scope, i + 1));
-                    frames.push((child, 0));
-                    break;
-                }
-                i += 1;
-            }
-        }
-        None
     }
 
     fn is_unsigned_type(&self, type_str: &str) -> bool {
@@ -2017,12 +1778,12 @@ impl Int30C {
         if args.len() < 2 {
             return false;
         }
-        let Some(func) = self.find_containing_function(node) else {
+        let Some(func) = ast_utils::find_containing_function(node) else {
             return false;
         };
         let mut params: HashMap<String, String> = HashMap::new();
         if let Some(declarator) = func.child_by_field_name("declarator") {
-            self.collect_params_from_declarator(&declarator, source, &mut params);
+            overflow_helpers::collect_params_from_declarator(&declarator, source, &mut params);
         }
         params.contains_key(args[0].trim()) && params.contains_key(args[1].trim())
     }
@@ -2034,7 +1795,7 @@ impl Int30C {
         // Sanitized so a comment/string literal elsewhere in the function
         // can't spoof one of the patterns and silently suppress a real
         // violation.
-        if let Some(func) = self.find_containing_function(node) {
+        if let Some(func) = ast_utils::find_containing_function(node) {
             let func_text = get_sanitized_node_text(&func, source);
             return patterns.iter().all(|pattern| func_text.contains(pattern));
         }
@@ -2049,7 +1810,7 @@ impl Int30C {
     /// Check for subtraction precondition (if (a < b) before subtraction)
     fn has_subtraction_precondition(&self, node: &Node, source: &str) -> bool {
         // Look for if statement before the subtraction that compares the operands
-        if let Some(func) = self.find_containing_function(node) {
+        if let Some(func) = ast_utils::find_containing_function(node) {
             let func_text = get_sanitized_node_text(&func, source);
             // Look for typical precondition pattern
             if func_text.contains("if (ui_a < ui_b)")
@@ -2065,7 +1826,7 @@ impl Int30C {
 
     /// Check for postcondition check (if (result < original) or if (result > original))
     fn has_postcondition_check(&self, node: &Node, source: &str) -> bool {
-        if let Some(func) = self.find_containing_function(node) {
+        if let Some(func) = ast_utils::find_containing_function(node) {
             let func_text = get_sanitized_node_text(&func, source);
             // Look for postcondition patterns like "if (usum < ui_a)" or "if (udiff > ui_a)"
             if func_text.contains("if (usum < ")
@@ -2101,53 +1862,6 @@ impl Int30C {
         false
     }
 
-    /// Extract operand identifier names from a binary/assignment/update expression node.
-    fn extract_operand_names(&self, node: &Node, source: &str) -> Vec<String> {
-        let mut names = Vec::new();
-        if let Some(left) = node.child_by_field_name("left") {
-            Self::collect_identifiers(&left, source, &mut names);
-        }
-        if let Some(right) = node.child_by_field_name("right") {
-            Self::collect_identifiers(&right, source, &mut names);
-        }
-        if let Some(arg) = node.child_by_field_name("argument") {
-            Self::collect_identifiers(&arg, source, &mut names);
-        }
-        names
-    }
-
-    fn collect_identifiers(node: &Node, source: &str, names: &mut Vec<String>) {
-        for ident in query::find_descendants_of_kind(*node, "identifier") {
-            let name = get_node_text(&ident, source).to_string();
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
-    }
-
-    /// Check if `text` contains `word` as a whole word (not a substring of another identifier).
-    fn contains_word(&self, text: &str, word: &str) -> bool {
-        if word.is_empty() {
-            return false;
-        }
-        let mut start = 0;
-        while let Some(pos) = text[start..].find(word) {
-            let abs_pos = start + pos;
-            let before_ok = abs_pos == 0
-                || !text.as_bytes()[abs_pos - 1].is_ascii_alphanumeric()
-                    && text.as_bytes()[abs_pos - 1] != b'_';
-            let after_pos = abs_pos + word.len();
-            let after_ok = after_pos >= text.len()
-                || !text.as_bytes()[after_pos].is_ascii_alphanumeric()
-                    && text.as_bytes()[after_pos] != b'_';
-            if before_ok && after_ok {
-                return true;
-            }
-            start = abs_pos + 1;
-        }
-        false
-    }
-
     /// Check if the operation is inside an if-else block guarded by an unsigned type-limit macro.
     /// Operand-aware: the if-condition must reference at least one operand of the arithmetic.
     fn is_inside_checked_block(&self, node: &Node, source: &str) -> bool {
@@ -2164,7 +1878,7 @@ impl Int30C {
             "ULLONG_MAX",
         ];
 
-        let op_names = self.extract_operand_names(node, source);
+        let op_names = overflow_helpers::extract_operand_names(node, source);
         let mut current = *node;
         while let Some(parent) = current.parent() {
             if parent.kind() == "if_statement" {
@@ -2172,14 +1886,14 @@ impl Int30C {
                     let cond_text = get_node_text(&condition, source);
                     let has_limit = UNSIGNED_LIMIT_MACROS
                         .iter()
-                        .any(|m| self.contains_word(cond_text, m));
+                        .any(|m| overflow_helpers::contains_word(cond_text, m));
                     if has_limit {
                         if op_names.is_empty() {
                             return true;
                         }
                         if op_names
                             .iter()
-                            .any(|name| self.contains_word(cond_text, name))
+                            .any(|name| overflow_helpers::contains_word(cond_text, name))
                         {
                             return true;
                         }
@@ -2191,18 +1905,6 @@ impl Int30C {
                 break;
             }
             current = parent;
-        }
-        false
-    }
-
-    #[allow(dead_code)]
-    fn has_surrounding_check(&self, node: &Node, source: &str, patterns: &[&str]) -> bool {
-        // Simple heuristic: look in parent contexts for overflow checking patterns
-        if let Some(parent) = node.parent() {
-            if let Some(grandparent) = parent.parent() {
-                let context = &source[grandparent.start_byte()..grandparent.end_byte()];
-                return patterns.iter().all(|pattern| context.contains(pattern));
-            }
         }
         false
     }
@@ -2232,14 +1934,7 @@ impl Int30C {
     }
 
     fn get_update_operator(&self, node: &Node, source: &str) -> String {
-        let text = get_node_text(node, source);
-        if text.contains("++") {
-            "++".to_string()
-        } else if text.contains("--") {
-            "--".to_string()
-        } else {
-            "unknown".to_string()
-        }
+        overflow_helpers::get_update_operator(node, source)
     }
 
     /// Check if a decrement/subtraction is inside a block guarded by a positive-value condition.
@@ -2281,7 +1976,7 @@ impl Int30C {
         let cond = cond.trim();
 
         // Quick check: does the condition mention the variable as a whole word?
-        if !self.contains_word(cond, var_name) {
+        if !overflow_helpers::contains_word(cond, var_name) {
             return false;
         }
 
@@ -2482,7 +2177,7 @@ impl Int30C {
         };
         let cond = cond.trim();
 
-        if !self.contains_word(cond, var_name) {
+        if !overflow_helpers::contains_word(cond, var_name) {
             return false;
         }
 
@@ -2670,7 +2365,7 @@ impl Int30C {
         let cond = cond.trim();
 
         // Must mention both variables
-        if !self.contains_word(cond, a) || !self.contains_word(cond, b) {
+        if !overflow_helpers::contains_word(cond, a) || !overflow_helpers::contains_word(cond, b) {
             return false;
         }
 
@@ -2699,7 +2394,7 @@ impl Int30C {
         // Pattern: a >= b or a > b
         let gte_pat = format!("{} >= {}", a, b);
         let gt_pat = format!("{} > {}", a, b);
-        if self.contains_word(cond, a) && self.contains_word(cond, b) {
+        if overflow_helpers::contains_word(cond, a) && overflow_helpers::contains_word(cond, b) {
             if cond.contains(&gte_pat) || cond.contains(&gt_pat) {
                 return true;
             }

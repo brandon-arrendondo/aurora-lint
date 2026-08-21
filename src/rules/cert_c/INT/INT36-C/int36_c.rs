@@ -42,7 +42,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -58,7 +58,7 @@ impl Int36C {
     /// Note: bare `void` (without `*`) is NOT a pointer type — it's a discard cast.
     /// `void *` matches via the `*` check.
     fn is_pointer_type(&self, type_text: &str) -> bool {
-        type_text.contains('*')
+        ast_utils::is_pointer_type(type_text)
     }
 
     /// Check if a type is an integer type suitable for pointer storage
@@ -68,20 +68,7 @@ impl Int36C {
 
     /// Check if a type is a generic integer type
     fn is_integer_type(&self, type_text: &str) -> bool {
-        let integer_types = [
-            "int",
-            "unsigned",
-            "long",
-            "short",
-            "char",
-            "size_t",
-            "ptrdiff_t",
-        ];
-        integer_types.iter().any(|&t| {
-            type_text.contains(t)
-                && !type_text.contains("uintptr_t")
-                && !type_text.contains("intptr_t")
-        })
+        ast_utils::is_integer_type(type_text)
     }
 
     /// Check if an expression is the integer constant 0 (NULL exception)

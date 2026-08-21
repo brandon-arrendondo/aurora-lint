@@ -40,6 +40,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -162,7 +163,7 @@ impl Int10C {
 
                 if op_text == "%" {
                     let scoped_type_map: &HashMap<String, String> =
-                        match Self::enclosing_function_definition(&n) {
+                        match overflow_helpers::enclosing_function_definition(&n) {
                             Some(func_node) => fn_type_maps
                                 .entry(func_node.id())
                                 .or_insert_with(|| self.collect_variable_types(&func_node, source)),
@@ -259,7 +260,7 @@ impl Int10C {
                     return t.contains("size_t")
                         || t.contains("unsigned")
                         || t.contains("uint")
-                        || is_short_unsigned_typedef(t);
+                        || overflow_helpers::is_short_unsigned_typedef(t);
                 }
             }
             // For field expressions like self->field, we can't resolve the type
@@ -312,23 +313,4 @@ impl Int10C {
 
         false
     }
-
-    /// Walk up from `node` to the nearest enclosing `function_definition`, if
-    /// any. Used to pick the correctly-scoped type map for a modulo candidate
-    /// found by a flat, whole-subtree descendant search.
-    fn enclosing_function_definition<'a>(node: &Node<'a>) -> Option<Node<'a>> {
-        let mut current = node.parent();
-        while let Some(parent) = current {
-            if parent.kind() == "function_definition" {
-                return Some(parent);
-            }
-            current = parent.parent();
-        }
-        None
-    }
-}
-
-/// Recognizes common short unsigned typedef names: u8, u16, u32, u64, u128.
-fn is_short_unsigned_typedef(s: &str) -> bool {
-    matches!(s, "u8" | "u16" | "u32" | "u64" | "u128")
 }

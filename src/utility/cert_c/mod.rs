@@ -8,6 +8,8 @@ pub mod call_roles;
 /// Reusable functions for analyzing C declarators (arrays, pointers, function pointers).
 pub mod declarator_utils;
 pub mod float_typing;
+/// Shared helpers for arithmetic-overflow-detection rules (INT30-C, INT32-C).
+pub mod overflow_helpers;
 pub mod size_analysis;
 /// Lookup of known C standard library / POSIX / Windows socket function names.
 pub mod std_functions;

@@ -198,6 +198,45 @@ printf sub-list overlaps; the rest of the function answers a materially
 different "does this call leave the buffer's contents alone" question).
 These are candidates for a later migration pass, not oversights.
 
+## Arithmetic-overflow-detection helpers
+
+### `src/utility/cert_c/overflow_helpers.rs`
+**Problem solved:** `INT30-C` (~2760 lines) and `INT32-C` (~2920 lines)
+independently defined ~20 identically-named private helpers for the same
+sub-problems (building a local variable/parameter type map, extracting
+operand identifiers, resolving an identifier's originating call, etc.) —
+the single largest duplicated surface found in task 481's sweep. Filed and
+closed as task 490.
+
+| Function | Signature | Description |
+|---|---|---|
+| `collect_variable_types` | `(node: &Node, source: &str) -> HashMap<String, String>` | Builds a `{name -> type}` map from a function's parameters and local declarations. Correctly unwraps a top-level `init_declarator` (`int *p = malloc(...)` — the declaration's `declarator` field IS the `init_declarator`, not a bare `pointer_declarator`) — a case `INT32-C`'s pre-migration version silently missed, recording such a variable as non-pointer. |
+| `collect_params_from_declarator` | `(node: &Node, source: &str, type_map: &mut HashMap<String, String>) -> ()` | Params-only half of `collect_variable_types`, also called standalone by `INT30-C`. |
+| `extract_identifier_name` | `(node: &Node, source: &str) -> Option<String>` | Resolves a declarator's bound identifier, unwrapping one level of pointer/array/parenthesized wrapping. |
+| `extract_operand_names` | `(node: &Node, source: &str) -> Vec<String>` | Identifiers referenced by a binary/assignment/update expression's `left`/`right`/`argument` fields. |
+| `collect_identifiers` | `(node: &Node, source: &str, names: &mut Vec<String>) -> ()` | Every distinct identifier under a subtree, first-seen order. |
+| `contains_word` | `(text: &str, word: &str) -> bool` | Word-boundary-aware substring check (not a raw `contains`). |
+| `resolve_identifier_call_name` | `(scope: &Node, var_name: &str, source: &str, usage_node: &Node) -> Option<String>` | Walks statements strictly preceding `usage_node` for a declaration-with-initializer or assignment to `var_name` whose RHS is a call, returning the callee name. |
+| `get_update_operator` | `(node: &Node, source: &str) -> String` | `"++"`/`"--"`/`"unknown"`. |
+| `enclosing_function_definition` | `(node: &Node) -> Option<Node>` | Strict-ancestor-only walk to the nearest `function_definition` — distinct from `ast_utils::find_containing_function`, which also matches `node` itself. |
+| `is_short_unsigned_typedef` | `(s: &str) -> bool` | `u8`/`u16`/`u32`/`u64`/`u128` (Rust-style short aliases, not the C11 `uintN_t` family). |
+
+**Deliberately NOT folded in here** (confirmed by a dedicated read-through,
+not assumed from matching names): the `has_overflow_check_*` family and
+`is_small_increment_of_opaque` only *look* duplicated between `INT30-C`
+and `INT32-C` — `INT30-C`'s versions detect unsigned-wraparound guard
+idioms (`UINT_MAX`/`SIZE_MAX` thresholds) and `INT32-C`'s detect
+signed-overflow guard idioms (`INT_MAX`/`INT_MIN`/`LONG_MAX`/`LONG_MIN`) —
+two independently correct, deliberately different pattern sets for two
+different overflow directions. Folding them in would need a genuinely
+parameterized guard-detection engine, not a mechanical extraction; they
+stay rule-local. `INT10-C`'s own `collect_variable_types` is also NOT the
+same algorithm as the one above (a different, simpler recursive walk)
+despite the identical name — left untouched. A small confirmed gap found
+in the same audit — `INT30-C`'s `get_operator`/`get_assignment_operator`
+missing `%`/`%=` that `INT32-C`'s otherwise-parallel versions have — is
+filed separately (task 500) since it's a one-line fix, not a duplication.
+
 ## Pointer / lvalue / aliasing analysis
 
 ### `src/analyze/points_to.rs`

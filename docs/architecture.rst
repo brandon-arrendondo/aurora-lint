@@ -119,6 +119,16 @@ Analysis Modules
   ``is_sizeof_text``), replacing 7+ independently reinvented, disagreeing
   per-rule lists found by task 481's duplication sweep (task 487).
 
+**Arithmetic-overflow-detection helpers** (``src/utility/cert_c/overflow_helpers.rs``).
+  Shared type-map-building and identifier/operand-extraction primitives for
+  ``INT30-C``/``INT32-C`` (and one primitive each for ``INT10-C``),
+  replacing ~20 identically-named private helpers duplicated across those
+  two ~2800-line files — the largest duplicated surface found by task 481's
+  sweep (task 490). The overflow-*guard-detection* logic itself
+  (``has_overflow_check_*``) stays rule-local: it only looks duplicated:
+  ``INT30-C``'s is unsigned-wraparound-focused and ``INT32-C``'s is
+  signed-overflow-focused.
+
 **Internal capability catalog** (``docs/design/internal-capability-catalog.md``).
   A browsable-by-concept catalog of every reusable primitive in
   ``src/utility/cert_c/*.rs`` and ``src/analyze/*.rs`` (macro detection,

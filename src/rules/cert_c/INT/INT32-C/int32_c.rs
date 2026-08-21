@@ -8,6 +8,7 @@ use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -150,7 +151,7 @@ impl Int32C {
             }
 
             let scoped_type_map: &HashMap<String, String> =
-                match Self::enclosing_function_definition(&candidate) {
+                match overflow_helpers::enclosing_function_definition(&candidate) {
                     Some(func_node) => fn_type_maps
                         .entry(func_node.id())
                         .or_insert_with(|| self.collect_variable_types(&func_node, source)),
@@ -181,22 +182,6 @@ impl Int32C {
                 _ => {}
             }
         }
-    }
-
-    /// Walk up from `node` to the nearest enclosing `function_definition`, if
-    /// any. Used to pick the correctly-scoped type map for a candidate node
-    /// found by a flat, whole-subtree descendant search (mirrors the scoping
-    /// the original recursive walk achieved by re-deriving `type_map` each
-    /// time it stepped into a `function_definition` child).
-    fn enclosing_function_definition<'a>(node: &Node<'a>) -> Option<Node<'a>> {
-        let mut current = node.parent();
-        while let Some(parent) = current {
-            if parent.kind() == "function_definition" {
-                return Some(parent);
-            }
-            current = parent.parent();
-        }
-        None
     }
 
     /// Check if this node is inside a compile-time context where overflow cannot occur at runtime.
@@ -1502,136 +1487,7 @@ impl Int32C {
     /// Walks the entire AST to find all function_definition nodes and collects
     /// types from their parameters and body declarations.
     fn collect_variable_types(&self, node: &Node, source: &str) -> HashMap<String, String> {
-        let mut type_map = HashMap::new();
-
-        // Root included, so a `node` that is itself a function_definition is
-        // covered alongside any nested function_definitions.
-        for func in query::find_descendants_of_kind(*node, "function_definition") {
-            // Collect from function parameters
-            if let Some(declarator) = func.child_by_field_name("declarator") {
-                self.collect_params_from_declarator(&declarator, source, &mut type_map);
-            }
-            // Collect from local declarations in the function body
-            if let Some(body) = func.child_by_field_name("body") {
-                self.collect_local_declarations(&body, source, &mut type_map);
-            }
-        }
-
-        type_map
-    }
-
-    fn collect_params_from_declarator(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        // Root included, so a `node` that is itself a function_declarator is
-        // covered alongside any nested ones (e.g. pointer declarators).
-        for declarator in query::find_descendants_of_kind(*node, "function_declarator") {
-            if let Some(params) = declarator.child_by_field_name("parameters") {
-                for i in 0..params.child_count() {
-                    if let Some(param) = params.child(i) {
-                        if param.kind() == "parameter_declaration" {
-                            self.extract_type_and_name(&param, source, type_map);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn collect_local_declarations(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        for decl in query::find_descendants_of_kind(*node, "declaration") {
-            self.extract_type_and_name(&decl, source, type_map);
-        }
-    }
-
-    fn extract_type_and_name(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        let mut type_text = String::new();
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "primitive_type" | "sized_type_specifier" | "type_identifier" => {
-                        type_text = get_node_text(&child, source).to_string();
-                    }
-                    "struct_specifier" => {
-                        type_text = get_node_text(&child, source).to_string();
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        if type_text.is_empty() {
-            return;
-        }
-
-        // Extract variable names from declarators, tracking pointer indirection
-        if let Some(declarator) = node.child_by_field_name("declarator") {
-            let is_pointer = declarator.kind() == "pointer_declarator";
-            if let Some(name) = Self::extract_identifier_name(&declarator, source) {
-                let full_type = if is_pointer {
-                    format!("{} *", type_text)
-                } else {
-                    type_text.clone()
-                };
-                type_map.insert(name, full_type);
-            }
-        }
-
-        // Handle init_declarator lists (e.g. `int a, b;`)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(decl) = child.child_by_field_name("declarator") {
-                        let is_pointer = decl.kind() == "pointer_declarator";
-                        if let Some(name) = Self::extract_identifier_name(&decl, source) {
-                            let full_type = if is_pointer {
-                                format!("{} *", type_text)
-                            } else {
-                                type_text.clone()
-                            };
-                            type_map.insert(name, full_type);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn extract_identifier_name(node: &Node, source: &str) -> Option<String> {
-        match node.kind() {
-            "identifier" => Some(get_node_text(node, source).to_string()),
-            "pointer_declarator" | "array_declarator" | "parenthesized_declarator" => {
-                if let Some(inner) = node.child_by_field_name("declarator") {
-                    Self::extract_identifier_name(&inner, source)
-                } else {
-                    None
-                }
-            }
-            _ => {
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "identifier" {
-                            return Some(get_node_text(&child, source).to_string());
-                        }
-                    }
-                }
-                None
-            }
-        }
+        overflow_helpers::collect_variable_types(node, source)
     }
 
     fn infer_type(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> String {
@@ -1910,7 +1766,7 @@ impl Int32C {
             || type_str.contains("uint")
             || type_str.starts_with("unsigned ")
             || type_str == "SIZE_MAX"
-            || is_short_unsigned_typedef(type_str)
+            || overflow_helpers::is_short_unsigned_typedef(type_str)
     }
 
     fn could_be_int_min(&self, node: &Node, source: &str) -> bool {
@@ -1934,27 +1790,7 @@ impl Int32C {
     /// Extract operand identifier names from a binary expression node.
     /// Returns a vec of variable names found in the left/right operands.
     fn extract_operand_names(&self, node: &Node, source: &str) -> Vec<String> {
-        let mut names = Vec::new();
-        if let Some(left) = node.child_by_field_name("left") {
-            Self::collect_identifiers(&left, source, &mut names);
-        }
-        if let Some(right) = node.child_by_field_name("right") {
-            Self::collect_identifiers(&right, source, &mut names);
-        }
-        // For unary/update expressions, check argument
-        if let Some(arg) = node.child_by_field_name("argument") {
-            Self::collect_identifiers(&arg, source, &mut names);
-        }
-        names
-    }
-
-    fn collect_identifiers(node: &Node, source: &str, names: &mut Vec<String>) {
-        for identifier in query::find_descendants_of_kind(*node, "identifier") {
-            let name = get_node_text(&identifier, source).to_string();
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
+        overflow_helpers::extract_operand_names(node, source)
     }
 
     /// Opt-in provenance gate (task 140).
@@ -2112,7 +1948,9 @@ impl Int32C {
                 let var_name = get_node_text(n, source);
                 if let Some(func) = ast_utils::find_containing_function(n) {
                     if let Some(body) = func.child_by_field_name("body") {
-                        return Self::resolve_identifier_call_name(&body, var_name, source, n);
+                        return overflow_helpers::resolve_identifier_call_name(
+                            &body, var_name, source, n,
+                        );
                     }
                 }
             }
@@ -2156,98 +1994,6 @@ impl Int32C {
 
         // Default: suppress (safe for strlen, wcslen, unknown helpers)
         true
-    }
-
-    /// Resolve the callee function name for an identifier that was initialized
-    /// name instead of just a boolean.
-    ///
-    /// Uses an explicit continuation-frame stack instead of recursion: each
-    /// frame is `(scope, next_child_index)`, capturing exactly where a
-    /// native recursive call would resume its sibling loop after returning
-    /// from a nested scope. This avoids blowing the native stack on a
-    /// deeply nested if/while/for chain (the same hostap-style shape that
-    /// motivated task 153) while preserving the original left-to-right,
-    /// depth-first match order — a nested scope is fully explored before
-    /// its later siblings are considered, exactly as the recursive call
-    /// would (call-then-continue), rather than deferring nested scopes
-    /// until after all direct siblings are checked.
-    fn resolve_identifier_call_name(
-        scope: &Node,
-        var_name: &str,
-        source: &str,
-        usage_node: &Node,
-    ) -> Option<String> {
-        let usage_row = usage_node.start_position().row;
-        let mut frames: Vec<(Node, usize)> = vec![(*scope, 0)];
-
-        while let Some((cur_scope, start_idx)) = frames.pop() {
-            let mut i = start_idx;
-            while i < cur_scope.named_child_count() {
-                let Some(child) = cur_scope.named_child(i) else {
-                    i += 1;
-                    continue;
-                };
-                if child.start_position().row >= usage_row {
-                    break;
-                }
-                // declaration: type var = call();
-                if child.kind() == "declaration" {
-                    if let Some(declarator) = child.child_by_field_name("declarator") {
-                        if declarator.kind() == "init_declarator" {
-                            let decl_name = declarator
-                                .child_by_field_name("declarator")
-                                .map(|d| get_node_text(&d, source));
-                            let init = declarator.child_by_field_name("value");
-                            if decl_name == Some(var_name) {
-                                if let Some(init_node) = init {
-                                    if init_node.kind() == "call_expression" {
-                                        return init_node
-                                            .child_by_field_name("function")
-                                            .and_then(|f| f.utf8_text(source.as_bytes()).ok())
-                                            .map(|s| s.trim().to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // assignment: var = call();
-                if child.kind() == "expression_statement" {
-                    if let Some(expr) = child.named_child(0) {
-                        if expr.kind() == "assignment_expression" {
-                            let lhs = expr.child_by_field_name("left");
-                            let rhs = expr.child_by_field_name("right");
-                            if let (Some(l), Some(r)) = (lhs, rhs) {
-                                if get_node_text(&l, source) == var_name
-                                    && r.kind() == "call_expression"
-                                {
-                                    return r
-                                        .child_by_field_name("function")
-                                        .and_then(|f| f.utf8_text(source.as_bytes()).ok())
-                                        .map(|s| s.trim().to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-                // Descend into preproc blocks and nested scopes: resume this
-                // scope at i + 1 after the nested scope is fully explored.
-                if child.kind().starts_with("preproc_")
-                    || child.kind() == "compound_statement"
-                    || child.kind() == "if_statement"
-                    || child.kind() == "switch_statement"
-                    || child.kind() == "case_statement"
-                    || child.kind() == "for_statement"
-                    || child.kind() == "while_statement"
-                {
-                    frames.push((cur_scope, i + 1));
-                    frames.push((child, 0));
-                    break;
-                }
-                i += 1;
-            }
-        }
-        None
     }
 
     fn contains_arithmetic(&self, expr: &str) -> bool {
@@ -2684,25 +2430,7 @@ impl Int32C {
 
     /// Check if `text` contains `word` as a whole word (not a substring of another identifier).
     fn contains_word(&self, text: &str, word: &str) -> bool {
-        if word.is_empty() {
-            return false;
-        }
-        let mut start = 0;
-        while let Some(pos) = text[start..].find(word) {
-            let abs_pos = start + pos;
-            let before_ok = abs_pos == 0
-                || !text.as_bytes()[abs_pos - 1].is_ascii_alphanumeric()
-                    && text.as_bytes()[abs_pos - 1] != b'_';
-            let after_pos = abs_pos + word.len();
-            let after_ok = after_pos >= text.len()
-                || !text.as_bytes()[after_pos].is_ascii_alphanumeric()
-                    && text.as_bytes()[after_pos] != b'_';
-            if before_ok && after_ok {
-                return true;
-            }
-            start = abs_pos + 1;
-        }
-        false
+        overflow_helpers::contains_word(text, word)
     }
 
     /// Check if the arithmetic node is inside a block guarded by a type-limit bounds check.
@@ -2890,14 +2618,7 @@ impl Int32C {
     }
 
     fn get_update_operator(&self, node: &Node, source: &str) -> String {
-        let text = get_node_text(node, source);
-        if text.contains("++") {
-            "++".to_string()
-        } else if text.contains("--") {
-            "--".to_string()
-        } else {
-            "unknown".to_string()
-        }
+        overflow_helpers::get_update_operator(node, source)
     }
 }
 
@@ -2907,16 +2628,4 @@ fn is_simple_c_identifier(s: &str) -> bool {
             .next()
             .is_some_and(|c| c.is_alphabetic() || c == '_')
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
-}
-
-/// True when `callee` (any function-reference text) names a source of
-/// untrusted or full-range values: a full-range integer parser
-/// (`atoi`/`strtol`/`rand`/`RAND32`/`ntohl`), a standard environment/IO taint
-/// source (`scanf`/`recv`/`fgets`/`getenv`/...), or a project-local function
-/// whose prescan summary carries taint (`has_env03_taint_source` directly or
-/// `returns_tainted` transitively). Used by the INT32-C provenance gate.
-/// Recognizes common short unsigned typedef names: u8, u16, u32, u64, u128.
-/// These are MCU/embedded typedefs not caught by the "uint" substring check.
-fn is_short_unsigned_typedef(s: &str) -> bool {
-    matches!(s, "u8" | "u16" | "u32" | "u64" | "u128")
 }
