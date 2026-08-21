@@ -1,5 +1,7 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::array_size::resolve_declared_array_size;
 use crate::analyze::buffer_size;
+use crate::analyze::const_eval::{collect_macro_constants, MacroConstantMap};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
@@ -27,6 +29,11 @@ pub struct Str31C {
     /// companion file, where the current file's own AST has no definition to
     /// inspect.
     produces_param_buffer_size: RefCell<HashMap<String, HashMap<usize, usize>>>,
+    /// `#define`/`const` table for resolving array dimension expressions
+    /// (e.g. `arr[2*SIZE + 2]`) when consulting the shared AST array-size
+    /// resolver (see [`crate::analyze::array_size::resolve_declared_array_size`],
+    /// task 504). Built once per file in `check()`.
+    macros: RefCell<MacroConstantMap>,
 }
 
 impl Str31C {
@@ -217,16 +224,33 @@ impl Str31C {
     /// Find buffer size by tracing variable definitions using simpler line-based approach.
     /// `fn_range` restricts malloc/ALLOCA searches to a function's line range when provided,
     /// preventing cross-function pollution (e.g. bad-section malloc bleeding into good-section).
+    ///
+    /// `use_node`, when supplied, is a node at the point of use (typically the
+    /// copy call's argument) in the SAME function as `fn_range` — it lets the
+    /// shared AST array-size resolver (task 504) walk that function's block
+    /// scopes to find `var_name`'s fixed-array declaration, in preference to
+    /// the text-regex fallback below. Callers that only have a *different*
+    /// function's range (the relay/global-buffer lookups) pass `None`, since
+    /// a use-node from the wrong function would search the wrong scope.
     fn find_buffer_size(
         &self,
         var_name: &str,
         _root: &Node,
         source: &str,
         fn_range: Option<(usize, usize)>,
+        use_node: Option<&Node>,
     ) -> Option<usize> {
         // First check for #define constants
         if let Some(define_size) = self.find_define_constant(var_name, _root, source) {
             return Some(define_size);
+        }
+
+        if let Some(node) = use_node {
+            if let Some(size) =
+                resolve_declared_array_size(node, var_name, source, &self.macros.borrow())
+            {
+                return Some(size);
+            }
         }
 
         let lines: Vec<&str> = source.lines().collect();
@@ -638,14 +662,17 @@ impl Str31C {
     ) -> Option<usize> {
         let fn_range = Self::find_enclosing_function_lines(call_node);
         // Direct lookup first
-        if let Some(size) = self.find_buffer_size(var_name, root, source, fn_range) {
+        if let Some(size) = self.find_buffer_size(var_name, root, source, fn_range, Some(call_node))
+        {
             return Some(size);
         }
         // Try alias resolution (one level)
         if let Some(alias_target) =
             Self::resolve_pointer_alias_in_function(call_node, var_name, source)
         {
-            if let Some(size) = self.find_buffer_size(&alias_target, root, source, fn_range) {
+            if let Some(size) =
+                self.find_buffer_size(&alias_target, root, source, fn_range, Some(call_node))
+            {
                 return Some(size);
             }
             // Juliet flow variant 45 passes the destination buffer through a
@@ -726,7 +753,8 @@ impl Str31C {
             let params = ast_utils::get_function_parameters(&callee_fn, source)?;
             let (param_name, _) = params.get(arg_idx)?;
             let callee_range = (callee_fn.start_position().row, callee_fn.end_position().row);
-            if let Some(size) = self.find_buffer_size(param_name, root, source, Some(callee_range))
+            if let Some(size) =
+                self.find_buffer_size(param_name, root, source, Some(callee_range), None)
             {
                 return Some(size);
             }
@@ -746,7 +774,7 @@ impl Str31C {
             // underwrite flaw) does not match this alias regex, so the
             // flawed branch correctly stays unresolved here.
             let alias = Self::resolve_pointer_alias_in_range(param_name, callee_range, source)?;
-            return self.find_buffer_size(&alias, root, source, Some(callee_range));
+            return self.find_buffer_size(&alias, root, source, Some(callee_range), None);
         }
 
         // Callee not defined in this file — consult the cross-file prescan
@@ -794,11 +822,11 @@ impl Str31C {
             // assigned from `data`, which is in turn assigned from the
             // actual `ALLOCA`'d buffer). One more hop of alias resolution,
             // scoped to the writer's own range, covers this.
-            let size = match self.find_buffer_size(target, root, source, Some(fn_range)) {
+            let size = match self.find_buffer_size(target, root, source, Some(fn_range), None) {
                 Some(size) => size,
                 None => {
                     let alias2 = Self::resolve_pointer_alias_in_range(target, fn_range, source)?;
-                    self.find_buffer_size(&alias2, root, source, Some(fn_range))?
+                    self.find_buffer_size(&alias2, root, source, Some(fn_range), None)?
                 }
             };
             min_size = Some(min_size.map_or(size, |m: usize| m.min(size)));
@@ -2092,7 +2120,7 @@ impl Str31C {
         root: &Node,
     ) -> Option<RuleViolation> {
         // Get destination buffer size using the already-parsed root node
-        let buffer_size = self.find_buffer_size(dest_var, root, source, None)?;
+        let buffer_size = self.find_buffer_size(dest_var, root, source, None, None)?;
 
         // Start with initial buffer content
         let mut cumulative_length = self.get_initial_buffer_content_length(dest_var, source);
@@ -2306,6 +2334,7 @@ impl CertRule for Str31C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         // node is always the translation_unit root when called by the framework.
         // Pass it down to avoid re-finding root on every call.
+        *self.macros.borrow_mut() = collect_macro_constants(node, source);
         let mut violations = Vec::new();
         for n in query::find_descendants(*node, |_| true) {
             self.check_node(&n, source, node, &mut violations);

@@ -1,3 +1,5 @@
+/// Shared AST-based fixed-array-declaration size resolution (task 504).
+pub mod array_size;
 pub mod buffer_size;
 pub mod cfg;
 pub mod const_eval;
