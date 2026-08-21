@@ -616,41 +616,16 @@ impl Str31C {
     /// instead of a tree-sitter node to derive one from (e.g.
     /// [`Self::find_global_buffer_size`], which locates the range of a
     /// DIFFERENT function than the one performing the copy).
+    ///
+    /// Delegates to [`buffer_size::resolve_bare_alias_in_range`] (task 503):
+    /// this used to be an independent, near-identical regex re-implementation
+    /// of that shared helper.
     fn resolve_pointer_alias_in_range(
         var_name: &str,
         (start_line, end_line): (usize, usize),
         source: &str,
     ) -> Option<String> {
-        let lines: Vec<&str> = source.lines().collect();
-
-        // Match: var_name = identifier; (with optional cast)
-        // Must NOT match: var_name = identifier - 8; or var_name = identifier + N;
-        let pattern = format!(
-            r"\b{}\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*;",
-            regex::escape(var_name)
-        );
-        let re = regex::Regex::new(&pattern).ok()?;
-
-        let end = end_line.min(lines.len().saturating_sub(1));
-        for line in &lines[start_line..=end] {
-            if let Some(caps) = re.captures(line) {
-                let target = &caps[1];
-                // Skip self-assignment, NULL, and numeric literals. (A
-                // genuine call-shaped RHS like `ALLOCA(...)`/`malloc(...)`
-                // can never match `(\w+)\s*;` in the first place — the `(`
-                // right after the bare word breaks the match — so no
-                // separate "looks like a call" text check is needed here;
-                // one used to substring-match "alloca" against the whole
-                // line, which false-skipped Juliet's alloca-variant tests
-                // whose *identifier names themselves* contain "alloca" as a
-                // substring, e.g. `..._alloca_cpy_45_badData`.)
-                if target == var_name || target == "NULL" || target == "0" {
-                    continue;
-                }
-                return Some(target.to_string());
-            }
-        }
-        None
+        buffer_size::resolve_bare_alias_in_range(var_name, source, start_line, end_line)
     }
 
     /// Try find_buffer_size for a variable, falling back to alias resolution.
