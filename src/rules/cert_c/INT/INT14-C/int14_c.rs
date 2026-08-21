@@ -40,7 +40,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -127,15 +127,19 @@ impl Int14C {
         }
     }
 
+    /// `node` is a `parameter_declaration`. Its declarator may itself be a
+    /// bare identifier (simple params) or a pointer/array/function/
+    /// parenthesized declarator wrapping one (e.g. `int *x`) -- unwrap via
+    /// the shared resolver instead of only checking direct children, which
+    /// would silently miss every pointer/array-typed parameter.
     fn extract_param_name(&self, node: &Node, source: &str) -> Option<String> {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "identifier" {
-                    return Some(get_node_text(&child, source).to_string());
-                }
-            }
+        let declarator = node.child_by_field_name("declarator").unwrap_or(*node);
+        let name = ast_utils::get_identifier_from_declarator(&declarator, source);
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
         }
-        None
     }
 
     /// Extract variable names used in an expression

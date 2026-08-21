@@ -472,7 +472,10 @@ impl Con34C {
         if node.kind() == "call_expression" {
             if let Some(func) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
-                return matches!(func_name, "malloc" | "calloc" | "realloc");
+                return matches!(
+                    func_name,
+                    "malloc" | "calloc" | "realloc" | "strdup" | "strndup" | "aligned_alloc"
+                );
             }
         }
 

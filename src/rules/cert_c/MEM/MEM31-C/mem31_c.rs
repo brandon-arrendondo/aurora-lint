@@ -1765,24 +1765,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         "unknown".to_string()
     }
 
+    /// Resolve a declarator's bound identifier, unwrapping arbitrarily-nested
+    /// pointer/array/function/parenthesized declarators (see
+    /// `ast_utils::get_identifier_from_declarator`). Returns `"unknown"`
+    /// (this rule's existing not-found sentinel) instead of an empty string.
     fn get_variable_name(&self, declarator: &Node, source: &str) -> String {
-        match declarator.kind() {
-            "identifier" => ast_utils::get_node_text_owned(declarator, source),
-            "pointer_declarator" | "array_declarator" => {
-                for i in 0..declarator.child_count() {
-                    if let Some(child) = declarator.child(i) {
-                        if child.kind() == "identifier" {
-                            return ast_utils::get_node_text_owned(&child, source);
-                        }
-                        let nested_name = self.get_variable_name(&child, source);
-                        if nested_name != "unknown" {
-                            return nested_name;
-                        }
-                    }
-                }
-                "unknown".to_string()
-            }
-            _ => "unknown".to_string(),
+        match ast_utils::get_identifier_from_declarator(declarator, source) {
+            name if name.is_empty() => "unknown".to_string(),
+            name => name,
         }
     }
 

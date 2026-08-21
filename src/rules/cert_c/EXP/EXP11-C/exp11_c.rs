@@ -142,7 +142,7 @@ fn collect_bitfield_variables<'a>(
             let type_text = ast_utils::get_node_text(&type_node, source);
 
             // Extract struct name from "struct bf" type text
-            if let Some(struct_name) = extract_struct_name(&type_text) {
+            if let Some(struct_name) = ast_utils::extract_struct_name_from_type(&type_text) {
                 // Check if this struct has bit-fields
                 if bitfield_structs.contains(struct_name) {
                     // Extract variable names from declarators
@@ -156,15 +156,6 @@ fn collect_bitfield_variables<'a>(
 }
 
 /// Extracts struct name from type text like "struct bf"
-fn extract_struct_name(type_text: &str) -> Option<&str> {
-    let trimmed = type_text.trim();
-    if let Some(rest) = trimmed.strip_prefix("struct ") {
-        Some(rest.trim())
-    } else {
-        None
-    }
-}
-
 /// Extracts variable names from declarators in a declaration
 fn extract_declared_variable_names<'a>(
     decl_node: &Node,
