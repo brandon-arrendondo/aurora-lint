@@ -12,6 +12,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use tree_sitter::Node;
 
 pub struct Dcl11C;
@@ -51,20 +52,7 @@ impl Dcl11C {
 
     /// Check if function name is a printf-family function
     fn is_printf_family(&self, name: &str) -> bool {
-        matches!(
-            name,
-            "printf"
-                | "fprintf"
-                | "sprintf"
-                | "snprintf"
-                | "vprintf"
-                | "vfprintf"
-                | "vsprintf"
-                | "vsnprintf"
-                | "wprintf"
-                | "fwprintf"
-                | "swprintf"
-        )
+        call_roles::is_printf_family(name)
     }
 
     /// Check a printf-family function call for type mismatches

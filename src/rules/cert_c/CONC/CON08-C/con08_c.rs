@@ -58,6 +58,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -212,18 +213,11 @@ impl Con08C {
     }
 
     fn is_safe_function(&self, name: &str) -> bool {
-        matches!(
-            name,
-            "printf"
-                | "fprintf"
-                | "sprintf"
-                | "snprintf"
-                | "thrd_create"
-                | "thrd_join"
-                | "thrd_detach"
-                | "mtx_init"
-                | "mtx_destroy"
-        )
+        call_roles::is_printf_family(name)
+            || matches!(
+                name,
+                "thrd_create" | "thrd_join" | "thrd_detach" | "mtx_init" | "mtx_destroy"
+            )
     }
 
     fn find_all_function_calls(&self, node: &Node, source: &str) -> Vec<String> {

@@ -1724,11 +1724,6 @@ impl Arr38C {
         expr.contains("sizeof(") && !expr.contains("/ sizeof(")
     }
 
-    #[allow(dead_code)]
-    fn is_sizeof_expression(&self, expr: &str) -> bool {
-        expr.contains("sizeof(")
-    }
-
     fn is_dangerous_size_calculation(&self, size_expr: &str) -> bool {
         // Look for potentially dangerous patterns that indicate incorrect size calculations
 

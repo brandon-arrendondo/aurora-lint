@@ -3,6 +3,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -1706,10 +1707,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 let func_name = ast_utils::get_node_text_owned(&function, source);
 
                 // Standard allocation functions
-                if matches!(
-                    func_name.as_str(),
-                    "malloc" | "calloc" | "realloc" | "strdup" | "strndup"
-                ) {
+                if call_roles::is_allocator_call(&func_name) {
                     return true;
                 }
 

@@ -32,6 +32,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -53,37 +54,14 @@ impl Fio47C {
         Self
     }
 
-    /// List of printf-family functions that take format strings
-    const PRINTF_FUNCTIONS: &'static [&'static str] = &[
-        "printf",
-        "fprintf",
-        "sprintf",
-        "snprintf",
-        "vprintf",
-        "vfprintf",
-        "vsprintf",
-        "vsnprintf",
-        "dprintf",
-        "vdprintf",
-    ];
-
-    /// List of scanf-family functions that take format strings
-    const SCANF_FUNCTIONS: &'static [&'static str] =
-        &["scanf", "fscanf", "sscanf", "vscanf", "vfscanf", "vsscanf"];
-
-    /// Check if a function name is a printf-family function
-    fn is_printf_family(&self, name: &str) -> bool {
-        Self::PRINTF_FUNCTIONS.contains(&name)
-    }
-
     /// Check if a function name is a scanf-family function
     fn is_scanf_family(&self, name: &str) -> bool {
-        Self::SCANF_FUNCTIONS.contains(&name)
+        call_roles::is_scanf_family(name)
     }
 
     /// Check if a function name is a format string function
     fn is_format_function(&self, name: &str) -> bool {
-        self.is_printf_family(name) || self.is_scanf_family(name)
+        call_roles::is_format_function(name)
     }
 
     /// Extract format string from a call expression

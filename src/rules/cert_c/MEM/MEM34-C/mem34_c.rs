@@ -15,6 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -307,10 +308,7 @@ impl MemorySourceAnalyzer {
         if node.kind() == "call_expression" {
             if let Some(function) = node.child_by_field_name("function") {
                 let func_name = ast_utils::get_node_text_owned(&function, source);
-                return matches!(
-                    func_name.as_str(),
-                    "malloc" | "calloc" | "realloc" | "strdup" | "strndup" | "aligned_alloc"
-                );
+                return call_roles::is_allocator_call(&func_name);
             }
         } else if node.kind() == "cast_expression" {
             // Handle casted allocations like (char*)malloc(...)

@@ -70,6 +70,7 @@ use crate::utility::cert_c::ast_utils::{
     self, find_containing_function, get_function_parameters, get_identifier_from_declarator,
     get_node_text, is_function_parameter, is_pointer_type,
 };
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -472,10 +473,7 @@ impl Con34C {
         if node.kind() == "call_expression" {
             if let Some(func) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
-                return matches!(
-                    func_name,
-                    "malloc" | "calloc" | "realloc" | "strdup" | "strndup" | "aligned_alloc"
-                );
+                return call_roles::is_allocator_call(func_name);
             }
         }
 

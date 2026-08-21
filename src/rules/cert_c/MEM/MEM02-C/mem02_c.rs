@@ -14,13 +14,12 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
 pub struct Mem02C;
-
-const ALLOC_FUNCS: &[&str] = &["malloc", "calloc", "realloc", "aligned_alloc"];
 
 impl CertRule for Mem02C {
     fn rule_id(&self) -> &'static str {
@@ -315,7 +314,7 @@ impl Mem02C {
         if node.kind() == "call_expression" {
             if let Some(func) = node.child_by_field_name("function") {
                 let func_name = get_node_text(&func, source);
-                return ALLOC_FUNCS.contains(&func_name);
+                return call_roles::is_heap_allocator(func_name);
             }
         }
         false

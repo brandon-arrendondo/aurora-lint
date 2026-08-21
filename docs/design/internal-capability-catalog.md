@@ -167,6 +167,37 @@ their own recursive descent.
 | `is_pointer_declarator` | `(node: &Node) -> bool` | Contains a `pointer_declarator`. |
 | `is_function_declarator` | `(node: &Node) -> bool` | Contains a `function_declarator` (i.e. this is a function-pointer declarator). |
 
+## Call-role classification (allocator / printf-family / scanf-family)
+
+### `src/utility/cert_c/call_roles.rs`
+**Problem solved:** `std_functions.rs` answers "is this a known std/POSIX/
+Windows function at all" but has no "classify this call by role" layer on
+top of it. Task 481's ruleset-wide sweep found `is_allocation_call`/
+`is_alloc_call` reimplemented in 7 files with disagreeing lists (some
+missing `strdup`/`strndup`/`aligned_alloc`), and `is_printf_family` (or an
+equivalent list embedded in a broader `is_safe_function`) reimplemented in
+5+ files with disagreeing coverage (some missing `dprintf`/`vdprintf` or
+the wide-character `wprintf` family). Filed and closed as task 487.
+
+| Function | Signature | Description |
+|---|---|---|
+| `is_heap_allocator` | `(name: &str) -> bool` | `malloc`/`calloc`/`realloc`/`aligned_alloc` — the `void *`-returning allocators. Deliberately excludes `strdup`/`strndup` (they return `char *` already typed); use this instead of `is_allocator_call` when the rule's concern is specifically the void-pointer-cast idiom (e.g. MEM02-C). |
+| `is_string_duplicator` | `(name: &str) -> bool` | `strdup`/`strndup`. |
+| `is_allocator_call` | `(name: &str) -> bool` | `is_heap_allocator` or `is_string_duplicator` — the broader set most allocation-lifetime-tracking rules (leak/free/thread-lifetime) actually want. |
+| `is_printf_family` | `(name: &str) -> bool` | printf-family formatted-output functions, including `dprintf`/`vdprintf` and the wide-character `wprintf`/`fwprintf`/`swprintf` variants — the union of every printf list found across the ruleset. |
+| `is_scanf_family` | `(name: &str) -> bool` | scanf-family formatted-input functions. |
+| `is_format_function` | `(name: &str) -> bool` | `is_printf_family` or `is_scanf_family`. |
+| `is_sizeof_text` | `(expr: &str) -> bool` | Word-boundary-aware `sizeof` detection over an already-extracted text snippet (not an AST node), for rule files that operate on stringified sub-expressions rather than the AST directly. |
+
+**Deliberately NOT folded in here** (as of task 487): `ARR30-C`'s
+allocator list (its own buffer-size-tracking subsystem, task 497),
+`MEM12-C`'s broader resource-acquisition list (`fopen`/`open`/`socket` —
+a different, wider classification concept, and text-based rather than
+AST-based), and `STR30-C`/`ENV30-C`'s `is_safe_function` (only their
+printf sub-list overlaps; the rest of the function answers a materially
+different "does this call leave the buffer's contents alone" question).
+These are candidates for a later migration pass, not oversights.
+
 ## Pointer / lvalue / aliasing analysis
 
 ### `src/analyze/points_to.rs`

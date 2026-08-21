@@ -7,6 +7,7 @@
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -59,17 +60,7 @@ impl Dcl10C {
     }
 
     fn is_printf_family(&self, func_name: &str) -> bool {
-        matches!(
-            func_name,
-            "printf"
-                | "fprintf"
-                | "sprintf"
-                | "snprintf"
-                | "vprintf"
-                | "vfprintf"
-                | "vsprintf"
-                | "vsnprintf"
-        )
+        call_roles::is_printf_family(func_name)
     }
 
     fn check_printf_call(

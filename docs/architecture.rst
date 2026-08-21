@@ -112,6 +112,13 @@ Analysis Modules
   ~370 C11, POSIX, and Windows API functions recognized to suppress false
   positives on standard library calls (DCL31-C, DCL07-C).
 
+**Call-role classification** (``src/utility/cert_c/call_roles.rs``).
+  Single-source-of-truth predicates layered on top of the standard function
+  database for "what role does this call play" (``is_allocator_call``,
+  ``is_heap_allocator``, ``is_printf_family``, ``is_scanf_family``,
+  ``is_sizeof_text``), replacing 7+ independently reinvented, disagreeing
+  per-rule lists found by task 481's duplication sweep (task 487).
+
 **Internal capability catalog** (``docs/design/internal-capability-catalog.md``).
   A browsable-by-concept catalog of every reusable primitive in
   ``src/utility/cert_c/*.rs`` and ``src/analyze/*.rs`` (macro detection,

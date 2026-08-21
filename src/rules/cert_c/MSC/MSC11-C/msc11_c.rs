@@ -20,11 +20,10 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
-
-const ALLOC_FUNCS: &[&str] = &["malloc", "calloc", "realloc", "strdup"];
 
 #[derive(Debug)]
 pub struct Msc11C;
@@ -83,7 +82,7 @@ impl Msc11C {
             return false;
         };
         func.kind() == "identifier"
-            && ALLOC_FUNCS.contains(&ast_utils::get_node_text(&func, source))
+            && call_roles::is_allocator_call(ast_utils::get_node_text(&func, source))
     }
 
     fn traverse(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {

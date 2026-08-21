@@ -43,6 +43,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -125,8 +126,7 @@ impl Int35C {
 
     /// Check if expression is a sizeof expression
     fn is_sizeof_expression(&self, expr: &str) -> bool {
-        let trimmed = expr.trim();
-        trimmed.starts_with("sizeof") || trimmed.contains("sizeof(") || trimmed.contains("sizeof ")
+        call_roles::is_sizeof_text(expr)
     }
 
     /// Check if expression is CHAR_BIT
