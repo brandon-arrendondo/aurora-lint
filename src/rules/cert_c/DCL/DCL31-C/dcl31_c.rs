@@ -15,7 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -28,6 +28,8 @@ pub struct Dcl31C {
     declared_functions: RefCell<HashSet<String>>,
     // Functions known from pre-scanned directories (cross-file context)
     cross_file_functions: RefCell<HashSet<String>>,
+    // Object-macro names known from pre-scanned directories (cross-file context)
+    cross_file_macro_names: RefCell<HashSet<String>>,
 }
 
 impl Dcl31C {
@@ -35,7 +37,15 @@ impl Dcl31C {
         Dcl31C {
             declared_functions: RefCell::new(HashSet::new()),
             cross_file_functions: RefCell::new(HashSet::new()),
+            cross_file_macro_names: RefCell::new(HashSet::new()),
         }
+    }
+
+    /// True if `name` is a known `#define`d macro, either in this file
+    /// (text scan) or cross-file (prescan-collected `ProjectContext`).
+    fn is_known_macro(&self, name: &str, source: &str) -> bool {
+        ast_utils::is_defined_macro_name(name, source)
+            || self.cross_file_macro_names.borrow().contains(name)
     }
 
     /// Check if a declaration has an explicit type specifier
@@ -174,7 +184,7 @@ impl Dcl31C {
                 // convention. Tree-sitter cannot expand macros, so it sees macro
                 // invocations like SAFE_PRINT(x) or CU_ASSERT_EQUAL(a,b) as function
                 // calls. They are never truly undeclared functions.
-                if is_macro_like_name(func_name) {
+                if is_macro_like_name(func_name) || self.is_known_macro(func_name, source) {
                     return;
                 }
 
@@ -313,6 +323,7 @@ impl CertRule for Dcl31C {
             funcs.insert(macro_name.clone());
         }
         *self.cross_file_functions.borrow_mut() = funcs;
+        *self.cross_file_macro_names.borrow_mut() = context.defined_macro_names.clone();
     }
 
     fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {

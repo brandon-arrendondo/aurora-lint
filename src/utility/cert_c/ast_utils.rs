@@ -379,6 +379,8 @@ pub fn is_signed_type(type_str: &str) -> bool {
             | "signed int"
             | "signed short"
             | "signed long"
+            | "long long"
+            | "signed long long"
             | "signed char"
             | "int8_t"
             | "int16_t"

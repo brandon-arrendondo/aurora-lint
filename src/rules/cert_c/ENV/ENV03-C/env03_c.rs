@@ -20,7 +20,7 @@
 use crate::analyze::cfg;
 use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
-use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::{CertRule, RuleViolation};
 use crate::utility::cert_c::ast_utils::{get_node_text, is_function_parameter};
@@ -534,49 +534,10 @@ fn is_command_var_parameter_derived(scope: &Node, var_name: &str, source: &str) 
 
 /// Parameter-declarator identifiers for a `function_definition` node.
 fn collect_param_names(scope: &Node, source: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let Some(decl) = scope.child_by_field_name("declarator") else {
-        return names;
-    };
-    let Some(params) = find_parameter_list(&decl) else {
-        return names;
-    };
-    for i in 0..params.child_count() {
-        let Some(child) = params.child(i) else {
-            continue;
-        };
-        if child.kind() != "parameter_declaration" {
-            continue;
-        }
-        let Some(pd) = child.child_by_field_name("declarator") else {
-            continue;
-        };
-        if let Some(name) = extract_declarator_name(&pd, source) {
-            names.push(name);
-        }
-    }
-    names
-}
-
-fn find_parameter_list<'a>(node: &Node<'a>) -> Option<Node<'a>> {
-    if node.kind() == "function_declarator" {
-        for i in 0..node.child_count() {
-            if let Some(c) = node.child(i) {
-                if c.kind() == "parameter_list" {
-                    return Some(c);
-                }
-            }
-        }
-    }
-    // Nested declarators (e.g. pointer_declarator → function_declarator).
-    for i in 0..node.child_count() {
-        if let Some(c) = node.child(i) {
-            if let Some(found) = find_parameter_list(&c) {
-                return Some(found);
-            }
-        }
-    }
-    None
+    function_summary::collect_param_names(scope, source)
+        .into_iter()
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 /// Gather `(var_name, Vec<rhs>)` for every assignment to a named local

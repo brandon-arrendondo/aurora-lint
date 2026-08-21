@@ -509,7 +509,7 @@ impl Dcl30C {
                         || upper.contains("MALLOC")
                         || upper.contains("CALLOC")
                         || upper.contains("REALLOC")
-                        || upper.contains("ALLOC")
+                        || (upper.contains("ALLOC") && !upper.contains("DEALLOC"))
                         || upper.contains("STRDUP");
                 }
                 false

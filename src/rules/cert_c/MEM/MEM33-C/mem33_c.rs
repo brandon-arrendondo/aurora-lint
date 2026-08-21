@@ -2637,20 +2637,35 @@ impl FlexibleArrayAnalyzer {
     }
 
     fn extract_assignment_expression(&self, line: &str, var_name: &str) -> Option<String> {
-        // Extract the right-hand side of an assignment expression
+        // Extract the right-hand side of an assignment expression.
+        //
+        // Both patterns below search for the literal substring "{var_name} =",
+        // which is also a prefix of "{var_name} ==" -- guard every match against
+        // a following '=' so a comparison like `if (x == other)` isn't misread
+        // as an assignment to `x`.
+        let needle = format!("{} =", var_name);
 
         // Pattern 1: Declaration with initialization - type var_name = expression;
-        if let Some(pos) = line.find(&format!("{} =", var_name)) {
-            let after_equals = &line[pos + var_name.len() + 2..]; // +2 to skip " ="
-            if let Some(semicolon_pos) = after_equals.find(';') {
-                return Some(after_equals[..semicolon_pos].trim().to_string());
-            } else {
-                return Some(after_equals.trim().to_string());
+        let mut search_from = 0;
+        while let Some(rel_pos) = line[search_from..].find(&needle) {
+            let pos = search_from + rel_pos;
+            let equals_end = pos + var_name.len() + 2; // skip "{var_name} ="
+            if line.as_bytes().get(equals_end) == Some(&b'=') {
+                // "==" comparison, not an assignment -- keep searching.
+                search_from = equals_end;
+                continue;
             }
+            let after_equals = &line[equals_end..];
+            return Some(match after_equals.find(';') {
+                Some(semicolon_pos) => after_equals[..semicolon_pos].trim().to_string(),
+                None => after_equals.trim().to_string(),
+            });
         }
 
         // Pattern 2: Simple assignment - var_name = expression;
-        if line.trim_start().starts_with(&format!("{} =", var_name)) {
+        if line.trim_start().starts_with(&needle)
+            && line.as_bytes().get(line.find('=').unwrap() + 1) != Some(&b'=')
+        {
             let after_equals = &line[line.find('=').unwrap() + 1..];
             if let Some(semicolon_pos) = after_equals.find(';') {
                 return Some(after_equals[..semicolon_pos].trim().to_string());

@@ -2075,7 +2075,7 @@ impl Arr38C {
             return false;
         }
         // Check if source is a string literal or assigned from one
-        if !self.is_short_string_source(src_arg, dest_arg, source) {
+        if !self.is_short_string_source(src_arg, dest_arg, node, source) {
             return false;
         }
         let start_point = node.start_position();
@@ -2487,7 +2487,13 @@ impl Arr38C {
     }
 
     /// Check if source is a string literal that's shorter than destination
-    fn is_short_string_source(&self, src_arg: &str, dest_arg: &str, source: &str) -> bool {
+    fn is_short_string_source(
+        &self,
+        src_arg: &str,
+        dest_arg: &str,
+        node: &Node,
+        source: &str,
+    ) -> bool {
         let src = src_arg.trim();
         let dest = dest_arg.trim();
 
@@ -2496,17 +2502,24 @@ impl Arr38C {
             return true;
         }
 
+        // Scope the text search to the enclosing function so a same-named
+        // variable/parameter in an unrelated function (or a comment) can't
+        // supply the wrong array size or string length.
+        let scoped_source = find_containing_function(node)
+            .map(|f| &source[f.start_byte()..f.end_byte()])
+            .unwrap_or(source);
+
         // Check if source variable is assigned from a string literal
         // Pattern: const char *q = "Too short";
         // or: char *q = "string";
         let patterns = [format!("*{} = \"", src), format!(" {} = \"", src)];
         for pattern in &patterns {
-            if source.contains(pattern.as_str()) {
+            if scoped_source.contains(pattern.as_str()) {
                 // Found string literal assignment - now check if dest is larger
                 // Look for dest array size
-                if let Some(dest_size) = self.find_array_size(dest, source) {
+                if let Some(dest_size) = self.find_array_size(dest, scoped_source) {
                     // Estimate string length by finding the literal
-                    if let Some(literal_len) = self.find_string_literal_length(src, source) {
+                    if let Some(literal_len) = self.find_string_literal_length(src, scoped_source) {
                         if dest_size > literal_len {
                             return true;
                         }
@@ -2522,7 +2535,9 @@ impl Arr38C {
         false
     }
 
-    /// Find the size of an array from its declaration
+    /// Find the size of an array from its declaration. `source` should
+    /// already be scoped to the enclosing function to avoid matching a
+    /// same-named array declared elsewhere in the file.
     fn find_array_size(&self, var_name: &str, source: &str) -> Option<usize> {
         // Pattern: type var_name[SIZE]
         let pattern = format!(" {}[", var_name);
@@ -2538,7 +2553,9 @@ impl Arr38C {
         None
     }
 
-    /// Find the length of a string literal assigned to a variable
+    /// Find the length of a string literal assigned to a variable. `source`
+    /// should already be scoped to the enclosing function (see
+    /// `find_array_size`).
     fn find_string_literal_length(&self, var_name: &str, source: &str) -> Option<usize> {
         // Look for: *var = "..." or var = "..."
         let patterns = [format!("*{} = \"", var_name), format!(" {} = \"", var_name)];

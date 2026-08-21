@@ -83,13 +83,15 @@ fn check_node_for_self_detach(node: &Node, file_content: &str) -> bool {
         let Some(func_name_node) = n.child_by_field_name("function") else {
             return false;
         };
-        if get_node_text(&func_name_node, file_content) != "thrd_detach" {
+        let fn_name = get_node_text(&func_name_node, file_content);
+        if fn_name != "thrd_detach" && fn_name != "pthread_detach" {
             return false;
         }
         let Some(args_node) = n.child_by_field_name("arguments") else {
             return false;
         };
-        get_node_text(&args_node, file_content).contains("thrd_current()")
+        let args_text = get_node_text(&args_node, file_content);
+        args_text.contains("thrd_current()") || args_text.contains("pthread_self()")
     })
     .is_some()
 }
@@ -122,7 +124,7 @@ fn search_for_thread_create(
     for n in query::find_descendants_of_kind(*node, "call_expression") {
         if let Some(fn_node) = n.child_by_field_name("function") {
             let fn_name = get_node_text(&fn_node, file_content);
-            if fn_name == "thrd_create" {
+            if fn_name == "thrd_create" || fn_name == "pthread_create" {
                 // Check if this creates the thread with our function
                 if let Some(args) = n.child_by_field_name("arguments") {
                     let args_text = get_node_text(&args, file_content);
@@ -191,7 +193,8 @@ fn find_thrd_join_in_node(node: &Node, file_content: &str) -> bool {
         let Some(fn_node) = n.child_by_field_name("function") else {
             return false;
         };
-        get_node_text(&fn_node, file_content) == "thrd_join"
+        let fn_name = get_node_text(&fn_node, file_content);
+        fn_name == "thrd_join" || fn_name == "pthread_join"
     })
     .is_some()
 }

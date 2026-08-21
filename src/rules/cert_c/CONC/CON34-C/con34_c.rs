@@ -564,7 +564,10 @@ impl Con34C {
                 return false;
             }
             n.child_by_field_name("function")
-                .map(|func| get_node_text(&func, source) == "thrd_create")
+                .map(|func| {
+                    let name = get_node_text(&func, source);
+                    name == "thrd_create" || name == "pthread_create"
+                })
                 .unwrap_or(false)
         })
         .is_some()

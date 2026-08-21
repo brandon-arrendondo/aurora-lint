@@ -139,20 +139,27 @@ impl Pre31C {
     /// Check if the source contains a safe definition of the macro
     /// Safe definitions use _Generic or statement expressions
     fn is_safe_macro_definition(&self, function_name: &str, source: &str) -> bool {
-        // Look for #define of this macro
-        let define_pattern = format!("#define {}", function_name);
-        if let Some(start) = source.find(&define_pattern) {
-            // Get the rest of the line/definition
-            let rest = &source[start..];
-            // Check for safe patterns
-            // _Generic evaluates its controlling expression only once
-            if rest.contains("_Generic") {
-                return true;
-            }
-            // GNU statement expression: ({ ... }) ensures single evaluation
-            if rest.contains("({") {
-                return true;
-            }
+        // Look for #define of this macro, word-boundary-anchored so e.g. "MIN"
+        // doesn't false-match a "#define MIN_VALUE ..." definition.
+        let Ok(re) = regex::Regex::new(&format!(
+            r"(?m)^\s*#\s*define\s+{}\b",
+            regex::escape(function_name)
+        )) else {
+            return false;
+        };
+        let Some(m) = re.find(source) else {
+            return false;
+        };
+        // Get the rest of the line/definition
+        let rest = &source[m.start()..];
+        // Check for safe patterns
+        // _Generic evaluates its controlling expression only once
+        if rest.contains("_Generic") {
+            return true;
+        }
+        // GNU statement expression: ({ ... }) ensures single evaluation
+        if rest.contains("({") {
+            return true;
         }
         false
     }

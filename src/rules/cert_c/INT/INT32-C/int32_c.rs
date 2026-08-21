@@ -1892,7 +1892,7 @@ impl Int32C {
     }
 
     fn is_signed_type(&self, type_str: &str) -> bool {
-        type_str == "signed" || type_str == "int" || type_str == "char" || type_str == "short"
+        ast_utils::is_signed_type(type_str)
     }
 
     fn signed_type_bits(left_type: &str, right_type: &str) -> u32 {
