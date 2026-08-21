@@ -15,6 +15,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::float_typing;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -96,129 +97,16 @@ impl Flp34C {
     }
 
     /// Collect variable types from function parameters and local declarations.
-    /// Returns a map from variable name to its base type string.
+    /// Returns a map from variable name to its base type string. Pointer-typed
+    /// declarators are recorded as `"<base type> *"` (e.g. a `float *fp`
+    /// parameter maps to `"float *"`, not `"float"` -- otherwise `fp_rank`
+    /// would treat the pointer value itself as float-ranked).
     fn collect_variable_types<'a>(
         &self,
         func_node: &Node<'a>,
         source: &'a str,
     ) -> HashMap<String, String> {
-        let mut type_map = HashMap::new();
-
-        // Collect from function parameters
-        if let Some(declarator) = func_node.child_by_field_name("declarator") {
-            self.collect_params_from_declarator(&declarator, source, &mut type_map);
-        }
-
-        // Collect from local declarations in the function body
-        if let Some(body) = func_node.child_by_field_name("body") {
-            self.collect_local_declarations(&body, source, &mut type_map);
-        }
-
-        type_map
-    }
-
-    /// Extract parameter types from a function declarator
-    fn collect_params_from_declarator(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        // Find this declarator and any nested function_declarator (e.g. pointer declarators)
-        for func_declarator in query::find_descendants_of_kind(*node, "function_declarator") {
-            if let Some(params) = func_declarator.child_by_field_name("parameters") {
-                for i in 0..params.child_count() {
-                    if let Some(param) = params.child(i) {
-                        if param.kind() == "parameter_declaration" {
-                            self.extract_type_and_name(&param, source, type_map);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Collect local variable declarations from a compound_statement
-    fn collect_local_declarations(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        for decl in query::find_descendants_of_kind(*node, "declaration") {
-            self.extract_type_and_name(&decl, source, type_map);
-        }
-    }
-
-    /// Extract the type specifier text and variable name from a declaration or parameter_declaration
-    fn extract_type_and_name(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        let mut type_text = String::new();
-
-        // Collect the type from children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "primitive_type" | "sized_type_specifier" | "type_identifier" => {
-                        type_text = ast_utils::get_node_text(&child, source).to_string();
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        if type_text.is_empty() {
-            return;
-        }
-
-        // Extract variable names from declarators
-        if let Some(declarator) = node.child_by_field_name("declarator") {
-            if let Some(name) = self.extract_identifier_name(&declarator, source) {
-                type_map.insert(name, type_text.clone());
-            }
-        }
-
-        // Also handle init_declarator lists (e.g. `int a, b;`)
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "init_declarator" {
-                    if let Some(decl) = child.child_by_field_name("declarator") {
-                        if let Some(name) = self.extract_identifier_name(&decl, source) {
-                            type_map.insert(name, type_text.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Extract the identifier name from a declarator, unwrapping pointer/array declarators
-    fn extract_identifier_name(&self, node: &Node, source: &str) -> Option<String> {
-        match node.kind() {
-            "identifier" => Some(ast_utils::get_node_text(node, source).to_string()),
-            "pointer_declarator" | "array_declarator" | "parenthesized_declarator" => {
-                if let Some(inner) = node.child_by_field_name("declarator") {
-                    self.extract_identifier_name(&inner, source)
-                } else {
-                    None
-                }
-            }
-            _ => {
-                // Search children for identifier
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "identifier" {
-                            return Some(ast_utils::get_node_text(&child, source).to_string());
-                        }
-                    }
-                }
-                None
-            }
-        }
+        float_typing::collect_variable_types(func_node, source)
     }
 
     /// Check if a cast expression converts floating-point types unsafely

@@ -212,9 +212,8 @@ fn extract_type_and_name(node: &Node, source: &str, type_map: &mut HashMap<Strin
     }
 
     if let Some(declarator) = node.child_by_field_name("declarator") {
-        let is_pointer = declarator.kind() == "pointer_declarator";
         if let Some(name) = extract_identifier_name(&declarator, source) {
-            let full_type = if is_pointer {
+            let full_type = if is_pointer_declarator_field(&declarator) {
                 format!("{} *", type_text)
             } else {
                 type_text.clone()
@@ -228,9 +227,8 @@ fn extract_type_and_name(node: &Node, source: &str, type_map: &mut HashMap<Strin
         if let Some(child) = node.child(i) {
             if child.kind() == "init_declarator" {
                 if let Some(decl) = child.child_by_field_name("declarator") {
-                    let is_pointer = decl.kind() == "pointer_declarator";
                     if let Some(name) = extract_identifier_name(&decl, source) {
-                        let full_type = if is_pointer {
+                        let full_type = if is_pointer_declarator_field(&decl) {
                             format!("{} *", type_text)
                         } else {
                             type_text.clone()
@@ -241,6 +239,25 @@ fn extract_type_and_name(node: &Node, source: &str, type_map: &mut HashMap<Strin
             }
         }
     }
+}
+
+/// True if this declarator (or an `init_declarator` wrapping it) contains a
+/// `pointer_declarator`. The `init_declarator` unwrap matters because a
+/// `declaration` node's `declarator` field IS the `init_declarator` itself
+/// when there's an initializer (e.g. `float *p = get_ptr();`), not a bare
+/// `pointer_declarator` -- a case this function's direct-kind-check
+/// predecessor missed, silently recording such a variable as non-pointer
+/// (the same bug task 490 fixed in INT32-C's equivalent helper).
+fn is_pointer_declarator_field(node: &Node) -> bool {
+    if node.kind() == "pointer_declarator" {
+        return true;
+    }
+    if node.kind() == "init_declarator" {
+        if let Some(decl) = node.child_by_field_name("declarator") {
+            return decl.kind() == "pointer_declarator";
+        }
+    }
+    false
 }
 
 fn extract_identifier_name(node: &Node, source: &str) -> Option<String> {
@@ -259,5 +276,41 @@ fn extract_identifier_name(node: &Node, source: &str) -> Option<String> {
             }
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tree_sitter::Parser;
+
+    fn parse_c_code(code: &str) -> tree_sitter::Tree {
+        let mut parser = Parser::new();
+        let language = crate::parser::c_language();
+        parser.set_language(&language).unwrap();
+        parser.parse(code, None).unwrap()
+    }
+
+    #[test]
+    fn is_float_type_is_word_boundary_aware() {
+        assert!(is_float_type("float"));
+        assert!(is_float_type("double"));
+        assert!(!is_float_type("double_buffered_count"));
+    }
+
+    #[test]
+    fn collect_variable_types_marks_init_declarator_pointer() {
+        // Regression test for the same init_declarator-unwrap bug task 490
+        // fixed in overflow_helpers.rs: a single declarator with an
+        // initializer (`declarator` field IS the init_declarator itself)
+        // must still be recorded as a pointer type.
+        let src = "void f(void) { float *p = get_ptr(); }";
+        let tree = parse_c_code(src);
+        let func = tree
+            .root_node()
+            .child(0)
+            .expect("function_definition child");
+        let type_map = collect_variable_types(&func, src);
+        assert_eq!(type_map.get("p").map(|s| s.as_str()), Some("float *"));
     }
 }

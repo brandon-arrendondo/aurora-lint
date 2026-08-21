@@ -2,6 +2,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::float_typing;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -85,7 +86,8 @@ impl Flp37C {
 
     fn has_float_field(&self, node: &Node, source: &str) -> bool {
         query::find_first_descendant(*node, |n| {
-            n.kind() == "primitive_type" && matches!(get_node_text(&n, source), "float" | "double")
+            matches!(n.kind(), "primitive_type" | "type_identifier")
+                && float_typing::is_float_type(get_node_text(&n, source))
         })
         .is_some()
     }

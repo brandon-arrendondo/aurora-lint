@@ -55,6 +55,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::float_typing;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -69,7 +70,7 @@ impl Flp02C {
 
     /// Check if type is a floating-point type
     fn is_float_type(&self, type_text: &str) -> bool {
-        type_text.contains("float") || type_text.contains("double")
+        float_typing::is_float_type(type_text)
     }
 
     /// Check if operator is equality or inequality

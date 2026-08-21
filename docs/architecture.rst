@@ -129,6 +129,15 @@ Analysis Modules
   ``INT30-C``'s is unsigned-wraparound-focused and ``INT32-C``'s is
   signed-overflow-focused.
 
+**Floating-point type inference** (``src/utility/cert_c/float_typing.rs``).
+  Word-boundary-aware float/integer classification (``is_float_type``,
+  ``expr_is_float``, ``expr_is_definitely_integer``,
+  ``collect_variable_types``) shared by the FLP rule family. Task 491
+  migrated 3 of the 9 flagged rules (FLP02-C, FLP34-C, FLP37-C); the other
+  6 turned out to check genuinely different concepts (format specifiers,
+  ``long double`` specifically, a more comprehensive extended-float set)
+  and correctly stay rule-local.
+
 **Internal capability catalog** (``docs/design/internal-capability-catalog.md``).
   A browsable-by-concept catalog of every reusable primitive in
   ``src/utility/cert_c/*.rs`` and ``src/analyze/*.rs`` (macro detection,

@@ -237,6 +237,51 @@ in the same audit — `INT30-C`'s `get_operator`/`get_assignment_operator`
 missing `%`/`%=` that `INT32-C`'s otherwise-parallel versions have — is
 filed separately (task 500) since it's a one-line fix, not a duplication.
 
+## Floating-point type inference
+
+### `src/utility/cert_c/float_typing.rs`
+**Problem solved:** distinguishing integer arithmetic from floating-point
+arithmetic via the C usual arithmetic conversions. Task 481's sweep found
+only 2 of 14 FLP rules (`FLP06-C`, `FLP30-C`) actually called this module;
+task 491 migrated 3 more and confirmed the other 6 flagged rules are
+checking genuinely different concepts (format specifiers, `long double`
+specifically, integer `long`, or a more comprehensive extended-float set
+this module doesn't cover) and correctly stay rule-local.
+
+| Function | Signature | Description |
+|---|---|---|
+| `is_float_type` | `(type_str: &str) -> bool` | Word-boundary-tokenized check for `float`/`double`/`float_t`/`double_t` — never a substring match, so an integer typedef merely embedding "float" in its name (e.g. `double_buffered_count`) isn't misclassified. |
+| `is_float_literal` | `(text: &str) -> bool` | True if a numeric literal is a floating-point constant (`.`, exponent, or `f`/`F` suffix; hex integer literals excluded). |
+| `expr_is_float` | `(node, source, type_map, struct_field_types) -> bool` | Best-effort positive-only float determination for an expression; unknown expressions return `false` to preserve integer-detection recall. |
+| `expr_is_definitely_integer` | `(node, source, type_map) -> bool` | Dual of the above: true only when every leaf is provably integer-typed. |
+| `collect_variable_types` | `(node: &Node, source: &str) -> HashMap<String, String>` | Builds a `{name -> type}` map for a function's parameters/locals, pointer-aware (`"float *"`, not `"float"`) since task 491 fixed the same init_declarator-unwrap bug task 490 found in `overflow_helpers.rs`'s equivalent. |
+
+**Migrated in task 491** (each confirmed either a pure refactor or a
+narrow, justified widen): `FLP02-C` (local substring-only `is_float_type`
+replaced with the word-boundary version — closes a real FP risk on
+integer variables like `double_buffered_count`), `FLP34-C` (its 4-helper
+type-map-builder cluster replaced wholesale — gains pointer-awareness,
+so a `float *fp` parameter is no longer mis-fed into `fp_rank`/
+`is_integer_type` as a bare scalar `"float"`), `FLP37-C` (`has_float_field`
+widened to also match `type_identifier` nodes through `is_float_type`,
+catching `float_t`/`double_t` typedefs a `primitive_type`-only check
+couldn't see).
+
+**Deliberately NOT migrated** (confirmed different concepts, not
+duplicates despite similar names): `FLP04-C` (`%f`/`%lf` format
+*specifiers*, an unrelated classification axis), `FLP05-C` (`float`
+specifically, deliberately excluding `double`), `FLP07-C` (`long double`
+specifically), `FLP36-C` (integer `long`, the *other* operand in a
+float-conversion-precision check, not float classification at all),
+`FLP38-C` (its local `is_floating_type` is MORE comprehensive than
+`is_float_type` — covers 6 C23/GCC extended float types this module has
+no equivalent for; migrating would have been a regression). `FLP03-C`
+overlaps conceptually but is structurally incompatible with a quick
+call-swap (works over raw text via an ad hoc `HashSet` rather than a type
+map) — filed as its own follow-up (task 501) rather than risking a subtle
+behavior change under this task's scope. Closing the `is_floating_type`
+gap in `is_float_type` itself is tracked as task 502.
+
 ## Pointer / lvalue / aliasing analysis
 
 ### `src/analyze/points_to.rs`
