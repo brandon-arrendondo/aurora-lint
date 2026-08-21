@@ -4584,7 +4584,8 @@ impl Arr30C {
                     if child.kind() == "init_declarator" {
                         // Get the declarator (left side)
                         if let Some(declarator) = child.child(0) {
-                            return self.extract_variable_name_from_declarator(&declarator, source);
+                            let name = get_identifier_from_declarator(&declarator, source);
+                            return if name.is_empty() { None } else { Some(name) };
                         }
                     }
                 }
@@ -4601,27 +4602,6 @@ impl Arr30C {
         }
 
         None
-    }
-
-    /// Extract variable name from a declarator node
-    fn extract_variable_name_from_declarator(&self, node: &Node, source: &str) -> Option<String> {
-        match node.kind() {
-            "identifier" => Some(source[node.start_byte()..node.end_byte()].to_string()),
-            "pointer_declarator" => {
-                // Recurse into pointer declarator to find the identifier
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if let Some(name) =
-                            self.extract_variable_name_from_declarator(&child, source)
-                        {
-                            return Some(name);
-                        }
-                    }
-                }
-                None
-            }
-            _ => None,
-        }
     }
 
     /// Check if there's a safe NULL check (with return/exit) for the given variable in the function
@@ -5713,7 +5693,7 @@ impl Arr30C {
     ) -> Option<BufferInfo> {
         let var_name = if declarator.kind() == "pointer_declarator" {
             // Navigate to the identifier within pointer_declarator (may be nested for double pointers)
-            self.find_identifier_in_declarator(declarator, source)?
+            find_identifier_in_declarator(declarator, source)?
         } else {
             source[declarator.start_byte()..declarator.end_byte()].to_string()
         };
@@ -5749,24 +5729,6 @@ impl Arr30C {
                 }
             }
         }
-        None
-    }
-
-    /// Recursively find identifier within a declarator (handles nested pointer_declarators)
-    fn find_identifier_in_declarator(&self, node: &Node, source: &str) -> Option<String> {
-        if node.kind() == "identifier" {
-            return Some(source[node.start_byte()..node.end_byte()].to_string());
-        }
-
-        // Recursively search children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(name) = self.find_identifier_in_declarator(&child, source) {
-                    return Some(name);
-                }
-            }
-        }
-
         None
     }
 
