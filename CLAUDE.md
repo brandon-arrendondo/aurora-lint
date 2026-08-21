@@ -170,6 +170,18 @@ text, line-by-line logic).
 Rebuild after non-trivial changes: `clew --output <db path from index(action='status')> --repo-root . --rebuild`.
 The MCP tools also offer to build/refresh on first use if no index exists yet.
 
+**Before implementing any new AST/text heuristic, verify one doesn't already
+exist** (task 479, filed after task 475 nearly re-implemented DCL40-C's
+`is_defined_macro_name`/`ProjectContext::defined_macro_names` cross-file
+macro-detection as a fresh ALL_CAPS-name heuristic — a plain keyword grep for
+"macro detection" missed it on the first pass). Until task 479 ships a proper
+capability index, treat this as mandatory due diligence, not optional: try
+`dossier`/`search` for the concept, then grep `src/utility/cert_c/` and
+`src/analyze/` directly for the primitive by what it *does* (e.g.
+`is_defined_macro_name`, `is_macro_like_name`, `lvalue_of`, `points_to`), not
+just by the term you'd naturally reach for — this has caught real scoping
+bugs before (ARR39-C task 146, CON34-C task 385).
+
 ## Build & Test
 
 ```bash
