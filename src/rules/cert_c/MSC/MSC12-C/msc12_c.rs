@@ -10,16 +10,38 @@
 //! 7. Empty function bodies
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, is_defined_macro_name};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashSet;
 use tree_sitter::Node;
 
-pub struct Msc12C;
+pub struct Msc12C {
+    // Names of #define macros collected cross-file during pre-scan (same
+    // mechanism DCL40-C uses, task 432): a bare object-like macro invoked
+    // as a statement (`NODE_LOCK_SYS;`) commonly has its #define in a
+    // different file (a header) than the .c file that invokes it.
+    cross_file_macro_names: RefCell<HashSet<String>>,
+}
 
 impl Msc12C {
     pub fn new() -> Self {
-        Self
+        Self {
+            cross_file_macro_names: RefCell::new(HashSet::new()),
+        }
+    }
+
+    /// True if `name` is a known `#define` macro — either textually present
+    /// in this same file's `source`, or collected cross-file during
+    /// pre-scan. A parenthesis-less macro invoked as a bare identifier
+    /// statement (`NODE_LOCK_SYS;`, `IPI_MEM_BARRIER;`) may expand to real
+    /// code (lock acquire/release, a memory-barrier instruction) that
+    /// tree-sitter can't see without preprocessing. See
+    /// data/precision_audit/sel4/README.md (task 475).
+    fn is_known_macro(&self, name: &str, source: &str) -> bool {
+        is_defined_macro_name(name, source) || self.cross_file_macro_names.borrow().contains(name)
     }
 
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
@@ -291,6 +313,13 @@ impl Msc12C {
             }
             // Bare identifier or field expression as statement: `x;` or `s.field;`
             "identifier" | "field_expression" => {
+                // Mirrors the call_expression exception above, but for a
+                // macro invoked without `()`. See is_known_macro's doc.
+                if expr.kind() == "identifier"
+                    && self.is_known_macro(&get_node_text(&expr, source), source)
+                {
+                    return;
+                }
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: self.severity(),
@@ -943,6 +972,10 @@ impl CertRule for Msc12C {
 
     fn cert_id(&self) -> &'static str {
         "MSC12-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.cross_file_macro_names.borrow_mut() = context.defined_macro_names.clone();
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
