@@ -192,15 +192,19 @@ pub fn calculate_malloc_size(malloc_args: &str) -> Option<BufferSize> {
     if trimmed.contains('*') && trimmed.contains("sizeof") {
         // Split only on the first '*' to handle cases like "3 * sizeof(int*)"
         if let Some(mult_pos) = trimmed.find('*') {
-            let count_str = &trimmed[..mult_pos].trim();
-            let sizeof_str = &trimmed[mult_pos + 1..].trim();
+            let left = trimmed[..mult_pos].trim();
+            let right = trimmed[mult_pos + 1..].trim();
 
-            let count = extract_numeric_value(count_str);
-            let _sizeof_val = extract_sizeof_value(sizeof_str);
-
-            if let Some(c) = count {
+            if let Some(c) = extract_numeric_value(left) {
                 // Store element count, not byte count
                 return Some(BufferSize::DynamicCalculated(c));
+            }
+            // Reversed order: sizeof(TYPE) * COUNT - malloc(sizeof(int) * 5)
+            // (task 513, same shape as task 509's nested-multiply extension)
+            if left.contains("sizeof") {
+                if let Some(c) = extract_numeric_value(right) {
+                    return Some(BufferSize::DynamicCalculated(c));
+                }
             }
             // Count is a variable (e.g., data*sizeof(char)) — size is unknown
             // Do NOT fall through to pattern 3 which would misinterpret
@@ -232,13 +236,15 @@ pub fn calculate_alloc_bytes(malloc_args: &str) -> Option<usize> {
     // Pattern 2: COUNT * sizeof(TYPE) - malloc(5 * sizeof(int)) → 5 * 4 = 20 bytes
     if trimmed.contains('*') && trimmed.contains("sizeof") {
         if let Some(mult_pos) = trimmed.find('*') {
-            let count_str = trimmed[..mult_pos].trim();
-            let sizeof_str = trimmed[mult_pos + 1..].trim();
+            let left = trimmed[..mult_pos].trim();
+            let right = trimmed[mult_pos + 1..].trim();
 
-            let count = extract_numeric_value(count_str);
-            let sizeof_val = extract_sizeof_value(sizeof_str);
-
-            if let (Some(c), Some(s)) = (count, sizeof_val) {
+            if let (Some(c), Some(s)) = (extract_numeric_value(left), extract_sizeof_value(right)) {
+                return Some(c * s);
+            }
+            // Reversed order: sizeof(TYPE) * COUNT - malloc(sizeof(int) * 5)
+            // (task 513, same shape as task 509's nested-multiply extension)
+            if let (Some(s), Some(c)) = (extract_sizeof_value(left), extract_numeric_value(right)) {
                 return Some(c * s);
             }
         }
@@ -535,6 +541,29 @@ mod tests {
             calculate_malloc_size("(10-2) * sizeof(char)"),
             Some(BufferSize::DynamicCalculated(8))
         ));
+    }
+
+    #[test]
+    fn malloc_size_handles_reversed_sizeof_times_count_order() {
+        // sizeof(T) * COUNT (task 513): calculate_malloc_size only tried
+        // COUNT * sizeof(T) before; the reversed order used to fall through
+        // to Dynamic even though COUNT is a plain number.
+        assert!(matches!(
+            calculate_malloc_size("sizeof(int) * 5"),
+            Some(BufferSize::DynamicCalculated(5))
+        ));
+        assert_eq!(calculate_alloc_bytes("sizeof(int) * 5"), Some(20));
+        // Reversed order with a variable count still falls back to Dynamic
+        // for calculate_malloc_size (Pattern 2's explicit early return).
+        assert!(matches!(
+            calculate_malloc_size("sizeof(char) * n"),
+            Some(BufferSize::Dynamic(_))
+        ));
+        // calculate_alloc_bytes has no such guard and falls through to
+        // Pattern 3's whole-string sizeof lookup here — pre-existing
+        // behavior, unchanged by this task, same as the forward order
+        // ("n * sizeof(char)") already exhibited.
+        assert_eq!(calculate_alloc_bytes("sizeof(char) * n"), Some(1));
     }
 
     #[test]
