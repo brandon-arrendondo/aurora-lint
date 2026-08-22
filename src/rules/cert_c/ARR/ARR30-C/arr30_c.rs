@@ -58,6 +58,7 @@ use crate::utility::cert_c::ast_utils::{
     find_enclosing_declaration_for_identifier, find_identifier_in_declarator,
     get_identifier_from_declarator,
 };
+use crate::utility::cert_c::call_roles;
 
 pub struct Arr30C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
@@ -4491,7 +4492,7 @@ impl Arr30C {
                         rule_id: self.rule_id().to_string(),
                         severity: Severity::High,
                         message: format!(
-                            "Pointer arithmetic on potentially NULL pointer '{}' from malloc/calloc/realloc. \
+                            "Pointer arithmetic on potentially NULL pointer '{}' from a heap allocator. \
                             No NULL check found before use at line {}.",
                             var_name, violation_line
                         ),
@@ -4511,11 +4512,20 @@ impl Arr30C {
         violations
     }
 
-    /// Whether `value` is a call to malloc/calloc/realloc, unwrapping a
-    /// leading cast (`(char *)malloc(n)`) if present. Matched against the
-    /// callee identifier node, not the RHS's raw text, so a string-literal
+    /// Whether `value` is a call to a heap allocator (malloc/calloc/
+    /// realloc/aligned_alloc/strdup/strndup), unwrapping a leading cast
+    /// (`(char *)malloc(n)`) if present. Matched against the callee
+    /// identifier node, not the RHS's raw text, so a string-literal
     /// initializer like `char *msg = "malloc(10) failed";` can't be
     /// mistaken for an allocation.
+    ///
+    /// Only feeds `check_malloc_null_pointer_arithmetic`'s NULL-check-
+    /// before-pointer-arithmetic tracking here, not any numeric-size
+    /// extraction — so widening from the original malloc/calloc/realloc-only
+    /// list to the shared `call_roles::is_allocator_call` set (task 498)
+    /// is a plain recall improvement: `aligned_alloc`/`strdup`/`strndup`
+    /// can also return NULL and are equally subject to the same
+    /// missing-NULL-check bug.
     fn is_alloc_call(value: &Node, source: &str) -> bool {
         let value = match value.kind() {
             "cast_expression" => value.child_by_field_name("value").unwrap_or(*value),
@@ -4523,10 +4533,7 @@ impl Arr30C {
         };
         value.kind() == "call_expression"
             && value.child_by_field_name("function").is_some_and(|f| {
-                matches!(
-                    &source[f.start_byte()..f.end_byte()],
-                    "malloc" | "calloc" | "realloc"
-                )
+                call_roles::is_allocator_call(&source[f.start_byte()..f.end_byte()])
             })
     }
 
