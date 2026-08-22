@@ -166,6 +166,27 @@ pub fn calculate_malloc_size(malloc_args: &str) -> Option<BufferSize> {
         return Some(BufferSize::DynamicCalculated(size));
     }
 
+    // Pattern 1.5: (A op B) * sizeof(TYPE) — a parenthesized two-operand
+    // arithmetic expression immediately multiplied by a sizeof, e.g.
+    // malloc((N*M) * sizeof(int)) or malloc((N+1) * sizeof(char)). Handled
+    // before Pattern 2's naive split-on-first-'*', which mis-splits on the
+    // operator INSIDE the parens when it is itself '*' (task 509) — this
+    // pattern only fires where Pattern 2 would otherwise fall through to
+    // `Dynamic` (the '+'/'-' cases already succeed via Pattern 2's
+    // extract_numeric_value/evaluate_simple_arithmetic fallback), so it is
+    // purely additive.
+    if let Some(caps) = regex::Regex::new(r"^\(\s*(\d+)\s*([+*\-])\s*(\d+)\s*\)\s*\*\s*sizeof")
+        .ok()
+        .and_then(|re| re.captures(trimmed))
+    {
+        let a = caps[1].parse::<usize>().ok();
+        let op = caps.get(2).map(|m| m.as_str());
+        let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
+        if let Some(n) = eval_arith(a, op, b) {
+            return Some(BufferSize::DynamicCalculated(n));
+        }
+    }
+
     // Pattern 2: COUNT * sizeof(TYPE) - malloc(5 * sizeof(int))
     // Store the COUNT (number of elements), not the byte size
     if trimmed.contains('*') && trimmed.contains("sizeof") {
@@ -492,6 +513,27 @@ mod tests {
         assert!(matches!(
             calculate_malloc_size("n * sizeof(char)"),
             Some(BufferSize::Dynamic(_))
+        ));
+    }
+
+    #[test]
+    fn malloc_size_handles_nested_paren_arith_before_sizeof() {
+        // (N*M) * sizeof(T): the inner '*' used to break Pattern 2's naive
+        // split-on-first-'*' (task 509) — now resolved via Pattern 1.5.
+        assert!(matches!(
+            calculate_malloc_size("(4*3) * sizeof(int)"),
+            Some(BufferSize::DynamicCalculated(12))
+        ));
+        // (N+M) * sizeof(T) and (N-M) * sizeof(T) already worked via
+        // Pattern 2's arithmetic fallback — confirm Pattern 1.5 doesn't
+        // change their answer.
+        assert!(matches!(
+            calculate_malloc_size("(4+3) * sizeof(int)"),
+            Some(BufferSize::DynamicCalculated(7))
+        ));
+        assert!(matches!(
+            calculate_malloc_size("(10-2) * sizeof(char)"),
+            Some(BufferSize::DynamicCalculated(8))
         ));
     }
 
