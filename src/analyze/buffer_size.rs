@@ -108,19 +108,43 @@ pub fn extract_sizeof_value(s: &str) -> Option<usize> {
         return None;
     }
 
-    // Common type sizes (assuming typical 64-bit Linux system)
+    // Pointer types (T*) are 8 bytes on the 64-bit target this table
+    // assumes, regardless of T — checked before the type-name table so a
+    // base-type substring match (e.g. "int" inside "int*") can never
+    // shadow it (task 516: the old "int*"/"char*"/"wchar_t*" table
+    // entries were dead code for exactly this reason, since "int"/"char"/
+    // "wchar_t" are checked first and match every one of those strings).
+    if let Some(after_sizeof) = s.split_once("sizeof(").map(|(_, rest)| rest) {
+        if let Some(type_name) = after_sizeof.split(')').next() {
+            if type_name.trim().ends_with('*') {
+                return Some(8);
+            }
+        }
+    }
+
+    // Common type sizes (assuming typical 64-bit Linux system). Longer,
+    // more specific names are checked before shorter substrings they
+    // contain (task 516): "int64_t"/"uint64_t" would otherwise
+    // substring-match "int" (4 bytes) before ever reaching a check for
+    // their real 8-byte width, and likewise for the other stdint widths.
     let type_sizes = [
+        ("int64_t", 8),
+        ("uint64_t", 8),
+        ("int32_t", 4),
+        ("uint32_t", 4),
+        ("int16_t", 2),
+        ("uint16_t", 2),
+        ("int8_t", 1),
+        ("uint8_t", 1),
+        ("size_t", 8),
         ("wchar_t", 4),
+        ("long long", 8),
+        ("long", 8),
         ("int", 4),
         ("char", 1),
         ("short", 2),
-        ("long", 8),
         ("float", 4),
         ("double", 8),
-        ("void*", 8),
-        ("int*", 8),
-        ("char*", 8),
-        ("wchar_t*", 8),
     ];
 
     for (type_name, size) in &type_sizes {
@@ -505,6 +529,36 @@ mod tests {
         assert_eq!(extract_sizeof_value("sizeof(struct foo)"), Some(8));
         // No sizeof at all → None (distinct from the size-8 fallback).
         assert_eq!(extract_sizeof_value("42"), None);
+    }
+
+    #[test]
+    fn sizeof_stdint_widths_not_shadowed_by_int_substring() {
+        // int64_t/uint64_t used to substring-match "int" (4 bytes) before
+        // ever reaching "long" (8 bytes); same root cause affected every
+        // other fixed-width stdint type against its containing base name.
+        assert_eq!(extract_sizeof_value("sizeof(int64_t)"), Some(8));
+        assert_eq!(extract_sizeof_value("sizeof(uint64_t)"), Some(8));
+        assert_eq!(extract_sizeof_value("sizeof(int32_t)"), Some(4));
+        assert_eq!(extract_sizeof_value("sizeof(uint32_t)"), Some(4));
+        assert_eq!(extract_sizeof_value("sizeof(int16_t)"), Some(2));
+        assert_eq!(extract_sizeof_value("sizeof(uint16_t)"), Some(2));
+        assert_eq!(extract_sizeof_value("sizeof(int8_t)"), Some(1));
+        assert_eq!(extract_sizeof_value("sizeof(uint8_t)"), Some(1));
+        assert_eq!(extract_sizeof_value("sizeof(size_t)"), Some(8));
+        assert_eq!(extract_sizeof_value("sizeof(long long)"), Some(8));
+        assert_eq!(extract_sizeof_value("sizeof(unsigned long long)"), Some(8));
+    }
+
+    #[test]
+    fn sizeof_pointer_types_are_eight_bytes_regardless_of_base_type() {
+        // "int*"/"char*"/"wchar_t*" were dead table entries: the bare
+        // "int"/"char"/"wchar_t" checks matched first and returned the
+        // base type's size instead of the pointer size (task 516).
+        assert_eq!(extract_sizeof_value("sizeof(int*)"), Some(8));
+        assert_eq!(extract_sizeof_value("sizeof(char*)"), Some(8));
+        assert_eq!(extract_sizeof_value("sizeof(wchar_t*)"), Some(8));
+        assert_eq!(extract_sizeof_value("sizeof(void*)"), Some(8));
+        assert_eq!(extract_sizeof_value("sizeof(struct foo*)"), Some(8));
     }
 
     #[test]
