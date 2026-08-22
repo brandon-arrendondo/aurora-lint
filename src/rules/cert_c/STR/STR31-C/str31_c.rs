@@ -454,15 +454,6 @@ impl Str31C {
         .ok();
         let malloc_plain_re = regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[,)]").ok();
 
-        // Take the MAX across every matching assignment in range, not the
-        // first one encountered (task 514): a variable can be allocated on
-        // more than one line in scope (e.g. one assignment per branch), and
-        // assuming the largest of those sizes is the conservative choice
-        // that avoids flagging a copy that's actually safe on some paths —
-        // the same worst-case-for-false-positives philosophy documented on
-        // buffer_size::resolve_alloc_assigned_in_range. First-match-wins was
-        // never a deliberate choice here, just an artifact of source order.
-        let mut best: Option<usize> = None;
         for (idx, line) in lines.iter().enumerate() {
             if idx < fn_start || idx > fn_end {
                 continue;
@@ -473,33 +464,31 @@ impl Str31C {
                 continue;
             }
             // malloc(N*sizeof(type)) or calloc(N, sizeof(type))
-            let mut this_line: Option<usize> = None;
             if let Some(caps) = malloc_sizeof_re.as_ref().and_then(|re| re.captures(line)) {
-                this_line = caps[1].parse::<usize>().ok();
+                if let Ok(n) = caps[1].parse::<usize>() {
+                    return Some(n);
+                }
             }
             // malloc((N+M)*sizeof(type)) or malloc((N)*sizeof(type))
-            if this_line.is_none() {
-                if let Some(caps) = malloc_paren_sizeof_re
-                    .as_ref()
-                    .and_then(|re| re.captures(line))
-                {
-                    let a = caps[1].parse::<usize>().ok();
-                    let op = caps.get(2).map(|m| m.as_str());
-                    let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
-                    this_line = buffer_size::eval_arith(a, op, b);
+            if let Some(caps) = malloc_paren_sizeof_re
+                .as_ref()
+                .and_then(|re| re.captures(line))
+            {
+                let a = caps[1].parse::<usize>().ok();
+                let op = caps.get(2).map(|m| m.as_str());
+                let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
+                if let Some(n) = buffer_size::eval_arith(a, op, b) {
+                    return Some(n);
                 }
             }
             // Plain malloc(N) or calloc(N, M) with numeric first arg
-            if this_line.is_none() {
-                if let Some(caps) = malloc_plain_re.as_ref().and_then(|re| re.captures(line)) {
-                    this_line = caps[1].parse::<usize>().ok();
+            if let Some(caps) = malloc_plain_re.as_ref().and_then(|re| re.captures(line)) {
+                if let Ok(n) = caps[1].parse::<usize>() {
+                    return Some(n);
                 }
             }
-            if let Some(n) = this_line {
-                best = Some(best.map_or(n, |b: usize| b.max(n)));
-            }
         }
-        best
+        None
     }
 
     /// Look for `realloc` patterns with strlen-based size calculations.
@@ -542,11 +531,6 @@ impl Str31C {
         let alloca_simple_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*(\d+)\s*\)").ok();
         let alloca_ident_re = regex::Regex::new(r"(?:ALLOCA|alloca)\s*\(\s*\(?(\w+)").ok();
 
-        // Take the MAX across every matching assignment in range, not the
-        // first one encountered (task 514) — see find_fixed_alloc_size's
-        // comment for the rationale. usize::MAX cases still short-circuit:
-        // nothing else in the range could exceed that ceiling anyway.
-        let mut best: Option<usize> = None;
         for (idx, line) in lines.iter().enumerate() {
             if idx < fn_start || idx > fn_end {
                 continue;
@@ -559,32 +543,29 @@ impl Str31C {
             if line.contains("strlen") || line.contains("wcslen") {
                 return Some(usize::MAX);
             }
-            let mut this_line: Option<usize> = None;
             // Pattern: ALLOCA(N*sizeof(type)) — N is the element count
             if let Some(caps) = alloca_sizeof_re.as_ref().and_then(|re| re.captures(line)) {
-                this_line = caps[1].parse::<usize>().ok();
+                if let Ok(n) = caps[1].parse::<usize>() {
+                    return Some(n);
+                }
             }
             // Pattern: ALLOCA((N)*sizeof(type)) or ALLOCA((N+M)*sizeof(type))
-            if this_line.is_none() {
-                if let Some(caps) = alloca_paren_sizeof_re
-                    .as_ref()
-                    .and_then(|re| re.captures(line))
-                {
-                    let a = caps[1].parse::<usize>().ok();
-                    let op = caps.get(2).map(|m| m.as_str());
-                    let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
-                    this_line = buffer_size::eval_arith(a, op, b);
+            if let Some(caps) = alloca_paren_sizeof_re
+                .as_ref()
+                .and_then(|re| re.captures(line))
+            {
+                let a = caps[1].parse::<usize>().ok();
+                let op = caps.get(2).map(|m| m.as_str());
+                let b = caps.get(3).and_then(|m| m.as_str().parse::<usize>().ok());
+                if let Some(s) = buffer_size::eval_arith(a, op, b) {
+                    return Some(s);
                 }
             }
             // Simpler: ALLOCA(N) without sizeof
-            if this_line.is_none() {
-                if let Some(caps) = alloca_simple_re.as_ref().and_then(|re| re.captures(line)) {
-                    this_line = caps[1].parse::<usize>().ok();
+            if let Some(caps) = alloca_simple_re.as_ref().and_then(|re| re.captures(line)) {
+                if let Ok(n) = caps[1].parse::<usize>() {
+                    return Some(n);
                 }
-            }
-            if let Some(n) = this_line {
-                best = Some(best.map_or(n, |b: usize| b.max(n)));
-                continue;
             }
             // ALLOCA arg is a variable (e.g. ALLOCA((dataLen+1)*1)) — check if that
             // variable was assigned from strlen() anywhere in the file, which means
@@ -606,7 +587,7 @@ impl Str31C {
                 }
             }
         }
-        best
+        None
     }
 
     /// Check if source is a variable that represents a larger array than destination
