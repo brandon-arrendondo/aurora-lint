@@ -49,38 +49,58 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
 use lang_parsing_substrate::query;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use tree_sitter::Node;
 
 pub struct Flp03C;
 
-/// Analyzer that tracks floating-point variables
+/// Analyzer that tracks floating-point variables.
+///
+/// `type_map` holds `name -> "float"` for every identifier this file's
+/// declarations establish as float/double-typed (see [`Self::collect_float_vars`]);
+/// no project context is available here, so [`StructFieldTypes`] is always
+/// empty and `float_typing::expr_is_float` cannot resolve struct-field types.
 struct FpAnalyzer {
-    float_vars: HashSet<String>,
+    type_map: HashMap<String, String>,
+    struct_field_types: StructFieldTypes,
 }
 
 impl FpAnalyzer {
     fn new() -> Self {
         Self {
-            float_vars: HashSet::new(),
+            type_map: HashMap::new(),
+            struct_field_types: StructFieldTypes::new(),
         }
     }
 
     /// Collect all floating-point variable declarations from the AST
     fn collect_float_vars(&mut self, node: &Node, source: &str) {
         for decl in query::find_descendants_of_kind(*node, "declaration") {
-            let decl_text = get_node_text(&decl, source);
-            // Check if this is a float/double declaration
-            if decl_text.starts_with("float")
-                || decl_text.starts_with("double")
-                || decl_text.contains(" float ")
-                || decl_text.contains(" double ")
-            {
-                // Extract all identifiers from this declaration
+            if Self::declaration_is_float_typed(&decl, source) {
                 self.extract_identifiers_from_declaration(&decl, source);
             }
         }
+    }
+
+    /// True if `decl`'s type specifier child is a float/double token (whole-token
+    /// match via [`float_typing::is_float_type`], not a substring scan of the
+    /// full declaration text — avoids misclassifying e.g. a `double_buffered_count`
+    /// declarator as float).
+    fn declaration_is_float_typed(decl: &Node, source: &str) -> bool {
+        for i in 0..decl.child_count() {
+            if let Some(child) = decl.child(i) {
+                if matches!(
+                    child.kind(),
+                    "primitive_type" | "sized_type_specifier" | "type_identifier"
+                ) && float_typing::is_float_type(get_node_text(&child, source))
+                {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn extract_identifiers_from_declaration(&mut self, node: &Node, source: &str) {
@@ -95,48 +115,29 @@ impl FpAnalyzer {
                     || parent_kind == "array_declarator"
                 {
                     let var_name = get_node_text(&id_node, source).to_string();
-                    self.float_vars.insert(var_name);
+                    self.type_map.insert(var_name, "float".to_string());
                 }
             }
         }
     }
 
-    /// Check if an expression involves floating-point values or variables
+    /// Check if an expression involves floating-point values or variables.
+    ///
+    /// Delegates the structural cases (literals, casts, unary/binary/paren
+    /// forms) to [`float_typing::expr_is_float`]. That function doesn't model
+    /// every node kind (call/conditional/subscript expressions fall through
+    /// to its `false` default), so [`Self::contains_float_identifier`] is
+    /// still consulted unconditionally as a whole-subtree fallback — this
+    /// preserves the original "any known-float identifier anywhere inside"
+    /// recall for expressions like `x / sqrt(y)` where `y` is a float local.
     fn is_fp_expression(&self, node: &Node, source: &str) -> bool {
-        let text = get_node_text(node, source);
-
-        // Check for floating-point literals (contains decimal point or e notation)
-        if text.contains('.') && !text.starts_with("/*") {
-            return true;
-        }
-
-        // Precise scientific notation: digit before e/E, digit or sign after
-        // Avoids matching 'e' in identifiers like "sizeof"
-        let bytes = text.as_bytes();
-        for i in 1..bytes.len().saturating_sub(1) {
-            if bytes[i] == b'e' || bytes[i] == b'E' {
-                let before = bytes[i - 1];
-                let after = bytes[i + 1];
-                if before.is_ascii_digit()
-                    && (after.is_ascii_digit() || after == b'+' || after == b'-')
-                {
-                    return true;
-                }
-            }
-        }
-
-        // Check for floating-point type keywords
-        if text.contains("float") || text.contains("double") {
-            return true;
-        }
-
-        // Check if any identifier in this expression is a known float variable
-        self.contains_float_identifier(node, source)
+        float_typing::expr_is_float(node, source, &self.type_map, &self.struct_field_types)
+            || self.contains_float_identifier(node, source)
     }
 
     fn contains_float_identifier(&self, node: &Node, source: &str) -> bool {
         query::find_first_descendant(*node, |n| {
-            n.kind() == "identifier" && self.float_vars.contains(get_node_text(&n, source))
+            n.kind() == "identifier" && self.type_map.contains_key(get_node_text(&n, source))
         })
         .is_some()
     }
