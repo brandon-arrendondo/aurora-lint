@@ -114,11 +114,10 @@ impl Api02C {
 
                 // Check each pointer parameter for missing size
                 for i in 0..params.len() {
-                    if self.is_pointer_parameter(&params[i], source) {
+                    let is_last = i + 1 >= params.len();
+                    if self.is_pointer_parameter(&params[i], source, is_last) {
                         // Check if next parameter is size_t
-                        if i + 1 >= params.len()
-                            || !self.is_size_t_parameter(&params[i + 1], source)
-                        {
+                        if is_last || !self.is_size_t_parameter(&params[i + 1], source) {
                             self.report_violation(declaration, &params[i], source, violations);
                         }
                     }
@@ -135,7 +134,7 @@ impl Api02C {
         }
     }
 
-    fn is_pointer_parameter(&self, param: &Node, source: &str) -> bool {
+    fn is_pointer_parameter(&self, param: &Node, source: &str, is_last: bool) -> bool {
         // Get the type
         let type_node = match param.child_by_field_name("type") {
             Some(t) => t,
@@ -222,6 +221,30 @@ impl Api02C {
             }
         }
 
+        // Skip a trailing pointer-to-scalar-arithmetic-type parameter — the
+        // well-established "single-value output parameter" C convention
+        // (`int *out`, `size_t *n`, `long *ms`) where the pointee is
+        // inherently bounded to one object: with nothing after it in the
+        // signature, there is no possible size argument for it to pair
+        // with, so a memory-safe implementation can only ever write one
+        // element through it. Only applies when this is the LAST
+        // parameter — the same pointee type earlier in the list, followed
+        // by other parameters that could have been (but weren't) its
+        // size, is still the genuine strncpy-style violation this rule
+        // targets. Confirmed via 589 adjudicated real-world API02-C false
+        // positives (task 450): sqlite's pRes/pResOut/pAmt/pMask/pnOpt,
+        // curl's curl_easy_recv's `size_t *n`, curl_multi_perform's
+        // `int *running_handles`, curl_multi_timeout's `long *milliseconds`
+        // — every one a trailing scalar-typed out-pointer with no
+        // possible size parameter anywhere in the signature.
+        if is_last && self.is_scalar_arithmetic_type(&type_text) {
+            if let Some(declarator) = param.child_by_field_name("declarator") {
+                if is_pointer_declarator(&declarator) {
+                    return false;
+                }
+            }
+        }
+
         // Check for pointer type
         if type_text.contains('*') {
             // Exclude function pointers (they're not arrays)
@@ -238,6 +261,47 @@ impl Api02C {
         }
 
         false
+    }
+
+    /// True for a plain arithmetic/integer scalar type — the set of pointee
+    /// types conventionally used for single-value output parameters
+    /// (`int *out`, `size_t *n`). Deliberately excludes `char`/`wchar_t`
+    /// (retain their array/string-buffer semantics elsewhere in this file)
+    /// and `bool`/`_Bool`/`void` (already handled by their own dedicated
+    /// checks above).
+    fn is_scalar_arithmetic_type(&self, type_text: &str) -> bool {
+        matches!(
+            type_text,
+            "int"
+                | "short"
+                | "long"
+                | "long long"
+                | "unsigned"
+                | "signed"
+                | "unsigned int"
+                | "unsigned short"
+                | "unsigned long"
+                | "unsigned long long"
+                | "signed int"
+                | "signed short"
+                | "signed long"
+                | "signed long long"
+                | "float"
+                | "double"
+                | "int8_t"
+                | "int16_t"
+                | "int32_t"
+                | "int64_t"
+                | "uint8_t"
+                | "uint16_t"
+                | "uint32_t"
+                | "uint64_t"
+                | "size_t"
+                | "ssize_t"
+                | "ptrdiff_t"
+                | "intptr_t"
+                | "uintptr_t"
+        )
     }
 
     /// Check if a type name is a user-defined type (struct, union, typedef, enum)
