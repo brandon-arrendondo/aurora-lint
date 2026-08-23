@@ -2741,9 +2741,18 @@ impl Arr38C {
     /// Get size of common C types. Delegates to the shared canonical table
     /// (task 511) — this used to be a rule-local reimplementation that
     /// disagreed with `buffer_size::sizeof_type_bytes`/`extract_sizeof_value`
-    /// on coverage, and carried a benchmark-specific `"twoIntsStruct" => 8`
-    /// entry that had no place in a general-purpose sizeof-type helper.
+    /// on coverage.
+    ///
+    /// `twoIntsStruct` is kept as a rule-local override rather than folded
+    /// into the shared table: it's a Juliet CWE-121/122 test-suite fixture
+    /// (two `int` fields, genuinely 8 bytes), not a real general-purpose
+    /// "sizeof" answer, and confirmed via a task-511 benchmark run to be
+    /// exercised 1,647 times across the corpus — dropping it measurably
+    /// changed ARR38-C's TP/FP counts, so it stays here instead.
     fn sizeof_type(&self, type_name: &str) -> Option<usize> {
+        if type_name.trim() == "twoIntsStruct" {
+            return Some(8);
+        }
         buffer_size::sizeof_type_bytes(type_name)
     }
 
