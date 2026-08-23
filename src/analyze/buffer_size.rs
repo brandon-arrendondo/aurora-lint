@@ -482,6 +482,37 @@ pub fn resolve_alloc_assigned_in_range(
     best
 }
 
+/// True if `var_name` was assigned the result of `strlen()` (or `wcslen()`
+/// when `wide` is set) anywhere within `lines[fn_start..=fn_end]` — i.e. a
+/// second-order "this size variable is itself strlen-derived, so the
+/// allocation it sizes is dynamically safe" check, as opposed to
+/// [`resolve_alloc_assigned_in_range`]'s first-order "what did this
+/// allocation call's own argument say" check.
+pub fn resolves_to_strlen_call(
+    var_name: &str,
+    lines: &[&str],
+    fn_start: usize,
+    fn_end: usize,
+    wide: bool,
+) -> bool {
+    let pattern = if wide {
+        format!(r"\b{}\s*=\s*wcslen\s*\(", regex::escape(var_name))
+    } else {
+        format!(r"\b{}\s*=\s*(?:w?)strlen\s*\(", regex::escape(var_name))
+    };
+    let Ok(re) = regex::Regex::new(&pattern) else {
+        return false;
+    };
+    if lines.is_empty() || fn_start >= lines.len() {
+        return false;
+    }
+    let end = fn_end.min(lines.len().saturating_sub(1));
+    if fn_start > end {
+        return false;
+    }
+    lines[fn_start..=end].iter().any(|l| re.is_match(l))
+}
+
 /// Evaluate a parenthesised allocation-size arithmetic capture of the form
 /// `(N op M)` (or a bare `N`), as produced by the malloc/alloca size regexes.
 /// `op` is `Some("+"|"-"|"*")` with both operands present, or `None` for a

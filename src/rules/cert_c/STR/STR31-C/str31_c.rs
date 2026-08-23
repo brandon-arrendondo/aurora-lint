@@ -364,16 +364,7 @@ impl Str31C {
         // Checks whether `size_var` was assigned from strlen()/wcslen() anywhere
         // in the enclosing function's line range.
         let assigned_from_len_fn = |size_var: &str, wide: bool| -> bool {
-            let pat = if wide {
-                format!(r"\b{}\s*=\s*wcslen\s*\(", regex::escape(size_var))
-            } else {
-                format!(r"\b{}\s*=\s*(?:w?)strlen\s*\(", regex::escape(size_var))
-            };
-            let Ok(re) = regex::Regex::new(&pat) else {
-                return false;
-            };
-            let end = fn_end.min(lines.len().saturating_sub(1));
-            lines[fn_start..=end].iter().any(|l| re.is_match(l))
+            buffer_size::resolves_to_strlen_call(size_var, lines, fn_start, fn_end, wide)
         };
 
         for (idx, line) in lines.iter().enumerate() {
