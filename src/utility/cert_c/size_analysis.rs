@@ -5,6 +5,7 @@
 //! buffer overflow detection.
 
 use super::ast_utils::find_containing_function;
+use crate::analyze::buffer_size::sizeof_type_bytes;
 use tree_sitter::Node;
 
 /// Determine the element size of an array based on its type declaration
@@ -30,22 +31,24 @@ pub fn find_element_size(var_name: &str, preceding_text: &str) -> usize {
     // Try to determine the element type and return its size
     // Pattern: type var_name[...]
 
-    // Common C type sizes (assuming typical 32/64-bit platforms)
-    let type_sizes = [
-        ("char", 1),
-        ("short", 2),
-        ("int", 4),
-        ("long", 8),
-        ("float", 4),
-        ("double", 8),
-        ("unsigned char", 1),
-        ("unsigned short", 2),
-        ("unsigned int", 4),
-        ("unsigned long", 8),
-        ("signed char", 1),
-        ("signed short", 2),
-        ("signed int", 4),
-        ("signed long", 8),
+    // Candidate type keywords a declaration might end with, immediately
+    // before `var_name[`. Byte sizes themselves come from the shared
+    // canonical table (task 511) rather than a rule-local copy.
+    let type_names = [
+        "char",
+        "short",
+        "int",
+        "long",
+        "float",
+        "double",
+        "unsigned char",
+        "unsigned short",
+        "unsigned int",
+        "unsigned long",
+        "signed char",
+        "signed short",
+        "signed int",
+        "signed long",
     ];
 
     let pattern = format!("{}[", var_name);
@@ -55,11 +58,13 @@ pub fn find_element_size(var_name: &str, preceding_text: &str) -> usize {
         let before_array = &preceding_text[..pos];
 
         // Search for type keywords
-        for (type_name, size) in &type_sizes {
+        for type_name in &type_names {
             if before_array.ends_with(type_name)
                 || before_array.ends_with(&format!("{} ", type_name))
             {
-                return *size;
+                if let Some(size) = sizeof_type_bytes(type_name) {
+                    return size;
+                }
             }
         }
     }

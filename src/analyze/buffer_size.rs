@@ -100,6 +100,68 @@ pub fn extract_numeric_value(s: &str) -> Option<usize> {
     }
 }
 
+/// Canonical `type name -> byte size` lookup for a single, already-extracted
+/// C type name (e.g. `"int"`, `"unsigned long"`, `"int64_t"` — the trimmed
+/// inner text of a `sizeof(TYPE)` expression, not the whole expression).
+/// A trailing `*` (pointer type) always resolves to 8 regardless of the
+/// pointee. Returns `None` for a type this table has no fixed-width answer
+/// for (structs, unions, unrecognised typedefs — callers decide their own
+/// fallback). Assumes a typical 64-bit Linux target throughout (`long` = 8,
+/// pointer = 8, `int` = 4, ...).
+///
+/// This is the single home for a `type_name -> byte size` table that used
+/// to be reimplemented independently by `extract_sizeof_value` (below),
+/// ARR38-C's `sizeof_type`, and `size_analysis::find_element_size` — each
+/// with slightly different coverage and, in ARR38-C's case, a benchmark-
+/// specific `"twoIntsStruct" => 8` entry that has no place in a shared
+/// primitive (task 511).
+pub fn sizeof_type_bytes(type_name: &str) -> Option<usize> {
+    let t = type_name.trim();
+    if t.ends_with('*') {
+        return Some(8);
+    }
+    match t {
+        "int64_t" | "uint64_t" => Some(8),
+        "int32_t" | "uint32_t" => Some(4),
+        "int16_t" | "uint16_t" => Some(2),
+        "int8_t" | "uint8_t" => Some(1),
+        "size_t" => Some(8),
+        "wchar_t" => Some(4),
+        "long long" | "unsigned long long" | "signed long long" => Some(8),
+        "long" | "unsigned long" | "signed long" => Some(8),
+        "int" | "unsigned int" | "signed int" => Some(4),
+        "char" | "unsigned char" | "signed char" => Some(1),
+        "short" | "unsigned short" | "signed short" => Some(2),
+        "float" => Some(4),
+        "double" => Some(8),
+        _ => None,
+    }
+}
+
+/// Ordered so a longer/more-specific type name is checked before a shorter
+/// substring it contains (e.g. `"int64_t"` before `"int"`) — needed only by
+/// [`extract_sizeof_value`]'s whole-expression substring-scan fallback.
+/// [`sizeof_type_bytes`]'s exact-match lookup has no such ordering hazard.
+const TYPE_SIZE_SUBSTRING_ORDER: &[(&str, usize)] = &[
+    ("int64_t", 8),
+    ("uint64_t", 8),
+    ("int32_t", 4),
+    ("uint32_t", 4),
+    ("int16_t", 2),
+    ("uint16_t", 2),
+    ("int8_t", 1),
+    ("uint8_t", 1),
+    ("size_t", 8),
+    ("wchar_t", 4),
+    ("long long", 8),
+    ("long", 8),
+    ("int", 4),
+    ("char", 1),
+    ("short", 2),
+    ("float", 4),
+    ("double", 8),
+];
+
 /// Resolve the byte size of a `sizeof(TYPE)` sub-expression using fixed-width
 /// assumptions (typical 64-bit Linux). Returns `None` if `s` contains no
 /// `sizeof`, and falls back to pointer size (8) for unrecognised types.
@@ -108,46 +170,20 @@ pub fn extract_sizeof_value(s: &str) -> Option<usize> {
         return None;
     }
 
-    // Pointer types (T*) are 8 bytes on the 64-bit target this table
-    // assumes, regardless of T — checked before the type-name table so a
-    // base-type substring match (e.g. "int" inside "int*") can never
-    // shadow it (task 516: the old "int*"/"char*"/"wchar_t*" table
-    // entries were dead code for exactly this reason, since "int"/"char"/
-    // "wchar_t" are checked first and match every one of those strings).
+    // Preferred path: extract the exact type text between `sizeof(` and `)`
+    // and resolve it via the canonical exact-match table.
     if let Some(after_sizeof) = s.split_once("sizeof(").map(|(_, rest)| rest) {
         if let Some(type_name) = after_sizeof.split(')').next() {
-            if type_name.trim().ends_with('*') {
-                return Some(8);
+            if let Some(size) = sizeof_type_bytes(type_name) {
+                return Some(size);
             }
         }
     }
 
-    // Common type sizes (assuming typical 64-bit Linux system). Longer,
-    // more specific names are checked before shorter substrings they
-    // contain (task 516): "int64_t"/"uint64_t" would otherwise
-    // substring-match "int" (4 bytes) before ever reaching a check for
-    // their real 8-byte width, and likewise for the other stdint widths.
-    let type_sizes = [
-        ("int64_t", 8),
-        ("uint64_t", 8),
-        ("int32_t", 4),
-        ("uint32_t", 4),
-        ("int16_t", 2),
-        ("uint16_t", 2),
-        ("int8_t", 1),
-        ("uint8_t", 1),
-        ("size_t", 8),
-        ("wchar_t", 4),
-        ("long long", 8),
-        ("long", 8),
-        ("int", 4),
-        ("char", 1),
-        ("short", 2),
-        ("float", 4),
-        ("double", 8),
-    ];
-
-    for (type_name, size) in &type_sizes {
+    // Fallback: whole-expression substring scan, for `sizeof(...)` text the
+    // exact-match extraction above didn't handle cleanly (e.g. unusual
+    // whitespace around the parentheses).
+    for (type_name, size) in TYPE_SIZE_SUBSTRING_ORDER {
         if s.contains(type_name) {
             return Some(*size);
         }
@@ -549,6 +585,31 @@ mod tests {
         assert_eq!(extract_numeric_value("(10+1)"), Some(11));
         // Negative results are rejected (the size domain is unsigned).
         assert_eq!(extract_numeric_value("1-5"), None);
+    }
+
+    #[test]
+    fn sizeof_type_bytes_exact_match_canonical_table() {
+        // task 511: single canonical table backing extract_sizeof_value,
+        // ARR38-C's former sizeof_type, and size_analysis::find_element_size.
+        assert_eq!(sizeof_type_bytes("int"), Some(4));
+        assert_eq!(sizeof_type_bytes("unsigned int"), Some(4));
+        assert_eq!(sizeof_type_bytes("char"), Some(1));
+        assert_eq!(sizeof_type_bytes("long"), Some(8));
+        assert_eq!(sizeof_type_bytes("unsigned long"), Some(8));
+        assert_eq!(sizeof_type_bytes("int64_t"), Some(8));
+        assert_eq!(sizeof_type_bytes("uint64_t"), Some(8));
+        assert_eq!(sizeof_type_bytes("int8_t"), Some(1));
+        assert_eq!(sizeof_type_bytes("size_t"), Some(8));
+        assert_eq!(sizeof_type_bytes("wchar_t"), Some(4));
+        assert_eq!(sizeof_type_bytes("float"), Some(4));
+        assert_eq!(sizeof_type_bytes("double"), Some(8));
+        // Pointer types always resolve to 8 regardless of pointee.
+        assert_eq!(sizeof_type_bytes("int *"), Some(8));
+        assert_eq!(sizeof_type_bytes("struct foo*"), Some(8));
+        // Structs/unions/unrecognised typedefs (incl. the old Juliet-only
+        // "twoIntsStruct" hack, deliberately not carried into this table).
+        assert_eq!(sizeof_type_bytes("twoIntsStruct"), None);
+        assert_eq!(sizeof_type_bytes("struct foo"), None);
     }
 
     #[test]

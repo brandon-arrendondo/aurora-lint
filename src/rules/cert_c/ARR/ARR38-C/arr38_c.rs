@@ -1,4 +1,5 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::buffer_size;
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, find_containing_function, get_node_text};
@@ -2737,20 +2738,13 @@ impl Arr38C {
         None
     }
 
-    /// Get size of common C types
+    /// Get size of common C types. Delegates to the shared canonical table
+    /// (task 511) — this used to be a rule-local reimplementation that
+    /// disagreed with `buffer_size::sizeof_type_bytes`/`extract_sizeof_value`
+    /// on coverage, and carried a benchmark-specific `"twoIntsStruct" => 8`
+    /// entry that had no place in a general-purpose sizeof-type helper.
     fn sizeof_type(&self, type_name: &str) -> Option<usize> {
-        match type_name.trim() {
-            "char" | "unsigned char" | "signed char" => Some(1),
-            "short" | "unsigned short" => Some(2),
-            "int" | "unsigned int" | "int32_t" | "uint32_t" => Some(4),
-            "long" | "unsigned long" | "int64_t" | "uint64_t" | "long long"
-            | "unsigned long long" | "size_t" => Some(8),
-            "float" => Some(4),
-            "double" => Some(8),
-            "wchar_t" => Some(4),
-            "twoIntsStruct" => Some(8), // Common Juliet struct
-            _ => None,
-        }
+        buffer_size::sizeof_type_bytes(type_name)
     }
 
     /// If `expr` is of the form `N*sizeof(T)`, return N (the element count).
