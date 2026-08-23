@@ -82,52 +82,6 @@ impl Str31C {
 }
 
 impl Str31C {
-    /// Extract buffer size from array declaration or malloc call
-    #[allow(dead_code)]
-    fn analyze_buffer_size(&self, node: &Node, source: &str) -> Option<usize> {
-        // Check for array declaration with size
-        if node.kind() == "array_declarator" {
-            if let Some(size_node) = node.child_by_field_name("size") {
-                let size_text = &source[size_node.start_byte()..size_node.end_byte()];
-                if let Ok(size) = size_text.parse::<usize>() {
-                    return Some(size);
-                }
-            }
-        }
-
-        // Check for malloc/calloc calls
-        if node.kind() == "call_expression" {
-            if let Some(function_node) = node.child_by_field_name("function") {
-                let function_name = &source[function_node.start_byte()..function_node.end_byte()];
-
-                if function_name == "malloc" || function_name == "calloc" {
-                    if let Some(arguments) = node.child_by_field_name("arguments") {
-                        // Look for strlen(source) + 1 pattern
-                        let args_text = &source[arguments.start_byte()..arguments.end_byte()];
-                        if args_text.contains("strlen") && args_text.contains("+ 1") {
-                            // This is likely a safe dynamic allocation
-                            return Some(usize::MAX); // Indicate dynamic safe allocation
-                        }
-
-                        // Try to parse numeric size
-                        for i in 0..arguments.child_count() {
-                            if let Some(arg) = arguments.child(i) {
-                                if arg.kind() == "number_literal" {
-                                    let size_text = &source[arg.start_byte()..arg.end_byte()];
-                                    if let Ok(size) = size_text.parse::<usize>() {
-                                        return Some(size);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
     /// Analyze string length from string literals or strlen calls
     fn analyze_string_length(&self, node: &Node, source: &str) -> Option<usize> {
         if node.kind() == "string_literal" {
