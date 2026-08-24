@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from bench.config import DB_PATH
+from bench.config import BENCH_ROOT, DB_PATH
 
 
 def _wall_seconds(started_at: str, finished_at: str) -> float | None:
@@ -904,13 +904,13 @@ class BenchDB:
 
     @staticmethod
     def live_codebase_commit(project: str) -> str | None:
-        """Short HEAD SHA of a benchmark codebase checkout under ~/toolchain.
+        """Short HEAD SHA of a benchmark codebase checkout under BENCH_ROOT.
 
         Fallback for runs that predate scan-time capture; only valid on the
         machine that hosts the checkouts.
         """
         import subprocess
-        path = Path.home() / "toolchain" / project
+        path = BENCH_ROOT / project
         if not path.exists():
             return None
         try:

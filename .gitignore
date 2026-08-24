@@ -19,6 +19,7 @@ Thumbs.db
 
 # SqC specific
 .todo-sqlite-cli
+.env
 sqc-results.json
 mcp_servers/remote_hosts.json
 *.log
@@ -29,6 +30,9 @@ data/benchmarks.db-wal
 data/benchmarks.db-shm
 todo-sqlite-cli.db-wal
 todo-sqlite-cli.db-shm
+todo-sqlite-cli.local.db
+todo-sqlite-cli.local.db-wal
+todo-sqlite-cli.local.db-shm
 
 # Python
 __pycache__/
