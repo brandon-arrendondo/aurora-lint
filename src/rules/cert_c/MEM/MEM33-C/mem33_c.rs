@@ -2,6 +2,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     find_containing_function, find_enclosing_declaration_for_identifier,
+    find_identifier_in_declarator, get_node_text,
 };
 use crate::utility::cert_c::declarator_utils;
 use lang_parsing_substrate::query;
@@ -2670,15 +2671,49 @@ impl FlexibleArrayAnalyzer {
         var_name: &str,
         source: &str,
     ) -> Option<String> {
-        // Check if this node contains an assignment to the specified variable
-        let node_text = source[node.start_byte()..node.end_byte()].to_string();
-
-        // Look for patterns like: var_name = expression
-        if let Some(assignment_expr) = self.extract_assignment_expression(&node_text, var_name) {
-            return Some(assignment_expr);
+        // Resolve the assignment via the AST's own structure rather than
+        // scanning node_text as if it were a single source line (task 528):
+        // node_text can span multiple lines and embed comments, so a text
+        // scan for "{var_name} =" can match inside a comment (e.g.
+        // `/* old: x = wrong */ x = right;`) and return the commented-out
+        // value instead of the real RHS.
+        match node.kind() {
+            "assignment_expression" => {
+                let left = node.child_by_field_name("left")?;
+                let operator = node.child_by_field_name("operator")?;
+                if get_node_text(&operator, source) != "=" {
+                    return None; // +=, -=, etc. -- not a plain assignment
+                }
+                if left.kind() == "identifier" && get_node_text(&left, source) == var_name {
+                    let right = node.child_by_field_name("right")?;
+                    return Some(get_node_text(&right, source).trim().to_string());
+                }
+                None
+            }
+            "init_declarator" => {
+                let declarator = node.child_by_field_name("declarator")?;
+                let name = find_identifier_in_declarator(&declarator, source)?;
+                if name == var_name {
+                    let value = node.child_by_field_name("value")?;
+                    return Some(get_node_text(&value, source).trim().to_string());
+                }
+                None
+            }
+            "declaration" => {
+                for i in 0..node.child_count() {
+                    let child = node.child(i)?;
+                    if child.kind() == "init_declarator" {
+                        if let Some(result) =
+                            self.check_node_for_variable_assignment(&child, var_name, source)
+                        {
+                            return Some(result);
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
         }
-
-        None
     }
 
     fn extract_assignment_expression(&self, line: &str, var_name: &str) -> Option<String> {
