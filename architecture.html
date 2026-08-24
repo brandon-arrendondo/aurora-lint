@@ -191,6 +191,37 @@ per-rule disposition table.</p>
 <dt><strong>Standard function database</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/std_functions.rs</span></code>).</dt><dd><p>~370 C11, POSIX, and Windows API functions recognized to suppress false
 positives on standard library calls (DCL31-C, DCL07-C).</p>
 </dd>
+<dt><strong>Call-role classification</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/call_roles.rs</span></code>).</dt><dd><p>Single-source-of-truth predicates layered on top of the standard function
+database for “what role does this call play” (<code class="docutils literal notranslate"><span class="pre">is_allocator_call</span></code>,
+<code class="docutils literal notranslate"><span class="pre">is_heap_allocator</span></code>, <code class="docutils literal notranslate"><span class="pre">is_printf_family</span></code>, <code class="docutils literal notranslate"><span class="pre">is_scanf_family</span></code>,
+<code class="docutils literal notranslate"><span class="pre">is_sizeof_text</span></code>), replacing 7+ independently reinvented, disagreeing
+per-rule lists found by task 481’s duplication sweep (task 487).</p>
+</dd>
+<dt><strong>Arithmetic-overflow-detection helpers</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/overflow_helpers.rs</span></code>).</dt><dd><p>Shared type-map-building and identifier/operand-extraction primitives for
+<code class="docutils literal notranslate"><span class="pre">INT30-C</span></code>/<code class="docutils literal notranslate"><span class="pre">INT32-C</span></code> (and one primitive each for <code class="docutils literal notranslate"><span class="pre">INT10-C</span></code>),
+replacing ~20 identically-named private helpers duplicated across those
+two ~2800-line files — the largest duplicated surface found by task 481’s
+sweep (task 490). The overflow-<em>guard-detection</em> logic itself
+(<code class="docutils literal notranslate"><span class="pre">has_overflow_check_*</span></code>) stays rule-local: it only looks duplicated:
+<code class="docutils literal notranslate"><span class="pre">INT30-C</span></code>’s is unsigned-wraparound-focused and <code class="docutils literal notranslate"><span class="pre">INT32-C</span></code>’s is
+signed-overflow-focused.</p>
+</dd>
+<dt><strong>Floating-point type inference</strong> (<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/float_typing.rs</span></code>).</dt><dd><p>Word-boundary-aware float/integer classification (<code class="docutils literal notranslate"><span class="pre">is_float_type</span></code>,
+<code class="docutils literal notranslate"><span class="pre">expr_is_float</span></code>, <code class="docutils literal notranslate"><span class="pre">expr_is_definitely_integer</span></code>,
+<code class="docutils literal notranslate"><span class="pre">collect_variable_types</span></code>) shared by the FLP rule family. Task 491
+migrated 3 of the 9 flagged rules (FLP02-C, FLP34-C, FLP37-C); the other
+6 turned out to check genuinely different concepts (format specifiers,
+<code class="docutils literal notranslate"><span class="pre">long</span> <span class="pre">double</span></code> specifically, a more comprehensive extended-float set)
+and correctly stay rule-local.</p>
+</dd>
+<dt><strong>Internal capability catalog</strong> (<code class="docutils literal notranslate"><span class="pre">docs/design/internal-capability-catalog.md</span></code>).</dt><dd><p>A browsable-by-concept catalog of every reusable primitive in
+<code class="docutils literal notranslate"><span class="pre">src/utility/cert_c/*.rs</span></code> and <code class="docutils literal notranslate"><span class="pre">src/analyze/*.rs</span></code> (macro detection,
+declarator resolution, lvalue/aliasing, constant folding/VRA, CFG,
+function summaries, suppression, cross-file <code class="docutils literal notranslate"><span class="pre">ProjectContext</span></code>). Skim it
+before writing any new AST/text heuristic in a rule file — filed as task
+479 after a near-duplication of DCL40-C’s macro-detection helpers in
+MSC12-C task 475.</p>
+</dd>
 <dt><strong>Suppression system</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/suppression.rs</span></code>).</dt><dd><p>Inline <code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">SQC-SUPPRESS</span></code> comments and <code class="docutils literal notranslate"><span class="pre">.sqc-suppress.toml</span></code> files.
 SHA-256 hash-based point suppressions and glob/prefix wildcard suppressions.</p>
 </dd>
