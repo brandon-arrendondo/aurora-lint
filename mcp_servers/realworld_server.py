@@ -400,8 +400,7 @@ CODEBASES = {
     # families as every other oracle, at a similar ~2.8% sample precision.
     # MSC12-C stays disabled here too (sel4-rules.toml); this is now onboarded
     # as a general 8th oracle (novel domain: verified microkernel), not the
-    # MSC12-C-specific oracle task 381 originally set out to find. sqc-only
-    # (no cppcheck/clang-tidy config).
+    # MSC12-C-specific oracle task 381 originally set out to find.
     "sel4": {
         "path": BENCH_ROOT / "sel4",
         "sqc": {
@@ -412,6 +411,15 @@ CODEBASES = {
             "manifest": "conf/realworld/sel4-rules.toml",
             "includes": ["-I", "{path}/include", "-I", "{path}/libsel4/include"],
             "extra_args": ["-d", "{path}/include", "-d", "{path}/libsel4/include"],
+        },
+        # Same src/-only scope as sqc above, for a fair cross-tool comparison.
+        "cppcheck": {
+            "includes": ["-I", "{path}/include", "-I", "{path}/libsel4/include"],
+            "source_dirs": ["{path}/src/"],
+        },
+        "clang-tidy": {
+            "includes": ["-I", "{path}/include", "-I", "{path}/libsel4/include"],
+            "source_dirs": ["{path}/src/"],
         },
     },
 }
