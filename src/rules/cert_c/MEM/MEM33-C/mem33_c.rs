@@ -785,8 +785,7 @@ impl FlexibleArrayAnalyzer {
             && self.is_flexible_struct_dereference(&right, source)
         {
             // Check if left side is a flexible array struct variable
-            let left_text = source[left.start_byte()..left.end_byte()].to_string();
-            if self.is_declared_flexible_struct_variable(&left_text, node) {
+            if self.is_declared_flexible_struct_variable(&left, source) {
                 let start_point = node.start_position();
                 let right_text = source[right.start_byte()..right.end_byte()].to_string();
 
@@ -900,20 +899,13 @@ impl FlexibleArrayAnalyzer {
         match init_node.kind() {
             "pointer_expression"
                 // Direct dereference: *shared_flex
-                if init_text.starts_with("*") => {
-                    let dereferenced_var = init_text.trim_start_matches("*").trim();
-                    return self.is_likely_flexible_struct_pointer(dereferenced_var);
-                }
+                if init_text.starts_with("*") =>
+            {
+                return self.is_likely_flexible_struct_pointer_node(init_node, source);
+            }
             "identifier" => {
                 // Direct variable copy: local_copy (without dereference)
-                // Since we're in the context of initializing a flexible array struct,
-                // any variable being copied is potentially problematic
-                let var_name = init_text.trim();
-                return self.is_likely_flexible_struct_variable(var_name) ||
-                       // For declaration initialization context, be more permissive about variables
-                       // that could be flexible array structs
-                       var_name.contains("copy") || var_name.contains("local") ||
-                       var_name.contains("another") || var_name.contains("temp");
+                return self.is_likely_flexible_struct_pointer_node(init_node, source);
             }
             "compound_literal_expression"
                 // Compound literal: (struct flex_array_struct){...}
@@ -925,7 +917,9 @@ impl FlexibleArrayAnalyzer {
                 }
             "subscript_expression" => {
                 // Array element copy: flex_array[0]
-                return self.is_likely_flexible_struct_array_access(&init_text);
+                if let Some(array_expr) = init_node.child_by_field_name("argument") {
+                    return self.is_likely_flexible_struct_pointer_node(&array_expr, source);
+                }
             }
             "call_expression" => {
                 // Function return value: get_flex_struct()
@@ -938,48 +932,47 @@ impl FlexibleArrayAnalyzer {
         false
     }
 
+    /// Is `node` (an identifier, or a `*`/`&`-wrapped identifier, or a
+    /// subscript base) declared with a type this file has recorded as a
+    /// genuine flexible-array-member struct? Resolves the identifier's
+    /// actual declared type via `identifier_declared_type_name` instead of
+    /// guessing from its spelling (task 521 -- the previous
+    /// `is_likely_flexible_struct_pointer`/`_variable` string heuristics
+    /// matched unrelated identifiers like `reflex_timer`, `global_config`,
+    /// `thread_id` via unbounded substring checks on "flex"/"shared"/
+    /// "global_"/"thread_").
+    fn is_likely_flexible_struct_pointer_node(&self, node: &Node, source: &str) -> bool {
+        let mut current = *node;
+        while current.kind() == "pointer_expression" {
+            let Some(argument) = current.child_by_field_name("argument") else {
+                return false;
+            };
+            current = argument;
+        }
+        if current.kind() != "identifier" {
+            return false;
+        }
+        let Some(type_name) = self.identifier_declared_type_name(&current, source) else {
+            return false;
+        };
+        self.flexible_structs.contains_key(&type_name)
+    }
+
+    /// Text-only fallback for contexts with no AST node to resolve a type
+    /// from (e.g. a `sizeof(*ptr)` expression already flattened to a
+    /// string). Kept narrower than a bare substring scan: identifiers are
+    /// split on non-alphanumeric boundaries so `reflex_timer` (token
+    /// `reflex`) no longer matches `flex`, though a segment literally named
+    /// `flex`/`struct` (e.g. `my_struct_ptr`) still can -- prefer
+    /// `is_likely_flexible_struct_pointer_node` wherever a Node is
+    /// available.
     fn is_likely_flexible_struct_pointer(&self, var_name: &str) -> bool {
-        // Heuristic to determine if variable name suggests a flexible array struct pointer
-
-        // Strategy 1: Check against known flexible array struct names
-        for struct_name in self.flexible_structs.keys() {
-            if var_name.contains(struct_name) {
-                return true;
-            }
-        }
-
-        // Strategy 2: Common naming patterns
-        if var_name.contains("flex") || var_name.contains("shared") || var_name.contains("_struct")
-        {
+        if self.flexible_structs.keys().any(|s| var_name.contains(s)) {
             return true;
         }
-
-        // Strategy 3: Threading/shared context names
-        if var_name.contains("shared_")
-            || var_name.contains("global_")
-            || var_name.contains("thread_")
-        {
-            return true;
-        }
-
-        false
-    }
-
-    fn is_likely_flexible_struct_variable(&self, var_name: &str) -> bool {
-        // Similar to pointer check but for direct variable names
-        self.is_likely_flexible_struct_pointer(var_name)
-    }
-
-    fn is_likely_flexible_struct_array_access(&self, expr: &str) -> bool {
-        // Check if array access might be accessing flexible array structures
-        // Pattern: flex_array[index] or similar
-
-        if let Some(bracket_pos) = expr.find('[') {
-            let array_name = &expr[..bracket_pos];
-            return self.is_likely_flexible_struct_pointer(array_name);
-        }
-
-        false
+        var_name
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|token| token == "flex" || token == "struct")
     }
 
     fn is_likely_flexible_struct_function_call(&self, call_node: &Node, source: &str) -> bool {
@@ -999,12 +992,8 @@ impl FlexibleArrayAnalyzer {
         false
     }
 
-    fn is_declared_flexible_struct_variable(&self, var_name: &str, _context_node: &Node) -> bool {
-        // Check if the variable is declared as a flexible array struct type
-        // This requires walking up the AST to find variable declarations
-
-        // For now, use heuristic approach
-        self.is_likely_flexible_struct_variable(var_name)
+    fn is_declared_flexible_struct_variable(&self, node: &Node, source: &str) -> bool {
+        self.is_likely_flexible_struct_pointer_node(node, source)
     }
 
     fn check_value_parameter(&self, node: &Node, source: &str) -> Option<RuleViolation> {
@@ -1803,8 +1792,10 @@ impl FlexibleArrayAnalyzer {
     }
 
     /// Resolve `ident`'s declared base type (pointer/array qualifiers
-    /// stripped), checking its nearest local declaration first, then falling
-    /// back to the enclosing function's parameter list.
+    /// stripped), checking its nearest local declaration first, then the
+    /// enclosing function's parameter list, then (task 521) file-scope
+    /// declarations -- needed for e.g. a global pointer referenced from
+    /// inside a function that neither declares nor takes it as a parameter.
     fn identifier_declared_type_name(&self, ident: &Node, source: &str) -> Option<String> {
         let name = source[ident.start_byte()..ident.end_byte()].to_string();
         if let Some(decl) = find_enclosing_declaration_for_identifier(ident, &name, source) {
@@ -1812,22 +1803,75 @@ impl FlexibleArrayAnalyzer {
                 return Some(type_name);
             }
         }
-        let func = find_containing_function(ident)?;
-        let declarator = func.child_by_field_name("declarator")?;
-        let param_list = Self::find_descendant_kind(&declarator, "parameter_list")?;
-        for i in 0..param_list.child_count() {
-            let Some(param) = param_list.child(i) else {
+        if let Some(func) = find_containing_function(ident) {
+            if let Some(declarator) = func.child_by_field_name("declarator") {
+                if let Some(param_list) = Self::find_descendant_kind(&declarator, "parameter_list")
+                {
+                    for i in 0..param_list.child_count() {
+                        let Some(param) = param_list.child(i) else {
+                            continue;
+                        };
+                        if param.kind() != "parameter_declaration" {
+                            continue;
+                        }
+                        let param_text = &source[param.start_byte()..param.end_byte()];
+                        let is_match = param_text
+                            .split(|c: char| !c.is_alphanumeric() && c != '_')
+                            .any(|w| w == name);
+                        if is_match {
+                            return self.extract_parameter_type(&param, source);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(decl) = self.find_global_declaration_for_identifier(ident, &name, source) {
+            return self.extract_declared_type(&decl, source);
+        }
+        None
+    }
+
+    /// Find a top-level (file-scope) `declaration` binding `name`, for
+    /// identifiers referenced from a function that neither declares them
+    /// locally nor takes them as a parameter (e.g. a global variable).
+    fn find_global_declaration_for_identifier<'a>(
+        &self,
+        ident: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        let mut root = *ident;
+        while let Some(parent) = root.parent() {
+            root = parent;
+        }
+        for i in 0..root.child_count() {
+            let Some(child) = root.child(i) else {
                 continue;
             };
-            if param.kind() != "parameter_declaration" {
+            if child.kind() != "declaration" || child.start_byte() >= ident.start_byte() {
                 continue;
             }
-            let param_text = &source[param.start_byte()..param.end_byte()];
-            let is_match = param_text
-                .split(|c: char| !c.is_alphanumeric() && c != '_')
-                .any(|w| w == name);
-            if is_match {
-                return self.extract_parameter_type(&param, source);
+            for j in 0..child.child_count() {
+                let Some(decl_child) = child.child(j) else {
+                    continue;
+                };
+                let declarator = match decl_child.kind() {
+                    "init_declarator" => decl_child
+                        .child_by_field_name("declarator")
+                        .unwrap_or(decl_child),
+                    "identifier"
+                    | "pointer_declarator"
+                    | "array_declarator"
+                    | "function_declarator" => decl_child,
+                    _ => continue,
+                };
+                if crate::utility::cert_c::ast_utils::get_identifier_from_declarator(
+                    &declarator,
+                    source,
+                ) == name
+                {
+                    return Some(child);
+                }
             }
         }
         None
