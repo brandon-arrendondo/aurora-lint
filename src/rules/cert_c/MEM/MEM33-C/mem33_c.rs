@@ -975,21 +975,78 @@ impl FlexibleArrayAnalyzer {
             .any(|token| token == "flex" || token == "struct")
     }
 
+    /// Does `call_node` invoke a function defined in this file whose return
+    /// type is a known flexible-array struct returned *by value* (not via a
+    /// pointer)? Resolves the callee's actual definition and declarator
+    /// instead of guessing from the call's spelling (task 522 -- the
+    /// previous heuristic flagged any call whose name contained "create",
+    /// "get", "flex", or "struct", matching nearly any real-world
+    /// getter/factory such as `get_config()` or `create_thread()`).
     fn is_likely_flexible_struct_function_call(&self, call_node: &Node, source: &str) -> bool {
-        // Check if function call might return a flexible array struct by value
+        let Some(function_name) = self.get_function_name(call_node, source) else {
+            return false;
+        };
+        let Some(func_def) =
+            self.find_function_definition_by_name(call_node, &function_name, source)
+        else {
+            // No definition in this file (e.g. an external/library
+            // function) -- nothing to resolve a return type from.
+            return false;
+        };
+        let Some(declarator) = func_def.child_by_field_name("declarator") else {
+            return false;
+        };
+        if declarator_utils::is_pointer_declarator(&declarator) {
+            // Returns a pointer to the struct, not the struct by value --
+            // not the violation this rule is looking for.
+            return false;
+        }
+        let Some(return_type) = self.extract_declared_type(&func_def, source) else {
+            return false;
+        };
+        self.flexible_structs.contains_key(&return_type)
+    }
 
-        if let Some(function_name) = self.get_function_name(call_node, source) {
-            // Heuristic: function names that suggest returning flexible array structs
-            if function_name.contains("create")
-                || function_name.contains("get")
-                || function_name.contains("flex")
-                || function_name.contains("struct")
-            {
-                return true;
+    fn find_function_definition_by_name<'a>(
+        &self,
+        node: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        let mut root = *node;
+        while let Some(parent) = root.parent() {
+            root = parent;
+        }
+        Self::find_function_definition_recursive(&root, name, source)
+    }
+
+    fn find_function_definition_recursive<'a>(
+        node: &Node<'a>,
+        name: &str,
+        source: &str,
+    ) -> Option<Node<'a>> {
+        if node.kind() == "function_definition" {
+            if let Some(declarator) = node.child_by_field_name("declarator") {
+                if crate::utility::cert_c::ast_utils::find_identifier_in_declarator(
+                    &declarator,
+                    source,
+                )
+                .as_deref()
+                    == Some(name)
+                {
+                    return Some(*node);
+                }
             }
         }
-
-        false
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if let Some(found) = Self::find_function_definition_recursive(&child, name, source)
+                {
+                    return Some(found);
+                }
+            }
+        }
+        None
     }
 
     fn is_declared_flexible_struct_variable(&self, node: &Node, source: &str) -> bool {
