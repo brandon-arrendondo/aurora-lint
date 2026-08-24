@@ -5,7 +5,7 @@ Manifest File
 -------------
 
 The rules manifest TOML file controls which rules are active and their severity.
-The default manifest (``rules_templates/rules-all.toml``) enables all 285 rules.
+The default manifest (``rules_templates/rules-all.toml``) enables 305 of the 311 implemented rules.
 
 ::
 
@@ -43,7 +43,7 @@ Custom Manifest Format
 Supported CERT C Rules
 ----------------------
 
-285 rules are implemented across 17 categories:
+311 rules are implemented across 17 categories (305 enabled by default):
 
 ==========  ======  ===========================================================
 Category    Count   Rules

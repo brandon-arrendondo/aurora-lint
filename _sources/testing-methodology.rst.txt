@@ -13,9 +13,12 @@ SqC is benchmarked on two axes:
 1. **Juliet Test Suite** (NIST) — 54,484 files with ground truth (OMITBAD/OMITGOOD
    sections). Measures TP rate, FP rate, and per-CWE coverage.
 
-2. **Real-World Open-Source Projects** — 5 codebases (libcrc, sqlite, mosquitto,
-   curl, hostap) analyzed by sqc, cppcheck, and clang-tidy. No ground truth —
-   measures violation counts, rule distribution, and cross-tool agreement.
+2. **Real-World Open-Source Projects** — 9 codebases (libcrc, sqlite, mosquitto,
+   curl, hostap, lua, raylib, pure-ftpd, seL4); the original 7 are analyzed by
+   sqc, cppcheck, and clang-tidy, the latter two (pure-ftpd, seL4) sqc-only so
+   far. No ground truth from the tools themselves — measures violation counts,
+   rule distribution, and cross-tool agreement (a separate adjudicated
+   ground-truth oracle covers precision/recall; see below).
 
 **Why both**:
 
@@ -27,8 +30,8 @@ SqC is benchmarked on two axes:
 **Benchmark cadence**:
 
 - **After every significant rule change**: Juliet benchmark (MCP server, ~10 min)
-- **After version milestones**: Full real-world benchmark (MCP server, all 5
-  codebases × 3 tools)
+- **After version milestones**: Full real-world benchmark (MCP server, all 9
+  codebases; sqc on all 9, cppcheck/clang-tidy on the original 7)
 - **cppcheck/clang-tidy results are stable** across sqc changes — run once and cache
 
 Unit Tests
@@ -205,7 +208,7 @@ hostap       430        589,724        37,432        1,761         1,710
 
 *Data from sqc v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).*
 
-**Why sqc reports more violations**: SqC implements 285 CERT C rules (both
+**Why sqc reports more violations**: SqC implements 311 CERT C rules, 305 enabled by default (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.
 
@@ -222,7 +225,7 @@ Apples-to-Apples Concerns
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 1. **Rule coverage**: cppcheck/clang-tidy implement ~20 checks each vs. sqc's
-   283 rules. Raw violation counts are not directly comparable.
+   305 enabled rules. Raw violation counts are not directly comparable.
 
 2. **Translation unit scope**: Use consistent scope (cross-file ``-d`` flag or
    single-file) when comparing.

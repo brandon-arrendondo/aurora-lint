@@ -122,9 +122,12 @@ open-source codebases for scalability and noise validation.</p>
 <ol class="arabic simple">
 <li><p><strong>Juliet Test Suite</strong> (NIST) — 54,484 files with ground truth (OMITBAD/OMITGOOD
 sections). Measures TP rate, FP rate, and per-CWE coverage.</p></li>
-<li><p><strong>Real-World Open-Source Projects</strong> — 5 codebases (libcrc, sqlite, mosquitto,
-curl, hostap) analyzed by sqc, cppcheck, and clang-tidy. No ground truth —
-measures violation counts, rule distribution, and cross-tool agreement.</p></li>
+<li><p><strong>Real-World Open-Source Projects</strong> — 9 codebases (libcrc, sqlite, mosquitto,
+curl, hostap, lua, raylib, pure-ftpd, seL4); the original 7 are analyzed by
+sqc, cppcheck, and clang-tidy, the latter two (pure-ftpd, seL4) sqc-only so
+far. No ground truth from the tools themselves — measures violation counts,
+rule distribution, and cross-tool agreement (a separate adjudicated
+ground-truth oracle covers precision/recall; see below).</p></li>
 </ol>
 <p><strong>Why both</strong>:</p>
 <ul class="simple">
@@ -136,8 +139,8 @@ real-world for noise reduction</p></li>
 <p><strong>Benchmark cadence</strong>:</p>
 <ul class="simple">
 <li><p><strong>After every significant rule change</strong>: Juliet benchmark (MCP server, ~10 min)</p></li>
-<li><p><strong>After version milestones</strong>: Full real-world benchmark (MCP server, all 5
-codebases × 3 tools)</p></li>
+<li><p><strong>After version milestones</strong>: Full real-world benchmark (MCP server, all 9
+codebases; sqc on all 9, cppcheck/clang-tidy on the original 7)</p></li>
 <li><p><strong>cppcheck/clang-tidy results are stable</strong> across sqc changes — run once and cache</p></li>
 </ul>
 </section>
@@ -423,7 +426,7 @@ cppcheck and clang-tidy:</p>
 </tbody>
 </table>
 <p><em>Data from sqc v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).</em></p>
-<p><strong>Why sqc reports more violations</strong>: SqC implements 285 CERT C rules (both
+<p><strong>Why sqc reports more violations</strong>: SqC implements 311 CERT C rules, 305 enabled by default (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.</p>
 <p><strong>Measured precision/recall</strong>: 6.2% precision / 91.7% recall against the
@@ -438,7 +441,7 @@ per-rule breakdowns, and oracle methodology.</p>
 <h3>Apples-to-Apples Concerns<a class="headerlink" href="#apples-to-apples-concerns" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
 <li><p><strong>Rule coverage</strong>: cppcheck/clang-tidy implement ~20 checks each vs. sqc’s
-283 rules. Raw violation counts are not directly comparable.</p></li>
+305 enabled rules. Raw violation counts are not directly comparable.</p></li>
 <li><p><strong>Translation unit scope</strong>: Use consistent scope (cross-file <code class="docutils literal notranslate"><span class="pre">-d</span></code> flag or
 single-file) when comparing.</p></li>
 <li><p><strong>Preprocessor handling</strong>: cppcheck evaluates all <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> configs;

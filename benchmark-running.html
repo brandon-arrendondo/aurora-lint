@@ -278,7 +278,7 @@ Full-suite ~40-50 min. Check status no more than once every 5 minutes.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">run_benchmark()</span></code> returns immediately – use <code class="docutils literal notranslate"><span class="pre">get_status()</span></code> to monitor</p></li>
 <li><p>If a benchmark is already running, <code class="docutils literal notranslate"><span class="pre">run_benchmark()</span></code> returns the existing PID</p></li>
 <li><p><strong>Fast mode</strong> (default): per-CWE manifests, CWE-matched rules only. ~10x faster</p></li>
-<li><p><strong>Full mode</strong>: all 283 rules against every CWE. Higher noise ratio</p></li>
+<li><p><strong>Full mode</strong>: all 305 enabled rules against every CWE. Higher noise ratio</p></li>
 <li><p>Results from <code class="docutils literal notranslate"><span class="pre">get_results()</span></code> only include completed CWEs</p></li>
 <li><p>Resume: interrupted runs skip already-completed CWEs on re-run</p></li>
 </ul>
@@ -334,7 +334,9 @@ python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </
 </tbody>
 </table>
 <p>Supported tools: <code class="docutils literal notranslate"><span class="pre">sqc</span></code>, <code class="docutils literal notranslate"><span class="pre">cppcheck</span></code>, <code class="docutils literal notranslate"><span class="pre">clang-tidy</span></code></p>
-<p>Supported codebases: <code class="docutils literal notranslate"><span class="pre">libcrc</span></code>, <code class="docutils literal notranslate"><span class="pre">sqlite</span></code>, <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code>, <code class="docutils literal notranslate"><span class="pre">curl</span></code>, <code class="docutils literal notranslate"><span class="pre">hostap</span></code></p>
+<p>Supported codebases: <code class="docutils literal notranslate"><span class="pre">libcrc</span></code>, <code class="docutils literal notranslate"><span class="pre">sqlite</span></code>, <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code>, <code class="docutils literal notranslate"><span class="pre">curl</span></code>, <code class="docutils literal notranslate"><span class="pre">hostap</span></code>,
+<code class="docutils literal notranslate"><span class="pre">lua</span></code>, <code class="docutils literal notranslate"><span class="pre">raylib</span></code>, <code class="docutils literal notranslate"><span class="pre">pure-ftpd</span></code>, <code class="docutils literal notranslate"><span class="pre">sel4</span></code> (sqc-only for the latter two —
+no cppcheck/clang-tidy baseline yet)</p>
 <section id="per-codebase-rule-configs">
 <h3>Per-Codebase Rule Configs<a class="headerlink" href="#per-codebase-rule-configs" title="Link to this heading"></a></h3>
 <p>Each codebase may carry its own sqc rules manifest in <code class="docutils literal notranslate"><span class="pre">conf/realworld/</span></code> (the

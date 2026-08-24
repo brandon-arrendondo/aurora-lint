@@ -119,7 +119,7 @@ Run identifiers accepted by query tools:
 - ``run_benchmark()`` returns immediately -- use ``get_status()`` to monitor
 - If a benchmark is already running, ``run_benchmark()`` returns the existing PID
 - **Fast mode** (default): per-CWE manifests, CWE-matched rules only. ~10x faster
-- **Full mode**: all 283 rules against every CWE. Higher noise ratio
+- **Full mode**: all 305 enabled rules against every CWE. Higher noise ratio
 - Results from ``get_results()`` only include completed CWEs
 - Resume: interrupted runs skip already-completed CWEs on re-run
 
@@ -153,7 +153,9 @@ Tool                                        Purpose
 
 Supported tools: ``sqc``, ``cppcheck``, ``clang-tidy``
 
-Supported codebases: ``libcrc``, ``sqlite``, ``mosquitto``, ``curl``, ``hostap``
+Supported codebases: ``libcrc``, ``sqlite``, ``mosquitto``, ``curl``, ``hostap``,
+``lua``, ``raylib``, ``pure-ftpd``, ``sel4`` (sqc-only for the latter two —
+no cppcheck/clang-tidy baseline yet)
 
 Per-Codebase Rule Configs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
