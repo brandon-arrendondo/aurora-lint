@@ -53,6 +53,7 @@
 <li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Benchmark Setup</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#benchmark-host-layout">Benchmark Host Layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#installing-comparison-tools">Installing Comparison Tools</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#cppcheck">cppcheck</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#clang-tidy">clang-tidy</a></li>
@@ -128,6 +129,25 @@
 <h1>Benchmark Setup<a class="headerlink" href="#benchmark-setup" title="Link to this heading"></a></h1>
 <p>This section covers installing comparison tools, setting up the Juliet test suite,
 and configuring real-world codebases for benchmarking.</p>
+<section id="benchmark-host-layout">
+<h2>Benchmark Host Layout<a class="headerlink" href="#benchmark-host-layout" title="Link to this heading"></a></h2>
+<p>Every benchmark node needs one directory – <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code> (default
+<code class="docutils literal notranslate"><span class="pre">~/toolchain</span></code>) – holding the Juliet suite and every real-world codebase
+checkout. <code class="docutils literal notranslate"><span class="pre">bench/config.py</span></code> and <code class="docutils literal notranslate"><span class="pre">mcp_servers/realworld_server.py</span></code> both
+read this from the <code class="docutils literal notranslate"><span class="pre">SQC_BENCH_ROOT</span></code> environment variable, or from a
+<code class="docutils literal notranslate"><span class="pre">.env</span></code> file at the repo root (copy <code class="docutils literal notranslate"><span class="pre">.env.example</span></code> – it’s gitignored, so
+each machine sets its own).</p>
+<p>To provision a fresh node, run the Ansible playbook (clones and pins all 9
+real-world codebases; does not fetch Juliet – see below):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-playbook<span class="w"> </span>playbooks/setup-benchmark-repos.yml<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span>
+<span class="c1"># Or a different root:</span>
+ansible-playbook<span class="w"> </span>playbooks/setup-benchmark-repos.yml<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">bench_root</span><span class="o">=</span>/data/toolchain
+</pre></div>
+</div>
+<p>Keep <code class="docutils literal notranslate"><span class="pre">bench_root</span></code> and <code class="docutils literal notranslate"><span class="pre">SQC_BENCH_ROOT</span></code>/<code class="docutils literal notranslate"><span class="pre">.env</span></code> pointed at the same
+directory – the playbook provisions the checkouts the code actually reads.</p>
+</section>
 <section id="installing-comparison-tools">
 <h2>Installing Comparison Tools<a class="headerlink" href="#installing-comparison-tools" title="Link to this heading"></a></h2>
 <section id="cppcheck">
@@ -226,9 +246,12 @@ frama-c<span class="w"> </span>-version
 </section>
 <section id="juliet-test-suite-setup">
 <h2>Juliet Test Suite Setup<a class="headerlink" href="#juliet-test-suite-setup" title="Link to this heading"></a></h2>
-<p>Download the <a class="reference external" href="https://samate.nist.gov/SARD/test-suites/112">NIST Juliet Test Suite v1.3</a>:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span>~/data/benchmarks
-<span class="nb">cd</span><span class="w"> </span>~/data/benchmarks
+<p>NIST SARD is a click-through portal with no stable direct-download URL, so
+this step is manual (the setup playbook only creates the parent directory
+and reports whether the suite is already in place). Download the <a class="reference external" href="https://samate.nist.gov/SARD/test-suites/112">NIST
+Juliet Test Suite v1.3</a>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span>/benchmarks<span class="w">   </span><span class="c1"># default: ~/toolchain/benchmarks</span>
+<span class="nb">cd</span><span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span>/benchmarks
 <span class="c1"># Download and extract juliet-test-suite-c</span>
 <span class="c1"># Expected structure:</span>
 <span class="c1">#   juliet-test-suite-c/testcases/CWE*/     (118 CWE directories)</span>
@@ -308,8 +331,10 @@ D-Bus, libgcrypt, libpcap</p></td>
 <h2>Real-World Project Setup<a class="headerlink" href="#real-world-project-setup" title="Link to this heading"></a></h2>
 <section id="pinned-source-commits">
 <h3>Pinned Source Commits<a class="headerlink" href="#pinned-source-commits" title="Link to this heading"></a></h3>
-<p>All benchmark results are run against these exact commits. Pin your clones to
-match before comparing results.</p>
+<p>All benchmark results are run against these exact commits – this is the
+full set in <code class="docutils literal notranslate"><span class="pre">mcp_servers/realworld_server.py</span></code>’s <code class="docutils literal notranslate"><span class="pre">CODEBASES</span></code> registry.
+<code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code> clones and pins all 9 automatically;
+this table is both its source of truth and the manual fallback.</p>
 <table class="docutils align-default">
 <colgroup>
 <col style="width: 12.0%" />
@@ -350,39 +375,87 @@ match before comparing results.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">dcee60436390dd34731560657c4257c3b4c839a6</span></code></p></td>
 <td><p>main</p></td>
 </tr>
+<tr class="row-odd"><td><p>lua</p></td>
+<td><p><a class="reference external" href="https://github.com/lua/lua.git">https://github.com/lua/lua.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">40b76de2d77e66b70a9d4bf989c3f5340919973f</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-even"><td><p>raylib</p></td>
+<td><p><a class="reference external" href="https://github.com/raysan5/raylib.git">https://github.com/raysan5/raylib.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">962bbfc6bfbd7a5acd08e21314fcfa161003a589</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-odd"><td><p>pureftpd</p></td>
+<td><p><a class="reference external" href="https://github.com/jedisct1/pure-ftpd.git">https://github.com/jedisct1/pure-ftpd.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cc28bff52ca28e1d122a2142bf37f2dc578f4d3e</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
+<tr class="row-even"><td><p>sel4</p></td>
+<td><p><a class="reference external" href="https://github.com/seL4/seL4.git">https://github.com/seL4/seL4.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1326364bc9135d9445d936ebc01e38a402c1f4c6</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
 </tbody>
 </table>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><code class="docutils literal notranslate"><span class="pre">pureftpd</span></code>’s checkout directory must be named <code class="docutils literal notranslate"><span class="pre">pureftpd</span></code> (no
+hyphen), not the upstream <code class="docutils literal notranslate"><span class="pre">pure-ftpd</span></code> – two path-parsing spots in
+<code class="docutils literal notranslate"><span class="pre">bench/db.py</span></code> (result-filename parsing, ground-truth path
+normalization) require the checkout dir basename to match the registry
+key exactly. The playbook already clones it to the right name.</p>
+</div>
 </section>
 <section id="clone-and-pin">
 <h3>Clone and Pin<a class="headerlink" href="#clone-and-pin" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span>~/data
-<span class="nb">cd</span><span class="w"> </span>~/data
+<p>Preferred: run <code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code> (see <a class="reference internal" href="#benchmark-host-layout">Benchmark Host
+Layout</a> above) – it clones, pins, and verifies all 9 checkouts in one pass.</p>
+<p>Manual fallback:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span><span class="w">   </span><span class="c1"># default: ~/toolchain</span>
+<span class="nb">cd</span><span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span>
 
-<span class="c1"># libcrc</span>
 git<span class="w"> </span>clone<span class="w"> </span>https://github.com/lammertb/libcrc.git
 <span class="nb">cd</span><span class="w"> </span>libcrc<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>7719e2112a9a960b1bba130d02bebdf58e8701f1<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
 
-<span class="c1"># sqlite</span>
 git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sqlite/sqlite.git
 <span class="nb">cd</span><span class="w"> </span>sqlite<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>b1a73ba34d05b32007315e4065c6468cc638e3af<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
 
-<span class="c1"># mosquitto</span>
 git<span class="w"> </span>clone<span class="w"> </span>https://github.com/eclipse-mosquitto/mosquitto.git
 <span class="nb">cd</span><span class="w"> </span>mosquitto<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>d3ee5c5ca62c0fa4983308c6fff558ee978e878c<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
 
-<span class="c1"># curl</span>
 git<span class="w"> </span>clone<span class="w"> </span>https://github.com/curl/curl.git
 <span class="nb">cd</span><span class="w"> </span>curl<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>3e198f75861cc2e12daf299689e145949dddd19b<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
 
-<span class="c1"># hostap</span>
 git<span class="w"> </span>clone<span class="w"> </span>https://git.w1.fi/hostap.git
 <span class="nb">cd</span><span class="w"> </span>hostap<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>dcee60436390dd34731560657c4257c3b4c839a6<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/lua/lua.git
+<span class="nb">cd</span><span class="w"> </span>lua<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>40b76de2d77e66b70a9d4bf989c3f5340919973f<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/raysan5/raylib.git
+<span class="nb">cd</span><span class="w"> </span>raylib<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>962bbfc6bfbd7a5acd08e21314fcfa161003a589<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+<span class="c1"># NOTE: checkout dir must be &quot;pureftpd&quot; (no hyphen) -- see the warning above</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/jedisct1/pure-ftpd.git<span class="w"> </span>pureftpd
+<span class="nb">cd</span><span class="w"> </span>pureftpd<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>cc28bff52ca28e1d122a2142bf37f2dc578f4d3e<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+<span class="c1"># NOTE: checkout dir must be lowercase &quot;sel4&quot; to match the registry key</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/seL4/seL4.git<span class="w"> </span>sel4
+<span class="nb">cd</span><span class="w"> </span>sel4<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>1326364bc9135d9445d936ebc01e38a402c1f4c6<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
 </pre></div>
 </div>
 </section>
 </section>
 <section id="running-each-tool-manually">
 <h2>Running Each Tool Manually<a class="headerlink" href="#running-each-tool-manually" title="Link to this heading"></a></h2>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The examples below use an illustrative <code class="docutils literal notranslate"><span class="pre">~/data/comparisons/&lt;project&gt;</span></code>
+checkout path for ad hoc manual runs. If you provisioned codebases via
+<code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code>, substitute
+<code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT/&lt;project&gt;</span></code> (default <code class="docutils literal notranslate"><span class="pre">~/toolchain/&lt;project&gt;</span></code>) instead
+– that’s the path the MCP servers themselves read.</p>
+</div>
 <section id="sqc">
 <h3>sqc<a class="headerlink" href="#sqc" title="Link to this heading"></a></h3>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Build</span>
