@@ -1849,16 +1849,36 @@ impl FlexibleArrayAnalyzer {
     }
 
     /// Resolve `ident`'s declared base type (pointer/array qualifiers
-    /// stripped), checking its nearest local declaration first, then the
-    /// enclosing function's parameter list, then (task 521) file-scope
-    /// declarations -- needed for e.g. a global pointer referenced from
-    /// inside a function that neither declares nor takes it as a parameter.
+    /// stripped) via `find_identifier_declaration_node`.
     fn identifier_declared_type_name(&self, ident: &Node, source: &str) -> Option<String> {
+        let decl = self.find_identifier_declaration_node(ident, source)?;
+        self.extract_declared_type(&decl, source)
+    }
+
+    /// Is `ident` declared `const` at its actual declaration/parameter site?
+    /// Resolves via `find_identifier_declaration_node` instead of guessing
+    /// from the identifier's spelling (task 524).
+    fn is_identifier_const_qualified(&self, ident: &Node, source: &str) -> bool {
+        let Some(decl) = self.find_identifier_declaration_node(ident, source) else {
+            return false;
+        };
+        self.has_const_keyword(&decl, source)
+    }
+
+    /// Find `ident`'s declaration node -- its nearest local declaration
+    /// first, then the enclosing function's parameter list, then (task 521)
+    /// file-scope declarations, needed for e.g. a global pointer referenced
+    /// from inside a function that neither declares nor takes it as a
+    /// parameter. Returns the `declaration` or `parameter_declaration` node
+    /// itself so callers can inspect qualifiers, not just the type name.
+    fn find_identifier_declaration_node<'a>(
+        &self,
+        ident: &Node<'a>,
+        source: &str,
+    ) -> Option<Node<'a>> {
         let name = source[ident.start_byte()..ident.end_byte()].to_string();
         if let Some(decl) = find_enclosing_declaration_for_identifier(ident, &name, source) {
-            if let Some(type_name) = self.extract_declared_type(&decl, source) {
-                return Some(type_name);
-            }
+            return Some(decl);
         }
         if let Some(func) = find_containing_function(ident) {
             if let Some(declarator) = func.child_by_field_name("declarator") {
@@ -1876,16 +1896,13 @@ impl FlexibleArrayAnalyzer {
                             .split(|c: char| !c.is_alphanumeric() && c != '_')
                             .any(|w| w == name);
                         if is_match {
-                            return self.extract_parameter_type(&param, source);
+                            return Some(param);
                         }
                     }
                 }
             }
         }
-        if let Some(decl) = self.find_global_declaration_for_identifier(ident, &name, source) {
-            return self.extract_declared_type(&decl, source);
-        }
-        None
+        self.find_global_declaration_for_identifier(ident, &name, source)
     }
 
     /// Find a top-level (file-scope) `declaration` binding `name`, for
@@ -3552,46 +3569,49 @@ impl FlexibleArrayAnalyzer {
         })
     }
 
+    /// Look for `(struct target *)&var` where `var` is actually declared
+    /// `const`. Resolves the referenced variable's declaration via
+    /// `is_identifier_const_qualified` instead of guessing from its name
+    /// (task 524 -- the previous heuristic decided this purely from whether
+    /// the variable's name contained the substring "const", so a variable
+    /// literally named `const_thing` that wasn't const-qualified triggered a
+    /// bogus violation, while a genuinely const-qualified variable named
+    /// anything else was missed entirely).
     fn check_const_casting_specific(
         &self,
         node: &Node,
         source: &str,
         _struct_name: &str,
     ) -> Option<RuleViolation> {
-        // Original const-casting logic from existing check_const_casting method
-        // Check for patterns like: (struct flex_array_struct *)&const_flex
-        // where const qualifier is being cast away
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "unary_expression" {
-                    let unary_text = source[child.start_byte()..child.end_byte()].to_string();
-                    if unary_text.starts_with("&") {
-                        let var_ref = unary_text.trim_start_matches("&").trim();
-
-                        // Check if this looks like const-casting (variable name suggests const)
-                        if var_ref.contains("const") {
-                            let start_point = node.start_position();
-                            return Some(RuleViolation {
-                                rule_id: "MEM33-C".to_string(),
-                                severity: Severity::High,
-                                message: format!(
-                                    "Const-casting violation: casting const-qualified flexible array structure '{}' to non-const pointer. This removes const qualification and may lead to undefined behavior.",
-                                    var_ref
-                                ),
-                                file_path: String::new(),
-                                line: start_point.row + 1,
-                                column: start_point.column + 1,
-                                suggestion: Some("Use const-qualified pointer or avoid casting away const qualifier".to_string()),
-                            ..Default::default()
-                            });
-                        }
-                    }
-                }
-            }
+        let value = node.child_by_field_name("value")?;
+        if value.kind() != "unary_expression" {
+            return None;
+        }
+        let operator = value.child_by_field_name("operator")?;
+        if source[operator.start_byte()..operator.end_byte()].trim() != "&" {
+            return None;
+        }
+        let argument = value.child_by_field_name("argument")?;
+        if argument.kind() != "identifier" || !self.is_identifier_const_qualified(&argument, source)
+        {
+            return None;
         }
 
-        None
+        let var_ref = source[argument.start_byte()..argument.end_byte()].to_string();
+        let start_point = node.start_position();
+        Some(RuleViolation {
+            rule_id: "MEM33-C".to_string(),
+            severity: Severity::High,
+            message: format!(
+                "Const-casting violation: casting const-qualified flexible array structure '{}' to non-const pointer. This removes const qualification and may lead to undefined behavior.",
+                var_ref
+            ),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some("Use const-qualified pointer or avoid casting away const qualifier".to_string()),
+        ..Default::default()
+        })
     }
 
     /// Check for offsetof() misuse with flexible array members in call expressions
