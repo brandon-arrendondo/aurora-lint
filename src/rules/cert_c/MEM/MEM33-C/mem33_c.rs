@@ -3,6 +3,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     find_containing_function, find_enclosing_declaration_for_identifier,
 };
+use crate::utility::cert_c::declarator_utils;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -1955,7 +1956,7 @@ impl FlexibleArrayAnalyzer {
         false
     }
 
-    fn is_pointer_declaration(&self, node: &Node, source: &str) -> bool {
+    fn is_pointer_declaration(&self, node: &Node, _source: &str) -> bool {
         // Check if this declaration is for a pointer (which is allowed)
         // Look for pointer_declarator or * symbols in the declarator part ONLY
         for i in 0..node.child_count() {
@@ -1979,31 +1980,29 @@ impl FlexibleArrayAnalyzer {
                                     break;
                                 }
                                 _ => {
-                                    // Check for pointer syntax only in declarator nodes
-                                    if declarator_child.kind().contains("declarator") {
-                                        if self.contains_pointer_syntax(&declarator_child, source) {
-                                            return true;
-                                        }
+                                    // Check for a nested pointer_declarator only in
+                                    // declarator nodes (AST-based, not a text scan --
+                                    // a text '*' scan false-positives on array-size
+                                    // arithmetic like `buffer[count * 2]`, task 520).
+                                    if declarator_child.kind().contains("declarator")
+                                        && declarator_utils::is_pointer_declarator(
+                                            &declarator_child,
+                                        )
+                                    {
+                                        return true;
                                     }
                                 }
                             }
                         }
                     }
-                } else if child.kind().contains("declarator") {
-                    // Check for '*' character in declarators only
-                    if self.contains_pointer_syntax(&child, source) {
-                        return true;
-                    }
+                } else if child.kind().contains("declarator")
+                    && declarator_utils::is_pointer_declarator(&child)
+                {
+                    return true;
                 }
             }
         }
         false
-    }
-
-    fn contains_pointer_syntax(&self, node: &Node, source: &str) -> bool {
-        // Check if node contains pointer syntax like '*'
-        let node_text = &source[node.start_byte()..node.end_byte()];
-        node_text.contains('*')
     }
 
     fn get_severity_for_storage_type(&self, storage_type: &str) -> Severity {
