@@ -2762,66 +2762,47 @@ impl FlexibleArrayAnalyzer {
         None
     }
 
-    fn get_memory_op_target_argument(&self, call_node: &Node, source: &str) -> Option<String> {
-        // Extract the target argument from memory operation functions like memset(target, value, size)
+    fn get_memory_op_target_node<'a>(
+        &self,
+        call_node: &Node<'a>,
+        _source: &str,
+    ) -> Option<Node<'a>> {
+        // Extract the target argument node from memory operation functions like memset(target, value, size)
         // This is the 1st argument (index 0)
-        if let Some(arguments) = call_node.child_by_field_name("arguments") {
-            let mut args = Vec::new();
-            for i in 0..arguments.child_count() {
-                if let Some(child) = arguments.child(i) {
-                    if child.kind() != "," && child.kind() != "(" && child.kind() != ")" {
-                        args.push(source[child.start_byte()..child.end_byte()].to_string());
-                    }
+        let arguments = call_node.child_by_field_name("arguments")?;
+        for i in 0..arguments.child_count() {
+            if let Some(child) = arguments.child(i) {
+                if child.kind() != "," && child.kind() != "(" && child.kind() != ")" {
+                    return Some(child);
                 }
-            }
-            if !args.is_empty() {
-                return Some(args[0].clone()); // First argument is the target
             }
         }
         None
     }
 
-    fn is_flexible_array_struct_target(&self, target_expr: &str) -> bool {
-        // Check if the target expression appears to be a flexible array struct
-        // This is a heuristic-based approach
-
-        // Strategy 1: Check if target contains known flexible array struct names
-        for struct_name in self.flexible_structs.keys() {
-            if target_expr.contains(struct_name) {
-                return true;
-            }
+    /// Is `target_node` a flexible-array-struct pointer/value? Resolves the
+    /// underlying identifier's *declared type* against the AST-derived
+    /// `flexible_structs` map instead of guessing from the target's spelling
+    /// (task 519 -- the previous name-substring/short-identifier heuristic
+    /// flagged nearly any `memset` target, e.g. `memset(buf, 0, sizeof(hdr))`
+    /// where `hdr` is an unrelated small struct).
+    fn is_flexible_array_struct_target(&self, target_node: &Node, source: &str) -> bool {
+        let mut node = *target_node;
+        // Unwrap `&ident` / `*ident` (tree-sitter-c represents both as
+        // `pointer_expression`) down to the base identifier.
+        while node.kind() == "pointer_expression" {
+            let Some(argument) = node.child_by_field_name("argument") else {
+                return false;
+            };
+            node = argument;
         }
-
-        // Strategy 2: Check for common flexible array struct patterns
-        if target_expr.contains("flex") || target_expr.contains("_struct") {
-            return true;
+        if node.kind() != "identifier" {
+            return false;
         }
-
-        // Strategy 3: Check for dereference patterns that might indicate struct pointers
-        if target_expr.starts_with("*") || target_expr.contains("->") {
-            return true;
-        }
-
-        // Strategy 4: Check for common variable names that might be flexible array struct pointers
-        // This is a broader heuristic for variables likely to be struct pointers
-        let var_name = target_expr.trim();
-        if var_name == "dest" || var_name == "src" || var_name == "target" || var_name == "buffer" {
-            return true;
-        }
-
-        // Strategy 5: If we have flexible array structs detected, be more permissive
-        // for simple variable names that look like pointers (since exact type analysis is complex)
-        if !self.flexible_structs.is_empty()
-            && var_name.len() <= 8
-            && var_name.chars().all(|c| c.is_alphanumeric() || c == '_')
-        {
-            // Only for variables that don't look like regular values
-            if !var_name.chars().all(|c| c.is_numeric()) && var_name != "0" && var_name != "1" {
-                return true;
-            }
-        }
-
-        false
+        let Some(type_name) = self.identifier_declared_type_name(&node, source) else {
+            return false;
+        };
+        self.flexible_structs.contains_key(&type_name)
     }
 
     fn check_memory_operations(&self, node: &Node, source: &str) -> Option<RuleViolation> {
@@ -2856,10 +2837,9 @@ impl FlexibleArrayAnalyzer {
                     if let Some(size_arg) = self.get_memory_op_size_argument(node, source) {
                         if self.is_insufficient_sizeof_only(&size_arg) {
                             // Check if first argument might be a flexible array struct
-                            if let Some(target_arg) =
-                                self.get_memory_op_target_argument(node, source)
+                            if let Some(target_node) = self.get_memory_op_target_node(node, source)
                             {
-                                if self.is_flexible_array_struct_target(&target_arg) {
+                                if self.is_flexible_array_struct_target(&target_node, source) {
                                     let start_point = node.start_position();
                                     return Some(RuleViolation {
                                         rule_id: "MEM33-C".to_string(),
