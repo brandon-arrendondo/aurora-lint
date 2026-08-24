@@ -34,7 +34,6 @@ SCRIPT = PROJECT_DIR / "scripts" / "run_juliet_parallel.sh"
 ANALYZE_SCRIPT = PROJECT_DIR / "scripts" / "analyze_juliet_results.py"
 GENERATE_MAP_SCRIPT = PROJECT_DIR / "scripts" / "generate_rule_cwe_map.py"
 RULE_CWE_MAP = PROJECT_DIR / "data" / "rule_cwe_map.json"
-JULIET_BASE = Path.home() / "toolchain" / "benchmarks" / "juliet-test-suite-c" / "testcases"
 RESULTS_BASE = Path("/tmp/juliet_results")
 STATE_FILE = Path("/tmp/juliet_bench.pid")  # stores JSON state (name kept for compat)
 
@@ -45,7 +44,7 @@ KNOWN_TOTAL_CWES = 118
 # Add project root to path so bench package is importable
 sys.path.insert(0, str(PROJECT_DIR))
 from bench.db import BenchDB
-from bench.config import DB_PATH
+from bench.config import DB_PATH, JULIET_BASE
 
 def _get_db() -> BenchDB:
     """Get a BenchDB instance."""

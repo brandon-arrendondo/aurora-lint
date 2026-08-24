@@ -4,6 +4,29 @@ Benchmark Setup
 This section covers installing comparison tools, setting up the Juliet test suite,
 and configuring real-world codebases for benchmarking.
 
+Benchmark Host Layout
+----------------------
+
+Every benchmark node needs one directory -- ``$SQC_BENCH_ROOT`` (default
+``~/toolchain``) -- holding the Juliet suite and every real-world codebase
+checkout. ``bench/config.py`` and ``mcp_servers/realworld_server.py`` both
+read this from the ``SQC_BENCH_ROOT`` environment variable, or from a
+``.env`` file at the repo root (copy ``.env.example`` -- it's gitignored, so
+each machine sets its own).
+
+To provision a fresh node, run the Ansible playbook (clones and pins all 9
+real-world codebases; does not fetch Juliet -- see below):
+
+.. code-block:: bash
+
+    ansible-playbook playbooks/setup-benchmark-repos.yml -i "localhost," -c local
+    # Or a different root:
+    ansible-playbook playbooks/setup-benchmark-repos.yml -i "localhost," -c local \
+      -e bench_root=/data/toolchain
+
+Keep ``bench_root`` and ``SQC_BENCH_ROOT``/``.env`` pointed at the same
+directory -- the playbook provisions the checkouts the code actually reads.
+
 Installing Comparison Tools
 ---------------------------
 
@@ -118,13 +141,15 @@ Manual install:
 Juliet Test Suite Setup
 -----------------------
 
-Download the `NIST Juliet Test Suite v1.3
-<https://samate.nist.gov/SARD/test-suites/112>`_:
+NIST SARD is a click-through portal with no stable direct-download URL, so
+this step is manual (the setup playbook only creates the parent directory
+and reports whether the suite is already in place). Download the `NIST
+Juliet Test Suite v1.3 <https://samate.nist.gov/SARD/test-suites/112>`_:
 
 .. code-block:: bash
 
-    mkdir -p ~/data/benchmarks
-    cd ~/data/benchmarks
+    mkdir -p $SQC_BENCH_ROOT/benchmarks   # default: ~/toolchain/benchmarks
+    cd $SQC_BENCH_ROOT/benchmarks
     # Download and extract juliet-test-suite-c
     # Expected structure:
     #   juliet-test-suite-c/testcases/CWE*/     (118 CWE directories)
@@ -188,8 +213,10 @@ Real-World Project Setup
 Pinned Source Commits
 ~~~~~~~~~~~~~~~~~~~~~
 
-All benchmark results are run against these exact commits. Pin your clones to
-match before comparing results.
+All benchmark results are run against these exact commits -- this is the
+full set in ``mcp_servers/realworld_server.py``'s ``CODEBASES`` registry.
+``playbooks/setup-benchmark-repos.yml`` clones and pins all 9 automatically;
+this table is both its source of truth and the manual fallback.
 
 .. list-table::
    :header-rows: 1
@@ -219,37 +246,83 @@ match before comparing results.
      - https://git.w1.fi/hostap.git
      - ``dcee60436390dd34731560657c4257c3b4c839a6``
      - main
+   * - lua
+     - https://github.com/lua/lua.git
+     - ``40b76de2d77e66b70a9d4bf989c3f5340919973f``
+     - detached
+   * - raylib
+     - https://github.com/raysan5/raylib.git
+     - ``962bbfc6bfbd7a5acd08e21314fcfa161003a589``
+     - detached
+   * - pureftpd
+     - https://github.com/jedisct1/pure-ftpd.git
+     - ``cc28bff52ca28e1d122a2142bf37f2dc578f4d3e``
+     - detached
+   * - sel4
+     - https://github.com/seL4/seL4.git
+     - ``1326364bc9135d9445d936ebc01e38a402c1f4c6``
+     - detached
+
+.. important::
+
+    ``pureftpd``'s checkout directory must be named ``pureftpd`` (no
+    hyphen), not the upstream ``pure-ftpd`` -- two path-parsing spots in
+    ``bench/db.py`` (result-filename parsing, ground-truth path
+    normalization) require the checkout dir basename to match the registry
+    key exactly. The playbook already clones it to the right name.
 
 Clone and Pin
 ~~~~~~~~~~~~~
 
+Preferred: run ``playbooks/setup-benchmark-repos.yml`` (see `Benchmark Host
+Layout`_ above) -- it clones, pins, and verifies all 9 checkouts in one pass.
+
+Manual fallback:
+
 .. code-block:: bash
 
-    mkdir -p ~/data
-    cd ~/data
+    mkdir -p $SQC_BENCH_ROOT   # default: ~/toolchain
+    cd $SQC_BENCH_ROOT
 
-    # libcrc
     git clone https://github.com/lammertb/libcrc.git
     cd libcrc && git checkout 7719e2112a9a960b1bba130d02bebdf58e8701f1 && cd ..
 
-    # sqlite
     git clone https://github.com/sqlite/sqlite.git
     cd sqlite && git checkout b1a73ba34d05b32007315e4065c6468cc638e3af && cd ..
 
-    # mosquitto
     git clone https://github.com/eclipse-mosquitto/mosquitto.git
     cd mosquitto && git checkout d3ee5c5ca62c0fa4983308c6fff558ee978e878c && cd ..
 
-    # curl
     git clone https://github.com/curl/curl.git
     cd curl && git checkout 3e198f75861cc2e12daf299689e145949dddd19b && cd ..
 
-    # hostap
     git clone https://git.w1.fi/hostap.git
     cd hostap && git checkout dcee60436390dd34731560657c4257c3b4c839a6 && cd ..
 
+    git clone https://github.com/lua/lua.git
+    cd lua && git checkout 40b76de2d77e66b70a9d4bf989c3f5340919973f && cd ..
+
+    git clone https://github.com/raysan5/raylib.git
+    cd raylib && git checkout 962bbfc6bfbd7a5acd08e21314fcfa161003a589 && cd ..
+
+    # NOTE: checkout dir must be "pureftpd" (no hyphen) -- see the warning above
+    git clone https://github.com/jedisct1/pure-ftpd.git pureftpd
+    cd pureftpd && git checkout cc28bff52ca28e1d122a2142bf37f2dc578f4d3e && cd ..
+
+    # NOTE: checkout dir must be lowercase "sel4" to match the registry key
+    git clone https://github.com/seL4/seL4.git sel4
+    cd sel4 && git checkout 1326364bc9135d9445d936ebc01e38a402c1f4c6 && cd ..
+
 Running Each Tool Manually
 --------------------------
+
+.. note::
+
+    The examples below use an illustrative ``~/data/comparisons/<project>``
+    checkout path for ad hoc manual runs. If you provisioned codebases via
+    ``playbooks/setup-benchmark-repos.yml``, substitute
+    ``$SQC_BENCH_ROOT/<project>`` (default ``~/toolchain/<project>``) instead
+    -- that's the path the MCP servers themselves read.
 
 sqc
 ~~~

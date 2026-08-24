@@ -54,6 +54,7 @@ VALID_TOOLS = {"sqc", "cppcheck", "clang-tidy"}
 # ── SQLite backend ───────────────────────────────────────────────────────────
 sys.path.insert(0, str(PROJECT_DIR))
 from bench.db import BenchDB
+from bench.config import BENCH_ROOT
 
 def _get_db() -> BenchDB:
     """Get a BenchDB instance."""
@@ -78,7 +79,7 @@ def _load_remote_config() -> tuple[dict[str, str], str]:
 # ── Codebase Registry ─────────────────────────────────────────────────────────
 CODEBASES = {
     "libcrc": {
-        "path": Path.home() / "toolchain" / "libcrc",
+        "path": BENCH_ROOT / "libcrc",
         "sqc": {
             "scan_path": None,  # same as path (whole project)
             # Per-codebase rules manifest (conf/realworld/<cb>-rules.toml).
@@ -99,7 +100,7 @@ CODEBASES = {
         },
     },
     "sqlite": {
-        "path": Path.home() / "toolchain" / "sqlite",
+        "path": BENCH_ROOT / "sqlite",
         "sqc": {
             "scan_path": None,
             "manifest": "conf/realworld/sqlite-rules.toml",
@@ -135,7 +136,7 @@ CODEBASES = {
         },
     },
     "mosquitto": {
-        "path": Path.home() / "toolchain" / "mosquitto",
+        "path": BENCH_ROOT / "mosquitto",
         "sqc": {
             "scan_path": None,
             "manifest": "conf/realworld/mosquitto-rules.toml",
@@ -179,7 +180,7 @@ CODEBASES = {
         },
     },
     "curl": {
-        "path": Path.home() / "toolchain" / "curl",
+        "path": BENCH_ROOT / "curl",
         "sqc": {
             "scan_path": None,
             "manifest": "conf/realworld/curl-rules.toml",
@@ -236,7 +237,7 @@ CODEBASES = {
         },
     },
     "hostap": {
-        "path": Path.home() / "toolchain" / "hostap",
+        "path": BENCH_ROOT / "hostap",
         "sqc": {
             "scan_path": None,
             "manifest": "conf/realworld/hostap-rules.toml",
@@ -284,7 +285,7 @@ CODEBASES = {
         },
     },
     "lua": {
-        "path": Path.home() / "toolchain" / "lua",
+        "path": BENCH_ROOT / "lua",
         "sqc": {
             "scan_path": None,
             "manifest": "conf/realworld/lua-rules.toml",
@@ -318,7 +319,7 @@ CODEBASES = {
         },
     },
     "raylib": {
-        "path": Path.home() / "toolchain" / "raylib",
+        "path": BENCH_ROOT / "raylib",
         "sqc": {
             # Scope to raylib's OWN library code: src/ (the 7 module .c TUs +
             # platform backends + headers), excluding src/external/** which is
@@ -359,7 +360,7 @@ CODEBASES = {
     # matching checkout dir name; this is the first one that would trip
     # either bug.
     "pureftpd": {
-        "path": Path.home() / "toolchain" / "pureftpd",
+        "path": BENCH_ROOT / "pureftpd",
         "sqc": {
             # Onboarded task 301: the suite's SQL-client-API oracle for
             # CWE-89 (SQL injection) -- src/log_mysql.c/log_pgsql.c call
@@ -402,7 +403,7 @@ CODEBASES = {
     # MSC12-C-specific oracle task 381 originally set out to find. sqc-only
     # (no cppcheck/clang-tidy config).
     "sel4": {
-        "path": Path.home() / "toolchain" / "sel4",
+        "path": BENCH_ROOT / "sel4",
         "sqc": {
             # Scope = the kernel proper (src/, 183 of 184 repo .c files).
             # libsel4/ (userspace bindings), tools/, manual/, configs/ are not

@@ -1,0 +1,145 @@
+---
+# Ansible playbook: clone and pin every real-world benchmark codebase
+#
+# Provisions BENCH_ROOT (default ~/toolchain, override with -e bench_root=...
+# or by exporting SQC_BENCH_ROOT before running) with the 9 codebases in
+# mcp_servers/realworld_server.py's CODEBASES registry, each checked out at
+# the exact commit its ground-truth oracle was adjudicated against. Keep
+# bench_root in sync with SQC_BENCH_ROOT in your .env (see .env.example) --
+# they must point at the same directory.
+#
+# Does NOT fetch the Juliet test suite: NIST SARD (https://samate.nist.gov/
+# SARD/test-suites/112) is a click-through portal with no stable direct
+# download URL, so that step stays manual (see docs/benchmark-setup.rst).
+# This playbook only creates the expected juliet-test-suite-c/ parent dir
+# and reports whether the suite is already in place.
+#
+# Usage:
+#   ansible-playbook playbooks/setup-benchmark-repos.yml -i "localhost," -c local
+#   ansible-playbook playbooks/setup-benchmark-repos.yml -i "localhost," -c local \
+#     -e bench_root=/data/toolchain
+#
+# After running:
+#   git -C ~/toolchain/libcrc rev-parse HEAD   # etc., verify pinned SHAs
+
+- name: Clone and pin real-world benchmark codebases
+  hosts: all
+  vars:
+    bench_root: "{{ lookup('env', 'SQC_BENCH_ROOT') | default(ansible_env.HOME + '/toolchain', true) }}"
+    repos:
+      - name: libcrc
+        repo: https://github.com/lammertb/libcrc.git
+        version: 7719e2112a9a960b1bba130d02bebdf58e8701f1
+      - name: sqlite
+        repo: https://github.com/sqlite/sqlite.git
+        version: b1a73ba34d05b32007315e4065c6468cc638e3af
+      - name: mosquitto
+        repo: https://github.com/eclipse-mosquitto/mosquitto.git
+        version: d3ee5c5ca62c0fa4983308c6fff558ee978e878c
+      - name: curl
+        repo: https://github.com/curl/curl.git
+        version: 3e198f75861cc2e12daf299689e145949dddd19b
+      - name: hostap
+        repo: https://git.w1.fi/hostap.git
+        version: dcee60436390dd34731560657c4257c3b4c839a6
+      - name: lua
+        repo: https://github.com/lua/lua.git
+        version: 40b76de2d77e66b70a9d4bf989c3f5340919973f
+      - name: raylib
+        repo: https://github.com/raysan5/raylib.git
+        version: 962bbfc6bfbd7a5acd08e21314fcfa161003a589
+      # Registry key + checkout dir name are "pureftpd" (no hyphen), even
+      # though upstream is "pure-ftpd" -- bench/db.py's result-filename
+      # parsing and path normalization both require the checkout dir
+      # basename to equal the registry key. See mcp_servers/realworld_server.py.
+      - name: pureftpd
+        repo: https://github.com/jedisct1/pure-ftpd.git
+        version: cc28bff52ca28e1d122a2142bf37f2dc578f4d3e
+      - name: sel4
+        repo: https://github.com/seL4/seL4.git
+        version: 1326364bc9135d9445d936ebc01e38a402c1f4c6
+
+  tasks:
+    - name: Create bench_root directory
+      file:
+        path: "{{ bench_root }}"
+        state: directory
+        mode: "0755"
+
+    - name: Clone and checkout each codebase at its pinned commit
+      git:
+        repo: "{{ item.repo }}"
+        dest: "{{ bench_root }}/{{ item.name }}"
+        version: "{{ item.version }}"
+        force: false
+      loop: "{{ repos }}"
+      loop_control:
+        label: "{{ item.name }}@{{ item.version[:12] }}"
+
+    - name: Verify each checkout landed on its pinned commit
+      command: git -C "{{ bench_root }}/{{ item.name }}" rev-parse HEAD
+      register: checkout_heads
+      changed_when: false
+      loop: "{{ repos }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Fail if any checkout drifted from its pinned commit
+      fail:
+        msg: >-
+          {{ item.item.name }} is at {{ item.stdout }}, expected
+          {{ item.item.version }}
+      when: item.stdout != item.item.version
+      loop: "{{ checkout_heads.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Third-party library headers (resolves -I include paths; see docs/benchmark-setup.rst)
+      become: true
+      apt:
+        name:
+          - libssl-dev
+          - libcjson-dev
+          - zlib1g-dev
+          - libcunit1-dev
+          - libsqlite3-dev
+          - libmbedtls-dev
+          - libgnutls28-dev
+          - tcl-dev
+          - libnl-3-dev
+          - libnl-genl-3-dev
+          - libdbus-1-dev
+          - libgcrypt20-dev
+          - libpcap-dev
+          - libwolfssl-dev
+        state: present
+        update_cache: true
+      tags: [headers]
+
+    - name: Check whether the Juliet test suite is already in place
+      stat:
+        path: "{{ bench_root }}/benchmarks/juliet-test-suite-c/testcases"
+      register: juliet_testcases
+
+    - name: Create benchmarks/ parent directory for the (manually downloaded) Juliet suite
+      file:
+        path: "{{ bench_root }}/benchmarks"
+        state: directory
+        mode: "0755"
+      when: not juliet_testcases.stat.exists
+
+    - name: Juliet test suite still needs manual placement
+      debug:
+        msg: >-
+          Juliet Test Suite v1.3 not found at
+          {{ bench_root }}/benchmarks/juliet-test-suite-c/testcases -- download
+          it from https://samate.nist.gov/SARD/test-suites/112 (NIST portal,
+          no stable direct-download URL) and extract it so that
+          testcases/CWE*/ (118 dirs) and testcasesupport/ land under
+          {{ bench_root }}/benchmarks/juliet-test-suite-c/.
+      when: not juliet_testcases.stat.exists
+
+    - name: Juliet test suite already present
+      debug:
+        msg: "Found at {{ bench_root }}/benchmarks/juliet-test-suite-c/testcases"
+      when: juliet_testcases.stat.exists
