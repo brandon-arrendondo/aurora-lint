@@ -47,7 +47,7 @@ Tristan Vanfossen\\
 Static analysis tools for C either cover narrow subsets of known
 vulnerability classes or require heavyweight build infrastructure that
 limits adoption.  This paper presents SqC, a static analyzer that
-checks C source code for compliance with 285 rules from the SEI CERT C
+checks C source code for compliance with 311 rules from the SEI CERT C
 Coding Standard---significantly broader coverage than any single
 open-source alternative.  SqC uses tree-sitter for incremental parsing,
 constructs per-function control-flow graphs, performs forward dataflow
@@ -94,7 +94,7 @@ clang-tidy~\cite{clang-tidy} implement approximately 20 CERT C checks
 each, leaving the majority of the standard uncovered.
 
 This paper presents SqC (\textbf{S}oftware Code \textbf{Q}uality for
-\textbf{C}), a static analysis tool that implements 285 CERT C rules
+\textbf{C}), a static analysis tool that implements 311 CERT C rules
 across all 17 categories.  The paper describes the tool's architecture,
 the iterative process used to reduce false positives, and the results of
 evaluating SqC against both a standardized benchmark and real-world
@@ -132,22 +132,22 @@ and recommendations organized into 17 categories, shown in
 API & API Usage & 9 \\
 ARR & Arrays & 9 \\
 CON & Concurrency & 23 \\
-DCL & Declarations & 31 \\
-ENV & Environment & 8 \\
+DCL & Declarations & 32 \\
+ENV & Environment & 9 \\
 ERR & Error Handling & 11 \\
 EXP & Expressions & 31 \\
 FIO & File I/O & 35 \\
-FLP & Floating Point & 13 \\
+FLP & Floating Point & 14 \\
 INT & Integers & 23 \\
 MEM & Memory Mgmt & 17 \\
-MSC & Miscellaneous & 10 \\
-POS & POSIX & 20 \\
+MSC & Miscellaneous & 31 \\
+POS & POSIX & 21 \\
 PRE & Preprocessor & 16 \\
 SIG & Signals & 7 \\
 STR & Strings & 16 \\
-WIN & Windows & 6 \\
+WIN & Windows & 7 \\
 \midrule
-& \textbf{Total} & \textbf{285}\textsuperscript{$\dagger$} \\
+& \textbf{Total} & \textbf{311}\textsuperscript{$\dagger$} \\
 \bottomrule
 \end{tabular}
 \caption{CERT C rule categories implemented in SqC.
@@ -221,7 +221,7 @@ in \cref{fig:pipeline}.
 \node[box] (parse) {1. Tree-sitter Parse $\rightarrow$ Concrete Syntax Tree};
 \node[box, below=of parse] (prescan) {2. Cross-file Prescan $\rightarrow$ Function Summaries};
 \node[box, below=of prescan] (cfg) {3. Per-function CFG + Dataflow Analysis};
-\node[box, below=of cfg] (rules) {4. Rule Evaluation (285 CERT C checkers)};
+\node[box, below=of cfg] (rules) {4. Rule Evaluation (311 CERT C checkers)};
 \draw[arrow] (parse) -- (prescan);
 \draw[arrow] (prescan) -- (cfg);
 \draw[arrow] (cfg) -- (rules);
@@ -303,7 +303,7 @@ The CFG infrastructure also supports:
 
 \subsection{Stage 4: Rule Evaluation}
 
-Each of the 285 rules is implemented as a Rust struct implementing
+Each of the 311 rules is implemented as a Rust struct implementing
 the \texttt{CertRule} trait.  Rules range from simple AST pattern
 matchers (e.g., MSC24-C: obsolete function detection) to complex
 multi-pass analyzers (e.g., EXP34-C: null dereference detection
@@ -347,7 +347,7 @@ calls from unsequenced evaluation warnings.
 
 The Juliet benchmark operates in two modes:
 
-\textbf{Full mode}: All 285 rules are applied to all 118 CWEs.  This
+\textbf{Full mode}: All 305 enabled rules are applied to all 118 CWEs.  This
 measures overall tool behavior but introduces noise from rules
 triggering on CWEs they were not designed to detect.
 
@@ -427,7 +427,7 @@ neither sufficient to validate analyzer robustness nor predictive of
 real-world precision (\cref{sec:limitations}).
 
 An important caveat for interpreting the cross-tool results: SqC
-implements 285 rules while cppcheck and clang-tidy implement
+implements 311 rules while cppcheck and clang-tidy implement
 approximately 20 each.  The $\sim$30$\times$ difference in raw
 violation counts reflects coverage breadth, not false positive rate.
 
@@ -892,7 +892,7 @@ hostap & 37,432 & 1,761 & 1,710 \\
 \bottomrule
 \end{tabular}
 \caption{Violation counts (sqc v0.4.120, cppcheck v2.10, clang-tidy
-v21.1.6).  The $\sim$25--40$\times$ difference reflects SqC's 285-rule
+v21.1.6).  The $\sim$25--40$\times$ difference reflects SqC's 311-rule
 coverage vs.~$\sim$20 checks in competitors.}
 \label{tab:realworld-results}
 \end{table}
@@ -1760,7 +1760,7 @@ coverage of any single metric is misleading---what matters is
 reasonable coverage across \emph{many} dimensions.
 Marick~\cite{marick} demonstrates that code coverage tools are
 most useful as guides for what to test next, not as proof of
-correctness.  SqC's approach of implementing 285 rules (broad
+correctness.  SqC's approach of implementing 311 rules (broad
 coverage) rather than perfecting a handful aligns with this
 philosophy.
 
@@ -1768,7 +1768,7 @@ philosophy.
 \section{Conclusion}
 \label{sec:conclusion}
 
-We have presented SqC, a static analysis tool implementing 285 CERT C
+We have presented SqC, a static analysis tool implementing 311 CERT C
 rules across 17 categories.  Through tree-sitter-based parsing,
 control-flow graph construction, null-state dataflow analysis,
 value-range analysis, and inter-procedural function summaries

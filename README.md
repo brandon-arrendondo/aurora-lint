@@ -1,10 +1,10 @@
 # SqC - Software Code Quality
 
-A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC checks 285 rules across 17 categories, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
+A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC checks 305 rules across 17 categories, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
 ## Key Features
 
-- **285 CERT C rules** across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
+- **305 CERT C rules** enabled by default (311 implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
 - **Optional interactive terminal UI** for browsing and managing violations (build with `--features tui`)
 - **Multiple export formats**: CSV, XLSX, JSON, SARIF 2.1.0
 - **CI/CD ready**: exit codes, severity thresholds, diff-only mode, SARIF output
@@ -15,14 +15,20 @@ A static analysis tool for C code compliance with [SEI CERT C Coding Standards](
 
 | Metric | Value |
 |--------|-------|
-| **Juliet TP Rate** | 83.8% (v0.4.116) |
-| **Juliet CWEs Scanned** | 74 (fast mode, CWE-matched rules) |
-| **100% Precision CWEs** | 48 (zero false positives) |
-| **Per-File Detection** | 38.2% (19,117 / 50,038 files) |
-| **Real-World Precision / Recall** | 6.2% / 91.7% (v0.4.120, adjudicated oracle) |
-| **Real-World Projects** | libcrc, sqlite, mosquitto, curl, hostap, lua, raylib |
+| **Juliet TP Rate** | 87.7% (v0.4.249) |
+| **Juliet CWEs Scanned** | 79 (fast mode, CWE-matched rules) |
+| **100% Precision CWEs** | 44 (zero false positives, with real detections) |
+| **Per-File Detection** | 38.0% (19,101 / 50,256 files) |
+| **Real-World Precision / Recall** | 6.2% / 91.7% (v0.4.120, last adjudicated oracle) |
+| **Real-World Projects** | libcrc, sqlite, mosquitto, curl, hostap, lua, raylib, pure-ftpd, seL4 |
 
-Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 5 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) and [REALWORLD_RESULTS.md](REALWORLD_RESULTS.md) for details.
+Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) and [REALWORLD_RESULTS.md](REALWORLD_RESULTS.md) for details.
+
+> **Note**: the real-world precision/recall figure is pinned to the last
+> ground-truth-adjudicated run (v0.4.120, run #118). ~30 rule-logic commits
+> have landed since then (through v0.4.249); a current figure requires
+> delta-adjudicating the newer unlabeled findings first (see
+> `todo-sqlite-cli show 532`) before it can be safely republished.
 
 ## Installation
 
@@ -95,7 +101,7 @@ directories for cross-file context and never restricts what gets analyzed.
 sqc /path/to/project --manifest my-rules.toml
 ```
 
-The default manifest (`rules_templates/rules-all.toml`) enables all 285 rules. See the [Developer Guide](docs/index.rst) for the manifest format.
+The default manifest (`rules_templates/rules-all.toml`) enables 305 of the 311 implemented rules. See the [Developer Guide](docs/index.rst) for the manifest format.
 
 ## Quick CI Example
 

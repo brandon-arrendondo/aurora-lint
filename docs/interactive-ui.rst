@@ -50,7 +50,7 @@ Configuration Tab
    *Configuration tab showing CERT C rule categories. Toggle individual rules
    on/off and export custom manifests.*
 
-The Configuration tab lets you browse all 283 rules by category, toggle
+The Configuration tab lets you browse all 311 rules by category, toggle
 them on/off, and export a custom manifest file.
 
 Keyboard Reference
