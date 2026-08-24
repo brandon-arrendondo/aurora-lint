@@ -565,9 +565,236 @@ impl Flp03C {
         };
         let constants = const_eval::collect_macro_constants(&root, source);
         let div_line = div_node.start_position().row;
-        let last_val =
-            Self::walk_scope_for_last_assignment(&body, var_name, source, div_line, &constants);
-        last_val == Some(false)
+        let last_val = Self::walk_scope_for_last_zero_assignment(
+            &body, var_name, source, div_line, &constants,
+        );
+        last_val == Some(true)
+    }
+
+    /// If `node` is a declaration or assignment to `var_name`, classify its
+    /// RHS as a literal: `Some(true)` zero, `Some(false)` nonzero, `None` if
+    /// it's not a literal at all (a computed expression, call, cast of a
+    /// non-literal, ...). Distinct from [`Self::is_nonzero_literal`], which
+    /// collapses "not a literal" into `false` — safe for the nonzero-checker
+    /// (an unrecognized RHS just fails to prove non-zero, so the rule still
+    /// flags), but wrong here: it would make *any* computed reassignment
+    /// (`float rl = (float)(right - left);`) look "provably zero" and
+    /// force-flag every division by it — the bug this helper exists to avoid.
+    fn literal_zero_value(node: &Node, source: &str) -> Option<bool> {
+        match node.kind() {
+            "number_literal" => {
+                let text = get_node_text(node, source)
+                    .trim_end_matches(['f', 'F', 'l', 'L'])
+                    .to_string();
+                if let Ok(v) = text.parse::<f64>() {
+                    return Some(v == 0.0);
+                }
+                if let Ok(v) = text.parse::<i64>() {
+                    return Some(v == 0);
+                }
+                None
+            }
+            "unary_expression" => node
+                .child_by_field_name("argument")
+                .and_then(|a| Self::literal_zero_value(&a, source)),
+            "parenthesized_expression" => node
+                .named_child(0)
+                .and_then(|inner| Self::literal_zero_value(&inner, source)),
+            _ => None,
+        }
+    }
+
+    /// If `node` is a declaration or assignment to `var_name`, return
+    /// `Some(signal)` where `signal` is [`Self::literal_zero_value`]'s
+    /// classification of the RHS (`None` inside means "assigns var_name a
+    /// non-literal — resets the provably-zero chain", NOT "skip this node").
+    /// Returns plain `None` when `node` doesn't touch `var_name` at all, so
+    /// the walk leaves any prior state untouched.
+    fn zero_assignment_signal(node: &Node, var_name: &str, source: &str) -> Option<Option<bool>> {
+        match node.kind() {
+            "declaration" => {
+                for j in 0..node.named_child_count() {
+                    if let Some(gc) = node.named_child(j) {
+                        if gc.kind() == "init_declarator" {
+                            let has_var = (0..gc.named_child_count()).any(|k| {
+                                gc.named_child(k).is_some_and(|n| {
+                                    n.kind() == "identifier"
+                                        && get_node_text(&n, source) == var_name
+                                })
+                            });
+                            if has_var {
+                                if let Some(val) =
+                                    gc.named_child(gc.named_child_count().saturating_sub(1))
+                                {
+                                    if val.kind() != "identifier"
+                                        || get_node_text(&val, source) != var_name
+                                    {
+                                        return Some(Self::literal_zero_value(&val, source));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            "expression_statement" => {
+                let expr = node.named_child(0)?;
+                if expr.kind() != "assignment_expression" {
+                    return None;
+                }
+                let lhs = expr.child_by_field_name("left")?;
+                if lhs.kind() == "identifier" && get_node_text(&lhs, source) == var_name {
+                    let rhs = expr.child_by_field_name("right")?;
+                    return Some(Self::literal_zero_value(&rhs, source));
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// True if `var_name` is assigned or incremented/decremented anywhere in
+    /// `scope`'s subtree — used to decide whether a loop the zero-walk
+    /// doesn't step into could invalidate a proven-zero state.
+    fn scope_may_reassign(scope: &Node, var_name: &str, source: &str) -> bool {
+        query::find_descendants_of_kind(*scope, "assignment_expression")
+            .into_iter()
+            .any(|expr| {
+                expr.child_by_field_name("left").is_some_and(|l| {
+                    l.kind() == "identifier" && get_node_text(&l, source) == var_name
+                })
+            })
+            || query::find_descendants_of_kind(*scope, "update_expression")
+                .into_iter()
+                .any(|expr| {
+                    expr.child_by_field_name("argument").is_some_and(|a| {
+                        a.kind() == "identifier" && get_node_text(&a, source) == var_name
+                    })
+                })
+    }
+
+    /// Zero-tracking counterpart of [`Self::walk_scope_for_last_assignment`]:
+    /// same explicit continuation-frame walk and branch-feasibility pruning,
+    /// but tracking "is the last reaching assignment a literal zero" instead
+    /// of "...non-zero", via [`Self::zero_assignment_signal`]. A non-literal
+    /// reassignment resets `last_val` to `None` (unknown) rather than leaving
+    /// stale state, since [`Self::zero_assignment_signal`] returns `Some(None)`
+    /// for that case and this walk assigns it straight into `last_val`.
+    fn walk_scope_for_last_zero_assignment(
+        scope: &Node,
+        var_name: &str,
+        source: &str,
+        div_line: usize,
+        constants: &const_eval::MacroConstantMap,
+    ) -> Option<bool> {
+        struct Frame<'a> {
+            scope: Node<'a>,
+            idx: usize,
+            last_val: Option<bool>,
+        }
+
+        let mut stack: Vec<Frame> = vec![Frame {
+            scope: *scope,
+            idx: 0,
+            last_val: None,
+        }];
+        let mut pending_return: Option<Option<bool>> = None;
+
+        loop {
+            let mut frame = stack.pop().expect("stack non-empty by loop invariant");
+
+            if let Some(Some(v)) = pending_return.take() {
+                frame.last_val = Some(v);
+            }
+
+            let mut spawned: Option<Frame> = None;
+            while frame.idx < frame.scope.named_child_count() {
+                let child = match frame.scope.named_child(frame.idx) {
+                    Some(c) => c,
+                    None => {
+                        frame.idx += 1;
+                        continue;
+                    }
+                };
+                if child.start_position().row >= div_line {
+                    break;
+                }
+                // Direct assignment
+                if let Some(signal) = Self::zero_assignment_signal(&child, var_name, source) {
+                    frame.last_val = signal;
+                    frame.idx += 1;
+                    continue;
+                }
+                // If-statement: resolve condition if possible
+                if child.kind() == "if_statement" {
+                    let mut target = None;
+                    if let Some(cond) = child.child_by_field_name("condition") {
+                        match Self::eval_condition_const(&cond, source, constants) {
+                            Some(true) => {
+                                target = child.child_by_field_name("consequence");
+                            }
+                            Some(false) => {
+                                target = child.child_by_field_name("alternative");
+                            }
+                            None => {}
+                        }
+                    }
+                    frame.idx += 1;
+                    if let Some(target) = target {
+                        spawned = Some(Frame {
+                            scope: target,
+                            idx: 0,
+                            last_val: None,
+                        });
+                        break;
+                    }
+                    continue;
+                }
+                // Loops aren't feasibility-tracked (unlike if-statements): a
+                // reassignment inside a `while`/`for`/`do` body may or may
+                // not execute before `div_line`. Rather than walking into the
+                // body and risking a stale pre-loop `last_val` surviving past
+                // a reassignment the walk doesn't recurse into (the bug this
+                // exists to fix: `nToken = 0;` before a `while(...) { nToken
+                // = sqlite3_column_int(...); }` loop, then divided after —
+                // the loop body's reassignment must not be invisible), any
+                // assignment to `var_name` anywhere inside resets `last_val`
+                // to unknown; otherwise the loop can't affect it and is safe
+                // to skip.
+                if matches!(
+                    child.kind(),
+                    "while_statement" | "for_statement" | "do_statement"
+                ) && Self::scope_may_reassign(&child, var_name, source)
+                {
+                    frame.last_val = None;
+                    frame.idx += 1;
+                    continue;
+                }
+                // Recurse into compound statements
+                if child.kind() == "compound_statement" {
+                    frame.idx += 1;
+                    spawned = Some(Frame {
+                        scope: child,
+                        idx: 0,
+                        last_val: None,
+                    });
+                    break;
+                }
+                frame.idx += 1;
+            }
+
+            if let Some(child_frame) = spawned {
+                stack.push(frame);
+                stack.push(child_frame);
+                continue;
+            }
+
+            if stack.is_empty() {
+                return frame.last_val;
+            }
+            pending_return = Some(frame.last_val);
+        }
     }
 
     /// Walk a scope tracking the last assignment to `var_name` before `div_line`.
