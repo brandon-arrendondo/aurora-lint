@@ -48,10 +48,11 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
 use crate::manifest::{RuleCategory, Severity};
+use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
 use lang_parsing_substrate::query;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Flp03C;
@@ -201,6 +202,118 @@ impl Flp03C {
         .is_some()
     }
 
+    /// String-to-float parsers: like `atoi`/`strtol` for INT32-C's provenance
+    /// gate, these return an arbitrary caller-supplied magnitude — including
+    /// exactly zero when the input doesn't parse (`atof("garbage")` == 0.0).
+    /// Kept local to FLP03-C rather than folded into
+    /// [`crate::utility::cert_c::std_functions::is_full_range_return_function`]:
+    /// that list is also consulted by INT30/32-C's integer-overflow gate,
+    /// and a float parser returning e.g. `1e300` isn't a signed-int overflow
+    /// risk in the same sense an `atoi()` full-range int is.
+    const FLOAT_PARSE_FUNCTIONS: &'static [&'static str] = &[
+        "atof", "strtod", "strtof", "strtold", "wcstod", "wcstof", "wcstold",
+    ];
+
+    /// True when `op` (after stripping casts/parens) is a call to one of
+    /// [`Self::FLOAT_PARSE_FUNCTIONS`].
+    fn is_float_parse_call(op: &Node, source: &str) -> bool {
+        let mut node = *op;
+        loop {
+            match node.kind() {
+                "parenthesized_expression" => match node.named_child(0) {
+                    Some(inner) => node = inner,
+                    None => return false,
+                },
+                "cast_expression" => match node.child_by_field_name("value") {
+                    Some(value) => node = value,
+                    None => return false,
+                },
+                "call_expression" => {
+                    return node.child_by_field_name("function").is_some_and(|f| {
+                        let text = get_node_text(&f, source);
+                        let ident = text
+                            .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+                            .next()
+                            .unwrap_or(text);
+                        Self::FLOAT_PARSE_FUNCTIONS.contains(&ident)
+                    });
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    /// Resolve the bare identifier inside a (possibly pointer/array-wrapped)
+    /// declarator.
+    fn init_declarator_name(decl: &Node, source: &str) -> Option<String> {
+        let mut current = *decl;
+        loop {
+            if current.kind() == "identifier" {
+                return Some(get_node_text(&current, source).to_string());
+            }
+            current = current.child_by_field_name("declarator")?;
+        }
+    }
+
+    /// Variables fed from an untrusted/full-range source within `body`:
+    /// unions [`int_provenance::collect_risky_vars`]'s channels (env/IO taint
+    /// sources like `recv`/`fgets`/`fscanf`, full-range parsers like `rand`)
+    /// with a float-specific channel for [`Self::FLOAT_PARSE_FUNCTIONS`],
+    /// which `int_provenance` doesn't know about. No cross-file
+    /// `FunctionSummary`/global-writer context is available or needed here —
+    /// every channel this rule cares about is resolved from static callee
+    /// name lists.
+    fn collect_float_risky_vars(body: &Node, source: &str) -> HashSet<String> {
+        let mut set = int_provenance::collect_risky_vars(body, &HashMap::new(), source);
+        for candidate in
+            query::find_descendants_of_kinds(*body, &["assignment_expression", "init_declarator"])
+        {
+            match candidate.kind() {
+                "assignment_expression" => {
+                    if let (Some(lhs), Some(rhs)) = (
+                        candidate.child_by_field_name("left"),
+                        candidate.child_by_field_name("right"),
+                    ) {
+                        if lhs.kind() == "identifier" && Self::is_float_parse_call(&rhs, source) {
+                            set.insert(get_node_text(&lhs, source).to_string());
+                        }
+                    }
+                }
+                "init_declarator" => {
+                    if let (Some(decl), Some(value)) = (
+                        candidate.child_by_field_name("declarator"),
+                        candidate.child_by_field_name("value"),
+                    ) {
+                        if Self::is_float_parse_call(&value, source) {
+                            if let Some(name) = Self::init_declarator_name(&decl, source) {
+                                set.insert(name);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        set
+    }
+
+    /// True when `divisor` derives from an untrusted/full-range source —
+    /// either directly (`100.0 / atof(buf)`) or via a risky-fed variable.
+    fn divisor_is_risky_operand(
+        divisor: &Node,
+        risky_vars: &HashSet<String>,
+        source: &str,
+    ) -> bool {
+        Self::is_float_parse_call(divisor, source)
+            || int_provenance::operand_is_risky(
+                divisor,
+                risky_vars,
+                &HashMap::new(),
+                &HashMap::new(),
+                source,
+            )
+    }
+
     /// Check for floating-point division operations
     fn check_fp_division(
         &self,
@@ -234,35 +347,70 @@ impl Flp03C {
                     return;
                 }
 
+                let divisor = node.child_by_field_name("right");
+
                 // Check if the divisor is provably non-zero (all assignments
                 // to it are non-zero constants). Catches goodG2B pattern:
                 // `data = 2.0F; 100.0 / data;`
-                if let Some(right) = node.child_by_field_name("right") {
+                let mut provably_zero = false;
+                if let Some(right) = &divisor {
                     if right.kind() == "identifier" {
-                        let var_name = get_node_text(&right, source);
+                        let var_name = get_node_text(right, source);
                         if Self::divisor_provably_nonzero_fp(node, var_name, source) {
                             return;
+                        }
+                        if Self::divisor_provably_zero_fp(node, var_name, source) {
+                            provably_zero = true;
                         }
                     }
                 }
 
-                // Check if there's error checking in the containing function
-                if let Some(containing_func) = self.find_containing_function(node) {
-                    if !self.contains_fp_error_checking(&containing_func, source) {
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: self.severity(),
-                            message: "Floating-point division without error checking (consider using feclearexcept/fetestexcept)".to_string(),
-                            file_path: String::new(),
-                            line: node.start_position().row + 1,
-                            column: node.start_position().column + 1,
-                            suggestion: Some(
-                                "Use feclearexcept(FE_ALL_EXCEPT) before and fetestexcept(FE_ALL_EXCEPT) after floating-point operations".to_string()
-                            ),
-                            ..Default::default()
-                        });
-                    }
+                let containing_func = match self.find_containing_function(node) {
+                    Some(f) => f,
+                    None => return,
+                };
+
+                // A fenv.h error check in the containing function is still a
+                // full suppression signal — it means the code IS handling FP
+                // errors, matching the letter of the CERT recommendation.
+                if self.contains_fp_error_checking(&containing_func, source) {
+                    return;
                 }
+
+                // Opt-in provenance gate (task 517, mirroring INT30/32-C's
+                // task 140 redesign): flag only when the divisor is provably
+                // zero, or derives from untrusted/full-range input with no
+                // local guard. Real-world code almost never uses fenv.h, so
+                // gating solely on its absence flags nearly every float
+                // division in every codebase (measured 0% precision across
+                // 5 real-world oracles); this narrows the rule to the actual
+                // divide-by-zero risk shape CERT's own Juliet test corpus
+                // encodes (network/file/env-derived divisor, unguarded).
+                let risky = provably_zero
+                    || divisor.as_ref().is_some_and(|d| {
+                        containing_func
+                            .child_by_field_name("body")
+                            .is_some_and(|body| {
+                                let risky_vars = Self::collect_float_risky_vars(&body, source);
+                                Self::divisor_is_risky_operand(d, &risky_vars, source)
+                            })
+                    });
+                if !risky {
+                    return;
+                }
+
+                violations.push(RuleViolation {
+                    rule_id: self.rule_id().to_string(),
+                    severity: self.severity(),
+                    message: "Floating-point division without error checking (consider using feclearexcept/fetestexcept)".to_string(),
+                    file_path: String::new(),
+                    line: node.start_position().row + 1,
+                    column: node.start_position().column + 1,
+                    suggestion: Some(
+                        "Use feclearexcept(FE_ALL_EXCEPT) before and fetestexcept(FE_ALL_EXCEPT) after floating-point operations".to_string()
+                    ),
+                    ..Default::default()
+                });
             }
         }
     }
@@ -387,6 +535,39 @@ impl Flp03C {
         }
 
         false
+    }
+
+    /// Check if the divisor variable is provably zero at the division point —
+    /// the mirror of [`Self::divisor_provably_nonzero_fp`], catching Juliet's
+    /// "zero" BadSource shape (`data = 0.0F;` with no reassignment, including
+    /// through dead-branch obfuscation the constant-aware walk resolves).
+    /// Force-flags regardless of operand provenance, since a provably-zero
+    /// divisor is a real violation independent of where the value came from.
+    fn divisor_provably_zero_fp(div_node: &Node, var_name: &str, source: &str) -> bool {
+        let mut current = Some(*div_node);
+        let func = loop {
+            match current {
+                Some(n) if n.kind() == "function_definition" => break n,
+                Some(n) => current = n.parent(),
+                None => return false,
+            }
+        };
+        let body = match func.child_by_field_name("body") {
+            Some(b) => b,
+            None => return false,
+        };
+        let root = {
+            let mut n = func;
+            while let Some(p) = n.parent() {
+                n = p;
+            }
+            n
+        };
+        let constants = const_eval::collect_macro_constants(&root, source);
+        let div_line = div_node.start_position().row;
+        let last_val =
+            Self::walk_scope_for_last_assignment(&body, var_name, source, div_line, &constants);
+        last_val == Some(false)
     }
 
     /// Walk a scope tracking the last assignment to `var_name` before `div_line`.
