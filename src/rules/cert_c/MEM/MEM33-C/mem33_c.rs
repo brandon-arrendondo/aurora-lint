@@ -3500,48 +3500,56 @@ impl FlexibleArrayAnalyzer {
         None
     }
 
+    /// Look for `(struct target_struct_name *)&var` where `var`'s actual
+    /// declared type is resolvable and disagrees with `target_struct_name`.
+    /// Resolves the referenced variable's declared type via
+    /// `identifier_declared_type_name` instead of guessing from its name
+    /// (task 523 -- the previous heuristic was inverted: it flagged the cast
+    /// as invalid unless the variable's *name* happened to contain "flex" or
+    /// the struct name literally, so a correctly cast variable with an
+    /// unrelated name, e.g. `&packet`, was flagged, while an actually wrong
+    /// cast of an unrelated struct whose variable happened to be named
+    /// `..._flex` was silently accepted). When the type can't be resolved
+    /// (e.g. not a simple identifier), conservatively reports no violation
+    /// rather than guessing.
     fn check_invalid_type_casting(
         &self,
         node: &Node,
         source: &str,
         target_struct_name: &str,
     ) -> Option<RuleViolation> {
-        // Look for patterns like: (struct flex_array_struct *)&something
-        // where 'something' is not a compatible flexible array structure
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "unary_expression" {
-                    let unary_text = source[child.start_byte()..child.end_byte()].to_string();
-                    if unary_text.starts_with("&") {
-                        // Extract the variable being referenced
-                        let var_ref = unary_text.trim_start_matches("&").trim();
-
-                        // Check if this looks like an invalid cast
-                        // Heuristics: if the variable name doesn't suggest it's a flexible array struct
-                        if !var_ref.contains("flex") && !var_ref.contains(target_struct_name) {
-                            // This might be casting a non-flexible array struct to flexible array struct
-                            let start_point = node.start_position();
-                            return Some(RuleViolation {
-                                rule_id: "MEM33-C".to_string(),
-                                severity: Severity::High,
-                                message: format!(
-                                    "Invalid type casting: casting '{}' to flexible array structure pointer '{}'. This may lead to undefined behavior when accessing the flexible array member.",
-                                    var_ref, target_struct_name
-                                ),
-                                file_path: String::new(),
-                                line: start_point.row + 1,
-                                column: start_point.column + 1,
-                                suggestion: Some("Ensure the source type is compatible with flexible array structure layout or use proper dynamic allocation".to_string()),
-                            ..Default::default()
-                            });
-                        }
-                    }
-                }
-            }
+        let value = node.child_by_field_name("value")?;
+        if value.kind() != "unary_expression" {
+            return None;
+        }
+        let operator = value.child_by_field_name("operator")?;
+        if source[operator.start_byte()..operator.end_byte()].trim() != "&" {
+            return None;
+        }
+        let argument = value.child_by_field_name("argument")?;
+        if argument.kind() != "identifier" {
+            return None;
+        }
+        let declared_type = self.identifier_declared_type_name(&argument, source)?;
+        if declared_type == target_struct_name {
+            return None;
         }
 
-        None
+        let var_ref = source[argument.start_byte()..argument.end_byte()].to_string();
+        let start_point = node.start_position();
+        Some(RuleViolation {
+            rule_id: "MEM33-C".to_string(),
+            severity: Severity::High,
+            message: format!(
+                "Invalid type casting: casting '{}' (declared as 'struct {}') to flexible array structure pointer '{}'. This may lead to undefined behavior when accessing the flexible array member.",
+                var_ref, declared_type, target_struct_name
+            ),
+            file_path: String::new(),
+            line: start_point.row + 1,
+            column: start_point.column + 1,
+            suggestion: Some("Ensure the source type is compatible with flexible array structure layout or use proper dynamic allocation".to_string()),
+        ..Default::default()
+        })
     }
 
     fn check_const_casting_specific(
