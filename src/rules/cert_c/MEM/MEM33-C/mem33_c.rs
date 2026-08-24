@@ -1426,33 +1426,32 @@ impl FlexibleArrayAnalyzer {
         false
     }
 
+    /// Is `array_node` an array-of-flexible-struct-*values* (a real MEM33-C
+    /// violation), as opposed to an array of *pointers* to flexible structs
+    /// (perfectly compliant)? `flexible_struct_arrays` is populated by
+    /// `detect_flexible_struct_array_declaration` during the AST pre-scan,
+    /// which already distinguishes the two by declarator shape (a bare
+    /// `array_declarator(identifier)` vs one wrapping a `pointer_declarator`)
+    /// -- so it is authoritative here. Two removed heuristic fallbacks
+    /// (`is_explicitly_declared_array`/`is_clearly_struct_array_pattern` +
+    /// `array_contains_flexible_structs`, task 529) matched purely on the
+    /// array *variable's name* ending in `_array` and containing "flex" --
+    /// which cannot tell `struct flex_array_struct flex_array[3]` (an actual
+    /// violation) apart from `struct flex_array_struct *flex_array[3]` (an
+    /// array of pointers, fully compliant): both share the same name. That
+    /// false-positive was latent but masked by a separate, since-fixed bug
+    /// in `is_compliant_pointer_access`'s allocation-context scan (task
+    /// 525) that happened to short-circuit the pointer-array case for
+    /// unrelated reasons; fixing 525 alone would have unmasked it here.
     fn is_flexible_array_struct_array(&self, array_node: &Node, source: &str) -> bool {
-        // Check if the array being indexed is an array of flexible array structures
-        // This function should ONLY return true for actual arrays of structures,
-        // NOT for pointers to individual structures with flexible array members
-
         let array_text = source[array_node.start_byte()..array_node.end_byte()].to_string();
 
-        // Strategy 1: Check against explicitly tracked flexible array struct arrays
         if self.flexible_struct_arrays.contains(&array_text) {
             return true;
         }
 
-        // Strategy 2: Analyze the AST structure to determine if this is array access vs member access
         if self.is_member_access_not_array_access(array_node, source) {
             return false; // This is member access (compliant), not array access
-        }
-
-        // Strategy 3: Check for explicit array declaration patterns
-        if self.is_explicitly_declared_array(array_node, source) {
-            // Only flag if the array contains flexible array structures
-            return self.array_contains_flexible_structs(&array_text);
-        }
-
-        // Strategy 4: Conservative approach - only flag patterns that are clearly arrays
-        // of structures, not pointers to individual structures
-        if self.is_clearly_struct_array_pattern(&array_text) {
-            return self.array_contains_flexible_structs(&array_text);
         }
 
         false
@@ -1495,65 +1494,6 @@ impl FlexibleArrayAnalyzer {
                 }
             }
         }
-        false
-    }
-
-    fn is_explicitly_declared_array(&self, array_node: &Node, source: &str) -> bool {
-        // Check if this variable was explicitly declared as an array
-        // This would require more sophisticated variable tracking
-        // For now, use simple heuristics
-
-        let array_text = source[array_node.start_byte()..array_node.end_byte()].to_string();
-
-        // Look for explicit array patterns in the variable name
-        array_text.ends_with("_array") ||
-        array_text.ends_with("_list") ||
-        array_text.starts_with("array_") ||
-        array_text.contains("_arr_") ||
-        // Look for indexed access patterns that suggest array usage
-        (array_text.contains("[") && array_text.contains("]"))
-    }
-
-    fn array_contains_flexible_structs(&self, array_name: &str) -> bool {
-        // Check if the array name suggests it contains flexible array structures
-
-        // Check against known flexible struct names
-        for struct_name in self.flexible_structs.keys() {
-            if array_name.contains(struct_name) {
-                return true;
-            }
-        }
-
-        // Check for explicit flexible array naming patterns
-        array_name.contains("flex")
-            && (array_name.contains("array")
-                || array_name.contains("struct")
-                || array_name.contains("_arr"))
-    }
-
-    fn is_clearly_struct_array_pattern(&self, array_text: &str) -> bool {
-        // Only return true for patterns that clearly indicate arrays of structures
-        // Be conservative to avoid false positives
-
-        // Pattern 1: Variable names that explicitly indicate arrays
-        if array_text.ends_with("_array")
-            || array_text.ends_with("_list")
-            || array_text.starts_with("array_")
-            || array_text.starts_with("list_")
-        {
-            return true;
-        }
-
-        // Pattern 2: Global arrays (but be careful not to flag stack-allocated pointers)
-        if array_text.contains("global_") || array_text.contains("static_") {
-            return true;
-        }
-
-        // Pattern 3: Multiple consecutive array access patterns
-        if array_text.matches('[').count() > 1 {
-            return true;
-        }
-
         false
     }
 
@@ -1602,7 +1542,12 @@ impl FlexibleArrayAnalyzer {
         false
     }
 
-    fn is_compliant_pointer_access(&self, variable_name: &str, source: &str) -> bool {
+    fn is_compliant_pointer_access(
+        &self,
+        array_node: &Node,
+        variable_name: &str,
+        source: &str,
+    ) -> bool {
         // Check if this variable represents a properly allocated pointer
         // Look for patterns that suggest proper allocation
 
@@ -1624,7 +1569,7 @@ impl FlexibleArrayAnalyzer {
 
         // Pattern 2: Check for allocation context in preceding lines
         // This is a simplified check - a full implementation would track allocations
-        self.find_allocation_context(variable_name, source)
+        self.find_allocation_context(array_node, variable_name, source)
     }
 
     #[allow(dead_code)]
@@ -1659,12 +1604,24 @@ impl FlexibleArrayAnalyzer {
             || member_name.ends_with("_buffer")
     }
 
-    fn find_allocation_context(&self, variable_name: &str, source: &str) -> bool {
-        // Look for malloc/calloc allocation of this variable
-        // This is a simplified implementation
-        let lines: Vec<&str> = source.lines().collect();
+    /// Look for a `malloc`/`calloc` allocation of `variable_name`, scoped to
+    /// `scope_node`'s enclosing function (falling back to the whole file
+    /// only when there is no enclosing function, e.g. file-scope arrays) --
+    /// task 525 -- an unscoped whole-file text scan let an allocation of a
+    /// same-named variable/parameter (e.g. a common name like `buf`/`len`)
+    /// in a completely unrelated function suppress a real violation here.
+    fn find_allocation_context(
+        &self,
+        scope_node: &Node,
+        variable_name: &str,
+        source: &str,
+    ) -> bool {
+        let scope_text = match find_containing_function(scope_node) {
+            Some(func) => &source[func.start_byte()..func.end_byte()],
+            None => source,
+        };
 
-        for line in lines {
+        for line in scope_text.lines() {
             if line.contains(variable_name)
                 && (line.contains("malloc") || line.contains("calloc"))
                 && (line.contains("sizeof") || line.contains("size"))
@@ -3077,7 +3034,7 @@ impl FlexibleArrayAnalyzer {
             }
 
             // Check if this is accessing an allocated pointer (compliant)
-            if self.is_compliant_pointer_access(&array_text, source) {
+            if self.is_compliant_pointer_access(&array, &array_text, source) {
                 return None; // This is compliant pointer access
             }
 
