@@ -1493,44 +1493,22 @@ impl FlexibleArrayAnalyzer {
 
     fn is_flexible_member_access(&self, subscript_node: &Node, source: &str) -> bool {
         // Check if this subscript expression is accessing a flexible array member
-        // Pattern: ptr->flexible_member[index] or (*ptr).flexible_member[index]
-        // This should ONLY return true for member access, NOT for array indexing
+        // Pattern: ptr->flexible_member[index] or flex_array[i]->flexible_member[index]
+        // This should ONLY return true for member access, NOT for array indexing.
+        //
+        // The subscript's `argument` is the expression being indexed; if that's a
+        // field_expression whose field name matches a known flexible-array-member
+        // naming convention (task 527: not just "data"), this subscript indexes the
+        // flexible array member itself rather than an array of structures.
+        let Some(argument) = subscript_node.child_by_field_name("argument") else {
+            return false;
+        };
 
-        let subscript_text =
-            source[subscript_node.start_byte()..subscript_node.end_byte()].to_string();
-
-        // Strategy 1: Check if this subscript contains "->data[" pattern
-        // This catches flex_array[i]->data[j] where the subscript is data[j]
-        if subscript_text.contains("->data[") || subscript_text.contains("data[") {
-            return true; // This is accessing the flexible array member "data"
-        }
-
-        // Strategy 2: Look at the full expression context
-        // Check if we can walk up to find a field expression containing "->"
-        let mut current_parent = subscript_node.parent();
-        let mut steps = 0;
-        while let Some(p) = current_parent {
-            if steps > 3 {
-                break;
-            } // Prevent infinite loops
-            steps += 1;
-
-            let parent_text = source[p.start_byte()..p.end_byte().min(source.len())].to_string();
-
-            // If we find a field expression with -> and data, this is member access
-            if p.kind() == "field_expression"
-                && parent_text.contains("->")
-                && parent_text.contains("data")
-            {
-                return true;
+        if argument.kind() == "field_expression" {
+            if let Some(field_node) = argument.child_by_field_name("field") {
+                let field_name = &source[field_node.start_byte()..field_node.end_byte()];
+                return self.is_flexible_array_member_name(field_name);
             }
-
-            // If the parent expression contains our subscript and has "->data" pattern
-            if parent_text.contains(&subscript_text) && parent_text.contains("->data") {
-                return true;
-            }
-
-            current_parent = p.parent();
         }
 
         false
@@ -1583,7 +1561,6 @@ impl FlexibleArrayAnalyzer {
         None
     }
 
-    #[allow(dead_code)]
     fn is_flexible_array_member_name(&self, member_name: &str) -> bool {
         // Check if this member name suggests a flexible array member
         // Common naming patterns for flexible array members
