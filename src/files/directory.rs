@@ -24,11 +24,11 @@ impl DirectorySource {
             ));
         }
 
-        // If it's a file, verify the substrate can parse it (C: .c / .h).
+        // If it's a file, verify it has a C source/header extension.
         if is_file {
             let parseable = path_obj
                 .extension()
-                .map(lang_parsing_substrate::is_parseable_extension)
+                .map(super::is_c_source_extension)
                 .unwrap_or(false);
             if !parseable {
                 return Err(anyhow::anyhow!(
@@ -57,7 +57,7 @@ impl DirectorySource {
         for entry in WalkDir::new(&self.path).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
             if let Some(extension) = path.extension() {
-                if lang_parsing_substrate::is_parseable_extension(extension) {
+                if super::is_c_source_extension(extension) {
                     if let Some(path_str) = path.to_str() {
                         // Skip files in .git directory (in case there's a .git folder but not a valid repo)
                         if !path_str.contains("/.git/") {

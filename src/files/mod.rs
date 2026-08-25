@@ -6,6 +6,20 @@ use git::GitRepo;
 
 use anyhow::Result;
 
+/// Whether `ext` is a C source/header extension sqc analyzes.
+///
+/// Deliberately NOT `lang_parsing_substrate::is_parseable_extension`: that
+/// function reflects every language feature compiled into the substrate,
+/// including `lang-cpp` (enabled solely for `cpp_header::looks_like_cpp`,
+/// task 571's C++-header detection) — using it here would silently widen
+/// file discovery to `.cpp`/`.hpp`/etc. and run C-only rules against real
+/// C++ source across every project, not just the one ambiguous `.h` case
+/// task 571 targets. tools_sqc is CERT-C only, so this stays a fixed,
+/// feature-independent check.
+pub(crate) fn is_c_source_extension(ext: &std::ffi::OsStr) -> bool {
+    matches!(ext.to_str(), Some("c") | Some("h"))
+}
+
 /// Where the project's C files are being read from.
 pub enum ProjectSource {
     /// A git repository (enables `get_modified_c_files`/diff-only scoping).
