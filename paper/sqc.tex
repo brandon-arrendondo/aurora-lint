@@ -54,14 +54,14 @@ constructs per-function control-flow graphs, performs forward dataflow
 analysis for null pointer state tracking, and employs inter-procedural
 function summaries to reduce false positives across translation units.
 
-We evaluate SqC against the NIST Juliet Test Suite v1.3 (50,038 test
-files across 74 CWE categories) and 7 real-world open-source C codebases
-totaling 1.12 million lines of code.  Through iterative
+We evaluate SqC against the NIST Juliet Test Suite v1.3 (50,256 test
+files across 79 CWE categories) and 9 real-world open-source C codebases
+totaling 1.21 million lines of code.  Through iterative
 refinement---including cross-file function summaries, value-range analysis,
 and CFG-based dead-branch pruning---the true positive rate improved from
-41.1\% to 83.8\%, with 48 of 74 CWEs achieving 100\% precision (zero
+41.1\% to 87.7\%, with 44 of 79 CWEs achieving 100\% precision (zero
 false positives).  On a five-tool comparison against cppcheck, clang-tidy,
-Infer, and Frama-C, SqC covers 5--12$\times$ more CWE categories while
+Infer, and Frama-C, SqC covers 5--13$\times$ more CWE categories while
 now exceeding clang-tidy outright on three of fifteen overlapping CWEs
 (integer overflow/underflow and integer-overflow-to-buffer-overflow) and
 exceeding Frama-C's per-CWE precision on overlapping CWEs.  On real-world code, SqC detects
@@ -192,15 +192,19 @@ evaluation.
 
 \subsection{Real-World Benchmarks}
 
-Seven open-source C projects serve as real-world benchmarks:
-libcrc (1K LOC), lua (32K LOC), raylib (56K LOC), mosquitto (39K LOC),
-curl (186K LOC), sqlite (219K LOC), and hostap (590K LOC).  These span
-embedded libraries, scripting-language runtimes, game/graphics
-libraries, network servers, databases, and large-scale infrastructure.
-Lua and raylib were added as a fifth and sixth ground-truth oracle
-specifically to exercise C99 idioms (compound literals, designated
-initializers) that the original five-project set does not contain
-(\cref{sec:sloc-scope}).
+Nine open-source C projects serve as real-world benchmarks:
+libcrc (1K LOC), lua (31K LOC), raylib (56K LOC), mosquitto (39K LOC),
+curl (186K LOC), sqlite (182K LOC), hostap (590K LOC), pure-ftpd (33K
+LOC), and seL4 (87K LOC).  These span embedded libraries,
+scripting-language runtimes, game/graphics libraries, network servers,
+databases, an FTP daemon, and a formally verified microkernel.  Lua and
+raylib were added as a fifth and sixth ground-truth oracle specifically
+to exercise C99 idioms (compound literals, designated initializers) that
+the original five-project set does not contain (\cref{sec:sloc-scope});
+pure-ftpd was added as an eighth oracle to exercise SQL-client-API call
+sites (\texttt{mysql\_real\_query}, \texttt{PQexec}) absent from the
+other codebases, and seL4 as a ninth to test a freestanding,
+formally-verified, hardware-facing codebase with no libc/POSIX surface.
 
 %% ============================================================
 \section{Architecture}
@@ -465,12 +469,27 @@ the \texttt{ltests.c}/\texttt{ltests.h} test-harness pair; for raylib
 we evaluate the core module set plus all platform backends (built
 under \texttt{PLATFORM\_DESKTOP}, \texttt{ANDROID}, \texttt{DRM}, and
 \texttt{WEB} configurations combined) but exclude the vendored
-third-party decode/GL-loader headers.  libcrc is small enough that its
-entire shipped, tooling, and test tree is in scope.  Across the six
-audited projects, the evaluated scope is substantially smaller than the
-corresponding whole-repository line count; for Mosquitto it is smaller
-by nearly a factor of three, so the choice of denominator materially
-changes any per-KLOC metric.
+third-party decode/GL-loader headers; for hostap we evaluate the
+shipped \texttt{src/}, \texttt{wpa\_supplicant/}, and \texttt{hostapd/}
+trees (the station and access-point daemons and their shared library)
+but exclude \texttt{tests/}, the separate \texttt{wlantest/} monitoring
+tool, and the example/bindings directories that ship with the
+repository but not with either daemon; for seL4 we evaluate the
+\texttt{src/} kernel tree only, excluding \texttt{libsel4/} (the
+userspace binding library, not kernel code), \texttt{tools/}, and
+\texttt{manual/}.  libcrc is small enough that its entire shipped,
+tooling, and test tree is in scope.  pure-ftpd is scoped differently
+still: rather than a whole-project audit, it is our SQL-client-API
+oracle (\cref{sec:ground-truth-snapshot}), scoped to exactly the two
+files that motivated onboarding it---\texttt{src/log\_mysql.c} and
+\texttt{src/log\_pgsql.c} plus their four headers, the MySQL/PostgreSQL
+authentication backends that call \texttt{mysql\_real\_query}/
+\texttt{PQexec} as a genuine SQL client---not the whole daemon, which
+is scanned and tracked in the benchmark suite but not yet labeled.
+Across the nine audited projects, the evaluated scope is substantially
+smaller than the corresponding whole-repository line count; for
+Mosquitto it is smaller by nearly a factor of three, so the choice of
+denominator materially changes any per-KLOC metric.
 
 \begin{table}[t]
 \centering
@@ -484,8 +503,9 @@ libcrc    & \texttt{7719e21} &  19 &     751 & whole shipped + tooling + test tr
 mosquitto & \texttt{d3ee5c5} & 142 &  24,704 & \texttt{lib/} + \texttt{src/}; excl.\ deps, test, plugins \\
 curl      & \texttt{3e198f7} & 427 & 110,615 & \texttt{lib/} + \texttt{src/}; excl.\ 14 Win/macOS files \\
 sqlite    & \texttt{b1a73ba} & 220 & 161,312 & \texttt{src/} core + \texttt{ext/}; excl.\ test/tooling \\
+hostap    & \texttt{dcee6043} & 736 & 442,335 & \texttt{src/}+\texttt{wpa\_supplicant/}+\texttt{hostapd/}; excl.\ tests/wlantest/examples \\
 \cmidrule(l){1-5}
-\textbf{Subtotal (C89/C90)} &        & \textbf{808} & \textbf{297,382} & \\
+\textbf{Subtotal (C89/C90)} &        & \textbf{1,544} & \textbf{739,717} & \\
 \midrule
 \multicolumn{5}{@{}l}{\emph{Audited (C99 idiom corpora)}} \\
 lua       & \texttt{40b76de2} &  66 &  20,986 & whole interpreter tree; excl.\ \texttt{ltests.*} \\
@@ -493,27 +513,39 @@ raylib    & \texttt{962bbfc}  &  23 &  38,473 & core + 10 platform backends; exc
 \cmidrule(l){1-5}
 \textbf{Subtotal (C99)} &        & \textbf{89} & \textbf{59,459} & \\
 \midrule
-\multicolumn{5}{@{}l}{\emph{Total, all 6 audited}} \\
-\textbf{Total}    &        & \textbf{897} & \textbf{356,841} & \\
+\multicolumn{5}{@{}l}{\emph{Audited (freestanding kernel)}} \\
+seL4      & \texttt{1326364}  & 183 &  37,560 & \texttt{src/} kernel only; excl.\ \texttt{libsel4/}, tools, manual \\
+\midrule
+\multicolumn{5}{@{}l}{\emph{Audited (scoped SQL-client oracle, not whole-project)}} \\
+pure-ftpd & \texttt{cc28bff5} &   6 &   1,436 & \texttt{log\_mysql}/\texttt{log\_pgsql} + headers only; rest of daemon unlabeled \\
+\midrule
+\multicolumn{5}{@{}l}{\emph{Total, all 9 audited}} \\
+\textbf{Total}    &        & \textbf{1,822} & \textbf{838,172} & \\
 \midrule
 \multicolumn{5}{@{}l}{\emph{Planned}} \\
-hostap    & \texttt{dcee6043} & --- & --- & \texttt{src/} + \texttt{wpa\_supplicant/} (audit pending; 65 spot-check labels only) \\
 ReactOS   & ---               & --- & --- & Windows module subset (TP/FP scope) \\
 \bottomrule
 \end{tabular}
 \caption{Evaluated source scope per project: SLOC counted over the
 audited file set, not the whole repository.  Lua and raylib are
-now fully adjudicated (23/23 files for raylib, run \#66); the Planned
-row is reserved for hostap, where only a 65-label spot-check exists
-so far, and for the not-yet-started Windows target.}
+fully adjudicated (23/23 files for raylib, run \#66); hostap is
+fully adjudicated across all 736 in-scope files (337 batches); seL4
+is fully scoped to its 183-file kernel tree; pure-ftpd is
+intentionally scoped to its 6-file SQL-client oracle rather than the
+whole daemon.  The Planned row is reserved for the not-yet-started
+Windows target.}
 \label{tab:eval-scope}
 \end{table}
 
-hostap's audit is deferred pending adjudication budget beyond the
-initial 65-label spot-check; its evaluated scope will be the
-\texttt{src/} and \texttt{wpa\_supplicant/} trees that the benchmark
-already analyzes.  A Windows-API corpus (ReactOS) remains under
-consideration to exercise the \texttt{WIN}-category rules
+hostap, seL4, and pure-ftpd's evaluated scopes and adjudication status
+are described above; hostap is a full-corpus audit (all 736 in-scope
+files, recall as well as precision) like lua and raylib, while seL4
+and pure-ftpd are both deliberately scoped precision-only samples
+(\cref{sec:ground-truth-snapshot})---seL4's sample targets the
+MSC12-C empty-body/no-effect-code class specifically rather than
+every rule, and pure-ftpd's does not extend past its two SQL-client
+files to the rest of the daemon.  A Windows-API corpus (ReactOS)
+remains under consideration to exercise the \texttt{WIN}-category rules
 (\cref{sec:limitations}).  Because ReactOS exceeds the entire current
 suite by several multiples in line count, it is anticipated as a
 precision (true/false-positive) target with a module-scoped audit rather
@@ -572,7 +604,7 @@ version.
 
 \subsection{Juliet Benchmark Results}
 
-\Cref{tab:juliet-summary} summarizes SqC v0.4.116's performance on
+\Cref{tab:juliet-summary} summarizes SqC v0.4.249's performance on
 the Juliet Test Suite in fast mode.
 
 \begin{table}[t]
@@ -582,26 +614,28 @@ the Juliet Test Suite in fast mode.
 \toprule
 \textbf{Metric} & \textbf{Value} \\
 \midrule
-Rules implemented & 285 \\
-CWEs scanned (fast mode) & 74 \\
-Test files & 50,038 \\
-True Positives & 21,770 \\
-False Positives & 4,220 \\
-TP Rate (precision) & 83.8\% \\
-Per-file detection rate & 38.2\% \\
-100\% precision CWEs & 48 \\
+Rules implemented & 311 \\
+CWEs scanned (fast mode) & 79 \\
+Test files & 50,256 \\
+True Positives & 22,261 \\
+False Positives & 3,121 \\
+TP Rate (precision) & 87.7\% \\
+Per-file detection rate & 38.0\% \\
+100\% precision CWEs & 44 \\
 \bottomrule
 \end{tabular}
-\caption{SqC v0.4.116 Juliet benchmark summary (fast mode).}
+\caption{SqC v0.4.249 Juliet benchmark summary (fast mode).}
 \label{tab:juliet-summary}
 \end{table}
 
 \subsubsection{Precision Tiers}
 
-The 74 CWEs tested fall into four precision tiers, shown in
-\cref{tab:precision-tiers}.  The distribution is encouraging: nearly
-93\% of scored CWEs achieve either perfect or high precision, with
-no CWEs falling below 33\%.
+The 79 CWEs tested fall into five tiers, shown in
+\cref{tab:precision-tiers}.  The distribution is encouraging: the
+44 CWEs at 100\% precision and the 22 at high precision together are
+84\% of scored CWEs, and no CWE falls below 33\%; the 12 zero-detection
+CWEs (rules mapped to them but no Juliet testcase triggers a finding)
+are a distinct category from low precision, not a failure mode.
 
 \begin{table}[t]
 \centering
@@ -610,28 +644,30 @@ no CWEs falling below 33\%.
 \toprule
 \textbf{Tier} & \textbf{CWEs} & \textbf{TP Rate} & \textbf{TP} \\
 \midrule
-100\% Precision & 48 & 100\% & 9,504 \\
-High ($>$50\%) & 21 & 50--99\% & 11,935 \\
-Medium (33--50\%) & 5 & 33--50\% & 331 \\
+100\% Precision & 44 & 100\% & 9,835 \\
+High ($>$50\%) & 22 & 50--99\% & 12,418 \\
+Medium (33--50\%) & 1 & 33--50\% & 8 \\
 Low ($<$33\%) & 0 & --- & 0 \\
-Zero Detection & 7 & --- & 0 \\
+Zero Detection & 12 & --- & 0 \\
 \midrule
-\textbf{Total} & \textbf{74}\textsuperscript{$\dagger$} & & \textbf{21,770} \\
+\textbf{Total} & \textbf{79}\textsuperscript{$\dagger$} & & \textbf{22,261} \\
 \bottomrule
 \end{tabular}
-\caption{CWE distribution by precision tier (fast mode, v0.4.116).
-\textsuperscript{$\dagger$}All 74 scanned CWEs; the 7 with zero
+\caption{CWE distribution by precision tier (fast mode, v0.4.249).
+\textsuperscript{$\dagger$}All 79 scanned CWEs; the 12 with zero
 detection contribute 0 TP.}
 \label{tab:precision-tiers}
 \end{table}
 
-\Cref{tab:perfect-cwes} lists the 48 CWEs with 100\% precision.  These
-represent vulnerability classes where SqC produces zero false
-positives on Juliet---every reported violation is a true defect on
-this benchmark.  Notably, CWE-190 (integer overflow) now joins this
-list: the opt-in provenance-gated rewrite of the INT rules
-(\cref{sec:provenance-frontier}) eliminated its remaining Juliet false
-positives as a side effect of the real-world-motivated redesign.
+\Cref{tab:perfect-cwes} lists the 44 CWEs with 100\% precision (out of
+79 scanned; a further 12 are mapped rules with zero Juliet detections
+rather than false positives).  These represent vulnerability classes
+where SqC produces zero false positives on Juliet---every reported
+violation is a true defect on this benchmark.  Notably, CWE-190
+(integer overflow) joined this list with the opt-in provenance-gated
+rewrite of the INT rules (\cref{sec:provenance-frontier}), which
+eliminated its remaining Juliet false positives as a side effect of the
+real-world-motivated redesign.
 
 A 100\% Juliet precision figure is a claim about the synthetic
 benchmark only, not a guarantee that generalizes to real-world code.
@@ -656,25 +692,25 @@ confirmed.
 \textbf{CWE} & \textbf{Description} & \textbf{TP} \\
 \midrule
 CWE-78  & OS Command Injection & 2,810 \\
-CWE-190 & Integer Overflow & 1,484 \\
+CWE-190 & Integer Overflow & 1,498 \\
 CWE-690 & Null Deref from Return & 558 \\
 CWE-195 & Signed to Unsigned Conversion & 520 \\
+CWE-197 & Numeric Truncation Error & 468 \\
 CWE-253 & Incorrect Check of Return Value & 432 \\
-CWE-197 & Numeric Truncation Error & 354 \\
-CWE-680 & Int Overflow $\to$ Buffer Overflow & 350 \\
-CWE-758 & Reliance on Undefined Behavior & 322 \\
+CWE-680 & Int Overflow $\to$ Buffer Overflow & 352 \\
+CWE-758 & Reliance on Undefined Behavior & 342 \\
 CWE-194 & Unexpected Sign Extension & 310 \\
-CWE-563 & Unused Variable & 289 \\
 CWE-761 & Free Pointer Not at Start & 276 \\
+CWE-563 & Unused Variable & 272 \\
 CWE-590 & Free Memory Not on Heap & 240 \\
 CWE-789 & Uncontrolled Mem Alloc & 190 \\
-CWE-666 & Wrong Phase of Lifetime & 162 \\
-\multicolumn{2}{@{}l}{\emph{+ 34 more CWEs}} & 1,207 \\
+CWE-398 & Indicator of Poor Code Quality & 162 \\
+\multicolumn{2}{@{}l}{\emph{+ 30 more CWEs}} & 1,405 \\
 \midrule
-\textbf{Total} & & \textbf{9,504} \\
+\textbf{Total} & & \textbf{9,835} \\
 \bottomrule
 \end{tabular}
-\caption{CWEs with 100\% precision (zero false positives).}
+\caption{CWEs with 100\% precision (zero false positives), v0.4.249.}
 \label{tab:perfect-cwes}
 \end{table}
 
@@ -689,7 +725,10 @@ achieve 0\% FP rate; INT32-C and INT31-C reached zero-FP as a direct
 result of the opt-in provenance-gated rewrite discussed in
 \cref{sec:provenance-frontier}, which trades some Juliet recall (fewer
 TP than the v0.4.22 figures) for eliminating essentially all of their
-FPs on both benchmarks.
+FPs on both benchmarks.  FIO30-C's FP rate dropped sharply since
+v0.4.116 (11\%$\to$1.8\%) from a round of cross-translation-unit and
+function-pointer format-string false-positive fixes
+(\cref{fig:tp-rate-progression}).
 
 \begin{table}[t]
 \centering
@@ -698,19 +737,19 @@ FPs on both benchmarks.
 \toprule
 \textbf{Rule} & \textbf{TP} & \textbf{FP} & \textbf{FP\%} & \textbf{Primary CWEs} \\
 \midrule
-INT32-C & 2,398 & 0    & 0  & 190, 191, 680 \\
-ARR38-C & 2,136 & 684  & 24 & 121, 126, 124 \\
-ARR30-C & 1,814 & 711  & 28 & 121, 122, 126 \\
-FIO30-C & 1,650 & 210  & 11 & 134 \\
+INT32-C & 2,425 & 0    & 0  & 190, 191, 680 \\
+ARR38-C & 2,142 & 648  & 23 & 121, 126, 124 \\
+ARR30-C & 1,803 & 699  & 28 & 121, 122, 126 \\
+FIO30-C & 1,650 & 30   & 2  & 134 \\
+STR31-C & 1,608 & 278  & 15 & 121, 122, 124 \\
 ENV33-C & 1,550 & 0    & 0  & 78 \\
-STR31-C & 1,150 & 476  & 29 & 121, 122, 124 \\
-EXP33-C & 1,092 & 402  & 27 & 457, 758, 665 \\
 INT31-C & 1,070 & 0    & 0  & 195, 194, 197 \\
+EXP33-C & 914   & 35   & 4  & 457, 758, 665 \\
 EXP34-C & 850   & 127  & 13 & 690, 476 \\
 ENV03-C & 832   & 0    & 0  & 78, 426 \\
 \bottomrule
 \end{tabular}
-\caption{Top 10 rules by true positive volume (fast mode, v0.4.116).}
+\caption{Top 10 rules by true positive volume (fast mode, v0.4.249).}
 \label{tab:top-rules}
 \end{table}
 
@@ -740,6 +779,26 @@ small share of the full 79-CWE suite, the aggregate move is only
 zero-cost correctness fix can be nearly invisible in an aggregate
 rate dominated by high-volume CWEs.
 
+The plateau breaks decisively at v0.4.249 (87.7\%, +2.2 points over
+v0.4.175), the largest single jump since v0.4.46. Unlike the v0.4.175
+point, this was not one isolated fix but a scoping-and-deduplication
+pass across the buffer-size-resolution subsystem shared by ARR30-C,
+ARR38-C, and STR31-C (consolidating three independently-drifted
+size-inference implementations onto one shared \texttt{buffer\_size.rs}
+module, and fixing several cross-function variable-name-conflation
+bugs where a same-named buffer in a different function was credited
+with the wrong size) plus a cross-translation-unit and
+function-pointer fix to FIO30-C's format-string tracking. The net
+effect over this window (\texttt{bench compare v0.4.175 v0.4.249}) is
+$+329$ TP and $-590$ FP; the two largest movers are CWE-121/CWE-122
+(stack/heap buffer overflow, $-76$/$-80$ FP with $+258$/$+115$ TP from
+the buffer-size fixes recovering previously-missed real detections
+alongside removing false ones) and CWE-134 (format string, $-180$ FP
+from the FIO30-C fix, TP unchanged). CWE-369 (divide by zero) moved
+the other way on this pass ($-132$ FP but also $-104$ TP), a reminder
+that not every FP-reduction round is free even when the aggregate
+trend is positive.
+
 \begin{figure}[t]
 \centering
 \begin{tikzpicture}
@@ -750,7 +809,7 @@ rate dominated by high-volume CWEs.
     ylabel={TP Rate (\%)},
     ymin=40, ymax=90,
     xtick=data,
-    xticklabels={v0.2.1, v0.2.7, v0.2.23, v0.3.20, v0.3.37, v0.3.53, v0.3.75, v0.3.84, v0.3.99, v0.3.119, v0.4.5, v0.4.9, v0.4.22, v0.4.38, v0.4.46, v0.4.116, v0.4.175},
+    xticklabels={v0.2.1, v0.2.7, v0.2.23, v0.3.20, v0.3.37, v0.3.53, v0.3.75, v0.3.84, v0.3.99, v0.3.119, v0.4.5, v0.4.9, v0.4.22, v0.4.38, v0.4.46, v0.4.116, v0.4.175, v0.4.249},
     xticklabel style={rotate=45, anchor=east, font=\footnotesize},
     ylabel style={font=\footnotesize},
     xlabel style={font=\footnotesize},
@@ -762,19 +821,23 @@ rate dominated by high-volume CWEs.
     grid style={dashed, gray!30},
 ]
 \addplot[color=blue, mark=*, thick] coordinates {
-    (1, 41.1) (2, 44.5) (3, 44.6) (4, 45.8) (5, 48.4) (6, 52.0) (7, 56.3) (8, 60.2) (9, 63.6) (10, 67.5) (11, 69.4) (12, 70.4) (13, 72.7) (14, 80.0) (15, 83.2) (16, 83.8) (17, 85.5)
+    (1, 41.1) (2, 44.5) (3, 44.6) (4, 45.8) (5, 48.4) (6, 52.0) (7, 56.3) (8, 60.2) (9, 63.6) (10, 67.5) (11, 69.4) (12, 70.4) (13, 72.7) (14, 80.0) (15, 83.2) (16, 83.8) (17, 85.5) (18, 87.7)
 };
 \end{axis}
 \end{tikzpicture}
 \caption{TP rate progression from baseline (v0.2.1) through current
-(v0.4.175).  The gap between v0.2.23 and v0.3.20 reflects the switch
+(v0.4.249).  The gap between v0.2.23 and v0.3.20 reflects the switch
 from full-suite to fast-mode benchmarking.  The rate plateaus after
 v0.4.46 despite continued FP-reduction work, reflecting the
 diminishing-returns dynamic of \cref{sec:fp-reduction}.  The v0.4.175
 point reflects a MEM30-C soundness fix that recovered CWE-416/415 TP
 rate by 4--5 points each at zero added FP, but moves the aggregate
 rate by only +0.1 points since both CWEs are a small share of the
-79-CWE suite.}
+79-CWE suite.  The plateau breaks at v0.4.249 (+2.2 points), driven by
+a shared buffer-size-resolution consolidation across ARR30-C/ARR38-C/
+STR31-C and a FIO30-C format-string fix (CWE-121/122/134 are the
+largest movers); this is the largest single-version gain since
+v0.4.46.}
 \label{fig:tp-rate-progression}
 \end{figure}
 
@@ -871,7 +934,11 @@ achieve both high per-CWE precision and broad coverage.
 \label{sec:realworld-results}
 
 \Cref{tab:realworld-results} compares SqC against cppcheck and
-clang-tidy.
+clang-tidy across the 9-project real-world set. seL4 has no
+cppcheck/clang-tidy baseline yet (onboarded as a ninth oracle after the
+last competitor sweep); sqlite's scan scope narrowed between versions
+(125$\to$81 in-scope files) as its file predicate was tightened, not a
+regression.
 
 \begin{table}[t]
 \centering
@@ -880,22 +947,40 @@ clang-tidy.
 \toprule
 \textbf{Project} & \textbf{sqc} & \textbf{cppcheck} & \textbf{clang-tidy} \\
 \midrule
-libcrc & 391 & 40 & 2 \\
-lua & 3,068 & 49 & 107 \\
-raylib & 5,213 & 1,060 & 469 \\
-mosquitto & 11,225 & 277 & 44 \\
-curl & 16,085 & 556 & 116 \\
-sqlite & 31,319 & 503 & 137 \\
-hostap & 37,432 & 1,761 & 1,710 \\
+libcrc & 395 & 40 & 2 \\
+lua & 3,047 & 49 & 107 \\
+raylib & 4,749 & 1,060 & 469 \\
+mosquitto & 2,970 & 277 & 44 \\
+curl & 8,582 & 556 & 116 \\
+sqlite & 18,922 & 503 & 137 \\
+hostap & 30,752 & 1,761 & 1,710 \\
+pure-ftpd & 5,855 & 12 & 109 \\
+seL4 & 4,959 & --- & --- \\
 \midrule
-\textbf{Total} & \textbf{104,733} & \textbf{4,246} & \textbf{2,585} \\
+\textbf{Total} & \textbf{80,231} & \textbf{4,258} & \textbf{2,694} \\
 \bottomrule
 \end{tabular}
-\caption{Violation counts (sqc v0.4.120, cppcheck v2.10, clang-tidy
-v21.1.6).  The $\sim$25--40$\times$ difference reflects SqC's 311-rule
-coverage vs.~$\sim$20 checks in competitors.}
+\caption{Violation counts (sqc v0.4.249, cppcheck v2.10, clang-tidy
+v21.1.6).  Excluding seL4 (no competitor baseline), SqC's total is
+75,272 across the other 8 projects --- an $\sim$18--28$\times$
+difference vs.\ cppcheck/clang-tidy, reflecting SqC's 311-rule coverage
+vs.\ $\sim$20 checks in competitors.  SqC's own total dropped 28\% from
+the v0.4.120 figure (104,733 across the original 7 projects) despite
+covering more rules, from the FP-reduction work in
+\cref{sec:fp-reduction} landing on real-world code, not just Juliet.}
 \label{tab:realworld-results}
 \end{table}
+
+Beyond raw violation volume, what matters is what fraction of these
+findings are real: scored against a hand-adjudicated ground-truth
+oracle spanning all 9 projects (\cref{sec:ground-truth-snapshot}), aggregate
+measured precision is 16.6\% (TP 10,561 of 63,608 labeled findings) with
+97.4\% recall (10,561 of 10,841 known true positives flagged), at 86.3\%
+label coverage (63,649 of 73,718 total findings labeled;
+run \texttt{sqc-0.4.258}). As with the Juliet 100\%-precision figures
+in \cref{tab:perfect-cwes}, this aggregate number should be read scoped
+to its oracle rather than as a universal precision claim
+(\cref{sec:limitations}).
 
 \Cref{tab:realworld-timing} reports analysis throughput.  Each tool was
 run serially---one process at a time, with the full machine to itself---so
