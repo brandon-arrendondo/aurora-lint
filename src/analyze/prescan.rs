@@ -79,6 +79,15 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
     };
 
     if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
+        // Skip a header that can only be C++ (task 571) -- its declarations
+        // (default-argument prototypes, namespaced names, ...) are not real
+        // C API surface and must not pollute cross-file summaries any more
+        // than they should generate direct C-rule findings (the same check
+        // in analyze_one_file).
+        if is_header && lang_parsing_substrate::looks_like_cpp(source.as_bytes()) {
+            return result;
+        }
+
         let root = tree.root_node();
 
         collect_function_names(&root, &source, &mut result.known_functions);
@@ -469,6 +478,10 @@ pub fn prescan_sibling_headers(parent_dir: &str) -> Result<ProjectContext> {
         .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("h"))
     {
         if let Ok((tree, source)) = parser.parse_file(&entry.path().to_string_lossy()) {
+            // Skip a header that can only be C++ (task 571).
+            if lang_parsing_substrate::looks_like_cpp(source.as_bytes()) {
+                continue;
+            }
             collect_header_declarations(
                 &tree.root_node(),
                 &source,

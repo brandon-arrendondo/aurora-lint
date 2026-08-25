@@ -474,6 +474,20 @@ fn analyze_one_file(
     let mut file_suppressed = Vec::new();
 
     if let Ok((tree, source)) = parser.parse_file(file_path) {
+        // A `.h` file is ambiguous between C and C++ by extension alone; a
+        // header written entirely in C++ (a vendored C++ wrapper API
+        // shipped alongside a C library, e.g. mosquitto's
+        // libmosquittopp.h) parses under tree-sitter-c anyway, producing
+        // ERROR-node garbage that several independent C-oriented rules
+        // (DCL15-C, DCL19-C, DCL20-C, MSC13-C, WIN04-C, API02-C, EXP37-C)
+        // have each misread as real C declarations (task 571). Detect and
+        // skip such files entirely rather than analyzing nonsense --
+        // tools_sqc is CERT-C only, so a file that can only be C++ is out
+        // of scope, not a source of findings.
+        if file_path.ends_with(".h") && lang_parsing_substrate::looks_like_cpp(source.as_bytes()) {
+            return (file_violations, file_suppressed);
+        }
+
         let root_node = tree.root_node();
 
         // Build CFGs for all function definitions in this file
