@@ -68,6 +68,17 @@ python -m bench runs
    both look clean while the real picture is unmeasured underneath. Before
    writing "precision improved/held" or "FP reduced" into a commit message,
    task note, or the paper for a changed rule:
+   - **Gate the delta-adjudication task on any known-but-unfixed FP driver for
+     that rule before filing/starting it.** Adjudicating a raw dump when a
+     cheap follow-up fix would still eliminate a large slice of it wastes
+     investigatory effort re-reading findings that are about to disappear —
+     task 553/582 saw MSC17-C real-world findings drop 2,024 → 376 (−81%)
+     from one structural fix; adjudicating the 2,024 first would have thrown
+     most of that work away. Before filing a delta-adjudication task,
+     `todo-sqlite-cli list` (or search) for open FP-reduction tasks against
+     the same rule; if any exist, add them via `--depends-on` so `next`
+     skips the adjudication until the cheaper fixes land, then re-measure
+     before adjudicating what's left.
    - Pull the new unlabeled findings for that rule only:
      `bench realworld-unlabeled RUN --rule RULE_ID --project P --json`
      (repeat per affected project, or omit `--project` and split after).
