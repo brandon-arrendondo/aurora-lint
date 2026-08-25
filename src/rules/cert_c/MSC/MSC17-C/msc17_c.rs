@@ -203,14 +203,16 @@ impl Msc17C {
             if terminated {
                 continue;
             }
-            // Skip trailing comments and the stray empty `;` statement that
+            // Skip only the stray empty `;` statement that
             // `__attribute__((fallthrough));` leaves behind (the attribute
             // itself parses as a preceding ERROR node, not part of that
-            // expression_statement) to find the real trailing marker, if any.
-            let marker = items.iter().rev().find(|n| {
-                n.kind() != "comment"
-                    && !(n.kind() == "expression_statement" && n.named_child(0).is_none())
-            });
+            // expression_statement) to find the real trailing marker, if
+            // any -- a trailing comment (the common case) must NOT be
+            // skipped past, since the comment itself is the marker.
+            let marker = items
+                .iter()
+                .rev()
+                .find(|n| !(n.kind() == "expression_statement" && n.named_child(0).is_none()));
             let marked_intentional = marker
                 .map(|n| {
                     self.is_fallthrough_comment(n, source) || self.is_fallthrough_marker(n, source)
