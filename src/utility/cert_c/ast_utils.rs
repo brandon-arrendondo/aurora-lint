@@ -150,6 +150,94 @@ fn declaration_binds_name(decl_node: &Node, name: &str, source: &str) -> bool {
     false
 }
 
+/// Fallback for file-scope (global) declarations, which
+/// `find_enclosing_declaration_for_identifier` intentionally does not
+/// resolve to (it only walks enclosing `compound_statement` blocks).
+/// Restricted to direct children of the translation unit so it can't cross
+/// into an unrelated function body.
+///
+/// This generalizes a scan that MSC05-C, MSC15-C, and CON34-C each
+/// hand-rolled independently (task 387 item #3) as a type- or
+/// qualifier-filtered variant of the same walk.
+pub fn find_global_declaration_for_identifier<'a>(
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    let mut top = *ident_node;
+    while let Some(p) = top.parent() {
+        top = p;
+    }
+    (0..top.child_count())
+        .filter_map(|i| top.child(i))
+        .find(|decl| decl.kind() == "declaration" && declaration_binds_name(decl, name, source))
+}
+
+/// Where an identifier use resolves to its binding declaration/parameter.
+pub enum IdentifierBinding<'a> {
+    /// Bound by a local (block-scope) declaration.
+    Local(Node<'a>),
+    /// Bound by a function parameter; carries the parameter's type text
+    /// since a parameter has no `declaration` node of its own to point at.
+    Parameter(String),
+    /// Bound by a file-scope (translation-unit level) declaration.
+    Global(Node<'a>),
+}
+
+/// Resolve `ident_node` (an occurrence of `name`) to wherever it's bound:
+/// the nearest enclosing local declaration, else the containing function's
+/// parameter list, else a file-scope global declaration. Chains
+/// [`find_enclosing_declaration_for_identifier`], [`get_function_parameters`],
+/// and [`find_global_declaration_for_identifier`] in that order so callers
+/// don't each hand-roll the same 3-way fallback (task 387 item #3 -- MSC05-C,
+/// MSC15-C, FIO34-C, ENV34-C, INT34-C, and CON34-C all did this
+/// independently).
+pub fn resolve_identifier_binding<'a>(
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<IdentifierBinding<'a>> {
+    if let Some(decl) = find_enclosing_declaration_for_identifier(ident_node, name, source) {
+        return Some(IdentifierBinding::Local(decl));
+    }
+    if let Some(func) = find_containing_function(ident_node) {
+        if let Some(params) = get_function_parameters(&func, source) {
+            if let Some((_, ptype)) = params.iter().find(|(n, _)| n == name) {
+                return Some(IdentifierBinding::Parameter(ptype.clone()));
+            }
+        }
+    }
+    find_global_declaration_for_identifier(ident_node, name, source).map(IdentifierBinding::Global)
+}
+
+/// Extract the type text (tokens before the declarator) of a `declaration`
+/// node, e.g. `time_t x;` -> `"time_t"`, `static unsigned int x;` ->
+/// `"static unsigned int"`.
+fn declaration_type_text(decl: &Node, source: &str) -> String {
+    (0..decl.child_count())
+        .filter_map(|i| decl.child(i))
+        .take_while(|c| {
+            !matches!(
+                c.kind(),
+                "identifier" | "init_declarator" | "pointer_declarator" | "array_declarator"
+            )
+        })
+        .map(|c| get_node_text(&c, source))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Convenience wrapper over [`resolve_identifier_binding`] for callers that
+/// only need the resolved type text, not the binding site itself.
+pub fn resolve_identifier_type(ident_node: &Node, name: &str, source: &str) -> Option<String> {
+    match resolve_identifier_binding(ident_node, name, source)? {
+        IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl) => {
+            Some(declaration_type_text(&decl, source))
+        }
+        IdentifierBinding::Parameter(ptype) => Some(ptype),
+    }
+}
+
 /// Check if a node is inside a loop (for, while, or do-while)
 ///
 /// No function-boundary short-circuit: `function_definition`s never nest in
@@ -212,27 +300,21 @@ pub fn get_identifier_from_declarator(declarator: &Node, source: &str) -> String
     }
 }
 
-/// Find identifier in a declarator node, returns Option instead of "unknown" string
+/// Find identifier in a declarator node, returns Option instead of "unknown" string.
+///
+/// Delegates to [`get_identifier_from_declarator`], which (unlike this
+/// function's original implementation) checks the declarator's own node kind
+/// before scanning its children — needed for a bare, unwrapped declarator
+/// (`int j = 0;`) where the declarator field IS the identifier directly.
+/// The old children-only scan returned `None` for that shape, which caused a
+/// live regression in CON34-C's OpenMP shared-variable detection (task 385).
 pub fn find_identifier_in_declarator(declarator: &Node, source: &str) -> Option<String> {
-    // Recursively find identifier in declarator
-    for i in 0..declarator.child_count() {
-        if let Some(child) = declarator.child(i) {
-            if child.kind() == "identifier" {
-                return Some(get_node_text_owned(&child, source));
-            } else if matches!(
-                child.kind(),
-                "array_declarator"
-                    | "pointer_declarator"
-                    | "function_declarator"
-                    | "parenthesized_declarator"
-            ) {
-                if let Some(id) = find_identifier_in_declarator(&child, source) {
-                    return Some(id);
-                }
-            }
-        }
+    let name = get_identifier_from_declarator(declarator, source);
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
     }
-    None
 }
 
 // ============================================================================

@@ -31,79 +31,16 @@ impl Msc05C {
         Msc05C
     }
 
-    /// Extract the type text (tokens before the declarator) of a `declaration`
-    /// node, e.g. `time_t x;` -> `"time_t"`.
-    fn type_text_for_decl(decl: &Node, source: &str) -> String {
-        (0..decl.child_count())
-            .filter_map(|i| decl.child(i))
-            .take_while(|c| {
-                !matches!(
-                    c.kind(),
-                    "identifier" | "init_declarator" | "pointer_declarator" | "array_declarator"
-                )
-            })
-            .map(|c| ast_utils::get_node_text(&c, source))
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    /// Fallback for file-scope (global) `time_t` declarations, which
-    /// `find_enclosing_declaration_for_identifier` intentionally does not
-    /// resolve to (it only walks enclosing `compound_statement` blocks).
-    /// Mirrors the original whole-file scan, but restricted to direct
-    /// children of the translation unit so it can't cross into unrelated
-    /// function bodies.
-    fn global_time_t_decl(&self, ident_node: &Node, name: &str, source: &str) -> bool {
-        let mut top = *ident_node;
-        while let Some(p) = top.parent() {
-            top = p;
-        }
-        for i in 0..top.child_count() {
-            let Some(decl) = top.child(i) else { continue };
-            if decl.kind() != "declaration" {
-                continue;
-            }
-            let Some(type_node) = decl.child(0) else {
-                continue;
-            };
-            if type_node.kind() != "type_identifier"
-                || ast_utils::get_node_text(&type_node, source) != "time_t"
-            {
-                continue;
-            }
-            for name_node in query::find_descendants_of_kind(decl, "identifier") {
-                let is_declared_name = match name_node.parent() {
-                    Some(p) if p.kind() == "declaration" => true,
-                    Some(p) if p.kind() == "init_declarator" => p.child(0) == Some(name_node),
-                    _ => false,
-                };
-                if is_declared_name && ast_utils::get_node_text(&name_node, source) == name {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     /// Resolve whether the identifier at this specific use site is declared
     /// (locally, as a parameter, or at file scope) with type `time_t`.
     /// Scope- and shadowing-aware: two different functions (or blocks)
     /// declaring a same-named variable of a different type are not conflated.
+    /// `ast_utils::resolve_identifier_type` chains the local/parameter/global
+    /// fallback (task 387 item #3) that used to be hand-rolled here.
     fn is_time_t_typed(&self, ident: &Node, source: &str) -> bool {
         let name = ast_utils::get_node_text(ident, source);
-        if let Some(decl) =
-            ast_utils::find_enclosing_declaration_for_identifier(ident, name, source)
-        {
-            return Self::type_text_for_decl(&decl, source).contains("time_t");
-        }
-        if let Some(func) = ast_utils::find_containing_function(ident) {
-            if let Some(params) = ast_utils::get_function_parameters(&func, source) {
-                if let Some((_, ptype)) = params.iter().find(|(n, _)| n == name) {
-                    return ptype.contains("time_t");
-                }
-            }
-        }
-        self.global_time_t_decl(ident, name, source)
+        ast_utils::resolve_identifier_type(ident, name, source)
+            .is_some_and(|t| t.contains("time_t"))
     }
 
     fn flag(&self, node: &Node, op: &str, name: &str, violations: &mut Vec<RuleViolation>) {
