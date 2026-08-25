@@ -1096,6 +1096,47 @@ Juliet-wide FP rate is a more modest 13\% (\cref{tab:top-rules}), but
 even that headline number does not survive contact with real-world
 code.
 
+That low precision coexists with a concentrated pocket of confirmed
+true positives.  Delta-adjudicating EXP34-C's findings against
+SQLite's \texttt{ext/} extension modules --- code reachable only
+through optional loadable extensions, and correspondingly less
+scrutinized than the core engine --- confirmed 11 genuine
+out-of-memory-triggered NULL-dereference bugs: an unchecked
+\texttt{sqlite3\_malloc64()} result used directly in \texttt{fread()}
+(\texttt{ext/expert/expert.c}); \texttt{sqlite3\_column\_name()}
+strlen'd with no NULL check at two sites in
+\texttt{ext/fts3/fts3.c}; \texttt{sqlite3\_column\_text()} indexed and
+compared with no NULL check in \texttt{ext/misc/amatch.c} (SQL-NULL
+triggerable, not merely OOM); \texttt{sqlite3\_vmprintf()} consumed
+unguarded at two sites in \texttt{ext/misc/sqlite3\_stdio.c};
+\texttt{sqlite3\_stmt\_scanstatus\_v2()}'s
+\texttt{SQLITE\_SCANSTAT\_EXPLAIN} output used unguarded on its normal
+(non-error) return path in \texttt{ext/qrf/qrf.c}; and an
+\texttt{sqlite3\_mprintf()} result passed to plain libc \texttt{printf}'s
+\texttt{\%s} --- bypassing SQLite's own NULL-safe \texttt{mprintf} ---
+in \texttt{ext/session/changeset.c}.  Cross-checking against the live
+upstream mainline found 4 of the original 11 sites already
+independently hardened by a June 2026 OOM-hardening pass; we filed
+disclosures for the remaining six, covering
+\texttt{expert.c}\footnote{\url{https://sqlite.org/bugs/forumpost/c06a3c0d3f}},
+\texttt{amatch.c}\footnote{\url{https://sqlite.org/bugs/forumpost/20d89d613b}},
+\texttt{sqlite3\_stdio.c}\footnote{\url{https://sqlite.org/bugs/forumpost/ba00fdddda}},
+\texttt{changeset.c}\footnote{\url{https://sqlite.org/bugs/forumpost/f20ea456ac}},
+\texttt{fts3.c}\footnote{\url{https://sqlite.org/bugs/forumpost/9b4276628a}},
+and \texttt{qrf.c}\footnote{\url{https://sqlite.org/bugs/forumpost/18338dc19d}}.
+SQLite fixed all six the same day they were filed, extending the
+same-day/next-day turnaround documented in
+\cref{sec:provenance-frontier} to nine consecutive disclosures across
+this evaluation.  Unlike the \texttt{kvvfsDecode} finding in
+\cref{sec:provenance-frontier} (an audit-discovered false negative,
+not a rule detection), these 11 sites are genuine EXP34-C true
+positives --- the rule flagged real bugs, adjudication confirmed them
+against source, and the resulting disclosures were externally
+validated by the same-day fixes.  They are a small fraction of
+EXP34-C's real-world output, but a concrete demonstration that its
+0.66\% measured precision reflects volume of false alarms, not an
+absence of genuine findings underneath them.
+
 \subsection{A Defect Class Juliet Cannot Surface}
 \label{sec:juliet-blindspot}
 
