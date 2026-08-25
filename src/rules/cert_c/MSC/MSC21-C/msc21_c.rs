@@ -39,6 +39,14 @@ const MAX_VALUE_CONSTANTS: &[&str] = &[
     "LLONG_MAX",
 ];
 
+/// A numeric step recognized on the loop counter: exactly ±1, or a
+/// constant literal other than ±1.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Unit,
+    NonUnit,
+}
+
 #[derive(Debug)]
 pub struct Msc21C;
 
@@ -48,37 +56,86 @@ impl Msc21C {
         Msc21C
     }
 
-    /// Whether the `update` clause of a for-loop advances `var_name` by
-    /// exactly 1 (in either direction).
-    fn update_step_is_one(&self, update: &Node, var_name: &str, source: &str) -> bool {
+    /// A `var +/- literal` (or `literal +/- var`) binary expression's step,
+    /// if it's an addition/subtraction with `var_name` on one side and a
+    /// numeric literal on the other.
+    fn literal_binary_step(&self, expr: &Node, var_name: &str, source: &str) -> Option<Step> {
+        if expr.kind() != "binary_expression" {
+            return None;
+        }
+        let op = ast_utils::get_node_text(&expr.child(1)?, source);
+        if op != "+" && op != "-" {
+            return None;
+        }
+        let left = expr.child_by_field_name("left")?;
+        let right = expr.child_by_field_name("right")?;
+        let literal_side =
+            if left.kind() == "identifier" && ast_utils::get_node_text(&left, source) == var_name {
+                right
+            } else if right.kind() == "identifier"
+                && ast_utils::get_node_text(&right, source) == var_name
+            {
+                left
+            } else {
+                return None;
+            };
+        if literal_side.kind() != "number_literal" {
+            return None;
+        }
+        if ast_utils::get_node_text(&literal_side, source) == "1" {
+            Some(Step::Unit)
+        } else {
+            Some(Step::NonUnit)
+        }
+    }
+
+    /// Classifies the numeric step the `update` clause of a for-loop applies
+    /// to `var_name`, or `None` when `update` doesn't provably step
+    /// `var_name` by a constant amount at all.
+    ///
+    /// `None` covers pointer-chasing traversal (`p = p->next`),
+    /// function-return-driven conditions (`rc = f()`), a non-literal step
+    /// that can't be proven non-unit by this AST-only checker, and an
+    /// `update` that touches a variable other than the one actually
+    /// compared in the loop condition (the two can differ, e.g. `for
+    /// (...; eOp != f(op); op++)` — a real +1 step on `op`, but not on the
+    /// compared `eOp`). Any of these means the loop isn't the arithmetic
+    /// "counter can skip its target" shape this rule checks, so it must not
+    /// be flagged regardless of comparison operator.
+    fn classify_step(&self, update: &Node, var_name: &str, source: &str) -> Option<Step> {
         match update.kind() {
             "update_expression" => query::find_descendants_of_kind(*update, "identifier")
                 .iter()
-                .any(|n| ast_utils::get_node_text(n, source) == var_name),
+                .any(|n| ast_utils::get_node_text(n, source) == var_name)
+                .then_some(Step::Unit),
             "assignment_expression" => {
-                let Some(left) = update.child_by_field_name("left") else {
-                    return false;
-                };
+                let left = update.child_by_field_name("left")?;
                 if left.kind() != "identifier"
                     || ast_utils::get_node_text(&left, source) != var_name
                 {
-                    return false;
+                    return None;
                 }
-                let Some(op) = update.child(1) else {
-                    return false;
-                };
-                let op_text = ast_utils::get_node_text(&op, source);
-                if op_text != "+=" && op_text != "-=" {
-                    return false;
+                let op = ast_utils::get_node_text(&update.child(1)?, source);
+                let right = update.child_by_field_name("right")?;
+                match op {
+                    "+=" | "-=" => {
+                        if right.kind() != "number_literal" {
+                            // Non-literal step: could be provably ±1 by
+                            // dataflow this AST-only check can't see —
+                            // never positively confirmed non-unit either.
+                            return None;
+                        }
+                        if ast_utils::get_node_text(&right, source) == "1" {
+                            Some(Step::Unit)
+                        } else {
+                            Some(Step::NonUnit)
+                        }
+                    }
+                    "=" => self.literal_binary_step(&right, var_name, source),
+                    _ => None,
                 }
-                update
-                    .child_by_field_name("right")
-                    .map(|r| {
-                        r.kind() == "number_literal" && ast_utils::get_node_text(&r, source) == "1"
-                    })
-                    .unwrap_or(false)
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -102,12 +159,11 @@ impl Msc21C {
         }
         let var_name = ast_utils::get_node_text(&left, source);
 
-        if (op_text == "!=" || op_text == "==")
-            && !for_stmt
-                .child_by_field_name("update")
-                .map(|u| self.update_step_is_one(&u, var_name, source))
-                .unwrap_or(false)
-        {
+        let step = for_stmt
+            .child_by_field_name("update")
+            .and_then(|u| self.classify_step(&u, var_name, source));
+
+        if (op_text == "!=" || op_text == "==") && step == Some(Step::NonUnit) {
             let pos = cond.start_position();
             violations.push(RuleViolation {
                 rule_id: "MSC21-C".to_string(),
