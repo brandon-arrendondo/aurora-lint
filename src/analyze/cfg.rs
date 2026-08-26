@@ -106,6 +106,14 @@ struct CfgBuilder {
     break_stack: Vec<BlockId>,
     /// Label name → block ID mapping for goto edge wiring.
     label_blocks: HashMap<String, BlockId>,
+    /// Stack of (case_statement node id -> its pre-allocated block) maps, one
+    /// per currently-active `switch`, innermost last. Lets a `case`/`default`
+    /// label encountered mid-walk -- nested inside a *different* arm's `{ }`,
+    /// e.g. sqlite's vdbe.c `OP_ReopenIdx: { ... case OP_OpenRead: case
+    /// OP_OpenWrite: ... }` opcode-dispatch pattern -- be recognized as
+    /// physical fallthrough into that label's own block rather than folded
+    /// into the enclosing arm's block as an opaque statement (task 454).
+    case_block_stack: Vec<HashMap<usize, BlockId>>,
     /// Pending goto edges: (source_block, label_name) to wire after all labels are seen.
     pending_gotos: Vec<(BlockId, String)>,
     function_start_byte: usize,
@@ -128,6 +136,7 @@ impl CfgBuilder {
             loop_stack: Vec::new(),
             break_stack: Vec::new(),
             label_blocks: HashMap::new(),
+            case_block_stack: Vec::new(),
             pending_gotos: Vec::new(),
             function_start_byte,
             constants,
@@ -224,6 +233,7 @@ impl CfgBuilder {
             "compound_statement" => {
                 self.build_from_compound_statement(node, source);
             }
+            "case_statement" => self.process_nested_case_label(node, source),
             "preproc_ifdef" | "preproc_ifndef" | "preproc_if" => {
                 self.process_preproc_conditional(node, source);
             }
@@ -532,50 +542,146 @@ impl CfgBuilder {
             self.add_edge(condition_block, exit_block, CfgEdge::Fallthrough);
         }
 
+        let case_id_to_block: HashMap<usize, BlockId> = case_statement_nodes
+            .iter()
+            .zip(case_blocks.iter())
+            .map(|(n, (b, _, _))| (n.id(), *b))
+            .collect();
         let case_blocks: Vec<BlockId> = case_blocks.into_iter().map(|(b, _, _)| b).collect();
-        for (case_idx, child) in case_statement_nodes.iter().enumerate() {
-            let case_block = case_blocks[case_idx];
-            self.current_block = case_block;
 
-            let value_start = child.child_by_field_name("value").map(|v| v.start_byte());
-            for j in 0..child.child_count() {
-                if let Some(sub) = child.child(j) {
-                    if Some(sub.start_byte()) == value_start {
-                        continue;
-                    }
-                    match sub.kind() {
-                        "case" | "default" | ":" => continue,
-                        _ => self.process_statement(&sub, source),
-                    }
-                }
-            }
+        // Only arms found as *direct* children of the switch body (or through
+        // a transparent preprocessor wrapper) drive this loop. An arm nested
+        // inside another arm's `{ }` is reached when `process_nested_case_label`
+        // encounters its node while walking that other arm's content --
+        // walking it again here would duplicate every statement in it.
+        let top_level: Vec<usize> = case_statement_nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| body.is_some_and(|b| Self::is_direct_switch_arm(n, &b)))
+            .map(|(i, _)| i)
+            .collect();
 
-            // Physical fallthrough into the next case arm if this arm's
-            // control flow didn't already break/return/continue/goto out.
-            let next_block = case_blocks.get(case_idx + 1).copied().unwrap_or(exit_block);
+        self.case_block_stack.push(case_id_to_block);
+
+        for (pos, &case_idx) in top_level.iter().enumerate() {
+            self.current_block = case_blocks[case_idx];
+            self.walk_case_arm_children(&case_statement_nodes[case_idx], source);
+
+            // Physical fallthrough into the next top-level case arm if this
+            // arm's control flow didn't already break/return/continue/goto out.
+            let next_block = top_level
+                .get(pos + 1)
+                .map(|&ni| case_blocks[ni])
+                .unwrap_or(exit_block);
             self.add_edge(self.current_block, next_block, CfgEdge::Fallthrough);
         }
 
+        self.case_block_stack.pop();
         self.break_stack.pop();
         self.current_block = exit_block;
     }
 
+    /// Walk one case arm's content: process each child statement, skipping
+    /// the label tokens (`case`/`default`/`:`) and the case value expression.
+    /// A nested `case_statement` child (task 454) is handled by
+    /// `process_statement`'s dispatch to `process_nested_case_label`, so it
+    /// naturally hops this walk to that label's own block rather than being
+    /// folded in here as an opaque statement.
+    fn walk_case_arm_children(&mut self, node: &Node, source: &str) {
+        let value_start = node.child_by_field_name("value").map(|v| v.start_byte());
+        for j in 0..node.child_count() {
+            if let Some(sub) = node.child(j) {
+                if Some(sub.start_byte()) == value_start {
+                    continue;
+                }
+                match sub.kind() {
+                    "case" | "default" | ":" => continue,
+                    _ => self.process_statement(&sub, source),
+                }
+            }
+        }
+    }
+
+    /// Reached when a `case`/`default` label appears mid-arm, nested inside
+    /// another arm's `{ }` (task 454) -- physical fallthrough, not a normal
+    /// statement (e.g. sqlite's vdbe.c `OP_ReopenIdx: { ... case OP_OpenRead:
+    /// case OP_OpenWrite: ... }`). Jump this walk to the label's own
+    /// pre-allocated block (looked up by node id in the innermost active
+    /// switch's map) and continue walking its children from there.
+    fn process_nested_case_label(&mut self, node: &Node, source: &str) {
+        let Some(&target) = self
+            .case_block_stack
+            .last()
+            .and_then(|map| map.get(&node.id()))
+        else {
+            // Not a label of the innermost active switch (shouldn't happen
+            // for valid C, since `case`/`default` are only legal inside a
+            // switch). Treat conservatively as an opaque statement rather
+            // than silently dropping its content.
+            self.add_statement(node.start_byte(), node.end_byte());
+            return;
+        };
+        self.add_edge(self.current_block, target, CfgEdge::Fallthrough);
+        self.current_block = target;
+        self.walk_case_arm_children(node, source);
+    }
+
+    /// True if `case_node` is reached as a direct arm of `body` -- i.e.
+    /// without descending into another arm's `{ }` -- transparently through
+    /// any preprocessor wrapper. Used to pick the entry points for
+    /// `process_switch`'s arm-walking loop; a case nested inside a sibling
+    /// arm's braces (task 454) still gets its own dispatch block and edge,
+    /// but is walked via `process_nested_case_label`, not as its own loop
+    /// iteration.
+    fn is_direct_switch_arm(case_node: &Node, body: &Node) -> bool {
+        let mut cur = *case_node;
+        loop {
+            let Some(parent) = cur.parent() else {
+                return false;
+            };
+            if parent.id() == body.id() {
+                return true;
+            }
+            match parent.kind() {
+                "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef"
+                | "preproc_else" => cur = parent,
+                _ => return false,
+            }
+        }
+    }
+
     /// Flatten every `case_statement`/`default` arm in a switch body into
     /// document order, transparently descending into `#if`/`#ifdef`/`#elif`/
-    /// `#else` wrappers (task 445). Without this, a case label split across a
+    /// `#else` wrappers (task 445) and into a case arm's own `{ }` (task 454).
+    /// Without the preprocessor descent, a case label split across a
     /// preprocessor guard -- e.g. raylib's per-codec `#if SUPPORT_FILEFORMAT_*`
     /// arms in `UpdateMusicStream` -- was invisible to the CFG: its direct-child
     /// scan only matched bare `case_statement` siblings, so the reads/writes
     /// inside a guarded arm were never modeled, producing phantom dead-store
-    /// false positives.
+    /// false positives. Without the `{ }` descent, a case arm that wraps its
+    /// locals in braces while later labels still physically fall through into
+    /// it -- e.g. sqlite's vdbe.c `OP_ReopenIdx: { Db *pDb; ... case
+    /// OP_OpenRead: case OP_OpenWrite: pDb = ...; ... }` -- hides those nested
+    /// labels from dispatch-edge/reachability modeling entirely, and their
+    /// content gets folded into the wrapping arm's block as one opaque
+    /// statement, producing phantom "used uninitialized" (EXP33-C) findings
+    /// for a variable that was, on that path, assigned immediately before use.
     fn collect_case_statements_in_switch_body<'a>(node: &Node<'a>) -> Vec<Node<'a>> {
         let mut out = Vec::new();
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 match child.kind() {
-                    "case_statement" => out.push(child),
+                    "case_statement" => {
+                        out.push(child);
+                        // A case arm's own children can include a nested `{ }`
+                        // (or, depending on grammar shape, a further label
+                        // directly) that a later `case`/`default` physically
+                        // falls through into (task 454) -- recurse into this
+                        // arm too, not just the switch body's direct children.
+                        out.extend(Self::collect_case_statements_in_switch_body(&child));
+                    }
                     "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef"
-                    | "preproc_else" => {
+                    | "preproc_else" | "compound_statement" => {
                         out.extend(Self::collect_case_statements_in_switch_body(&child));
                     }
                     _ => {}
@@ -1049,5 +1155,73 @@ mod tests {
         let has_continue = cfg.edges.iter().any(|(_, _, e)| *e == CfgEdge::Continue);
         assert!(has_break);
         assert!(has_continue);
+    }
+
+    /// A case arm can wrap its locals in `{ }` while a later `case` label
+    /// still falls through into it -- e.g. sqlite's vdbe.c `OP_ReopenIdx: {
+    /// Db *pDb; ... case OP_OpenRead: case OP_OpenWrite: pDb = ...; }`
+    /// opcode-dispatch pattern (task 454). Both the nested label's dispatch
+    /// edge from the switch condition and the physical fallthrough edge from
+    /// the wrapping arm must be modeled, and its content must land in its
+    /// own block rather than being folded into the wrapping arm's block as
+    /// one opaque statement.
+    #[test]
+    fn test_switch_case_nested_in_sibling_braces() {
+        let code = r#"
+        static int run(int op, int iDb) {
+            switch (op) {
+                case 1: {
+                    int pDb;
+                    if (op == 2) {
+                        goto later;
+                    }
+                case 3:
+                case 4:
+                    pDb = iDb;
+                    int pX = pDb;
+                    return pX;
+                }
+            }
+        later:
+            return 0;
+        }
+        "#;
+        let cfg = parse_and_build_cfg(code).unwrap();
+        let condition_block = cfg.entry;
+
+        // The nested `case 3`/`case 4` labels each got their own block with
+        // a direct dispatch edge from the switch condition.
+        let dispatch_targets: Vec<BlockId> = cfg
+            .successors(condition_block)
+            .into_iter()
+            .filter(|(_, e)| **e == CfgEdge::Fallthrough)
+            .map(|(id, _)| id)
+            .collect();
+        assert!(
+            dispatch_targets.len() >= 3,
+            "expected direct dispatch edges to case 1, case 3, and case 4: {:?}",
+            cfg.edges
+        );
+
+        // The block containing `pDb = iDb;` also contains the very next
+        // statement (`int pX = pDb;`) rather than that statement having been
+        // folded into a sibling arm's block as one opaque span.
+        let assign_block = cfg
+            .blocks
+            .iter()
+            .find(|b| {
+                b.statements
+                    .iter()
+                    .any(|&(s, e)| code[s..e].trim() == "pDb = iDb;")
+            })
+            .expect("pDb assignment should be modeled as its own statement");
+        assert!(
+            assign_block
+                .statements
+                .iter()
+                .any(|&(s, e)| code[s..e].trim() == "int pX = pDb;"),
+            "the read of pDb should be in the same block as its preceding assignment: {:?}",
+            assign_block.statements
+        );
     }
 }
