@@ -196,9 +196,11 @@ pub struct SuppressionManager {
     /// entries that have no `hash`.
     wildcard_suppressions: Vec<CompiledWildcard>,
     /// 1-based inclusive line ranges never compiled when the file is built as C
-    /// (`#if 0` and `__cplusplus`-gated C++-only branches), keyed by full file
-    /// path. Violations landing in these ranges are suppressed because the
-    /// enclosing code is never compiled in a C translation unit.
+    /// (`#if 0`, `__cplusplus`-gated C++-only branches, and locally-provable
+    /// `#define`/`#undef` macro definedness), keyed by full file path.
+    /// Violations landing in these ranges are suppressed because the
+    /// enclosing code is never compiled in a C translation unit. Computed by
+    /// `lang_parsing_substrate::dead_code_ranges`.
     dead_code_ranges: HashMap<String, Vec<(usize, usize)>>,
 }
 
@@ -299,7 +301,10 @@ impl SuppressionManager {
                 .insert(file_path.to_string(), file_suppressions);
         }
 
-        let dead_ranges = compute_dead_code_ranges(source);
+        let dead_ranges: Vec<(usize, usize)> = lang_parsing_substrate::dead_code_ranges(source)
+            .into_iter()
+            .map(|r| (r.start_line, r.end_line))
+            .collect();
         if !dead_ranges.is_empty() {
             self.dead_code_ranges
                 .insert(file_path.to_string(), dead_ranges);
@@ -319,17 +324,19 @@ impl SuppressionManager {
         message: &str,
     ) -> Option<&str> {
         // Suppress anything inside a branch that is never compiled when building
-        // as C (`#if 0` or a `__cplusplus`-gated C++-only region): any finding
-        // there is unfixable noise, since sqc has no preprocessor and would
-        // otherwise analyze the inactive branch.
+        // as C (`#if 0`, a `__cplusplus`-gated C++-only region, or a
+        // locally-provable-dead `#ifdef`/`#if defined(MACRO)` branch): any
+        // finding there is unfixable noise, since sqc has no preprocessor and
+        // would otherwise analyze the inactive branch.
         if let Some(ranges) = self.dead_code_ranges.get(file_path) {
             if ranges
                 .iter()
                 .any(|&(start, end)| line >= start && line <= end)
             {
                 return Some(
-                    "code is inside an inactive preprocessor branch (`#if 0` or C++-only \
-                     `__cplusplus` block) that is never compiled as C",
+                    "code is inside an inactive preprocessor branch (`#if 0`, C++-only \
+                     `__cplusplus` block, or a locally-provable-dead macro guard) that is \
+                     never compiled as C",
                 );
             }
         }
@@ -560,174 +567,6 @@ fn file_path_matches(full_path: &str, pattern: &str) -> bool {
             .unwrap_or("");
         file_name == pattern
     }
-}
-
-/// Which branch of a preprocessor conditional is never compiled when the
-/// translation unit is built as C (sqc has no preprocessor, so it would
-/// otherwise analyze both branches and flag the inactive one).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum BranchKind {
-    /// The then-branch is dead in C; the `#else` branch (if any) is live.
-    /// Covers `#if 0`, `#ifdef __cplusplus`, `#if defined(__cplusplus)`.
-    ThenDead,
-    /// The then-branch is live; the `#else` branch is dead in C.
-    /// Covers `#ifndef __cplusplus`, `#if !defined(__cplusplus)`.
-    ElseDead,
-    /// Not a recognized dead-in-C conditional — both branches are analyzed.
-    Neutral,
-}
-
-/// Leading identifier token of a string (for `#ifdef NAME` / `#ifndef NAME`).
-fn first_ident(s: &str) -> &str {
-    let s = s.trim_start();
-    let end = s
-        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .unwrap_or(s.len());
-    &s[..end]
-}
-
-/// Classify a `#if` condition's then-branch with respect to `__cplusplus`.
-/// `cond` is the text after the `#if` keyword.
-fn classify_cpp_if(cond: &str) -> BranchKind {
-    let cond = cond.split("//").next().unwrap_or(cond);
-    let cond = cond.split("/*").next().unwrap_or(cond);
-    let c: String = cond.chars().filter(|ch| !ch.is_whitespace()).collect();
-    // A disjunction may be true in C via the non-__cplusplus operand, so we
-    // cannot prove either branch dead — stay conservative (analyze both).
-    if c.contains("||") || !c.contains("__cplusplus") {
-        return BranchKind::Neutral;
-    }
-    // `&&` chains require every operand, so the polarity of the __cplusplus
-    // term decides which branch is dead in C.
-    if c.contains("!defined(__cplusplus)") || c.contains("!__cplusplus") {
-        BranchKind::ElseDead
-    } else {
-        // `defined(__cplusplus)`, bare `__cplusplus`, `__cplusplus>=201103L`, …
-        BranchKind::ThenDead
-    }
-}
-
-/// Classify a conditional directive (`if`/`ifdef`/`ifndef`) by which branch is
-/// never compiled when building as C.
-fn classify_conditional(directive: &str, rest: &str) -> BranchKind {
-    match directive {
-        "ifdef" => {
-            if first_ident(rest) == "__cplusplus" {
-                BranchKind::ThenDead
-            } else {
-                BranchKind::Neutral
-            }
-        }
-        "ifndef" => {
-            if first_ident(rest) == "__cplusplus" {
-                BranchKind::ElseDead
-            } else {
-                BranchKind::Neutral
-            }
-        }
-        "if" => {
-            if is_zero_condition(rest) {
-                BranchKind::ThenDead
-            } else {
-                classify_cpp_if(rest)
-            }
-        }
-        _ => BranchKind::Neutral,
-    }
-}
-
-/// Compute the 1-based inclusive line ranges that are never compiled when the
-/// file is built as C.
-///
-/// Covers two families of unconditionally-inactive branches:
-///   * `#if 0` / `#if (0)` — literal-zero dead code.
-///   * `__cplusplus`-gated C++-only regions — `#ifdef __cplusplus`,
-///     `#if defined(__cplusplus) [&& …]` (then-branch dead in C), and the
-///     `#else` branch of `#ifndef __cplusplus` / `#if !defined(__cplusplus)`.
-///
-/// Handles nested conditionals (a nested `#if`/`#ifdef` inside a dead block does
-/// not end the block) and ends a dead region at the matching `#else`/`#elif`/
-/// `#endif`. This is line-based on purpose: tree-sitter mis-nests these blocks
-/// because the C++ `extern "C" {` brace is unbalanced in a C parse.
-fn compute_dead_code_ranges(source: &str) -> Vec<(usize, usize)> {
-    let mut ranges = Vec::new();
-    let mut depth: usize = 0;
-    // Kind of each currently-open conditional (parallel to nesting depth), so an
-    // `#else` knows whether it opens an else-branch dead region.
-    let mut kinds: Vec<BranchKind> = Vec::new();
-    // (start_line, conditional-nesting depth at which the dead region opened)
-    let mut dead: Option<(usize, usize)> = None;
-
-    for (idx, line) in source.lines().enumerate() {
-        let line_no = idx + 1;
-        let trimmed = line.trim_start();
-        if !trimmed.starts_with('#') {
-            continue;
-        }
-        let after_hash = trimmed[1..].trim_start();
-        let directive: String = after_hash
-            .chars()
-            .take_while(|c| c.is_ascii_alphabetic())
-            .collect();
-
-        match directive.as_str() {
-            "if" | "ifdef" | "ifndef" => {
-                depth += 1;
-                let rest = &after_hash[directive.len()..];
-                let kind = classify_conditional(&directive, rest);
-                kinds.push(kind);
-                if dead.is_none() && kind == BranchKind::ThenDead {
-                    dead = Some((line_no, depth));
-                }
-            }
-            "elif" | "else" => {
-                if let Some((start, dead_depth)) = dead {
-                    if depth == dead_depth {
-                        // A dead then-branch ends where its alternative begins.
-                        ranges.push((start, line_no));
-                        dead = None;
-                    }
-                } else if directive == "else"
-                    && depth > 0
-                    && kinds.last() == Some(&BranchKind::ElseDead)
-                {
-                    // The `#else` branch of `#ifndef __cplusplus` is dead in C.
-                    dead = Some((line_no, depth));
-                }
-            }
-            "endif" => {
-                if let Some((start, dead_depth)) = dead {
-                    if depth == dead_depth {
-                        ranges.push((start, line_no));
-                        dead = None;
-                    }
-                }
-                kinds.pop();
-                depth = depth.saturating_sub(1);
-            }
-            _ => {}
-        }
-    }
-
-    // An unterminated dead block (no matching `#endif`) covers the rest of file.
-    if let Some((start, _)) = dead {
-        let last = source.lines().count().max(start);
-        ranges.push((start, last));
-    }
-
-    ranges
-}
-
-/// Whether a `#if` condition expression is a literal zero (dead branch).
-/// Strips trailing comments and surrounding whitespace/parens before comparing.
-fn is_zero_condition(cond: &str) -> bool {
-    let cond = cond.split("//").next().unwrap_or(cond);
-    let cond = cond.split("/*").next().unwrap_or(cond);
-    let stripped: String = cond
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '(' && *c != ')')
-        .collect();
-    stripped == "0"
 }
 
 #[cfg(test)]
@@ -1466,45 +1305,51 @@ justification = "Third-party code"
         assert_eq!(result, Some("inline justification"));
     }
 
+    /// Test-local wrapper over `lang_parsing_substrate::dead_code_ranges`,
+    /// discarding the `reason` field for the tests that only care about spans.
+    fn dead_ranges(source: &str) -> Vec<(usize, usize)> {
+        lang_parsing_substrate::dead_code_ranges(source)
+            .into_iter()
+            .map(|r| (r.start_line, r.end_line))
+            .collect()
+    }
+
     #[test]
     fn test_dead_code_simple_if0() {
         let source = "int a;\n#if 0\nint dead;\nint dead2;\n#endif\nint b;\n";
-        let ranges = compute_dead_code_ranges(source);
-        // `#if 0` on line 2 through `#endif` on line 5 inclusive.
-        assert_eq!(ranges, vec![(2, 5)]);
+        // The dead span is the body between `#if 0` (line 2) and `#endif`
+        // (line 5) — the directive lines themselves aren't "dead code".
+        assert_eq!(dead_ranges(source), vec![(3, 4)]);
     }
 
     #[test]
     fn test_dead_code_ends_at_else() {
         // For `#if 0`, the `#else` branch IS compiled, so the dead region stops there.
         let source = "#if 0\ndead;\n#else\nlive;\n#endif\n";
-        let ranges = compute_dead_code_ranges(source);
-        assert_eq!(ranges, vec![(1, 3)]);
+        assert_eq!(dead_ranges(source), vec![(2, 2)]);
     }
 
     #[test]
     fn test_dead_code_nested_conditional() {
         // A nested `#if 1` inside `#if 0` must not terminate the outer dead block.
         let source = "#if 0\n#if 1\nstill_dead;\n#endif\nalso_dead;\n#endif\nlive;\n";
-        let ranges = compute_dead_code_ranges(source);
-        assert_eq!(ranges, vec![(1, 6)]);
+        assert_eq!(dead_ranges(source), vec![(2, 5)]);
     }
 
     #[test]
     fn test_dead_code_paren_zero() {
         let source = "#if (0)\ndead;\n#endif\n";
-        assert_eq!(compute_dead_code_ranges(source), vec![(1, 3)]);
+        assert_eq!(dead_ranges(source), vec![(2, 2)]);
         // A non-zero condition is not dead.
-        assert!(compute_dead_code_ranges("#if 1\nx;\n#endif\n").is_empty());
-        assert!(compute_dead_code_ranges("#if defined(X)\nx;\n#endif\n").is_empty());
+        assert!(dead_ranges("#if 1\nx;\n#endif\n").is_empty());
+        assert!(dead_ranges("#if defined(X)\nx;\n#endif\n").is_empty());
     }
 
     #[test]
     fn test_dead_code_ifdef_cplusplus() {
         // `#ifdef __cplusplus` then-branch is dead when compiling as C.
         let source = "#ifdef __cplusplus\nextern \"C\" {\n#endif\nint live(void);\n";
-        // Dead region is lines 1..=3 (the directive, the C++ line, the #endif).
-        assert_eq!(compute_dead_code_ranges(source), vec![(1, 3)]);
+        assert_eq!(dead_ranges(source), vec![(2, 2)]);
     }
 
     #[test]
@@ -1512,29 +1357,29 @@ justification = "Third-party code"
         // raylib/raymath operator block: `#if defined(__cplusplus) && !defined(X)`.
         let source =
             "#if defined(__cplusplus) && !defined(RAYMATH_DISABLE_CPP_OPERATORS)\nop();\n#endif\n";
-        assert_eq!(compute_dead_code_ranges(source), vec![(1, 3)]);
+        assert_eq!(dead_ranges(source), vec![(2, 2)]);
     }
 
     #[test]
     fn test_dead_code_ifndef_cplusplus_else_is_dead() {
         // `#ifndef __cplusplus`: then-branch is live (C), the `#else` is C++ dead.
         let source = "#ifndef __cplusplus\nc_code();\n#else\ncpp_code();\n#endif\n";
-        // Only the `#else`..`#endif` span (lines 3..=5) is dead.
-        assert_eq!(compute_dead_code_ranges(source), vec![(3, 5)]);
+        // Only the `cpp_code();` line (4) is dead.
+        assert_eq!(dead_ranges(source), vec![(4, 4)]);
     }
 
     #[test]
     fn test_dead_code_cplusplus_negation_not_dead_in_c() {
         // `#if !defined(__cplusplus)` then-branch is the C branch — live, not dead.
         let source = "#if !defined(__cplusplus)\nc_code();\n#endif\n";
-        assert!(compute_dead_code_ranges(source).is_empty());
+        assert!(dead_ranges(source).is_empty());
     }
 
     #[test]
     fn test_dead_code_cplusplus_disjunction_conservative() {
         // A disjunction can be true in C, so neither branch is provably dead.
         let source = "#if defined(__cplusplus) || defined(FORCE)\nx();\n#endif\n";
-        assert!(compute_dead_code_ranges(source).is_empty());
+        assert!(dead_ranges(source).is_empty());
     }
 
     #[test]
@@ -1544,12 +1389,39 @@ justification = "Third-party code"
         let source = "#ifdef __cplusplus\nextern \"C\" {\n#endif\n\
                       int real_c_code(int x);\n\
                       #ifdef __cplusplus\n}\n#endif\n";
-        let ranges = compute_dead_code_ranges(source);
+        let ranges = dead_ranges(source);
         // Line 4 (real_c_code) must be live.
         assert!(!ranges.iter().any(|&(s, e)| 4 >= s && 4 <= e));
         // The two guard regions are dead.
         assert!(ranges.iter().any(|&(s, e)| 2 >= s && 2 <= e));
         assert!(ranges.iter().any(|&(s, e)| 6 >= s && 6 <= e));
+    }
+
+    #[test]
+    fn test_dead_code_always_defined_macro_else_is_dead() {
+        // task 560: raylib's ExportFontAsCode gates on `SUPPORT_COMPRESSED_FONT_ATLAS`,
+        // unconditionally `#define`d earlier in the same file with no `#undef` —
+        // the `#else` branch is provably dead, not just the literal-`#if 0` case.
+        let source = "#define SUPPORT_COMPRESSED_FONT_ATLAS\n\
+                      #ifdef SUPPORT_COMPRESSED_FONT_ATLAS\nlive();\n#else\ndead();\n#endif\n";
+        assert_eq!(dead_ranges(source), vec![(5, 5)]);
+    }
+
+    #[test]
+    fn test_dead_code_never_defined_macro_commented_out() {
+        // A macro only ever mentioned as a commented-out `#define` is never
+        // validly defined in this file, so the `#ifdef` branch is dead.
+        let source = "// #define SUPPORT_FONT_DATA_COPY\n\
+                      #ifdef SUPPORT_FONT_DATA_COPY\ndead();\n#endif\n";
+        assert_eq!(dead_ranges(source), vec![(3, 3)]);
+    }
+
+    #[test]
+    fn test_dead_code_macro_never_mentioned_is_not_classified() {
+        // No local evidence either way (e.g. a build-system flag like _WIN32)
+        // — guessing would turn every such branch into a false positive.
+        let source = "#ifdef _WIN32\nmaybe_live();\n#endif\n";
+        assert!(dead_ranges(source).is_empty());
     }
 
     #[test]
