@@ -744,6 +744,17 @@ fn check_deref_read(
         None => return,
     };
 
+    // A static/thread-local pointer with no explicit initializer is
+    // zero-initialized (NULL) per C11 6.7.9p10 -- its value is determinate,
+    // just not what the programmer probably intended (the identifier-level
+    // check above already surfaces that as a softer "used without explicit
+    // initialization" note). Dereferencing it is a null-pointer-deref
+    // concern, not "uninitialized/indeterminate content" -- EXP33-C's own
+    // domain (task 459).
+    if info.is_static {
+        return;
+    }
+
     // Check both pointer and content state
     if info.state.is_unsafe() {
         // Pointer itself is uninitialized
@@ -847,6 +858,14 @@ fn check_subscript_read(
 
     // EXP33-C exception: unsigned char content reads are permitted
     if info.is_unsigned_char {
+        return;
+    }
+
+    // A static/thread-local array with no explicit initializer is
+    // zero-initialized per C11 6.7.9p10 -- its elements are determinate
+    // (just possibly not what the programmer intended), not indeterminate
+    // content the way an uninitialized auto array's would be (task 459).
+    if info.is_static {
         return;
     }
 
