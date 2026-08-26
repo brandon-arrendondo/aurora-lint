@@ -146,7 +146,21 @@ impl Mem10C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
-        // Look for if statements
+        // MEM10-C's actual concern (per CERT) is centralizing ad hoc, duplicated,
+        // or inconsistent pointer-validity checks into a shared validation
+        // function — not flagging every instance of the single, universally
+        // accepted early-return NULL-guard idiom (`if (ptr == NULL) return;`).
+        // A lone guard in a file is not evidence of duplication or
+        // inconsistency, so we gather every candidate ad hoc check across the
+        // whole translation unit first and only report them when there is
+        // actual evidence that a shared validator is warranted: either (a)
+        // the same ad hoc check idiom is repeated at multiple sites in the
+        // file, or (b) the file already defines a dedicated validation
+        // function elsewhere yet this site still does an ad hoc check instead
+        // of calling it (a genuine inconsistency).
+        let has_existing_validator = file_defines_validator_function(node, source);
+
+        let mut candidates: Vec<(Node, Node)> = Vec::new();
         for if_node in query::find_descendants_of_kind(*node, "if_statement") {
             if let Some(condition) = if_node.child_by_field_name("condition") {
                 // Check if this is a direct NULL comparison
@@ -166,28 +180,44 @@ impl Mem10C {
                                 && !is_param_used_after_if(&if_node, var_name, source)
                         });
                         if !suppress {
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                message: "Direct NULL check for pointer validation. \
-                                         Define and use a dedicated pointer validation function \
-                                         instead of ad-hoc NULL checks. This centralizes validation \
-                                         logic and allows platform-specific enhancements."
-                                    .to_string(),
-                                severity: self.severity(),
-                                line: condition.start_position().row + 1,
-                                column: condition.start_position().column + 1,
-                                file_path: String::new(),
-                                suggestion: Some(
-                                    "Create a validation function like 'int valid(void *ptr)' \
-                                     and use 'if (!valid(ptr))' instead of 'if (ptr == NULL)'"
-                                        .to_string(),
-                                ),
-                                requires_manual_review: Some(true),
-                            });
+                            candidates.push((if_node, condition));
                         }
                     }
                 }
             }
+        }
+
+        // Require real evidence before firing: either multiple ad hoc checks
+        // exist somewhere in the file (duplication), or a shared validator is
+        // already defined but bypassed at these sites (inconsistency). A
+        // single isolated guard in a file with no existing validator is the
+        // standard, accepted idiom and must not be flagged on its own.
+        if candidates.is_empty() {
+            return;
+        }
+        if candidates.len() < 2 && !has_existing_validator {
+            return;
+        }
+
+        for (_if_node, condition) in &candidates {
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                message: "Direct NULL check for pointer validation. \
+                         Define and use a dedicated pointer validation function \
+                         instead of ad-hoc NULL checks. This centralizes validation \
+                         logic and allows platform-specific enhancements."
+                    .to_string(),
+                severity: self.severity(),
+                line: condition.start_position().row + 1,
+                column: condition.start_position().column + 1,
+                file_path: String::new(),
+                suggestion: Some(
+                    "Create a validation function like 'int valid(void *ptr)' \
+                     and use 'if (!valid(ptr))' instead of 'if (ptr == NULL)'"
+                        .to_string(),
+                ),
+                requires_manual_review: Some(true),
+            });
         }
     }
 
@@ -500,6 +530,55 @@ fn is_param_used_after_if(if_node: &Node, var_name: &str, source: &str) -> bool 
         }
     }
 
+    false
+}
+
+/// Check whether the file already defines a dedicated pointer-validation
+/// function — i.e. a function whose entire body is a single `return`
+/// statement comparing its argument against NULL (or negating it), matching
+/// the "compliant" shape from CERT's own example:
+/// `int valid(void *ptr) { return ptr != NULL; }`.
+/// If such a function exists, any ad hoc NULL check elsewhere in the file is
+/// a real inconsistency (a shared validator was available but not used),
+/// which is stronger evidence than a lone guard on its own.
+fn file_defines_validator_function(root: &Node, source: &str) -> bool {
+    for func in query::find_descendants_of_kind(*root, "function_definition") {
+        let Some(body) = func.child_by_field_name("body") else {
+            continue;
+        };
+        if body.kind() != "compound_statement" {
+            continue;
+        }
+        // Collect the non-brace statements in the body.
+        let mut cursor = body.walk();
+        let statements: Vec<Node> = body
+            .children(&mut cursor)
+            .filter(|c| c.kind() != "{" && c.kind() != "}")
+            .collect();
+        if statements.len() != 1 {
+            continue;
+        }
+        let stmt = statements[0];
+        if stmt.kind() != "return_statement" {
+            continue;
+        }
+        // The return value should itself be a NULL comparison or negation,
+        // i.e. the function's only job is validity checking.
+        if let Some(value) = stmt.child(1) {
+            if value.kind() == "binary_expression" {
+                let text = get_node_text(&value, source);
+                if text.contains("NULL") {
+                    return true;
+                }
+            } else if value.kind() == "unary_expression" {
+                if let Some(op) = value.child_by_field_name("operator") {
+                    if get_node_text(&op, source) == "!" {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
     false
 }
 
