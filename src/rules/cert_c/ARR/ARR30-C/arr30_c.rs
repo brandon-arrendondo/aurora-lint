@@ -211,7 +211,7 @@ impl CertRule for Arr30C {
             // walks unbounded. Consumed by `check_overread_helper_callsite`.
             *self.helper_overread_summary.borrow_mut() =
                 Some(self.build_helper_overread_summary(node, source));
-            let buffer_info = self.analyze_buffer_allocations(source);
+            let mut buffer_info = self.analyze_buffer_allocations(source);
             let pointer_aliases = self.analyze_pointer_aliases(source, &buffer_info);
             // Task 389: the file-scope-only base each function's own buffer
             // tracking resets to in `check_with_buffer_info`'s
@@ -225,6 +225,31 @@ impl CertRule for Arr30C {
             // used by MEM30/EXP33/DCL31.
             let function_macros = collect_function_macros(node, source);
             let flexible_array_structs = self.find_flexible_array_structs(node, source);
+
+            // Task 554: a C99/struct-hack flexible array member's *declared*
+            // size (often a literal `[1]` or empty `[]`) is a placeholder --
+            // the real element count lives at whatever allocation reserves
+            // `sizeof(struct X) + n * sizeof(elem)`-style extra space for it
+            // (directly, or via a macro wrapping that expression). Once such
+            // an allocation is found anywhere in the file, stop treating the
+            // member's declared size as a hard bound: every access to it
+            // was, until now, checked against the placeholder size and
+            // flagged regardless of how the real (structurally correlated)
+            // count was proven safe elsewhere -- 0% TP across 4 real-world
+            // oracles (data/precision_audit/DELTA_ARR30_TASK537.md).
+            let variable_sized_flexible_members = self.find_variable_sized_flexible_members(
+                source,
+                &flexible_array_structs,
+                &function_macros,
+            );
+            for member in &variable_sized_flexible_members {
+                if let Some(buf) = buffer_info.get_mut(member) {
+                    buf.size = BufferSize::Unknown;
+                }
+                if let Some(buf) = self.global_scope_buffers.borrow_mut().get_mut(member) {
+                    buf.size = BufferSize::Unknown;
+                }
+            }
 
             // Collect macro/enum/const constants for loop bound resolution
             let macro_constants = self.collect_constants(node, source);
@@ -4758,6 +4783,111 @@ impl Arr30C {
         flexible_structs
     }
 
+    /// Of `flexible_array_structs` (struct name -> its trailing flexible/
+    /// struct-hack member name), return the member names whose owning
+    /// struct is allocated somewhere in the file with a
+    /// `sizeof(struct X) + N * sizeof(elem)`-style expression that reserves
+    /// *extra* space beyond the struct itself -- proof that the member's
+    /// real element count lives at the allocation site, not its declared
+    /// size (task 554). Both a direct literal-arithmetic size expression
+    /// and one hidden behind a file-local function-like macro (e.g. a
+    /// `SZ(n)` wrapper) are recognized: the macro case is resolved via
+    /// `macro_expand::expand_invocation` before pattern-matching, since
+    /// `buffer_size`'s parsers only ever see literal text.
+    fn find_variable_sized_flexible_members(
+        &self,
+        source: &str,
+        flexible_array_structs: &HashMap<String, String>,
+        function_macros: &HashMap<String, FunctionMacro>,
+    ) -> HashSet<String> {
+        let mut result = HashSet::new();
+        for (struct_name, member_name) in flexible_array_structs {
+            if Self::struct_has_variable_sized_alloc(source, struct_name, member_name)
+                || function_macros.values().any(|m| {
+                    Self::text_reserves_extra_space_for_struct(&m.body, struct_name, member_name)
+                })
+            {
+                result.insert(member_name.clone());
+            }
+        }
+        result
+    }
+
+    /// Does the file's source text (or, via the `function_macros` check in
+    /// `find_variable_sized_flexible_members`, a macro body) reserve extra
+    /// space for `struct_name`'s trailing flexible/struct-hack member
+    /// `member_name`, via either the `sizeof(struct struct_name) +
+    /// N*sizeof(elem)` idiom or the `offsetof(struct_name, member_name) +
+    /// N*sizeof(elem)` idiom (the latter is how real-world code -- e.g.
+    /// sqlite's FTS3/FTS5 code, task 537's corpus -- actually computes this
+    /// size, since it doesn't depend on the compiler's struct padding)?
+    ///
+    /// Deliberately a whole-file text scan rather than tracing the
+    /// allocation call's argument expression: the size computation is
+    /// commonly one indirection removed from the call itself (stored in a
+    /// local `nByte = sizeof(struct X) + n*sizeof(elem)` and only the local
+    /// passed to the allocator), or hidden entirely inside a `SZ(N)`-style
+    /// macro's *body* (checked separately against `function_macros`, since
+    /// the macro is usually defined once per struct and reused generically
+    /// without repeating the struct name at each call site). A pattern this
+    /// distinctive (`sizeof`/`offsetof` naming this exact struct, plus
+    /// extra arithmetic) essentially only ever appears in the
+    /// struct-hack-allocation context, so a plain text match is a safe,
+    /// low-risk proxy for "is this struct actually allocated this way
+    /// somewhere" without needing to prove the call site itself.
+    fn struct_has_variable_sized_alloc(source: &str, struct_name: &str, member_name: &str) -> bool {
+        Self::text_reserves_extra_space_for_struct(source, struct_name, member_name)
+    }
+
+    /// Does `text` contain `sizeof(struct_name)`/`sizeof(struct
+    /// struct_name)`, or `offsetof(struct_name, member_name)`, *plus*
+    /// additional arithmetic -- i.e. more than just the bare struct size or
+    /// bare offset, proving extra space was reserved for a trailing
+    /// flexible/struct-hack member? `offsetof` is the more common
+    /// real-world idiom (it doesn't depend on the compiler's struct
+    /// padding); `sizeof` is the simpler/older one.
+    fn text_reserves_extra_space_for_struct(
+        text: &str,
+        struct_name: &str,
+        member_name: &str,
+    ) -> bool {
+        let sizeof_pattern = format!(
+            r"sizeof\s*\(\s*(struct\s+)?{}\s*\)",
+            regex::escape(struct_name)
+        );
+        let offsetof_pattern = format!(
+            r"offsetof\s*\(\s*{}\s*,\s*{}\s*\)",
+            regex::escape(struct_name),
+            regex::escape(member_name)
+        );
+        for pattern in [&sizeof_pattern, &offsetof_pattern] {
+            let Ok(re) = regex::Regex::new(pattern) else {
+                continue;
+            };
+            for m in re.find_iter(text) {
+                // The bare match alone (modulo surrounding whitespace/
+                // parens on its own line/statement) just accounts for the
+                // struct itself -- no extra space. `+`/`*` immediately
+                // adjacent (outside the match) is the "+ N * sizeof(elem)"
+                // extra term that proves this is a struct-hack allocation.
+                let after = text[m.end()..].trim_start();
+                let before = text[..m.start()].trim_end();
+                let adjacent_op = |s: &str, front: bool| {
+                    let c = if front {
+                        s.chars().next()
+                    } else {
+                        s.chars().next_back()
+                    };
+                    matches!(c, Some('+') | Some('*'))
+                };
+                if adjacent_op(after, true) || adjacent_op(before, false) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Recursively collect structs with flexible array members
     fn collect_flexible_array_structs(
         &self,
@@ -4808,15 +4938,33 @@ impl Arr30C {
         if let Some(field) = last_field {
             let field_text = &source[field.start_byte()..field.end_byte()];
 
-            // Flexible array pattern: identifier[] with no size
-            if field_text.contains("[]") {
-                // Extract the identifier before []
-                // Pattern: type identifier[];
-                if let Some(bracket_pos) = field_text.rfind("[]") {
-                    let before_bracket = &field_text[..bracket_pos];
-                    // Find the last identifier before []
-                    if let Some(identifier) = before_bracket.split_whitespace().last() {
-                        return Some(identifier.trim_end_matches('[').to_string());
+            // Flexible array pattern: identifier[] with no size (C99);
+            // identifier[1] (the pre-C99 "struct hack" idiom -- a literal
+            // size of exactly 1 as the trailing field); or identifier[NAME]
+            // where NAME's own spelling names it as a flexible-array-size
+            // macro (e.g. sqlite's `FLEXARRAY`, which expands to nothing
+            // under C99 or `1` otherwise -- sqc has no preprocessor, so the
+            // bracket contents are seen as a bare, unresolved identifier
+            // either way). All three are the same "real size lives at the
+            // allocation site, not the declaration" pattern (task 554).
+            if let Some(open_pos) = field_text.rfind('[') {
+                if let Some(close_rel) = field_text[open_pos..].find(']') {
+                    let inside = field_text[open_pos + 1..open_pos + close_rel].trim();
+                    let is_flexible_size = inside.is_empty()
+                        || inside == "1"
+                        || (inside
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                            && inside
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                            && inside.to_ascii_uppercase().contains("FLEX"));
+                    if is_flexible_size {
+                        let before_bracket = &field_text[..open_pos];
+                        if let Some(identifier) = before_bracket.split_whitespace().last() {
+                            return Some(identifier.trim_end_matches('[').to_string());
+                        }
                     }
                 }
             }
