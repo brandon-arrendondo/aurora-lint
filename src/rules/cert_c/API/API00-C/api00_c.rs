@@ -57,12 +57,14 @@ use tree_sitter::Node;
 
 pub struct Api00C {
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    dispatch_table_callbacks: RefCell<HashSet<String>>,
 }
 
 impl Api00C {
     pub fn new() -> Self {
         Self {
             function_summaries: RefCell::new(HashMap::new()),
+            dispatch_table_callbacks: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -90,6 +92,7 @@ impl CertRule for Api00C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.dispatch_table_callbacks.borrow_mut() = context.dispatch_table_callbacks.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -110,6 +113,22 @@ impl Api00C {
     ) {
         // Skip static functions — API00-C is about public API contracts
         if Self::is_static_function(function_node, source) {
+            return;
+        }
+
+        // Skip dispatch-table-registered callbacks (task 594, extending task
+        // 169's internal-contract suppression): a non-static function whose
+        // name is registered as a bare value in an aggregate initializer
+        // (e.g. pure-ftpd's `{ "mysql", pw_mysql_parse, pw_mysql_check,
+        // pw_mysql_exit }` auth_list entry) and that is never invoked
+        // directly by name anywhere in the project is reachable only through
+        // the single indirect call site that walks that table. Its contract
+        // is established at registration the same way a directly-called
+        // internal helper's is — it isn't a public API entry point just
+        // because it can't be marked `static` (cross-TU visibility is
+        // required for the table to reference it).
+        let func_name = self.get_function_name(function_node, source);
+        if self.dispatch_table_callbacks.borrow().contains(&func_name) {
             return;
         }
 

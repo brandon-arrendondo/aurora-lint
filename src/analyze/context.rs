@@ -70,6 +70,18 @@ pub struct ProjectContext {
     /// different file than the struct (task 432).
     #[serde(default)]
     pub defined_macro_names: HashSet<String>,
+    /// Functions whose name appears as a bare value inside an aggregate
+    /// initializer (e.g. `{ "mysql", pw_mysql_parse, pw_mysql_check,
+    /// pw_mysql_exit }` or a designated `.check = pw_mysql_check`) — the
+    /// dispatch-table registration idiom used by callback-style backends
+    /// (auth/log/protocol handler tables) — and that are never invoked
+    /// through a direct-by-name `identifier(...)` call anywhere in the
+    /// project. Such a function is reachable only through the single
+    /// indirect call site that walks the table, so API00-C treats it like
+    /// a project-internal helper (task 594, extending task 169's
+    /// internal-contract suppression to the dispatch-table-callback shape).
+    #[serde(default)]
+    pub dispatch_table_callbacks: HashSet<String>,
 }
 
 impl ProjectContext {

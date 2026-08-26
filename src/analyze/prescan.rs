@@ -27,6 +27,7 @@ struct FilePrescanResult {
     packed_struct_candidates: Vec<(String, String)>,
     packed_macro_names: HashSet<String>,
     defined_macro_names: HashSet<String>,
+    initializer_function_refs: HashSet<String>,
     global_constants: HashMap<String, i64>,
     global_var_null_states: HashMap<String, NullState>,
     global_writers: HashMap<String, HashSet<String>>,
@@ -55,6 +56,7 @@ impl FilePrescanResult {
             packed_struct_candidates: Vec::new(),
             packed_macro_names: HashSet::new(),
             defined_macro_names: HashSet::new(),
+            initializer_function_refs: HashSet::new(),
             global_constants: HashMap::new(),
             global_var_null_states: HashMap::new(),
             global_writers: HashMap::new(),
@@ -91,6 +93,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         let root = tree.root_node();
 
         collect_function_names(&root, &source, &mut result.known_functions);
+        collect_initializer_function_refs(&root, &source, &mut result.initializer_function_refs);
 
         if is_header {
             collect_header_declarations(&root, &source, &mut result.header_declared_functions);
@@ -233,6 +236,7 @@ pub fn prescan_directories(
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
     let mut packed_macro_names: HashSet<String> = HashSet::new();
     let mut defined_macro_names: HashSet<String> = HashSet::new();
+    let mut initializer_function_refs: HashSet<String> = HashSet::new();
     let mut global_constants: HashMap<String, i64> = HashMap::new();
     let mut global_var_null_states: HashMap<String, NullState> = HashMap::new();
     let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
@@ -328,6 +332,7 @@ pub fn prescan_directories(
         packed_struct_candidates.extend(r.packed_struct_candidates);
         packed_macro_names.extend(r.packed_macro_names);
         defined_macro_names.extend(r.defined_macro_names);
+        initializer_function_refs.extend(r.initializer_function_refs);
         global_constants.extend(r.global_constants);
         global_var_null_states.extend(r.global_var_null_states);
 
@@ -437,6 +442,24 @@ pub fn prescan_directories(
         }
     }
 
+    // A function registered in a dispatch-table initializer (task 594's
+    // pattern: `{ ..., pw_mysql_check, ... }` / `.check = pw_mysql_check`)
+    // is treated as reachable only through that indirect call when it is
+    // never also invoked by a direct `identifier(...)` call anywhere in the
+    // project. Direct calls are tracked as call_graph edges (by name), so a
+    // single reverse-index pass over the callee sets tells them apart from
+    // a function that's both registered *and* called directly elsewhere
+    // (which keeps the normal API00-C validation path, since its contract
+    // isn't purely established at registration).
+    let directly_called: HashSet<&str> = call_graph
+        .values()
+        .flat_map(|callees| callees.iter().map(|s| s.as_str()))
+        .collect();
+    let dispatch_table_callbacks: HashSet<String> = initializer_function_refs
+        .into_iter()
+        .filter(|name| known_functions.contains(name) && !directly_called.contains(name.as_str()))
+        .collect();
+
     if let Some(reporter) = progress {
         reporter.report_prescan_complete(known_functions.len());
     }
@@ -455,6 +478,7 @@ pub fn prescan_directories(
         global_constants,
         global_var_null_states,
         global_writers,
+        dispatch_table_callbacks,
     })
 }
 
@@ -687,6 +711,50 @@ fn collect_function_names(node: &Node, source: &str, names: &mut HashSet<String>
                     collect_function_names(&child, source, names);
                 }
             }
+        }
+    }
+}
+
+/// Collect every bare identifier that appears as a value inside an
+/// `initializer_list` (aggregate initializer) anywhere in the tree — the
+/// dispatch-table registration idiom, e.g.
+/// `{ "mysql", pw_mysql_parse, pw_mysql_check, pw_mysql_exit }` or a
+/// designated `.check = pw_mysql_check`. A function's address decays
+/// implicitly from its bare name, so no `&` is needed for this to be a
+/// function-pointer registration.
+///
+/// This over-collects (a plain identifier constant sitting in a struct
+/// literal isn't necessarily a function), which is fine: the caller
+/// intersects the result against `known_functions` before treating a name
+/// as a registered callback (task 594).
+fn collect_initializer_function_refs(node: &Node, source: &str, out: &mut HashSet<String>) {
+    if node.kind() == "initializer_list" {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "identifier" => {
+                    if let Ok(name) = child.utf8_text(source.as_bytes()) {
+                        out.insert(name.to_string());
+                    }
+                }
+                "initializer_pair" => {
+                    // Designated initializer: `.field = value` or `[idx] = value`.
+                    if let Some(value) = child.child_by_field_name("value") {
+                        if value.kind() == "identifier" {
+                            if let Ok(name) = value.utf8_text(source.as_bytes()) {
+                                out.insert(name.to_string());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_initializer_function_refs(&child, source, out);
         }
     }
 }
