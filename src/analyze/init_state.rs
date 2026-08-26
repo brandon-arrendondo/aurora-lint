@@ -195,7 +195,15 @@ pub fn match_initializing_function(func_name: &str) -> Option<&'static str> {
     if let Some(&entry) = INITIALIZING_FUNCTIONS.iter().find(|&&e| e == func_name) {
         return Some(entry);
     }
-    // Suffix match: os_memset → memset, wp_memcpy → memcpy, etc.
+    // Suffix match: os_memset → memset, wp_memcpy → memcpy, etc. This
+    // assumes the matched wrapper keeps the same argument order as the
+    // libc function it's named after -- true for the vast majority of
+    // suffix wrappers, but NOT for sqlite3_snprintf, whose destination
+    // buffer is argument 1 (size is argument 0), unlike libc snprintf's
+    // dest-at-0. That's why it's an exact INITIALIZING_FUNCTIONS entry
+    // above (task 458) rather than falling through to this suffix match,
+    // which would otherwise resolve it to plain "snprintf" and get its
+    // destination argument index wrong.
     INITIALIZER_SUFFIXES
         .iter()
         .find(|&&suffix| func_name.len() > suffix.len() && func_name.ends_with(suffix))
@@ -211,6 +219,13 @@ pub const INITIALIZING_FUNCTIONS: &[&str] = &[
     "strncpy",
     "sprintf",
     "snprintf",
+    // sqlite3_snprintf(size, dest, fmt, ...) puts its destination buffer at
+    // argument 1 (size at 0) -- the reverse of libc snprintf(dest, size,
+    // fmt, ...). Listed here as its own exact entry (task 458) so it never
+    // falls through INITIALIZER_SUFFIXES' generic "ends with snprintf"
+    // match, which would canonicalize it to plain "snprintf" and get
+    // get_output_arg_indices' answer backwards.
+    "sqlite3_snprintf",
     "fgets",
     "fread",
     "read",
@@ -252,6 +267,10 @@ pub fn get_output_arg_indices(func_name: &str) -> Vec<usize> {
     match func_name {
         "memset" | "memcpy" | "memmove" | "strcpy" | "strncpy" | "sprintf" | "snprintf"
         | "strcat" | "strncat" | "bzero" => vec![0],
+        // sqlite3_snprintf(size, dest, fmt, ...) — dest is argument 1, not 0
+        // (task 458). Must be its own case: the generic "snprintf" arm above
+        // is for libc's dest-at-0 order and would get this backwards.
+        "sqlite3_snprintf" => vec![1],
         "fgets" | "gets" => vec![0],
         "fread" => vec![0],
         // `read(fd, buf, count)`/`recv(sockfd, buf, len, flags)`: the
