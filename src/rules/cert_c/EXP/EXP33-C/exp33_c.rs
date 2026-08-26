@@ -571,7 +571,7 @@ fn check_identifier_read(
     }
 
     // Skip if this is NOT a read context
-    if !is_read_context(node, source) {
+    if !is_read_context(node, source, &config.cross_file_output_params) {
         return;
     }
 
@@ -917,7 +917,11 @@ fn is_in_asm_call(node: &Node, source: &str) -> bool {
     false
 }
 
-fn is_read_context(node: &Node, source: &str) -> bool {
+fn is_read_context(
+    node: &Node,
+    source: &str,
+    cross_file_output_params: &HashMap<String, HashSet<usize>>,
+) -> bool {
     // GNU asm is opaque to uninitialized analysis, and tree-sitter-c misparses
     // the __asm(...) / __ASM(...) call forms differently across grammar
     // versions. Any identifier inside such an asm-keyword call is asm-related,
@@ -982,7 +986,7 @@ fn is_read_context(node: &Node, source: &str) -> bool {
             if is_misparsed_asm_output_operand(&parent, source) {
                 return false;
             }
-            is_read_in_argument_list(node, &parent, source)
+            is_read_in_argument_list(node, &parent, source, cross_file_output_params)
         }
         // Return statement — reading
         "return_statement" => true,
@@ -1154,7 +1158,12 @@ fn is_misparsed_asm_output_operand(arg_list: &Node, source: &str) -> bool {
 }
 
 /// Check if an identifier in an argument_list is being read (vs. being an output arg).
-fn is_read_in_argument_list(node: &Node, arg_list: &Node, source: &str) -> bool {
+fn is_read_in_argument_list(
+    node: &Node,
+    arg_list: &Node,
+    source: &str,
+    cross_file_output_params: &HashMap<String, HashSet<usize>>,
+) -> bool {
     // Find the parent call_expression
     let call_expr = match arg_list.parent() {
         Some(c) if c.kind() == "call_expression" => c,
@@ -1188,17 +1197,28 @@ fn is_read_in_argument_list(node: &Node, arg_list: &Node, source: &str) -> bool 
     }
 
     // Check if this is a known initializing function (exact or suffix match)
-    let base_name = match init_state::match_initializing_function(&func_name) {
-        Some(name) => name,
+    let output_indices: HashSet<usize> = match init_state::match_initializing_function(&func_name) {
+        Some(base_name) => init_state::get_output_arg_indices(base_name)
+            .into_iter()
+            .collect(),
         None => {
-            // For unknown functions, check if the identifier is passed by name
-            // (arrays passed by name to unknown functions are assumed initialized)
-            return true;
+            // Not a built-in-registry initializer. Fall back to whether a
+            // (same-file or cross-file) FunctionSummary found this function
+            // writes through one of its pointer params (task 456) —
+            // e.g. eloop_sock_table_set_fds(table, fd_set *fds) writing
+            // `fds` via FD_ZERO/FD_SET. Without this, a bare pointer
+            // variable passed by value (not `&var`, not an array) to such a
+            // function was always treated as a read here, regardless of
+            // what process_unknown_function_call's state transfer decided
+            // afterward — the finding fires at the call site itself, before
+            // any post-call state update is even consulted.
+            match cross_file_output_params.get(&func_name) {
+                Some(indices) if !indices.is_empty() => indices.clone(),
+                _ => return true,
+            }
         }
     };
 
-    // Determine which argument position this identifier is at
-    let output_indices = init_state::get_output_arg_indices(base_name);
     if output_indices.is_empty() {
         return true; // No output args — this is a read
     }

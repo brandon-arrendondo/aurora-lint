@@ -1054,6 +1054,7 @@ fn analyze_param_usage(
         // line, mirroring ARR00-C's own write-vs-read line scan.
         if body_text.contains(&format!("*{} =", param_name))
             || line_has_arrow_or_subscript_write(body_text, param_name)
+            || is_fd_set_macro_write(body, source, param_name)
         {
             summary.modifies_params.insert(idx);
         }
@@ -1077,6 +1078,44 @@ fn analyze_param_usage(
     // free((*param)->field) (the double-pointer-deref idiom used by
     // `void destroy(T **param)` style destructors).
     collect_frees_param_fields(body, source, params, function_macros, summary);
+}
+
+/// POSIX fd_set macros (`FD_ZERO`, `FD_SET`, `FD_CLR`) write through their
+/// `fd_set *` argument -- the sole arg for `FD_ZERO`, the last arg for
+/// `FD_SET`/`FD_CLR` -- but they're opaque system macros sqc's
+/// macro-expansion engine never sees a definition for, so the arrow/subscript
+/// text scan above can't see the write either (task 456; hostap's
+/// `eloop_sock_table_set_fds(struct eloop_sock_table *table, fd_set *fds)`
+/// writes its `fds` param purely through `FD_ZERO(fds)`/`FD_SET(sock, fds)`,
+/// leaving `fds` looking never-written to callers passing a malloc'd
+/// `fd_set *` bare, e.g. `eloop_sock_table_set_fds(&eloop.readers, rfds)`).
+fn is_fd_set_macro_write(body: &Node, source: &str, param_name: &str) -> bool {
+    use lang_parsing_substrate::query;
+
+    for call in query::find_descendants_of_kind(*body, "call_expression") {
+        let Some(func) = call.child_by_field_name("function") else {
+            continue;
+        };
+        if func.kind() != "identifier" {
+            continue;
+        }
+        if !matches!(
+            query::node_text(func, source.as_bytes()),
+            "FD_ZERO" | "FD_SET" | "FD_CLR"
+        ) {
+            continue;
+        }
+        let Some(args) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let mut cursor = args.walk();
+        let real: Vec<Node> = args.named_children(&mut cursor).collect();
+        let Some(last) = real.last() else { continue };
+        if last.kind() == "identifier" && query::node_text(*last, source.as_bytes()) == param_name {
+            return true;
+        }
+    }
+    false
 }
 
 /// True if `body` calls `fclose`/`close`/`CloseHandle` with `param_name` as
