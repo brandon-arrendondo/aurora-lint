@@ -218,12 +218,23 @@ grep -n "SqC v0\.4\.[0-9]*" paper/sqc.tex   # find the pinned comparison-table v
 grep -m1 "^version" Cargo.toml             # current version
 ```
 
-Baseline 2026-08-26: comparison table pinned to **v0.4.116**, current repo
-**v0.4.267** — a ~150-version gap, and *not* touched by the routine paper
-refreshes (task #533 explicitly left it out of scope: re-running it
-requires re-executing all 4 external tools, not a number swap). Report the
-gap every week; it will only close via a deliberate re-run task, not
-incidentally. Flag if this becomes the long-pole item before submission.
+Baseline 2026-08-26 (pre-refresh): comparison table pinned to **v0.4.116**,
+current repo **v0.4.267** — a ~150-version gap, and *not* touched by the
+routine paper refreshes (task #533 explicitly left it out of scope:
+re-running it requires re-executing all 4 external tools, not a number
+swap). Report the gap every week; it will only close via a deliberate
+re-run task, not incidentally. Flag if this becomes the long-pole item
+before submission.
+
+**Updated 2026-08-26 (same day, commit 98be5e2f):** re-ran Juliet at
+current HEAD (v0.4.271, `sqc-0.4.271-bf75fcaa`, 79/79 CWEs) and refreshed
+SqC's column + overall stats + prose in `tab:competitor`. cppcheck/
+clang-tidy/Infer/Frama-C columns still held fixed (unchanged from the
+original study, per the table's own footnote — that part of the gap is
+permanent by design, not drift). SqC's overall TP rate on the 15
+overlapping CWEs moved 79.5% → 82.6%; no row's winner flipped. Next
+refresh should re-check the version gap again from v0.4.271, not
+v0.4.116.
 
 ### 5.5 Runtime / performance
 
@@ -282,7 +293,7 @@ Capability trend:
   5.1 precision/recall     — improving (real-world 6.2%/91.7% -> 16.6%/97.4%; Juliet TP 83.8% -> 87.7%, still climbing)
   5.2 rule coverage         — flat (305 enabled / 311 implemented, unchanged 1 month since 2026-07-26)
   5.3 benchmark breadth     — improving (real-world set 7 -> 9 projects; run-to-citation lag 2 days, healthy)
-  5.4 vs-other-tools claims — stale (comparison table pinned v0.4.116 vs current v0.4.267, ~150 versions, untouched by design)
+  5.4 vs-other-tools claims — refreshed 2026-08-26 (v0.4.116 -> v0.4.271; overall TP rate 79.5% -> 82.6%, no row flipped; competitor columns still held fixed by design)
   5.5 runtime               — unavailable (data/benchmarks.db empty on this machine, last checked 2026-08-26)
 ```
 
