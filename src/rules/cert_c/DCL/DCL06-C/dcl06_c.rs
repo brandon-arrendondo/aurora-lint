@@ -184,9 +184,12 @@ impl Dcl06C {
 
                     // Determine context
                     let context = self.get_literal_context(&n);
+                    let operator = self.get_binary_operator(&n, source);
 
                     // Only track literals in suspicious contexts
-                    if self.is_suspicious_context(&context) {
+                    if self.is_suspicious_context(&context)
+                        && !self.is_well_known_idiom(&value, &operator)
+                    {
                         let info = LiteralInfo {
                             value: value.clone(),
                             line: n.start_position().row + 1,
@@ -271,6 +274,57 @@ impl Dcl06C {
     /// Check if context is suspicious for magic numbers
     fn is_suspicious_context(&self, context: &str) -> bool {
         matches!(context, "comparison" | "function_argument")
+    }
+
+    /// If `node` is a direct operand of a `binary_expression`, return the text of
+    /// that expression's operator (e.g. "<<", "&", "*", "<="). Empty string otherwise.
+    fn get_binary_operator(&self, node: &Node, source: &str) -> String {
+        node.parent()
+            .filter(|p| p.kind() == "binary_expression")
+            .and_then(|p| p.child_by_field_name("operator"))
+            .map(|op| get_node_text(&op, source).to_string())
+            .unwrap_or_default()
+    }
+
+    /// Narrow, context-gated exemptions for well-known numeric idioms that don't
+    /// obscure intent even though they're "magic numbers" in the literal sense.
+    /// Each exemption is gated on BOTH the literal's normalized value AND the
+    /// specific operator it's an operand of, so these values are still flagged
+    /// everywhere else (e.g. `8` in an unrelated comparison is not exempted).
+    fn is_well_known_idiom(&self, value: &str, operator: &str) -> bool {
+        let normalized = Self::normalize_int_literal(value);
+
+        match normalized.as_str() {
+            // Byte-shift widths: standard byte-packing/unpacking idiom, e.g.
+            // `(a << 24) | (b << 16) | (c << 8) | d` for IPv4 octet packing.
+            "8" | "16" | "24" => operator == "<<" || operator == ">>",
+            // 0xff as a byte mask: `x & 0xff`, `(x >> 8) & 0xff`, etc.
+            "255" => operator == "&",
+            // 1024 / KB-MB conversion factor: `size / 1024`, `n * 1024 * 1024UL`.
+            "1024" => operator == "*" || operator == "/",
+            // 65535: well-known max TCP port / max uint16, in a bounds check.
+            "65535" => matches!(operator, "<" | "<=" | ">" | ">=" | "==" | "!="),
+            _ => false,
+        }
+    }
+
+    /// Normalize an integer literal's text to its decimal value for comparison
+    /// against well-known idiom constants, stripping unsigned/long suffixes and
+    /// resolving hex form (e.g. "0xff", "0XFF", "255UL" all normalize to "255").
+    fn normalize_int_literal(value: &str) -> String {
+        let trimmed = value.trim();
+        let stripped = trimmed.trim_end_matches(['u', 'U', 'l', 'L']);
+
+        if let Some(hex) = stripped
+            .strip_prefix("0x")
+            .or_else(|| stripped.strip_prefix("0X"))
+        {
+            if let Ok(n) = u64::from_str_radix(hex, 16) {
+                return n.to_string();
+            }
+        }
+
+        stripped.to_string()
     }
 
     /// Check if a literal value is acceptable (common non-magic values)
