@@ -80,6 +80,20 @@ impl Arr02C {
                 continue;
             }
 
+            // Skip K&R-style old-style parameter declarations. tree-sitter-c
+            // parses `int f(arr) int arr[]; { ... }` with the parameter
+            // declaration as a plain `declaration` node whose parent is the
+            // `function_definition` itself (not a `compound_statement`).
+            // These are array-typed function PARAMETERS — which C always
+            // adjusts to pointer type (C11 §6.7.6.3p7) — not array object
+            // declarations, so they're out of scope for this rule.
+            if n.parent()
+                .map(|p| p.kind() == "function_definition")
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
             // Check if this declaration has an initializer
             if let Some(declarator) = n.child_by_field_name("declarator") {
                 self.check_declarator(&declarator, source, violations);
@@ -91,21 +105,16 @@ impl Arr02C {
     fn check_declarator(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         match node.kind() {
             "init_declarator" => {
-                // This has an initializer, check the declarator part
+                // Any initializer — a brace initializer list (`{1, 2, 3}`,
+                // including designated initializers) or a string literal
+                // (`= "Hello"`) — makes the array bound well-defined per
+                // C11 §6.7.9p22: the size is inferred from the greatest
+                // element index/subscript actually used. This is standard,
+                // unambiguous C, not the "unspecified/ambiguous bound" case
+                // ARR02-C targets, so it's not checked for implicit bounds.
                 if let Some(declarator) = node.child_by_field_name("declarator") {
-                    // Skip implicit bounds check when initializer is a string literal
-                    // (or concatenated_string). const char name[] = "..." is standard C
-                    // and the compiler determines the size from the initializer.
-                    let has_string_init = node
-                        .child_by_field_name("value")
-                        .map(|v| v.kind() == "string_literal" || v.kind() == "concatenated_string")
-                        .unwrap_or(false);
-
-                    if !has_string_init {
-                        self.check_array_declarator(&declarator, source, violations);
-                    }
-
-                    // Also check if initializer has too many elements
+                    // Still check if the initializer has too many elements
+                    // for an explicitly-declared size.
                     if let Some(value) = node.child_by_field_name("value") {
                         self.check_initializer_size(&declarator, &value, source, violations);
                     }
@@ -113,6 +122,13 @@ impl Arr02C {
             }
             "array_declarator" => {
                 self.check_array_declarator(node, source, violations);
+            }
+            "parameter_declaration" => {
+                // Array-typed function parameters (e.g. `void f(int arr[])`)
+                // are adjusted to pointer type by C (C11 §6.7.6.3p7) — they
+                // are not array OBJECT declarations, so an omitted bound
+                // here is neither unspecified nor ambiguous; it's simply
+                // irrelevant. Do not recurse into parameter lists.
             }
             _ => {
                 // Recursively check children
