@@ -217,6 +217,14 @@ impl Exp39C {
         struct_field_ptrs: &mut HashSet<String>,
         union_vars: &mut HashSet<String>,
     ) {
+        // Function parameters are declared types too (e.g. `const void
+        // *srcPtr`), but they live in a `parameter_declaration` inside the
+        // function's `function_declarator`, not in a `declaration` node
+        // scanned below. Without this, any cast of an unmatched parameter
+        // identifier fell through to `infer_type_from_name`'s naming-based
+        // guess and could silently default to "int" (task 569).
+        self.collect_parameter_types(node, source, var_types);
+
         for descendant in query::find_descendants_of_kinds(
             *node,
             &["declaration", "assignment_expression", "init_declarator"],
@@ -235,6 +243,76 @@ impl Exp39C {
                     self.check_struct_field_ptr_init(&descendant, source, struct_field_ptrs);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Collect declared types for a function's parameters (e.g. `void
+    /// f(const void *srcPtr, unsigned short *dst)`), so casts of a
+    /// parameter identifier resolve to its real declared type instead of
+    /// falling through to the naming-based `infer_type_from_name` heuristic.
+    fn collect_parameter_types(
+        &self,
+        func_node: &Node,
+        source: &str,
+        var_types: &mut HashMap<String, VarTypeInfo>,
+    ) {
+        for declarator in query::find_descendants_of_kind(*func_node, "function_declarator") {
+            let Some(params) = declarator.child_by_field_name("parameters") else {
+                continue;
+            };
+            for i in 0..params.child_count() {
+                let Some(param) = params.child(i) else {
+                    continue;
+                };
+                if param.kind() != "parameter_declaration" {
+                    continue;
+                }
+
+                // Base type: same shape as a `declaration` node - the type
+                // specifier is a direct child, not a named field.
+                let mut base_type = String::new();
+                for j in 0..param.child_count() {
+                    if let Some(child) = param.child(j) {
+                        match child.kind() {
+                            "primitive_type" | "sized_type_specifier" | "type_identifier" => {
+                                base_type = get_node_text(&child, source).trim().to_string();
+                                break;
+                            }
+                            "struct_specifier" => {
+                                base_type = get_node_text(&child, source).trim().to_string();
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if base_type.is_empty() {
+                    continue;
+                }
+
+                let Some(name) = self.find_var_name(&param, source) else {
+                    continue;
+                };
+
+                let declarator_node = param.child_by_field_name("declarator");
+                let is_array = declarator_node
+                    .map(|d| {
+                        d.kind() == "array_declarator" || get_node_text(&d, source).contains('[')
+                    })
+                    .unwrap_or(false);
+                let array_dimensions = declarator_node
+                    .map(|d| self.extract_array_dimensions(&d, source))
+                    .unwrap_or_default();
+
+                // Do not clobber a more specific local shadow already
+                // collected for this scope (parameters are visited first,
+                // so this only matters if a caller ever reorders).
+                var_types.entry(name).or_insert(VarTypeInfo {
+                    base_type,
+                    is_array,
+                    array_dimensions,
+                });
             }
         }
     }
@@ -761,7 +839,17 @@ impl Exp39C {
     }
 
     fn infer_type_from_name(&self, name: &str) -> Option<String> {
-        // Heuristic: try to infer type from variable naming conventions
+        // Heuristic: try to infer type from variable naming conventions.
+        // This only runs once `var_types` (which now includes function
+        // parameters, see `collect_parameter_types`) has already failed to
+        // resolve the identifier. Falling back to a concrete guess (e.g.
+        // defaulting unmatched names to "int") fabricates a type the source
+        // never declared and manufactures false-confidence violations
+        // (task 569: raylib's `GetPixelColor` parameter went unmatched and
+        // was silently treated as `int`, producing 31/31 FPs). When no
+        // naming convention matches, return `None` (unknown type) so the
+        // caller treats the cast as unanalyzable rather than firing on a
+        // fabricated type.
         let lower_name = name.to_lowercase();
 
         if lower_name.starts_with('f') || lower_name.contains("float") {
@@ -775,8 +863,7 @@ impl Exp39C {
         } else if lower_name.starts_with('l') && lower_name.contains("long") {
             Some("long".to_string())
         } else {
-            // Default to int for most cases
-            Some("int".to_string())
+            None
         }
     }
 
