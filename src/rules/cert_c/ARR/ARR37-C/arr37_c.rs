@@ -588,8 +588,17 @@ impl NonArrayPointerAnalyzer {
                 let var_type = self.analyze_initializer_type(&right, source);
                 self.variable_types.insert(var_name.clone(), var_type);
 
-                // Check for struct member pointer assignment
-                if right.kind() == "unary_expression" {
+                // Check for struct member pointer assignment (`x = &s.field;`
+                // only — must confirm the operator is actually `&`, not
+                // `-`/`!`/`~`, for the same reason as analyze_initializer_type
+                // above; otherwise `x = -s.field;` would wrongly mark `x` as
+                // a struct-member pointer).
+                if right.kind() == "unary_expression"
+                    && right
+                        .child_by_field_name("operator")
+                        .map(|op| &source[op.start_byte()..op.end_byte()] == "&")
+                        .unwrap_or(false)
+                {
                     if let Some(argument) = right.child_by_field_name("argument") {
                         if argument.kind() == "field_expression" {
                             self.struct_member_pointers
@@ -652,8 +661,21 @@ impl NonArrayPointerAnalyzer {
                 }
             }
             "unary_expression" | "pointer_expression" => {
-                // Handle &array, &variable patterns
-                // pointer_expression is used by tree-sitter for address-of operations
+                // Handle &array, &variable patterns.
+                // `pointer_expression` is tree-sitter-c's node kind for
+                // address-of (`&x`); `unary_expression` covers `-x`, `+x`,
+                // `!x`, `~x` too. Only the `&` operator produces a pointer —
+                // treating every unary_expression as address-of (regardless
+                // of operator) mistakenly classified plain arithmetic like
+                // `e = -e;` as `&e`, marking a non-pointer int as NonArray
+                // and causing ARR37-C to misfire on it (task 556).
+                let is_address_of = node
+                    .child_by_field_name("operator")
+                    .map(|op| &source[op.start_byte()..op.end_byte()] == "&")
+                    .unwrap_or(false);
+                if !is_address_of {
+                    return VariableType::Unknown;
+                }
                 if let Some(argument) = node.child_by_field_name("argument") {
                     match argument.kind() {
                         "identifier" => VariableType::NonArray,           // &variable
