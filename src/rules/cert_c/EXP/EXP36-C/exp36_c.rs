@@ -388,6 +388,18 @@ impl Exp36C {
         if let Some(declarator) = node.child_by_field_name("declarator") {
             let var_type = self.extract_pointer_type_from_declarator(&declarator, source);
 
+            // EXP36-C is about alignment-increasing conversions into a
+            // pointer variable. If the declarator isn't actually a pointer
+            // (e.g. `int res = some_call(...)`), there's no pointer target
+            // type at all, so `check_void_pointer_conversion` would compare
+            // a call argument's alignment against an unrelated scalar type
+            // and fabricate a violation (sqlite whereexpr.c:1532 -- `int
+            // res = isAuxiliaryVtabOperator(...)` was flagged this way with
+            // no pointer cast anywhere in the statement).
+            if !var_type.contains('*') {
+                return;
+            }
+
             // Get the value being assigned (often a function call)
             if let Some(value) = node.child_by_field_name("value") {
                 if value.kind() == "call_expression" {
@@ -608,6 +620,30 @@ impl Exp36C {
         None
     }
 
+    /// Normalize a type string for alignment-table lookup: strip `const`/
+    /// `volatile` qualifiers (wherever they appear, e.g. `const uint8_t *`
+    /// or `unsigned char * const`) and collapse whitespace so `uint8_t*`,
+    /// `uint8_t *`, and `uint8_t  *` all normalize to the same lookup key.
+    /// Without this, a qualified target type like `const uint8_t *` never
+    /// matched the map's `"uint8_t *"` entry, silently fell through to the
+    /// "pointer type not in map -> assume 4-byte alignment" default, and
+    /// fabricated an alignment mismatch for byte-sized types (task 572).
+    fn normalize_type_for_alignment_lookup(&self, type_str: &str) -> String {
+        let trimmed = type_str.trim();
+        let is_pointer = trimmed.ends_with('*');
+        let base = trimmed.trim_end_matches('*').trim();
+        let words: Vec<&str> = base
+            .split_whitespace()
+            .filter(|w| *w != "const" && *w != "volatile")
+            .collect();
+        let base_norm = words.join(" ");
+        if is_pointer {
+            format!("{} *", base_norm)
+        } else {
+            base_norm
+        }
+    }
+
     /// Get alignment requirements for a type
     /// Returns alignment in bytes
     fn get_type_alignment(&self, type_str: &str) -> usize {
@@ -647,10 +683,10 @@ impl Exp36C {
         .cloned()
         .collect();
 
-        let normalized = type_str.trim();
+        let normalized = self.normalize_type_for_alignment_lookup(type_str);
 
         // Check for exact match
-        if let Some(&alignment) = alignments.get(normalized) {
+        if let Some(&alignment) = alignments.get(normalized.as_str()) {
             return alignment;
         }
 
