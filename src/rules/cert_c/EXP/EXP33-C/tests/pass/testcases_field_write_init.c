@@ -35,3 +35,16 @@ void test_malloc_subscript_field_write(void)
     arr[0].b = 0;
     free(arr);
 }
+
+typedef union { char a[8]; int i; } ByteBuf;
+
+/* Pattern 4: field+subscript write (sqlite's util.c sqlite3Int64ToText
+ * pattern) — the base 'u' is not read just because one element of its
+ * array member is being written through. */
+void test_field_subscript_write(int idx)
+{
+    ByteBuf u;
+    int i = idx;
+    u.a[i] = 0;   /* write through field+subscript — 'u' is not read */
+    printf("%d\n", u.i);
+}

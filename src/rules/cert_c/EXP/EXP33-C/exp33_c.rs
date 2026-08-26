@@ -1108,7 +1108,14 @@ fn is_read_in_pointer_expression(parent: &Node, source: &str) -> bool {
 fn is_read_in_field_expression(parent: &Node) -> bool {
     let mut outer = *parent;
     while let Some(next) = outer.parent() {
-        if next.kind() != "field_expression" {
+        // `obj.field[i] = val` / `obj.field[i].g[j] = val` — the assignment's
+        // LHS is the subscript_expression wrapping the field access, not the
+        // field access itself. Keep rebasing `outer` through subscript and
+        // field wrapping (mirrors is_subscript_read_context's walk in the
+        // other direction) so the assignment-LHS check below compares
+        // against the actual outermost lvalue node, not just the last
+        // field_expression seen.
+        if next.kind() != "field_expression" && next.kind() != "subscript_expression" {
             break;
         }
         outer = next;
@@ -1122,7 +1129,7 @@ fn is_read_in_field_expression(parent: &Node) -> bool {
     let Some(left) = grandparent.child_by_field_name("left") else {
         return true;
     };
-    left.id() != outer.id() // obj.field = val — obj is not "read"
+    left.id() != outer.id() // obj.field = val / obj.field[i] = val — obj is not "read"
 }
 
 /// `__asm("..." : "=r"(var) ...)` is misparsed by tree-sitter as
