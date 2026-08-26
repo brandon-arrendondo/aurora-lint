@@ -425,6 +425,7 @@ fn check_call_expression_cfg(
     if function.kind() == "identifier" {
         let func_name = ast_utils::get_node_text_owned(&function, source);
         if !reported_vars.contains(&func_name)
+            && !is_provably_not_a_pointer(&function, &func_name, source)
             && is_unsafe_at(&func_name, node, source, analysis, cfg, body, summaries)
         {
             reported_vars.insert(func_name.clone());
@@ -494,6 +495,7 @@ fn check_function_arguments_cfg(
             if arg.kind() == "identifier" {
                 let var_name = ast_utils::get_node_text_owned(&arg, source);
                 if !reported_vars.contains(&var_name)
+                    && !is_provably_not_a_pointer(&arg, &var_name, source)
                     && is_unsafe_at(&var_name, &arg, source, analysis, cfg, body, summaries)
                 {
                     reported_vars.insert(var_name.clone());
@@ -545,6 +547,10 @@ fn check_callsite_null_args(
 
             if arg.kind() == "identifier" {
                 let var_name = ast_utils::get_node_text_owned(&arg, source);
+                if is_provably_not_a_pointer(&arg, &var_name, source) {
+                    param_idx += 1;
+                    continue;
+                }
                 let state = null_state::get_var_state_at(
                     analysis,
                     cfg,
@@ -600,6 +606,8 @@ fn check_callsite_null_args(
 /// - C standard: `free(NULL)` (C11 7.22.3.3) and `realloc(NULL, n)` (C11 7.22.3.5)
 ///   are defined as no-op / equivalent-to-malloc.
 /// - Juliet test harness print helpers (null-tolerant stubs).
+/// - SQLite's own documented NULL-safe C-API surface (see
+///   `is_sqlite_null_safe_api` below for the rationale and citations).
 fn is_null_safe_function(name: &str) -> bool {
     matches!(
         name,
@@ -617,7 +625,173 @@ fn is_null_safe_function(name: &str) -> bool {
             | "printDoubleLine"
             | "printSizeTLine"
             | "printHexUnsignedCharLine"
-    )
+    ) || is_sqlite_null_safe_api(name)
+}
+
+/// SQLite's own C-API functions that are documented and implementation-verified
+/// (vdbeapi.c / printf.c) to tolerate a NULL or misused `sqlite3_stmt *` /
+/// pointer argument without dereferencing it unsafely (task 559, delta-adjudication
+/// in `data/precision_audit/DELTA_EXP34_TASK539.md`):
+///
+/// - `sqlite3_column_*` / `sqlite3_bind_*`: per the SQLite docs, "The pointer to
+///   [a destroyed] statement or with any other pointer used as a placeholder,
+///   these routines... behave as if [the argument] is a null pointer" — i.e.
+///   documented no-op/safe-return on a NULL or invalidated statement handle.
+/// - `sqlite3_step`, `sqlite3_sql`, `sqlite3_stmt_readonly`: all documented
+///   NULL-safe on a NULL/misused `stmt` (return an error code or NULL rather
+///   than dereferencing).
+/// - `sqlite3_mprintf`: its `%s` conversion substitutes `""` for a NULL
+///   argument (confirmed in `printf.c`), so a NULL flowing into it is not a
+///   dereference risk.
+///
+/// This is a narrow, named allowlist scoped to this specific documented API
+/// contract — it must not be broadened to arbitrary functions.
+fn is_sqlite_null_safe_api(name: &str) -> bool {
+    matches!(
+        name,
+        "sqlite3_step" | "sqlite3_sql" | "sqlite3_stmt_readonly" | "sqlite3_mprintf"
+    ) || name.starts_with("sqlite3_column_")
+        || name.starts_with("sqlite3_bind_")
+}
+
+// ---------------------------------------------------------------------------
+// Declared-type verification (task 558)
+// ---------------------------------------------------------------------------
+
+/// True when `name`'s nearest lexical declaration provably resolves to a
+/// pointer type; `false` when it provably does NOT (a plain scalar or
+/// array); `None` when the binding can't be resolved at all (macro-expanded
+/// declarator, unresolvable identifier, etc.) — callers should treat `None`
+/// as "can't tell" rather than using it to suppress a finding.
+///
+/// This guards EXP34-C's call-argument null-propagation checks against the
+/// class of type-confusion bug found in task 558 (shared with ARR37-C's
+/// task 556): `declared_pointers` in `null_state.rs` is a flat, whole-function
+/// set rather than one scoped per lexical block, so a pointer declared under
+/// one name in one scope (e.g. `HashElem *i;` in one `PRAGMA` case of
+/// sqlite's giant `sqlite3Pragma` function) can make an unrelated `int i;`
+/// loop counter declared under the *same name* in a different scope of the
+/// same function get tracked as a nullable pointer too — producing
+/// "possibly-NULL pointer" findings against plain integers. Re-deriving the
+/// argument's actual declared type at the call site, independent of that
+/// dataflow-internal set, catches this before it's reported. Uses the shared
+/// `ast_utils::resolve_identifier_binding` primitive (task 387) rather than
+/// hand-rolling a new declaration lookup.
+fn identifier_is_declared_pointer(ident_node: &Node, name: &str, source: &str) -> Option<bool> {
+    match ast_utils::resolve_identifier_binding(ident_node, name, source)? {
+        ast_utils::IdentifierBinding::Parameter(ptype) => classify_type_text(&ptype),
+        ast_utils::IdentifierBinding::Local(decl) | ast_utils::IdentifierBinding::Global(decl) => {
+            let declarator = declaration_declarator_for(&decl, name, source)?;
+            if null_state::is_pointer_declarator(&declarator) {
+                return Some(true);
+            }
+            // A structural non-pointer declarator (bare identifier or array)
+            // is only *provably* non-pointer if the declaration's base type
+            // is a recognized built-in scalar/aggregate-by-value keyword —
+            // an unrecognized name could itself be a typedef'd pointer type
+            // (e.g. `callback_t cb;`, `sqlite3 *db;` aliased as `sqlite3
+            // Handle;`-style patterns), so stay ambiguous (`None`) there
+            // rather than guess.
+            classify_type_text(&declaration_prefix_type_text(&decl, source))
+        }
+    }
+}
+
+/// `Some(true)` when `type_text` contains a literal `*` (definitely a
+/// pointer). `Some(false)` only when it names a recognized built-in
+/// scalar/aggregate-by-value type with no pointer indirection at all — safe
+/// to treat as provably not a pointer regardless of codebase-specific
+/// typedefs. Anything else (an unrecognized bare type name, which may be a
+/// `typedef` for a pointer type) is `None`: can't tell, so callers must not
+/// use it to suppress a finding.
+fn classify_type_text(type_text: &str) -> Option<bool> {
+    if ast_utils::is_pointer_type(type_text) {
+        return Some(true);
+    }
+    let normalized = type_text.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    if ast_utils::is_integer_type(normalized) {
+        return Some(false);
+    }
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    if words
+        .iter()
+        .any(|w| matches!(*w, "float" | "double" | "bool" | "_Bool"))
+    {
+        return Some(false);
+    }
+    // `struct Foo` / `enum Foo` / `union Foo` with no `*` is passed/stored
+    // by value — non-pointer regardless of what `Foo` is, since a tag name
+    // (unlike a typedef name) can't itself hide a pointer.
+    if matches!(words.first().copied(), Some("struct" | "enum" | "union")) {
+        return Some(false);
+    }
+    None
+}
+
+/// Collect only the genuine type-specifier tokens of a `declaration` node
+/// (its base type, shared by every comma-separated declarator in it) —
+/// deliberately excluding any declarator text, so a sibling pointer
+/// declarator's `*` in a multi-declarator declaration (`int *a, b;`) can't
+/// leak into the classification of an unrelated name (`b`) in the same
+/// declaration.
+fn declaration_prefix_type_text(decl_node: &Node, source: &str) -> String {
+    let mut parts = Vec::new();
+    for i in 0..decl_node.child_count() {
+        let Some(child) = decl_node.child(i) else {
+            continue;
+        };
+        if matches!(
+            child.kind(),
+            "primitive_type"
+                | "sized_type_specifier"
+                | "type_identifier"
+                | "struct_specifier"
+                | "enum_specifier"
+                | "union_specifier"
+                | "type_qualifier"
+                | "storage_class_specifier"
+        ) {
+            parts.push(ast_utils::get_node_text_owned(&child, source));
+        }
+    }
+    parts.join(" ")
+}
+
+/// Find the specific declarator sub-node within a (possibly multi-declarator)
+/// `declaration` node that binds `name`, so its own node kind can be
+/// inspected (e.g. `int a, *b;` must not report `a` as a pointer just
+/// because `b` is one in the same declaration).
+fn declaration_declarator_for<'a>(
+    decl_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    for i in 0..decl_node.child_count() {
+        let child = decl_node.child(i)?;
+        let declarator = match child.kind() {
+            "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
+            "identifier" | "pointer_declarator" | "array_declarator" | "function_declarator" => {
+                child
+            }
+            _ => continue,
+        };
+        if ast_utils::get_identifier_from_declarator(&declarator, source) == name {
+            return Some(declarator);
+        }
+    }
+    None
+}
+
+/// True when `ident_node`'s occurrence of `name` provably resolves to a
+/// non-pointer declared type — the signal `check_function_arguments_cfg`,
+/// `check_callsite_null_args`, and the function-pointer-call check use to
+/// skip a candidate outright rather than let a type-confused dataflow state
+/// report it as a null pointer.
+fn is_provably_not_a_pointer(ident_node: &Node, name: &str, source: &str) -> bool {
+    identifier_is_declared_pointer(ident_node, name, source) == Some(false)
 }
 
 // ---------------------------------------------------------------------------
