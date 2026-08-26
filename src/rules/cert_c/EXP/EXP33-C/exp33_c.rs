@@ -820,7 +820,7 @@ fn check_subscript_read(
     }
 
     // Skip non-read contexts
-    if !is_subscript_read_context(node) {
+    if !is_subscript_read_context(node, source) {
         return;
     }
 
@@ -1265,7 +1265,7 @@ fn is_deref_read_context(node: &Node) -> bool {
 }
 
 /// Check if a subscript access (arr[i]) is in a read context.
-fn is_subscript_read_context(node: &Node) -> bool {
+fn is_subscript_read_context(node: &Node, source: &str) -> bool {
     // Walk up ancestors to find if this subscript is ultimately on the LHS of an assignment
     let mut current = *node;
     for _ in 0..5 {
@@ -1285,6 +1285,35 @@ fn is_subscript_read_context(node: &Node) -> bool {
             "field_expression" => {
                 current = parent;
                 continue;
+            }
+            // &arr[i] — address-of a subscript element (e.g. an output-param
+            // pointer into an array, curl's `&mime->boundary[N]` passed to
+            // Curl_rand_alnum) is not itself a content read, same as
+            // is_read_in_pointer_expression's identical exception for &var
+            // (task 457) -- unless that address is then handed to a function
+            // known to only read through it.
+            "pointer_expression" => {
+                let text = get_node_text(&parent, source);
+                if !text.starts_with('&') {
+                    return true;
+                }
+                let Some(arg_list) = parent.parent() else {
+                    return false;
+                };
+                if arg_list.kind() != "argument_list" {
+                    return false;
+                }
+                let Some(call) = arg_list.parent() else {
+                    return false;
+                };
+                if call.kind() != "call_expression" {
+                    return false;
+                }
+                let Some(func) = call.child_by_field_name("function") else {
+                    return false;
+                };
+                let func_name = get_node_text(&func, source);
+                return init_state::is_non_initializing_function(&func_name);
             }
             _ => return true,
         }
