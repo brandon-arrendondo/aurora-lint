@@ -1,6 +1,6 @@
 # SqC — Real-World Benchmark Results
 
-**Last Updated**: 2026-08-24
+**Last Updated**: 2026-08-26
 
 Automated benchmark results across 9 real-world C codebases using sqc, plus
 cppcheck and clang-tidy on the original 7.
@@ -12,15 +12,15 @@ cppcheck and clang-tidy on the original 7.
 
 ---
 
-## Latest Raw Counts (sqc v0.4.249)
+## Latest Raw Counts (sqc v0.4.249 / v0.4.258)
 
 Run #186, commit `107be7f0`, scanned 2026-08-23 — sqc only (cppcheck 2.10 /
-clang-tidy 21.1.6 not re-run since v0.4.120; their columns below are carried
-forward from that run for the original 7 projects). `pure-ftpd` and `seL4`
-are two newly onboarded oracles (sqc-only, no cppcheck/clang-tidy baseline
-yet). Note `sqlite`'s scan scope narrowed (125→81 files, 218,733→181,604 LOC)
-since v0.4.120 — the project's in-scope file predicate changed, not a
-regression.
+clang-tidy 21.1.6 not re-run since v0.4.120 for the original 7 projects;
+`pure-ftpd`'s competitor columns were added in the very next run, #187/
+v0.4.258, which has identical sqc violation counts to #186 below). `pure-ftpd`
+and `seL4` are two newly onboarded oracles. Note `sqlite`'s scan scope
+narrowed (125→81 files, 218,733→181,604 LOC) since v0.4.120 — the project's
+in-scope file predicate changed, not a regression.
 
 ### Violation Counts — All Three Tools
 
@@ -33,24 +33,58 @@ regression.
 | **curl** | 222 | 186,220 | 8,582 | 556 | 116 |
 | **sqlite** | 81 | 181,604 | 18,922 | 503 | 137 |
 | **hostap** | 430 | 589,724 | 30,752 | 1,761 | 1,710 |
-| **pure-ftpd** | 53 | 33,301 | 5,855 | — | — |
+| **pure-ftpd** | 53 | 33,301 | 5,855 | 12 | 109 |
 | **seL4** | 184 | 87,223 | 4,959 | — | — |
 
-> **Precision/recall not yet re-scored.** ~30 rule-logic commits (STR31-C,
-> MEM33-C, FLP03-C, ARR30/38-C, API02-C, MSC12-C, STR02-C and others) landed
-> between run #118 (v0.4.120, the last ground-truth-adjudicated baseline
-> below) and this run. Per CLAUDE.md's delta-adjudication protocol, the new
-> findings those commits produce sit at `(file, line)` pairs never
-> adjudicated, so a fresh `bench realworld-score 186` number would be
-> computed against a stale/incomplete denominator. `pure-ftpd` and `seL4`
-> also have thin label coverage (395 and 81 labels respectively) from their
-> initial onboarding. **Delta-adjudication of run 186 is tracked as
-> `todo-sqlite-cli` task 532 (priority 1)** — until it lands, the 6.2% /
-> 91.7% figure below (v0.4.120) remains the last validly-measured number.
+**Now scored** — see "Latest Adjudicated Results (sqc v0.4.258)" below.
+Task 532's delta-adjudication (completed 2026-08-25) closed the gap between
+this raw run and the last validly-measured v0.4.120 baseline; `seL4` still
+has thin label coverage (81 labels from initial onboarding, later expanded
+to a 10% sample under task 552) and `pure-ftpd`'s 10% sample is task 551.
 
 ---
 
-## Latest Adjudicated Results (sqc v0.4.120)
+## Latest Adjudicated Results (sqc v0.4.258)
+
+Run #187, commit `8cb0c4ba`, scanned 2026-08-24. Delta-adjudicated against
+the v0.4.120 baseline below per CLAUDE.md's delta-adjudication protocol
+(task 532, completed 2026-08-25): ~30 intervening rule-logic commits'
+findings were batched and adjudicated per-rule (tasks 534–550), plus initial
+10%-sample coverage audits for the two newly-onboarded projects, `pure-ftpd`
+(task 551) and `seL4` (task 552). Same violation counts as run #186 above,
+now with `pure-ftpd`'s cppcheck/clang-tidy columns filled in (12 / 109).
+
+### Violation Counts — All Three Tools
+
+| Project | C Files | LOC | sqc | cppcheck | clang-tidy |
+|---------|--------:|----:|----:|--------:|-----------:|
+| **libcrc** | 9 | 1,034 | 395 | 40 | 2 |
+| **lua** | 33 | 31,470 | 3,047 | 49 | 107 |
+| **raylib** | 17 | 56,107 | 4,749 | 1,060 | 469 |
+| **mosquitto** | 120 | 39,368 | 2,970 | 277 | 44 |
+| **curl** | 222 | 186,220 | 8,582 | 556 | 116 |
+| **sqlite** | 81 | 181,604 | 18,922 | 503 | 137 |
+| **hostap** | 430 | 589,724 | 30,752 | 1,761 | 1,710 |
+| **pure-ftpd** | 53 | 33,301 | 5,855 | 12 | 109 |
+| **seL4** | 184 | 87,223 | 4,959 | — | — |
+| **Total** | **1,149** | **1,206,051** | **80,231** | **4,258** | **2,694** |
+
+Aggregate measured precision (adjudicated oracle, `bench realworld-score 187`):
+**16.6%** (TP 10,559 / 63,608 labeled of 73,718 findings), **recall 97.4%**
+(10,559 / 10,839 known TPs flagged); label coverage 63,649 / 73,718 findings
+(86.3%; 41 matched labels are "uncertain" and excluded from precision).
+Total sqc finding volume is down 28% from the v0.4.120 baseline's 104,733
+(despite more rules enabled) — real FP-reduction landing on real-world code,
+not just less scanning.
+
+> The bulk of the remaining 10,069 unlabeled findings (13.7%) is the
+> deliberately-unsampled 90% of `pure-ftpd` (task 578) and `seL4` (task 579),
+> plus pre-existing long-tail rule gaps outside task 532's scope — not a gap
+> in this measurement's validity for the rules/projects it does cover.
+
+---
+
+## Previous Adjudicated Results (sqc v0.4.120) — superseded by v0.4.258 above
 
 Full sweep on per-project pinned commits (cppcheck 2.10, clang-tidy 21.1.6,
 sqc v0.4.120), run #118, scanned 2026-07-22. Same 7-project set (`libcrc`,

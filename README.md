@@ -19,16 +19,18 @@ A static analysis tool for C code compliance with [SEI CERT C Coding Standards](
 | **Juliet CWEs Scanned** | 79 (fast mode, CWE-matched rules) |
 | **100% Precision CWEs** | 44 (zero false positives, with real detections) |
 | **Per-File Detection** | 38.0% (19,101 / 50,256 files) |
-| **Real-World Precision / Recall** | 6.2% / 91.7% (v0.4.120, last adjudicated oracle) |
+| **Real-World Precision / Recall** | 16.6% / 97.4% (v0.4.258, run #187, 86.3% label coverage) |
 | **Real-World Projects** | libcrc, sqlite, mosquitto, curl, hostap, lua, raylib, pure-ftpd, seL4 |
 
 Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) and [REALWORLD_RESULTS.md](REALWORLD_RESULTS.md) for details.
 
 > **Note**: the real-world precision/recall figure is pinned to the last
-> ground-truth-adjudicated run (v0.4.120, run #118). ~30 rule-logic commits
-> have landed since then (through v0.4.249); a current figure requires
-> delta-adjudicating the newer unlabeled findings first (see
-> `todo-sqlite-cli show 532`) before it can be safely republished.
+> ground-truth-adjudicated run (v0.4.258, run #187 — task 532's delta
+> adjudication vs. the prior v0.4.120 baseline, 6.2%/91.7%). Rule-logic
+> commits landed since v0.4.258 aren't reflected here; a current figure
+> requires delta-adjudicating the newer unlabeled findings first (see
+> CLAUDE.md's delta-adjudication protocol) before it can be safely
+> republished.
 
 ## Installation
 
