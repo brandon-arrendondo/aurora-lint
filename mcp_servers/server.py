@@ -10,6 +10,7 @@ Tools:
   get_results(sort_by)   - Aggregated TP/FP stats + per-rule breakdown
   get_cwe_detail(cwe_id) - Detailed stats for one CWE
   list_runs              - List all benchmark runs
+  get_run_timings        - Runtime (wall/analysis time) of the last N runs
   compare_runs           - Compare two runs
   compare_cwe            - Compare one CWE across two runs
   reanalyze_run          - Re-run analysis on existing CSVs
@@ -1556,6 +1557,42 @@ def list_runs(limit: int = 10, compact: bool = True, verbose: bool = False) -> s
         "count": len(shown),
         "total": total,
         "message": msg,
+    })
+
+
+@mcp.tool()
+def get_run_timings(limit: int = 10) -> str:
+    """
+    Runtime of the last N Juliet benchmark runs, newest first (SQLite runs only).
+
+    Returns, per run: wall_s (real elapsed start-to-finish time, when the run
+    has finished) and analysis_s (summed per-CWE sqc-subprocess time — exceeds
+    wall_s under parallelism, and is the more stable axis for comparing the
+    cost of analysis-depth changes across versions; see task 202).
+
+    Args:
+        limit: Max runs to return, newest first. Use 0 for all. Default 10.
+    """
+    try:
+        db = _get_db()
+        timings = db.list_run_timings(limit=limit)
+    except Exception as e:
+        return json.dumps({"error": f"Failed to load run timings: {e}"})
+
+    for t in timings:
+        if t.get("wall_s") is not None:
+            t["wall_human"] = _fmt_duration(int(t["wall_s"]))
+        if t.get("analysis_s") is not None:
+            t["analysis_human"] = _fmt_duration(int(t["analysis_s"]))
+
+    return json.dumps({
+        "timings": timings,
+        "count": len(timings),
+        "message": (
+            f"Runtime for the last {len(timings)} run(s), newest first. "
+            "wall_s is real elapsed time (finished runs only); analysis_s is "
+            "summed per-CWE sqc time (parallelism-independent compute cost)."
+        ),
     })
 
 

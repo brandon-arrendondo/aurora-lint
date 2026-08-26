@@ -16,6 +16,7 @@ Tools:
   compare_runs(base, target)         - Compare two runs with per-rule deltas
   get_dashboard(run, compare, top)   - FP tracking dashboard with rule deltas
   list_runs()                        - List all runs (SQLite + filesystem)
+  get_run_timings(limit, tool)       - Runtime of the last N runs
   get_rule_trend(rule_id, project)   - Per-rule violation trend across versions
   get_project_history(project)       - Per-project violation trend across versions
   cancel_run(run_id)                 - Cancel a specific or all active runs
@@ -2351,6 +2352,40 @@ def list_runs(limit: int = 10, compact: bool = True, verbose: bool = False) -> s
         "count": len(shown),
         "total": total,
         "message": msg,
+    })
+
+
+@mcp.tool()
+def get_run_timings(limit: int = 10, tool: str = "sqc") -> str:
+    """
+    Runtime of the last N real-world benchmark runs, newest first (SQLite runs only).
+
+    Returns, per run, `total_duration_s` (sum of each scanned project's
+    duration for `tool` — projects scan sequentially, so this doubles as the
+    run's approximate wall-clock time) and a per-project breakdown.
+
+    Args:
+        limit: Max runs to return, newest first. Use 0 for all. Default 10.
+        tool: Which tool's timings to report — "sqc" (default), "cppcheck",
+              or "clang-tidy".
+    """
+    try:
+        db = _get_db()
+        timings = db.list_realworld_run_timings(limit=limit, tool=tool)
+    except Exception as e:
+        return json.dumps({"error": f"Failed to load run timings: {e}"})
+
+    for t in timings:
+        if t.get("total_duration_s") is not None:
+            t["total_duration_human"] = _fmt_duration(int(t["total_duration_s"]))
+
+    return json.dumps({
+        "timings": timings,
+        "count": len(timings),
+        "message": (
+            f"Runtime for the last {len(timings)} run(s) (tool={tool}), newest first. "
+            "total_duration_s sums per-project scan time within the run."
+        ),
     })
 
 

@@ -325,6 +325,47 @@ class BenchDB:
             cur.execute("SELECT * FROM runs ORDER BY started_at DESC")
             return [dict(r) for r in cur.fetchall()]
 
+    def list_run_timings(self, limit: int = 10) -> list[dict]:
+        """Runtime (wall + summed analysis time) for the most recent Juliet
+        runs, newest first. `analysis_s` sums each CWE's own sqc-subprocess
+        duration (see get_run_summary's note on why it exceeds wall_s under
+        parallelism); `wall_s` is the run's real start-to-finish elapsed time.
+        """
+        with self._cursor() as cur:
+            query = "SELECT * FROM runs ORDER BY started_at DESC"
+            if limit and limit > 0:
+                query += " LIMIT ?"
+                cur.execute(query, (limit,))
+            else:
+                cur.execute(query)
+            runs = [dict(r) for r in cur.fetchall()]
+
+            timings = []
+            for run in runs:
+                cur.execute(
+                    "SELECT SUM(duration_s) as total FROM cwe_scans WHERE run_id = ? AND status = 'completed'",
+                    (run["run_id"],),
+                )
+                analysis_s = cur.fetchone()["total"]
+                entry = {
+                    "run_id": run["run_id"],
+                    "sqc_version": run["sqc_version"],
+                    "commit_sha": run["commit_sha"],
+                    "mode": run["mode"],
+                    "status": run["status"],
+                    "started_at": run["started_at"],
+                    "finished_at": run.get("finished_at"),
+                    "jobs": run.get("jobs"),
+                    "cache_state": run.get("cache_state"),
+                    "analysis_s": round(analysis_s, 1) if analysis_s else None,
+                }
+                if run.get("started_at") and run.get("finished_at"):
+                    wall_s = _wall_seconds(run["started_at"], run["finished_at"])
+                    if wall_s is not None:
+                        entry["wall_s"] = wall_s
+                timings.append(entry)
+            return timings
+
     # ── CWE Scan CRUD ────────────────────────────────────────────────────
 
     def create_cwe_scan(self, run_id: str, cwe_id: str,
@@ -1159,6 +1200,44 @@ class BenchDB:
         with self._cursor() as cur:
             cur.execute("SELECT * FROM realworld_runs ORDER BY id DESC")
             return [dict(r) for r in cur.fetchall()]
+
+    def list_realworld_run_timings(self, limit: int = 10, tool: str = "sqc") -> list[dict]:
+        """Runtime for the most recent real-world runs, newest first.
+
+        `total_duration_s` sums each project's `duration_s` for `tool` within
+        the run (projects scan sequentially, so this is also the run's
+        approximate wall-clock time, unlike Juliet's parallel-CWE analysis_s).
+        """
+        with self._cursor() as cur:
+            query = "SELECT * FROM realworld_runs ORDER BY id DESC"
+            if limit and limit > 0:
+                query += " LIMIT ?"
+                cur.execute(query, (limit,))
+            else:
+                cur.execute(query)
+            runs = [dict(r) for r in cur.fetchall()]
+
+            timings = []
+            for run in runs:
+                cur.execute("""
+                    SELECT project, duration_s FROM realworld_results
+                    WHERE run_id = ? AND tool = ?
+                    ORDER BY project
+                """, (run["id"], tool))
+                per_project = [dict(r) for r in cur.fetchall()]
+                total = sum(p["duration_s"] for p in per_project if p["duration_s"] is not None)
+                timings.append({
+                    "run_id": run["id"],
+                    "sqc_version": run["sqc_version"],
+                    "commit_sha": run.get("commit_sha"),
+                    "scanned_at": run.get("scanned_at"),
+                    "notes": run.get("notes"),
+                    "tool": tool,
+                    "project_count": len(per_project),
+                    "total_duration_s": round(total, 1) if per_project else None,
+                    "per_project_s": {p["project"]: p["duration_s"] for p in per_project},
+                })
+            return timings
 
     def get_realworld_results(self, run_id: int) -> list[dict]:
         with self._cursor() as cur:
