@@ -122,6 +122,13 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 **When picking up work:** `todo-sqlite-cli start <id>` before coding,
 `todo-sqlite-cli done <id>` when committed.
 
+**Adding a progress note to an existing task:**
+`todo-sqlite-cli edit <id> --append-details "note"` — appends with a newline,
+preserving prior context. `edit <id> --details "..."` REPLACES the entire
+details body instead (discards what was there) — only use it when you mean
+to overwrite, not to log progress. `--add-tag`/`--rm-tag`,
+`--add-dep`/`--rm-dep`, `--title`, `--priority` are also available on `edit`.
+
 **When a new task surfaces:**
 `todo-sqlite-cli add "title" --details "..." --tag <area> --priority <1-5>`
 (1 = highest). `--depends-on <id>` links prerequisites; tasks with unmet
