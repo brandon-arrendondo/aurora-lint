@@ -1616,15 +1616,20 @@ pub fn get_var_info_at_with_config(
                         config,
                         byte_offset,
                     );
-                } else if matches!(
-                    stmt_node.kind(),
-                    "binary_expression" | "parenthesized_expression"
-                ) {
+                } else if let Some(chain) =
+                    find_short_circuit_chain(&stmt_node, source, byte_offset)
+                {
                     // `add_statement` records if/while/for conditions by their
-                    // own byte range (not the enclosing statement's), so the
-                    // node found here IS the condition expression itself.
+                    // own byte range (not the enclosing statement's), so for
+                    // those the node found here IS the condition expression
+                    // itself. But a `&&`/`||` chain guarding a read of its own
+                    // left operand's output param can also appear anywhere
+                    // inside a return/declaration/assignment statement (e.g.
+                    // `return f(&x) && use(x);`), not just as an if/while/for
+                    // condition — search the whole statement for the chain
+                    // rather than requiring it to BE the statement.
                     replay_short_circuit_operands(
-                        &stmt_node,
+                        &chain,
                         source,
                         &mut state,
                         &mut tracked,
@@ -2111,6 +2116,38 @@ fn replay_within_switch_case(
             }
         }
     }
+}
+
+/// Find the outermost `&&`/`||` `binary_expression` anywhere inside `node`
+/// whose range contains `byte_offset`. Used to locate a still-in-progress
+/// short-circuit chain even when it's embedded inside a larger statement
+/// (a `return`, a declaration initializer, an assignment RHS) rather than
+/// being the statement's own condition expression.
+fn find_short_circuit_chain<'a>(
+    node: &Node<'a>,
+    source: &str,
+    byte_offset: usize,
+) -> Option<Node<'a>> {
+    if byte_offset < node.start_byte() || byte_offset >= node.end_byte() {
+        return None;
+    }
+    if node.kind() == "binary_expression" {
+        let op = node
+            .child_by_field_name("operator")
+            .map(|o| o.utf8_text(source.as_bytes()).unwrap_or(""))
+            .unwrap_or("");
+        if op == "&&" || op == "||" {
+            return Some(*node);
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if let Some(found) = find_short_circuit_chain(&child, source, byte_offset) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 /// Recursively unwrap a (possibly parenthesized) short-circuit `&&`/`||`
