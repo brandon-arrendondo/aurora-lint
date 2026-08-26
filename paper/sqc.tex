@@ -857,75 +857,81 @@ and \texttt{OMITBAD}/\texttt{OMITGOOD} guards).
 \toprule
 \textbf{CWE} & \textbf{Description} & \textbf{SqC} & \textbf{cppcheck} & \textbf{clang-tidy} & \textbf{Infer} & \textbf{Frama-C} \\
 \midrule
-121 & Stack Buffer Overflow       & 71.0 & 40.5 & \textbf{86.6} & 38.8 & --- \\
-122 & Heap Buffer Overflow        & 78.8 & 45.0 & \textbf{89.5} & 37.8 & --- \\
-124 & Buffer Underwrite           & 66.8 & 40.5 & \textbf{90.4} & 33.9 & --- \\
-127 & Buffer Underread            & 81.5 & 42.7 & \textbf{93.2} & 33.9 & --- \\
+121 & Stack Buffer Overflow       & 74.8 & 40.5 & \textbf{86.6} & 38.8 & --- \\
+122 & Heap Buffer Overflow        & 83.7 & 45.0 & \textbf{89.5} & 37.8 & --- \\
+124 & Buffer Underwrite           & 70.9 & 40.5 & \textbf{90.4} & 33.9 & --- \\
+127 & Buffer Underread            & 87.8 & 42.7 & \textbf{93.2} & 33.9 & --- \\
 190 & Integer Overflow            & \textbf{100.0} & 27.5 & 94.3 & --- & 58.1 \\
 191 & Integer Underflow           & \textbf{98.5} & 27.2 & 94.4 & --- & 63.1 \\
 197 & Numeric Truncation          & \textbf{100.0} & 40.0 & 94.5 & --- & \textbf{100.0} \\
-369 & Divide by Zero              & 57.8 & 27.4 & \textbf{94.7} & --- & 43.4 \\
-401 & Memory Leak                 & 77.6 & 25.7 & \textbf{83.9} & 54.7 & --- \\
-415 & Double Free                 & 57.6 & 33.8 & \textbf{80.0} & 63.0 & --- \\
-416 & Use After Free              & \textbf{90.7} & 29.6 & 60.3 & 2.0  & --- \\
+369 & Divide by Zero              & 61.4 & 27.4 & \textbf{94.7} & --- & 43.4 \\
+401 & Memory Leak                 & 78.0 & 25.7 & \textbf{83.9} & 54.7 & --- \\
+415 & Double Free                 & 62.8 & 33.8 & \textbf{80.0} & 63.0 & --- \\
+416 & Use After Free              & \textbf{91.3} & 29.6 & 60.3 & 2.0  & --- \\
 476 & Null Pointer Deref          & 67.9 & 39.7 & \textbf{94.3} & 66.1 & 64.2 \\
 680 & Int Overflow $\to$ BOF      & \textbf{100.0} & 40.8 & 95.9 & --- & 82.6 \\
 690 & Null Deref from Return      & \textbf{100.0} & 45.7 & 88.0 & 60.0 & --- \\
 761 & Free Not at Start           & \textbf{100.0} & 45.7 & 94.3 & 58.1 & --- \\
 \midrule
-\multicolumn{2}{@{}l}{\textbf{Overall TP rate}} & 79.5 & 36.4 & \textbf{91.6} & 43.6 & 61.0 \\
-\multicolumn{2}{@{}l}{\textbf{CWEs tested}}     & \textbf{74} & 15 & 15 & 10 & 6 \\
+\multicolumn{2}{@{}l}{\textbf{Overall TP rate}} & 82.6 & 36.4 & \textbf{91.6} & 43.6 & 61.0 \\
+\multicolumn{2}{@{}l}{\textbf{CWEs tested}}     & \textbf{79} & 15 & 15 & 10 & 6 \\
 \bottomrule
 \end{tabular}
 \caption{TP rate (\%) comparison on overlapping Juliet CWEs.
 \textbf{Bold} = highest per row.  ``---'' = CWE not tested by that tool.
-SqC v0.4.116; cppcheck 2.10; clang-tidy (LLVM 21.1); Infer v1.2.0; Frama-C 32.0 EVA.
+SqC v0.4.271; cppcheck 2.10; clang-tidy (LLVM 21.1); Infer v1.2.0; Frama-C 32.0 EVA.
 Competitor numbers are held fixed from the original study (not
-re-measured); SqC's column reflects v0.4.116.
+re-measured); SqC's column reflects v0.4.271.
 All tools run on same test files (28{,}488 total across 15 CWEs).}
 \label{tab:competitor}
 \end{table*}
 
-Four patterns emerge, sharper now than at the v0.4.22 snapshot this
-table previously reported.  First, \textbf{clang-tidy still achieves the
-highest overall precision} (91.6\%) with only 116 false positives across
-all 15 CWEs, but the gap has narrowed: SqC's overall rate on these 15
-CWEs is now 79.5\% (up from 68.2\%), and it detects far more total
-violations than clang-tidy (21{,}770 vs.\ 13{,}952 TP, though note SqC's
-figure is summed over all 74 CWEs it tests, not just these 15).
+Four patterns persist in this refreshed snapshot, which updates SqC's
+column from v0.4.116 to v0.4.271 (155 releases, mostly real-world
+FP-reduction work per \cref{sec:fp-reduction} rather than
+Juliet-targeted tuning); the competitor columns are unchanged, held
+fixed from the original study.  First, \textbf{clang-tidy still
+achieves the highest overall precision} (91.6\%) with only 116 false
+positives across all 15 CWEs, but the gap has continued to narrow:
+SqC's overall rate on these 15 CWEs is now 82.6\% (up from 79.5\% at
+v0.4.116, 68.2\% at the original snapshot), and it detects far more
+total violations than clang-tidy (22{,}261 vs.\ 13{,}952 TP, though
+note SqC's figure is summed over all 79 CWEs it tests, not just these
+15).
 
-Second, \textbf{SqC now beats clang-tidy outright on three of these
-CWEs}, not just Frama-C.  The opt-in provenance-gated rewrite of the
-INT rules (\cref{sec:provenance-frontier}) --- adopted to fix a
-real-world false-positive problem, not to chase Juliet score --- pushed
-CWE-190 from 67.8\% to 100.0\% (vs.\ clang-tidy's 94.3\%), CWE-191 from
-65.9\% to 98.5\% (vs.\ 94.4\%), and CWE-680 from 63.2\% to 100.0\% (vs.\
-95.9\%).  CWE-197 also reaches 100.0\%, tying Frama-C.  This is a
-notable case of a fix motivated entirely by real-world precision
-(\cref{sec:provenance-frontier}) also improving the synthetic-benchmark
-score, contrary to the more common pattern in this codebase where the
-two benchmarks pull in opposite directions (\cref{sec:limitations}).
+Second, \textbf{SqC still beats clang-tidy outright on the same six
+CWEs it won at v0.4.116}: CWE-190 (100.0\% vs.\ 94.3\%), CWE-191
+(98.5\% vs.\ 94.4\%), CWE-416 (91.3\% vs.\ 60.3\%), CWE-680 (100.0\%
+vs.\ 95.9\%), CWE-690 (100.0\% vs.\ 88.0\%), and CWE-761 (100.0\% vs.\
+94.3\%), plus ties Frama-C at 100.0\% on CWE-197.  None of the 155
+intervening releases flipped a row's winner in either direction; the
+movement on the other nine rows is incremental (e.g.\ CWE-121 74.8\%
+vs.\ 71.0\%, CWE-369 61.4\% vs.\ 57.8\%, CWE-415 62.8\% vs.\ 57.6\%)
+rather than structural, consistent with the plateau-then-real-world-fix
+pattern described in \cref{sec:fp-reduction} --- none of that work
+targeted these 15 CWEs specifically.
 
-Third, \textbf{SqC has further extended its lead over Frama-C}: 79.5\%
-vs.\ Frama-C's 61.0\% on the 15 overlapping CWEs (was 68.2\% vs.\
-61.0\%), while covering 74 CWEs vs.\ Frama-C's 6.  SqC now exceeds
-Frama-C on CWE-369 (57.8\% vs.\ 43.4\%), CWE-190 (100.0\% vs.\ 58.1\%),
-CWE-191 (98.5\% vs.\ 63.1\%), and CWE-680 (100.0\% vs.\ 82.6\%).
+Third, \textbf{SqC has further extended its lead over Frama-C}: 82.6\%
+vs.\ Frama-C's 61.0\% on the 15 overlapping CWEs (was 79.5\% vs.\
+61.0\% at v0.4.116, 68.2\% vs.\ 61.0\% at the original snapshot), while
+covering 79 CWEs vs.\ Frama-C's 6.  SqC still exceeds Frama-C on
+CWE-369 (61.4\% vs.\ 43.4\%), CWE-190 (100.0\% vs.\ 58.1\%), CWE-191
+(98.5\% vs.\ 63.1\%), and CWE-680 (100.0\% vs.\ 82.6\%).
 
-Fourth, \textbf{SqC wins on five CWEs outright}: CWE-190, CWE-680,
-CWE-690, and CWE-761 at 100\% (the first two newly so, the latter two
-unchanged from the earlier study), and CWE-416 use-after-free (90.7\%
-vs.\ clang-tidy's 60.3\%), where MEM01-C's flow-sensitive deref
-tracking after \texttt{free} distinguishes the good/bad paths more
-reliably than clang-tidy's pattern checks.  CWE-416 has drifted down
-slightly from 92.9\% as unrelated MEM-rule changes shifted a handful of
-edge cases; it remains the clear leader on this CWE regardless.
+Fourth, \textbf{SqC wins on six CWEs outright}: CWE-190, CWE-680,
+CWE-690, and CWE-761 at 100\%, CWE-191 at 98.5\%, and CWE-416
+use-after-free (91.3\% vs.\ clang-tidy's 60.3\%), where MEM01-C's
+flow-sensitive deref tracking after \texttt{free} distinguishes the
+good/bad paths more reliably than clang-tidy's pattern checks.
+CWE-416 has recovered slightly since v0.4.116 (90.7\%) and sits just
+below the 92.9\% figure from the original study; it remains the clear
+leader on this CWE regardless.
 
 Fifth, \textbf{cppcheck still produces the most findings but the lowest
 precision} (36.4\%), reflecting its heuristic approach.  Its 29{,}377
 TPs represent high recall but at the cost of 51{,}361 FPs.
 
-The coverage gap remains the key differentiator: SqC tests 74 CWEs
+The coverage gap remains the key differentiator: SqC tests 79 CWEs
 spanning 17 CERT~C categories, while the other tools cover 6--15 on
 this benchmark.  A hypothetical ensemble of all five tools would
 achieve both high per-CWE precision and broad coverage.
