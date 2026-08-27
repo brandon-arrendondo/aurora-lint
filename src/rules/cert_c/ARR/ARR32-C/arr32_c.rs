@@ -1,6 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_sanitized_node_text;
+use crate::utility::cert_c::ast_utils::{get_sanitized_node_text, is_likely_macro_constant};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -325,7 +325,6 @@ fn has_prior_validation(body_node: &Node, source: &str, var_name: &str, vla_line
     false
 }
 
-/// ALL_CAPS identifiers are conventionally preprocessor constants (not runtime variables)
 /// Check if an expression tree consists entirely of compile-time constants:
 /// numeric literals, ALL_CAPS macro identifiers, sizeof, and arithmetic operators.
 fn is_all_constant_expression(node: &Node, source: &str) -> bool {
@@ -356,17 +355,6 @@ fn is_all_constant_expression(node: &Node, source: &str) -> bool {
         "sizeof_expression" => true,
         _ => false,
     }
-}
-
-fn is_likely_macro_constant(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
-        && name
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
 }
 
 fn get_binary_operator<'a>(node: &Node, source: &'a str) -> &'a str {

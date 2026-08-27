@@ -103,6 +103,23 @@ expansion-engine gap, and is out of scope for the engine-vs-pass decision
 this task is gating. Recommend filing it as its own low-priority tech-debt
 ticket, not folding it into 199/554/573/589.
 
+**RESOLVED (task 603, v0.4.288):** filed and done as its own tech-debt
+ticket. The shared helper landed as
+`utility::cert_c::ast_utils::is_likely_macro_constant` (named for the
+existing per-rule spelling, not the `looks_like_macro_constant_name`
+proposed above), and MEM05-C, ARR32-C, MEM33-C and DCL03-C now call it.
+EXP08-C's copy turned out to be **unreachable dead code** — the preceding
+`if node.kind() == "identifier"` branch returns unconditionally, and `text`
+is lowercased before the check, so `is_uppercase()` could never hold — and
+was deleted rather than wired to the shared helper; whether that exclusion
+should be made live is a behavior question, tracked as task 618. Gated
+byte-identical over the full Juliet suite (58,784 files, 4,457 findings) and
+**all 9 real-world projects at their pinned commits** (1,345 findings: curl
+100, hostap 447, libcrc 0, lua 16, mosquitto 27, sqlite 506, pureftpd 29,
+raylib 80, seL4 140). The only divergence the consolidation introduces is
+that DCL03-C's identifier check is now ASCII-only rather than Unicode
+`is_uppercase()`, which no corpus file exercises.
+
 ### 1d. The three gated capability gaps (tasks 573, 589, 554)
 
 | Task | Rule | Macro property needed | Currently modeled by |
@@ -143,7 +160,8 @@ Re-verified every row in §10's table against current source:
   KEEP":** spot-checked several from each list; still accurate.
 - **"Local is_likely_macro_constant name heuristic — KEEP" (MEM05, ARR32):**
   undercounted — see §1c drift note (MEM33-C, DCL03-C, EXP08-C also do
-  this).
+  this). *Fixed in task 603: row now reads MEM05, ARR32, MEM33, DCL03 and
+  all four share one helper; EXP08-C's copy was dead code, deleted.*
 
 ---
 

@@ -232,14 +232,16 @@ impl Exp08C {
     fn looks_like_offset_value(&self, node: &Node, source: &str) -> bool {
         let text = ast_utils::get_node_text(&node, source).to_lowercase();
 
-        // Check for offset-related variable names
+        // Check for offset-related variable names.
+        //
+        // NOTE: an ALL_CAPS-macro-constant exclusion ("likely an array size, not a
+        // byte offset") used to sit below this return, where it was unreachable —
+        // same `identifier` guard, and `text` is already lowercased. Deleted as dead
+        // code rather than folded into the shared `is_likely_macro_constant` helper
+        // (task 603); making the exclusion actually fire is a behavior change,
+        // tracked separately.
         if node.kind() == "identifier" {
             return text.contains("offset") || text.contains("skip");
-        }
-
-        // Don't flag macro constants (all caps) as they're likely array sizes, not byte offsets
-        if node.kind() == "identifier" && text.chars().all(|c| c.is_uppercase() || c == '_') {
-            return false;
         }
 
         false

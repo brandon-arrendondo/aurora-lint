@@ -96,10 +96,19 @@ library macros.
 | `collect_packed_macro_names` | `(source: &str, out: &mut HashSet<String>)` | Specialization of the above scoped to macros whose replacement text contains "packed" (e.g. `#define STRUCT_PACKED __attribute__((packed))`). |
 | `macro_expands_to_packed` | `(name: &str, source: &str) -> bool` | True if `#define name ...` in `source` expands to text containing "packed". |
 | `struct_specifier_packed_signal` / `struct_specifier_is_packed` | `(s: &Node, source: &str) -> PackedSignal` / `-> bool` | Inspects a `struct_specifier` for a packed-attribute signal: direct `__attribute__((packed))`, or a trailing bare identifier that *might* be a packed macro (resolved via the macro-name sets above). |
+| `is_likely_macro_constant` | `(name: &str) -> bool` | **Name-convention-only** guess: `[A-Z_][A-Z0-9_]*` (ASCII, non-empty, never leading-digit). Consults no `#define` at all — the last-resort answer to "is this identifier a compile-time constant?" when the definition isn't in scanned files, e.g. `int a[SIZE]` (not a VLA) vs. `int a[n]` (a VLA). Shared by MEM05-C, ARR32-C, MEM33-C, DCL03-C (deduped in task 603 from five divergent per-rule copies). |
 
 `is_defined_macro_name` (single-file) and `collect_defined_macro_names`
 (project-wide, stored in `ProjectContext::defined_macro_names`) are the
 general-purpose pair for "is this bare identifier actually a macro."
+
+**Pick the strongest available primitive, in this order:** if the macro's
+*value* matters, use `analyze::macro_expand` / `const_eval`; if only its
+*existence* matters and the definition is reachable, use
+`is_defined_macro_name` / `ProjectContext::defined_macro_names`; only when
+no definition can be in scope does `is_likely_macro_constant` apply. Reaching
+for the name heuristic when a definition-backed check would do is exactly the
+mistake task 475 nearly made — do not add a sixth ALL_CAPS heuristic.
 
 **Wiring pattern:** No wiring needed for the single-file check
 (`is_defined_macro_name(name, source)` — just call it with the current

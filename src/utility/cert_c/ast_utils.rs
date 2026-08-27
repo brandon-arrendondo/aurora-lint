@@ -951,6 +951,43 @@ pub fn is_defined_macro_name(name: &str, source: &str) -> bool {
     re.is_match(source)
 }
 
+/// True if `name` looks like a preprocessor macro constant *by naming
+/// convention alone*: ALL_CAPS letters, digits and underscores only, and not
+/// starting with a digit (so a bare numeric literal is never mistaken for a
+/// macro name). Empty input is never a macro name.
+///
+/// This never consults an actual `#define` — prefer
+/// `is_defined_macro_name` (or `ProjectContext`'s project-wide macro-name
+/// set) whenever the definition is reachable, and prefer
+/// `analyze::macro_expand` whenever the macro's *value* matters. This is the
+/// last-resort guess for "is this identifier a compile-time constant?" when
+/// no definition is in scope — e.g. distinguishing `int a[SIZE]` (not a VLA)
+/// from `int a[n]` (a VLA).
+///
+/// Single source of truth for a heuristic that was independently
+/// reimplemented in five rules with slightly different edge cases
+/// (task 603): MEM05-C, ARR32-C, MEM33-C, DCL03-C, EXP08-C.
+///
+/// # Examples
+/// ```
+/// use sqc::utility::cert_c::ast_utils::is_likely_macro_constant;
+/// assert!(is_likely_macro_constant("MAX_SIZE"));
+/// assert!(is_likely_macro_constant("_BUF_LEN2"));
+/// assert!(!is_likely_macro_constant("bufLen"));
+/// assert!(!is_likely_macro_constant("10"));
+/// assert!(!is_likely_macro_constant(""));
+/// ```
+pub fn is_likely_macro_constant(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
+}
+
 /// Collect every `#define NAME ...` object-macro name in `source`,
 /// regardless of what it expands to. Plain regex over raw text, not
 /// AST-based — deliberately independent of any single file's declarations
