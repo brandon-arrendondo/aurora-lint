@@ -31,7 +31,20 @@ python -m bench juliet [--full] [--jobs N]
 python -m bench status [RUN_ID]
 python -m bench compare BASE TARGET
 python -m bench runs
+python -m bench corpus-check   # are the real-world checkouts still pinned?
 ```
+
+**Run `python -m bench corpus-check` before any real-world run or precision
+claim** (task 619). The pins live in `data/benchmark_repos.json` (single
+source of truth, shared with `playbooks/setup-benchmark-repos.yml`), but
+provisioning pins a checkout *once* and nothing keeps it there — a `git pull`
+on a tracking-branch checkout drifts it silently, and `realworld_server.py`
+records whatever SHA it finds rather than asserting the expected one. Since
+`ground_truth` is keyed on `(project, commit, file, line, rule)`, findings
+from a drifted tree fall outside the precision/recall denominator in either
+direction with no error. The check exits nonzero and prints the
+`git checkout --detach` fix per row. It also flags untracked `*.c`/`*.h`
+files, which sqc *will* scan and attribute to the pinned commit.
 
 ### Protocol
 

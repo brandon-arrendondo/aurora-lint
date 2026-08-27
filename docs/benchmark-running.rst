@@ -132,6 +132,7 @@ CLI Alternative
     python -m bench status [RUN_ID]
     python -m bench compare BASE TARGET
     python -m bench runs
+    python -m bench corpus-check [--json]   # real-world checkouts still pinned?
 
 Real-World Benchmark Tools
 --------------------------
@@ -234,6 +235,7 @@ are appended over time, never tied to a single run.
 
 CLI::
 
+    python -m bench corpus-check                       # checkouts still pinned?
     python -m bench ground-truth                       # label inventory
     python -m bench realworld-score [RUN]              # measured precision/recall
     python -m bench realworld-unlabeled [RUN] --rule R --project P --limit N --seed S
