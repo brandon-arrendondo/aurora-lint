@@ -618,21 +618,67 @@ impl Str31C {
     /// file); when the callee is only forward-declared here and defined in
     /// a different file (Juliet variant 22's sink/source file split), falls
     /// back to the cross-file `produces_param_buffer_size` prescan summary.
+    ///
+    /// The same-file check must run first and is NOT optional (task 610):
+    /// `produces_param_buffer_size` is a whole-project prescan summary keyed
+    /// only by function name (`ProjectContext::function_summaries`), with no
+    /// file/translation-unit scoping. Static helper functions that share a
+    /// name across many files — e.g. Juliet's `badSource`/`goodG2BSource`
+    /// templates, reused verbatim in every flow-variant file — collide in
+    /// that map, and the prescan merge (`prescan.rs`) keeps only the
+    /// first-seen entry's `produces_param_buffer_size` on collision. Routing
+    /// same-file relays through the summary unconditionally (as task 506
+    /// briefly did) resolves each call against whichever same-named
+    /// function happened to be prescanned first project-wide — silently
+    /// right or wrong per file — which cost 4 TP and added 9 FP on Juliet
+    /// CWE-122 alone. See `docs/design/str31c-relay-function-scoping.md`.
     fn resolve_relay_source_size(
         &self,
         var_name: &str,
-        _root: &Node,
+        root: &Node,
         source: &str,
         call_node: &Node,
     ) -> Option<usize> {
         let (callee_name, arg_idx) = Self::find_relay_call(var_name, source, call_node)?;
 
-        // Prescan's `FunctionSummary::produces_param_buffer_size` (task 506)
-        // resolves this uniformly for same-file and cross-file callees alike
-        // — it walks the same alloc/memset/array-decl/strlen-alloc resolver
-        // chain `find_buffer_size` uses, over every function project-wide,
-        // so there is no longer a same-file AST-walk case to special-case
-        // here (see `docs/design/str31c-relay-function-scoping.md`).
+        if let Some(callee_fn) = query::find_descendants_of_kind(*root, "function_definition")
+            .into_iter()
+            .find(|f| {
+                f.child_by_field_name("declarator")
+                    .map(|d| ast_utils::get_identifier_from_declarator(&d, source) == callee_name)
+                    .unwrap_or(false)
+            })
+        {
+            let params = ast_utils::get_function_parameters(&callee_fn, source)?;
+            let (param_name, _) = params.get(arg_idx)?;
+            let callee_range = (callee_fn.start_position().row, callee_fn.end_position().row);
+            if let Some(size) =
+                self.find_buffer_size(param_name, root, source, Some(callee_range), None)
+            {
+                return Some(size);
+            }
+            if let Some(size) = buffer_size::memset_content_length_in_range(
+                param_name,
+                source,
+                callee_range.0,
+                callee_range.1 + 1,
+            ) {
+                return Some(size);
+            }
+            // The relay function itself allocates through a local alias
+            // rather than the parameter directly (`char *buf =
+            // malloc(...); data = buf;`) — one more alias hop, scoped to
+            // the relay function's own range. An arithmetic-offset
+            // reassignment (`data = buf - 8;`, the Juliet CWE-124
+            // underwrite flaw) does not match this alias regex, so the
+            // flawed branch correctly stays unresolved here.
+            let alias = Self::resolve_pointer_alias_in_range(param_name, callee_range, source)?;
+            return self.find_buffer_size(&alias, root, source, Some(callee_range), None);
+        }
+
+        // Callee not defined in this file (Juliet variant 22's sink/source
+        // file split) — consult the cross-file prescan summary of what the
+        // callee itself produces for that parameter (task 506).
         self.produces_param_buffer_size
             .borrow()
             .get(&callee_name)?
