@@ -301,67 +301,7 @@ impl Str31C {
         fn_start: usize,
         fn_end: usize,
     ) -> Option<usize> {
-        // Regexes for indirect strlen/wcslen safe-allocation detection (hoisted outside loop).
-        // calloc(len+1, 1) or calloc(len+1, sizeof(char)) — byte-string safe allocation.
-        let calloc_narrow_re = regex::Regex::new(
-            r"calloc\s*\(\s*(\w+)\s*\+\s*1\s*,\s*(?:1|sizeof\s*\(\s*char\s*\))\s*\)",
-        )
-        .ok();
-        // calloc(len+1, sizeof(wchar_t)) — wide-string safe allocation (requires wcslen).
-        let calloc_wide_re = regex::Regex::new(
-            r"calloc\s*\(\s*(\w+)\s*\+\s*1\s*,\s*sizeof\s*\(\s*wchar_t\s*\)\s*\)",
-        )
-        .ok();
-        // malloc(len+1) — implied byte-sized element safe allocation.
-        let malloc_indirect_re = regex::Regex::new(r"malloc\s*\(\s*(\w+)\s*\+\s*1\s*\)").ok();
-
-        // Checks whether `size_var` was assigned from strlen()/wcslen() anywhere
-        // in the enclosing function's line range.
-        let assigned_from_len_fn = |size_var: &str, wide: bool| -> bool {
-            buffer_size::resolves_to_strlen_call(size_var, lines, fn_start, fn_end, wide)
-        };
-
-        for (idx, line) in lines.iter().enumerate() {
-            if idx < fn_start || idx > fn_end {
-                continue;
-            }
-            let assigns_here = Self::line_assigns_to(line, var_name);
-            if assigns_here
-                && (line.contains("malloc") || line.contains("calloc"))
-                && line.contains("strlen")
-                && line.contains("+ 1")
-            {
-                return Some(usize::MAX);
-            }
-            // calloc(strlen_var+1, 1) or calloc(strlen_var+1, sizeof(char)) where
-            // strlen_var was assigned from strlen() — safe byte-string allocation.
-            // Only matches when element size is 1 byte to distinguish from
-            // calloc(strlen_var+1, sizeof(wchar_t)) which is a real bug.
-            if assigns_here && line.contains("calloc") {
-                if let Some(caps) = calloc_narrow_re.as_ref().and_then(|re| re.captures(line)) {
-                    if assigned_from_len_fn(&caps[1], false) {
-                        return Some(usize::MAX);
-                    }
-                }
-                // calloc(wcslen_var+1, sizeof(wchar_t)) where wcslen_var = wcslen(...)
-                // — safe wide-string allocation.  Requires wcslen specifically (not strlen)
-                // so calloc(strlen_var+1, sizeof(wchar_t)) remains flagged as a real bug.
-                if let Some(caps) = calloc_wide_re.as_ref().and_then(|re| re.captures(line)) {
-                    if assigned_from_len_fn(&caps[1], true) {
-                        return Some(usize::MAX);
-                    }
-                }
-            }
-            // malloc(strlen_var+1) — implied byte-sized element
-            if assigns_here && line.contains("malloc") {
-                if let Some(caps) = malloc_indirect_re.as_ref().and_then(|re| re.captures(line)) {
-                    if assigned_from_len_fn(&caps[1], false) {
-                        return Some(usize::MAX);
-                    }
-                }
-            }
-        }
-        None
+        buffer_size::resolve_strlen_based_alloc_size(var_name, lines, fn_start, fn_end)
     }
 
     /// True if `line` contains an assignment whose LHS is exactly `var_name`
@@ -681,49 +621,18 @@ impl Str31C {
     fn resolve_relay_source_size(
         &self,
         var_name: &str,
-        root: &Node,
+        _root: &Node,
         source: &str,
         call_node: &Node,
     ) -> Option<usize> {
         let (callee_name, arg_idx) = Self::find_relay_call(var_name, source, call_node)?;
 
-        if let Some(callee_fn) = query::find_descendants_of_kind(*root, "function_definition")
-            .into_iter()
-            .find(|f| {
-                f.child_by_field_name("declarator")
-                    .map(|d| ast_utils::get_identifier_from_declarator(&d, source) == callee_name)
-                    .unwrap_or(false)
-            })
-        {
-            let params = ast_utils::get_function_parameters(&callee_fn, source)?;
-            let (param_name, _) = params.get(arg_idx)?;
-            let callee_range = (callee_fn.start_position().row, callee_fn.end_position().row);
-            if let Some(size) =
-                self.find_buffer_size(param_name, root, source, Some(callee_range), None)
-            {
-                return Some(size);
-            }
-            if let Some(size) = buffer_size::memset_content_length_in_range(
-                param_name,
-                source,
-                callee_range.0,
-                callee_range.1 + 1,
-            ) {
-                return Some(size);
-            }
-            // The relay function itself allocates through a local alias
-            // rather than the parameter directly (`char *buf =
-            // malloc(...); data = buf;`) — one more alias hop, scoped to
-            // the relay function's own range. An arithmetic-offset
-            // reassignment (`data = buf - 8;`, the Juliet CWE-124
-            // underwrite flaw) does not match this alias regex, so the
-            // flawed branch correctly stays unresolved here.
-            let alias = Self::resolve_pointer_alias_in_range(param_name, callee_range, source)?;
-            return self.find_buffer_size(&alias, root, source, Some(callee_range), None);
-        }
-
-        // Callee not defined in this file — consult the cross-file prescan
-        // summary of what the callee itself produces for that parameter.
+        // Prescan's `FunctionSummary::produces_param_buffer_size` (task 506)
+        // resolves this uniformly for same-file and cross-file callees alike
+        // — it walks the same alloc/memset/array-decl/strlen-alloc resolver
+        // chain `find_buffer_size` uses, over every function project-wide,
+        // so there is no longer a same-file AST-walk case to special-case
+        // here (see `docs/design/str31c-relay-function-scoping.md`).
         self.produces_param_buffer_size
             .borrow()
             .get(&callee_name)?
