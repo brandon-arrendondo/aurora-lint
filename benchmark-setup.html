@@ -69,6 +69,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#real-world-project-setup">Real-World Project Setup</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#pinned-source-commits">Pinned Source Commits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#verifying-the-pins">Verifying the Pins</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#clone-and-pin">Clone and Pin</a></li>
 </ul>
 </li>
@@ -146,7 +147,11 @@ ansible-playbook<span class="w"> </span>playbooks/setup-benchmark-repos.yml<span
 </pre></div>
 </div>
 <p>Keep <code class="docutils literal notranslate"><span class="pre">bench_root</span></code> and <code class="docutils literal notranslate"><span class="pre">SQC_BENCH_ROOT</span></code>/<code class="docutils literal notranslate"><span class="pre">.env</span></code> pointed at the same
-directory – the playbook provisions the checkouts the code actually reads.</p>
+directory – the playbook provisions the checkouts the code actually reads.
+A mismatch is easy to miss: if <code class="docutils literal notranslate"><span class="pre">SQC_BENCH_ROOT</span></code> is unset and the corpora
+do not live in <code class="docutils literal notranslate"><span class="pre">~/toolchain</span></code>, <code class="docutils literal notranslate"><span class="pre">BENCH_ROOT</span></code> silently resolves to a
+directory that does not exist. <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">corpus-check</span></code> reports the
+resolved root and says so outright.</p>
 </section>
 <section id="installing-comparison-tools">
 <h2>Installing Comparison Tools<a class="headerlink" href="#installing-comparison-tools" title="Link to this heading"></a></h2>
@@ -331,10 +336,25 @@ D-Bus, libgcrypt, libpcap</p></td>
 <h2>Real-World Project Setup<a class="headerlink" href="#real-world-project-setup" title="Link to this heading"></a></h2>
 <section id="pinned-source-commits">
 <h3>Pinned Source Commits<a class="headerlink" href="#pinned-source-commits" title="Link to this heading"></a></h3>
-<p>All benchmark results are run against these exact commits – this is the
-full set in <code class="docutils literal notranslate"><span class="pre">mcp_servers/realworld_server.py</span></code>’s <code class="docutils literal notranslate"><span class="pre">CODEBASES</span></code> registry.
-<code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code> clones and pins all 9 automatically;
-this table is both its source of truth and the manual fallback.</p>
+<p>All benchmark results are run against these exact commits – the full set of
+projects in <code class="docutils literal notranslate"><span class="pre">mcp_servers/realworld_server.py</span></code>’s <code class="docutils literal notranslate"><span class="pre">CODEBASES</span></code> registry
+(which stores paths and per-tool flags, not the pins).</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The <strong>single source of truth for the pins is</strong>
+<code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code>. Both
+<code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code> (provisioning) and <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span>
+<span class="pre">bench</span> <span class="pre">corpus-check</span></code> (verification) read it. The table below is a
+human-readable mirror – if the two disagree, the JSON wins. Do not add
+a third copy.</p>
+</div>
+<p>Each checkout must sit at a <strong>detached HEAD</strong> on its pinned commit. A
+checkout left on a tracking branch is not pinned even while it happens to
+match: the next <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">pull</span></code> moves it silently, and every finding then lands
+at <code class="docutils literal notranslate"><span class="pre">(file,</span> <span class="pre">line)</span></code> pairs the <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> oracle – keyed on
+project+commit+file+line+rule – was never adjudicated against, so it drops
+out of the precision/recall denominator without any error. This is not
+hypothetical; see <a class="reference internal" href="#verifying-the-pins">Verifying the Pins</a> below.</p>
 <table class="docutils align-default">
 <colgroup>
 <col style="width: 12.0%" />
@@ -346,14 +366,14 @@ this table is both its source of truth and the manual fallback.</p>
 <tr class="row-odd"><th class="head"><p>Project</p></th>
 <th class="head"><p>Repository</p></th>
 <th class="head"><p>Commit SHA</p></th>
-<th class="head"><p>Branch</p></th>
+<th class="head"><p>Checkout state</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>libcrc</p></td>
 <td><p><a class="reference external" href="https://github.com/lammertb/libcrc">https://github.com/lammertb/libcrc</a></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">7719e2112a9a960b1bba130d02bebdf58e8701f1</span></code></p></td>
-<td><p>master</p></td>
+<td><p>detached</p></td>
 </tr>
 <tr class="row-odd"><td><p>sqlite</p></td>
 <td><p><a class="reference external" href="https://github.com/sqlite/sqlite.git">https://github.com/sqlite/sqlite.git</a></p></td>
@@ -363,7 +383,7 @@ this table is both its source of truth and the manual fallback.</p>
 <tr class="row-even"><td><p>mosquitto</p></td>
 <td><p><a class="reference external" href="https://github.com/eclipse-mosquitto/mosquitto">https://github.com/eclipse-mosquitto/mosquitto</a></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">d3ee5c5ca62c0fa4983308c6fff558ee978e878c</span></code></p></td>
-<td><p>master</p></td>
+<td><p>detached</p></td>
 </tr>
 <tr class="row-odd"><td><p>curl</p></td>
 <td><p><a class="reference external" href="https://github.com/curl/curl.git">https://github.com/curl/curl.git</a></p></td>
@@ -373,7 +393,7 @@ this table is both its source of truth and the manual fallback.</p>
 <tr class="row-even"><td><p>hostap</p></td>
 <td><p><a class="reference external" href="https://git.w1.fi/hostap.git">https://git.w1.fi/hostap.git</a></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">dcee60436390dd34731560657c4257c3b4c839a6</span></code></p></td>
-<td><p>main</p></td>
+<td><p>detached</p></td>
 </tr>
 <tr class="row-odd"><td><p>lua</p></td>
 <td><p><a class="reference external" href="https://github.com/lua/lua.git">https://github.com/lua/lua.git</a></p></td>
@@ -406,10 +426,76 @@ normalization) require the checkout dir basename to match the registry
 key exactly. The playbook already clones it to the right name.</p>
 </div>
 </section>
+<section id="verifying-the-pins">
+<h3>Verifying the Pins<a class="headerlink" href="#verifying-the-pins" title="Link to this heading"></a></h3>
+<p>Provisioning pins the checkouts once; nothing kept them pinned. Run this
+before any real-world benchmark or precision claim:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>corpus-check<span class="w">          </span><span class="c1"># exits 1 if anything is off</span>
+python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>corpus-check<span class="w"> </span>--json<span class="w">   </span><span class="c1"># machine-readable</span>
+</pre></div>
+</div>
+<p>It reports one row per project, worst first:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Status</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>MISSING</p></td>
+<td><p>Checkout directory absent</p></td>
+</tr>
+<tr class="row-odd"><td><p>NOT_GIT</p></td>
+<td><p>Directory exists but is not a git checkout</p></td>
+</tr>
+<tr class="row-even"><td><p>PIN_ABSENT</p></td>
+<td><p>Pinned commit not present locally (needs a fetch)</p></td>
+</tr>
+<tr class="row-odd"><td><p>DRIFTED</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">HEAD</span></code> is not the pinned commit</p></td>
+</tr>
+<tr class="row-even"><td><p>UNPINNED</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">HEAD</span></code> matches the pin but sits on a branch, so the next
+<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">pull</span></code> silently drifts it</p></td>
+</tr>
+<tr class="row-odd"><td><p>OK</p></td>
+<td><p>Detached at the pinned commit</p></td>
+</tr>
+</tbody>
+</table>
+<p>It also flags three contamination cases independent of status:</p>
+<ul class="simple">
+<li><p>tracked files modified, so the scanned source is not the pin;</p></li>
+<li><p><strong>untracked ``*.c``/``*.h`` files, which sqc will scan</strong> and attribute to
+the pinned commit (untracked files sqc ignores are counted separately and
+are harmless);</p></li>
+<li><p><strong>gitignored ``*.c``/``*.h`` files</strong>, which are invisible to <code class="docutils literal notranslate"><span class="pre">git</span>
+<span class="pre">status</span></code> but which sqc scans anyway – it dispatches on file extension and
+never consults git. The case to watch is a build run inside a checkout:
+sqlite’s build generates a gitignored <code class="docutils literal notranslate"><span class="pre">sqlite3.c</span></code> amalgamation, which
+would silently add ~250k lines to every sqlite scan.</p></li>
+</ul>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p>Keep the checkouts pristine. Build artifacts belong in a separate tree,
+not inside <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code>.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>This check exists because the failure is silent and did happen. On the
+work node curl, hostap and sqlite had all drifted, while libcrc and lua
+sat on tracking branches matching their pins only by coincidence. A gate
+run against the drifted trees reported hostap 452 / sqlite 516 findings
+where the pinned snapshots give 447 / 506 – close enough to look
+plausible, and not comparable to <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> at all. Fix drift with
+the <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">checkout</span> <span class="pre">--detach</span></code> command the check prints for each row.</p>
+</div>
+</section>
 <section id="clone-and-pin">
 <h3>Clone and Pin<a class="headerlink" href="#clone-and-pin" title="Link to this heading"></a></h3>
 <p>Preferred: run <code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code> (see <a class="reference internal" href="#benchmark-host-layout">Benchmark Host
-Layout</a> above) – it clones, pins, and verifies all 9 checkouts in one pass.</p>
+Layout</a> above) – it clones, pins, and verifies all 9 checkouts in one pass,
+reading the pins from <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code>.</p>
 <p>Manual fallback:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span><span class="w">   </span><span class="c1"># default: ~/toolchain</span>
 <span class="nb">cd</span><span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span>
