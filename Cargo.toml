@@ -63,7 +63,7 @@ git2 = "0.19"
 # enabled only for cpp_header::looks_like_cpp (a .h file compiled as C++
 # despite the ambiguous extension, task 571) -- no C++ grammar-based
 # analysis is otherwise performed; tools_sqc stays CERT-C only.
-lang-parsing-substrate = { version = "0.6.2", default-features = false, features = ["lang-c", "lang-cpp"] }
+lang-parsing-substrate = { version = "0.7.0", default-features = false, features = ["lang-c", "lang-cpp"] }
 tree-sitter = "0.25"
 streaming-iterator = "0.1"
 anyhow = "1.0"
