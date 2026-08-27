@@ -1882,15 +1882,7 @@ impl FlexibleArrayAnalyzer {
     }
 
     fn is_pointer_parameter(&self, param: &Node, _source: &str) -> bool {
-        // Check if parameter declaration includes pointer syntax
-        for i in 0..param.child_count() {
-            if let Some(child) = param.child(i) {
-                if child.kind() == "pointer_declarator" {
-                    return true;
-                }
-            }
-        }
-        false
+        declarator_utils::is_pointer_declarator(param)
     }
 
     fn analyze_storage_duration(&self, node: &Node, source: &str) -> StorageInfo {
@@ -1991,52 +1983,12 @@ impl FlexibleArrayAnalyzer {
     }
 
     fn is_pointer_declaration(&self, node: &Node, _source: &str) -> bool {
-        // Check if this declaration is for a pointer (which is allowed)
-        // Look for pointer_declarator or * symbols in the declarator part ONLY
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "pointer_declarator" {
-                    return true;
-                }
-                // Only check for '*' character in declarators, not in initializers
-                if child.kind() == "init_declarator" {
-                    // Check the declarator part, not the initializer
-                    for j in 0..child.child_count() {
-                        if let Some(declarator_child) = child.child(j) {
-                            match declarator_child.kind() {
-                                "pointer_declarator" => return true,
-                                "identifier" => {
-                                    // This is just the variable name, continue
-                                    continue;
-                                }
-                                "=" => {
-                                    // Stop here - we've reached the initializer
-                                    break;
-                                }
-                                _ => {
-                                    // Check for a nested pointer_declarator only in
-                                    // declarator nodes (AST-based, not a text scan --
-                                    // a text '*' scan false-positives on array-size
-                                    // arithmetic like `buffer[count * 2]`, task 520).
-                                    if declarator_child.kind().contains("declarator")
-                                        && declarator_utils::is_pointer_declarator(
-                                            &declarator_child,
-                                        )
-                                    {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if child.kind().contains("declarator")
-                    && declarator_utils::is_pointer_declarator(&child)
-                {
-                    return true;
-                }
-            }
-        }
-        false
+        // pointer_declarator only ever appears within a declaration's actual
+        // declarator, never inside an init_declarator's initializer
+        // expression (a dereference like `*p` parses as pointer_expression,
+        // and `a * b` as binary_expression), so a whole-subtree search is
+        // safe here and doesn't need to special-case stopping at `=`.
+        declarator_utils::is_pointer_declarator(node)
     }
 
     fn get_severity_for_storage_type(&self, storage_type: &str) -> Severity {
