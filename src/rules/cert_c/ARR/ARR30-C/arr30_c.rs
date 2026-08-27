@@ -43,6 +43,7 @@ use crate::analyze::buffer_size::{self, BufferInfo, BufferSize};
 use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, VarRangeMap};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::function_summary::collect_param_names;
 use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
@@ -5300,6 +5301,25 @@ impl Arr30C {
                 // (if-blocks, loops) are visible to sibling scopes for
                 // overflow checks — scoped to this function alone.
                 local_buffers = self.global_scope_buffers.borrow().clone();
+                // Task 555: a parameter's name (e.g. `buf`) can collide with
+                // an unrelated global-scope buffer of the same name -- a
+                // struct/union member array, a typedef-array member, or a
+                // global variable declared in a completely different part of
+                // the file. No source in this file ever legitimately inserts
+                // a *parameter*'s own size into `buffers` (only "declaration"
+                // nodes are tracked, never "parameter_declaration"), so any
+                // hit under a parameter's name here is always that
+                // collision, not real size info for the parameter -- e.g.
+                // hostap's `wpas_p2ps_get_feat_cap_str(char *buf, ...)` was
+                // linked to an unrelated struct's `u8 buf[0]` flexible-array
+                // member from a different function entirely. Strip those
+                // names from the base map before layering this function's
+                // own local declarations back on, so a real local buffer
+                // that happens to shadow a parameter name (rare, but valid
+                // C) is still tracked correctly.
+                for param_name in collect_param_names(node, source) {
+                    local_buffers.remove(&param_name);
+                }
                 if let Some(body) = node.child_by_field_name("body") {
                     let typedefs = self.cached_typedefs.borrow();
                     self.extract_buffers_from_ast(
