@@ -75,7 +75,14 @@ impl Msc13C {
                     c.kind() == "storage_class_specifier" && get_node_text(&c, source) == "static"
                 })
             });
-            if !decl_text.contains("extern ") && !decl_text.contains("typedef ") && !is_static {
+            // See walk_for_declarations: a declaration with a genuine parse
+            // error (e.g. embedded JS inside EM_ASM) can't be trusted to
+            // name a real variable.
+            if !decl_text.contains("extern ")
+                && !decl_text.contains("typedef ")
+                && !is_static
+                && !node.has_error()
+            {
                 let mut vars = Vec::new();
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
@@ -104,8 +111,17 @@ impl Msc13C {
         if node.kind() == "declaration" {
             // Skip function declarations and extern/typedef
             let decl_text = get_node_text(node, source);
-            if decl_text.contains("extern ") || decl_text.contains("typedef ") {
-                // Don't flag extern or typedef declarations
+            // A declaration containing a genuine parse error can't be
+            // trusted to name a real variable at all. This is how
+            // Emscripten's `EM_ASM({ const width = $0; ... })` embeds raw
+            // JavaScript inside C: tree-sitter-c treats `width` as a
+            // type_identifier and recovers `$0` as a bare `identifier`
+            // inside an ERROR node, which this pass would otherwise flag
+            // as a phantom "declared but never used" variable named `$0`
+            // (task 444). Name-independent by design -- any macro that
+            // embeds non-C content the same way hits the same guard.
+            if decl_text.contains("extern ") || decl_text.contains("typedef ") || node.has_error() {
+                // Don't flag extern/typedef declarations or malformed parses
             } else {
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
