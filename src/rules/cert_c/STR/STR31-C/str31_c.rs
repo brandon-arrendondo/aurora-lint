@@ -653,39 +653,84 @@ impl Str31C {
         root: &Node,
         source: &str,
     ) -> Option<usize> {
-        let pattern = format!(
-            r"\b{}\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*;",
-            regex::escape(global_name)
-        );
-        let re = regex::Regex::new(&pattern).ok()?;
-        let lines: Vec<&str> = source.lines().collect();
-
         let mut min_size: Option<usize> = None;
-        for (idx, line) in lines.iter().enumerate() {
-            let Some(caps) = re.captures(line) else {
-                continue;
-            };
-            let target = &caps[1];
-            if target == global_name || target == "NULL" || target == "0" {
-                continue;
-            }
-            let fn_range = Self::function_range_containing_line(root, idx)?;
+        for (target, row) in Self::find_global_assignment_targets(root, global_name, source) {
+            let fn_range = Self::function_range_containing_line(root, row)?;
             // `target` is often itself just a local alias for the real
             // allocation within the writer function (Juliet variant 45:
             // `data = dataGoodBuffer; ...; GLOBAL = data;` — the global is
             // assigned from `data`, which is in turn assigned from the
             // actual `ALLOCA`'d buffer). One more hop of alias resolution,
             // scoped to the writer's own range, covers this.
-            let size = match self.find_buffer_size(target, root, source, Some(fn_range), None) {
+            let size = match self.find_buffer_size(&target, root, source, Some(fn_range), None) {
                 Some(size) => size,
                 None => {
-                    let alias2 = Self::resolve_pointer_alias_in_range(target, fn_range, source)?;
+                    let alias2 = Self::resolve_pointer_alias_in_range(&target, fn_range, source)?;
                     self.find_buffer_size(&alias2, root, source, Some(fn_range), None)?
                 }
             };
             min_size = Some(min_size.map_or(size, |m: usize| m.min(size)));
         }
         min_size
+    }
+
+    /// Every `global_name = target;` (optionally through a single-level
+    /// parenthesized cast: `global_name = (Type *)target;`) assignment
+    /// anywhere in the file, as the RHS identifier text paired with the
+    /// assignment's 0-indexed row. AST-based replacement (task 507) for a
+    /// former line-regex scan: walking `assignment_expression` nodes and
+    /// checking the `left` field is itself an `identifier` matching
+    /// `global_name` exactly means a struct/union field write that merely
+    /// shares the global's spelling (`s->global_name = ...`) can no longer
+    /// be mistaken for a write to the global, and compound assignments
+    /// (`global_name += x;`) are excluded by checking the operator is a
+    /// plain `=`, matching the old regex's `\s*=\s*` (not `==` or `+=`).
+    fn find_global_assignment_targets(
+        root: &Node,
+        global_name: &str,
+        source: &str,
+    ) -> Vec<(String, usize)> {
+        let mut targets = Vec::new();
+        Self::collect_global_assignment_targets(root, global_name, source, &mut targets);
+        targets
+    }
+
+    fn collect_global_assignment_targets(
+        node: &Node,
+        global_name: &str,
+        source: &str,
+        out: &mut Vec<(String, usize)>,
+    ) {
+        if node.kind() == "assignment_expression"
+            && node
+                .child_by_field_name("operator")
+                .is_some_and(|op| ast_utils::get_node_text(&op, source) == "=")
+        {
+            if let Some(left) = node.child_by_field_name("left") {
+                if left.kind() == "identifier"
+                    && ast_utils::get_node_text(&left, source) == global_name
+                {
+                    if let Some(mut right) = node.child_by_field_name("right") {
+                        if right.kind() == "cast_expression" {
+                            if let Some(value) = right.child_by_field_name("value") {
+                                right = value;
+                            }
+                        }
+                        if right.kind() == "identifier" {
+                            let target = ast_utils::get_node_text(&right, source);
+                            if target != global_name && target != "NULL" && target != "0" {
+                                out.push((target.to_string(), node.start_position().row));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::collect_global_assignment_targets(&child, global_name, source, out);
+            }
+        }
     }
 
     /// Find the `function_definition` node (by line range) that contains
