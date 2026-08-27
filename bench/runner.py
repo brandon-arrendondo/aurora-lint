@@ -279,6 +279,14 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
         cwe_id = _extract_cwe_id(cwe_dir_name)
         work_items.append((cwe_dir_name, cwe_id, manifest, file_count))
 
+    # Longest-processing-time-first: submit the biggest CWEs first so they
+    # start at t=0 instead of whenever their name comes up alphabetically.
+    # The largest CWEs dominate wall-clock (task 388) — starting them last
+    # means workers idle waiting on a straggler that could have started
+    # 30+ minutes earlier. file_count is an imperfect proxy for scan time
+    # but a far better signal than sorted-CWE-name order.
+    work_items.sort(key=lambda item: item[3], reverse=True)
+
     total_cwes = len(work_items) + len(completed_cwes)
 
     # Create or update run record
