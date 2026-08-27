@@ -415,8 +415,18 @@ impl Str34C {
                 if self.is_single_indirection_char(char_vars, &base_name) {
                     // Check if this dereference is being assigned to a larger type
                     if let Some(parent) = node.parent() {
-                        if parent.kind() == "init_declarator"
-                            || parent.kind() == "assignment_expression"
+                        // For `*ptr = value`, this pointer_expression is the
+                        // assignment's write *target* -- the char byte is being
+                        // written, not read and widened, so STR34-C's
+                        // sign-extension-on-read premise doesn't apply (task 574).
+                        let is_assignment_write_target = parent.kind() == "assignment_expression"
+                            && parent
+                                .child_by_field_name("left")
+                                .is_some_and(|left| left == *node);
+
+                        if (parent.kind() == "init_declarator"
+                            || parent.kind() == "assignment_expression")
+                            && !is_assignment_write_target
                         {
                             // Check if there's a cast to unsigned char
                             if !self.has_unsigned_char_cast(node, source) {
