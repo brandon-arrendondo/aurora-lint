@@ -94,6 +94,19 @@ pub struct ProjectContext {
     /// internal-contract suppression to the dispatch-table-callback shape).
     #[serde(default)]
     pub dispatch_table_callbacks: HashSet<String>,
+    /// `#include` paths that name a *project* header which is not on disk:
+    /// the directory prefix resolves under one of the search roots but the
+    /// file itself does not exist (e.g. seL4's `<object/structures_gen.h>`,
+    /// emitted at build time by `tools/bitfield_gen.py` from an `.bf` spec;
+    /// likewise `*.pb-c.h`, `*.tab.h`, and other generated headers).
+    ///
+    /// A system header that simply isn't on the `-I` path (`<sys/socket.h>`)
+    /// does *not* land here — its directory prefix doesn't exist under the
+    /// project either — so this set means specifically "this project's
+    /// declaration set is incomplete because a build step we can't run
+    /// produces part of it" (task 580).
+    #[serde(default)]
+    pub unresolved_project_headers: HashSet<String>,
     /// Function names reachable (including the root itself) from a real
     /// concurrent-execution root: an ISR handler, a thread-spawn entry
     /// point (`pthread_create`/`thrd_create`/`CreateThread`, direct or
