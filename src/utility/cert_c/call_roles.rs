@@ -15,10 +15,9 @@
 //! `char *`, not `void *`, so MEM02-C's "must cast a void*-returning
 //! allocator" rule doesn't apply) -- that's `is_heap_allocator`, distinct
 //! from the broader `is_allocator_call`. `ARR30-C`'s buffer-size-tracking
-//! allocator list and `MEM12-C`'s broader resource-acquisition list
-//! (`fopen`/`open`/`socket`) are intentionally NOT folded in here yet --
-//! both sit inside oversized, text-heuristic-heavy rule files flagged for
-//! their own dedicated audit (tasks 492/493/497) before any migration.
+//! allocator list is intentionally NOT folded in here yet -- it sits inside
+//! an oversized, text-heuristic-heavy rule file flagged for its own
+//! dedicated audit (task 497) before any migration.
 
 /// Core heap allocators that return `void *` (the `MEM02-C` "must
 /// immediately cast" set). Does NOT include `strdup`/`strndup`, which
@@ -54,6 +53,13 @@ const PRINTF_FUNCS: &[&str] = &[
 /// scanf-family formatted-input functions.
 const SCANF_FUNCS: &[&str] = &["scanf", "fscanf", "sscanf", "vscanf", "vfscanf", "vsscanf"];
 
+/// Resource-acquisition functions in `MEM12-C`'s "must be released on every
+/// error path" sense -- a broader, cross-domain concept (file, memory,
+/// socket) than [`is_allocator_call`]'s heap-only scope, matching the set
+/// MEM12-C's own doc comment already illustrates.
+const RESOURCE_ACQUISITION_FUNCS: &[&str] =
+    &["fopen", "malloc", "calloc", "realloc", "open", "socket"];
+
 /// A `void *`-returning heap allocator: `malloc`/`calloc`/`realloc`/
 /// `aligned_alloc`. Use this (not [`is_allocator_call`]) when the rule's
 /// concern is specifically the void-pointer-cast idiom.
@@ -86,6 +92,41 @@ pub fn is_scanf_family(name: &str) -> bool {
 /// Either printf- or scanf-family: takes/uses a format string.
 pub fn is_format_function(name: &str) -> bool {
     is_printf_family(name) || is_scanf_family(name)
+}
+
+/// A resource-acquisition call in `MEM12-C`'s sense (`fopen`/`malloc`/
+/// `calloc`/`realloc`/`open`/`socket` -- file/memory/socket resources that
+/// must be released on every error path, a broader and different concept
+/// from [`is_allocator_call`]'s heap-only scope) over an already-extracted
+/// text snippet (not an AST node), matching how `MEM12-C` operates on
+/// stringified sub-expressions rather than re-walking the AST. Requires
+/// the matched name to be immediately followed by `(`, matching the
+/// "name(" substring shape callers historically relied on, but (unlike a
+/// bare `contains("fopen(")`) also requires a word boundary *before* the
+/// name so a hypothetical `myfopen(` doesn't false-match `fopen`.
+pub fn is_resource_acquisition_text(expr: &str) -> bool {
+    RESOURCE_ACQUISITION_FUNCS
+        .iter()
+        .any(|name| contains_word_boundary_call(expr, name))
+}
+
+/// True if `expr` contains `name` as a whole identifier immediately
+/// followed by `(` -- e.g. `contains_word_boundary_call("n = fopen(...)",
+/// "fopen")` is true, but `"myfopen(...)"` is not.
+fn contains_word_boundary_call(expr: &str, name: &str) -> bool {
+    let bytes = expr.as_bytes();
+    let mut start = 0;
+    while let Some(rel) = expr[start..].find(name) {
+        let pos = start + rel;
+        let before_ok = pos == 0 || !is_ident_byte(bytes[pos - 1]);
+        let after = pos + name.len();
+        let after_is_paren = bytes.get(after) == Some(&b'(');
+        if before_ok && after_is_paren {
+            return true;
+        }
+        start = pos + name.len();
+    }
+    false
 }
 
 /// Word-boundary-aware `sizeof` detection over an already-extracted text
@@ -147,5 +188,20 @@ mod tests {
         assert!(is_sizeof_text("n * sizeof x"));
         assert!(!is_sizeof_text("mysizeof(int)"));
         assert!(!is_sizeof_text("sizeofx"));
+    }
+
+    #[test]
+    fn resource_acquisition_text_covers_file_memory_and_socket() {
+        assert!(is_resource_acquisition_text("fopen(\"f\", \"r\")"));
+        assert!(is_resource_acquisition_text("malloc(sizeof(object_t))"));
+        assert!(is_resource_acquisition_text(
+            "socket(AF_INET, SOCK_STREAM, 0)"
+        ));
+        assert!(!is_resource_acquisition_text("fclose(f)"));
+    }
+
+    #[test]
+    fn resource_acquisition_text_is_word_boundary_aware() {
+        assert!(!is_resource_acquisition_text("myfopen(\"f\", \"r\")"));
     }
 }

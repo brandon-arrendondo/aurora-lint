@@ -188,15 +188,29 @@ the wide-character `wprintf` family). Filed and closed as task 487.
 | `is_scanf_family` | `(name: &str) -> bool` | scanf-family formatted-input functions. |
 | `is_format_function` | `(name: &str) -> bool` | `is_printf_family` or `is_scanf_family`. |
 | `is_sizeof_text` | `(expr: &str) -> bool` | Word-boundary-aware `sizeof` detection over an already-extracted text snippet (not an AST node), for rule files that operate on stringified sub-expressions rather than the AST directly. |
+| `is_resource_acquisition_text` | `(expr: &str) -> bool` | Word-boundary-aware `fopen`/`malloc`/`calloc`/`realloc`/`open`/`socket` detection over an already-extracted text snippet — `MEM12-C`'s broader, cross-domain (file/memory/socket) "must release on every error path" concept, distinct from `is_allocator_call`'s heap-only scope. Migrated from a text-only `.contains("fopen(")`-style check (task 499); the word-boundary requirement is new (narrows out a hypothetical `myfopen(` false-match). |
 
-**Deliberately NOT folded in here** (as of task 487): `ARR30-C`'s
-allocator list (its own buffer-size-tracking subsystem, task 497),
-`MEM12-C`'s broader resource-acquisition list (`fopen`/`open`/`socket` —
-a different, wider classification concept, and text-based rather than
-AST-based), and `STR30-C`/`ENV30-C`'s `is_safe_function` (only their
-printf sub-list overlaps; the rest of the function answers a materially
-different "does this call leave the buffer's contents alone" question).
-These are candidates for a later migration pass, not oversights.
+**Deliberately NOT folded in here** (as of task 499): `ARR30-C`'s
+allocator list (its own buffer-size-tracking subsystem, task 497), and
+`STR30-C`/`ENV30-C`'s `is_safe_function` beyond the printf sub-list
+(already migrated to `is_printf_family`, task 499) — the rest of each
+function answers a materially different "does this call leave the
+buffer's contents alone" question specific to that rule. These are
+candidates for a later migration pass, not oversights.
+
+**Task 499 migration notes:** `STR30-C`'s printf sub-list migration is
+behaviorally inert either way — `is_safe_function` there only gates
+`check_unknown_function_literal_arg`, which itself immediately bails
+unless the callee's name contains "modify"/"change"/"set"/"update", so
+no printf-family name was ever reachable through it before or after.
+`ENV30-C` needed one corequisite fix: `is_modification_function` didn't
+already list `vsprintf`/`vsnprintf` as destination-writing (unlike
+`STR30-C`'s equivalent list, which did), so folding the full printf
+family into `is_safe_function` would have newly (and wrongly) treated
+`vsprintf(protected_var, ...)` as safe. Added `vsprintf`/`vsnprintf` to
+`is_modification_function` first; a regression fixture
+(`tests/fail/testcases_vsprintf_modification.c`) was confirmed to fail
+without that addition before the migration landed.
 
 ## Arithmetic-overflow-detection helpers
 

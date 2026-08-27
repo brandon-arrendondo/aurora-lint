@@ -2,6 +2,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::prelude::RuleViolation;
 use crate::rules::cert_c::CertRule;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -502,6 +503,14 @@ impl ENV30C {
                 | "strncat"
                 | "sprintf"
                 | "snprintf"
+                // vsprintf/vsnprintf write to their first argument exactly
+                // like sprintf/snprintf; must be classified here (checked
+                // before is_safe_function below) so that folding
+                // is_safe_function's printf sublist into
+                // call_roles::is_printf_family doesn't newly treat them as
+                // safe to pass a protected var to as a destination.
+                | "vsprintf"
+                | "vsnprintf"
                 | "memcpy"
                 | "memmove"
                 | "memset"
@@ -523,15 +532,15 @@ impl ENV30C {
             return true;
         }
 
+        if call_roles::is_printf_family(name) {
+            return true;
+        }
+
         // Functions that don't modify their first argument (may read it but not write)
         matches!(
             name,
             // Output functions (read string, output elsewhere)
-            "printf"
-                | "fprintf"
-                | "sprintf"
-                | "snprintf"
-                | "puts"
+            "puts"
                 | "fputs"
                 | "fwrite"
                 | "write"
