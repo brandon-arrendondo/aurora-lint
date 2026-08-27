@@ -43,8 +43,11 @@ records whatever SHA it finds rather than asserting the expected one. Since
 `ground_truth` is keyed on `(project, commit, file, line, rule)`, findings
 from a drifted tree fall outside the precision/recall denominator in either
 direction with no error. The check exits nonzero and prints the
-`git checkout --detach` fix per row. It also flags untracked `*.c`/`*.h`
-files, which sqc *will* scan and attribute to the pinned commit.
+`git checkout --detach` fix per row. It also flags untracked *and gitignored*
+`*.c`/`*.h` files, which sqc *will* scan and attribute to the pinned commit —
+sqc dispatches on file extension and never consults git, so a build run inside
+a checkout (e.g. sqlite's generated `sqlite3.c` amalgamation) contaminates a
+scan while staying invisible to `git status`.
 
 ### Protocol
 

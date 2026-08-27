@@ -316,11 +316,22 @@ UNPINNED     ``HEAD`` matches the pin but sits on a branch, so the next
 OK           Detached at the pinned commit
 ===========  =========================================================
 
-It also flags two contamination cases independent of status: tracked files
-modified, and **untracked ``*.c``/``*.h`` files, which sqc will scan** and
-attribute to the pinned commit. Untracked files sqc ignores are counted
-separately and are harmless (hostap carries ~800 ``*.uncrustify`` formatter
-leftovers that fall in this bucket).
+It also flags three contamination cases independent of status:
+
+* tracked files modified, so the scanned source is not the pin;
+* **untracked ``*.c``/``*.h`` files, which sqc will scan** and attribute to
+  the pinned commit (untracked files sqc ignores are counted separately and
+  are harmless);
+* **gitignored ``*.c``/``*.h`` files**, which are invisible to ``git
+  status`` but which sqc scans anyway -- it dispatches on file extension and
+  never consults git. The case to watch is a build run inside a checkout:
+  sqlite's build generates a gitignored ``sqlite3.c`` amalgamation, which
+  would silently add ~250k lines to every sqlite scan.
+
+.. tip::
+
+    Keep the checkouts pristine. Build artifacts belong in a separate tree,
+    not inside ``$SQC_BENCH_ROOT``.
 
 .. warning::
 

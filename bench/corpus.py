@@ -24,12 +24,19 @@ Statuses, worst first:
               silently drifts it -- provisioning leaves a detached HEAD
   OK          detached at the pinned commit
 
-Independently of status, two contamination flags are reported:
+Independently of status, three contamination flags are reported:
   dirty       tracked files modified, so the scanned source is not the pin
   untracked   untracked *.c/*.h files, which sqc WILL scan and attribute to
-              the pinned commit. Untracked files sqc ignores (e.g. hostap's
-              ~800 *.uncrustify formatter leftovers) are counted separately
-              and are harmless.
+              the pinned commit. Untracked files sqc ignores (e.g. the
+              ~800 *.uncrustify formatter leftovers once found in hostap) are
+              counted separately and are harmless.
+  ignored     *.c/*.h files present on disk but matched by a .gitignore.
+              These are invisible to `git status`, yet sqc scans by file
+              extension and does not consult git at all -- so they contaminate
+              a scan exactly as much as untracked ones. The motivating case is
+              a build run inside a checkout: sqlite's build generates a
+              gitignored sqlite3.c amalgamation, which would silently add
+              ~250k lines to every sqlite scan.
 """
 
 import json
@@ -73,6 +80,7 @@ def check_repo(entry, bench_root=None):
         "name": name, "path": str(path), "expected": pin,
         "head": None, "branch": None, "status": None,
         "dirty": 0, "untracked_scanned": 0, "untracked_ignored": 0,
+        "gitignored_scanned": 0,
     }
 
     if not path.is_dir():
@@ -108,6 +116,15 @@ def check_repo(entry, bench_root=None):
             res[key] += 1
         else:
             res["dirty"] += 1
+
+    # Ignored files never appear in `git status`, but sqc dispatches on file
+    # extension and never consults git -- so a gitignored .c/.h is scanned.
+    ignored = _git(path, "ls-files", "--others", "--ignored",
+                   "--exclude-standard") or ""
+    res["gitignored_scanned"] = sum(
+        1 for line in ignored.splitlines()
+        if line.strip().endswith(SCANNED_SUFFIXES)
+    )
     return res
 
 
@@ -136,7 +153,8 @@ def report(bench_root=None, as_json=False):
     results = check_all(bench_root)
     bad = [r for r in results if r["status"] != "OK"]
     contaminated = [r for r in results
-                    if r["dirty"] or r["untracked_scanned"]]
+                    if r["dirty"] or r["untracked_scanned"]
+                    or r["gitignored_scanned"]]
 
     if as_json:
         print(json.dumps({
@@ -163,6 +181,8 @@ def report(bench_root=None, as_json=False):
             notes.append(f"{r['dirty']} tracked file(s) modified")
         if r["untracked_scanned"]:
             notes.append(f"{r['untracked_scanned']} untracked .c/.h WILL be scanned")
+        if r["gitignored_scanned"]:
+            notes.append(f"{r['gitignored_scanned']} gitignored .c/.h WILL be scanned")
         if r["untracked_ignored"]:
             notes.append(f"{r['untracked_ignored']} untracked (not scanned)")
         print(f"{r['name']:<11} {r['status']:<11} "
@@ -178,7 +198,8 @@ def report(bench_root=None, as_json=False):
               f"untracked files -- scanned source differs from the pin:")
         for r in contaminated:
             print(f"  {r['name']:<11} dirty={r['dirty']} "
-                  f"untracked_scanned={r['untracked_scanned']}")
+                  f"untracked_scanned={r['untracked_scanned']} "
+                  f"gitignored_scanned={r['gitignored_scanned']}")
     if not bad and not contaminated:
         print("\nAll 9 checkouts detached at their pinned commits, working "
               "trees clean.")
