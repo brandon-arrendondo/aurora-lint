@@ -15,8 +15,37 @@ use tree_sitter::Node;
 /// Map of `struct/typedef name -> { field name -> field type }`.
 pub type StructFieldTypes = HashMap<String, HashMap<String, String>>;
 
-/// True if a type string denotes a floating-point type (`float`, `double`,
-/// `long double`, `float_t`, `double_t`).
+/// The C23 / GCC extended floating types: the ISO/IEC TS 18661 interchange
+/// (`_FloatN`, `_DecimalN`) and extended (`_FloatNx`, `_DecimalNx`) formats,
+/// plus GCC's non-standard spellings (`__float128`, `__fp16`, `__bf16`).
+///
+/// Every spelling here begins with `_` + uppercase or with `__`, which C
+/// reserves to the implementation, so a token matching one of these is always
+/// the implementation's floating type and never a user typedef — safe to
+/// match without further qualification.
+///
+/// Shared with FLP38-C, which needs the same set but as an *exact* whole-type
+/// match rather than a token scan (see `Flp38C::is_floating_type`).
+pub const EXTENDED_FLOAT_TYPES: &[&str] = &[
+    "_Float16",
+    "_Float32",
+    "_Float32x",
+    "_Float64",
+    "_Float64x",
+    "_Float128",
+    "_Float128x",
+    "_Decimal32",
+    "_Decimal64",
+    "_Decimal64x",
+    "_Decimal128",
+    "_Decimal128x",
+    "__float128",
+    "__fp16",
+    "__bf16",
+];
+
+/// True if a type string denotes a floating-point type: `float`, `double`,
+/// `long double`, `float_t`, `double_t`, or any of [`EXTENDED_FLOAT_TYPES`].
 ///
 /// Matches whole type *tokens* — never substrings — so integer typedefs whose
 /// names merely embed "float"/"double" (e.g. `double_buffered_count`) are NOT
@@ -24,7 +53,10 @@ pub type StructFieldTypes = HashMap<String, HashMap<String, String>>;
 pub fn is_float_type(type_str: &str) -> bool {
     type_str
         .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .any(|tok| matches!(tok, "float" | "double" | "float_t" | "double_t"))
+        .any(|tok| {
+            matches!(tok, "float" | "double" | "float_t" | "double_t")
+                || EXTENDED_FLOAT_TYPES.contains(&tok)
+        })
 }
 
 /// True if a numeric literal is a floating-point constant: contains a `.`, an
@@ -296,6 +328,40 @@ mod tests {
         assert!(is_float_type("float"));
         assert!(is_float_type("double"));
         assert!(!is_float_type("double_buffered_count"));
+    }
+
+    #[test]
+    fn is_float_type_covers_c23_extended_float_types() {
+        for t in EXTENDED_FLOAT_TYPES {
+            assert!(is_float_type(t), "{t} should classify as floating-point");
+        }
+        assert!(is_float_type("const _Decimal64"));
+        // Word-boundary discipline still holds for the extended spellings: a
+        // longer identifier that merely starts with one is a single token.
+        assert!(!is_float_type("_Float32_count"));
+        assert!(!is_float_type("my_Float64"));
+    }
+
+    #[test]
+    fn collect_variable_types_records_multi_token_and_extended_float_types() {
+        // tree-sitter-c emits `long double` as ONE sized_type_specifier node,
+        // so extract_type_and_name's overwrite-per-specifier loop does not
+        // truncate it to "long" -- the concern raised by task 502 when
+        // comparing against FLP38-C's token-concatenating declared_type_text.
+        // The extended types parse as type_identifier and survive too.
+        let src = "void f(void) { long double a; _Float32 b; _Decimal64 c; }";
+        let tree = parse_c_code(src);
+        let func = tree
+            .root_node()
+            .child(0)
+            .expect("function_definition child");
+        let type_map = collect_variable_types(&func, src);
+        assert_eq!(type_map.get("a").map(|s| s.as_str()), Some("long double"));
+        assert_eq!(type_map.get("b").map(|s| s.as_str()), Some("_Float32"));
+        assert_eq!(type_map.get("c").map(|s| s.as_str()), Some("_Decimal64"));
+        for name in ["a", "b", "c"] {
+            assert!(is_float_type(type_map.get(name).unwrap()), "{name}");
+        }
     }
 
     #[test]
