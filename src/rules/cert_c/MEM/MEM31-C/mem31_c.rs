@@ -4,6 +4,7 @@ use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::declarator_utils;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -105,6 +106,13 @@ struct MemoryLeakAnalyzer<'a> {
     // across calls, never freed) is exactly that pattern -- not a leak
     // just because the function returns without freeing it.
     static_variables: HashSet<String>,
+    // Locals declared with a non-pointer, non-array declarator that are
+    // never used in a pointer-shaped way anywhere in the body (no `->`,
+    // no unary `*`, no subscript, no NULL comparison). Nothing that holds
+    // heap memory can look like this, so a `*_new`-style *name-heuristic*
+    // allocation stored into one of them is not an allocation at all
+    // (task 580).
+    value_only_locals: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +221,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             function_params: HashSet::new(),
             deref_allocated_params: HashSet::new(),
             static_variables: HashSet::new(),
+            value_only_locals: HashSet::new(),
         }
     }
 
@@ -228,6 +237,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .filter(|n| !n.is_empty())
                 .collect();
             self.static_variables = Self::collect_static_variable_names(&body, source);
+            self.value_only_locals = Self::collect_value_only_locals(&body, source);
 
             // Pre-analysis: collect what variables are freed at each label
             self.collect_label_frees(&body, source);
@@ -383,6 +393,94 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
         }
         names
+    }
+
+    /// Collect the locals that provably cannot hold heap memory: declared
+    /// with a plain (non-pointer, non-array) declarator *and* never used
+    /// through any pointer-shaped operation in the whole body.
+    ///
+    /// This exists to corroborate `is_allocation_call`'s name-shape
+    /// heuristic (`*_new`, `create_*`, `*_alloc`, `*_dup`, ...), which is a
+    /// guess about an unseen callee, not evidence. seL4 builds its
+    /// capability/page-table types with a code generator whose value
+    /// constructors are named exactly like that (`pte_new`,
+    /// `cap_frame_cap_new`, `seL4_Fault_VMFault_new`) but return a small
+    /// struct *by value* — `pte_t pte = pte_new(...)` is a register/stack
+    /// value, so "not freed" is never a leak (task 580).
+    ///
+    /// A pointer typedef (`typedef struct foo *foo_t;`) declared without a
+    /// `*` is the case this deliberately does not exclude on the declarator
+    /// alone: any such variable that really holds heap memory gets
+    /// dereferenced, indexed, or NULL-checked somewhere, and each of those
+    /// uses takes it back out of this set.
+    fn collect_value_only_locals(body: &Node, source: &str) -> HashSet<String> {
+        let mut candidates = HashSet::new();
+        for decl in query::find_descendants_of_kind(*body, "declaration") {
+            let mut cursor = decl.walk();
+            for child in decl.children(&mut cursor) {
+                let declarator = match child.kind() {
+                    "init_declarator" => child.child_by_field_name("declarator"),
+                    "pointer_declarator" | "identifier" | "array_declarator" => Some(child),
+                    _ => None,
+                };
+                let Some(d) = declarator else { continue };
+                if declarator_utils::is_pointer_declarator(&d)
+                    || declarator_utils::is_array_declarator(&d)
+                    || declarator_utils::is_function_declarator(&d)
+                {
+                    continue;
+                }
+                let name = ast_utils::get_identifier_from_declarator(&d, source);
+                if !name.is_empty() {
+                    candidates.insert(name);
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            return candidates;
+        }
+
+        for node in query::find_descendants(*body, |n| {
+            matches!(
+                n.kind(),
+                "field_expression"
+                    | "pointer_expression"
+                    | "subscript_expression"
+                    | "binary_expression"
+            )
+        }) {
+            for used in pointer_shaped_operand_names(&node, source) {
+                candidates.remove(&used);
+            }
+        }
+
+        candidates
+    }
+
+    /// True if `alloc_type` (the callee name recorded in `AllocInfo`) was
+    /// recognized as an allocator *only* by `is_allocation_call`'s name-shape
+    /// heuristic — neither a standard allocator nor a callee whose computed
+    /// summary says it returns an allocation.
+    fn is_name_heuristic_allocator(&self, alloc_type: &str) -> bool {
+        !call_roles::is_allocator_call(alloc_type)
+            && !self
+                .function_summaries
+                .get(alloc_type)
+                .is_some_and(|summary| summary.returns_allocation)
+    }
+
+    /// Record `var_name` as holding allocated memory, unless the allocation
+    /// was a bare name-shape guess about a variable that cannot be a pointer
+    /// (see `collect_value_only_locals`).
+    fn track_allocation(&mut self, var_name: String, info: AllocInfo) -> bool {
+        if self.value_only_locals.contains(&var_name)
+            && self.is_name_heuristic_allocator(&info.alloc_type)
+        {
+            return false;
+        }
+        self.allocated_memory.insert(var_name, info);
+        true
     }
 
     /// Pre-analyze function to find what variables are freed at each labeled statement
@@ -812,7 +910,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         self.handle_realloc_in_decl(&var_name, &value, source);
                     }
 
-                    self.allocated_memory.insert(
+                    let tracked = self.track_allocation(
                         var_name.clone(),
                         AllocInfo {
                             line: pos.row + 1,
@@ -820,9 +918,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             alloc_type: alloc_type.clone(),
                         },
                     );
-
                     // If signal handler has been registered, warn about potential leak
-                    if self.signal_registered {
+                    if tracked && self.signal_registered {
                         self.leak_violations.push(RuleViolation {
                             rule_id: "MEM31-C".to_string(),
                             severity: Severity::High,
@@ -1170,7 +1267,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
                 let pos = right.start_position();
                 let alloc_type = self.get_allocation_type(&right, source);
-                self.allocated_memory.insert(
+                self.track_allocation(
                     var_name.clone(),
                     AllocInfo {
                         line: pos.row + 1,
@@ -1847,4 +1944,74 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     fn block_has_return(&self, node: &Node) -> bool {
         query::find_first_descendant(*node, |n| n.kind() == "return_statement").is_some()
     }
+}
+
+/// Names used through a pointer-shaped operation in `node`: `p->f`, `*p`,
+/// `p[i]`, or a `p == NULL`/`p != NULL` comparison. Any one of these is
+/// evidence that `p` really is a pointer even when its declarator carries no
+/// `*` (a pointer typedef), which is what takes it back out of
+/// `collect_value_only_locals`' candidate set.
+///
+/// `&p` is deliberately not evidence: taking the address of a plain value
+/// local is ordinary C and says nothing about `p`'s own type.
+fn pointer_shaped_operand_names(node: &Node, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    match node.kind() {
+        "field_expression" => {
+            // Only `->` implies the base is a pointer; `.` does not.
+            let is_arrow = node
+                .child_by_field_name("operator")
+                .map(|op| ast_utils::get_node_text(&op, source) == "->")
+                .unwrap_or(false);
+            if is_arrow {
+                if let Some(arg) = node.child_by_field_name("argument") {
+                    if arg.kind() == "identifier" {
+                        names.push(ast_utils::get_node_text_owned(&arg, source));
+                    }
+                }
+            }
+        }
+        "pointer_expression" => {
+            let is_deref = node
+                .child_by_field_name("operator")
+                .map(|op| ast_utils::get_node_text(&op, source) == "*")
+                .unwrap_or(false);
+            if is_deref {
+                if let Some(arg) = node.child_by_field_name("argument") {
+                    if arg.kind() == "identifier" {
+                        names.push(ast_utils::get_node_text_owned(&arg, source));
+                    }
+                }
+            }
+        }
+        "subscript_expression" => {
+            if let Some(arg) = node.child_by_field_name("argument") {
+                if arg.kind() == "identifier" {
+                    names.push(ast_utils::get_node_text_owned(&arg, source));
+                }
+            }
+        }
+        "binary_expression" => {
+            let op = node
+                .child_by_field_name("operator")
+                .map(|o| ast_utils::get_node_text_owned(&o, source))
+                .unwrap_or_default();
+            if op == "==" || op == "!=" {
+                let left = node.child_by_field_name("left");
+                let right = node.child_by_field_name("right");
+                for (ident, other) in [(left, right), (right, left)] {
+                    let (Some(ident), Some(other)) = (ident, other) else {
+                        continue;
+                    };
+                    if ident.kind() == "identifier"
+                        && ast_utils::get_node_text(&other, source) == "NULL"
+                    {
+                        names.push(ast_utils::get_node_text_owned(&ident, source));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    names
 }
