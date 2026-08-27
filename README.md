@@ -1,10 +1,10 @@
 # SqC - Software Code Quality
 
-A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC checks 305 rules across 17 categories, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
+A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC checks 306 rules across 17 categories, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
 ## Key Features
 
-- **305 CERT C rules** enabled by default (311 implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
+- **306 CERT C rules** enabled by default (311 implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
 - **Optional interactive terminal UI** for browsing and managing violations (build with `--features tui`)
 - **Multiple export formats**: CSV, XLSX, JSON, SARIF 2.1.0
 - **CI/CD ready**: exit codes, severity thresholds, diff-only mode, SARIF output
@@ -103,7 +103,7 @@ directories for cross-file context and never restricts what gets analyzed.
 sqc /path/to/project --manifest my-rules.toml
 ```
 
-The default manifest (`rules_templates/rules-all.toml`) enables 305 of the 311 implemented rules. See the [Developer Guide](docs/index.rst) for the manifest format.
+The default manifest (`rules_templates/rules-all.toml`) enables 306 of the 311 implemented rules. See the [Developer Guide](docs/index.rst) for the manifest format.
 
 ## Quick CI Example
 
