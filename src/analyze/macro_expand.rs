@@ -445,7 +445,7 @@ fn rescan(
 /// (which must index a `'('`). Returns the argument texts (trimmed) and the
 /// index just past the closing `')'`. Respects nested parens/brackets/braces
 /// and string/char literals.
-fn parse_call_args(chars: &[char], open: usize) -> Option<(Vec<String>, usize)> {
+pub(crate) fn parse_call_args(chars: &[char], open: usize) -> Option<(Vec<String>, usize)> {
     debug_assert_eq!(chars[open], '(');
     let mut args = Vec::new();
     let mut cur = String::new();

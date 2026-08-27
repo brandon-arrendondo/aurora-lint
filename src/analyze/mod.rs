@@ -2,6 +2,7 @@
 pub mod array_size;
 pub mod buffer_size;
 pub mod cfg;
+pub mod concurrency_roots;
 pub mod const_eval;
 /// Cross-file project context ([`context::ProjectContext`]) gathered by the
 /// pre-scan phase and injected into rules that need whole-project data.

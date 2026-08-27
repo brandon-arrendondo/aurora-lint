@@ -933,12 +933,12 @@ impl RuleRegistry {
         registry.register(Box::new(con01_c::Con01C));
         registry.register(Box::new(con02_c::Con02C));
         registry.register(Box::new(con36_c::Con36C));
-        registry.register(Box::new(con03_c::Con03C));
+        registry.register(Box::new(con03_c::Con03C::new()));
         registry.register(Box::new(con04_c::Con04C));
         registry.register(Box::new(con05_c::Con05C));
         registry.register(Box::new(con06_c::Con06C));
         registry.register(Box::new(con30_c::Con30C));
-        registry.register(Box::new(con07_c::Con07C));
+        registry.register(Box::new(con07_c::Con07C::new()));
         registry.register(Box::new(con08_c::Con08C));
         registry.register(Box::new(con09_c::Con09C));
         registry.register(Box::new(con31_c::Con31C));

@@ -29,3 +29,22 @@ static int event_count;
 void log_event(void) {
     event_count++;
 }
+
+/* Establish real concurrent-execution context (task 608): each accessing
+ * function must be reachable from a thread-spawn root for CON07-C's
+ * reachability gate to still fire on this fixture. */
+#include <pthread.h>
+
+void *worker(void *arg) {
+    get_product();
+    set_xy(1, 2);
+    accumulate(1);
+    log_event();
+    return 0;
+}
+
+int main(void) {
+    pthread_t t;
+    pthread_create(&t, 0, worker, 0);
+    return 0;
+}

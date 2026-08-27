@@ -35,3 +35,20 @@ static int error_code = 0;
 void report_error(int code) {
     error_code = code;
 }
+
+/* Establish real concurrent-execution context (task 608): each accessing
+ * function must be reachable from a thread-spawn root for CON03-C's
+ * reachability gate to still fire on this fixture. */
+void *background_worker(void *arg) {
+    increment();
+    set_buffer((char *)arg);
+    report_error(0);
+    return 0;
+}
+
+int main(void) {
+    pthread_t t1, t2;
+    pthread_create(&t1, 0, worker, 0);
+    pthread_create(&t2, 0, background_worker, 0);
+    return 0;
+}

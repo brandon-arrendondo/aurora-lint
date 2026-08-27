@@ -18,3 +18,18 @@ void unsafe_increment(void) {
 int unsafe_read(void) {
     return shared_counter;
 }
+
+/* Establish real concurrent-execution context (task 608): the accessing
+ * functions must be reachable from a thread-spawn root for CON07-C's
+ * reachability gate to still fire on this fixture. */
+void *worker(void *arg) {
+    unsafe_increment();
+    unsafe_read();
+    return 0;
+}
+
+int main(void) {
+    pthread_t t;
+    pthread_create(&t, 0, worker, 0);
+    return 0;
+}

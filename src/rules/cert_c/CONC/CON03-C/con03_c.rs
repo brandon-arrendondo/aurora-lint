@@ -75,13 +75,26 @@
 //! - Flag variables that lack proper synchronization mechanisms
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::cfg;
+use crate::analyze::concurrency_roots;
+use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Con03C;
+#[derive(Debug, Default)]
+pub struct Con03C {
+    /// Function names reachable from a real concurrent-execution root (ISR,
+    /// thread-spawn entry point, or `signal()` handler) — see task 608 /
+    /// `docs/design/con03-con07-isr-thread-reachability.md`. Populated from
+    /// `ProjectContext::concurrency_reachable` when a `-d` prescan ran;
+    /// `check()` ORs it with a same-file-only fallback so the rule still
+    /// works (reduced recall) on a single-file run.
+    concurrency_reachable: RefCell<HashSet<String>>,
+}
 
 impl CertRule for Con03C {
     fn rule_id(&self) -> &'static str {
@@ -104,8 +117,20 @@ impl CertRule for Con03C {
         "CON03-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        self.concurrency_reachable
+            .borrow_mut()
+            .extend(context.concurrency_reachable.iter().cloned());
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+
+        // Same-file fallback, OR'd with whatever a `-d` prescan already
+        // populated via set_project_context (see that method's docs).
+        self.concurrency_reachable
+            .borrow_mut()
+            .extend(concurrency_roots::reachable_within_file(node, source));
 
         // Collect all potentially shared variables (global/static)
         // HashMap: var_name -> (line, column, is_volatile, is_atomic)
@@ -115,6 +140,22 @@ impl CertRule for Con03C {
         // Check each shared variable for proper synchronization
         for (var_name, (line, column, is_volatile, is_atomic)) in shared_vars {
             if !is_volatile && !is_atomic {
+                // CON03-C reports at the variable's *declaration* site, not
+                // an access site, so reachability has to be checked at the
+                // function(s) that actually touch the variable -- a
+                // declaration is never itself a call-graph node. Skip
+                // (rather than always flag) when no accessing function is
+                // reachable from a concurrent root: the value can't race if
+                // nothing that reads/writes it ever runs concurrently.
+                // Task 608 / docs/design/con03-con07-isr-thread-reachability.md.
+                let accessors = self.collect_accessing_functions(node, &var_name, source);
+                let reachable = self.concurrency_reachable.borrow();
+                let is_reachable = accessors.iter().any(|f| reachable.contains(f.as_str()));
+                drop(reachable);
+                if !is_reachable {
+                    continue;
+                }
+
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: Severity::Medium,
@@ -138,6 +179,38 @@ impl CertRule for Con03C {
 }
 
 impl Con03C {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Every function whose body contains at least one reference to
+    /// `var_name` (identifier text match — same precision level as the
+    /// rest of this rule, no scope/shadowing analysis). CON03-C reports at
+    /// the variable's declaration site, which is itself never a call-graph
+    /// node, so this is how reachability gets checked instead (task 608).
+    fn collect_accessing_functions(
+        &self,
+        root: &Node,
+        var_name: &str,
+        source: &str,
+    ) -> HashSet<String> {
+        let mut out = HashSet::new();
+        for func in query::find_descendants_of_kind(*root, "function_definition") {
+            let Some(body) = func.child_by_field_name("body") else {
+                continue;
+            };
+            let touches = query::find_descendants_of_kind(body, "identifier")
+                .into_iter()
+                .any(|id| get_node_text(&id, source) == var_name);
+            if touches {
+                if let Some(name) = cfg::get_function_name(&func, source) {
+                    out.insert(name.to_string());
+                }
+            }
+        }
+        out
+    }
+
     /// Collect all global and static variables that could be shared across threads
     fn collect_shared_variables(
         &self,

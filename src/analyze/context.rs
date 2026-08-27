@@ -94,6 +94,20 @@ pub struct ProjectContext {
     /// internal-contract suppression to the dispatch-table-callback shape).
     #[serde(default)]
     pub dispatch_table_callbacks: HashSet<String>,
+    /// Function names reachable (including the root itself) from a real
+    /// concurrent-execution root: an ISR handler, a thread-spawn entry
+    /// point (`pthread_create`/`thrd_create`/`CreateThread`, direct or
+    /// forwarded through a function-like macro), or a `signal()`-registered
+    /// handler. Computed once during prescan by forward-walking
+    /// `call_graph` from every detected root (`ambiguous_call_targets`
+    /// edges excluded — see that field's docs). Empty when the scanned
+    /// project has no such root anywhere (e.g. a genuinely single-threaded
+    /// codebase). Used by CON03-C/CON07-C to gate findings on whether the
+    /// flagged code is ever reachable from a concurrent context at all,
+    /// rather than firing unconditionally (task 608; see
+    /// `docs/design/con03-con07-isr-thread-reachability.md`).
+    #[serde(default)]
+    pub concurrency_reachable: HashSet<String>,
 }
 
 impl ProjectContext {
