@@ -112,7 +112,7 @@ EXP08-C's copy turned out to be **unreachable dead code** — the preceding
 `if node.kind() == "identifier"` branch returns unconditionally, and `text`
 is lowercased before the check, so `is_uppercase()` could never hold — and
 was deleted rather than wired to the shared helper; whether that exclusion
-should be made live is a behavior question, tracked as its own task. Gated
+should be made live is a behavior question, tracked as task 618. Gated
 byte-identical over the full Juliet suite (58,784 files, 4,457 findings) and
 6 real-world projects (1,111 findings); the only divergence the
 consolidation introduces is that DCL03-C's identifier check is now
