@@ -299,6 +299,16 @@ def analyze_shard(csv_path: str | Path, search_dir: str | Path, cwe_id: str,
     unit: `parse_sqc_csv` keys violations by bare filename (task 388 §3a),
     so a shard analyzing its own directory against its own CSV cannot pick
     up a same-named file from a sibling shard.
+
+    File discovery is recursive (`rglob`, not `glob`): a CWE below
+    `SHARD_MIN_FILES` still keeps its `sNN` subdirs on disk even though the
+    runner treats the whole CWE dir as a single un-split shard, so a
+    top-level-only glob would silently find 0 files for it (task 388 bug --
+    CWE-401/369/415/126/457/194 all scored files_analyzed=0 despite sqc
+    itself finding real violations, because their .c files live one level
+    down in sNN/ with nothing at the top). A leaf `sNN` shard has no further
+    nesting, so `rglob` is equivalent to `glob` there and this is a no-op
+    for the already-correct sharded case.
     """
     search_dir = Path(search_dir)
     csv_path = Path(csv_path)
@@ -317,7 +327,7 @@ def analyze_shard(csv_path: str | Path, search_dir: str | Path, cwe_id: str,
     total_flaw_lines_for_hit = 0
 
     if search_dir.is_dir():
-        for c_file in sorted(search_dir.glob('*.c')):
+        for c_file in sorted(search_dir.rglob('*.c')):
             result = _process_cwe_file(
                 c_file, violations_dict, cwe_rules, analysis, cwe_scan_id,
                 rule_tp, rule_fp, rule_flaw)
