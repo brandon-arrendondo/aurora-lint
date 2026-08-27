@@ -331,6 +331,21 @@ pub fn collect_macro_aliases(root: &Node, source: &str) -> HashMap<String, Strin
     aliases
 }
 
+/// Merge cross-file macro aliases (`project`, from [`ProjectContext::macro_aliases`])
+/// with aliases collected from the current file, with per-file definitions
+/// winning on name collisions. This is the common `set_project_context` +
+/// `check` idiom shared by rules that consume [`collect_macro_aliases`]
+/// (e.g. STR02-C, ERR33-C, ENV03-C, ENV33-C).
+pub fn merged_macro_aliases(
+    project: &HashMap<String, String>,
+    root: &Node,
+    source: &str,
+) -> HashMap<String, String> {
+    let mut aliases = project.clone();
+    aliases.extend(collect_macro_aliases(root, source));
+    aliases
+}
+
 /// Walk `preproc_def` nodes in the AST to collect `#define NAME value` constants.
 /// Handles decimal, hex, octal literals, expressions, and references to other macros.
 /// Recurses into `preproc_ifdef/if/ifndef` blocks.
@@ -363,6 +378,22 @@ pub fn collect_macro_constants(root: &Node, source: &str) -> MacroConstantMap {
             }
         }
     }
+    macros
+}
+
+/// Merge cross-file macro constants (`project`, from
+/// [`ProjectContext::macro_constants`]) with constants collected from the
+/// current file, with per-file definitions winning on name collisions. This
+/// is the common `set_project_context` + `check` idiom shared by rules that
+/// consume [`collect_macro_constants`] (e.g. INT30-C, INT32-C, INT34-C,
+/// ARR30-C).
+pub fn merged_macro_constants(
+    project: &MacroConstantMap,
+    root: &Node,
+    source: &str,
+) -> MacroConstantMap {
+    let mut macros = project.clone();
+    macros.extend(collect_macro_constants(root, source));
     macros
 }
 
@@ -2362,6 +2393,35 @@ mod tests {
         assert_eq!(aliases.get("SYSTEM"), Some(&"system".to_string()));
         // BUFSIZE is numeric, should NOT be in aliases
         assert!(!aliases.contains_key("BUFSIZE"));
+    }
+
+    #[test]
+    fn test_merged_macro_constants_per_file_wins() {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let code = "#define MY_CONST 42\n#define FILE_ONLY 7\nint x;\n";
+        let tree = parser.parse(code, None).unwrap();
+        let mut project = MacroConstantMap::new();
+        project.insert("MY_CONST".to_string(), 0); // overridden by the file's definition
+        project.insert("PROJECT_ONLY".to_string(), 99);
+        let merged = merged_macro_constants(&project, &tree.root_node(), code);
+        assert_eq!(merged.get("MY_CONST"), Some(&42));
+        assert_eq!(merged.get("FILE_ONLY"), Some(&7));
+        assert_eq!(merged.get("PROJECT_ONLY"), Some(&99));
+    }
+
+    #[test]
+    fn test_merged_macro_aliases_per_file_wins() {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let code = "#define SYSTEM system\n";
+        let tree = parser.parse(code, None).unwrap();
+        let mut project = HashMap::new();
+        project.insert("SYSTEM".to_string(), "popen".to_string()); // overridden by the file's definition
+        project.insert("PROJECT_ONLY".to_string(), "exec".to_string());
+        let merged = merged_macro_aliases(&project, &tree.root_node(), code);
+        assert_eq!(merged.get("SYSTEM"), Some(&"system".to_string()));
+        assert_eq!(merged.get("PROJECT_ONLY"), Some(&"exec".to_string()));
     }
 
     #[test]

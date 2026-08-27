@@ -294,11 +294,7 @@ impl Arr30C {
     /// merges in cross-file constants from the prescan (`set_project_context`)
     /// for names not defined in this file. Per-file definitions win.
     fn collect_constants(&self, root: &Node, source: &str) -> HashMap<String, i64> {
-        let mut constants = const_eval::collect_macro_constants(root, source);
-        for (name, value) in self.macro_constants.borrow().iter() {
-            constants.entry(name.clone()).or_insert(*value);
-        }
-        constants
+        const_eval::merged_macro_constants(&self.macro_constants.borrow(), root, source)
     }
 
     /// Get VRA-derived variable ranges at a specific expression node.
