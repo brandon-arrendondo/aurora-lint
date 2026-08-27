@@ -114,6 +114,12 @@ fn run() -> Result<i32> {
                 .action(clap::ArgAction::Append),
         )
         .arg(
+            Arg::new("compile_commands")
+                .long("compile-commands")
+                .help("Read include search paths and -D macros from a compile_commands.json (optional; improves cross-file macro/header coverage for projects that already have a compile database)")
+                .value_name("FILE"),
+        )
+        .arg(
             Arg::new("exclude")
                 .long("exclude")
                 .help("Exclude files matching this path glob from analysis (repeatable, e.g. --exclude '**/onelua.c' --exclude 'testes/**')")
@@ -210,10 +216,53 @@ fn run() -> Result<i32> {
         .get_many::<String>("directories")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
-    let include_paths: Vec<String> = matches
+    let mut include_paths: Vec<String> = matches
         .get_many::<String>("include_paths")
         .map(|vals| vals.cloned().collect())
         .unwrap_or_default();
+    // A compile database contributes its build's search paths *after* any
+    // explicit -I, so a hand-passed path keeps priority in the search order.
+    let compile_db = match matches.get_one::<String>("compile_commands") {
+        Some(db_path) => {
+            let db = analyze::compile_commands::CompileDb::load(std::path::Path::new(db_path))?;
+            eprintln!(
+                "Loaded compile database: {} {}, {} include paths, {} macro definitions ({})",
+                db.entry_count,
+                if db.entry_count == 1 {
+                    "entry"
+                } else {
+                    "entries"
+                },
+                db.include_paths.len(),
+                db.defines.len(),
+                db_path,
+            );
+            // A compile database stores absolute paths from the machine that
+            // built the project. If it was generated elsewhere, those paths are
+            // not here, and resolve_includes would silently skip every header
+            // rather than fail — an expensive no-op that still looks like it
+            // worked. Say so loudly instead.
+            let missing = db.missing_include_paths();
+            if !missing.is_empty() {
+                eprintln!(
+                    "Warning: {} of {} compile-database include paths do not exist on this \
+                     machine (e.g. {}). If this database was generated on another host or in a \
+                     container, its paths need remapping — header resolution will silently skip \
+                     them.",
+                    missing.len(),
+                    db.include_paths.len(),
+                    missing[0],
+                );
+            }
+            for p in &db.include_paths {
+                if !include_paths.contains(p) {
+                    include_paths.push(p.clone());
+                }
+            }
+            Some(db)
+        }
+        None => None,
+    };
     let excludes: Vec<String> = matches
         .get_many::<String>("exclude")
         .map(|vals| vals.cloned().collect())
@@ -313,6 +362,7 @@ fn run() -> Result<i32> {
         suppress_file.map(|s| s.as_str()),
         save_prescan.map(|s| s.as_str()),
         load_prescan.map(|s| s.as_str()),
+        compile_db.as_ref(),
         jobs,
     )?;
 
