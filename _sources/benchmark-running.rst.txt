@@ -13,6 +13,7 @@ Benchmark Infrastructure
     bench/
       __init__.py      Package marker
       __main__.py      CLI: python -m bench juliet [--full] [--jobs N]
+                            [--keep-csv] [--compile-commands]
       config.py        Paths, constants, defaults
       db.py            SQLite schema, WAL mode, CRUD + query API
       analyzer.py      TP/FP classifier (Juliet ground truth)
@@ -85,7 +86,8 @@ Juliet Benchmark Tools
 ==========================================  =================================================
 Tool                                        Purpose
 ==========================================  =================================================
-``run_benchmark(mode)``                     Start benchmark (``"fast"`` default or ``"full"``)
+``run_benchmark(mode, compile_commands)``   Start benchmark (``"fast"`` default or ``"full"``;
+                                            ``compile_commands=True`` adds ``--compile-commands``)
 ``get_status``                              Check progress (%, ETA, recent CWEs)
 ``get_results(sort_by, run)``               Aggregated TP/FP across completed CWEs
 ``get_cwe_detail(cwe_id, run)``             TP/FP breakdown for a specific CWE
@@ -128,11 +130,58 @@ CLI Alternative
 
 .. code-block:: bash
 
-    python -m bench juliet [--full] [--jobs N] [--keep-csv]
+    python -m bench juliet [--full] [--jobs N] [--keep-csv] [--compile-commands]
     python -m bench status [RUN_ID]
     python -m bench compare BASE TARGET
     python -m bench runs
     python -m bench corpus-check [--json]   # real-world checkouts still pinned?
+
+Compile-Database Runs
+~~~~~~~~~~~~~~~~~~~~~
+
+``--compile-commands`` (CLI) / ``compile_commands=True`` (MCP) makes a run pass
+sqc's ``--compile-commands`` flag, adding the build's include search paths and
+``-D`` macro state to the cross-file context. It is **off by default** -- a
+plain run is unchanged.
+
+The run_id is suffixed ``-cdb`` (and, for real-world runs, so is the results
+directory), so a with/without pair on the *same* sqc build stays two distinct,
+comparable runs. Without that suffix the second run would collide: Juliet's
+resume logic skips a run_id already marked ``completed``, and the real-world
+runner reuses the id for its results directory.
+
+Databases are generated per-host (they embed absolute paths, so they are never
+committed):
+
+.. code-block:: bash
+
+    # real-world: one compile_commands.json per checkout root
+    ansible-playbook playbooks/setup-compile-commands.yml -i "localhost," -c local --ask-become-pass
+    # Juliet: synthesized, no real build system to capture
+    python3 scripts/generate_juliet_compile_commands.py
+
+A run requested with ``--compile-commands`` **errors** if the database is
+absent, rather than silently running without it -- a quietly-degraded run is
+indistinguishable from a genuine "the compile DB made no difference" result.
+
+.. warning::
+
+   A compile-DB run is a **changed-rule delta, not a like-for-like
+   comparison**. The flag can only *add* macro/header knowledge, so findings
+   move to ``(file, line)`` pairs that were never adjudicated and fall outside
+   the ``ground_truth`` precision/recall denominator in either direction.
+   Follow the delta-adjudication protocol in ``CLAUDE.md`` before publishing
+   any precision claim from such a run.
+
+.. note::
+
+   **Juliet gains nothing from this.** Measured on the synthesized database
+   (54,486 entries): its only flag is ``-I<testcasesupport>``, which the runner
+   already passes as ``-d testcasesupport``. A with/without pair on
+   CWE457/s01 produced an identical 6,783 violations. The plumbing exists for
+   symmetry and for future Juliet build changes; the real payoff is on the
+   real-world corpora, whose databases carry genuine per-project include trees
+   and ``-D`` state.
 
 Real-World Benchmark Tools
 --------------------------

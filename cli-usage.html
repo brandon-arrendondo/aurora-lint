@@ -47,6 +47,7 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Advanced CLI Usage</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#full-command-reference">Full Command Reference</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#cross-file-analysis">Cross-File Analysis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#using-a-compile-database">Using a Compile Database</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#file-exclusion">File Exclusion</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#export-formats">Export Formats</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#severity-filtering">Severity Filtering</a></li>
@@ -131,6 +132,10 @@ Options:
                                    [[wildcard]] glob/prefix entries)
   -I, --include-path &lt;DIR&gt;         Include search paths for resolving #include directives
                                    (repeatable; like compiler -I flag)
+      --compile-commands &lt;FILE&gt;    Read include search paths and -D macros from a
+                                   compile_commands.json (optional; improves cross-file
+                                   macro/header coverage for projects that already have
+                                   a compile database)
   -v, --verbose                    Increase output verbosity (repeat for more detail;
                                    -v shows per-rule scanning progress)
       --save-prescan &lt;FILE&gt;        Save prescan context to a binary cache file
@@ -181,6 +186,43 @@ per parameter for inter-procedural null propagation</p></li>
 <li><p><strong>Global constants</strong>: file-scope <code class="docutils literal notranslate"><span class="pre">const</span></code> variables for dead-branch elimination</p></li>
 <li><p><strong>Global pointer null states</strong>: cross-file <code class="docutils literal notranslate"><span class="pre">extern</span></code> pointer tracking (EXP34-C)</p></li>
 </ul>
+</section>
+<section id="using-a-compile-database">
+<h2>Using a Compile Database<a class="headerlink" href="#using-a-compile-database" title="Link to this heading"></a></h2>
+<p>sqc needs no build system: point it at any tree and it works. <code class="docutils literal notranslate"><span class="pre">--compile-commands</span></code>
+is a purely optional upgrade for projects that <em>already</em> produce a
+<code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code> (CMake’s <code class="docutils literal notranslate"><span class="pre">CMAKE_EXPORT_COMPILE_COMMANDS</span></code>, <code class="docutils literal notranslate"><span class="pre">bear</span></code>,
+<code class="docutils literal notranslate"><span class="pre">compiledb</span></code>). Without the flag, nothing changes.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">sqc</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">--</span><span class="nb">compile</span><span class="o">-</span><span class="n">commands</span> <span class="n">build</span><span class="o">/</span><span class="n">compile_commands</span><span class="o">.</span><span class="n">json</span>
+</pre></div>
+</div>
+<p>sqc does <strong>not</strong> run a preprocessor. It reads two things out of the database and
+feeds them to the pre-scan that already exists:</p>
+<ul class="simple">
+<li><p><strong>Include search paths</strong> (<code class="docutils literal notranslate"><span class="pre">-I</span></code>, <code class="docutils literal notranslate"><span class="pre">-isystem</span></code>, <code class="docutils literal notranslate"><span class="pre">-iquote</span></code>, <code class="docutils literal notranslate"><span class="pre">-idirafter</span></code>,
+resolved against each entry’s <code class="docutils literal notranslate"><span class="pre">directory</span></code>) are appended to any explicit
+<code class="docutils literal notranslate"><span class="pre">-I</span></code> you passed. This lets <code class="docutils literal notranslate"><span class="pre">#include</span></code> resolution reach headers the
+sibling-header scan would never find — notably angle-bracket includes of
+vendored or out-of-tree headers — so their macros, prototypes and struct
+types join the cross-file context.</p></li>
+<li><p><strong>Command-line macros</strong> (<code class="docutils literal notranslate"><span class="pre">-D</span></code>, minus anything <code class="docutils literal notranslate"><span class="pre">-U</span></code>’d) are parsed as real
+<code class="docutils literal notranslate"><span class="pre">#define</span></code> directives, so command-line constants fold and function-like
+<code class="docutils literal notranslate"><span class="pre">-D</span></code> macros become expandable exactly like ones written in a header.</p></li>
+</ul>
+<p>Because the parse tree is untouched, every finding keeps the source location it
+always had, and the <code class="docutils literal notranslate"><span class="pre">PRE*</span></code> rules still audit macros as written.</p>
+<p>Two properties worth knowing:</p>
+<ul class="simple">
+<li><p><strong>Build flags never override real source.</strong> A <code class="docutils literal notranslate"><span class="pre">-D</span></code> only supplies a macro
+name the scanned tree never defined; a real <code class="docutils literal notranslate"><span class="pre">#define</span></code> always wins.</p></li>
+<li><p><strong>Paths are absolute and host-specific.</strong> A database generated on another
+machine or inside a container names directories that may not exist locally.
+sqc warns when compile-database include paths are missing rather than
+silently resolving nothing.</p></li>
+</ul>
+<p>The compiler’s own built-in system header directories are <em>not</em> in a compile
+database (they are implicit), so headers found only in <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> remain
+out of reach.</p>
 </section>
 <section id="file-exclusion">
 <h2>File Exclusion<a class="headerlink" href="#file-exclusion" title="Link to this heading"></a></h2>
