@@ -531,14 +531,16 @@ impl Msc12C {
     fn check_empty_control_flow(
         &self,
         node: &Node,
-        _source: &str,
+        source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
         match node.kind() {
             "if_statement" => {
                 // Check if the consequence (then-branch) is empty
                 if let Some(consequence) = node.child_by_field_name("consequence") {
-                    if self.is_empty_body(&consequence) {
+                    if self.is_empty_body(&consequence)
+                        && !self.empty_body_has_verification_annotation(&consequence, source)
+                    {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             severity: self.severity(),
@@ -561,6 +563,7 @@ impl Msc12C {
                             if let Some(child) = alt.child(i) {
                                 if child.kind() == "compound_statement"
                                     && self.is_empty_body(&child)
+                                    && !self.empty_body_has_verification_annotation(&child, source)
                                 {
                                     violations.push(RuleViolation {
                                         rule_id: self.rule_id().to_string(),
@@ -875,6 +878,64 @@ impl Msc12C {
             node.child(i)
                 .map(|c| c.kind() == "comment")
                 .unwrap_or(false)
+        })
+    }
+
+    /// Returns true if an (empty, per `is_empty_body`) compound_statement
+    /// contains a structured verification-annotation comment — the
+    /// `/** TAG: "..." */` convention seL4's Isabelle/HOL proof toolchain
+    /// uses to carry formal-verification hints inside otherwise-empty
+    /// if/else branches (`/** AUXUPD: "(True, ptr_retyps ...)" */`,
+    /// `/** GHOSTUPD: "(True, gs_new_frames ...)" */` —
+    /// src/arch/x86/64/object/objecttype.c:191/209/233/239,
+    /// src/arch/riscv/object/objecttype.c:205). These comments ARE the
+    /// branch's entire purpose (consumed by a separate proof build,
+    /// invisible to a plain C compile), unlike a generic explanatory
+    /// comment.
+    ///
+    /// Deliberately narrower than `empty_body_has_comment`: matches only
+    /// a doc-style `/**` (double-star) opener immediately followed by a
+    /// known verification-tag + colon (see
+    /// `is_verification_annotation_comment`), not any comment.
+    /// `empty_body_has_comment` can't be reused here — task 474 found that
+    /// a bare single-star
+    /// comment inside an if/else/for branch is exactly the shape CERT's
+    /// own MSC12-C wiki examples use to illustrate the violation
+    /// (`/* Handle error */`, `/* This code is unreachable */` in
+    /// tests/fail/wiki_{,non}compliant_*.c) — so treating any comment as
+    /// exculpatory there would suppress the rule's own textbook cases.
+    /// The structured tag+colon shape is a much stronger, more specific
+    /// signal that doesn't collide with those fixtures.
+    fn empty_body_has_verification_annotation(&self, node: &Node, source: &str) -> bool {
+        if node.kind() != "compound_statement" {
+            return false;
+        }
+        (0..node.child_count()).any(|i| {
+            node.child(i)
+                .filter(|c| c.kind() == "comment")
+                .is_some_and(|c| {
+                    Self::is_verification_annotation_comment(get_node_text(&c, source))
+                })
+        })
+    }
+
+    /// True if `text` (a single comment token's source text) opens with
+    /// `/**` followed by one of `VERIFICATION_ANNOTATION_TAGS` and a
+    /// colon. Deliberately an explicit tag allowlist rather than "any
+    /// ALL_CAPS word + colon": that broader shape also matches ordinary
+    /// `TODO:`/`FIXME:`/`NOTE:` markers, which are the opposite signal —
+    /// a `TODO:`-only if/else branch is exactly the "author flagged this
+    /// as unfinished" case MSC12-C should still catch. Extend the list if
+    /// another codebase's proof-annotation convention turns up.
+    fn is_verification_annotation_comment(text: &str) -> bool {
+        const VERIFICATION_ANNOTATION_TAGS: &[&str] = &["AUXUPD", "GHOSTUPD"];
+        let Some(rest) = text.strip_prefix("/**") else {
+            return false;
+        };
+        let rest = rest.trim_start();
+        VERIFICATION_ANNOTATION_TAGS.iter().any(|tag| {
+            rest.strip_prefix(tag)
+                .is_some_and(|after| after.starts_with(':'))
         })
     }
 
