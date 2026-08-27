@@ -67,12 +67,25 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg;
+use crate::analyze::concurrency_roots;
+use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashSet;
 use tree_sitter::Node;
 
-pub struct Con07C;
+#[derive(Debug, Default)]
+pub struct Con07C {
+    /// Function names reachable from a real concurrent-execution root (ISR,
+    /// thread-spawn entry point, or `signal()` handler) — see task 608 /
+    /// `docs/design/con03-con07-isr-thread-reachability.md`. Populated from
+    /// `ProjectContext::concurrency_reachable` when a `-d` prescan ran;
+    /// `check()` ORs it with a same-file-only fallback so the rule still
+    /// works (reduced recall) on a single-file run.
+    concurrency_reachable: RefCell<HashSet<String>>,
+}
 
 impl CertRule for Con07C {
     fn rule_id(&self) -> &'static str {
@@ -95,11 +108,23 @@ impl CertRule for Con07C {
         "CON07-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        self.concurrency_reachable
+            .borrow_mut()
+            .extend(context.concurrency_reachable.iter().cloned());
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
         // First pass: collect static variables
         let static_vars = self.collect_static_variables(node, source);
+
+        // Same-file fallback, OR'd with whatever a `-d` prescan already
+        // populated via set_project_context (see that method's docs).
+        self.concurrency_reachable
+            .borrow_mut()
+            .extend(concurrency_roots::reachable_within_file(node, source));
 
         // Second pass: check for non-atomic compound operations on these variables
         self.check_node(node, source, &static_vars, &mut violations);
@@ -109,6 +134,10 @@ impl CertRule for Con07C {
 }
 
 impl Con07C {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Collect all static variable names from the translation unit
     fn collect_static_variables(&self, node: &Node, source: &str) -> Vec<String> {
         let mut static_vars = Vec::new();
@@ -208,6 +237,19 @@ impl Con07C {
 
         // Skip functions that use mutex locks (compliant)
         if self.uses_mutex_lock(function_node, source) {
+            return;
+        }
+
+        // Skip functions never reachable from a real concurrent-execution
+        // root (ISR, thread-spawn entry point, signal() handler) -- a
+        // compound operation that only ever runs on one execution path
+        // can't race with itself. See task 608 /
+        // docs/design/con03-con07-isr-thread-reachability.md.
+        if !self
+            .concurrency_reachable
+            .borrow()
+            .contains(func_name.as_str())
+        {
             return;
         }
 

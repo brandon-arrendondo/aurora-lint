@@ -439,6 +439,21 @@ pub fn prescan_directories(
     function_summary::propagate_transitive_closes(&mut function_summaries);
     function_summary::propagate_return_taint(&mut function_summaries);
 
+    // CON03-C/CON07-C reachability gate (task 608): needs the fully merged,
+    // cross-file `function_macros` table to resolve macro-forwarded
+    // thread-spawn calls (e.g. mosquitto's COMPAT_pthread_create ->
+    // pthread_create — see docs/design/con03-con07-isr-thread-reachability.md),
+    // so root collection re-parses each file here rather than running during
+    // the per-file Phase 2 pass, same reason propagate_param_null_states
+    // above does.
+    let concurrency_reachable = compute_concurrency_reachable(
+        &source_files,
+        &mut parser,
+        &function_macros,
+        &call_graph,
+        &ambiguous_call_targets,
+    );
+
     // Resolve trailing-macro packed-struct candidates against the
     // project-wide macro-name set now that every file has been scanned —
     // the struct definition and the macro's #define commonly live in
@@ -490,7 +505,45 @@ pub fn prescan_directories(
         // Populated later by `resolve_includes`, which is the pass that
         // actually walks `#include` directives against the `-I` search path.
         unresolved_project_headers: HashSet::new(),
+        concurrency_reachable,
     })
+}
+
+/// Forward-reachability set from every concurrency root (an ISR handler, a
+/// thread-spawn entry point, or a `signal()`-registered handler — see
+/// `concurrency_roots`) over `call_graph`, with edges into
+/// `ambiguous_call_targets` stripped first: a callee resolved only by
+/// coincidental name-matching through a struct field or a
+/// parameter-shadowed identifier must not be chased (same reasoning as
+/// task 562's MSC04-C fix, applied here to a reachability walk instead of a
+/// cycle-detection DFS). Includes the roots themselves. Empty when no root
+/// is found anywhere in the scanned project (e.g. a single-threaded
+/// codebase with no `pthread_create`/ISR/`signal()` anywhere) — see
+/// `docs/design/con03-con07-isr-thread-reachability.md`.
+fn compute_concurrency_reachable(
+    source_files: &[PathBuf],
+    parser: &mut CParser,
+    function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    call_graph: &HashMap<String, HashSet<String>>,
+    ambiguous_call_targets: &HashSet<String>,
+) -> HashSet<String> {
+    let mut roots: HashSet<String> = HashSet::new();
+    for file_path in source_files {
+        if let Ok((tree, source)) = parser.parse_file(&file_path.to_string_lossy()) {
+            crate::analyze::concurrency_roots::collect_concurrency_roots(
+                &tree.root_node(),
+                &source,
+                function_macros,
+                &mut roots,
+            );
+        }
+    }
+
+    crate::analyze::concurrency_roots::reachable_from_roots(
+        &roots,
+        call_graph,
+        ambiguous_call_targets,
+    )
 }
 
 /// Scan only the `.h` files directly inside `parent_dir` to collect public API
