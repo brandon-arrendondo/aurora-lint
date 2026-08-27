@@ -178,14 +178,8 @@ fn is_constant_expr_recursive(node: &Node, source: &str) -> bool {
         // unless they're part of sizeof
         "identifier" => {
             let text = ast_utils::get_node_text(node, source);
-            // Check for common constant patterns (ALL_CAPS, kConstant)
-            if text
-                .chars()
-                .all(|c| c.is_uppercase() || c == '_' || c.is_numeric())
-            {
-                return true; // Likely a macro constant
-            }
-            false
+            // ALL_CAPS names are conventionally macro constants
+            ast_utils::is_likely_macro_constant(text)
         }
 
         _ => false,

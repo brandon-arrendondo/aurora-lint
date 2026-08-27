@@ -3,6 +3,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
+use crate::utility::cert_c::ast_utils::is_likely_macro_constant;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -44,7 +45,7 @@ impl Mem05C {
                     // ALL_CAPS identifiers are likely preprocessor constants.
                     if !size_expr.is_empty()
                         && !size_expr.chars().all(|c| c.is_numeric())
-                        && !Self::is_likely_macro_constant(size_expr)
+                        && !is_likely_macro_constant(size_expr)
                     {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
@@ -106,8 +107,6 @@ impl Mem05C {
         .is_some()
     }
 
-    /// Check if a size expression is likely a preprocessor macro constant.
-    /// ALL_CAPS identifiers with optional underscores are conventionally macros.
     /// Walk a declaration's AST to find an array_declarator and return its size expression.
     /// Returns None if the declaration doesn't contain an array_declarator (e.g., it's a
     /// scalar declaration like `uint8_t x = arr[i]` where `[i]` is a subscript, not a size).
@@ -152,17 +151,6 @@ impl Mem05C {
             }
         }
         None
-    }
-
-    fn is_likely_macro_constant(expr: &str) -> bool {
-        !expr.is_empty()
-            && expr
-                .chars()
-                .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
-            && expr
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
     }
 
     fn extract_function_name(&self, node: &Node, source: &str) -> Option<String> {

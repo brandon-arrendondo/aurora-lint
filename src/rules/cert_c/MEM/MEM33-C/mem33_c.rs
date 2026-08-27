@@ -2,7 +2,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     find_containing_function, find_enclosing_declaration_for_identifier,
-    find_identifier_in_declarator, get_node_text,
+    find_identifier_in_declarator, get_node_text, is_likely_macro_constant,
 };
 use crate::utility::cert_c::declarator_utils;
 use lang_parsing_substrate::query;
@@ -2420,13 +2420,10 @@ impl FlexibleArrayAnalyzer {
             return true; // Likely a function call that calculates proper size
         }
 
-        // Strategy 3: Check for macro usage (must contain at least one uppercase letter and not be just numbers)
-        if size_arg.chars().any(|c| c.is_uppercase())
-            && size_arg
-                .chars()
-                .all(|c| c.is_uppercase() || c.is_numeric() || c == '_' || c == '(' || c == ')')
-            && !size_arg.chars().all(|c| c.is_numeric())
-        {
+        // Strategy 3: Check for macro usage — an ALL_CAPS name is conventionally a
+        // macro that already computes the right size. Parenthesized macro *calls*
+        // (`SIZE_OF(x)`) are already handled by Strategy 2 above.
+        if is_likely_macro_constant(size_arg) {
             return true; // Likely a macro that calculates size
         }
 
