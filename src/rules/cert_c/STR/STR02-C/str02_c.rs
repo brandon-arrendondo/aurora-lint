@@ -1242,10 +1242,9 @@ impl CertRule for Str02C {
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
-        // Merge project-level aliases with per-file aliases
-        let mut aliases = self.project_aliases.borrow().clone();
-        aliases.extend(const_eval::collect_macro_aliases(node, source));
-        *self.current_aliases.borrow_mut() = aliases;
+        // Merge project-level aliases with per-file aliases (per-file wins)
+        *self.current_aliases.borrow_mut() =
+            const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
         *self.literal_only_params.borrow_mut() =
             self.collect_literal_only_static_params(node, source);
 
