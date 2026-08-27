@@ -58,6 +58,7 @@ use crate::analyze::macro_expand::{
 };
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -143,7 +144,7 @@ impl Mem12C {
                     let right_text = get_node_text(&right, source);
 
                     // Check if right side is a resource allocation
-                    if self.is_allocation_call(&right_text) {
+                    if call_roles::is_resource_acquisition_text(&right_text) {
                         let line = n.start_position().row;
                         allocations.push((var_name, line));
                     }
@@ -155,7 +156,7 @@ impl Mem12C {
                         let var_name = get_node_text(&declarator, source).trim().to_string();
                         let value_text = get_node_text(&value, source);
 
-                        if self.is_allocation_call(&value_text) {
+                        if call_roles::is_resource_acquisition_text(&value_text) {
                             let line = n.start_position().row;
                             allocations.push((var_name, line));
                         }
@@ -256,16 +257,6 @@ impl Mem12C {
                 });
             }
         }
-    }
-
-    /// Check if expression is a resource allocation call
-    fn is_allocation_call(&self, expr: &str) -> bool {
-        expr.contains("fopen(")
-            || expr.contains("malloc(")
-            || expr.contains("calloc(")
-            || expr.contains("realloc(")
-            || expr.contains("open(")
-            || expr.contains("socket(")
     }
 }
 

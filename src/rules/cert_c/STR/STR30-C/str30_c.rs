@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -929,27 +930,30 @@ fn is_string_search_function(func_name: &str) -> bool {
 
 /// Functions that are safe and don't modify their arguments
 fn is_safe_function(func_name: &str) -> bool {
-    matches!(
-        func_name,
-        "printf"
-            | "fprintf"
-            | "sprintf"
-            | "snprintf"
-            | "puts"
-            | "fputs"
-            | "strlen"
-            | "strcmp"
-            | "strncmp"
-            | "strcasecmp"
-            | "strncasecmp"
-            | "atoi"
-            | "atol"
-            | "atof"
-            | "strtol"
-            | "strtoul"
-            | "strtod"
-            | "main"
-            | "exit"
-            | "abort"
-    )
+    // sprintf/snprintf/vsprintf/vsnprintf are also printf-family, but they
+    // never reach here regardless: is_string_modifying_function (checked
+    // before is_safe_function, see check_function_call) already claims all
+    // four as destination-writing functions and returns first, so folding
+    // the full printf family in here can only affect the read-only members
+    // (printf/fprintf/vprintf/dprintf/vdprintf/wprintf/fwprintf/swprintf).
+    call_roles::is_printf_family(func_name)
+        || matches!(
+            func_name,
+            "puts"
+                | "fputs"
+                | "strlen"
+                | "strcmp"
+                | "strncmp"
+                | "strcasecmp"
+                | "strncasecmp"
+                | "atoi"
+                | "atol"
+                | "atof"
+                | "strtol"
+                | "strtoul"
+                | "strtod"
+                | "main"
+                | "exit"
+                | "abort"
+        )
 }
