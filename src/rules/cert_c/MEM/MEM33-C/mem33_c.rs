@@ -1811,7 +1811,8 @@ impl FlexibleArrayAnalyzer {
         }
         if let Some(func) = find_containing_function(ident) {
             if let Some(declarator) = func.child_by_field_name("declarator") {
-                if let Some(param_list) = Self::find_descendant_kind(&declarator, "parameter_list")
+                if let Some(param_list) =
+                    query::find_first_descendant(declarator, |n| n.kind() == "parameter_list")
                 {
                     for i in 0..param_list.child_count() {
                         let Some(param) = param_list.child(i) else {
@@ -1874,20 +1875,6 @@ impl FlexibleArrayAnalyzer {
                 ) == name
                 {
                     return Some(child);
-                }
-            }
-        }
-        None
-    }
-
-    fn find_descendant_kind<'a>(node: &Node<'a>, kind: &str) -> Option<Node<'a>> {
-        if node.kind() == kind {
-            return Some(*node);
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Some(found) = Self::find_descendant_kind(&child, kind) {
-                    return Some(found);
                 }
             }
         }
@@ -3587,8 +3574,9 @@ impl FlexibleArrayAnalyzer {
         let type_specifier = type_descriptor.child_by_field_name("type")?;
         let candidate = match type_specifier.kind() {
             "struct_specifier" => {
-                let type_identifier =
-                    Self::find_descendant_kind(&type_specifier, "type_identifier")?;
+                let type_identifier = query::find_first_descendant(type_specifier, |n| {
+                    n.kind() == "type_identifier"
+                })?;
                 source[type_identifier.start_byte()..type_identifier.end_byte()].to_string()
             }
             "type_identifier" => {
