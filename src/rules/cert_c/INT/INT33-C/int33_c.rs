@@ -86,13 +86,10 @@ impl CertRule for Int33C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Cache per-file macro constants once (avoid re-collecting per division node)
-        {
-            let project = self.project_macros.borrow();
-            let mut cached = const_eval::collect_macro_constants(node, source);
-            cached.extend(project.iter().map(|(k, v)| (k.clone(), *v)));
-            *self.file_macros.borrow_mut() = cached;
-        }
+        // Cache per-file macro constants once (avoid re-collecting per division node).
+        // Merge project-level macros with per-file macros (per-file wins).
+        *self.file_macros.borrow_mut() =
+            const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
 
         // Register simple typedef aliases (e.g. `typedef Vector4 Quaternion;`)
         // so field-expression operands of aliased struct types resolve to the
