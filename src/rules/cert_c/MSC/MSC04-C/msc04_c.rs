@@ -20,13 +20,42 @@ use tree_sitter::Node;
 #[derive(Debug)]
 pub struct Msc04C {
     call_graph: RefCell<HashMap<String, HashSet<String>>>,
+    ambiguous_call_targets: RefCell<HashSet<String>>,
 }
 
 impl Msc04C {
     pub fn new() -> Self {
         Msc04C {
             call_graph: RefCell::new(HashMap::new()),
+            ambiguous_call_targets: RefCell::new(HashSet::new()),
         }
+    }
+
+    /// Drop edges to a callee that can only be resolved to a same-named
+    /// function by coincidental name matching -- a call through a struct
+    /// field or a parameter-shadowed identifier (see
+    /// `ProjectContext::ambiguous_call_targets`). Such a callee is opaque
+    /// dispatch: it may or may not actually reach back into the caller, and
+    /// chasing it through the cycle-detection DFS fabricates recursion
+    /// cycles that don't exist in the source (task 562).
+    fn strip_ambiguous_callees(
+        graph: &HashMap<String, HashSet<String>>,
+        ambiguous: &HashSet<String>,
+    ) -> HashMap<String, HashSet<String>> {
+        if ambiguous.is_empty() {
+            return graph.clone();
+        }
+        graph
+            .iter()
+            .map(|(caller, callees)| {
+                let filtered: HashSet<String> = callees
+                    .iter()
+                    .filter(|callee| !ambiguous.contains(callee.as_str()))
+                    .cloned()
+                    .collect();
+                (caller.clone(), filtered)
+            })
+            .collect()
     }
 
     /// Extract function name from a function_definition node.
@@ -237,7 +266,15 @@ impl Msc04C {
         }
 
         // Build a local graph that includes this function's callees
-        // (prescan graph may not include the current file if it wasn't prescanned)
+        // (prescan graph may not include the current file if it wasn't prescanned).
+        // Strip ambiguous (struct-field / parameter-shadowed) callees here too --
+        // `callees` was collected fresh from this function's own body and hasn't
+        // gone through `strip_ambiguous_callees` yet (see task 562).
+        let ambiguous = self.ambiguous_call_targets.borrow();
+        let callees: HashSet<String> = callees
+            .into_iter()
+            .filter(|c| !ambiguous.contains(c))
+            .collect();
         let mut local_graph = graph.clone();
         local_graph.insert(func_name.clone(), callees);
 
@@ -288,7 +325,9 @@ impl CertRule for Msc04C {
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
-        *self.call_graph.borrow_mut() = context.call_graph.clone();
+        *self.call_graph.borrow_mut() =
+            Self::strip_ambiguous_callees(&context.call_graph, &context.ambiguous_call_targets);
+        *self.ambiguous_call_targets.borrow_mut() = context.ambiguous_call_targets.clone();
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {

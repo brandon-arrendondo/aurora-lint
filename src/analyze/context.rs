@@ -21,6 +21,18 @@ pub struct ProjectContext {
     pub function_summaries: HashMap<String, FunctionSummary>,
     /// Call graph: maps function name to the set of functions it calls.
     pub call_graph: HashMap<String, HashSet<String>>,
+    /// Callee names that must never be resolved to a same-named function
+    /// definition by name matching alone: names reached only through a
+    /// `field_expression` call (`obj->cb(...)`) or through a plain
+    /// identifier that is also a parameter name of the calling function
+    /// (a callback passed by the caller, shadowing any same-named global
+    /// function per C scoping rules). `call_graph` may still contain edges
+    /// to these names (recorded by the underlying, name-matching-only call
+    /// graph builder), so a consumer doing cycle/reachability analysis
+    /// through unresolved indirect calls should treat any callee in this
+    /// set as opaque rather than chase it (task 562).
+    #[serde(default)]
+    pub ambiguous_call_targets: HashSet<String>,
     /// Macro constants collected from `#define` directives across all scanned files.
     pub macro_constants: HashMap<String, i64>,
     /// Macro aliases: `#define ALIAS identifier` patterns (e.g., `SYSTEM` → `system`).
