@@ -11,6 +11,8 @@ Commands:
   realworld-import-labels CSV --run R      Append TP/FP labels to the oracle
   realworld-unlabeled [RUN]                Findings lacking a ground-truth label
   ground-truth                             Ground-truth label inventory
+  concurrency-context [--project P]        CON03/07/33-C precision split by
+                                            concurrency-context evidence
 """
 
 import argparse
@@ -411,6 +413,47 @@ def cmd_ground_truth(args):
     print(f"{'TOTAL':<10} {'':<12} {'':<12} {'':>4} {'':>4} {'':>4} {tot:>6}")
 
 
+def cmd_concurrency_context(args):
+    from bench.concurrency_context import (
+        CONCURRENCY_RULES,
+        concurrency_context_precision_split,
+    )
+    from bench.config import BENCH_ROOT
+
+    db = BenchDB()
+    rules = tuple(args.rules.split(",")) if args.rules else CONCURRENCY_RULES
+    result = concurrency_context_precision_split(
+        db, BENCH_ROOT, project=args.project, rules=rules
+    )
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    if result["labeled_total"] == 0:
+        print(f"No ground-truth labels for {', '.join(rules)}"
+              + (f" in {args.project}" if args.project else "") + ".")
+        return
+
+    def pct(v):
+        return f"{v:.1f}%" if v is not None else "—"
+
+    print(f"Concurrency-context precision split — {', '.join(rules)}"
+          + (f" ({args.project})" if args.project else " (all projects)"))
+    print(f"({result['labeled_total']} labeled findings"
+          + (f", {len(result['missing_files'])} source file(s) not found "
+             "locally -- run playbooks/setup-benchmark-repos.yml"
+             if result["missing_files"] else "") + ")")
+    print()
+    print(f"{'Bucket':<18} {'Prec':>7} {'TP':>4} {'FP':>4} {'Unc':>4}")
+    print("-" * 42)
+    for name, label in (("context_present", "Context present"),
+                        ("context_absent", "Context absent")):
+        b = result["buckets"][name]
+        print(f"{label:<18} {pct(b['precision_pct']):>7} {b['tp']:>4} "
+              f"{b['fp']:>4} {b['uncertain']:>4}")
+
+
 def cmd_audit_complete(args):
     db = BenchDB()
     run_id = db.resolve_realworld_run(args.run or "latest")
@@ -653,6 +696,18 @@ def main():
                           help="Inventory of ground-truth labels")
     p_gt.add_argument("--json", action="store_true", help="Emit JSON")
     p_gt.set_defaults(func=cmd_ground_truth)
+
+    # concurrency-context (task 607)
+    p_cc = sub.add_parser(
+        "concurrency-context",
+        help="CON03/07/33-C ground-truth precision split by whether the "
+             "flagged TU shows evidence of a concurrent execution path")
+    p_cc.add_argument("--project", default=None, help="Filter to one project")
+    p_cc.add_argument("--rules", default=None,
+                      help="Comma-separated rule IDs (default: "
+                           "CON03-C,CON07-C,CON33-C,CON34-C,CON37-C)")
+    p_cc.add_argument("--json", action="store_true", help="Emit JSON")
+    p_cc.set_defaults(func=cmd_concurrency_context)
 
     # audit-complete (mark a file as exhaustively audited = the 'done' unit)
     p_ac = sub.add_parser(
