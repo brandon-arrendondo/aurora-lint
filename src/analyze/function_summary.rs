@@ -629,7 +629,7 @@ fn analyze_function(
         // summary.
         if is_pointer_return {
             summary.produces_param_buffer_size =
-                compute_produces_param_buffer_size(&body, source, &params);
+                compute_produces_param_buffer_size(&body, source, &params, macros);
         }
     }
 
@@ -644,19 +644,20 @@ fn compute_produces_param_buffer_size(
     body: &Node,
     source: &str,
     params: &[String],
+    macros: &MacroConstantMap,
 ) -> HashMap<usize, usize> {
     let start = body.start_position().row;
     let end = body.end_position().row;
     let mut result = HashMap::new();
     for (idx, param_name) in params.iter().enumerate() {
-        if let Some(size) = produced_size_for_var(param_name, source, start, end) {
+        if let Some(size) = produced_size_for_var(param_name, body, source, start, end, macros) {
             result.insert(idx, size);
             continue;
         }
         if let Some(alias) =
             crate::analyze::buffer_size::resolve_bare_alias_in_range(param_name, source, start, end)
         {
-            if let Some(size) = produced_size_for_var(&alias, source, start, end) {
+            if let Some(size) = produced_size_for_var(&alias, body, source, start, end, macros) {
                 result.insert(idx, size);
             }
         }
@@ -664,12 +665,22 @@ fn compute_produces_param_buffer_size(
     result
 }
 
-/// Combine the allocation- and memset-content-length resolvers for a single
-/// variable within an explicit row range: only one is ever meaningful for a
-/// given relay function in practice (it either allocates a differently-sized
-/// buffer or fills an existing one to a different length, never both), so
-/// whichever resolves is the answer.
-fn produced_size_for_var(var_name: &str, source: &str, start: usize, end: usize) -> Option<usize> {
+/// Combine every buffer-size resolver a relay function's own body can prove
+/// a variable safe under, within an explicit row range: allocation size,
+/// memset-fill content length, a fixed array declaration's element count, or
+/// a strlen/wcslen-derived allocation. Only one is ever meaningful for a
+/// given relay function in practice, so whichever resolves first is the
+/// answer. Mirrors the resolver chain `Str31C::find_buffer_size` uses for
+/// its own same-file relay lookup (task 506) — kept in lock-step so the
+/// same-file and cross-file relay-resolution paths stay equally capable.
+fn produced_size_for_var(
+    var_name: &str,
+    body: &Node,
+    source: &str,
+    start: usize,
+    end: usize,
+    macros: &MacroConstantMap,
+) -> Option<usize> {
     crate::analyze::buffer_size::resolve_alloc_assigned_in_range(var_name, source, start, end)
         .or_else(|| {
             crate::analyze::buffer_size::memset_content_length_in_range(
@@ -677,6 +688,15 @@ fn produced_size_for_var(var_name: &str, source: &str, start: usize, end: usize)
                 source,
                 start,
                 end + 1,
+            )
+        })
+        .or_else(|| {
+            crate::analyze::array_size::resolve_declared_array_size(body, var_name, source, macros)
+        })
+        .or_else(|| {
+            let lines: Vec<&str> = source.lines().collect();
+            crate::analyze::buffer_size::resolve_strlen_based_alloc_size(
+                var_name, &lines, start, end,
             )
         })
 }

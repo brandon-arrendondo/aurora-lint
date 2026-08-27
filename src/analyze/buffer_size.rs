@@ -549,6 +549,70 @@ pub fn resolves_to_strlen_call(
     lines[fn_start..=end].iter().any(|l| re.is_match(l))
 }
 
+/// Resolve whether `var_name` is assigned, within `lines[fn_start..=fn_end]`,
+/// an allocation provably sized off a `strlen`/`wcslen` call — directly
+/// (`data = malloc(strlen(x) + 1)`) or indirectly through an intermediate
+/// size variable (`len = strlen(x); data = malloc(len + 1)`, or the
+/// `calloc(len + 1, 1)` / `calloc(len + 1, sizeof(char))` /
+/// `calloc(len + 1, sizeof(wchar_t))` element-count forms, the last
+/// requiring `len` to come from `wcslen` specifically). Such an allocation
+/// is provably large enough for its own null-terminated content, so a match
+/// returns the `usize::MAX` sentinel ("safe/unbounded") rather than a
+/// concrete byte count — there is no fixed size to report.
+pub fn resolve_strlen_based_alloc_size(
+    var_name: &str,
+    lines: &[&str],
+    fn_start: usize,
+    fn_end: usize,
+) -> Option<usize> {
+    let assign_re = regex::Regex::new(&format!(r"\b{}\b\s*=[^=]", regex::escape(var_name))).ok()?;
+    let calloc_narrow_re =
+        regex::Regex::new(r"calloc\s*\(\s*(\w+)\s*\+\s*1\s*,\s*(?:1|sizeof\s*\(\s*char\s*\))\s*\)")
+            .ok();
+    let calloc_wide_re =
+        regex::Regex::new(r"calloc\s*\(\s*(\w+)\s*\+\s*1\s*,\s*sizeof\s*\(\s*wchar_t\s*\)\s*\)")
+            .ok();
+    let malloc_indirect_re = regex::Regex::new(r"malloc\s*\(\s*(\w+)\s*\+\s*1\s*\)").ok();
+
+    let end = fn_end.min(lines.len().saturating_sub(1));
+    if lines.is_empty() || fn_start > end {
+        return None;
+    }
+
+    for line in &lines[fn_start..=end] {
+        let assigns_here = assign_re.is_match(line);
+        if !assigns_here {
+            continue;
+        }
+        if (line.contains("malloc") || line.contains("calloc"))
+            && line.contains("strlen")
+            && line.contains("+ 1")
+        {
+            return Some(usize::MAX);
+        }
+        if line.contains("calloc") {
+            if let Some(caps) = calloc_narrow_re.as_ref().and_then(|re| re.captures(line)) {
+                if resolves_to_strlen_call(&caps[1], lines, fn_start, fn_end, false) {
+                    return Some(usize::MAX);
+                }
+            }
+            if let Some(caps) = calloc_wide_re.as_ref().and_then(|re| re.captures(line)) {
+                if resolves_to_strlen_call(&caps[1], lines, fn_start, fn_end, true) {
+                    return Some(usize::MAX);
+                }
+            }
+        }
+        if line.contains("malloc") {
+            if let Some(caps) = malloc_indirect_re.as_ref().and_then(|re| re.captures(line)) {
+                if resolves_to_strlen_call(&caps[1], lines, fn_start, fn_end, false) {
+                    return Some(usize::MAX);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Evaluate a parenthesised allocation-size arithmetic capture of the form
 /// `(N op M)` (or a bare `N`), as produced by the malloc/alloca size regexes.
 /// `op` is `Some("+"|"-"|"*")` with both operands present, or `None` for a
