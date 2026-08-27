@@ -38,6 +38,10 @@ Full Command Reference
                                        [[wildcard]] glob/prefix entries)
       -I, --include-path <DIR>         Include search paths for resolving #include directives
                                        (repeatable; like compiler -I flag)
+          --compile-commands <FILE>    Read include search paths and -D macros from a
+                                       compile_commands.json (optional; improves cross-file
+                                       macro/header coverage for projects that already have
+                                       a compile database)
       -v, --verbose                    Increase output verbosity (repeat for more detail;
                                        -v shows per-rule scanning progress)
           --save-prescan <FILE>        Save prescan context to a binary cache file
@@ -89,6 +93,48 @@ The pre-scan collects:
 - **Struct field types**: struct definitions for type resolution (INT32-C, INT30-C)
 - **Global constants**: file-scope ``const`` variables for dead-branch elimination
 - **Global pointer null states**: cross-file ``extern`` pointer tracking (EXP34-C)
+
+
+Using a Compile Database
+------------------------
+
+sqc needs no build system: point it at any tree and it works. ``--compile-commands``
+is a purely optional upgrade for projects that *already* produce a
+``compile_commands.json`` (CMake's ``CMAKE_EXPORT_COMPILE_COMMANDS``, ``bear``,
+``compiledb``). Without the flag, nothing changes.
+
+::
+
+    sqc src/ -d src/ --compile-commands build/compile_commands.json
+
+sqc does **not** run a preprocessor. It reads two things out of the database and
+feeds them to the pre-scan that already exists:
+
+- **Include search paths** (``-I``, ``-isystem``, ``-iquote``, ``-idirafter``,
+  resolved against each entry's ``directory``) are appended to any explicit
+  ``-I`` you passed. This lets ``#include`` resolution reach headers the
+  sibling-header scan would never find — notably angle-bracket includes of
+  vendored or out-of-tree headers — so their macros, prototypes and struct
+  types join the cross-file context.
+- **Command-line macros** (``-D``, minus anything ``-U``'d) are parsed as real
+  ``#define`` directives, so command-line constants fold and function-like
+  ``-D`` macros become expandable exactly like ones written in a header.
+
+Because the parse tree is untouched, every finding keeps the source location it
+always had, and the ``PRE*`` rules still audit macros as written.
+
+Two properties worth knowing:
+
+- **Build flags never override real source.** A ``-D`` only supplies a macro
+  name the scanned tree never defined; a real ``#define`` always wins.
+- **Paths are absolute and host-specific.** A database generated on another
+  machine or inside a container names directories that may not exist locally.
+  sqc warns when compile-database include paths are missing rather than
+  silently resolving nothing.
+
+The compiler's own built-in system header directories are *not* in a compile
+database (they are implicit), so headers found only in ``/usr/include`` remain
+out of reach.
 
 
 File Exclusion

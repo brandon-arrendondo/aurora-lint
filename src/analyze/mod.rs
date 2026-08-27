@@ -2,6 +2,9 @@
 pub mod array_size;
 pub mod buffer_size;
 pub mod cfg;
+/// Optional `compile_commands.json` ingestion: feeds a build's include search
+/// paths and `-D` macro state into the existing prescan/expansion pipeline.
+pub mod compile_commands;
 pub mod concurrency_roots;
 pub mod const_eval;
 /// Cross-file project context ([`context::ProjectContext`]) gathered by the
@@ -61,7 +64,9 @@ pub struct AnalysisResults {
 /// suppressed violations. `directories`/`include_paths`/`excludes` scope
 /// which files are analyzed; `diff_only` limits analysis to changed files;
 /// `save_prescan`/`load_prescan` cache the cross-file pre-scan phase across
-/// runs; `jobs` bounds parallelism.
+/// runs; `jobs` bounds parallelism. `compile_db`, when supplied, contributes
+/// the build's `-D` macro state to the cross-file context (its include paths
+/// are expected to be already merged into `include_paths` by the caller).
 pub fn analyze_project(
     project_source: &ProjectSource,
     manifest: &RuleManifest,
@@ -73,6 +78,7 @@ pub fn analyze_project(
     suppress_file: Option<&str>,
     save_prescan: Option<&str>,
     load_prescan: Option<&str>,
+    compile_db: Option<&compile_commands::CompileDb>,
     jobs: usize,
 ) -> Result<AnalysisResults> {
     let mut violations = Vec::new();
@@ -93,6 +99,7 @@ pub fn analyze_project(
         diff_only,
         save_prescan,
         load_prescan,
+        compile_db,
         needs_vra,
     )?;
 
@@ -257,6 +264,7 @@ fn load_project_context(
     diff_only: bool,
     save_prescan: Option<&str>,
     load_prescan: Option<&str>,
+    compile_db: Option<&compile_commands::CompileDb>,
     needs_vra: bool,
 ) -> Result<context::ProjectContext> {
     let mut context = if let Some(cache_path) = load_prescan {
@@ -295,6 +303,14 @@ fn load_project_context(
             project_source.get_c_files()?
         };
         prescan::resolve_includes(&c_files, include_paths, &mut context, progress, needs_vra)?;
+    }
+
+    // Fold in the build's `-D` macro state last, so that any macro the real
+    // source already defined wins over a command-line flag of the same name
+    // (see `compile_commands`' gap-filling invariant). Runs before the cache
+    // save so a saved prescan carries the same context a live run would build.
+    if let Some(db) = compile_db {
+        db.merge_defines_into(&mut context)?;
     }
 
     // Save prescan cache if requested (after prescan + include resolution)

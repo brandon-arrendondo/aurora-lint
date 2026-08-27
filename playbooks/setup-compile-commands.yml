@@ -30,12 +30,13 @@
 #   ansible-playbook playbooks/setup-compile-commands.yml -i "localhost," -c local \
 #     --ask-become-pass -e bench_root=/data/toolchain
 #
-# Known gap: sel4 is NOT handled here. Its kernel-only CMakeLists.txt does
-# not configure/build standalone the way the other 8 do -- `cmake -E touch`
-# fails on missing nested generated_prune/**/*.h parent directories partway
-# through the build, which looks like it expects the full sel4test-manifest
-# umbrella project (fetched via the `repo` tool) rather than a bare kernel
-# checkout. See task 620's notes for what was tried. Left as a follow-up.
+# sel4 IS handled (all 9 projects are). It was previously believed to need
+# the sel4test-manifest umbrella project; it does not. The `cmake -E touch:
+# failed to update .../generated_prune/**/*_gen.h` failure was the Makefile
+# generator, not the checkout -- seL4 touches nested outputs without creating
+# their parent directories, which Ninja does for a declared output and Make
+# does not. `-G Ninja` builds the bare kernel checkout clean. See the sel4
+# task block below.
 #
 # Re-running: each project task is idempotent via a `creates:` guard on its
 # compile_commands.json. Delete that file (or the project's `.cc_build`
@@ -268,14 +269,46 @@
         chdir: "{{ bench_root }}/pureftpd"
       when: not ansible_check_mode
 
-    # ── sel4: not handled, see the playbook header comment and task 620 ───
-    - name: sel4 - not automated yet
-      debug:
-        msg: >-
-          Skipping sel4 -- its kernel-only CMakeLists.txt does not
-          configure/build standalone (see the playbook header comment and
-          task 620). Needs its own investigation, likely via the
-          sel4test-manifest umbrella project rather than a bare checkout.
+    # ── sel4 (CMake, out-of-tree; REQUIRES the Ninja generator) ───────────
+    #
+    # The bare kernel checkout DOES build standalone -- no sel4test-manifest
+    # / `repo` umbrella needed. The earlier failure was the *generator*, not
+    # the checkout: seL4's `dummy_header_wrapper` target runs `cmake -E touch`
+    # on nested outputs (generated_prune/**/{hardware,structures}_gen.h)
+    # without creating their parent directories. Ninja creates parent dirs
+    # for a declared output; the Makefile generator does not, so Make dies
+    # with `cmake -E touch: failed to update .../hardware_gen.h` and manually
+    # mkdir-ing each one just moves the failure to the next header.
+    # `-G Ninja` builds clean (49/49, kernel.elf links). Verified 2026-08-27
+    # on pin 1326364bc913 by reproducing the Make failure and the Ninja
+    # success side by side on the same host.
+    #
+    # NB: compile_commands.json is written at CONFIGURE time, so it exists
+    # even when the build fails. The build is still worth running here --
+    # it produces the generated headers (structures_gen.h et al) that six of
+    # the DB's 21 include paths point at, which is what task 580 had to work
+    # around the absence of. Without the build, sqc warns that those six
+    # paths do not exist.
+    - name: sel4 - configure (out-of-tree, Ninja generator)
+      command: >-
+        cmake -S {{ bench_root }}/sel4 -B {{ cc_build_root }}/sel4 -G Ninja
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        -DKernelPlatform=pc99 -DKernelArch=x86 -DKernelWordSize=64
+        -DCROSS_COMPILER_PREFIX=
+      args:
+        creates: "{{ cc_build_root }}/sel4/CMakeCache.txt"
+
+    - name: sel4 - build (generates the *_gen.h headers the DB references)
+      command: cmake --build {{ cc_build_root }}/sel4 -j{{ ansible_processor_vcpus | default(4) }}
+      args:
+        creates: "{{ bench_root }}/sel4/compile_commands.json"
+
+    - name: sel4 - copy compile_commands.json into the checkout
+      copy:
+        src: "{{ cc_build_root }}/sel4/compile_commands.json"
+        dest: "{{ bench_root }}/sel4/compile_commands.json"
+        remote_src: true
+        mode: "0644"
 
     # ── Juliet (synthesized -- no real build system; see the script) ──────
     - name: Juliet - synthesize compile_commands.json

@@ -40,6 +40,40 @@ BENCH_ROOT = Path(os.environ.get("SQC_BENCH_ROOT", str(Path.home() / "toolchain"
 # ── Juliet test suite ─────────────────────────────────────────────────────────
 JULIET_BASE = BENCH_ROOT / "benchmarks" / "juliet-test-suite-c" / "testcases"
 
+# ── Compile databases (sqc --compile-commands, task 187/622) ─────────────────
+# Optional. sqc runs fine without one; a compile_commands.json only adds the
+# build's include search paths and -D macro state to the cross-file context.
+#
+# Written by playbooks/setup-compile-commands.yml (one per real-world checkout
+# root) and scripts/generate_juliet_compile_commands.py (one for Juliet, a
+# sibling of testcases/). NOT committed: a compile DB embeds absolute paths, so
+# it is per-host and must be regenerated wherever BENCH_ROOT differs.
+COMPILE_DB_NAME = "compile_commands.json"
+JULIET_COMPILE_DB = JULIET_BASE.parent / COMPILE_DB_NAME
+
+# Appended to a run_id when a benchmark runs with --compile-commands, so a
+# with/without pair on the *same* sqc build stays two distinct runs. Without
+# this the second run would collide: Juliet's resume logic skips a run_id whose
+# status is already "completed", and the real-world runner reuses the id for
+# its results directory.
+COMPILE_DB_RUN_SUFFIX = "cdb"
+
+
+def compile_db_for(path) -> Path | None:
+    """Return `<path>/compile_commands.json` if it exists, else None.
+
+    `path` is a real-world codebase checkout root — the location the Ansible
+    playbook copies each generated database into.
+    """
+    candidate = Path(path) / COMPILE_DB_NAME
+    return candidate if candidate.is_file() else None
+
+
+def apply_run_suffix(run_id: str, compile_commands: bool) -> str:
+    """Tag a run_id as a compile-database run so it cannot collide with the
+    plain run of the same sqc build."""
+    return f"{run_id}-{COMPILE_DB_RUN_SUFFIX}" if compile_commands else run_id
+
 # ── Database ──────────────────────────────────────────────────────────────────
 # BENCH_DB overrides the default path (handy for tests/alternate corpora).
 DB_PATH = Path(os.environ["BENCH_DB"]) if os.environ.get("BENCH_DB") \

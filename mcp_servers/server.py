@@ -45,7 +45,7 @@ KNOWN_TOTAL_CWES = 118
 # Add project root to path so bench package is importable
 sys.path.insert(0, str(PROJECT_DIR))
 from bench.db import BenchDB
-from bench.config import DB_PATH, JULIET_BASE
+from bench.config import DB_PATH, JULIET_BASE, apply_run_suffix
 
 def _get_db() -> BenchDB:
     """Get a BenchDB instance."""
@@ -402,7 +402,7 @@ def _ensure_rule_cwe_map() -> bool:
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def run_benchmark(mode: str = "fast") -> str:
+def run_benchmark(mode: str = "fast", compile_commands: bool = False) -> str:
     """
     Start a fresh Juliet benchmark run against sqc.
 
@@ -411,6 +411,12 @@ def run_benchmark(mode: str = "fast") -> str:
 
     Args:
         mode: "fast" (default, per-CWE manifests) or "full" (all rules)
+        compile_commands: Pass --compile-commands to sqc using the synthesized
+            Juliet compile database (scripts/generate_juliet_compile_commands.py).
+            Off by default. The run_id and log directory are suffixed "-cdb" so
+            a with/without pair on the same sqc build stays two distinct,
+            comparable runs. The runner errors if the database is absent rather
+            than quietly running without it.
     """
     state = _read_state()
     if state and _process_alive(state.get("pid", 0)):
@@ -428,7 +434,7 @@ def run_benchmark(mode: str = "fast") -> str:
     # Determine version and commit for the unique directory name
     version = _get_sqc_version()
     sha = _get_git_sha()
-    run_name = f"sqc-{version}-{sha}"
+    run_name = apply_run_suffix(f"sqc-{version}-{sha}", compile_commands)
 
     # Create a log directory for stdout capture
     results_dir = RESULTS_BASE / run_name
@@ -440,6 +446,8 @@ def run_benchmark(mode: str = "fast") -> str:
     cmd = [sys.executable, "-m", "bench", "juliet"]
     if mode == "full":
         cmd.append("--full")
+    if compile_commands:
+        cmd.append("--compile-commands")
 
     # Launch benchmark detached from the MCP server process so it survives
     # even if the MCP server is restarted.

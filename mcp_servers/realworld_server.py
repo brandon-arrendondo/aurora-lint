@@ -55,7 +55,9 @@ VALID_TOOLS = {"sqc", "cppcheck", "clang-tidy"}
 # ── SQLite backend ───────────────────────────────────────────────────────────
 sys.path.insert(0, str(PROJECT_DIR))
 from bench.db import BenchDB
-from bench.config import BENCH_ROOT
+from bench.config import (
+    BENCH_ROOT, COMPILE_DB_NAME, COMPILE_DB_RUN_SUFFIX, compile_db_for,
+)
 
 def _get_db() -> BenchDB:
     """Get a BenchDB instance."""
@@ -519,11 +521,16 @@ def _get_tool_version(tool: str) -> str:
     return "unknown"
 
 
-def _make_version_dir_name(tool: str, version: str, sha: str) -> str:
-    """Build version directory name: sqc includes git SHA, others just tool-version."""
-    if tool == "sqc":
-        return f"sqc-{version}-{sha}"
-    return f"{tool}-{version}"
+def _make_version_dir_name(tool: str, version: str, sha: str,
+                           variant: str | None = None) -> str:
+    """Build version directory name: sqc includes git SHA, others just tool-version.
+
+    `variant` tags a non-default run configuration (currently only "cdb", a
+    --compile-commands run) so its results land in their own directory instead
+    of overwriting the plain run of the same build.
+    """
+    base = f"sqc-{version}-{sha}" if tool == "sqc" else f"{tool}-{version}"
+    return f"{base}-{variant}" if variant else base
 
 
 _STATE_LOCK = Path("/tmp/realworld_bench.lock")
@@ -722,8 +729,16 @@ def _dir_size_human(path: Path) -> str:
     return f"{total:.1f} TB"
 
 
-def _make_run_id(tool: str, codebase: str, version: str, sha: str) -> str:
-    return f"{tool}-{codebase}-{version}-{sha}"
+def _make_run_id(tool: str, codebase: str, version: str, sha: str,
+                 variant: str | None = None) -> str:
+    """Stable id for one (tool, codebase, build) run.
+
+    `variant` distinguishes a non-default configuration of the same build --
+    without it a --compile-commands run would reuse the plain run's id, and
+    its results would overwrite rather than be comparable against it.
+    """
+    base = f"{tool}-{codebase}-{version}-{sha}"
+    return f"{base}-{variant}" if variant else base
 
 
 def _expand(template_list: list[str], path: str) -> list[str]:
@@ -818,7 +833,8 @@ def _fetch_remote_results(host: str, version_dir: Path, run_id: str) -> dict:
     return {"fetched": fetched, "failed": failed}
 
 
-def _build_sqc_cmd(codebase: str, cfg: dict, results_dir: Path, run_id: str) -> list[str]:
+def _build_sqc_cmd(codebase: str, cfg: dict, results_dir: Path, run_id: str,
+                   compile_db: str | None = None) -> list[str]:
     path = str(cfg["path"])
     scan_path = cfg["sqc"].get("scan_path")
     scan_path = _expand([scan_path], path)[0] if scan_path else path
@@ -839,6 +855,8 @@ def _build_sqc_cmd(codebase: str, cfg: dict, results_dir: Path, run_id: str) -> 
     ]
     if "-d" not in extra:
         cmd.extend(["-d", path])
+    if compile_db:
+        cmd.extend(["--compile-commands", compile_db])
     cmd.extend(extra)
     cmd.extend(includes)
     return cmd
@@ -1160,7 +1178,8 @@ def _list_version_dirs() -> list[dict]:
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def run_analysis(tool: str, codebase: str, host: str | None = None) -> str:
+def run_analysis(tool: str, codebase: str, host: str | None = None,
+                 compile_commands: bool = False) -> str:
     """
     Start a single analysis run (one tool against one codebase).
 
@@ -1170,6 +1189,13 @@ def run_analysis(tool: str, codebase: str, host: str | None = None) -> str:
               "curl", "hostap", "lua", "raylib", "pureftpd")
         host: Optional remote host IP or nickname (e.g. "10.0.0.97", "workstation-97").
               If omitted, runs locally.
+        compile_commands: sqc only. Pass --compile-commands using the
+              codebase's compile_commands.json (generated per-host by
+              playbooks/setup-compile-commands.yml). Off by default. The
+              run_id and results directory are suffixed "-cdb" so a
+              with/without pair on the same build stays two distinct,
+              comparable runs. Errors if the database is absent rather than
+              quietly running without it.
 
     Every sqc run does a fresh prescan (no caching — measured ~10% wall-time
     savings from a warm prescan cache isn't worth the staleness risk for a
@@ -1200,6 +1226,33 @@ def run_analysis(tool: str, codebase: str, host: str | None = None) -> str:
 
     cfg = CODEBASES[codebase]
 
+    # Resolve the optional compile database before any run_id is built: it
+    # decides the run variant, and a missing database must fail loudly rather
+    # than silently degrade into a plain run that looks like a real "no
+    # difference" measurement.
+    compile_db = None
+    variant = None
+    if compile_commands:
+        if tool != "sqc":
+            return json.dumps({
+                "error": f"--compile-commands applies to sqc only, not '{tool}'.",
+            })
+        variant = COMPILE_DB_RUN_SUFFIX
+        if not remote:
+            found = compile_db_for(cfg["path"])
+            if found is None:
+                return json.dumps({
+                    "error": f"compile_commands requested but no {COMPILE_DB_NAME} in {cfg['path']}.",
+                    "hint": "Generate it with: ansible-playbook playbooks/setup-compile-commands.yml "
+                            "-i 'localhost,' -c local --ask-become-pass",
+                })
+            compile_db = str(found)
+        else:
+            # The remote host has its own checkout; a compile DB embeds
+            # absolute paths, so use the remote path and let the remote sqc
+            # warn if it is missing or stale.
+            compile_db = str(Path(cfg["path"]) / COMPILE_DB_NAME)
+
     # Local-only checks (can't verify paths/tools on remote)
     if not remote:
         if not cfg["path"].exists():
@@ -1216,11 +1269,11 @@ def run_analysis(tool: str, codebase: str, host: str | None = None) -> str:
 
     version = _get_tool_version(tool)
     sha = _get_git_sha()
-    dir_name = _make_version_dir_name(tool, version, sha)
+    dir_name = _make_version_dir_name(tool, version, sha, variant)
     version_dir = RESULTS_BASE / dir_name
     version_dir.mkdir(parents=True, exist_ok=True)
 
-    run_id = _make_run_id(tool, codebase, version, sha)
+    run_id = _make_run_id(tool, codebase, version, sha, variant)
 
     # Check if already running (locked read)
     with _StateLock() as state:
@@ -1252,7 +1305,7 @@ def run_analysis(tool: str, codebase: str, host: str | None = None) -> str:
 
     # Build command
     if tool == "sqc":
-        cmd = _build_sqc_cmd(codebase, cfg, version_dir, run_id)
+        cmd = _build_sqc_cmd(codebase, cfg, version_dir, run_id, compile_db)
     elif tool == "cppcheck":
         cmd = _build_cppcheck_cmd(codebase, cfg, version_dir, run_id)
     else:  # clang-tidy

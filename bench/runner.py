@@ -17,6 +17,7 @@ from bench.analyzer import analyze_shard, merge_shards
 from bench.config import (
     DEFAULT_JOBS, GENERATE_MAP_SCRIPT, JULIET_BASE, MANIFEST_ALL,
     MANIFEST_CWE_DIR, RULE_CWE_MAP, SQC_BIN,
+    JULIET_COMPILE_DB, apply_run_suffix,
 )
 from bench.db import BenchDB
 from bench.machine import get_machine_metadata
@@ -114,7 +115,6 @@ def _cwe_shard_dirs(cwe_dir: Path) -> list[Path] | None:
     subdirs = sorted(p for p in cwe_dir.glob('s*') if p.is_dir())
     return subdirs if len(subdirs) >= 2 else None
 
-
 # ── Shard worker ──────────────────────────────────────────────────────────────
 # One shard is either a single `sNN` subdirectory (a large CWE, split) or an
 # entire CWE dir (the common case, unsplit) -- callers treat both uniformly,
@@ -125,7 +125,7 @@ def _cwe_shard_dirs(cwe_dir: Path) -> list[Path] | None:
 
 def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
                     shard_dir_str: str, manifest: str, scan_id: int,
-                    keep_csv: bool = False) -> dict:
+                    keep_csv: bool = False, compile_db: str | None = None) -> dict:
     """Scan one shard: run sqc, parse its own CSV into a raw ShardPartial.
 
     Runs in a worker process. Every shard prescans the *whole* CWE dir
@@ -150,6 +150,8 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
             "-e", csv_path,
             "-j", "1",
         ]
+        if compile_db:
+            cmd.extend(["--compile-commands", compile_db])
         proc = subprocess.run(cmd, capture_output=True, timeout=3600)
         duration_s = round(time.monotonic() - start_time, 1)
 
@@ -197,13 +199,17 @@ def _scan_one_shard(cwe_dir_name: str, cwe_id: str, cwe_dir_str: str,
 # ── Main runner ───────────────────────────────────────────────────────────────
 
 def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
-                  keep_csv: bool = False) -> str:
+                  keep_csv: bool = False, compile_commands: bool = False) -> str:
     """Run a full Juliet benchmark.
 
     Args:
         fast: Use per-CWE manifests (default True).
         jobs: Number of parallel workers.
         keep_csv: Retain temp CSV files after analysis.
+        compile_commands: Pass ``--compile-commands`` to sqc, using the
+            synthesized Juliet compile database. Off by default, so a plain
+            run is unchanged. When on, the run_id is suffixed so a with/without
+            pair on the same sqc build stays two distinct, comparable runs.
 
     Returns:
         The run_id for the completed benchmark.
@@ -213,12 +219,26 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     if not JULIET_BASE.is_dir():
         raise FileNotFoundError(f"Juliet test suite not found at {JULIET_BASE}.")
 
+    # Fail loudly rather than silently running without the database — a run
+    # that quietly ignored the flag would be indistinguishable from a real
+    # "compile DB made no difference" result.
+    compile_db = None
+    if compile_commands:
+        if not JULIET_COMPILE_DB.is_file():
+            raise FileNotFoundError(
+                f"--compile-commands requested but no compile database at {JULIET_COMPILE_DB}. "
+                f"Generate it with: python3 scripts/generate_juliet_compile_commands.py"
+            )
+        compile_db = str(JULIET_COMPILE_DB)
+
     _ensure_rule_cwe_map()
 
     version = _get_sqc_version()
     sha = _get_git_sha()
-    run_id = f"sqc-{version}-{sha}"
+    run_id = apply_run_suffix(f"sqc-{version}-{sha}", compile_commands)
     mode = "fast" if fast else "full"
+    if compile_commands:
+        mode += " +compile-db"
     started_at = datetime.now(timezone.utc).isoformat()
     machine = get_machine_metadata()
 
@@ -321,7 +341,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
             future = executor.submit(
                 _scan_one_shard, sub["cwe_dir_name"], sub["cwe_id"],
                 str(sub["cwe_dir"]), str(sub["shard_dir"]), sub["manifest"],
-                scan_id, keep_csv,
+                scan_id, keep_csv, compile_db,
             )
             futures[future] = sub["cwe_dir_name"]
 

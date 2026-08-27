@@ -1,7 +1,8 @@
 """CLI entry point: python -m bench <command> [options]
 
 Commands:
-  juliet [--full] [--jobs N] [--keep-csv]  Run Juliet benchmark
+  juliet [--full] [--jobs N] [--keep-csv] [--compile-commands]
+                                           Run Juliet benchmark
   status [RUN_ID]                          Show benchmark progress/results
   compare BASE TARGET                      Compare two runs
   runs                                     List all runs
@@ -27,7 +28,8 @@ from bench.db import BenchDB
 
 def cmd_juliet(args):
     from bench.runner import run_benchmark
-    run_benchmark(fast=not args.full, jobs=args.jobs, keep_csv=args.keep_csv)
+    run_benchmark(fast=not args.full, jobs=args.jobs, keep_csv=args.keep_csv,
+                  compile_commands=args.compile_commands)
 
 
 def cmd_status(args):
@@ -621,6 +623,11 @@ def main():
                           help=f"Parallel workers (default: {DEFAULT_JOBS})")
     p_juliet.add_argument("--keep-csv", action="store_true",
                           help="Keep intermediate CSV files")
+    p_juliet.add_argument("--compile-commands", action="store_true",
+                          help="Pass --compile-commands to sqc using the synthesized "
+                               "Juliet compile database. Suffixes the run_id with "
+                               "'-cdb' so it does not collide with the plain run of "
+                               "the same build")
     p_juliet.set_defaults(func=cmd_juliet)
 
     # status

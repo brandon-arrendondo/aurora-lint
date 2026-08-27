@@ -408,3 +408,91 @@ shared infra, legitimately definition-side, or incidental AST traversal.
 This re-scopes task 186 from "migrate ~51 files" to "migrate ARR30 + optional
 const_eval DRY"; the bulk of the original estimate was already retired by
 Phases 1/2c. Recall-gate per §8.
+
+---
+
+## 11. Phase 4 as built (task 187, 2026-08-27)
+
+**Phase 4 shipped as compile-database *ingestion*, not as approach C.** §5(C)
+scoped it as "shell out to `cpp`/`clang -E`, parse the expanded TU, back-map via
+`#line`". That is not what was implemented, and the divergence is deliberate.
+
+### Why the scope changed
+
+Re-reading §5(C) against the code showed the expensive half of approach C buys
+very little that sqc cannot already do:
+
+- `prescan::resolve_includes` already resolves `#include` transitively against a
+  caller-supplied search list, and already harvests `macro_constants`,
+  `macro_aliases` and `function_macros` from every header it reaches.
+- `macro_expand` already expands those `function_macros`, and is already wired
+  into EXP33-C, EXP34-C, MEM30-C, MEM31-C and DCL31-C.
+
+So the reason §5(B) says sqc "cannot expand macros from unscanned system
+headers" was never a missing *engine* — it was that nothing ever told sqc where
+those headers live. A compile database knows. Feeding it the search paths and
+`-D` state reaches most of the Phase-4 payoff while avoiding every §5(C) con:
+no subprocess, no 10–100× TU blowup, no `#line` back-mapping, no second raw
+parse for the PRE-rules, and no per-rule regression surface — because **what
+gets parsed does not change at all**.
+
+### What `src/analyze/compile_commands.rs` does
+
+`--compile-commands <FILE>` (opt-in; absent ⇒ byte-identical behavior, per the
+§4 no-build-system constraint) reads the database and contributes:
+
+| From the DB | Into | Via |
+|---|---|---|
+| `-I`, `-isystem`, `-iquote`, `-idirafter` (resolved against each entry's `directory`, deduped, first-seen order) | the existing `include_paths` list, appended after any explicit `-I` | `prescan::resolve_includes` |
+| `-D` (minus anything `-U`'d anywhere in the DB) | `macro_constants` / `macro_aliases` / `function_macros` | rendered as real `#define` text, then run through the *existing* `const_eval` / `macro_expand` collectors |
+
+Rendering `-D` flags back into `#define` directives rather than hand-populating
+the context maps is the load-bearing choice: command-line macros get exactly the
+same constant folding, alias resolution and function-like handling as macros
+written in a header, with no second implementation of `#define` semantics to
+keep in sync.
+
+### Invariants
+
+- **Gap-filling, never overriding.** `-D` macros merge with `or_insert`
+  semantics *after* prescan and include resolution, so a real `#define` in real
+  source always wins. A build flag can only supply a name the tree never
+  defined — it can reveal a constant sqc previously treated as opaque, but can
+  never change the meaning of one it already resolved.
+- **Merged, not per-TU.** A compile DB is per-file; `resolve_includes` takes one
+  global list. The union is an approximation that can only make *more* headers
+  reachable.
+- **Stale paths are surfaced, not swallowed.** A database records absolute paths
+  from the host that built the project. `resolve_includes` skips unresolvable
+  includes silently (correct for its normal job), so a database generated on
+  another machine or in a container would otherwise degrade into an expensive
+  no-op that still looks like it worked. `CompileDb::missing_include_paths`
+  drives a CLI warning instead.
+
+### Known gap (deliberate)
+
+A compile database contains the flags a build *passes*, so it does **not**
+contain the compiler's implicit system header directories. `<sys/queue.h>` —
+the §5(D) motivating example — lives only in `/usr/include` and is therefore
+still out of reach; the §5(D) registry remains the answer for it. Closing this
+needs the compiler's default search list (`cc -E -Wp,-v -`), which is why
+`CompileDb::compilers` records the compiler executables. Left as a follow-up:
+it reintroduces a subprocess, and the project-header win should be measured on
+its own first.
+
+### Validation status
+
+Unit + end-to-end tests in `src/analyze/compile_commands.rs` (flag parsing for
+both the `command` and `arguments` forms, shell quoting, `-U`, function-like
+`-D`, the no-override invariant, and a tempdir case proving an angle-bracket
+include of a vendored header becomes reachable and contributes both a constant
+and a function-like macro). Full lib suite green (3852 tests).
+
+**Not yet done — required before any precision claim:** the §8 validation plan.
+Neither the Juliet runner nor `realworld_server.py` passes `--compile-commands`
+yet, so no benchmark has exercised this path. Note the §8 gate applies with a
+twist here: because this flag can only *add* macro/header knowledge, it changes
+what existing rules resolve, which per CLAUDE.md's delta-adjudication protocol
+means findings can move to `(file, line)` pairs outside the `ground_truth`
+denominator. Treat a compile-DB run as a changed-rule delta, not a like-for-like
+comparison.
