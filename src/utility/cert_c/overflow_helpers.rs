@@ -300,6 +300,83 @@ pub fn resolve_identifier_call_name(
     None
 }
 
+/// Within `scope`, walk statements strictly preceding `usage_node` (by
+/// source row) looking for the *most recent* declaration-with-initializer
+/// or assignment to `var_name`, and return its right-hand-side expression
+/// node (whatever kind it is -- unlike `resolve_identifier_call_name`, not
+/// restricted to a call). Used to resolve a bare identifier used as an
+/// allocation-size argument back to the expression that actually computed
+/// it (one assignment hop), so `to_len = from_len * 2U + 1U; ...;
+/// malloc(to_len)` can be checked the same way as an inline
+/// `malloc(from_len * 2U + 1U)`. Descends into nested blocks in the same
+/// depth-first, call-then-continue order as `resolve_identifier_call_name`,
+/// but keeps scanning past the first match so the last (most recent)
+/// assignment before `usage_node` wins over an earlier one.
+pub fn resolve_identifier_assignment_expr<'a>(
+    scope: &Node<'a>,
+    var_name: &str,
+    source: &str,
+    usage_node: &Node,
+) -> Option<Node<'a>> {
+    let usage_row = usage_node.start_position().row;
+    let mut result: Option<Node<'a>> = None;
+    let mut frames: Vec<(Node<'a>, usize)> = vec![(*scope, 0)];
+
+    while let Some((cur_scope, start_idx)) = frames.pop() {
+        let mut i = start_idx;
+        while i < cur_scope.named_child_count() {
+            let Some(child) = cur_scope.named_child(i) else {
+                i += 1;
+                continue;
+            };
+            if child.start_position().row >= usage_row {
+                break;
+            }
+            if child.kind() == "declaration" {
+                if let Some(declarator) = child.child_by_field_name("declarator") {
+                    if declarator.kind() == "init_declarator" {
+                        let decl_name = declarator
+                            .child_by_field_name("declarator")
+                            .map(|d| get_node_text(&d, source));
+                        if decl_name == Some(var_name) {
+                            if let Some(init_node) = declarator.child_by_field_name("value") {
+                                result = Some(init_node);
+                            }
+                        }
+                    }
+                }
+            }
+            if child.kind() == "expression_statement" {
+                if let Some(expr) = child.named_child(0) {
+                    if expr.kind() == "assignment_expression" {
+                        let lhs = expr.child_by_field_name("left");
+                        let rhs = expr.child_by_field_name("right");
+                        if let (Some(l), Some(r)) = (lhs, rhs) {
+                            if get_node_text(&l, source) == var_name {
+                                result = Some(r);
+                            }
+                        }
+                    }
+                }
+            }
+            if child.kind().starts_with("preproc_")
+                || child.kind() == "compound_statement"
+                || child.kind() == "if_statement"
+                || child.kind() == "switch_statement"
+                || child.kind() == "case_statement"
+                || child.kind() == "for_statement"
+                || child.kind() == "while_statement"
+            {
+                frames.push((cur_scope, i + 1));
+                frames.push((child, 0));
+                break;
+            }
+            i += 1;
+        }
+    }
+    result
+}
+
 /// `"++"`/`"--"`/`"unknown"` depending on which appears in `node`'s text.
 pub fn get_update_operator(node: &Node, source: &str) -> String {
     let text = get_node_text(node, source);

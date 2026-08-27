@@ -1223,13 +1223,34 @@ impl Int32C {
                     if kind == "(" || kind == ")" || kind == "," {
                         continue;
                     }
-                    let arg_text = get_node_text(&arg_node, source);
+
+                    // A bare identifier has no arithmetic in its own text
+                    // (e.g. `malloc(to_len)`). Walk back one assignment hop
+                    // to the statement that computed it -- `to_len =
+                    // from_len * 2U + 1U;` -- so that expression gets the
+                    // same overflow check an inline `malloc(from_len * 2U +
+                    // 1U)` would (task 604).
+                    let resolved_rhs = if arg_node.kind() == "identifier" {
+                        let var_name = get_node_text(&arg_node, source);
+                        ast_utils::find_containing_function(&arg_node)
+                            .and_then(|f| f.child_by_field_name("body"))
+                            .and_then(|body| {
+                                overflow_helpers::resolve_identifier_assignment_expr(
+                                    &body, var_name, source, &arg_node,
+                                )
+                            })
+                    } else {
+                        None
+                    };
+                    let check_node = resolved_rhs.as_ref().unwrap_or(&arg_node);
+
+                    let arg_text = get_node_text(check_node, source);
                     if self.contains_arithmetic(arg_text) {
                         // Use const_eval to check if the arithmetic provably fits
                         let macros = self.current_macros.borrow();
-                        let vra_ranges = self.vra_var_ranges_at(&arg_node, source);
+                        let vra_ranges = self.vra_var_ranges_at(check_node, source);
                         let fits_64 = const_eval::expression_fits_in_signed_vra(
-                            &arg_node,
+                            check_node,
                             source,
                             &macros,
                             64,
@@ -1243,7 +1264,7 @@ impl Int32C {
                         // fires only when the whole range exceeds the bound, so legit
                         // small allocations (good `data = 20` -> 80) stay clean.
                         let wraps_32_size_t = const_eval::expression_overflows_unsigned_vra(
-                            &arg_node,
+                            check_node,
                             source,
                             &macros,
                             32,
@@ -1256,15 +1277,26 @@ impl Int32C {
                         drop(macros);
                         if !self.has_allocation_overflow_check(node, source) {
                             let start_point = node.start_position();
-                            violations.push(RuleViolation {
-                                rule_id: self.rule_id().to_string(),
-                                severity: Severity::High,
-                                message: format!(
+                            let message = if resolved_rhs.is_some() {
+                                format!(
+                                    "{}() argument {} ('{}') was computed by arithmetic that may overflow: '{}'",
+                                    function_name,
+                                    arg_idx + 1,
+                                    get_node_text(&arg_node, source),
+                                    arg_text
+                                )
+                            } else {
+                                format!(
                                     "{}() argument {} contains arithmetic that may overflow: '{}'",
                                     function_name,
                                     arg_idx + 1,
                                     arg_text
-                                ),
+                                )
+                            };
+                            violations.push(RuleViolation {
+                                rule_id: self.rule_id().to_string(),
+                                severity: Severity::High,
+                                message,
                                 file_path: String::new(),
                                 line: start_point.row + 1,
                                 column: start_point.column + 1,
