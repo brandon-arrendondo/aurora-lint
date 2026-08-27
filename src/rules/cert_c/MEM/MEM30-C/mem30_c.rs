@@ -2063,22 +2063,51 @@ impl MemoryAnalyzer {
         // A compound statement's result is exactly its last real statement's
         // result (braces/comments aren't statements), so chains of nested
         // compounds can be unwrapped in a plain loop — no stack growth.
+        // tree-sitter-c wraps an `else` branch's body in its own `else_clause`
+        // node (the `alternative` field's value), distinct from the `if`/`for`
+        // body node returned directly by the `consequence`/`body` field — so an
+        // else-branch's terminator was never being seen at all (every
+        // `else_clause` fell through to the `_ => false` arm below), making
+        // `else_returns` always false and any free in an `else` arm leak into
+        // the general "neither branch returns" union-merge as if it hadn't
+        // terminated. Unwrap it the same way as `compound_statement` (task 563).
         fn resolve<'a>(mut node: Node<'a>) -> Option<Node<'a>> {
-            while node.kind() == "compound_statement" {
-                let mut last_child = None;
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() != "{" && child.kind() != "}" && child.kind() != "comment" {
-                            last_child = Some(child);
+            loop {
+                match node.kind() {
+                    "compound_statement" => {
+                        let mut last_child = None;
+                        for i in 0..node.child_count() {
+                            if let Some(child) = node.child(i) {
+                                if child.kind() != "{"
+                                    && child.kind() != "}"
+                                    && child.kind() != "comment"
+                                {
+                                    last_child = Some(child);
+                                }
+                            }
+                        }
+                        match last_child {
+                            Some(last) => node = last,
+                            None => return None,
                         }
                     }
-                }
-                match last_child {
-                    Some(last) => node = last,
-                    None => return None,
+                    "else_clause" => {
+                        let mut inner = None;
+                        for i in 0..node.child_count() {
+                            if let Some(child) = node.child(i) {
+                                if child.kind() != "else" && child.kind() != "comment" {
+                                    inner = Some(child);
+                                }
+                            }
+                        }
+                        match inner {
+                            Some(n) => node = n,
+                            None => return None,
+                        }
+                    }
+                    _ => return Some(node),
                 }
             }
-            Some(node)
         }
 
         let mut work: Vec<Frame> = vec![Frame::Eval(*node)];
@@ -2347,6 +2376,28 @@ impl MemoryAnalyzer {
                     return HashSet::new();
                 }
                 _ => {
+                    // Realloc-style wrappers (name-detected here) take priority
+                    // over the cross-file FunctionSummary below, exactly like the
+                    // literal `realloc` arm above. A tracing/debug allocator
+                    // implementation of e.g. `os_realloc` legitimately calls
+                    // `free(ptr)` on its own old-pointer argument as part of its
+                    // body (malloc new, copy, free old) — real behavior the
+                    // summary correctly credits as `unconditional_frees_params`.
+                    // But routing that through `process_summary_free_call`
+                    // treats the *call site* as an ordinary `free(subelem)`,
+                    // ignoring that the standard `x = os_realloc(x, n)` /
+                    // `nbuf = os_realloc(subelem, n); if (!nbuf) ...; else
+                    // subelem = nbuf;` idiom always pairs it with a reassignment
+                    // — exactly what `track_realloc_old_pointer`'s
+                    // pending-invalidation-then-clear-on-reassign tracking
+                    // exists for. Fabricated double-free/UAF across every
+                    // sequential realloc-grow block in real-world C (task 563).
+                    let upper_name = function_name.to_uppercase();
+                    if upper_name.contains("REALLOC") {
+                        self.track_realloc_old_pointer(node, source);
+                        return HashSet::new();
+                    }
+
                     // A cross-file FunctionSummary (real analysis of the callee's
                     // body) is authoritative over the name-based heuristic below —
                     // it fixes both false positives (e.g. hostap's
@@ -2378,7 +2429,6 @@ impl MemoryAnalyzer {
                     }
 
                     // Check for common free-related macros
-                    let upper_name = function_name.to_uppercase();
                     if upper_name.contains("FREE")
                         || upper_name == "XFREE"
                         || upper_name == "G_FREE"
@@ -2397,10 +2447,6 @@ impl MemoryAnalyzer {
                             self.clear_freed_for_nulled_args(node, source, &indices);
                         }
                         return freed_arg_ids;
-                    } else if upper_name.contains("REALLOC") {
-                        // Treat as realloc() call - track old pointer as invalidated
-                        // Don't check args for freed - realloc expects a possibly-allocated pointer
-                        self.track_realloc_old_pointer(node, source);
                     } else {
                         // Check if any argument is a freed pointer
                         self.check_function_args_for_freed(node, source, violations);
@@ -2780,6 +2826,24 @@ impl MemoryAnalyzer {
                 self.freed_vars.remove(&left_var);
                 self.nullified_vars.remove(&left_var);
                 self.realloc_invalidated.remove(&left_var);
+                self.aliases.remove(&left_var);
+            } else if left.kind() == "field_expression" {
+                // Same reassignment-overwrites-dangling-state principle as the
+                // identifier case above, for a field LHS whose RHS is a
+                // non-variable expression (typically a call result). Without
+                // this, `os_free(data->x); data->x = some_wrapper();` only
+                // cleared the freed state when `some_wrapper`'s name matched
+                // the `is_fresh_allocation_name` heuristic below — an
+                // arbitrary project function (e.g. hostap's
+                // `eap_sim_db_get_next_pseudonym`) left the field permanently
+                // marked freed even though this statement, like any
+                // reassignment, plainly gives it a fresh value (task 563).
+                self.freed_vars.remove(&left_var);
+                self.nullified_vars.remove(&left_var);
+                self.realloc_invalidated.remove(&left_var);
+                self.freed_vars.remove(&left_lv);
+                self.nullified_vars.remove(&left_lv);
+                self.realloc_invalidated.remove(&left_lv);
                 self.aliases.remove(&left_var);
             }
 
