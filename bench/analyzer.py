@@ -272,50 +272,51 @@ def _load_cwe_rules(cwe_id: str) -> set:
 
 # ── Main orchestrator ─────────────────────────────────────────────────────────
 
-def analyze_cwe(csv_path: str | Path, cwe_dir: str | Path,
-                cwe_scan_id: int | None = None) -> CWEAnalysis:
-    """Analyze a single CWE scan result.
-
-    Args:
-        csv_path: Path to sqc CSV output for this CWE.
-        cwe_dir: Path to the Juliet CWE test directory.
-        cwe_scan_id: Optional DB foreign key for violation records.
-
-    Returns:
-        CWEAnalysis with all metrics and raw violations.
+@dataclass
+class ShardPartial:
+    """Raw, unfinalized counters for one shard of a CWE (a single `sNN` dir,
+    or the whole CWE dir when it isn't split). `analysis` carries every
+    additive field (tp_count, violations, ...) but none of the derived
+    rate/pct fields -- those are computed once, after all of a CWE's shards
+    are merged, by `merge_shards`. Never read a rate field off a bare
+    ShardPartial.analysis (task 388).
     """
-    cwe_dir = Path(cwe_dir)
+    analysis: CWEAnalysis
+    rule_tp: dict = field(default_factory=lambda: defaultdict(int))
+    rule_fp: dict = field(default_factory=lambda: defaultdict(int))
+    rule_flaw: dict = field(default_factory=lambda: defaultdict(int))
+    files_with_bad_section: int = 0
+    files_detected: int = 0
+    total_flaw_lines_for_hit: int = 0
+
+
+def analyze_shard(csv_path: str | Path, search_dir: str | Path, cwe_id: str,
+                  cwe_dir_name: str, cwe_scan_id: int | None = None) -> ShardPartial:
+    """Analyze one shard's files against its own CSV of sqc violations.
+
+    `search_dir` is a single `sNN` subdirectory when the CWE is sharded, or
+    the whole CWE dir when it isn't -- either way this is a self-contained
+    unit: `parse_sqc_csv` keys violations by bare filename (task 388 §3a),
+    so a shard analyzing its own directory against its own CSV cannot pick
+    up a same-named file from a sibling shard.
+    """
+    search_dir = Path(search_dir)
     csv_path = Path(csv_path)
-    cwe_dir_name = cwe_dir.name
-    cwe_id = _extract_cwe_from_dir(str(cwe_dir)) or cwe_dir_name
     cwe_rules = _load_cwe_rules(cwe_id)
 
     analysis = CWEAnalysis(cwe_id=cwe_id, cwe_dir_name=cwe_dir_name)
     analysis.cwe_rules = cwe_rules
 
-    # Parse CSV violations
     violations_dict = parse_sqc_csv(csv_path)
 
-    # Find all C files (handle subdirectory layout like CWE-121)
-    subdirs = sorted(cwe_dir.glob('s*'))
-    if subdirs and subdirs[0].is_dir():
-        search_dirs = subdirs
-    else:
-        search_dirs = [cwe_dir]
-
-    # Per-rule counters
     rule_tp = defaultdict(int)
     rule_fp = defaultdict(int)
     rule_flaw = defaultdict(int)
-
-    # CWE-aware counters
     files_with_bad_section = 0
     files_detected = 0
     total_flaw_lines_for_hit = 0
 
-    for search_dir in search_dirs:
-        if not search_dir.is_dir():
-            continue
+    if search_dir.is_dir():
         for c_file in sorted(search_dir.glob('*.c')):
             result = _process_cwe_file(
                 c_file, violations_dict, cwe_rules, analysis, cwe_scan_id,
@@ -329,11 +330,87 @@ def analyze_cwe(csv_path: str | Path, cwe_dir: str | Path,
             if file_has_cwe_tp:
                 files_detected += 1
 
-    _finalize_cwe_rates(analysis, files_with_bad_section, files_detected,
-                        total_flaw_lines_for_hit)
-    _build_rule_breakdown(analysis, rule_tp, rule_fp, rule_flaw, cwe_rules)
+    return ShardPartial(
+        analysis=analysis, rule_tp=rule_tp, rule_fp=rule_fp, rule_flaw=rule_flaw,
+        files_with_bad_section=files_with_bad_section, files_detected=files_detected,
+        total_flaw_lines_for_hit=total_flaw_lines_for_hit,
+    )
 
-    return analysis
+
+def merge_shards(cwe_id: str, cwe_dir_name: str,
+                 partials: list[ShardPartial]) -> CWEAnalysis:
+    """Sum every shard's raw counters into one CWEAnalysis and finalize the
+    derived rates exactly once. Do NOT average per-shard rates -- they are
+    ratios of summed counters, and averaging ratios silently skews every
+    metric (task 388 §3).
+    """
+    merged = CWEAnalysis(cwe_id=cwe_id, cwe_dir_name=cwe_dir_name)
+    merged.cwe_rules = partials[0].analysis.cwe_rules if partials else set()
+
+    rule_tp = defaultdict(int)
+    rule_fp = defaultdict(int)
+    rule_flaw = defaultdict(int)
+    files_with_bad_section = 0
+    files_detected = 0
+    total_flaw_lines_for_hit = 0
+
+    for p in partials:
+        a = p.analysis
+        merged.files_analyzed += a.files_analyzed
+        merged.tp_count += a.tp_count
+        merged.fp_count += a.fp_count
+        merged.flaw_lines_total += a.flaw_lines_total
+        merged.flaw_lines_detected += a.flaw_lines_detected
+        merged.cwe_matched_tp += a.cwe_matched_tp
+        merged.cwe_matched_fp += a.cwe_matched_fp
+        merged.noise_count += a.noise_count
+        merged.flaw_hit_detected += a.flaw_hit_detected
+        merged.violations.extend(a.violations)
+        for rule, n in p.rule_tp.items():
+            rule_tp[rule] += n
+        for rule, n in p.rule_fp.items():
+            rule_fp[rule] += n
+        for rule, n in p.rule_flaw.items():
+            rule_flaw[rule] += n
+        files_with_bad_section += p.files_with_bad_section
+        files_detected += p.files_detected
+        total_flaw_lines_for_hit += p.total_flaw_lines_for_hit
+
+    _finalize_cwe_rates(merged, files_with_bad_section, files_detected,
+                        total_flaw_lines_for_hit)
+    _build_rule_breakdown(merged, rule_tp, rule_fp, rule_flaw, merged.cwe_rules)
+
+    return merged
+
+
+def analyze_cwe(csv_path: str | Path, cwe_dir: str | Path,
+                cwe_scan_id: int | None = None) -> CWEAnalysis:
+    """Analyze a single CWE scan result.
+
+    Args:
+        csv_path: Path to sqc CSV output for this CWE.
+        cwe_dir: Path to the Juliet CWE test directory.
+        cwe_scan_id: Optional DB foreign key for violation records.
+
+    Returns:
+        CWEAnalysis with all metrics and raw violations.
+    """
+    cwe_dir = Path(cwe_dir)
+    cwe_dir_name = cwe_dir.name
+    cwe_id = _extract_cwe_from_dir(str(cwe_dir)) or cwe_dir_name
+
+    # Find all C files (handle subdirectory layout like CWE-121)
+    subdirs = sorted(cwe_dir.glob('s*'))
+    if subdirs and subdirs[0].is_dir():
+        search_dirs = subdirs
+    else:
+        search_dirs = [cwe_dir]
+
+    partials = [
+        analyze_shard(csv_path, search_dir, cwe_id, cwe_dir_name, cwe_scan_id)
+        for search_dir in search_dirs
+    ]
+    return merge_shards(cwe_id, cwe_dir_name, partials)
 
 
 def _process_cwe_file(c_file, violations_dict, cwe_rules, analysis, cwe_scan_id,
