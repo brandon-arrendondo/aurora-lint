@@ -39,19 +39,28 @@ long-pole/straggler.
 `start_time` is taken at `bench/runner.py:121` and `duration_s` is computed
 at line 135, **immediately after `subprocess.run` returns and before
 `analyze_cwe` is called**. **[verified]** So the numbers above are *sqc
-subprocess time only* — the Python analysis phase (`analyze_cwe`, which
-re-reads and re-parses every `.c` file in the CWE) is entirely unmeasured
-and is not included in any recorded duration.
+subprocess time only*.
+
+This scope is already documented and honestly surfaced — no bug here:
+`bench/db.py:635-642` states `analysis_s` "sums each CWE's own
+sqc-subprocess duration (each including its own prescan+scan)" and notes it
+normally exceeds `wall_s` under parallelism; `bench/db.py:330-332` repeats
+it; `bench/__main__.py:116` prints "summed per-CWE sqc time". **[verified]**
+
+The residue that *does* matter for this work is narrower: the **Python
+analysis phase** (`analyze_cwe`, which re-reads and re-parses every `.c`
+file in the CWE) is not separately timed anywhere. It is excluded from
+`analysis_s` and conflated with scheduling idle inside `wall_s`, so its
+size is unknown.
 
 Two consequences:
 
-- The long pole is genuinely the Rust scan, so sharding the sqc invocation
-  is aimed at the right thing.
-- Any speedup computed from `sum(duration_s)` understates real CPU work by
-  the unmeasured Python analysis. **Instrument this first** (§6.0) — if the
-  Python phase is a large fraction of per-CWE wall time, it is a *second*
-  long pole that sharding the subprocess alone will not fix, and the shard
-  design must fan out the analysis too (it can — see §3).
+- The long pole in `duration_s` is genuinely the Rust scan, so sharding the
+  sqc invocation is aimed at the right thing.
+- If the Python phase turns out to be a large fraction of per-CWE wall
+  time, it is a *second* long pole that sharding the subprocess alone will
+  not fix, and the shard design must fan out the analysis too (it can — see
+  §3). Time it before trusting any speedup projection (§6.0).
 
 ---
 
@@ -189,9 +198,10 @@ symlinks first.
 
 ## 6. Order of work (measure before coding)
 
-- **6.0** Instrument the Python analysis phase — record it as its own column
-  or at minimum log it, so §1a's blind spot is closed before any speedup
-  claim is made.
+- **6.0** Time the Python `analyze_cwe` phase — as its own column, or at
+  minimum logged. It is the one piece of per-CWE cost nothing currently
+  measures (§1a), and its size decides whether §3's fan-out has to cover
+  the analysis as well as the subprocess.
 - **6.1** Measure the prescan fraction on CWE-121 (§4). **Gate:** if
   prescan dominates, stop and re-scope.
 - **6.2** Confirm `sNN` presence and count for CWE-121/78/190 (§2).
