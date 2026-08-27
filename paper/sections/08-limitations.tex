@@ -1,0 +1,87 @@
+%% ============================================================
+\section{Limitations}
+\label{sec:limitations}
+
+SqC has several architectural limitations that cap its achievable
+precision:
+
+\textbf{No general preprocessor expansion.}  Macros still appear as
+identifier tokens or function calls by default, and SqC does not
+expand an arbitrary macro body.  A narrower, registry-based
+macro-expansion engine now closes this gap for specific, recognized
+idioms: it identifies function-like macros whose body frees and
+null-writes their argument (the ``safe-free'' idiom, e.g.\
+\texttt{SAFE\_FREE(p)}, feeding MEM30-C/MEM31-C) and macros whose body
+writes to an output parameter (feeding EXP33-C), independent of the
+macro's name.  Outside these two recognized shapes, an arbitrary
+\texttt{SAFE\_FREE(p)}-style macro is still opaque.
+
+\textbf{No general alias analysis.}  Pointer aliasing is largely
+unresolved.  If \texttt{p} and \texttt{q} point to the same memory and
+\texttt{q} is checked for null, SqC does not propagate that
+information to \texttt{p} in the general case.  A field-sensitive
+points-to module now tracks a narrower form of this---resolving
+\texttt{\&var} and struct-field aliases for a handful of rules
+(MEM30-C, MEM31-C, DCL13-C, ARR30-C)---but general pointer aliasing
+remains unmodeled.
+
+\textbf{No symbolic execution.}  SqC's value-range analysis handles
+constant expressions but cannot reason about symbolic relationships
+(e.g., that \texttt{n} is always less than \texttt{sizeof(buf)}).
+
+\textbf{No SSA form.}  Without static single assignment, use-def
+chains are approximate, limiting the precision of dataflow analyses.
+
+\textbf{No ownership model.}  Cross-function memory ownership is only
+partially tracked.  MEM31-C credits same-function ownership transfer
+(allocate, then pass to a custom deallocator) via the points-to module
+above, but does not distinguish a parameter-owned struct field
+(populated by a function that does not own the struct's lifetime) from
+a locally-owned one---the dominant remaining source of MEM31-C
+real-world false positives (\cref{sec:realworld-results}).
+
+These gaps are fundamental to the tree-sitter approach, though not
+uniformly so: the macro and alias gaps above have narrowed via
+targeted, rule-scoped analyses rather than general resolution.  A tool
+built on Clang's AST would resolve macros and includes automatically
+but would require a compilation database.  The current
+architecture---AST plus CFG plus null-state dataflow plus value-range
+analysis plus inter-procedural summaries (including cross-function
+taint propagation)---has reached 83.8\% TP rate, exceeding the
+75--80\% range this paper previously projected as achievable only with
+alias analysis or symbolic execution.  In practice, most of that gain
+came not from either of those two capabilities but from the opt-in
+provenance-gated redesign of the INT rules
+(\cref{sec:provenance-frontier}), which reframed the problem instead of
+requiring deeper program analysis.  Further improvements past 83.8\%
+likely still require some combination of general alias analysis,
+symbolic execution, or a real ownership model, since the residual gaps
+(CWE-369, CWE-121, the MEM31-C parameter-ownership case above) are
+precisely the cases those three capabilities would address.
+
+The 7 remaining CWEs with zero detection (\cref{tab:precision-tiers})
+reveal residual coverage gaps.  CWE-259 (Hard-Coded Password) is
+blocked by tree-sitter's inability to expand preprocessor macros in
+Juliet's Windows headers; CWE-328 (Reversible One-Way Hash) requires
+a new cryptographic algorithm detection rule; the remainder (CWE-23,
+CWE-667, CWE-672, CWE-676, CWE-762) await dedicated rule implementations.
+
+Finally, Juliet precision does not transfer to real-world precision.
+To quantify the gap, we manually adjudicated a seeded random sample of
+50 findings from each of the four noisiest rules in the v0.4.22
+real-world run (MEM30-C, DCL13-C, INT32-C, EXP34-C; together 41K of
+133K total findings).  Measured precision was 0\%, 34\%, 6\%, and 2\%
+respectively---10.5\% combined---on rules whose Juliet results had
+motivated no further work.  The FP modes are real-world idioms Juliet
+rarely contains: free-then-reassign sequences, callback signatures
+fixed by function-pointer contracts, loop counters structurally
+bounded by data-structure sizes, and allocation checks placed on the
+line after the allocation.  This is the strongest evidence for
+treating Juliet as a rough approximation: a rule can be simultaneously
+well-tuned on Juliet and produce thousands of false positives per
+project in deployment.  A subsequent \emph{complete} audit of one
+project---every INT32-C finding across all 220 SQLite files
+adjudicated, rather than a 50-finding sample---sharpens the figure for
+the worst rule to 0.3\% precision and isolates a single root cause,
+operand provenance; we treat that case in detail in
+\cref{sec:provenance-frontier}.

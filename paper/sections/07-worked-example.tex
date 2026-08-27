@@ -1,0 +1,46 @@
+%% ============================================================
+\section{Worked Example: Null Dereference Detection}
+\label{sec:worked-example}
+
+To make the analysis pipeline concrete, consider this C function:
+
+\begin{lstlisting}
+void process(FILE *log) {
+    char *buf = malloc(256);
+    if (buf == NULL) {
+        fprintf(log, "alloc failed\n");
+        return;
+    }
+    /* buf is NotNull here */
+    strcpy(buf, "initialized");
+    free(buf);
+}
+\end{lstlisting}
+
+SqC's analysis proceeds through the four stages:
+
+\textbf{Stage 1 (Parse):} Tree-sitter produces a CST.  The
+\texttt{malloc} call, \texttt{if} statement, \texttt{return},
+\texttt{strcpy}, and \texttt{free} are all represented as nodes.
+
+\textbf{Stage 2 (Prescan):} If cross-file analysis is enabled,
+\texttt{malloc} is recognized from the standard function database
+as a function that may return NULL.
+
+\textbf{Stage 3 (CFG + Dataflow):} The CFG has four basic blocks:
+entry (malloc call), the null-check branch, the error path (fprintf +
+return), and the success path (strcpy + free).  The null-state dataflow
+computes:
+\begin{itemize}
+    \item After \texttt{malloc}: \texttt{buf} $=$ PossiblyNull
+    \item True branch (\texttt{buf == NULL}): \texttt{buf} $=$ DefinitelyNull
+    \item False branch: \texttt{buf} $=$ NotNull
+    \item At \texttt{strcpy}: \texttt{buf} $=$ NotNull (the DefinitelyNull
+        path returned early)
+\end{itemize}
+
+\textbf{Stage 4 (Rule Evaluation):} EXP34-C checks every dereference
+of a pointer.  At the \texttt{strcpy} call, \texttt{buf} is NotNull,
+so no violation is reported.  If the \texttt{if (buf == NULL)} check
+were removed, \texttt{buf} would still be PossiblyNull at \texttt{strcpy},
+and EXP34-C would flag the violation.

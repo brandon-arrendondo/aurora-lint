@@ -1,0 +1,50 @@
+%% ============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+We have presented SqC, a static analysis tool implementing 311 CERT C
+rules across 17 categories.  Through tree-sitter-based parsing,
+control-flow graph construction, null-state dataflow analysis,
+value-range analysis, and inter-procedural function summaries
+(including cross-function taint propagation), SqC achieves an 83.8\%
+true positive rate on the Juliet benchmark with 48 CWEs at 100\%
+precision.  On a five-tool comparison, SqC surpasses Frama-C
+(79.5\% vs.\ 61.0\% on overlapping CWEs) and now beats clang-tidy
+outright on three of those CWEs, while covering 5--12$\times$
+more vulnerability categories.
+
+On real-world codebases totaling 1.12 million lines of code across
+seven projects, total violations on the original five were reduced
+82.4\% through iterative refinement.  SqC detects vulnerability
+classes that existing open-source tools do not cover, including
+POSIX thread misuse, integer overflow, and inter-procedural null
+dereference.
+
+The tool's primary limitation---its tree-sitter foundation---is also
+its key advantage: SqC analyzes any C file without a build system,
+compilation database, or preprocessing step.  For teams that need
+broad CERT C coverage with minimal integration effort, this tradeoff
+is worthwhile.
+
+Much of the post-v0.4.22 progress came not from the alias analysis or
+symbolic execution this paper once projected as necessary, but from
+reframing rules as opt-in provenance gates (\cref{sec:provenance-frontier}):
+a cheaper redesign than either, and one motivated by real-world
+precision rather than Juliet score, that happened to lift the Juliet
+rate as a side effect.  This suggests future work should continue
+looking for rule-level reframings before reaching for the heavier
+architectural investments.  That said, some residual gaps do appear to
+require deeper analysis: the MEM31-C real-world false-positive rate
+remains largely unmoved by a first ownership-tracking pass
+(\cref{sec:limitations}) because its dominant cause---parameter-owned
+vs.\ locally-owned struct lifetimes---is exactly the kind of question
+a real ownership or alias model answers and a same-function heuristic
+cannot.  Future work therefore includes: a parameter-ownership model
+for MEM31-C; a broader audit of which other rules would benefit from
+the registry-based macro-expansion engine now used by MEM30/31-C and
+EXP33-C; alias analysis for pointer-related rules generally; and
+further expanding the cross-function taint infrastructure --- CWE-78
+(OS command injection) now achieves 100\% precision via caller-aware
+ENV03-C suppression and return-value propagation, and the same summary
+bits extend naturally to CWE-89 sinks (\texttt{sqlite3\_exec},
+\texttt{mysql\_query}, \texttt{PQexec}) and format-string injection.

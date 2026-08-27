@@ -1,0 +1,40 @@
+%% ============================================================
+\section{Introduction}
+\label{sec:intro}
+
+The C programming language remains dominant in systems software,
+embedded systems, and security-critical infrastructure.  Despite decades
+of research in programming language safety, C's lack of memory safety
+guarantees continues to produce vulnerabilities: buffer overflows, null
+pointer dereferences, integer overflows, and use-after-free defects
+account for the majority of CVEs in C codebases~\cite{cwe-top25}.
+
+The SEI CERT C Coding Standard~\cite{cert-c} codifies 120+ rules and
+200+ recommendations spanning 17 categories, from integer handling to
+concurrency to POSIX-specific interfaces.  While the standard is widely
+referenced in secure coding guidelines (e.g., MISRA C, IEC 62443),
+tool support for comprehensive CERT C checking remains fragmented.
+Commercial tools such as Coverity~\cite{coverity}, Klocwork, and
+Polyspace implement subsets of CERT C rules alongside proprietary
+checkers, but their closed-source nature limits reproducibility.
+Open-source alternatives like cppcheck~\cite{cppcheck} and
+clang-tidy~\cite{clang-tidy} implement approximately 20 CERT C checks
+each, leaving the majority of the standard uncovered.
+
+This paper presents SqC (\textbf{S}oftware Code \textbf{Q}uality for
+\textbf{C}), a static analysis tool that implements 311 CERT C rules
+across all 17 categories.  The paper describes the tool's architecture,
+the iterative process used to reduce false positives, and the results of
+evaluating SqC against both a standardized benchmark and real-world
+codebases.
+
+The rest of this paper is organized as follows.  \Cref{sec:background}
+covers the CERT C standard and the Juliet benchmark.
+\Cref{sec:architecture} describes SqC's architecture.
+\Cref{sec:methodology} details the testing methodology.
+\Cref{sec:results} presents benchmark results.
+\Cref{sec:fp-reduction} walks through the iterative false positive
+reduction process.  \Cref{sec:worked-example} provides a worked
+example.  \Cref{sec:limitations} discusses limitations.
+\Cref{sec:related} covers related work.  \Cref{sec:conclusion}
+concludes.
