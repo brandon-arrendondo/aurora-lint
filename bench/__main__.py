@@ -13,6 +13,8 @@ Commands:
   ground-truth                             Ground-truth label inventory
   concurrency-context [--project P]        CON03/07/33-C precision split by
                                             concurrency-context evidence
+  corpus-check                             Verify every real-world checkout is
+                                            still on its pinned commit
 """
 
 import argparse
@@ -597,6 +599,13 @@ def cmd_oracle_versions(args):
               f"{v['notes'] or ''}")
 
 
+def cmd_corpus_check(args):
+    from bench.corpus import report
+    # Exits nonzero on drift so this can gate a benchmark run or CI step;
+    # `args.func`'s return value is discarded, hence the explicit exit.
+    sys.exit(report(bench_root=args.bench_root, as_json=args.json))
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="bench",
@@ -763,6 +772,14 @@ def main():
                           help="List frozen oracle versions")
     p_ov.add_argument("--json", action="store_true", help="Emit JSON")
     p_ov.set_defaults(func=cmd_oracle_versions)
+
+    p_cchk = sub.add_parser(
+        "corpus-check",
+        help="Verify every real-world checkout is still on its pinned commit")
+    p_cchk.add_argument("--bench-root", default=None,
+                        help="Override BENCH_ROOT for this check")
+    p_cchk.add_argument("--json", action="store_true", help="Emit JSON")
+    p_cchk.set_defaults(func=cmd_corpus_check)
 
     args = parser.parse_args()
     if not args.command:

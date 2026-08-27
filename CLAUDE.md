@@ -31,7 +31,23 @@ python -m bench juliet [--full] [--jobs N]
 python -m bench status [RUN_ID]
 python -m bench compare BASE TARGET
 python -m bench runs
+python -m bench corpus-check   # are the real-world checkouts still pinned?
 ```
+
+**Run `python -m bench corpus-check` before any real-world run or precision
+claim** (task 619). The pins live in `data/benchmark_repos.json` (single
+source of truth, shared with `playbooks/setup-benchmark-repos.yml`), but
+provisioning pins a checkout *once* and nothing keeps it there — a `git pull`
+on a tracking-branch checkout drifts it silently, and `realworld_server.py`
+records whatever SHA it finds rather than asserting the expected one. Since
+`ground_truth` is keyed on `(project, commit, file, line, rule)`, findings
+from a drifted tree fall outside the precision/recall denominator in either
+direction with no error. The check exits nonzero and prints the
+`git checkout --detach` fix per row. It also flags untracked *and gitignored*
+`*.c`/`*.h` files, which sqc *will* scan and attribute to the pinned commit —
+sqc dispatches on file extension and never consults git, so a build run inside
+a checkout (e.g. sqlite's generated `sqlite3.c` amalgamation) contaminates a
+scan while staying invisible to `git status`.
 
 ### Protocol
 
@@ -114,13 +130,17 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 **Before planning or coding, ask the DB:**
 
 - `todo-sqlite-cli next` — the single task to work on right now.
-- `todo-sqlite-cli list` — all active (in-progress + pending), in-progress
-  first then by priority.
-- `todo-sqlite-cli show <id>` — full task detail.
+- `todo-sqlite-cli list` — all active (in-progress + partial + pending),
+  in-progress first, then partial, then pending; within each, by priority.
+- `todo-sqlite-cli show <id>` — full task detail (`--verbose` for humans).
 - Every command supports `--json`.
 
 **When picking up work:** `todo-sqlite-cli start <id>` before coding,
-`todo-sqlite-cli done <id>` when committed.
+`todo-sqlite-cli done <id>` when committed. `start` auto-pauses any prior
+in-progress task to `partial`, preserving its `started_at`, so a task left
+`partial` was interrupted rather than abandoned — resume it with `start`.
+`stop <id>` pauses deliberately; `revert <id>` undoes a start that turned out
+to be wrong (back to pending, clears `started_at`).
 
 **Adding a progress note to an existing task:**
 `todo-sqlite-cli edit <id> --append-details "note"` — appends with a newline,
@@ -135,7 +155,27 @@ to overwrite, not to log progress. `--add-tag`/`--rm-tag`,
 deps are skipped by `next` and shown `[blocked]` in `list`.
 
 Original task IDs (prior to the 2026-04-20 import) are preserved
-as `plan-id:NN` tags; CLI IDs are independent AUTOINCREMENT integers.
+as `plan-id:NN` tags.
+
+**Task identity is a UUID; the integer `<id>` is only a display alias**
+(todo-sqlite-cli v3.0.0). Consequences worth knowing:
+
+- **Run `todo-sqlite-cli doctor` after every `git merge`/`pull` that touches
+  `todo-sqlite-cli.db`.** It checks for duplicate display ids, unresolved
+  `merge-conflict` tags, orphaned tag/dep rows, self-deps and dependency
+  cycles, and exits 1 so it can gate a script. Verified 2026-08-27 against a
+  reconstruction of the v2.1.0 corruption: the merge itself is now sound
+  (tags and deps are keyed on `task_uuid`, so details can't concatenate and
+  tags can't union, and a dep keeps pointing at the task it meant), but two
+  nodes that independently allocated the same display id still merge to **two
+  rows sharing that id** — data intact, display ambiguous. `doctor` is what
+  surfaces that; the driver's "0 conflicts" line no longer implies it.
+- `rm` does not reserve the display id — a later `add` may reuse it.
+- If `show <id>` prints two tasks, pass the full UUID to disambiguate.
+
+Because identity is a UUID, the old defensive dance of deleting a
+locally-created task before merging to dodge an id collision is obsolete.
+Just merge, then run `doctor`.
 
 **Release history** also lives in the DB — each CHANGELOG entry is a
 `release`-tagged done task with `completed_at` set to the release date.

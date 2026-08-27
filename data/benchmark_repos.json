@@ -1,0 +1,65 @@
+{
+  "_comment": [
+    "Authoritative pinned commits for every real-world benchmark codebase.",
+    "",
+    "SINGLE SOURCE OF TRUTH. Consumed by both:",
+    "  - playbooks/setup-benchmark-repos.yml  (provisioning: clone + checkout)",
+    "  - python -m bench corpus-check         (verification: still at the pin?)",
+    "Do not duplicate these SHAs anywhere else. Each is the commit its",
+    "ground-truth oracle was adjudicated against, so changing one silently",
+    "invalidates every ground_truth row for that project (the oracle is keyed",
+    "on project+commit+file+line+rule). Re-pin only alongside a re-adjudication.",
+    "",
+    "'name' is also the checkout directory basename and the CODEBASES registry",
+    "key in mcp_servers/realworld_server.py -- bench/db.py's result-filename",
+    "parsing requires all three to match, which is why pure-ftpd is checked out",
+    "as 'pureftpd' (no hyphen)."
+  ],
+  "repos": [
+    {
+      "name": "libcrc",
+      "repo": "https://github.com/lammertb/libcrc.git",
+      "version": "7719e2112a9a960b1bba130d02bebdf58e8701f1"
+    },
+    {
+      "name": "sqlite",
+      "repo": "https://github.com/sqlite/sqlite.git",
+      "version": "b1a73ba34d05b32007315e4065c6468cc638e3af"
+    },
+    {
+      "name": "mosquitto",
+      "repo": "https://github.com/eclipse-mosquitto/mosquitto.git",
+      "version": "d3ee5c5ca62c0fa4983308c6fff558ee978e878c"
+    },
+    {
+      "name": "curl",
+      "repo": "https://github.com/curl/curl.git",
+      "version": "3e198f75861cc2e12daf299689e145949dddd19b"
+    },
+    {
+      "name": "hostap",
+      "repo": "https://git.w1.fi/hostap.git",
+      "version": "dcee60436390dd34731560657c4257c3b4c839a6"
+    },
+    {
+      "name": "lua",
+      "repo": "https://github.com/lua/lua.git",
+      "version": "40b76de2d77e66b70a9d4bf989c3f5340919973f"
+    },
+    {
+      "name": "raylib",
+      "repo": "https://github.com/raysan5/raylib.git",
+      "version": "962bbfc6bfbd7a5acd08e21314fcfa161003a589"
+    },
+    {
+      "name": "pureftpd",
+      "repo": "https://github.com/jedisct1/pure-ftpd.git",
+      "version": "cc28bff52ca28e1d122a2142bf37f2dc578f4d3e"
+    },
+    {
+      "name": "sel4",
+      "repo": "https://github.com/seL4/seL4.git",
+      "version": "1326364bc9135d9445d936ebc01e38a402c1f4c6"
+    }
+  ]
+}

@@ -26,6 +26,10 @@ real-world codebases; does not fetch Juliet -- see below):
 
 Keep ``bench_root`` and ``SQC_BENCH_ROOT``/``.env`` pointed at the same
 directory -- the playbook provisions the checkouts the code actually reads.
+A mismatch is easy to miss: if ``SQC_BENCH_ROOT`` is unset and the corpora
+do not live in ``~/toolchain``, ``BENCH_ROOT`` silently resolves to a
+directory that does not exist. ``python -m bench corpus-check`` reports the
+resolved root and says so outright.
 
 Installing Comparison Tools
 ---------------------------
@@ -213,10 +217,26 @@ Real-World Project Setup
 Pinned Source Commits
 ~~~~~~~~~~~~~~~~~~~~~
 
-All benchmark results are run against these exact commits -- this is the
-full set in ``mcp_servers/realworld_server.py``'s ``CODEBASES`` registry.
-``playbooks/setup-benchmark-repos.yml`` clones and pins all 9 automatically;
-this table is both its source of truth and the manual fallback.
+All benchmark results are run against these exact commits -- the full set of
+projects in ``mcp_servers/realworld_server.py``'s ``CODEBASES`` registry
+(which stores paths and per-tool flags, not the pins).
+
+.. note::
+
+    The **single source of truth for the pins is**
+    ``data/benchmark_repos.json``. Both
+    ``playbooks/setup-benchmark-repos.yml`` (provisioning) and ``python -m
+    bench corpus-check`` (verification) read it. The table below is a
+    human-readable mirror -- if the two disagree, the JSON wins. Do not add
+    a third copy.
+
+Each checkout must sit at a **detached HEAD** on its pinned commit. A
+checkout left on a tracking branch is not pinned even while it happens to
+match: the next ``git pull`` moves it silently, and every finding then lands
+at ``(file, line)`` pairs the ``ground_truth`` oracle -- keyed on
+project+commit+file+line+rule -- was never adjudicated against, so it drops
+out of the precision/recall denominator without any error. This is not
+hypothetical; see `Verifying the Pins`_ below.
 
 .. list-table::
    :header-rows: 1
@@ -225,11 +245,11 @@ this table is both its source of truth and the manual fallback.
    * - Project
      - Repository
      - Commit SHA
-     - Branch
+     - Checkout state
    * - libcrc
      - https://github.com/lammertb/libcrc
      - ``7719e2112a9a960b1bba130d02bebdf58e8701f1``
-     - master
+     - detached
    * - sqlite
      - https://github.com/sqlite/sqlite.git
      - ``b1a73ba34d05b32007315e4065c6468cc638e3af``
@@ -237,7 +257,7 @@ this table is both its source of truth and the manual fallback.
    * - mosquitto
      - https://github.com/eclipse-mosquitto/mosquitto
      - ``d3ee5c5ca62c0fa4983308c6fff558ee978e878c``
-     - master
+     - detached
    * - curl
      - https://github.com/curl/curl.git
      - ``3e198f75861cc2e12daf299689e145949dddd19b``
@@ -245,7 +265,7 @@ this table is both its source of truth and the manual fallback.
    * - hostap
      - https://git.w1.fi/hostap.git
      - ``dcee60436390dd34731560657c4257c3b4c839a6``
-     - main
+     - detached
    * - lua
      - https://github.com/lua/lua.git
      - ``40b76de2d77e66b70a9d4bf989c3f5340919973f``
@@ -271,11 +291,64 @@ this table is both its source of truth and the manual fallback.
     normalization) require the checkout dir basename to match the registry
     key exactly. The playbook already clones it to the right name.
 
+Verifying the Pins
+~~~~~~~~~~~~~~~~~~
+
+Provisioning pins the checkouts once; nothing kept them pinned. Run this
+before any real-world benchmark or precision claim:
+
+.. code-block:: bash
+
+    python -m bench corpus-check          # exits 1 if anything is off
+    python -m bench corpus-check --json   # machine-readable
+
+It reports one row per project, worst first:
+
+===========  =========================================================
+Status       Meaning
+===========  =========================================================
+MISSING      Checkout directory absent
+NOT_GIT      Directory exists but is not a git checkout
+PIN_ABSENT   Pinned commit not present locally (needs a fetch)
+DRIFTED      ``HEAD`` is not the pinned commit
+UNPINNED     ``HEAD`` matches the pin but sits on a branch, so the next
+             ``git pull`` silently drifts it
+OK           Detached at the pinned commit
+===========  =========================================================
+
+It also flags three contamination cases independent of status:
+
+* tracked files modified, so the scanned source is not the pin;
+* **untracked ``*.c``/``*.h`` files, which sqc will scan** and attribute to
+  the pinned commit (untracked files sqc ignores are counted separately and
+  are harmless);
+* **gitignored ``*.c``/``*.h`` files**, which are invisible to ``git
+  status`` but which sqc scans anyway -- it dispatches on file extension and
+  never consults git. The case to watch is a build run inside a checkout:
+  sqlite's build generates a gitignored ``sqlite3.c`` amalgamation, which
+  would silently add ~250k lines to every sqlite scan.
+
+.. tip::
+
+    Keep the checkouts pristine. Build artifacts belong in a separate tree,
+    not inside ``$SQC_BENCH_ROOT``.
+
+.. warning::
+
+    This check exists because the failure is silent and did happen. On the
+    work node curl, hostap and sqlite had all drifted, while libcrc and lua
+    sat on tracking branches matching their pins only by coincidence. A gate
+    run against the drifted trees reported hostap 452 / sqlite 516 findings
+    where the pinned snapshots give 447 / 506 -- close enough to look
+    plausible, and not comparable to ``ground_truth`` at all. Fix drift with
+    the ``git checkout --detach`` command the check prints for each row.
+
 Clone and Pin
 ~~~~~~~~~~~~~
 
 Preferred: run ``playbooks/setup-benchmark-repos.yml`` (see `Benchmark Host
-Layout`_ above) -- it clones, pins, and verifies all 9 checkouts in one pass.
+Layout`_ above) -- it clones, pins, and verifies all 9 checkouts in one pass,
+reading the pins from ``data/benchmark_repos.json``.
 
 Manual fallback:
 
