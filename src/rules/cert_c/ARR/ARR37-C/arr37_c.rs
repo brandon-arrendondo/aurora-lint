@@ -678,8 +678,39 @@ impl NonArrayPointerAnalyzer {
                 }
                 if let Some(argument) = node.child_by_field_name("argument") {
                     match argument.kind() {
-                        "identifier" => VariableType::NonArray,           // &variable
-                        "subscript_expression" => VariableType::NonArray, // &array[0] is pointer to single element
+                        "identifier" => VariableType::NonArray, // &variable
+                        // `&arr[i]` points *into* whatever `arr` is, not at
+                        // a standalone single object — trace back to arr's
+                        // own type instead of assuming NonArray. Only a
+                        // subscript on a base that's itself known NonArray
+                        // stays NonArray; an Array (or TrailingAllocation)
+                        // base makes the resulting pointer safe to treat
+                        // the same way, and an unresolved base is left
+                        // Unknown/ambiguous rather than guessed at (task
+                        // 557 — this was the single largest measured
+                        // ARR37-C FP source: sqlite/curl/lua all had
+                        // `p = &arr[i]` idioms misclassified as pointing to
+                        // a non-array object).
+                        "subscript_expression" => {
+                            if let Some(base) = argument.child_by_field_name("argument") {
+                                if base.kind() == "identifier" {
+                                    let base_name =
+                                        source[base.start_byte()..base.end_byte()].to_string();
+                                    match self.variable_types.get(&base_name) {
+                                        Some(VariableType::Array) => VariableType::Array,
+                                        Some(VariableType::NonArray) => VariableType::NonArray,
+                                        Some(VariableType::TrailingAllocation) => {
+                                            VariableType::TrailingAllocation
+                                        }
+                                        _ => VariableType::Unknown,
+                                    }
+                                } else {
+                                    VariableType::Unknown
+                                }
+                            } else {
+                                VariableType::Unknown
+                            }
+                        }
                         "field_expression" => VariableType::StructMemberPointer, // &struct.member
                         _ => VariableType::Unknown,
                     }
