@@ -279,6 +279,19 @@ which are legitimately definition-side and should stay off it). Its
 original scoping date) — trust the phase stock-takes further down the file,
 not that header.
 
+**Before writing a new rule, check whether its defect concept already
+overlaps an enabled rule** (search `rules_templates/rules-all.toml`
+descriptions and `docs/design/internal-capability-catalog.md`). Overlap is
+expected, not a bug — CERT-C's own two-layer structure (rules vs. broader
+recommendations) means the same defect is frequently covered from two
+angles. **Default to letting both rules fire.** Only suppress one in favor
+of the other if you can show *total* subsumption across every
+ground-truth-labeled instance, not just frequent co-location — see
+`docs/design/cross-rule-overlap.md` for the full policy and a concrete
+counterexample (`MSC24-C` categorically bans `strcpy`/`sprintf` regardless
+of provable safety; `STR31-C` proves specific calls safe; a hard precedence
+either direction is measurably wrong on real-world data).
+
 ## Git Commit Rules (CRITICAL)
 
 **EXPLICITLY DENIED:**
