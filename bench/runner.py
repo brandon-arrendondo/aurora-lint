@@ -17,6 +17,7 @@ from bench.analyzer import analyze_cwe
 from bench.config import (
     DEFAULT_JOBS, GENERATE_MAP_SCRIPT, JULIET_BASE, MANIFEST_ALL,
     MANIFEST_CWE_DIR, RULE_CWE_MAP, SQC_BIN, DB_PATH,
+    JULIET_COMPILE_DB, apply_run_suffix,
 )
 from bench.db import BenchDB
 from bench.machine import get_machine_metadata
@@ -103,7 +104,7 @@ def _extract_cwe_id(dirname: str) -> str:
 
 def _scan_single_cwe(db_path: str, run_id: str, scan_id: int,
                      cwe_dir_name: str, manifest: str,
-                     keep_csv: bool) -> dict:
+                     keep_csv: bool, compile_db: str | None = None) -> dict:
     """Scan a single CWE: run sqc, analyze, write results to DB.
 
     This runs in a worker process. Opens its own DB connection (WAL safe).
@@ -129,6 +130,8 @@ def _scan_single_cwe(db_path: str, run_id: str, scan_id: int,
             "-e", csv_path,
             "-j", "1",  # single-threaded: runner parallelizes at CWE level
         ]
+        if compile_db:
+            cmd.extend(["--compile-commands", compile_db])
         proc = subprocess.run(
             cmd, capture_output=True, timeout=3600,
         )
@@ -228,13 +231,17 @@ def _scan_single_cwe(db_path: str, run_id: str, scan_id: int,
 # ── Main runner ───────────────────────────────────────────────────────────────
 
 def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
-                  keep_csv: bool = False) -> str:
+                  keep_csv: bool = False, compile_commands: bool = False) -> str:
     """Run a full Juliet benchmark.
 
     Args:
         fast: Use per-CWE manifests (default True).
         jobs: Number of parallel workers.
         keep_csv: Retain temp CSV files after analysis.
+        compile_commands: Pass ``--compile-commands`` to sqc, using the
+            synthesized Juliet compile database. Off by default, so a plain
+            run is unchanged. When on, the run_id is suffixed so a with/without
+            pair on the same sqc build stays two distinct, comparable runs.
 
     Returns:
         The run_id for the completed benchmark.
@@ -244,12 +251,26 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
     if not JULIET_BASE.is_dir():
         raise FileNotFoundError(f"Juliet test suite not found at {JULIET_BASE}.")
 
+    # Fail loudly rather than silently running without the database — a run
+    # that quietly ignored the flag would be indistinguishable from a real
+    # "compile DB made no difference" result.
+    compile_db = None
+    if compile_commands:
+        if not JULIET_COMPILE_DB.is_file():
+            raise FileNotFoundError(
+                f"--compile-commands requested but no compile database at {JULIET_COMPILE_DB}. "
+                f"Generate it with: python3 scripts/generate_juliet_compile_commands.py"
+            )
+        compile_db = str(JULIET_COMPILE_DB)
+
     _ensure_rule_cwe_map()
 
     version = _get_sqc_version()
     sha = _get_git_sha()
-    run_id = f"sqc-{version}-{sha}"
+    run_id = apply_run_suffix(f"sqc-{version}-{sha}", compile_commands)
     mode = "fast" if fast else "full"
+    if compile_commands:
+        mode += " +compile-db"
     started_at = datetime.now(timezone.utc).isoformat()
     machine = get_machine_metadata()
 
@@ -318,7 +339,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
             scan_id = scan_map[cwe_dir_name]
             future = executor.submit(
                 _scan_single_cwe, db_path_str, run_id, scan_id,
-                cwe_dir_name, manifest, keep_csv,
+                cwe_dir_name, manifest, keep_csv, compile_db,
             )
             futures[future] = cwe_dir_name
 
