@@ -779,6 +779,20 @@ small share of the full 79-CWE suite, the aggregate move is only
 zero-cost correctness fix can be nearly invisible in an aggregate
 rate dominated by high-volume CWEs.
 
+A methodological note applies to both the v0.4.175 and v0.4.249
+points: v0.4.139 (between v0.4.116 and v0.4.175, not separately
+plotted) enabled 15 of 21 previously-untracked CERT-C rules
+surfaced by a wiki re-ingest that had never been implemented before.
+Three of the 15 map to CWEs already present in the Juliet suite ---
+MSC00-C (CWE-563/570/571), MSC11-C (CWE-190), and MSC24-C
+(CWE-197/367/464/676/242; CWE-114 was later dropped from its mapping)
+--- so some of the movement at v0.4.175 and v0.4.249 reflects newly
+enabled rule coverage rather than fixes to pre-existing rules alone.
+MSC11-C's CWE-190 hits in particular overlap with INT32-C/INT30-C's
+pre-existing detections on the same files and should not be read as
+net-new coverage without confirming they are not duplicate flags on
+cases the two established rules already caught.
+
 The plateau breaks decisively at v0.4.249 (87.7\%, +2.2 points over
 v0.4.175), the largest single jump since v0.4.46. Unlike the v0.4.175
 point, this was not one isolated fix but a scoping-and-deduplication
@@ -837,7 +851,11 @@ rate by only +0.1 points since both CWEs are a small share of the
 a shared buffer-size-resolution consolidation across ARR30-C/ARR38-C/
 STR31-C and a FIO30-C format-string fix (CWE-121/122/134 are the
 largest movers); this is the largest single-version gain since
-v0.4.46.}
+v0.4.46.  Between v0.4.116 and v0.4.175 (not separately plotted),
+v0.4.139 enabled 15 previously-untracked rules, three of which
+(MSC00-C, MSC11-C, MSC24-C) overlap existing Juliet CWEs; the
+v0.4.175/v0.4.249 points are not purely FP-reduction movement (main
+text).}
 \label{fig:tp-rate-progression}
 \end{figure}
 
