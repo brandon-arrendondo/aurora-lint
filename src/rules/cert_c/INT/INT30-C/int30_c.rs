@@ -165,10 +165,9 @@ impl CertRule for Int30C {
         let mut violations = Vec::new();
         let type_map = overflow_helpers::collect_variable_types(node, source);
 
-        // Merge project-level macros with per-file macros
-        let mut macros = self.project_macros.borrow().clone();
-        macros.extend(const_eval::collect_macro_constants(node, source));
-        *self.current_macros.borrow_mut() = macros;
+        // Merge project-level macros with per-file macros (per-file wins)
+        *self.current_macros.borrow_mut() =
+            const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
 
         // Risky-var memo is keyed on tree-sitter node ids, unique only within
         // one parse tree — reset per file.
