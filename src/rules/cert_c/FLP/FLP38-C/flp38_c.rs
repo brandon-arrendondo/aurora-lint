@@ -17,7 +17,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::{ast_utils, float_typing};
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -159,20 +159,17 @@ impl Flp38C {
         }
     }
 
+    /// An *exact* whole-type match, deliberately NOT
+    /// [`float_typing::is_float_type`]'s token scan. This rule compares the
+    /// canonical spelling of two arguments' declared types to decide whether
+    /// they are the *same* floating type, so it must not accept the token
+    /// scan's `float_t`/`double_t` (whose underlying type is
+    /// implementation-defined -- treating `float_t` as distinct from `float`
+    /// would manufacture a mismatch finding). Only the extended-type list is
+    /// shared with the utility module; see task 502.
     fn is_floating_type(type_text: &str) -> bool {
-        matches!(
-            type_text,
-            "float"
-                | "double"
-                | "long double"
-                | "_Float16"
-                | "_Float32"
-                | "_Float64"
-                | "_Float128"
-                | "_Decimal32"
-                | "_Decimal64"
-                | "_Decimal128"
-        )
+        matches!(type_text, "float" | "double" | "long double")
+            || float_typing::EXTENDED_FLOAT_TYPES.contains(&type_text)
     }
 
     /// Check every `call_expression` found under `scope` against `var_types`,

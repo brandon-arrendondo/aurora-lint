@@ -259,12 +259,13 @@ arithmetic via the C usual arithmetic conversions. Task 481's sweep found
 only 2 of 14 FLP rules (`FLP06-C`, `FLP30-C`) actually called this module;
 task 491 migrated 3 more and confirmed the other 6 flagged rules are
 checking genuinely different concepts (format specifiers, `long double`
-specifically, integer `long`, or a more comprehensive extended-float set
-this module doesn't cover) and correctly stay rule-local.
+specifically, integer `long`, or — for FLP38-C — an exact whole-type
+match rather than a token scan) and correctly stay rule-local.
 
 | Function | Signature | Description |
 |---|---|---|
-| `is_float_type` | `(type_str: &str) -> bool` | Word-boundary-tokenized check for `float`/`double`/`float_t`/`double_t` — never a substring match, so an integer typedef merely embedding "float" in its name (e.g. `double_buffered_count`) isn't misclassified. |
+| `EXTENDED_FLOAT_TYPES` | `&[&str]` (const) | The C23/GCC extended floating types: TS 18661 interchange/extended formats (`_FloatN`, `_FloatNx`, `_DecimalN`, `_DecimalNx`) plus GCC's `__float128`/`__fp16`/`__bf16`. All are implementation-reserved spellings, so a token match is never a user typedef. Shared with FLP38-C, which needs the same set as an exact whole-type match (task 502). |
+| `is_float_type` | `(type_str: &str) -> bool` | Word-boundary-tokenized check for `float`/`double`/`float_t`/`double_t` and every `EXTENDED_FLOAT_TYPES` spelling — never a substring match, so an integer typedef merely embedding "float" in its name (e.g. `double_buffered_count`) isn't misclassified. |
 | `is_float_literal` | `(text: &str) -> bool` | True if a numeric literal is a floating-point constant (`.`, exponent, or `f`/`F` suffix; hex integer literals excluded). |
 | `expr_is_float` | `(node, source, type_map, struct_field_types) -> bool` | Best-effort positive-only float determination for an expression; unknown expressions return `false` to preserve integer-detection recall. |
 | `expr_is_definitely_integer` | `(node, source, type_map) -> bool` | Dual of the above: true only when every leaf is provably integer-typed. |
@@ -287,14 +288,23 @@ duplicates despite similar names): `FLP04-C` (`%f`/`%lf` format
 specifically, deliberately excluding `double`), `FLP07-C` (`long double`
 specifically), `FLP36-C` (integer `long`, the *other* operand in a
 float-conversion-precision check, not float classification at all),
-`FLP38-C` (its local `is_floating_type` is MORE comprehensive than
-`is_float_type` — covers 6 C23/GCC extended float types this module has
-no equivalent for; migrating would have been a regression). `FLP03-C`
-overlaps conceptually but is structurally incompatible with a quick
-call-swap (works over raw text via an ad hoc `HashSet` rather than a type
-map) — filed as its own follow-up (task 501) rather than risking a subtle
-behavior change under this task's scope. Closing the `is_floating_type`
-gap in `is_float_type` itself is tracked as task 502.
+`FLP38-C` (see below). `FLP03-C` overlaps conceptually but is
+structurally incompatible with a quick call-swap (works over raw text via
+an ad hoc `HashSet` rather than a type map) — filed as its own follow-up
+(task 501) rather than risking a subtle behavior change under this task's
+scope.
+
+**FLP38-C (task 502, resolved):** task 491 left `Flp38C::is_floating_type`
+alone because it covered extended float types `is_float_type` didn't. Task
+502 closed that gap in the shared helper (`EXTENDED_FLOAT_TYPES`, now
+consumed by both), but `is_floating_type` still correctly stays
+rule-local: it is a *different predicate*, not a duplicate. FLP38-C
+compares the canonical spelling of two arguments' declared types to decide
+whether they are the same floating type, so it needs an exact whole-type
+match. Migrating it to the token scan would newly accept `float_t`/
+`double_t` — implementation-defined aliases the rule would then report as
+mismatched against `float`/`double`, a manufactured FP. Only the type list
+is shared.
 
 ## Pointer / lvalue / aliasing analysis
 
