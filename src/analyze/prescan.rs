@@ -5,8 +5,10 @@ use crate::analyze::null_state::NullState;
 use crate::parser::CParser;
 use crate::progress::ProgressReporter;
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::ast_utils::get_node_text;
 
 use anyhow::Result;
+use lang_parsing_substrate::query;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -19,6 +21,7 @@ struct FilePrescanResult {
     header_declared_functions: HashSet<String>,
     function_summaries: HashMap<String, FunctionSummary>,
     call_graph: HashMap<String, HashSet<String>>,
+    ambiguous_call_targets: HashSet<String>,
     macro_constants: HashMap<String, i64>,
     macro_aliases: HashMap<String, String>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
@@ -48,6 +51,7 @@ impl FilePrescanResult {
             header_declared_functions: HashSet::new(),
             function_summaries: HashMap::new(),
             call_graph: HashMap::new(),
+            ambiguous_call_targets: HashSet::new(),
             macro_constants: HashMap::new(),
             macro_aliases: HashMap::new(),
             function_macros: HashMap::new(),
@@ -127,6 +131,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         );
 
         collect_call_graph(&root, &source, &mut result.call_graph);
+        collect_ambiguous_call_targets(&root, &source, &mut result.ambiguous_call_targets);
 
         result.macro_aliases.extend(file_aliases);
 
@@ -227,6 +232,7 @@ pub fn prescan_directories(
     let mut header_declared_functions: HashSet<String> = HashSet::new();
     let mut function_summaries: HashMap<String, FunctionSummary> = HashMap::new();
     let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut ambiguous_call_targets: HashSet<String> = HashSet::new();
     let mut macro_constants: HashMap<String, i64> = HashMap::new();
     let mut macro_aliases: HashMap<String, String> = HashMap::new();
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
@@ -321,6 +327,7 @@ pub fn prescan_directories(
         for (caller, callees) in r.call_graph {
             call_graph.entry(caller).or_default().extend(callees);
         }
+        ambiguous_call_targets.extend(r.ambiguous_call_targets);
 
         macro_constants.extend(r.macro_constants);
         macro_aliases.extend(r.macro_aliases);
@@ -469,6 +476,7 @@ pub fn prescan_directories(
         header_declared_functions,
         function_summaries,
         call_graph,
+        ambiguous_call_targets,
         macro_constants,
         macro_aliases,
         function_macros,
@@ -871,6 +879,144 @@ fn collect_call_graph(
             .entry(edge.caller)
             .or_default()
             .insert(edge.callee);
+    }
+}
+
+/// Collect callee names that a name-matching call graph must never resolve
+/// to a specific same-named function definition — see task 562 (MSC04-C
+/// fabricating spurious recursion cycles through function-pointer/callback
+/// dispatch).
+///
+/// Two cases, both backed by real C semantics rather than a heuristic:
+///
+/// - A call through a `field_expression` (`obj->cb(...)`, `obj.cb(...)`) is
+///   always an indirect call through whatever the struct field currently
+///   holds; the field *name* has no relationship to any global function of
+///   the same name, so `lang_parsing_substrate::calls::call_edges` recording
+///   the bare field name as a callee is a coincidental string match, not a
+///   real call target.
+/// - A call through a plain identifier that is also a parameter name, or a
+///   locally-declared variable name, of the enclosing function is, by C
+///   scoping rules, always a call through that binding's value (typically a
+///   callback loaded from a struct field, e.g. mosquitto's
+///   `on_publish = mosq->on_publish; ...; on_publish(...)`), never a call
+///   to a same-named global function -- the local binding unconditionally
+///   shadows the file-scope name for the rest of its scope.
+///   `collect_fn_ptr_aliases` in the substrate crate only resolves a local
+///   alias whose initializer/assignment RHS is a bare (possibly
+///   address-of'd) identifier; a RHS that is itself a `field_expression`
+///   (as in the mosquitto example) is left unresolved, so the raw local
+///   name leaks through as the callee. Marking every locally-declared name
+///   ambiguous is safe even when substrate *does* resolve the alias: a
+///   resolved alias's callee is recorded under the *target* function's
+///   name, never under the local variable's own name, so that edge is
+///   never affected by this filter.
+fn collect_ambiguous_call_targets(node: &Node, source: &str, out: &mut HashSet<String>) {
+    for func in query::find_descendants_of_kind(*node, "function_definition") {
+        let Some(body) = func.child_by_field_name("body") else {
+            continue;
+        };
+        let mut locals = collect_parameter_names(&func, source);
+        collect_local_declared_names(&body, source, &mut locals);
+        for call in query::find_descendants_of_kind(body, "call_expression") {
+            let Some(function) = call.child_by_field_name("function") else {
+                continue;
+            };
+            match function.kind() {
+                "field_expression" => {
+                    if let Some(field) = function.child_by_field_name("field") {
+                        let name = get_node_text(&field, source);
+                        if !name.is_empty() {
+                            out.insert(name.to_string());
+                        }
+                    }
+                }
+                "identifier" => {
+                    let name = get_node_text(&function, source);
+                    if locals.contains(name) {
+                        out.insert(name.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Collect every name declared by a local `declaration` statement within
+/// `node`'s subtree (a function body). Includes plain declarations
+/// (`T name;`) and initialized ones (`T name = ...;`), regardless of type --
+/// over-including a non-function-pointer local is harmless here since the
+/// result only ever suppresses a call-graph edge whose callee shares that
+/// name (see `collect_ambiguous_call_targets`).
+fn collect_local_declared_names(node: &Node, source: &str, out: &mut HashSet<String>) {
+    if node.kind() == "declaration" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let declarator = if child.kind() == "init_declarator" {
+                child.child_by_field_name("declarator")
+            } else if matches!(
+                child.kind(),
+                "identifier" | "pointer_declarator" | "array_declarator" | "function_declarator"
+            ) {
+                Some(child)
+            } else {
+                None
+            };
+            if let Some(d) = declarator {
+                if let Some(name) = innermost_declarator_identifier(&d, source) {
+                    out.insert(name);
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_local_declared_names(&child, source, out);
+    }
+}
+
+/// Collect the declared parameter names of a `function_definition` node.
+fn collect_parameter_names(func_node: &Node, source: &str) -> HashSet<String> {
+    let mut params = HashSet::new();
+    let Some(declarator) = func_node.child_by_field_name("declarator") else {
+        return params;
+    };
+    for param in query::find_descendants_of_kind(declarator, "parameter_declaration") {
+        let Some(decl) = param.child_by_field_name("declarator") else {
+            continue;
+        };
+        if let Some(name) = innermost_declarator_identifier(&decl, source) {
+            params.insert(name);
+        }
+    }
+    params
+}
+
+/// Find the deepest identifier under a declarator chain (mirrors MSC04-C's
+/// own `find_identifier_in_declarator`, duplicated here to keep this
+/// prescan-phase helper free of a dependency on rule code).
+fn innermost_declarator_identifier(node: &Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" => {
+            let name = get_node_text(node, source);
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        }
+        "function_declarator" | "pointer_declarator" | "array_declarator" => {
+            let inner = node.child_by_field_name("declarator")?;
+            innermost_declarator_identifier(&inner, source)
+        }
+        "parenthesized_declarator" => {
+            // `(*name)` -- the wrapped declarator is an unnamed child, not
+            // under a "declarator" field.
+            let inner = node.named_child(0)?;
+            innermost_declarator_identifier(&inner, source)
+        }
+        _ => None,
     }
 }
 
@@ -4661,6 +4807,57 @@ mod tests {
         assert!(graph.get("a").unwrap().contains("b"));
         assert!(graph.get("a").unwrap().contains("c"));
         assert!(graph.get("b").unwrap().contains("c"));
+    }
+
+    // -- collect_ambiguous_call_targets (task 562) --
+
+    #[test]
+    fn test_collect_ambiguous_call_targets_field_expression() {
+        // sqlite3_mem_methods-style vtable dispatch: `db->xFree(...)` must
+        // never be trusted to resolve to any same-named global `xFree`.
+        let code = "void caller(struct db *db) { db->xFree(db, 0); }";
+        let (tree, source) = parse_c(code);
+        let mut out = HashSet::new();
+        collect_ambiguous_call_targets(&tree.root_node(), &source, &mut out);
+        assert!(out.contains("xFree"));
+    }
+
+    #[test]
+    fn test_collect_ambiguous_call_targets_parameter_shadowed_identifier() {
+        // A callback passed by parameter and invoked by its parameter name
+        // is never a call to a same-named global function -- C scoping
+        // rules make the parameter binding shadow the file-scope name.
+        let code = "void dispatch(void (*on_publish)(int), int x) { on_publish(x); }";
+        let (tree, source) = parse_c(code);
+        let mut out = HashSet::new();
+        collect_ambiguous_call_targets(&tree.root_node(), &source, &mut out);
+        assert!(out.contains("on_publish"));
+    }
+
+    #[test]
+    fn test_collect_ambiguous_call_targets_local_var_loaded_from_field() {
+        // mosquitto's callback__on_publish pattern (task 562): a local
+        // variable is loaded from a struct field (not a bare identifier, so
+        // the substrate's alias resolution can't follow it) and then
+        // invoked by the local variable's own name.
+        let code = "void dispatch(struct mosquitto *mosq) {\n\
+                        void (*on_publish)(int);\n\
+                        on_publish = mosq->on_publish;\n\
+                        on_publish(1);\n\
+                    }";
+        let (tree, source) = parse_c(code);
+        let mut out = HashSet::new();
+        collect_ambiguous_call_targets(&tree.root_node(), &source, &mut out);
+        assert!(out.contains("on_publish"));
+    }
+
+    #[test]
+    fn test_collect_ambiguous_call_targets_ignores_ordinary_calls() {
+        let code = "void b(void) {} void a(void) { b(); }";
+        let (tree, source) = parse_c(code);
+        let mut out = HashSet::new();
+        collect_ambiguous_call_targets(&tree.root_node(), &source, &mut out);
+        assert!(out.is_empty());
     }
 
     #[test]
