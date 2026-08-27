@@ -114,10 +114,11 @@ is lowercased before the check, so `is_uppercase()` could never hold — and
 was deleted rather than wired to the shared helper; whether that exclusion
 should be made live is a behavior question, tracked as task 618. Gated
 byte-identical over the full Juliet suite (58,784 files, 4,457 findings) and
-6 real-world projects (1,111 findings); the only divergence the
-consolidation introduces is that DCL03-C's identifier check is now
-ASCII-only rather than Unicode `is_uppercase()`, which no corpus file
-exercises.
+**all 9 real-world projects at their pinned commits** (1,345 findings: curl
+100, hostap 447, libcrc 0, lua 16, mosquitto 27, sqlite 506, pureftpd 29,
+raylib 80, seL4 140). The only divergence the consolidation introduces is
+that DCL03-C's identifier check is now ASCII-only rather than Unicode
+`is_uppercase()`, which no corpus file exercises.
 
 ### 1d. The three gated capability gaps (tasks 573, 589, 554)
 
