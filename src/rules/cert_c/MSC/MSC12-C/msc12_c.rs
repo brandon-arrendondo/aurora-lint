@@ -97,8 +97,13 @@ impl Msc12C {
         // human wrote as a standalone statement. Same family as the
         // ERROR+function_declarator check further down (a different tree
         // shape: a variable declaration, not a function prototype).
+        //
+        // A `typedef` decorated the same way (`typedef T __attribute__((...))
+        // name;`, e.g. seL4's `ulong_alias`) hits the identical error-recovery
+        // split, but the preceding node is a `type_definition`, not a
+        // `declaration` — a distinct tree-sitter-c node kind for typedefs.
         if let Some(prev) = node.prev_sibling() {
-            if prev.kind() == "declaration"
+            if matches!(prev.kind(), "declaration" | "type_definition")
                 && query::find_first_descendant(prev, |n| n.is_missing()).is_some()
             {
                 return;
