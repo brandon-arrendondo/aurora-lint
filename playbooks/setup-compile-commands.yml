@@ -1,0 +1,299 @@
+---
+# Ansible playbook: generate compile_commands.json for every benchmark corpus
+#
+# Prep infra for task 187 (Macro-expansion Phase 4, opt-in compile_commands.json
+# preprocessed mode) and any other upcoming include-resolution/macro-expansion
+# work that wants a real compile DB: full system-header correctness and
+# per-file macro defines, instead of the hand-curated -I list in
+# mcp_servers/realworld_server.py's CODEBASES registry.
+#
+# compile_commands.json embeds absolute paths (directory + file), so it is
+# NOT portable between machines with a different bench_root -- that's why
+# this is a playbook you run on each node rather than a file checked into
+# tools_sqc's git history. Output lands inside each project's own checkout
+# (<bench_root>/<name>/compile_commands.json), untracked by that project's
+# git repo -- harmless there since `python -m bench corpus-check` (task 619)
+# only flags untracked/ignored *.c/*.h files, never *.json. Juliet's is
+# synthesized (no real build system -- see scripts/
+# generate_juliet_compile_commands.py) and written to
+# <bench_root>/benchmarks/juliet-test-suite-c/compile_commands.json.
+#
+# Prerequisite: playbooks/setup-benchmark-repos.yml has already cloned and
+# pinned the 9 real-world checkouts (this playbook fails fast via
+# corpus-check if they're missing or drifted) and installed its "Third-party
+# library headers" apt list. This playbook only adds the packages *on top
+# of* that list which its own project-specific builds need.
+#
+# Usage:
+#   ansible-playbook playbooks/setup-compile-commands.yml -i "localhost," -c local \
+#     --ask-become-pass
+#   ansible-playbook playbooks/setup-compile-commands.yml -i "localhost," -c local \
+#     --ask-become-pass -e bench_root=/data/toolchain
+#
+# Known gap: sel4 is NOT handled here. Its kernel-only CMakeLists.txt does
+# not configure/build standalone the way the other 8 do -- `cmake -E touch`
+# fails on missing nested generated_prune/**/*.h parent directories partway
+# through the build, which looks like it expects the full sel4test-manifest
+# umbrella project (fetched via the `repo` tool) rather than a bare kernel
+# checkout. See task 620's notes for what was tried. Left as a follow-up.
+#
+# Re-running: each project task is idempotent via a `creates:` guard on its
+# compile_commands.json. Delete that file (or the project's `.cc_build`
+# scratch dir for the CMake-based ones) to force regeneration after a pin
+# bump or a build-flag change.
+
+- name: Generate compile_commands.json for every benchmark corpus
+  hosts: all
+  vars:
+    bench_root: "{{ lookup('env', 'SQC_BENCH_ROOT') | default(ansible_env.HOME + '/toolchain', true) }}"
+    cc_build_root: "{{ bench_root }}/.cc_build"
+    project_dir: "{{ playbook_dir }}/.."
+
+  tasks:
+    - name: Verify all 9 real-world checkouts are present and pinned before touching them
+      command: python3 -m bench corpus-check
+      args:
+        chdir: "{{ project_dir }}"
+      register: corpus_check
+      changed_when: false
+      failed_when: corpus_check.rc != 0
+
+    - name: Additional build dependencies (on top of setup-benchmark-repos.yml's header list)
+      become: true
+      apt:
+        name:
+          - bear                # captures compile_commands.json from `make`
+          - autoconf-archive    # pure-ftpd's configure.ac needs AX_CHECK_COMPILE_FLAG
+          - libpsl-dev          # curl: full feature parity instead of -DCURL_USE_LIBPSL=OFF
+          - libgl1-mesa-dev     # raylib
+          - libwayland-dev      # raylib (Wayland backend headers; X11 build works without it)
+          - libxkbcommon-dev    # raylib (paired with libwayland-dev)
+        state: present
+        update_cache: true
+
+    - name: Create out-of-tree CMake build scratch directory
+      file:
+        path: "{{ cc_build_root }}"
+        state: directory
+        mode: "0755"
+
+    # ── libcrc (plain Makefile, in-tree) ──────────────────────────────────
+    - name: libcrc - build under bear to capture compile_commands.json
+      shell: |
+        set -e
+        make clean
+        bear -- make -j"$(nproc)"
+      args:
+        chdir: "{{ bench_root }}/libcrc"
+        executable: /bin/bash
+        creates: "{{ bench_root }}/libcrc/compile_commands.json"
+
+    - name: libcrc - restore checkout to pristine (keep compile_commands.json)
+      command: make clean
+      args:
+        chdir: "{{ bench_root }}/libcrc"
+      when: not ansible_check_mode
+
+    # ── lua (plain Makefile, sources at repo root, in-tree) ───────────────
+    - name: lua - build under bear to capture compile_commands.json
+      shell: |
+        set -e
+        make clean
+        bear -- make -j"$(nproc)"
+      args:
+        chdir: "{{ bench_root }}/lua"
+        executable: /bin/bash
+        creates: "{{ bench_root }}/lua/compile_commands.json"
+
+    - name: lua - restore checkout to pristine (keep compile_commands.json)
+      command: make clean
+      args:
+        chdir: "{{ bench_root }}/lua"
+      when: not ansible_check_mode
+
+    # ── hostap (wpa_supplicant needs a .config; see docs/benchmark-setup.rst) ─
+    # Only wpa_supplicant/ is built (matching the doc's clang-tidy recipe and
+    # the sqc real-world scan's own `-d src -d wpa_supplicant` scope) -- src/
+    # files hostapd-only code pulls in (ap/*.c etc.) won't get an entry.
+    - name: hostap - write wpa_supplicant/.config
+      copy:
+        dest: "{{ bench_root }}/hostap/wpa_supplicant/.config"
+        content: |
+          CONFIG_DRIVER_NL80211=y
+          CONFIG_LIBNL32=y
+          CONFIG_IEEE8021X_EAPOL=y
+          CONFIG_EAP_MD5=y
+        force: false
+        mode: "0644"
+
+    - name: hostap - build wpa_supplicant under bear to capture compile_commands.json
+      shell: |
+        set -e
+        make clean || true
+        bear -- make -j"$(nproc)" wpa_supplicant
+      args:
+        chdir: "{{ bench_root }}/hostap/wpa_supplicant"
+        executable: /bin/bash
+        creates: "{{ bench_root }}/hostap/wpa_supplicant/compile_commands.json"
+
+    - name: hostap - restore checkout to pristine (keep compile_commands.json, drop scratch .config)
+      shell: |
+        make clean || true
+        rm -f .config
+      args:
+        chdir: "{{ bench_root }}/hostap/wpa_supplicant"
+        executable: /bin/bash
+      when: not ansible_check_mode
+
+    # ── sqlite (configure is pre-generated in-tree; USE_AMALGAMATION=0 is the
+    #    whole trick -- the default build compiles one amalgamated sqlite3.c,
+    #    which gives a single useless compile_commands.json entry instead of
+    #    one per translation unit) ──────────────────────────────────────────
+    - name: sqlite - configure
+      command: ./configure
+      args:
+        chdir: "{{ bench_root }}/sqlite"
+        creates: "{{ bench_root }}/sqlite/Makefile"
+
+    - name: sqlite - build individual translation units under bear
+      shell: |
+        set -e
+        make clean
+        bear -- make USE_AMALGAMATION=0 -j"$(nproc)"
+      args:
+        chdir: "{{ bench_root }}/sqlite"
+        executable: /bin/bash
+        creates: "{{ bench_root }}/sqlite/compile_commands.json"
+
+    # distclean (not clean) -- the amalgamation-avoidance build still leaves
+    # sqlite_cfg.h, an untracked *header* corpus-check would flag as scanned
+    # contamination. distclean removes it and everything else `./configure`
+    # generated, but does not touch compile_commands.json (it's not in
+    # sqlite's own generated-file list).
+    - name: sqlite - restore checkout to pristine (keep compile_commands.json)
+      command: make distclean
+      args:
+        chdir: "{{ bench_root }}/sqlite"
+      when: not ansible_check_mode
+
+    # ── mosquitto (CMake, out-of-tree -- no checkout cleanup needed) ──────
+    - name: mosquitto - configure (out-of-tree)
+      command: >-
+        cmake -S {{ bench_root }}/mosquitto -B {{ cc_build_root }}/mosquitto
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        -DWITH_TLS=OFF -DWITH_WEBSOCKETS=OFF -DWITH_TESTS=OFF
+      args:
+        creates: "{{ cc_build_root }}/mosquitto/CMakeCache.txt"
+
+    - name: mosquitto - build
+      command: cmake --build {{ cc_build_root }}/mosquitto --clean-first -j{{ ansible_processor_vcpus | default(4) }}
+      args:
+        creates: "{{ bench_root }}/mosquitto/compile_commands.json"
+
+    - name: mosquitto - copy compile_commands.json into the checkout
+      copy:
+        src: "{{ cc_build_root }}/mosquitto/compile_commands.json"
+        dest: "{{ bench_root }}/mosquitto/compile_commands.json"
+        remote_src: true
+        mode: "0644"
+
+    # ── curl (CMake, out-of-tree) ──────────────────────────────────────────
+    - name: curl - configure (out-of-tree)
+      command: >-
+        cmake -S {{ bench_root }}/curl -B {{ cc_build_root }}/curl
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF
+        -DCURL_USE_OPENSSL=OFF -DCURL_DISABLE_LDAP=ON
+        -DUSE_LIBIDN2=OFF -DUSE_NGHTTP2=OFF -DCURL_ZSTD=OFF
+      args:
+        creates: "{{ cc_build_root }}/curl/CMakeCache.txt"
+
+    - name: curl - build
+      command: cmake --build {{ cc_build_root }}/curl -j{{ ansible_processor_vcpus | default(4) }}
+      args:
+        creates: "{{ bench_root }}/curl/compile_commands.json"
+
+    - name: curl - copy compile_commands.json into the checkout
+      copy:
+        src: "{{ cc_build_root }}/curl/compile_commands.json"
+        dest: "{{ bench_root }}/curl/compile_commands.json"
+        remote_src: true
+        mode: "0644"
+
+    # ── raylib (CMake, out-of-tree) ────────────────────────────────────────
+    - name: raylib - configure (out-of-tree)
+      command: >-
+        cmake -S {{ bench_root }}/raylib -B {{ cc_build_root }}/raylib
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      args:
+        creates: "{{ cc_build_root }}/raylib/CMakeCache.txt"
+
+    - name: raylib - build
+      command: cmake --build {{ cc_build_root }}/raylib -j{{ ansible_processor_vcpus | default(4) }}
+      args:
+        creates: "{{ bench_root }}/raylib/compile_commands.json"
+
+    - name: raylib - copy compile_commands.json into the checkout
+      copy:
+        src: "{{ cc_build_root }}/raylib/compile_commands.json"
+        dest: "{{ bench_root }}/raylib/compile_commands.json"
+        remote_src: true
+        mode: "0644"
+
+    # ── pureftpd (autotools; configure.ac -> needs autoreconf first) ──────
+    - name: pureftpd - bootstrap configure via autoreconf
+      command: autoreconf -fi
+      args:
+        chdir: "{{ bench_root }}/pureftpd"
+        creates: "{{ bench_root }}/pureftpd/configure"
+
+    - name: pureftpd - configure
+      command: ./configure
+      args:
+        chdir: "{{ bench_root }}/pureftpd"
+        creates: "{{ bench_root }}/pureftpd/Makefile"
+
+    - name: pureftpd - build under bear to capture compile_commands.json
+      shell: |
+        set -e
+        make clean
+        bear -- make -j"$(nproc)"
+      args:
+        chdir: "{{ bench_root }}/pureftpd"
+        executable: /bin/bash
+        creates: "{{ bench_root }}/pureftpd/compile_commands.json"
+
+    - name: pureftpd - restore checkout to pristine (keep compile_commands.json)
+      command: make distclean
+      args:
+        chdir: "{{ bench_root }}/pureftpd"
+      when: not ansible_check_mode
+
+    # ── sel4: not handled, see the playbook header comment and task 620 ───
+    - name: sel4 - not automated yet
+      debug:
+        msg: >-
+          Skipping sel4 -- its kernel-only CMakeLists.txt does not
+          configure/build standalone (see the playbook header comment and
+          task 620). Needs its own investigation, likely via the
+          sel4test-manifest umbrella project rather than a bare checkout.
+
+    # ── Juliet (synthesized -- no real build system; see the script) ──────
+    - name: Juliet - synthesize compile_commands.json
+      command: python3 scripts/generate_juliet_compile_commands.py
+      args:
+        chdir: "{{ project_dir }}"
+      register: juliet_gen
+      failed_when: juliet_gen.rc != 0
+      changed_when: "'wrote' in juliet_gen.stdout"
+
+    - name: Juliet - report
+      debug:
+        msg: "{{ juliet_gen.stdout }}"
+
+    - name: Verify no checkout was left dirty or contaminated
+      command: python3 -m bench corpus-check
+      args:
+        chdir: "{{ project_dir }}"
+      register: corpus_check_after
+      changed_when: false
+      failed_when: corpus_check_after.rc != 0
