@@ -115,8 +115,8 @@ result is not a labelling artefact---it reproduces at 92\% on the
 human-adjudicated subset ($n{=}49$), the largest human-labelled cell in
 the screen.
 
-The separation is explained by the rules' own definitions, and it is
-predictable \emph{a priori}.  MSC17-C asks whether a \texttt{case}
+Part of the separation is explained by the rules' own definitions.
+MSC17-C asks whether a \texttt{case}
 section ends in \texttt{break}, \texttt{return}, \texttt{continue}, or
 \texttt{goto}, or else carries a fallthrough comment.  That question is
 closed over the syntactic neighbourhood of the finding: a 50-line
@@ -126,27 +126,57 @@ should therefore be \texttt{const}---a question requiring whole-program
 aliasing and call-graph reachability into every callee.  No 50-line
 window can contain that evidence, and the model scores at chance.
 
-The operative criterion for enabling a local-model adjudicator on a
-given rule is therefore a static property of the rule---whether its
-decision procedure is closed over the finding's syntactic
-neighbourhood---rather than something that must be discovered
-empirically per rule.
+This gives a necessary condition for enabling a local-model
+adjudicator on a given rule---that its decision procedure be closed
+over the finding's syntactic neighbourhood---which is a static property
+of the rule rather than something that must be measured per rule.  As
+the next subsection shows, it is not a sufficient one.
 
-\subsection{Context assembly, not model capability}
+\subsection{Window locality is necessary but not sufficient}
 
-The failure of the entire \texttt{PRE*} family (PRE00, PRE01, PRE10,
-PRE11, PRE12; 40--57\% balanced accuracy) sharpens this into a design
-direction.  These are preprocessor rules, and the macro \emph{definition}
-that decides them typically lies outside the 50-line window, frequently
-in another file.  Their failure is thus a context-assembly failure
-rather than a model-capability failure---and SqC already owns the
-machinery to repair it: the registry-based macro-expansion engine of
-\cref{sec:limitations}, \texttt{ProjectContext}'s cross-file macro
-table, and the inter-procedural function summaries that would supply
-the callee facts DCL13-C needs.  Supplying a \emph{relevant-context
-bundle} assembled by the analyser, instead of a raw line window, is the
-natural next experiment; if it moves the \texttt{PRE*} family, the set
-of rules amenable to local adjudication grows well beyond MSC17-C.
+The obvious reading of \cref{tab:llm-per-rule} is that the model fails
+wherever the deciding evidence lies outside the window, and that
+assembling a richer context would recover those rules.  That reading is
+correct for the whole-program rules and \emph{wrong} for the
+preprocessor family, and the distinction is worth stating precisely
+because it bounds what better context can buy.
+
+We checked the \texttt{PRE*} findings directly.  All 602 of them sit on
+a \texttt{\#define} line: these are definition-side rules, so the macro
+body that decides them is in the window by construction, and only 17
+(2.8\%) have continuation lines running past the trailing edge of the
+window.  The model therefore had the deciding evidence in front of it
+and still scored 40--57\%.  PRE01-C in particular---``is this macro
+parameter parenthesised in the replacement text?''---is as syntactically
+local a question as MSC17-C's, and the model reaches only 54.0\% on it.
+
+Window locality is thus a \emph{necessary} condition for local
+adjudication, not a sufficient one, and the criterion we offered above
+must be weakened accordingly: a rule whose decision needs whole-program
+facts is reliably beyond these models, but a rule whose decision is
+local is not thereby within them.
+
+What separates MSC17-C from PRE01-C appears to be the character of the
+false positives rather than the character of the rule.  MSC17-C's false
+positives are mechanically stereotyped---the adjudication record
+attributes most of them to the checker failing to see a \texttt{break}
+nested inside a braced case body---so the model is recognising one
+recurring analyser mistake rather than exercising judgement about the
+rule.  We verified that a residue of this class survives in the current
+build: of 126 MSC17-C findings in the latest SQLite run, 12 (10\%) are
+cases whose braced body closes with \texttt{\};}, where the stray empty
+statement becomes the section's last statement and masks the
+\texttt{break} that precedes it.  We report this as a partial
+explanation only; we have not established that a single mechanism
+accounts for the rule's remaining false positives.
+
+This suggests the more promising use of a local model is not as a
+runtime adjudicator but as a development instrument---a cheap,
+independent detector of stereotyped analyser bugs, run against the
+existing oracle rather than against user code.  The context-assembly
+direction remains open for the whole-program rules (DCL13-C, MSC04-C),
+where SqC's inter-procedural summaries could supply callee facts no
+window contains, but we have not yet tested it.
 
 \subsection{Cost and disposition}
 
