@@ -550,6 +550,30 @@ pub fn macro_output_param_indices(
     out
 }
 
+/// True if a function-like macro's replacement list begins with a `case`
+/// label — e.g. sqlite's `#define CASE(i,str) case i: assert(...);`, invoked
+/// as `CASE(0, "xColumnCount") { ... }`. Tree-sitter parses the invocation as
+/// an ordinary `call_expression` (the real `case` label is hidden inside the
+/// macro body it can't see), so a switch-statement structural check walking
+/// the AST directly would misread the invocation as a plain statement
+/// preceding the first visible label. Callers use this to recognize such an
+/// invocation as itself being the case label.
+///
+/// No parameter substitution is needed: the leading `case` token is a literal
+/// keyword in the replacement list, never a parameter, so it is visible
+/// before expansion.
+pub fn macro_expands_to_case_label(table: &HashMap<String, FunctionMacro>, name: &str) -> bool {
+    let m = match table.get(name) {
+        Some(m) => m,
+        None => return false,
+    };
+    let body = m.body.trim_start();
+    match body.strip_prefix("case") {
+        Some(rest) => !rest.starts_with(|c: char| is_ident_char(c)),
+        None => false,
+    }
+}
+
 /// Parameter indices that a function-like macro frees-and-nulls: the body
 /// assigns the (whole) parameter the null pointer constant (`(param) = NULL`),
 /// directly or after expanding nested macros from `table`. This is the
@@ -1200,6 +1224,33 @@ mod tests {
         // Frees a, nulls b — only b is the nulled param.
         let t = table("#define FN(a, b) do { free(a); (b) = NULL; } while(0)\n");
         assert_eq!(macro_nulls_param_indices(&t, "FN"), vec![1]);
+    }
+
+    // ── Case-label macro detection ──────────────────────────────────────────
+
+    #[test]
+    fn expands_to_case_label_sqlite_shape() {
+        let t = table("#define CASE(i,str) case i: assert( strcmp(aSub[i].zName, str)==0 );\n");
+        assert!(macro_expands_to_case_label(&t, "CASE"));
+    }
+
+    #[test]
+    fn expands_to_case_label_rejects_non_case_body() {
+        let t = table("#define FOO(i) do_something(i);\n");
+        assert!(!macro_expands_to_case_label(&t, "FOO"));
+    }
+
+    #[test]
+    fn expands_to_case_label_rejects_prefix_match() {
+        // "casement(i)" must not be mistaken for the "case" keyword.
+        let t = table("#define WEIRD(i) casement(i);\n");
+        assert!(!macro_expands_to_case_label(&t, "WEIRD"));
+    }
+
+    #[test]
+    fn expands_to_case_label_unknown_macro_is_false() {
+        let t = table("#define X(a) (a)\n");
+        assert!(!macro_expands_to_case_label(&t, "NOPE"));
     }
 
     // ── Deallocation (frees) macro detection ────────────────────────────────
