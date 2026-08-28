@@ -70,6 +70,17 @@ impl Msc17C {
     /// flow), but marker checking is exactly the opposite: the comment *is*
     /// the thing being looked for, and it's as valid inside a brace-wrapped
     /// section as directly in the switch body.
+    /// True for a bare `;` parsed as its own `expression_statement` with no
+    /// content — either a stray empty statement written as-is (`case X: {
+    /// ...; break; };`, legal but pointless C) or the artifact a no-
+    /// semicolon marker macro invocation (`__attribute__((fallthrough));`,
+    /// `deliberate_fall_through`) leaves behind. Never itself a terminator
+    /// or a marker, so both the terminator check and the marker search skip
+    /// past it to find the real last item.
+    fn is_stray_empty_statement(node: &Node) -> bool {
+        node.kind() == "expression_statement" && node.named_child(0).is_none()
+    }
+
     fn last_child_including_comment<'a>(&self, node: &Node<'a>) -> Node<'a> {
         if node.kind() == "compound_statement" {
             let mut cursor = node.walk();
@@ -282,23 +293,31 @@ impl Msc17C {
             if !has_code {
                 continue;
             }
-            let last_non_comment = items.iter().rev().find(|n| n.kind() != "comment");
+            // Skip both comments and a stray empty `;` statement -- e.g. the
+            // trailing semicolon on `case X: { ...; break; };` (legal but
+            // pointless C; the compound_statement is a complete statement on
+            // its own) parses as its own `expression_statement` sibling
+            // *after* the compound_statement, not inside it. Counting it as
+            // "the last item" would make the real terminator (the `break;`
+            // inside the braces) invisible to `terminates_section`.
+            let last_non_comment = items
+                .iter()
+                .rev()
+                .find(|n| !Self::is_stray_empty_statement(n) && n.kind() != "comment");
             let terminated = last_non_comment
                 .map(|n| self.terminates_section(n))
                 .unwrap_or(false);
             if terminated {
                 continue;
             }
-            // Skip only the stray empty `;` statement that
-            // `__attribute__((fallthrough));` leaves behind (the attribute
-            // itself parses as a preceding ERROR node, not part of that
-            // expression_statement) to find the real trailing marker, if
-            // any -- a trailing comment (the common case) must NOT be
-            // skipped past, since the comment itself is the marker.
+            // Skip only the stray empty `;` statement (not a comment) to
+            // find the real trailing marker, if any -- a trailing comment
+            // (the common case) must NOT be skipped past, since the comment
+            // itself is the marker.
             let marker = items
                 .iter()
                 .rev()
-                .find(|n| !(n.kind() == "expression_statement" && n.named_child(0).is_none()))
+                .find(|n| !Self::is_stray_empty_statement(n))
                 .map(|n| self.last_child_including_comment(n));
             let marked_intentional = marker
                 .map(|n| {
