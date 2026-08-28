@@ -933,7 +933,7 @@ enabled = true
 
 
 [rules.cert_c.MSC23-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.MSC24-C]
