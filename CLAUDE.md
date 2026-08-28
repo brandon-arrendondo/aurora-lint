@@ -303,3 +303,35 @@ either direction is measurably wrong on real-world data).
 - All pre-commit hooks must pass before commit succeeds
 - If hooks fail, FIX the underlying issue (don't bypass)
 - Standard commit message format without AI attribution
+
+**PULLING FROM UPSTREAM (`todo-sqlite-cli.db`):**
+
+`.gitattributes` maps `todo-sqlite-cli.db merge=todo-sqlite-cli`, but the
+driver itself lives in **repo-local git config**, which is not committed — a
+fresh clone (or a new machine) has the attribute and no driver, and git then
+falls back to the binary default and leaves the DB in conflict on every
+`pull`/`merge`/`rebase` that touched it. Before pulling upstream:
+
+```bash
+git config --get merge.todo-sqlite-cli.driver \
+  || todo-sqlite-cli install-merge-driver    # one-time, per clone
+git pull                                     # DB auto-merges by task UUID
+todo-sqlite-cli doctor                       # REQUIRED after every merge/pull
+```
+
+`install-merge-driver` appends the `.gitattributes` line unconditionally — if
+that line is already there (it is, in this repo), register the driver by hand
+instead so the file doesn't gain a duplicate:
+
+```bash
+git config merge.todo-sqlite-cli.name "todo-sqlite-cli 3-way merge driver"
+git config merge.todo-sqlite-cli.driver "todo-sqlite-cli git-merge-driver %O %A %B"
+```
+
+The merge is a real 3-way union keyed on task UUID (`%O %A %B`), so nothing is
+lost and dependency edges keep resolving. What it *cannot* fix is two sides
+independently allocating the same display id: both rows survive, sharing that
+id. `doctor` exits 1 on that (and on unresolved `merge-conflict` tags, orphaned
+tag/dep rows, self-deps, cycles); fix a duplicate id with
+`todo-sqlite-cli renumber <uuid> <new-id>`. Never resolve a DB conflict with
+`git checkout --ours/--theirs` — that discards the other side's tasks entirely.
