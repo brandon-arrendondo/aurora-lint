@@ -183,6 +183,36 @@ fn is_fresh_allocation_name(name: &str) -> bool {
     u.contains("ALLOC") || u.contains("STRDUP") || u.contains("STRNDUP") || u.contains("MEMDUP")
 }
 
+/// True if `call_node`'s result is captured by an assignment or
+/// initializer — `x = call(...)` or `T *x = call(...)`, unwrapping any
+/// enclosing parenthesization/cast (`x = (T *)call(...)`). This is the shape
+/// every real `ptr = realloc(ptr, n)` idiom takes; a realloc-*named* call
+/// used as a bare, discarded-result statement (e.g. a wrapper like lua's
+/// `luaD_reallocstack(L, newsize, raiseerror);`, which mutates state via its
+/// first argument rather than returning a new pointer to assign back) is
+/// not that idiom, and must not be treated as invalidating its first
+/// argument (task 563).
+fn call_result_is_assigned(call_node: &Node) -> bool {
+    let mut current = *call_node;
+    loop {
+        let Some(parent) = current.parent() else {
+            return false;
+        };
+        match parent.kind() {
+            "parenthesized_expression" | "cast_expression" => {
+                current = parent;
+            }
+            "assignment_expression" => {
+                return parent.child_by_field_name("right").map(|r| r.id()) == Some(current.id());
+            }
+            "init_declarator" => {
+                return parent.child_by_field_name("value").map(|v| v.id()) == Some(current.id());
+            }
+            _ => return false,
+        }
+    }
+}
+
 /// Tracks global variables and cross-function memory patterns
 struct GlobalTracker {
     /// Global variable declarations
@@ -2376,24 +2406,31 @@ impl MemoryAnalyzer {
                     return HashSet::new();
                 }
                 _ => {
-                    // Realloc-style wrappers (name-detected here) take priority
-                    // over the cross-file FunctionSummary below, exactly like the
-                    // literal `realloc` arm above. A tracing/debug allocator
-                    // implementation of e.g. `os_realloc` legitimately calls
-                    // `free(ptr)` on its own old-pointer argument as part of its
-                    // body (malloc new, copy, free old) — real behavior the
-                    // summary correctly credits as `unconditional_frees_params`.
-                    // But routing that through `process_summary_free_call`
-                    // treats the *call site* as an ordinary `free(subelem)`,
-                    // ignoring that the standard `x = os_realloc(x, n)` /
-                    // `nbuf = os_realloc(subelem, n); if (!nbuf) ...; else
-                    // subelem = nbuf;` idiom always pairs it with a reassignment
-                    // — exactly what `track_realloc_old_pointer`'s
-                    // pending-invalidation-then-clear-on-reassign tracking
-                    // exists for. Fabricated double-free/UAF across every
-                    // sequential realloc-grow block in real-world C (task 563).
                     let upper_name = function_name.to_uppercase();
-                    if upper_name.contains("REALLOC") {
+
+                    // A realloc-*named* wrapper (hostap's `os_realloc`: malloc
+                    // new, copy, free old) is used at call sites via the
+                    // standard `x = os_realloc(x, n)` / `nbuf = os_realloc(old,
+                    // n); if (!nbuf) ...; else old = nbuf;` idiom, which always
+                    // captures the call's result in an assignment — exactly what
+                    // `track_realloc_old_pointer`'s
+                    // pending-invalidation-then-clear-on-reassign tracking exists
+                    // for. Gated on the call's result actually being assigned
+                    // (`call_result_is_assigned`), NOT on a cross-file
+                    // FunctionSummary crediting an unconditional free: the
+                    // summary can't be computed at all when the wrapper's own
+                    // free call goes through another project wrapper that's
+                    // only extern-declared in scope (hostap's real `os_free`),
+                    // and even when a summary *is* available, requiring it
+                    // reintroduces the exact bug this gate fixes — a
+                    // realloc-named function whose result is discarded (lua's
+                    // `luaD_reallocstack(L, newsize, raiseerror);`, a bare
+                    // statement whose first argument is a stable `lua_State*`
+                    // handle, not the pointer being reallocated) must NOT be
+                    // pushed through `track_realloc_old_pointer`, which would
+                    // wrongly invalidate that handle with no reassignment to
+                    // ever clear it (task 563).
+                    if upper_name.contains("REALLOC") && call_result_is_assigned(node) {
                         self.track_realloc_old_pointer(node, source);
                         return HashSet::new();
                     }
