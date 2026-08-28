@@ -255,8 +255,19 @@ r720 is not on that list. So:
 | r720 → surface | **no** — same |
 | dev-107 / dev-106 → r720 | **no** — not in `<vlan30_ssh_allowed>` |
 
-**Every byte that leaves r720 must be pulled by dev-921 or surface.**
-r720 cannot initiate. This is the same asymmetry already imposed on the
+**Every byte that leaves r720 *over SSH* must be pulled by dev-921 or
+surface.** r720 cannot initiate an SSH connection inward.
+
+**Scope correction (important, added later):** this asymmetry is
+**SSH-only**. pf implements it as `block return in quick … port ssh` plus
+an allow-list; the blanket `pass in on { $home $vlan30 $vlan50 }` rule
+still permits **all non-SSH inter-VLAN traffic** (that is how vlan50
+reaches Home Assistant on vlan1). dev-921's `ufw` is likewise
+*default-allow incoming* with only port 22 restricted. So r720 → dev-921
+on a non-SSH port works **today, with no firewall change**. An earlier
+draft of this section said flatly "r720 cannot initiate" — that is true of
+SSH and false in general, and the difference is load-bearing for the
+shared-database option below. This is the same asymmetry already imposed on the
 quarantine-kit research workers (`SECURITY_CONCERNS` §10: "surface
 initiates `scp`/`rsync`; the worker never pushes home"), so the pattern
 is established doctrine here, not something to invent.
@@ -465,3 +476,108 @@ guarantee.
 distribution hub (it already is, de facto). Revisit only if a worker needs
 to *drive* r720 rather than just read its output — and even then, prefer
 the allow-list edit to the move.
+
+---
+
+## Shared database node (Postgres/MySQL) — reassessed 2026-08-28
+
+The "verified from the repo" section above **evaluated and rejected** an
+RDBMS migration. Re-examined against measured facts, **that rejection does
+not hold up.** Its two load-bearing claims are both wrong:
+
+**Claim 1 — "the actual problem is network reachability, not write
+concurrency (it's one writer, occasional readers)."** Empirically false.
+`realworld_runs.hostname` records **six distinct producers**: `dev-41`
+(r720), `dev-workstation`, `10.0.0.63` (dev-107), `local`, `audit-ingest`,
+and one blank. Multi-node writing is not a hypothetical future requirement
+— it already happened, was merged by hand afterwards, and left a scar:
+the 4.1 M rows carrying a `/home/brandon/data/…` root instead of
+`/home/brandon/toolchain/…` (see `BENCHMARK_PULLING.md`) exist *because*
+independent nodes wrote independently and reconciled later. A shared DB
+with a write-time constraint is precisely the fix for that class of bug.
+
+**Claim 2 — "porting this whole layer" (implying 2,081 lines).**
+Overstated. `bench/db.py` is 2,081 lines but touches the sqlite3 API in
+**3 places** (`connect`, `Row`, a `Connection` type hint). The real work is
+mechanical and countable:
+
+| Item | Count |
+|---|---:|
+| `?` → `%s` placeholders | 191 |
+| `.execute` / `.executemany` sites | 83 |
+| `AUTOINCREMENT` → `IDENTITY`/`SERIAL` | 9 |
+| `INSERT OR REPLACE` → `ON CONFLICT … DO UPDATE` | 5 |
+| `PRAGMA table_info` → `information_schema` | 4 |
+| `PRAGMA journal_mode` / `foreign_keys` → drop | 2 |
+| sqlite3 API call sites | 3 |
+| Other consumer files | 4 (`realworld_server.py`, `corpus.py`, 2 scripts) |
+
+That is a focused port, not a rewrite. The data migration (6.4 GB,
+15.9 M `realworld_violations`, 268 `runs`, 88,939 `ground_truth`) is the
+larger risk and needs count-verification on both sides afterwards.
+
+### Why this fits the topology unusually well
+
+**DB traffic is not SSH, so it sidesteps the entire one-way problem** that
+dominates the rest of this document. pf filters only SSH between VLANs, and
+dev-921's ufw is default-allow inbound except port 22. A Postgres listener
+on a vlan1 node is therefore reachable **from r720 today, with no pf edit,
+no nftables edit, and no VLAN move.** Every node — r720 on vlan30, workers
+on vlan1, surface — becomes a first-class writer without touching the
+firewall posture that the VLAN-move option would have degraded.
+
+### It is also a security *improvement*, not just a cost
+
+Today the access model is "whoever has the 6.4 GB file has everything,"
+including the adjudicated `ground_truth` oracle. Postgres roles allow the
+opposite: **grant the most-exposed host the least authority.** r720 —
+the WG endpoint, the fleet's most exposed box — can be given `INSERT` on
+`runs`/`violations`/`realworld_*` and **no `DELETE`, no `DROP`, no write at
+all on `ground_truth`**. A compromised r720 could then add junk rows but
+could not destroy the oracle, which is the genuinely irreplaceable asset
+(88,939 hand-adjudicated labels). That directly answers
+`SECURITY_CONCERNS`'s framing question — "if r720's user account is
+compromised, what's destroyed?" — better than the current file model does.
+
+### Real costs, stated plainly
+
+- **A standing DB credential lands on r720.** Not an SSH key, so §6's
+  "permanently keyless" rule is not literally broken, but it is adjacent
+  and should be recorded as a deliberate bounded exception in the same
+  register as the `dev-106`/`dev-107` worker keys: scoped role, `pg_hba`
+  restricted to that host, append-only, revocable in one statement.
+- **Availability becomes a hard dependency.** Today a node with the file
+  works standalone. With a central DB, the DB node being down stops
+  benchmarking everywhere — and a 32–50 min Juliet run dying at minute 40
+  because the DB host rebooted is worse than any problem this solves.
+  Whichever host is chosen needs to be genuinely always-on.
+- **It does not resolve A/B/C.** The credential/push decision is untouched.
+- **`run_id` collision becomes enforceable** — version + commit SHA as a
+  `UNIQUE` constraint turns today's silent history fork into an error.
+  That is a benefit, but it will reject workflows that currently "work."
+
+### Recommendation
+
+**Postgres, not MySQL** — the query surface here is analytical (per-CWE
+aggregates, run-over-run deltas, precision/recall joins), which wants CTEs,
+window functions and partial indexes; `COPY` also makes the 15.9 M-row load
+far easier than MySQL's bulk path.
+
+**Host it on dev-921**, not r720 and not `minecraft`:
+- `minecraft` (10.0.0.4) is the natural "always-on services box" and
+  already runs UniFi OS + Home Assistant + mosquitto — but it is an
+  i3-3220T (2c/4t) with **8 GB RAM already ~4.4 GiB used and ~3 GiB free**,
+  on a 250 GB SSD. It cannot host a 6.4 GB analytical DB. Ruled out.
+- `r720` is the best server on paper (24 threads, 192 GB, always-on rack)
+  **but is the most-exposed host** — putting the canonical oracle there
+  inverts the whole point of the RBAC gain above.
+- `dev-921` has 474 GB free, 31 GB RAM, 12 threads, sits on vlan1 reachable
+  by every node, is already the admin pivot and planned git-mirror host,
+  and already holds the data. Its weakness is real — it is a daily-driver
+  and gaming box that reboots — so if uptime proves to be the binding
+  constraint, revisit `r720` with the oracle held read-only elsewhere.
+
+**Sequencing.** This stands on its own merits (it removes repeated 6.4 GB
+transfers and fixes the multi-writer reconciliation mess) and does **not**
+need to wait on A/B/C. It should be a tracked task with the migration
+verification step written into it, not folded into another change.
