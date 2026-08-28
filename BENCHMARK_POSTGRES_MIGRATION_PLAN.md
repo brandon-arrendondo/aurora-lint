@@ -1,17 +1,33 @@
 # Benchmark DB: SQLite → PostgreSQL Migration Plan
 
-Implementation plan for task **635**. Written on dev-921 2026-08-28 against the
+Implementation plan for task **638**. Written on dev-921 2026-08-28 against the
 live database; every count, size and line reference below was measured, not
 estimated. Intended for the implementing agent on r720.
+
+**2026-08-28: all three open decisions below resolved.**
+- §0: **(B) shim** — SQLite stays default, Postgres opt-in via DSN.
+- §2: duplicate `realworld_runs` pairs merged (49→48, 51→50 by run_id
+  reassignment on `realworld_results`, then row delete) and
+  `UNIQUE(sqc_version, commit_sha)` added via table rebuild. Verified: FK
+  check clean, integrity_check ok, autoincrement sequence preserved,
+  `python -m bench runs` smoke-tested against the rebuilt table.
+- §7: host is **r720**. Precondition satisfied — a `VACUUM INTO` snapshot of
+  `data/benchmarks.db` (consistent, non-WAL) was pulled from r720 to
+  beedev-sp269 via `scp` and sha256-verified byte-identical
+  (`d7eb8c59...36868f`). NAS-2 remains the eventual second copy (currently
+  powered off) once it's back up.
 
 ---
 
 ## 0. Decide this before writing any code
 
+**RESOLVED 2026-08-28: (B), shim.** SQLite stays the default backend,
+Postgres is opt-in via DSN.
+
 **Does SQLite remain a supported backend, or is this a hard cut?**
 
-This is the one decision that changes the shape of the whole port, and it is
-not settled. Both are defensible:
+This was the one decision that changes the shape of the whole port. Both
+were defensible:
 
 - **(A) Hard cut to Postgres.** Simplest code — one dialect, one paramstyle.
   But it makes a running Postgres server a **prerequisite for anyone running a
@@ -98,16 +114,87 @@ sqc_version  sha       n  ids    host    date
 0.4.38       714fd11c  2  50,51  dev-41  2026-06-17
 ```
 
-`realworld_runs` has 192 rows but only 190 distinct
-`(sqc_version, commit_sha)` pairs. Both duplicates are same-host, same-day —
-almost certainly deliberate re-runs, not corruption. So: **either resolve
-those two pairs first, or do not add the constraint to `realworld_runs`.**
-Adding it blindly will abort the load. (`runs.run_id` is already
-`TEXT PRIMARY KEY` and needs nothing.)
+`realworld_runs` had 192 rows but only 190 distinct
+`(sqc_version, commit_sha)` pairs. **Investigated 2026-08-28 — not deliberate
+re-runs.** Each pair (48/49, 50/51, same host/day) held *different projects*
+(48=curl, 49=mosquitto; 50=curl, 51=mosquitto) with distinct violation
+counts — a pre-task-238 ingestion artifact where a project's completion
+could allocate its own run row instead of sharing one run row per
+version+commit (see the `realworld-ingest-reconcile` fix that closed that
+class of bug going forward). Only `realworld_results.run_id` references
+`realworld_runs.id` (verified against full schema — no other FK), so the fix
+was a clean merge: reassign `realworld_results.run_id` 49→48 and 51→50,
+delete rows 49/51, then rebuild the table with the constraint (SQLite has no
+`ALTER TABLE ADD CONSTRAINT`). **Done** — verified clean going forward (no
+new duplicate pairs as of the rebuild), FK check clean, integrity_check ok,
+autoincrement sequence preserved, app smoke-tested (`python -m bench runs`).
+(`runs.run_id` is already `TEXT PRIMARY KEY` and needs nothing.)
 
 ---
 
-## 3. Code port
+## 3. Code port — DONE 2026-08-28 (bench/db.py connection fork + shim)
+
+Implemented and smoke-tested against SQLite (the still-default backend);
+**not yet tested against a live Postgres instance** — none is provisioned
+on r720 yet, that's §4/§7 follow-up work.
+
+What landed, and why it's smaller than the original divergence table below
+implied:
+
+- **`SQC_BENCH_DSN` env var** selects the backend in `BenchDB.__init__` /
+  `_connect()`. Unset (the default) → unchanged SQLite path. Set → a
+  `psycopg` (v3) connection wrapped in `_PGConnection`/`_PGCursor` shims so
+  every existing call site (`conn.execute`, `cur.executemany`,
+  `cur.fetchone()["col"]`, etc.) works unmodified against either backend.
+  `psycopg[binary]` is an optional dependency (`mcp_servers/requirements.txt`)
+  — imported lazily, only on the Postgres path, so it's never required for
+  normal single-node SQLite use.
+- **`?` → `%s` placeholders**: handled once, at execute time, inside the
+  shim (`_to_pg_placeholders`) — not by editing 83 call sites. Confirmed
+  safe as a blind replace: no SQL text in this module embeds a literal `%`
+  (grepped — the only `%` usage is inside *parameter values*, e.g.
+  `LIKE f"%{x}%"`, never in the SQL string itself), so the two
+  string-concatenation sites the plan flagged (`query += " LIMIT ?"`,
+  `bench/db.py` — now around lines 337/1214) need no special-casing: the
+  translation runs on the final assembled string regardless of how it was
+  built.
+- **`INSERT OR REPLACE` (5 sites) and `.lastrowid` (3 sites) — turned out
+  not to need a dialect fork at all.** SQLite 3.35+ (this repo runs 3.40.1)
+  and Postgres both support `INSERT ... ON CONFLICT (...) DO UPDATE SET ...`
+  and `RETURNING`. All 5 `INSERT OR REPLACE` sites were rewritten to
+  `ON CONFLICT (<unique cols>) DO UPDATE SET <col> = excluded.<col>, ...`
+  and all 3 `.lastrowid` reads to `... RETURNING id` + `cur.fetchone()["id"]`
+  — one portable SQL form, zero runtime branching, verified identical
+  behavior on SQLite (scratch-DB test: re-upsert same key → 1 row, updated
+  value, not a duplicate).
+- **`PRAGMA table_info` (4 sites)**: consolidated into one
+  `_table_columns(conn, table)` helper — `PRAGMA table_info` for SQLite,
+  `information_schema.columns` for Postgres — used identically by all 4
+  `_ensure_schema` column-migration checks.
+- **`PRAGMA journal_mode`/`foreign_keys` (2 sites)**: only ever run on the
+  SQLite branch now (both live inside the `else` arm of `_connect`).
+- **Schema DDL**: `_ensure_schema`'s `executescript(_SCHEMA)` (SQLite
+  `AUTOINCREMENT` syntax, invalid on Postgres) now only runs for the SQLite
+  backend. For Postgres, schema creation is the migration tooling's job
+  (§2/§4 below) — `_ensure_schema` still runs its column-migration checks
+  (backend-agnostic via `_table_columns`), so a Postgres schema that
+  predates a later `ALTER` still self-heals the same way.
+- **Row indexing audit**: grepped for integer indexing on a row
+  (`row[0]`-style) — none exists in this module, so the plan's flagged risk
+  ("audit for any code doing integer indexing, which `dict_row` doesn't
+  support") turned out to be a non-issue here.
+
+Verified against the live DB (SQLite path): `python -m bench runs`,
+`python -m bench status`, `python -m bench compare <base> <target>`
+(exercises the aggregate joins), `python -m bench realworld-score <run>`
+(the one the plan calls the most important — exercises the `ground_truth`
+join) all ran clean post-port.
+
+**Still open:** end-to-end verification against an actual Postgres instance
+(§5's full checklist) can't happen until §4 (schema + data load) and
+provisioning on r720 are done.
+
+### Original divergence analysis (superseded by the above where narrower)
 
 Smaller than it looks. **Only three files touch `sqlite3` directly:**
 
@@ -245,10 +332,20 @@ most, because its output goes into the paper.
 
 ## 7. Deployment notes
 
-- **Host:** see task 635 and the notes-repo `parallel_nodes_plan.md`. Short
-  version: dev-921 unless the `ground_truth`-to-git backup lands first, which
-  makes r720 viable on hardware merits. **Confirm with Brandon before
-  provisioning** — this is not settled.
+- **Host: RESOLVED 2026-08-28 — r720.** See task 638 and the notes-repo
+  `parallel_nodes_plan.md` for the original reasoning (dev-921 was the
+  fallback unless a `ground_truth` backup independent of the DB landed).
+  That precondition is now satisfied: a `VACUUM INTO` snapshot of
+  `data/benchmarks.db` (consistent, non-WAL — never copy the live WAL file)
+  was pulled from r720 to beedev-sp269 via `scp` and verified sha256-identical
+  (`d7eb8c59229a7587cbf872d0b04f1c1db3110cb4566a5360cba4b56a9836868f`).
+  NAS-2 (currently powered off) is the intended second/durable copy once it's
+  back online — the beedev-sp269 copy is not a substitute for that, just the
+  interim off-host copy that unblocked the host decision. Note this is a
+  point-in-time snapshot, not a diffable/version-controlled export of
+  `ground_truth` — if that's wanted separately (CSV export of the 88,939-row
+  table into git, for real history independent of any DB snapshot), it's a
+  small follow-up, not yet done.
 - **Concurrency:** the Juliet runner fans out over `ProcessPoolExecutor`, so
   each worker process opens its own connection. Size `max_connections`
   against the `--jobs` value actually used; consider a pool.

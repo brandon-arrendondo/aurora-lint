@@ -5,6 +5,7 @@ read (MCP server) + write (runner).
 """
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -12,6 +13,80 @@ from pathlib import Path
 from typing import Any
 
 from bench.config import BENCH_ROOT, DB_PATH
+
+# Backend selection: SQLite is the default and needs no setup; set this DSN
+# to opt a node into the shared Postgres instance instead (see
+# BENCHMARK_POSTGRES_MIGRATION_PLAN.md §0 — this is a deliberate choice, not
+# a hard cut, to keep a single-node contributor's workflow at zero setup).
+DSN_ENV_VAR = "SQC_BENCH_DSN"
+
+
+def _to_pg_placeholders(sql: str) -> str:
+    """Translate this module's sqlite `?` positional placeholders to
+    psycopg's `%s`. Safe as a blind replace: no SQL text in this module
+    embeds a literal `%` (the only `%` usage is inside bound *parameter*
+    values, e.g. LIKE f"%{x}%", which never touches the SQL string itself)."""
+    return sql.replace("?", "%s")
+
+
+class _PGCursor:
+    """Shim so call sites written against sqlite3's cursor API — execute,
+    executemany, fetchone/fetchall, name-based row access — work unchanged
+    against a psycopg3 cursor. Row access uses psycopg's dict_row, so
+    `row["col"]` matches sqlite3.Row's behavior; this module never does
+    integer indexing on a row (verified — no `row[0]`-style access exists)."""
+
+    def __init__(self, cur):
+        self._cur = cur
+
+    def execute(self, sql, params=()):
+        self._cur.execute(_to_pg_placeholders(sql), params)
+        return self
+
+    def executemany(self, sql, seq_of_params):
+        self._cur.executemany(_to_pg_placeholders(sql), seq_of_params)
+        return self
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+    def __iter__(self):
+        return iter(self._cur)
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+
+class _PGConnection:
+    """Shim over a psycopg3 connection so BenchDB's sqlite3-shaped call
+    sites (conn.execute, conn.commit/rollback/close, conn.cursor()) work
+    unchanged. conn.executescript is deliberately NOT provided — see
+    _ensure_schema, which skips the SQLite-syntax _SCHEMA DDL for this
+    backend entirely (Postgres schema comes from the migration tooling)."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        cur = self._conn.cursor()
+        cur.execute(_to_pg_placeholders(sql), params)
+        return _PGCursor(cur)
+
+    def cursor(self):
+        return _PGCursor(self._conn.cursor())
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
 
 
 def _wall_seconds(started_at: str, finished_at: str) -> float | None:
@@ -223,9 +298,17 @@ class BenchDB:
 
     def __init__(self, db_path: Path | str | None = None):
         self._db_path = str(db_path or DB_PATH)
+        self._dsn = os.environ.get(DSN_ENV_VAR)
+        self._is_postgres = bool(self._dsn)
         self._ensure_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self):
+        if self._is_postgres:
+            import psycopg
+            from psycopg.rows import dict_row
+
+            conn = psycopg.connect(self._dsn, row_factory=dict_row)
+            return _PGConnection(conn)
         conn = sqlite3.connect(self._db_path, timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -244,20 +327,42 @@ class BenchDB:
         finally:
             conn.close()
 
+    def _table_columns(self, conn, table: str) -> set[str]:
+        """Column names for `table`, from whichever backend `conn` is on.
+
+        SQLite's PRAGMA table_info has no Postgres equivalent; Postgres's
+        information_schema has no SQLite equivalent. Isolating the one
+        branch here keeps every _ensure_schema migration below
+        backend-agnostic.
+        """
+        if self._is_postgres:
+            rows = conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = ?", (table,)).fetchall()
+            return {r["column_name"] for r in rows}
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
     def _ensure_schema(self):
         conn = self._connect()
         try:
-            conn.executescript(_SCHEMA)
+            if self._is_postgres:
+                # Postgres schema is created by the migration tooling (see
+                # BENCHMARK_POSTGRES_MIGRATION_PLAN.md §2/§4), not by this
+                # SQLite-syntax DDL (AUTOINCREMENT etc. isn't valid there).
+                # The column-migration checks below still run — they're
+                # backend-agnostic via _table_columns — so a Postgres schema
+                # that predates a later ALTER still self-heals the same way.
+                pass
+            else:
+                conn.executescript(_SCHEMA)
             # Migrations for columns added after a table already exists
             # (CREATE TABLE IF NOT EXISTS does not update existing tables).
-            cols = {r[1] for r in
-                    conn.execute("PRAGMA table_info(realworld_results)")}
+            cols = self._table_columns(conn, "realworld_results")
             if "codebase_commit" not in cols:
                 conn.execute(
                     "ALTER TABLE realworld_results ADD COLUMN codebase_commit TEXT")
             # ground_truth gained provenance/confidence for FN corroboration.
-            gt_cols = {r[1] for r in
-                       conn.execute("PRAGMA table_info(ground_truth)")}
+            gt_cols = self._table_columns(conn, "ground_truth")
             if "provenance" not in gt_cols:
                 conn.execute(
                     "ALTER TABLE ground_truth ADD COLUMN provenance TEXT")
@@ -266,8 +371,7 @@ class BenchDB:
                     "ALTER TABLE ground_truth ADD COLUMN confidence TEXT")
             # runs gained cache_state (task 208); backfill existing rows as
             # 'cold' since no run ever used a prescan cache.
-            run_cols = {r[1] for r in
-                        conn.execute("PRAGMA table_info(runs)")}
+            run_cols = self._table_columns(conn, "runs")
             if "cache_state" not in run_cols:
                 conn.execute(
                     "ALTER TABLE runs ADD COLUMN cache_state TEXT NOT NULL DEFAULT 'cold'")
@@ -276,8 +380,7 @@ class BenchDB:
             # (RuleViolation.requires_manual_review), used by rules that
             # can't structurally distinguish a real violation from an
             # intentional idiom (e.g. MSC12-C's empty-switch-case check).
-            rv_cols = {r[1] for r in
-                       conn.execute("PRAGMA table_info(realworld_violations)")}
+            rv_cols = self._table_columns(conn, "realworld_violations")
             if "requires_manual_review" not in rv_cols:
                 conn.execute(
                     "ALTER TABLE realworld_violations "
@@ -392,8 +495,9 @@ class BenchDB:
             cur.execute("""
                 INSERT INTO cwe_scans (run_id, cwe_id, cwe_dir_name, file_count, status)
                 VALUES (?, ?, ?, ?, 'pending')
+                RETURNING id
             """, (run_id, cwe_id, cwe_dir_name, file_count))
-            return cur.lastrowid
+            return cur.fetchone()["id"]
 
     def update_cwe_scan(self, scan_id: int, **kwargs) -> None:
         if not kwargs:
@@ -443,13 +547,30 @@ class BenchDB:
         """Insert or replace pre-computed CWE metrics."""
         with self._cursor() as cur:
             cur.execute("""
-                INSERT OR REPLACE INTO cwe_metrics
+                INSERT INTO cwe_metrics
                     (cwe_scan_id, tp_count, fp_count, tp_rate_pct,
                      flaw_lines_total, flaw_lines_detected, flaw_detection_rate_pct,
                      cwe_matched_tp, cwe_matched_fp, noise_count, noise_ratio,
                      per_file_detected, per_file_total, per_file_rate,
                      flaw_hit_detected, flaw_hit_total, flaw_hit_rate)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (cwe_scan_id) DO UPDATE SET
+                    tp_count = excluded.tp_count,
+                    fp_count = excluded.fp_count,
+                    tp_rate_pct = excluded.tp_rate_pct,
+                    flaw_lines_total = excluded.flaw_lines_total,
+                    flaw_lines_detected = excluded.flaw_lines_detected,
+                    flaw_detection_rate_pct = excluded.flaw_detection_rate_pct,
+                    cwe_matched_tp = excluded.cwe_matched_tp,
+                    cwe_matched_fp = excluded.cwe_matched_fp,
+                    noise_count = excluded.noise_count,
+                    noise_ratio = excluded.noise_ratio,
+                    per_file_detected = excluded.per_file_detected,
+                    per_file_total = excluded.per_file_total,
+                    per_file_rate = excluded.per_file_rate,
+                    flaw_hit_detected = excluded.flaw_hit_detected,
+                    flaw_hit_total = excluded.flaw_hit_total,
+                    flaw_hit_rate = excluded.flaw_hit_rate
             """, (metrics["cwe_scan_id"],
                   metrics.get("tp_count", 0), metrics.get("fp_count", 0),
                   metrics.get("tp_rate_pct", 0),
@@ -473,10 +594,15 @@ class BenchDB:
             return
         with self._cursor() as cur:
             cur.executemany("""
-                INSERT OR REPLACE INTO rule_cwe_breakdown
+                INSERT INTO rule_cwe_breakdown
                     (cwe_scan_id, rule_id, tp_count, fp_count,
                      flaw_line_count, is_cwe_matched)
                 VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (cwe_scan_id, rule_id) DO UPDATE SET
+                    tp_count = excluded.tp_count,
+                    fp_count = excluded.fp_count,
+                    flaw_line_count = excluded.flaw_line_count,
+                    is_cwe_matched = excluded.is_cwe_matched
             """, [(r["cwe_scan_id"], r["rule_id"],
                    r.get("tp_count", 0), r.get("fp_count", 0),
                    r.get("flaw_line_count", 0), r.get("is_cwe_matched", 0))
@@ -926,8 +1052,9 @@ class BenchDB:
                 INSERT INTO realworld_runs
                     (sqc_version, commit_sha, scanned_at, hostname, cpu_model, cpu_cores, notes)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
             """, (sqc_version, commit_sha, scanned_at, hostname, cpu_model, cpu_cores, notes))
-            return cur.lastrowid
+            return cur.fetchone()["id"]
 
     def insert_realworld_result(self, run_id: int, project: str, tool: str,
                                 c_files: int = 0, loc: int = 0,
@@ -936,10 +1063,16 @@ class BenchDB:
                                 codebase_commit: str = None) -> None:
         with self._cursor() as cur:
             cur.execute("""
-                INSERT OR REPLACE INTO realworld_results
+                INSERT INTO realworld_results
                     (run_id, project, tool, c_files, loc, violation_count,
                      duration_s, codebase_commit)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (run_id, project, tool) DO UPDATE SET
+                    c_files = excluded.c_files,
+                    loc = excluded.loc,
+                    violation_count = excluded.violation_count,
+                    duration_s = excluded.duration_s,
+                    codebase_commit = excluded.codebase_commit
             """, (run_id, project, tool, c_files, loc, violation_count,
                   duration_s, codebase_commit))
 
@@ -1078,12 +1211,11 @@ class BenchDB:
 
             result_id = None
             with self._cursor() as cur:
-                # Drop any prior sqc row (and its violations) for this
-                # (run, project) first. foreign_keys=ON would otherwise abort
-                # the INSERT OR REPLACE: its implicit delete of the conflicting
-                # parent row is rejected while child violations still reference
-                # it. Deleting children up front also prevents duplicate
-                # findings on a merge/re-ingest.
+                # Drop any prior sqc row's violations for this (run, project)
+                # first, so a merge/re-ingest never duplicates or orphans
+                # findings — the upsert below updates the parent row in place
+                # (not delete+reinsert), so result_id stays stable across
+                # re-ingests, but its old children must still be cleared.
                 cur.execute("""
                     DELETE FROM realworld_violations
                     WHERE result_id IN (
@@ -1091,13 +1223,20 @@ class BenchDB:
                         WHERE run_id = ? AND project = ? AND tool = 'sqc')
                 """, (run_id, project))
                 cur.execute("""
-                    INSERT OR REPLACE INTO realworld_results
+                    INSERT INTO realworld_results
                         (run_id, project, tool, c_files, loc, violation_count,
                          duration_s, codebase_commit)
                     VALUES (?, ?, 'sqc', ?, ?, ?, ?, ?)
+                    ON CONFLICT (run_id, project, tool) DO UPDATE SET
+                        c_files = excluded.c_files,
+                        loc = excluded.loc,
+                        violation_count = excluded.violation_count,
+                        duration_s = excluded.duration_s,
+                        codebase_commit = excluded.codebase_commit
+                    RETURNING id
                 """, (run_id, project, c_files, loc, violation_count, duration,
                       codebase_commit))
-                result_id = cur.lastrowid
+                result_id = cur.fetchone()["id"]
 
             # Insert per-violation detail
             if result_id and violations:
