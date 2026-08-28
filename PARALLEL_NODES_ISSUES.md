@@ -222,15 +222,189 @@ that bite soonest in practice, and neither needs new infrastructure to
 decide — they're conventions, and could be settled independently of the
 network answers.
 
-### Slot: pulling `benchmarks.db` from r720-enterprise
 
-**TO BE FILLED IN by the r720-enterprise node.** There are findings on that
-machine about pulling the benchmark DB down from it that are not reproduced
-here — this node has no record of them (no memory entries, nothing in the
-repo, nothing in the task DB, nothing in git history mentioning r720).
-They matter because they are the concrete precedent for the
-"read-only snapshot sync to workers" option, which is otherwise
-hypothetical in this doc. Anything known about WAL-mode safety while a
-benchmark is mid-run, `.backup` vs. raw `cp`, transfer time for the DB's
-current size, and how stale a worker's copy is allowed to get before
-`compare_runs` misleads, belongs here.
+---
+
+## Topology resolved (dev-921, 2026-08-28)
+
+Source: `~/environment/notes/pages/home_network.md` and
+`~/environment/notes/pages/SECURITY_CONCERNS.md` (pulled from NAS to
+dev-921). Those notes are the authority; this section records only what
+bears on the parallel-nodes plan, and cites sections rather than copying
+credential material. **Read `SECURITY_CONCERNS` §2, §3 and §6 before
+acting on any of this** — they are the constraint, not background.
+
+### The headline: the fleet is not three co-equal nodes
+
+This doc was drafted assuming N symmetric machines that each implement,
+build, and push. The actual fleet is **hub-and-spoke**, and two independent
+mechanisms enforce it.
+
+**1. Reachability is deliberately one-way.** pf's inter-VLAN policy allows
+`vlan1 → vlan30` SSH only from the `<vlan30_ssh_allowed>` table
+(firewall, dev-921, X270 eth/wifi, surface), and blocks `vlan30 → vlan1`
+outright with an RST. r720 is the only host on vlan30. Independently,
+dev-921's own `ufw` allow-lists port 22 to surface and X270 **only** —
+r720 is not on that list. So:
+
+| From → To | SSH |
+|---|---|
+| dev-921 → r720 | yes (LAN `10.0.30.10`, or WG `10.77.0.10`) |
+| surface → r720 | yes (LAN, or WG when travelling) |
+| r720 → dev-921 | **no** — blocked twice (pf, and dev-921's ufw) |
+| r720 → surface | **no** — same |
+| dev-107 / dev-106 → r720 | **no** — not in `<vlan30_ssh_allowed>` |
+
+**Every byte that leaves r720 must be pulled by dev-921 or surface.**
+r720 cannot initiate. This is the same asymmetry already imposed on the
+quarantine-kit research workers (`SECURITY_CONCERNS` §10: "surface
+initiates `scp`/`rsync`; the worker never pushes home"), so the pattern
+is established doctrine here, not something to invent.
+
+**2. r720 is permanently keyless, by policy.** `SECURITY_CONCERNS` §6:
+r720 holds no SSH keys, ever — not soft, not TPM-bound. It sees only a
+forwarded agent socket, chosen per-session by intent via the Option B
+aliases (`r720-personal` forwards the TPM/szarta agent; `r720-enterprise`
+forwards gpg-agent holding soft dev-330). The socket dies when the SSH
+session ends.
+
+### This directly contradicts the plan's premise — resolve it deliberately
+
+The doc's model has worker nodes committing and **pushing to `origin`** for
+the benchmark node to pick up. On r720 that is not merely unconfigured, it
+is **designed to be impossible**:
+
+> `SECURITY_CONCERNS` §3 — "A Claude session inside detached tmux still has
+> the *old* `$SSH_AUTH_SOCK` pointing at the dead socket. Any `git push`
+> attempt hangs on a dead socket and fails. **Result:** Claude in detached
+> tmux literally cannot push."
+
+That is listed as a *security property to preserve*, and it is exactly the
+property an autonomous overnight worker would need to break. The notes
+already name this gap and leave it open — `SECURITY_CONCERNS`
+"Open questions", **"Long-lived bot tokens for CI / scheduled jobs"**:
+
+> "If r720 runs anything that needs to push to GitHub without a human
+> (e.g., nightly auto-commits), this whole 'credentials live with the
+> human' model breaks for that workflow. Solve case-by-case — usually a
+> scoped, write-only PAT for the specific repo, treated as
+> compromised-by-default."
+
+**So the real decision this doc exists to unblock is not a network
+question at all.** It is: *does an autonomous parallel worker get a
+standing credential, and if so what shape?* Three honest options:
+
+- **(A) No standing credential — parallelism is bounded by attachment.**
+  Worker sessions run on r720 under a live forwarded agent while Brandon
+  is attached; they commit locally and push only during that window.
+  Detached sessions keep building and testing but land nothing. Preserves
+  §3 intact. Costs: no overnight autonomy, which is most of the motivation.
+- **(B) A scoped write-only PAT for `tools_sqc` only**, treated as
+  compromised-by-default, living on the worker. This is the case the notes
+  pre-authorize ("solve case-by-case"), and it is bounded the way the
+  `dev-106`/`dev-107` worker keys are bounded (§"Open questions"): one
+  repo, one node, revocable in one line, not the TPM identity, shares no
+  fingerprint with a real credential. Note it punches through §3 for that
+  one repo — the detached session *can* push `tools_sqc` — so branch
+  protection on `main` (§1) becomes load-bearing rather than optional.
+- **(C) Worker never pushes; dev-921 pulls commits over SSH.** dev-921 can
+  reach r720 but not vice versa, so dev-921 runs
+  `git fetch <r720-path> <branch>` against the worker's clone and lands the
+  work itself. No new credential anywhere; the asymmetry does the work.
+  This is the direct analogue of the §10 pull-based drop, and it composes
+  with the planned dev-921 git mirror (§4). **Recommended** — it buys most
+  of (B)'s autonomy without creating a standing push credential.
+
+Under (C) the worker's output is untrusted-until-pulled, which is the
+existing doctrine, and nothing in §2/§3/§6 has to bend.
+
+### Which machine should be the benchmark node
+
+**r720**, on hardware: 12 cores / 24 threads and 192 GB, versus dev-921's
+12 threads / 31 GB. Juliet fans out over `ProcessPoolExecutor`, so the
+32–50 min fast-mode run is the part that actually benefits. r720 is also
+the designated primary build host and sits on home fiber.
+
+Caveats to check before committing to it:
+
+- **Disk.** Root LVM is 456 GiB at ~61% used (~178 GiB free) — needs to
+  cover the Juliet tree, nine real-world corpora, and `target/release`.
+  `sdb` (250 GB, ext4 at `/media/drive-01`) is empty and is the obvious
+  home for `BENCH_ROOT` if root gets tight.
+- **Juliet is a manual copy.** The playbook deliberately doesn't fetch it
+  (NIST SARD is click-through). It has to be transferred to r720 by hand,
+  and given the direction of travel that means pushed *from* dev-921 or
+  surface.
+- **r720 has no compute GPU** (Matrox BMC only). Irrelevant for sqc, but it
+  rules r720 out for any local-model adjudication work — that stays on
+  dev-921 (RTX 3060 12 GB) or `brandons-mini`. Worth knowing given task 166.
+
+### Pulling `benchmarks.db` off r720 — the concrete mechanism
+
+This was the specific open item. With the topology known:
+
+1. **dev-921 initiates. Always.** r720 cannot reach dev-921, so there is no
+   push option and no need to argue about one.
+2. **Never `cp`/`rsync` the bare `benchmarks.db`.** It is WAL-mode. A copy
+   of the `.db` file alone omits committed transactions still sitting in
+   `-wal`, so the snapshot silently loses the tail of a run — the exact
+   failure mode that would make `compare_runs` quietly wrong. Take a
+   consistent snapshot instead:
+   `ssh r720-enterprise 'sqlite3 ~/data/tools_sqc/data/benchmarks.db ".backup /tmp/bench-snap.db"'`
+   then `rsync` that file. `.backup` is safe against a concurrent writer;
+   a file copy is not.
+3. **Snapshot only between runs, or accept a partial one.** A mid-run
+   snapshot is internally consistent but semantically incomplete — the run
+   row exists with only some `cwe_scans` populated. Fine for progress
+   checks, misleading for `compare_runs`.
+4. **Unattended pulls will hit the agent problem.** A cron on dev-921 that
+   pulls from r720 needs dev-921's agent live. The r720 aliases pin
+   `IdentityAgent` at the TPM agent (passphrase-protected, GTK askpass) or
+   gpg-agent — and `SECURITY_CONCERNS` gotcha #10 documents gpg-agent
+   failing with `agent refused operation` when it has no TTY/DISPLAY. An
+   unattended pull is therefore **not** a free win; either run it from an
+   attached session, or accept it only works while the desktop session is
+   up and the agent is warm.
+5. **Read-only on arrival.** The pulled copy is a *snapshot for querying*,
+   not a second writer. Point the `bench` CLI / MCP tools at it for
+   `compare_runs`-style reads; never write to it and never try to merge it
+   back. There is no merge story for `benchmarks.db` and building one is
+   out of scope (see the SQLite-vs-Postgres note above).
+
+### Corrections to the earlier draft of this doc
+
+- **`harrison` and `cecilia` are not candidate worker nodes** — they are
+  the kids' gaming PCs, firewalled to accept SSH from dev-921 only. An
+  earlier round of this discussion floated them; rule them out.
+- **The real spare-capacity worker nodes already exist**: `dev-107`
+  (Fedora, `10.0.0.63`, standing worker key from surface, NOPASSWD sudo)
+  and `dev-106` (`10.0.0.69`, slated for headless-Debian reinstall). Both
+  are already provisioned as disposable Claude worker nodes. **Neither can
+  reach r720** — they are not in `<vlan30_ssh_allowed>`. Adding them means
+  editing pf's table *and* r720's nftables mirror, which the notes flag as
+  a must-keep-in-sync pair. Both are also small boxes; they suit
+  implement/build/test, not benchmarking.
+- **The seven-repo `github-enterprise` rewrite list in `SECURITY_CONCERNS`
+  §2 is stale** — it names funky, todo-sqlite-cli, winhelp2rst, knots,
+  windchill-connector, ingot, adotestplan-to-pytestbdd. `tools_sqc` is an
+  eighth, cloned on dev-921, whose remote is already
+  `git@github-enterprise:...`. §2's remark that "surface and dev-921 don't
+  carry these aliases" is likewise superseded by the 2026-05-20 entry
+  further down §6 (both machines got both aliases; 24 remotes rewritten).
+  Worth a fix in the notes, not here.
+
+### Revised open questions
+
+| # | Was | Now |
+|---|---|---|
+| 1 | Reachability | **Answered** — one-way, dev-921/surface → r720 only |
+| 2 | MCP transport | **Answered** — stdio only; file sync, not MCP |
+| 3 | Existing sync tooling | **Answered** — none; use dev-921-initiated `.backup` + rsync |
+| 4 | Auth model | **Reframed** — the question is the standing-credential decision (A/B/C above), not network auth |
+| 5 | git push access | **Answered** — only credential-holding nodes (dev-921, surface) can push; r720 never can |
+| 6 | Task claiming | **Still open** — convention, decide freely |
+| 7 | Version-bump collision | **Mostly dissolved** — if only dev-921/surface push, there is effectively one writer; still needs a pull-before-bump habit |
+| 8 | Corpus provisioning | **Partly answered** — r720 has fiber and can run the playbook; Juliet must be hand-copied *to* it |
+
+The one genuinely blocking decision left is **A / B / C** above. Q6 is a
+convention that can be settled in five minutes once that lands.
