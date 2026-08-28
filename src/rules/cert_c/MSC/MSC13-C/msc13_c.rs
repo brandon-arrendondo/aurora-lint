@@ -23,10 +23,14 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self as cfg_mod, FunctionCfg};
 use crate::analyze::dataflow::{
-    compute_reaching_definitions, extract_definitions, find_node_at_range, DefinitionKind,
+    compute_reaching_definitions, extract_definitions, find_node_at_range, Definition,
+    DefinitionKind,
 };
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
+use crate::utility::cert_c::ast_utils::{
+    find_enclosing_declaration_for_identifier, get_identifier_from_declarator, get_node_text,
+};
+use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -38,8 +42,13 @@ impl Msc13C {
     }
 
     /// Collect all local variable declarations in a function body.
-    /// Returns (name, declaration_line, has_initializer).
-    fn collect_local_vars(&self, body: &Node, source: &str) -> Vec<(String, usize, bool)> {
+    /// Returns (name, declaration_line, has_initializer, decl_start_byte).
+    /// `decl_start_byte` is the byte offset of the specific `declaration`
+    /// node that bound this name, so a later read can be checked against
+    /// the exact declaration it resolves to rather than just its name —
+    /// disambiguating same-named shadowing declarations in nested blocks
+    /// (task 386).
+    fn collect_local_vars(&self, body: &Node, source: &str) -> Vec<(String, usize, bool, usize)> {
         let mut vars = Vec::new();
         self.walk_for_declarations(body, source, &mut vars);
         vars
@@ -84,12 +93,13 @@ impl Msc13C {
                 && !node.has_error()
             {
                 let mut vars = Vec::new();
+                let decl_start = node.start_byte();
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
-                        self.extract_declared_names(&child, source, &mut vars);
+                        self.extract_declared_names(&child, source, decl_start, &mut vars);
                     }
                 }
-                names.extend(vars.into_iter().map(|(name, _, _)| name));
+                names.extend(vars.into_iter().map(|(name, _, _, _)| name));
             }
         }
 
@@ -106,7 +116,7 @@ impl Msc13C {
         &self,
         node: &Node,
         source: &str,
-        vars: &mut Vec<(String, usize, bool)>,
+        vars: &mut Vec<(String, usize, bool, usize)>,
     ) {
         if node.kind() == "declaration" {
             // Skip function declarations and extern/typedef
@@ -123,9 +133,10 @@ impl Msc13C {
             if decl_text.contains("extern ") || decl_text.contains("typedef ") || node.has_error() {
                 // Don't flag extern/typedef declarations or malformed parses
             } else {
+                let decl_start = node.start_byte();
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
-                        self.extract_declared_names(&child, source, vars);
+                        self.extract_declared_names(&child, source, decl_start, vars);
                     }
                 }
             }
@@ -145,27 +156,28 @@ impl Msc13C {
         &self,
         node: &Node,
         source: &str,
-        vars: &mut Vec<(String, usize, bool)>,
+        decl_start: usize,
+        vars: &mut Vec<(String, usize, bool, usize)>,
     ) {
         match node.kind() {
             "init_declarator" => {
                 if let Some(declarator) = node.child_by_field_name("declarator") {
                     let name = get_identifier_from_declarator(&declarator, source);
                     if !name.is_empty() {
-                        vars.push((name, node.start_position().row + 1, true));
+                        vars.push((name, node.start_position().row + 1, true, decl_start));
                     }
                 }
             }
             // Plain identifier declaration: `int x;`
             "identifier" => {
                 let name = get_node_text(node, source).to_string();
-                vars.push((name, node.start_position().row + 1, false));
+                vars.push((name, node.start_position().row + 1, false, decl_start));
             }
             // Pointer/array declarator without init: `int *p;`, `int arr[10];`
             "pointer_declarator" | "array_declarator" => {
                 let name = get_identifier_from_declarator(node, source);
                 if !name.is_empty() {
-                    vars.push((name, node.start_position().row + 1, false));
+                    vars.push((name, node.start_position().row + 1, false, decl_start));
                 }
             }
             // Skip function_declarator (function declarations, not variables)
@@ -179,18 +191,44 @@ impl Msc13C {
     /// - The left side of an assignment expression
     /// - The declarator in a declaration
     /// - The operand of address-of (&) used as an out-parameter
-    fn count_reads(&self, body: &Node, source: &str, var_name: &str) -> usize {
+    ///
+    /// `decl_start`, when given, is the byte offset of the specific
+    /// declaration this count is for; an occurrence is only counted when it
+    /// actually resolves (via `find_enclosing_declaration_for_identifier`)
+    /// to that same declaration, not a same-named shadowing declaration in
+    /// a nested or sibling block (task 386). `None` falls back to unscoped
+    /// name matching, for callers that can't resolve a specific declaration.
+    fn count_reads(
+        &self,
+        body: &Node,
+        source: &str,
+        var_name: &str,
+        decl_start: Option<usize>,
+    ) -> usize {
         let mut count = 0;
-        self.walk_for_reads(body, source, var_name, &mut count);
+        self.walk_for_reads(body, source, var_name, decl_start, &mut count);
         count
     }
 
-    fn walk_for_reads(&self, node: &Node, source: &str, var_name: &str, count: &mut usize) {
+    fn walk_for_reads(
+        &self,
+        node: &Node,
+        source: &str,
+        var_name: &str,
+        decl_start: Option<usize>,
+        count: &mut usize,
+    ) {
         if node.kind() == "identifier" {
             let text = get_node_text(node, source);
-            if text == var_name {
-                // Check if this is a read (not a write target or declaration)
-                if self.is_read_context(node, source) {
+            if text == var_name && self.is_read_context(node, source) {
+                let in_scope = match decl_start {
+                    None => true,
+                    Some(target) => {
+                        find_enclosing_declaration_for_identifier(node, var_name, source)
+                            .is_some_and(|d| d.start_byte() == target)
+                    }
+                };
+                if in_scope {
                     *count += 1;
                 }
             }
@@ -200,7 +238,7 @@ impl Msc13C {
             if let Some(child) = node.child(i) {
                 // Don't recurse into nested function definitions
                 if child.kind() != "function_definition" {
-                    self.walk_for_reads(&child, source, var_name, count);
+                    self.walk_for_reads(&child, source, var_name, decl_start, count);
                 }
             }
         }
@@ -346,8 +384,8 @@ impl Msc13C {
         let local_vars = self.collect_local_vars(body, source);
 
         // Check each declared variable for reads
-        for (name, line, has_init) in &local_vars {
-            let reads = self.count_reads(body, source, name);
+        for (name, line, has_init, decl_start) in &local_vars {
+            let reads = self.count_reads(body, source, name, Some(*decl_start));
             if reads == 0 {
                 let msg = if *has_init {
                     format!("Variable '{}' is initialized but never read.", name)
@@ -508,8 +546,12 @@ impl Msc13C {
             }
             // A variable never read anywhere in the function is already
             // reported by the unused-variable pass above; don't
-            // double-report the same root cause per definition.
-            if self.count_reads(body, source, &def.variable) == 0 {
+            // double-report the same root cause per definition. Scoped to
+            // this definition's own governing declaration (task 386) so a
+            // read of an unrelated same-named shadowing variable elsewhere
+            // in the function doesn't suppress this report.
+            let decl_start = self.declaration_scope_for_definition(cfg, def, body, source);
+            if self.count_reads(body, source, &def.variable, decl_start) == 0 {
                 continue;
             }
             let line = Self::line_for_byte(source, def.byte_offset);
@@ -530,6 +572,33 @@ impl Msc13C {
                 ..Default::default()
             });
         }
+    }
+
+    /// Resolve the specific local declaration governing `def`'s write, for
+    /// shadow-aware read counting (task 386): locate the definition's own
+    /// statement via its CFG block/index, find the identifier occurrence
+    /// naming `def.variable` within it, then walk up to the nearest
+    /// enclosing declaration that binds that name. Returns `None` when it
+    /// can't be resolved, in which case the caller falls back to unscoped
+    /// name matching.
+    fn declaration_scope_for_definition(
+        &self,
+        cfg: &FunctionCfg,
+        def: &Definition,
+        body: &Node,
+        source: &str,
+    ) -> Option<usize> {
+        let &(start, end) = cfg
+            .blocks
+            .get(def.block_id)?
+            .statements
+            .get(def.statement_index)?;
+        let stmt_node = find_node_at_range(body, start, end)?;
+        let ident = query::find_first_descendant(stmt_node, |n| {
+            n.kind() == "identifier" && get_node_text(&n, source) == def.variable
+        })?;
+        find_enclosing_declaration_for_identifier(&ident, &def.variable, source)
+            .map(|d| d.start_byte())
     }
 
     fn line_for_byte(source: &str, byte_offset: usize) -> usize {
