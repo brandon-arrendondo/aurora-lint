@@ -70,11 +70,53 @@ use crate::analyze::cfg;
 use crate::analyze::concurrency_roots;
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
+use crate::utility::cert_c::ast_utils::{
+    get_identifier_from_declarator, get_node_text, resolve_identifier_binding, IdentifierBinding,
+};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use tree_sitter::Node;
+
+/// The static/file-scope-global variables collected from a translation
+/// unit, keyed by name to the byte offset(s) of the `declaration` node(s)
+/// that bind them. Plain name matching against this set isn't enough
+/// on its own -- a same-named local variable or parameter in an unrelated
+/// scope would be misattributed as an access to the shared variable (task
+/// 386). [`StaticVars::resolves`] closes that gap by checking, via
+/// [`resolve_identifier_binding`], that a candidate identifier occurrence
+/// actually binds to one of the recorded declarations rather than shadowing
+/// it.
+#[derive(Debug, Default)]
+struct StaticVars {
+    decls: HashMap<String, Vec<usize>>,
+}
+
+impl StaticVars {
+    fn record(&mut self, name: String, decl_start: usize) {
+        self.decls.entry(name).or_default().push(decl_start);
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.decls.contains_key(name)
+    }
+
+    /// True if `id_node` (an occurrence of `name`) actually resolves to one
+    /// of the recorded declarations for that name, rather than a same-named
+    /// local variable or parameter shadowing it in this scope.
+    fn resolves(&self, id_node: &Node, name: &str, source: &str) -> bool {
+        let Some(starts) = self.decls.get(name) else {
+            return false;
+        };
+        match resolve_identifier_binding(id_node, name, source) {
+            Some(IdentifierBinding::Local(decl)) | Some(IdentifierBinding::Global(decl)) => {
+                starts.contains(&decl.start_byte())
+            }
+            _ => false,
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct Con07C {
@@ -139,13 +181,13 @@ impl Con07C {
     }
 
     /// Collect all static variable names from the translation unit
-    fn collect_static_variables(&self, node: &Node, source: &str) -> Vec<String> {
-        let mut static_vars = Vec::new();
+    fn collect_static_variables(&self, node: &Node, source: &str) -> StaticVars {
+        let mut static_vars = StaticVars::default();
         self.find_static_variables(node, source, &mut static_vars);
         static_vars
     }
 
-    fn find_static_variables(&self, node: &Node, source: &str, static_vars: &mut Vec<String>) {
+    fn find_static_variables(&self, node: &Node, source: &str, static_vars: &mut StaticVars) {
         for decl_node in query::find_descendants_of_kind(*node, "declaration") {
             let mut is_static = false;
             let mut is_file_scope = decl_node
@@ -196,7 +238,9 @@ impl Con07C {
 
             // Collect static variables AND file-scope globals (non-mutex types)
             if is_static || (is_file_scope && !is_mutex_or_thread_type) {
-                static_vars.extend(var_names);
+                for name in var_names {
+                    static_vars.record(name, decl_node.start_byte());
+                }
             }
         }
     }
@@ -205,7 +249,7 @@ impl Con07C {
         &self,
         node: &Node,
         source: &str,
-        static_vars: &[String],
+        static_vars: &StaticVars,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for function definitions that might access static variables
@@ -223,7 +267,7 @@ impl Con07C {
         &self,
         function_node: &Node,
         source: &str,
-        static_vars: &[String],
+        static_vars: &StaticVars,
         violations: &mut Vec<RuleViolation>,
     ) {
         let func_name = cfg::get_function_name(function_node, source)
@@ -280,9 +324,9 @@ impl Con07C {
         if static_var_accesses.len() > 1 {
             let has_compound_write = static_var_accesses
                 .iter()
-                .any(|v| self.has_compound_operation_on_var(&body, source, v));
-            let combines_reads = self.combines_multiple_vars(&body, source, &static_var_accesses);
-            let writes_multiple = self.writes_multiple_vars(&body, source, &static_var_accesses);
+                .any(|v| self.has_compound_operation_on_var(&body, source, v, static_vars));
+            let combines_reads = self.combines_multiple_vars(&body, source, static_vars);
+            let writes_multiple = self.writes_multiple_vars(&body, source, static_vars);
             if has_compound_write || combines_reads || writes_multiple {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
@@ -303,7 +347,12 @@ impl Con07C {
             }
         } else if static_var_accesses.len() == 1 {
             // Check for compound assignment operations on a single static variable
-            if self.has_compound_operation_on_var(&body, source, &static_var_accesses[0]) {
+            if self.has_compound_operation_on_var(
+                &body,
+                source,
+                &static_var_accesses[0],
+                static_vars,
+            ) {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: Severity::Medium,
@@ -374,7 +423,7 @@ impl Con07C {
         &self,
         node: &Node,
         source: &str,
-        static_vars: &[String],
+        static_vars: &StaticVars,
     ) -> Vec<String> {
         let mut accesses = Vec::new();
         self.collect_static_var_accesses(node, source, static_vars, &mut accesses);
@@ -387,25 +436,34 @@ impl Con07C {
         &self,
         node: &Node,
         source: &str,
-        static_vars: &[String],
+        static_vars: &StaticVars,
         accesses: &mut Vec<String>,
     ) {
         for id_node in query::find_descendants_of_kind(*node, "identifier") {
             let name = get_node_text(&id_node, source);
-            if static_vars.contains(&name.to_string()) {
+            if static_vars.contains(name) && static_vars.resolves(&id_node, name, source) {
                 accesses.push(name.to_string());
             }
         }
     }
 
-    fn has_compound_operation_on_var(&self, node: &Node, source: &str, var_name: &str) -> bool {
+    fn has_compound_operation_on_var(
+        &self,
+        node: &Node,
+        source: &str,
+        var_name: &str,
+        static_vars: &StaticVars,
+    ) -> bool {
         query::find_first_descendant(*node, |n| {
             if n.kind() == "assignment_expression" {
                 let left = n.child_by_field_name("left");
                 let right = n.child_by_field_name("right");
                 if let Some(left_node) = left {
                     let left_text = get_node_text(&left_node, source);
-                    if left_text == var_name {
+                    if left_text == var_name
+                        && left_node.kind() == "identifier"
+                        && static_vars.resolves(&left_node, var_name, source)
+                    {
                         // Compound assignment: x += 1, x -= 1, etc.
                         if let Some(operator) = n.child_by_field_name("operator") {
                             let op_text = get_node_text(&operator, source);
@@ -426,8 +484,13 @@ impl Con07C {
                         }
                         // Read-modify-write: x = x OP expr (var appears in RHS)
                         if let Some(right_node) = right {
-                            let right_text = get_node_text(&right_node, source);
-                            if right_text.contains(var_name) {
+                            if query::find_descendants_of_kind(right_node, "identifier")
+                                .into_iter()
+                                .any(|id| {
+                                    get_node_text(&id, source) == var_name
+                                        && static_vars.resolves(&id, var_name, source)
+                                })
+                            {
                                 return true;
                             }
                         }
@@ -438,7 +501,10 @@ impl Con07C {
             // Increment/decrement: x++, ++x, x--, --x
             if matches!(n.kind(), "update_expression") {
                 if let Some(argument) = n.child_by_field_name("argument") {
-                    if get_node_text(&argument, source) == var_name {
+                    if get_node_text(&argument, source) == var_name
+                        && argument.kind() == "identifier"
+                        && static_vars.resolves(&argument, var_name, source)
+                    {
                         return true;
                     }
                 }
@@ -449,17 +515,19 @@ impl Con07C {
         .is_some()
     }
 
-    /// Names from `vars` referenced anywhere in `node`'s subtree.
+    /// Names from `static_vars` referenced anywhere in `node`'s subtree,
+    /// excluding occurrences that actually resolve to a same-named
+    /// shadowing local variable or parameter rather than the shared one.
     fn vars_referenced_in(
         &self,
         node: &Node,
         source: &str,
-        vars: &[String],
+        static_vars: &StaticVars,
     ) -> std::collections::HashSet<String> {
         let mut found = std::collections::HashSet::new();
         for id_node in query::find_descendants_of_kind(*node, "identifier") {
             let name = get_node_text(&id_node, source);
-            if vars.iter().any(|v| v == name) {
+            if static_vars.contains(name) && static_vars.resolves(&id_node, name, source) {
                 found.insert(name.to_string());
             }
         }
@@ -471,10 +539,10 @@ impl Con07C {
     /// distinct shared variables — each read may individually be atomic,
     /// but the combination isn't (CERT's "Addition of Atomic Integers"
     /// noncompliant example).
-    fn combines_multiple_vars(&self, body: &Node, source: &str, vars: &[String]) -> bool {
+    fn combines_multiple_vars(&self, body: &Node, source: &str, static_vars: &StaticVars) -> bool {
         query::find_descendants_of_kind(*body, "binary_expression")
             .into_iter()
-            .any(|expr| self.vars_referenced_in(&expr, source, vars).len() > 1)
+            .any(|expr| self.vars_referenced_in(&expr, source, static_vars).len() > 1)
     }
 
     /// True if two or more distinct shared variables are each individually
@@ -482,13 +550,16 @@ impl Con07C {
     /// somewhere in this function — writing correlated shared state one
     /// variable at a time is not atomic as a whole, even if each
     /// individual write is.
-    fn writes_multiple_vars(&self, body: &Node, source: &str, vars: &[String]) -> bool {
+    fn writes_multiple_vars(&self, body: &Node, source: &str, static_vars: &StaticVars) -> bool {
         let mut written = std::collections::HashSet::new();
 
         for assign in query::find_descendants_of_kind(*body, "assignment_expression") {
             if let Some(left) = assign.child_by_field_name("left") {
                 let left_text = get_node_text(&left, source);
-                if vars.iter().any(|v| v == left_text) {
+                if left.kind() == "identifier"
+                    && static_vars.contains(left_text)
+                    && static_vars.resolves(&left, left_text, source)
+                {
                     written.insert(left_text.to_string());
                 }
             }
@@ -513,7 +584,7 @@ impl Con07C {
                 continue;
             };
             if let Some(first_arg) = args.named_child(0) {
-                written.extend(self.vars_referenced_in(&first_arg, source, vars));
+                written.extend(self.vars_referenced_in(&first_arg, source, static_vars));
             }
         }
 
