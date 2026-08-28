@@ -70,80 +70,13 @@ impl CertRule for Int10C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        let type_map = self.collect_variable_types(node, source);
+        let type_map = overflow_helpers::collect_variable_types(node, source);
         self.check_modulo_usage(node, source, &mut violations, &type_map);
         violations
     }
 }
 
 impl Int10C {
-    /// Collect variable types from function parameters and local declarations
-    fn collect_variable_types(&self, node: &Node, source: &str) -> HashMap<String, String> {
-        let mut type_map = HashMap::new();
-        self.collect_types_recursive(node, source, &mut type_map);
-        type_map
-    }
-
-    fn collect_types_recursive(
-        &self,
-        node: &Node,
-        source: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        for decl in
-            query::find_descendants_of_kinds(*node, &["parameter_declaration", "declaration"])
-        {
-            // Extract type text from the node
-            let mut type_text = String::new();
-            let mut cursor = decl.walk();
-            for child in decl.children(&mut cursor) {
-                match child.kind() {
-                    "type_qualifier"
-                    | "primitive_type"
-                    | "sized_type_specifier"
-                    | "type_identifier" => {
-                        if !type_text.is_empty() {
-                            type_text.push(' ');
-                        }
-                        type_text.push_str(get_node_text(&child, source));
-                    }
-                    _ => {}
-                }
-            }
-            if !type_text.is_empty() {
-                // Extract identifiers from declarators
-                let mut cursor2 = decl.walk();
-                for child in decl.children(&mut cursor2) {
-                    self.extract_var_names(&child, source, &type_text, type_map);
-                }
-            }
-        }
-    }
-
-    fn extract_var_names(
-        &self,
-        node: &Node,
-        source: &str,
-        type_text: &str,
-        type_map: &mut HashMap<String, String>,
-    ) {
-        for id in query::find_descendants_of_kind(*node, "identifier") {
-            if let Some(parent) = id.parent() {
-                let pk = parent.kind();
-                if pk == "init_declarator"
-                    || pk == "pointer_declarator"
-                    || pk == "array_declarator"
-                    || pk == "parameter_declaration"
-                {
-                    type_map.insert(
-                        get_node_text(&id, source).to_string(),
-                        type_text.to_string(),
-                    );
-                }
-            }
-        }
-    }
-
     fn check_modulo_usage(
         &self,
         node: &Node,
@@ -164,9 +97,11 @@ impl Int10C {
                 if op_text == "%" {
                     let scoped_type_map: &HashMap<String, String> =
                         match overflow_helpers::enclosing_function_definition(&n) {
-                            Some(func_node) => fn_type_maps
-                                .entry(func_node.id())
-                                .or_insert_with(|| self.collect_variable_types(&func_node, source)),
+                            Some(func_node) => {
+                                fn_type_maps.entry(func_node.id()).or_insert_with(|| {
+                                    overflow_helpers::collect_variable_types(&func_node, source)
+                                })
+                            }
                             None => type_map,
                         };
 

@@ -10,6 +10,7 @@ widget_type = WE_X;
 switch (widget_type) {
   case WE_W:
     /* ... */
+    do_something_for_w();
   case WE_X:
     /* ... */
     break;

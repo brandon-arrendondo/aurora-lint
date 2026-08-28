@@ -12,22 +12,56 @@
 //! https://wiki.sei.cmu.edu/confluence/display/c/DCL41-C.+Do+not+declare+variables+inside+a+switch+statement+before+the+first+case+label
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::{macro_expands_to_case_label, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use tree_sitter::Node;
 
-#[derive(Debug)]
-pub struct Dcl41C;
+#[derive(Default)]
+pub struct Dcl41C {
+    /// Cross-file function-like macro definitions (from the prescan / macro
+    /// engine). Used to recognize macros like sqlite's `CASE(i,str)` that
+    /// expand to a real `case i:` label sqc's tree-sitter-based parse can't
+    /// see directly — the invocation parses as an ordinary call expression.
+    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+}
 
 impl Dcl41C {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Dcl41C
+        Self::default()
     }
 
     /// Check if a node is a case or default label
     fn is_case_label(&self, node: &Node) -> bool {
         matches!(node.kind(), "case_statement" | "default")
+    }
+
+    /// True if `node` is an `expression_statement` invoking a function-like
+    /// macro whose replacement list begins with a `case` label (e.g. sqlite's
+    /// `CASE(i,str)` → `case i: assert(...);`). Such an invocation *is* the
+    /// first case label, even though tree-sitter sees only an ordinary call.
+    fn is_case_label_macro_invocation(&self, node: &Node, source: &str) -> bool {
+        if node.kind() != "expression_statement" {
+            return false;
+        }
+        let call = match node.child(0) {
+            Some(c) if c.kind() == "call_expression" => c,
+            _ => return false,
+        };
+        let func = match call.child_by_field_name("function") {
+            Some(f) if f.kind() == "identifier" => f,
+            _ => return false,
+        };
+        let name = match func.utf8_text(source.as_bytes()) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        let macros = self.function_macros.borrow();
+        macro_expands_to_case_label(&macros, name)
     }
 
     /// Check if a node is a declaration or executable statement
@@ -54,7 +88,7 @@ impl Dcl41C {
     fn check_switch_statement(
         &self,
         node: &Node,
-        _source: &str,
+        source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
         if node.kind() != "switch_statement" {
@@ -80,6 +114,14 @@ impl Dcl41C {
 
                 // Check if this is a case/default label
                 if self.is_case_label(&child) {
+                    found_first_label = true;
+                    continue;
+                }
+
+                // Check if this is a macro invocation that expands to a case
+                // label (e.g. sqlite's `CASE(i,str)`) — hidden from the plain
+                // AST, so treat it the same as a real case label.
+                if self.is_case_label_macro_invocation(&child, source) {
                     found_first_label = true;
                     continue;
                 }
@@ -144,5 +186,9 @@ impl CertRule for Dcl41C {
 
     fn scan(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.traverse(root, source, violations);
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.function_macros.borrow_mut() = context.function_macros.clone();
     }
 }
