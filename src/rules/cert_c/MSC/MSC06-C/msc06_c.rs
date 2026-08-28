@@ -112,6 +112,22 @@ impl Msc06C {
                 continue;
             }
 
+            // The buffer must actually go out of scope at the end of this
+            // function for the clear to be a dead store the compiler could
+            // legally elide. It doesn't if it's a pointer parameter (the
+            // caller owns the pointed-to memory, e.g. a clear/reset helper
+            // like `fts5SegIterClear(Iter *p) { ...; memset(p, 0, sizeof(*p)); }`)
+            // or if it escapes via `return` or an out-parameter assignment
+            // (e.g. an allocator helper that zeroes then returns the buffer).
+            if let Some(func) = ast_utils::find_containing_function(&call) {
+                if ast_utils::is_function_parameter(&func, &dest_name, source) {
+                    continue;
+                }
+                if self.escapes_function(&func, &dest_name, source) {
+                    continue;
+                }
+            }
+
             let pos = call.start_position();
             violations.push(RuleViolation {
                 rule_id: "MSC06-C".to_string(),
@@ -130,6 +146,54 @@ impl Msc06C {
                 requires_manual_review: Some(false),
             });
         }
+    }
+
+    /// True if `dest_name` (a buffer just cleared) escapes `function` --
+    /// either returned directly (`return dest_name;` / `return (T)dest_name;`)
+    /// or written through a dereferenced/field/subscript out-parameter
+    /// (`*out = dest_name;`, `out->field = dest_name;`), which means the
+    /// cleared memory persists past the function's own scope and the clear
+    /// is not the dead store MSC06-C's heuristic assumes.
+    fn escapes_function(&self, function: &Node, dest_name: &str, source: &str) -> bool {
+        for ret in query::find_descendants_of_kind(*function, "return_statement") {
+            let mut refs = HashSet::new();
+            self.collect_identifiers(&ret, source, &mut refs);
+            if refs.contains(dest_name) {
+                return true;
+            }
+        }
+        for assign in query::find_descendants_of_kind(*function, "assignment_expression") {
+            let Some(left) = assign.child_by_field_name("left") else {
+                continue;
+            };
+            let Some(right) = assign.child_by_field_name("right") else {
+                continue;
+            };
+            if !matches!(
+                left.kind(),
+                "unary_expression"
+                    | "pointer_expression"
+                    | "field_expression"
+                    | "subscript_expression"
+            ) {
+                continue;
+            }
+            // The LHS must write through some *other* pointer/struct, not the
+            // buffer itself -- `*(volatile char*)pwd = *(volatile char*)pwd;`
+            // (the wiki's "touch the memory" idiom) has `pwd` on both sides
+            // and is not an out-parameter escape.
+            let mut left_refs = HashSet::new();
+            self.collect_identifiers(&left, source, &mut left_refs);
+            if left_refs.contains(dest_name) {
+                continue;
+            }
+            let mut refs = HashSet::new();
+            self.collect_identifiers(&right, source, &mut refs);
+            if refs.contains(dest_name) {
+                return true;
+            }
+        }
+        false
     }
 
     fn check_spin_loop(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {

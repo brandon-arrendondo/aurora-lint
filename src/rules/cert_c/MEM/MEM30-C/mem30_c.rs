@@ -183,6 +183,36 @@ fn is_fresh_allocation_name(name: &str) -> bool {
     u.contains("ALLOC") || u.contains("STRDUP") || u.contains("STRNDUP") || u.contains("MEMDUP")
 }
 
+/// True if `call_node`'s result is captured by an assignment or
+/// initializer — `x = call(...)` or `T *x = call(...)`, unwrapping any
+/// enclosing parenthesization/cast (`x = (T *)call(...)`). This is the shape
+/// every real `ptr = realloc(ptr, n)` idiom takes; a realloc-*named* call
+/// used as a bare, discarded-result statement (e.g. a wrapper like lua's
+/// `luaD_reallocstack(L, newsize, raiseerror);`, which mutates state via its
+/// first argument rather than returning a new pointer to assign back) is
+/// not that idiom, and must not be treated as invalidating its first
+/// argument (task 563).
+fn call_result_is_assigned(call_node: &Node) -> bool {
+    let mut current = *call_node;
+    loop {
+        let Some(parent) = current.parent() else {
+            return false;
+        };
+        match parent.kind() {
+            "parenthesized_expression" | "cast_expression" => {
+                current = parent;
+            }
+            "assignment_expression" => {
+                return parent.child_by_field_name("right").map(|r| r.id()) == Some(current.id());
+            }
+            "init_declarator" => {
+                return parent.child_by_field_name("value").map(|v| v.id()) == Some(current.id());
+            }
+            _ => return false,
+        }
+    }
+}
+
 /// Tracks global variables and cross-function memory patterns
 struct GlobalTracker {
     /// Global variable declarations
@@ -2063,22 +2093,51 @@ impl MemoryAnalyzer {
         // A compound statement's result is exactly its last real statement's
         // result (braces/comments aren't statements), so chains of nested
         // compounds can be unwrapped in a plain loop — no stack growth.
+        // tree-sitter-c wraps an `else` branch's body in its own `else_clause`
+        // node (the `alternative` field's value), distinct from the `if`/`for`
+        // body node returned directly by the `consequence`/`body` field — so an
+        // else-branch's terminator was never being seen at all (every
+        // `else_clause` fell through to the `_ => false` arm below), making
+        // `else_returns` always false and any free in an `else` arm leak into
+        // the general "neither branch returns" union-merge as if it hadn't
+        // terminated. Unwrap it the same way as `compound_statement` (task 563).
         fn resolve<'a>(mut node: Node<'a>) -> Option<Node<'a>> {
-            while node.kind() == "compound_statement" {
-                let mut last_child = None;
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() != "{" && child.kind() != "}" && child.kind() != "comment" {
-                            last_child = Some(child);
+            loop {
+                match node.kind() {
+                    "compound_statement" => {
+                        let mut last_child = None;
+                        for i in 0..node.child_count() {
+                            if let Some(child) = node.child(i) {
+                                if child.kind() != "{"
+                                    && child.kind() != "}"
+                                    && child.kind() != "comment"
+                                {
+                                    last_child = Some(child);
+                                }
+                            }
+                        }
+                        match last_child {
+                            Some(last) => node = last,
+                            None => return None,
                         }
                     }
-                }
-                match last_child {
-                    Some(last) => node = last,
-                    None => return None,
+                    "else_clause" => {
+                        let mut inner = None;
+                        for i in 0..node.child_count() {
+                            if let Some(child) = node.child(i) {
+                                if child.kind() != "else" && child.kind() != "comment" {
+                                    inner = Some(child);
+                                }
+                            }
+                        }
+                        match inner {
+                            Some(n) => node = n,
+                            None => return None,
+                        }
+                    }
+                    _ => return Some(node),
                 }
             }
-            Some(node)
         }
 
         let mut work: Vec<Frame> = vec![Frame::Eval(*node)];
@@ -2347,6 +2406,35 @@ impl MemoryAnalyzer {
                     return HashSet::new();
                 }
                 _ => {
+                    let upper_name = function_name.to_uppercase();
+
+                    // A realloc-*named* wrapper (hostap's `os_realloc`: malloc
+                    // new, copy, free old) is used at call sites via the
+                    // standard `x = os_realloc(x, n)` / `nbuf = os_realloc(old,
+                    // n); if (!nbuf) ...; else old = nbuf;` idiom, which always
+                    // captures the call's result in an assignment — exactly what
+                    // `track_realloc_old_pointer`'s
+                    // pending-invalidation-then-clear-on-reassign tracking exists
+                    // for. Gated on the call's result actually being assigned
+                    // (`call_result_is_assigned`), NOT on a cross-file
+                    // FunctionSummary crediting an unconditional free: the
+                    // summary can't be computed at all when the wrapper's own
+                    // free call goes through another project wrapper that's
+                    // only extern-declared in scope (hostap's real `os_free`),
+                    // and even when a summary *is* available, requiring it
+                    // reintroduces the exact bug this gate fixes — a
+                    // realloc-named function whose result is discarded (lua's
+                    // `luaD_reallocstack(L, newsize, raiseerror);`, a bare
+                    // statement whose first argument is a stable `lua_State*`
+                    // handle, not the pointer being reallocated) must NOT be
+                    // pushed through `track_realloc_old_pointer`, which would
+                    // wrongly invalidate that handle with no reassignment to
+                    // ever clear it (task 563).
+                    if upper_name.contains("REALLOC") && call_result_is_assigned(node) {
+                        self.track_realloc_old_pointer(node, source);
+                        return HashSet::new();
+                    }
+
                     // A cross-file FunctionSummary (real analysis of the callee's
                     // body) is authoritative over the name-based heuristic below —
                     // it fixes both false positives (e.g. hostap's
@@ -2378,7 +2466,6 @@ impl MemoryAnalyzer {
                     }
 
                     // Check for common free-related macros
-                    let upper_name = function_name.to_uppercase();
                     if upper_name.contains("FREE")
                         || upper_name == "XFREE"
                         || upper_name == "G_FREE"
@@ -2397,10 +2484,6 @@ impl MemoryAnalyzer {
                             self.clear_freed_for_nulled_args(node, source, &indices);
                         }
                         return freed_arg_ids;
-                    } else if upper_name.contains("REALLOC") {
-                        // Treat as realloc() call - track old pointer as invalidated
-                        // Don't check args for freed - realloc expects a possibly-allocated pointer
-                        self.track_realloc_old_pointer(node, source);
                     } else {
                         // Check if any argument is a freed pointer
                         self.check_function_args_for_freed(node, source, violations);
@@ -2780,6 +2863,24 @@ impl MemoryAnalyzer {
                 self.freed_vars.remove(&left_var);
                 self.nullified_vars.remove(&left_var);
                 self.realloc_invalidated.remove(&left_var);
+                self.aliases.remove(&left_var);
+            } else if left.kind() == "field_expression" {
+                // Same reassignment-overwrites-dangling-state principle as the
+                // identifier case above, for a field LHS whose RHS is a
+                // non-variable expression (typically a call result). Without
+                // this, `os_free(data->x); data->x = some_wrapper();` only
+                // cleared the freed state when `some_wrapper`'s name matched
+                // the `is_fresh_allocation_name` heuristic below — an
+                // arbitrary project function (e.g. hostap's
+                // `eap_sim_db_get_next_pseudonym`) left the field permanently
+                // marked freed even though this statement, like any
+                // reassignment, plainly gives it a fresh value (task 563).
+                self.freed_vars.remove(&left_var);
+                self.nullified_vars.remove(&left_var);
+                self.realloc_invalidated.remove(&left_var);
+                self.freed_vars.remove(&left_lv);
+                self.nullified_vars.remove(&left_lv);
+                self.realloc_invalidated.remove(&left_lv);
                 self.aliases.remove(&left_var);
             }
 

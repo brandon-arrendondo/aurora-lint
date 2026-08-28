@@ -17,9 +17,12 @@
 //! deliberately different pattern sets for two different overflow
 //! directions. Those stay rule-local; folding them in here would require
 //! designing a genuinely parameterized guard-detection engine, not a
-//! mechanical extraction. `INT10-C`'s own `collect_variable_types` is also
-//! NOT the same algorithm as the one below (a different, simpler recursive
-//! walk) despite the identical name -- left untouched.
+//! mechanical extraction. `INT10-C` used to keep its own, simpler
+//! `collect_variable_types` duplicate; task 570 found it silently dropped
+//! every bare (non-`init_declarator`, non-pointer, non-array) comma-list
+//! declarator -- e.g. `u32 size, hash;` -- from the type map, misflagging
+//! provably-unsigned `%` operands as signed. `INT10-C` now calls this
+//! module's version directly instead of maintaining a parallel, buggier one.
 
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -97,8 +100,15 @@ fn extract_type_and_name(node: &Node, source: &str, type_map: &mut HashMap<Strin
         return;
     }
 
-    // Extract variable names from declarators
-    if let Some(declarator) = node.child_by_field_name("declarator") {
+    // A `declaration` node's `declarator` field repeats once per
+    // comma-separated declarator (e.g. `u32 size, hash;` has TWO
+    // `declarator`-field children, both direct `identifier` nodes with no
+    // `init_declarator`/`pointer_declarator` wrapper). `child_by_field_name`
+    // only ever returns the first match, so a plain `if let` here silently
+    // dropped every declarator after the first -- `children_by_field_name`
+    // walks all of them.
+    let mut cursor = node.walk();
+    for declarator in node.children_by_field_name("declarator", &mut cursor) {
         if let Some(name) = extract_identifier_name(&declarator, source) {
             let full_type = if is_pointer_declarator_field(&declarator) {
                 format!("{} *", type_text)
@@ -106,24 +116,6 @@ fn extract_type_and_name(node: &Node, source: &str, type_map: &mut HashMap<Strin
                 type_text.clone()
             };
             type_map.insert(name, full_type);
-        }
-    }
-
-    // Handle init_declarator lists (e.g. `int a, b;`)
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "init_declarator" {
-                if let Some(decl) = child.child_by_field_name("declarator") {
-                    if let Some(name) = extract_identifier_name(&decl, source) {
-                        let full_type = if is_pointer_declarator_field(&decl) {
-                            format!("{} *", type_text)
-                        } else {
-                            type_text.clone()
-                        };
-                        type_map.insert(name, full_type);
-                    }
-                }
-            }
         }
     }
 }
@@ -150,7 +142,10 @@ fn is_pointer_declarator_field(node: &Node) -> bool {
 pub fn extract_identifier_name(node: &Node, source: &str) -> Option<String> {
     match node.kind() {
         "identifier" => Some(get_node_text(node, source).to_string()),
-        "pointer_declarator" | "array_declarator" | "parenthesized_declarator" => {
+        "pointer_declarator"
+        | "array_declarator"
+        | "parenthesized_declarator"
+        | "init_declarator" => {
             if let Some(inner) = node.child_by_field_name("declarator") {
                 extract_identifier_name(&inner, source)
             } else {
