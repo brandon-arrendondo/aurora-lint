@@ -403,3 +403,65 @@ copy; the WAL hazard I described was right, the remedy was second-best.
 
 The one genuinely blocking decision left is **A / B / C** above. Q6 is a
 convention that can be settled in five minutes once that lands.
+
+---
+
+## Should worker nodes move onto vlan30 with r720?
+
+Offered 2026-08-28. Assessed and **recommended against** — but there is a
+narrower version of it that is strictly better if the access is wanted.
+
+**It doesn't unblock anything.** The remaining blocker is the credential
+decision (A/B/C above), and VLAN membership does not touch it. A worker on
+vlan30 still cannot push to `origin` without a standing credential, and
+still cannot SSH to dev-921 or surface, because `vlan30 → vlan1` SSH stays
+blocked — moving *into* r720's VLAN makes a worker's path back to a
+credential-holding node worse, not better.
+
+**The need it would serve is better served by dev-921.** The only concrete
+thing a worker gains from reaching r720 is a copy of `benchmarks.db`. But
+dev-921 already holds one (6.44 GB as of 2026-08-28 08:13), is the admin
+pivot, and is the planned git-mirror host — so it is already the natural
+distribution hub. Serving the DB from dev-921 to a vlan1 worker costs **one
+`ufw` line** (add the worker IP to dev-921's port-22 allow-list) against a
+VLAN migration plus a DHCP reservation, a switch-port change, and two
+firewall edits.
+
+**And it erases a defense the notes explicitly claim.**
+`SECURITY_CONCERNS` §6 lists VLAN separation as a named mitigation for r720
+compromise — "prevents r720 → other-LAN-host SSH (no lateral pivot via the
+network)". r720 is the most-exposed host in the fleet (WG endpoint with a
+public route via Linode). Putting workers on its segment means pf cannot
+mediate worker↔r720 at all, and a compromised r720 gains lateral targets it
+currently has none of. §10 makes the same argument in the physical case:
+"If surface and the worker share one L2 segment, the router can't mediate
+between them and the containment is theatre." The blast radius would be
+bounded (a vlan30 worker still can't reach vlan1, and holds no credentials),
+but the property is real and currently free.
+
+**If worker → r720 access *is* wanted, add the workers to
+`<vlan30_ssh_allowed>` instead of moving them.** The allow-list is
+*directional*; VLAN membership is not:
+
+| | worker → r720 | r720 → worker |
+|---|---|---|
+| Move worker to vlan30 | yes (intra-VLAN, pf blind) | **yes** — new lateral path |
+| Add worker to `<vlan30_ssh_allowed>` | yes | **no** — `vlan30 → vlan1` still blocked |
+
+The allow-list grants exactly the direction that is useful and denies the
+one that costs the pivot property. It still means two coordinated edits —
+pf's table *and* r720's host `nftables` mirror, which the notes flag as a
+must-keep-in-sync pair — but no re-addressing.
+
+**Worth knowing either way: pf filters only SSH between VLANs.** The blanket
+`pass in on { $home $vlan30 $vlan50 }` rule already permits all non-SSH
+inter-VLAN traffic (this is how vlan50 reaches Home Assistant on vlan1). So
+a vlan30 worker is not network-isolated from vlan1 in general — only its
+SSH is blocked. Any sync built on rsync-over-SSH hits the block; one built
+on HTTP would not. Don't read the SSH policy as a general segmentation
+guarantee.
+
+**Recommendation.** Leave dev-106/dev-107 on vlan1. Make dev-921 the DB
+distribution hub (it already is, de facto). Revisit only if a worker needs
+to *drive* r720 rather than just read its output — and even then, prefer
+the allow-list edit to the move.
