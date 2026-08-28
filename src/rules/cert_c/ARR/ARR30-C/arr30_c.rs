@@ -1239,6 +1239,23 @@ impl Arr30C {
     ) -> Option<Node<'a>> {
         let decl = find_enclosing_declaration_for_identifier(position_node, name, source)?;
         let block = decl.parent()?;
+        // A `for (T name = init; ...) { ... }` declaration's parent is the
+        // `for_statement` itself, not a `compound_statement` of sequential
+        // statements -- the "scan this block in source order for the last
+        // assignment" model below doesn't apply: the update expression
+        // (`name++`) sits textually *before* the body in the AST despite
+        // running *after* it each iteration, and the loop variable ranges
+        // over values rather than holding one constant. Resolving it to its
+        // bare initializer (the only thing this scan would find, since
+        // `i++` doesn't match `plain_assignment_value`'s plain-assignment
+        // shape) would wrongly report every use of the loop variable as its
+        // initial value -- e.g. `buffer[i]` inside the loop body would look
+        // like `buffer[0]` always, hiding a real off-by-one overrun. Bail
+        // out so the caller falls back to its loop/VRA-aware bounds check
+        // instead.
+        if block.kind() != "compound_statement" {
+            return None;
+        }
 
         let mut last_value_expr: Option<Node> = None;
         if let Some(init) = Self::declaration_initializer_for(&decl, name, source) {
