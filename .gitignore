@@ -73,3 +73,7 @@ paper/*.toc
 
 # Local MCP server configuration (contains org-specific paths and credentials)
 .mcp.json
+
+# Personal-network / local machine setup notes (not sqc tooling)
+BENCHMARK_PULLING.md
+PARALLEL_NODES_ISSUES.md
