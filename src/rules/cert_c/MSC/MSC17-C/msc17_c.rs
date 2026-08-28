@@ -62,6 +62,34 @@ impl Msc17C {
         last
     }
 
+    /// The real last child of `node` — a comment included, unlike
+    /// [`Self::last_meaningful_child`] — descending into a brace-wrapped case
+    /// body (`case X: { stmt(); /* marker */ }`) so a marker comment sitting
+    /// just inside the closing brace is still found. Terminator checking
+    /// must ignore trailing comments (a comment can't terminate control
+    /// flow), but marker checking is exactly the opposite: the comment *is*
+    /// the thing being looked for, and it's as valid inside a brace-wrapped
+    /// section as directly in the switch body.
+    fn last_child_including_comment<'a>(&self, node: &Node<'a>) -> Node<'a> {
+        if node.kind() == "compound_statement" {
+            let mut cursor = node.walk();
+            let mut last = None;
+            for child in node.children(&mut cursor) {
+                // `;` (a stray/MISSING bare terminator, e.g. the one a
+                // no-semicolon macro-invocation marker such as
+                // `deliberate_fall_through` leaves behind once tree-sitter
+                // recovers) isn't the marker; skip past it to the real one.
+                if !matches!(child.kind(), "{" | "}" | ";") {
+                    last = Some(child);
+                }
+            }
+            if let Some(l) = last {
+                return self.last_child_including_comment(&l);
+            }
+        }
+        *node
+    }
+
     /// Recognizes a terminating statement, descending into brace-wrapped
     /// case bodies (`case X: { ...; break; }`) and into if/else where every
     /// arm terminates. An `if` with no `else` can fall through either way,
@@ -89,11 +117,30 @@ impl Msc17C {
         }
     }
 
+    /// Wording (beyond "fall[ ]through") that documents *why* a case section
+    /// has no `break`, without using the word "fall" at all: either the
+    /// preceding call is `noreturn`-shaped (control never reaches a
+    /// fallthrough, e.g. pure-ftpd's `help(); /* doesn't return */`), or the
+    /// comment names the missing break directly (sqlite's
+    /// `/* no break */ deliberate_fall_through`). Same intent as a
+    /// fallthrough comment either way — telling the reader the missing
+    /// break is deliberate and verified.
+    const INTENTIONAL_NO_BREAK_PHRASES: [&'static str; 4] = [
+        "doesn't return",
+        "does not return",
+        "never returns",
+        "no break",
+    ];
+
     fn is_fallthrough_comment(&self, node: &Node, source: &str) -> bool {
-        node.kind() == "comment"
-            && ast_utils::get_node_text(node, source)
-                .to_lowercase()
-                .contains("fall")
+        if node.kind() != "comment" {
+            return false;
+        }
+        let text = ast_utils::get_node_text(node, source).to_lowercase();
+        text.contains("fall")
+            || Self::INTENTIONAL_NO_BREAK_PHRASES
+                .iter()
+                .any(|p| text.contains(p))
     }
 
     /// Non-comment idioms that mark a fallthrough as intentional:
@@ -101,7 +148,11 @@ impl Msc17C {
     /// valid in statement position per the C grammar and surfaces as an
     /// `ERROR` node instead of a clean attribute node, so it's matched on
     /// text), a `FALLTHROUGH()`-style macro call, or a bare marker
-    /// identifier such as `deliberate_fall_through;`.
+    /// identifier such as `deliberate_fall_through;`. A marker macro used
+    /// with no trailing `;` in the source (because its own expansion
+    /// supplies one, e.g. sqlite's `#define deliberate_fall_through
+    /// __attribute__((fallthrough));`) doesn't parse as a statement at all —
+    /// tree-sitter recovers it as a bare `type_identifier`.
     fn is_fallthrough_marker(&self, node: &Node, source: &str) -> bool {
         fn normalizes_to_fallthrough(name: &str) -> bool {
             let normalized: String = name
@@ -116,6 +167,9 @@ impl Msc17C {
             "attributed_statement" | "ERROR" => {
                 let text = ast_utils::get_node_text(node, source).to_lowercase();
                 text.contains("fallthrough") || text.contains("fall_through")
+            }
+            "type_identifier" | "identifier" => {
+                normalizes_to_fallthrough(&ast_utils::get_node_text(node, source))
             }
             "expression_statement" => node
                 .named_child(0)
@@ -143,11 +197,27 @@ impl Msc17C {
     fn collect_segments<'a>(
         &self,
         container: &Node<'a>,
+        source: &str,
         segments: &mut Vec<(Node<'a>, Vec<Node<'a>>)>,
     ) {
         let condition_id = container.child_by_field_name("condition").map(|n| n.id());
         let name_id = container.child_by_field_name("name").map(|n| n.id());
         let alternative_id = container.child_by_field_name("alternative").map(|n| n.id());
+
+        // True right after a nested `#if`/`#ifdef`/`#elif`/`#else` branch has
+        // just been fully walked. A comment sitting there in the source is
+        // conventionally the `#endif`'s own name annotation (`#endif /* FOO
+        // */`), not a fallthrough marker for whatever case happened to be
+        // last inside that branch — attaching it anyway made an unrelated
+        // trailing `#endif` comment shadow (or fabricate) a case's real
+        // marker, e.g. hostap's `case WLAN_AUTH_EPPKE:` (truly empty,
+        // grouped across an `#ifdef` into the next case) picking up
+        // `/* CONFIG_ENC_ASSOC */` as if it were content. But lua's
+        // `#endif` / `/* FALLTHROUGH */` / `default:` shows the position can
+        // also carry a genuine marker for the case *before* the `#ifdef`
+        // block — so only a non-marker comment in this position is dropped;
+        // an actual fallthrough/noreturn comment still attaches normally.
+        let mut just_closed_preproc_branch = false;
 
         let mut cursor = container.walk();
         for child in container.named_children(&mut cursor) {
@@ -160,10 +230,18 @@ impl Msc17C {
                     "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else"
                 )
             {
-                self.collect_segments(&child, segments);
+                self.collect_segments(&child, source, segments);
+                just_closed_preproc_branch = true;
             } else if child.kind() == "case_statement" {
                 let items = self.case_body_items(&child);
                 segments.push((child, items));
+                just_closed_preproc_branch = false;
+            } else if just_closed_preproc_branch
+                && child.kind() == "comment"
+                && !self.is_fallthrough_comment(&child, source)
+            {
+                // Drop the `#endif` annotation comment rather than attaching
+                // it to whatever segment the branch just populated.
             } else if let Some(last) = segments.last_mut() {
                 // A statement/comment directly following a case_statement
                 // sibling (tree-sitter only nests trailing content into the
@@ -171,6 +249,7 @@ impl Msc17C {
                 // label; a label with only a following comment leaves that
                 // comment as a sibling instead) belongs to the same section.
                 last.1.push(child);
+                just_closed_preproc_branch = false;
             }
         }
     }
@@ -185,7 +264,7 @@ impl Msc17C {
 
         // Each segment: (label node, ordered items belonging to that case).
         let mut segments: Vec<(Node, Vec<Node>)> = Vec::new();
-        self.collect_segments(&body, &mut segments);
+        self.collect_segments(&body, source, &mut segments);
 
         for i in 0..segments.len() {
             let is_last_segment = i + 1 == segments.len();
@@ -193,7 +272,14 @@ impl Msc17C {
                 continue;
             }
             let (label, items) = &segments[i];
-            if items.is_empty() {
+            // A section with no *executable* content is an empty grouped
+            // case label (`case A: case B: stmt; break;`), which CERT
+            // explicitly permits — regardless of whether a comment (of any
+            // wording) sits between the labels. A comment is not a
+            // statement, so a section containing only comments has exactly
+            // as much "code" as one containing nothing at all.
+            let has_code = items.iter().any(|n| n.kind() != "comment");
+            if !has_code {
                 continue;
             }
             let last_non_comment = items.iter().rev().find(|n| n.kind() != "comment");
@@ -212,10 +298,12 @@ impl Msc17C {
             let marker = items
                 .iter()
                 .rev()
-                .find(|n| !(n.kind() == "expression_statement" && n.named_child(0).is_none()));
+                .find(|n| !(n.kind() == "expression_statement" && n.named_child(0).is_none()))
+                .map(|n| self.last_child_including_comment(n));
             let marked_intentional = marker
                 .map(|n| {
-                    self.is_fallthrough_comment(n, source) || self.is_fallthrough_marker(n, source)
+                    self.is_fallthrough_comment(&n, source)
+                        || self.is_fallthrough_marker(&n, source)
                 })
                 .unwrap_or(false);
             if marked_intentional {
