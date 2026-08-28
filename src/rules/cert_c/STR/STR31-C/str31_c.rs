@@ -324,7 +324,10 @@ impl Str31C {
 
     /// Look for malloc/calloc assignments with specific numeric sizes.
     /// Handles casts (`data = (char *)malloc(N*sizeof(char))`), parenthesized
-    /// arithmetic (`malloc((N+M)*sizeof(type))`), and plain `malloc(N)`.
+    /// arithmetic (`malloc((N+M)*sizeof(type))`), plain `malloc(N)`, and a
+    /// bare single-element `malloc(sizeof(type))` (task 515) resolved via
+    /// [`buffer_size::extract_sizeof_value`] rather than a fresh type-size
+    /// table.
     fn find_fixed_alloc_size(
         var_name: &str,
         lines: &[&str],
@@ -338,6 +341,12 @@ impl Str31C {
         )
         .ok();
         let malloc_plain_re = regex::Regex::new(r"(?:malloc|calloc)\s*\(\s*(\d+)\s*[,)]").ok();
+        // Bare single-element allocation with no leading count, e.g.
+        // `malloc(sizeof(struct foo))` — deliberately `malloc`-only (not
+        // `calloc`), since a `calloc` with a `sizeof` argument always has a
+        // leading nmemb argument already covered by `malloc_sizeof_re`.
+        let malloc_bare_sizeof_re =
+            regex::Regex::new(r"malloc\s*\(\s*(sizeof\s*\([^()]*\))\s*\)").ok();
 
         for (idx, line) in lines.iter().enumerate() {
             if idx < fn_start || idx > fn_end {
@@ -369,6 +378,15 @@ impl Str31C {
             // Plain malloc(N) or calloc(N, M) with numeric first arg
             if let Some(caps) = malloc_plain_re.as_ref().and_then(|re| re.captures(line)) {
                 if let Ok(n) = caps[1].parse::<usize>() {
+                    return Some(n);
+                }
+            }
+            // malloc(sizeof(type)) — single-element allocation, no count
+            if let Some(caps) = malloc_bare_sizeof_re
+                .as_ref()
+                .and_then(|re| re.captures(line))
+            {
+                if let Some(n) = buffer_size::extract_sizeof_value(&caps[1]) {
                     return Some(n);
                 }
             }
