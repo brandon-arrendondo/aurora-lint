@@ -63,7 +63,14 @@ this and turn it into an actual plan.
     plan need to prevent two nodes from touching overlapping rule
     detection logic + adjudication at the same time?).
 - **git remote:** `origin` is
-  `git@github.com:brandon-arrendondo/tools_sqc.git` (both fetch and push).
+  `git@github-enterprise:brandon-arrendondo/tools_sqc` (both fetch and push).
+  **Corrected 2026-08-28 from dev-921** — an earlier draft of this doc said
+  `git@github.com:brandon-arrendondo/tools_sqc.git`, which is wrong in the
+  way that matters: `github-enterprise` is an **`~/.ssh/config` Host alias**,
+  not a real hostname. It resolves only on a machine whose ssh config
+  defines it (with the right `HostName`/`IdentityFile`). That config is
+  machine-local and **not in the repo**, so a worker node cannot clone or
+  push until it is reproduced by hand. See "Node bring-up" below.
   No branch protection checked from this session.
 
 ## Open questions that need topology knowledge
@@ -125,3 +132,105 @@ needs a benchmark result before it can be called done. Whether that
 blocking is acceptable, or whether workers need direct read access to
 benchmark results (and via what mechanism, per the open questions above),
 is the actual decision this doc exists to unblock.
+
+---
+
+## Findings from dev-921 (2026-08-28)
+
+Node identity: hostname `dev-921`, `10.0.0.11` (RFC1918), 12 cores / 31 GB.
+Everything in this section was verified on this machine this session. It
+closes two of the open questions above and adds a bring-up checklist the
+original draft didn't have. It does **not** describe the network topology —
+this node doesn't know it either. The `surface` node holds the detailed
+topology notes; this section is written to be merged with those.
+
+### Q2 (MCP transport) — ANSWERED: stdio only
+
+`mcp_servers/server.py:2086` is a bare `mcp.run()`. That is FastMCP's
+default transport, i.e. **stdio** — the server is spawned as a child
+process by whatever client launches it, over pipes. There is no listening
+socket and no address to point a remote client at.
+
+Consequence for the plan: **"expose the benchmark node's MCP server to the
+workers" is off the table as currently written.** FastMCP does support
+`mcp.run(transport="sse")` (or streamable-http), so this is a small code
+change rather than a rewrite — but it is a real change, and it drags in
+Q4 (auth) the moment it binds to anything but loopback. Until someone makes
+that change, any cross-node access to benchmark results has to be
+**file-level sync of `data/benchmarks.db`**, not MCP.
+
+`.mcp.json` is gitignored (`.gitignore:75`), so each node configures its own
+MCP server list regardless — same as the existing `clew init` per-machine
+step documented in CLAUDE.md. Nothing about MCP config travels with the repo.
+
+### Q3 (existing sync tooling) — ANSWERED for this node: none
+
+Checked on dev-921: no Tailscale (no binary), no Syncthing (no binary), no
+NFS or CIFS mounts (`mount` shows neither). There is no existing
+file-sync channel on this machine to piggyback a
+`sqlite3 data/benchmarks.db ".backup"` snapshot onto. If the plan wants
+workers to read benchmark results, that transport gets built from scratch
+(rsync-over-ssh on a timer being the obvious minimum).
+
+This is a per-node fact, not a global one — the other nodes were not
+checked from here. Confirm the same three checks on each node before
+concluding the network has nothing.
+
+### Node bring-up: the non-obvious prerequisites
+
+These are the steps a fresh worker needs that are **not** discoverable from
+the repo, because each one lives in machine-local state:
+
+1. **`~/.ssh/config` must define the `github-enterprise` Host alias** (with
+   its `HostName` and `IdentityFile`), or `git clone`/`git push` fails with
+   an unresolvable host. The repo records the alias in the remote URL but
+   nothing that resolves it. This is the single most likely first-run
+   failure on a new node.
+2. **The merge driver must be registered per clone.** `.gitattributes` maps
+   `todo-sqlite-cli.db merge=todo-sqlite-cli`, but the driver itself lives
+   in repo-local git config, which is not committed. Without it every pull
+   that touches the todo DB leaves it in binary conflict. CLAUDE.md has the
+   two `git config merge.todo-sqlite-cli.*` commands — use those rather
+   than `install-merge-driver`, which would append a duplicate
+   `.gitattributes` line since the line already exists here.
+3. **`clew init --repo-root <path>` once per machine** — `.mcp.json` is
+   gitignored, so the code index is per-node.
+4. **Real-world corpus provisioning** via `playbooks/setup-benchmark-repos.yml`
+   into `BENCH_ROOT` (default `~/toolchain`, kept in sync with
+   `SQC_BENCH_ROOT` in `.env`). Note: **`playbooks/` has no committed
+   inventory file** — there is no `hosts.yml`/`inventory` anywhere in the
+   repo, so multi-node ansible runs need one written first. That is a
+   genuine gap for this plan, not an oversight to route around.
+   Juliet is *not* covered by the playbook (NIST SARD is a click-through
+   portal); that stays a manual copy to each node that needs to benchmark.
+5. **`python -m bench corpus-check` on the new node before trusting any
+   real-world number from it** — per CLAUDE.md, pins drift silently and
+   `ground_truth` is keyed on the commit.
+
+Only step 4's Juliet half and step 5 are needed on a node that will *not*
+benchmark. A pure worker node (impl + `cargo build`/`test`/`clippy` +
+todo-db updates) needs steps 1–3 only, which is a meaningful argument in
+favor of the single-benchmark-node recommendation above: it keeps the
+expensive provisioning on one machine.
+
+### Still open / needs the topology notes
+
+Unchanged and still blocking: Q1 (reachability), Q4 (auth), Q5 (push
+access on the other two machines), Q6 (task claiming), Q7 (version-bump
+collision), Q8 (corpus provisioning reachability). Q6 and Q7 are the two
+that bite soonest in practice, and neither needs new infrastructure to
+decide — they're conventions, and could be settled independently of the
+network answers.
+
+### Slot: pulling `benchmarks.db` from r720-enterprise
+
+**TO BE FILLED IN by the r720-enterprise node.** There are findings on that
+machine about pulling the benchmark DB down from it that are not reproduced
+here — this node has no record of them (no memory entries, nothing in the
+repo, nothing in the task DB, nothing in git history mentioning r720).
+They matter because they are the concrete precedent for the
+"read-only snapshot sync to workers" option, which is otherwise
+hypothetical in this doc. Anything known about WAL-mode safety while a
+benchmark is mid-run, `.backup` vs. raw `cp`, transfer time for the DB's
+current size, and how stale a worker's copy is allowed to get before
+`compare_runs` misleads, belongs here.
