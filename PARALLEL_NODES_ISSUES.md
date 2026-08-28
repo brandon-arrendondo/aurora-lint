@@ -339,37 +339,23 @@ Caveats to check before committing to it:
   rules r720 out for any local-model adjudication work — that stays on
   dev-921 (RTX 3060 12 GB) or `brandons-mini`. Worth knowing given task 166.
 
-### Pulling `benchmarks.db` off r720 — the concrete mechanism
+### Pulling `benchmarks.db` off r720
 
-This was the specific open item. With the topology known:
+**Superseded — see `BENCHMARK_PULLING.md`**, which documents the r720 → dev-921
+pull that actually ran on 2026-08-28 (6.44 GB landed on dev-921 at 08:13) with
+measured timings. It is the operational reference; this section keeps only the
+two points that belong to *this* doc.
 
-1. **dev-921 initiates. Always.** r720 cannot reach dev-921, so there is no
-   push option and no need to argue about one.
-2. **Never `cp`/`rsync` the bare `benchmarks.db`.** It is WAL-mode. A copy
-   of the `.db` file alone omits committed transactions still sitting in
-   `-wal`, so the snapshot silently loses the tail of a run — the exact
-   failure mode that would make `compare_runs` quietly wrong. Take a
-   consistent snapshot instead:
-   `ssh r720-enterprise 'sqlite3 ~/data/tools_sqc/data/benchmarks.db ".backup /tmp/bench-snap.db"'`
-   then `rsync` that file. `.backup` is safe against a concurrent writer;
-   a file copy is not.
-3. **Snapshot only between runs, or accept a partial one.** A mid-run
-   snapshot is internally consistent but semantically incomplete — the run
-   row exists with only some `cwe_scans` populated. Fine for progress
-   checks, misleading for `compare_runs`.
-4. **Unattended pulls will hit the agent problem.** A cron on dev-921 that
-   pulls from r720 needs dev-921's agent live. The r720 aliases pin
-   `IdentityAgent` at the TPM agent (passphrase-protected, GTK askpass) or
-   gpg-agent — and `SECURITY_CONCERNS` gotcha #10 documents gpg-agent
-   failing with `agent refused operation` when it has no TTY/DISPLAY. An
-   unattended pull is therefore **not** a free win; either run it from an
-   attached session, or accept it only works while the desktop session is
-   up and the agent is warm.
-5. **Read-only on arrival.** The pulled copy is a *snapshot for querying*,
-   not a second writer. Point the `bench` CLI / MCP tools at it for
-   `compare_runs`-style reads; never write to it and never try to merge it
-   back. There is no merge story for `benchmarks.db` and building one is
-   out of scope (see the SQLite-vs-Postgres note above).
+**Direction is forced, not chosen.** Per the matrix above, r720 cannot initiate
+to dev-921 or surface, so the destination node drives every step — the
+`VACUUM INTO` over SSH, the `rsync` pull, and the source cleanup. The completed
+pull is empirical confirmation of the asymmetry.
+
+**One correction to my earlier draft of this section:** it recommended
+`sqlite3 ".backup"`. `VACUUM INTO` (what `BENCHMARK_PULLING.md` specifies and
+what was actually used) is the better call — equally consistent against
+concurrent writers, and it compacts, which matters at 6.4 GB. Both beat a file
+copy; the WAL hazard I described was right, the remedy was second-best.
 
 ### Corrections to the earlier draft of this doc
 
@@ -382,8 +368,17 @@ This was the specific open item. With the topology known:
   are already provisioned as disposable Claude worker nodes. **Neither can
   reach r720** — they are not in `<vlan30_ssh_allowed>`. Adding them means
   editing pf's table *and* r720's nftables mirror, which the notes flag as
-  a must-keep-in-sync pair. Both are also small boxes; they suit
-  implement/build/test, not benchmarking.
+  a must-keep-in-sync pair.
+
+  **They do not need to reach r720 in order to benchmark, and dev-107 already
+  has.** `realworld_runs.hostname` shows `10.0.0.63` producing 1,083,918
+  `realworld_violations` rows over 2026-03-20/21 — so an earlier round of this
+  already worked, with the node scanning its own corpus locally and the results
+  merged into the DB later. That is a working precedent for a worker node that
+  benchmarks without any path to r720, and it weakens the "one canonical
+  benchmark node" framing: the binding constraint is `run_id` collision (version
+  + commit SHA), not reachability. An earlier draft of this section claimed these
+  boxes "suit implement/build/test, not benchmarking" — the DB says otherwise.
 - **The seven-repo `github-enterprise` rewrite list in `SECURITY_CONCERNS`
   §2 is stale** — it names funky, todo-sqlite-cli, winhelp2rst, knots,
   windchill-connector, ingot, adotestplan-to-pytestbdd. `tools_sqc` is an

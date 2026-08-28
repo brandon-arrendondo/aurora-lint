@@ -38,6 +38,21 @@ rsync -P -e ssh --compress-choice=zstd --compress-level=1 \
   /path/to/tools_sqc/data/benchmarks.db
 ```
 
+**Destination-initiated is not a stylistic choice — it is the only direction
+that works.** pf blocks `vlan30 → vlan1` SSH outright, and dev-921's `ufw`
+independently omits r720 from its port-22 allow-list, so **r720 cannot open a
+connection to dev-921 or surface**. Both steps above therefore run *from* the
+destination: the `VACUUM INTO` via `ssh SOURCE_HOST 'sqlite3 …'`, then the
+`rsync` pull, then the cleanup. There is no push variant to reach for, and this
+matches the pull-based drop doctrine used for the quarantine-kit workers
+(`SECURITY_CONCERNS` §10). See `PARALLEL_NODES_ISSUES.md` for the full matrix.
+
+One consequence for automation: an unattended pull still needs the destination's
+SSH agent live. The `r720-*` aliases pin `IdentityAgent` at the TPM or gpg agent,
+and gotcha #10 in `SECURITY_CONCERNS` documents gpg-agent failing
+`agent refused operation` with no TTY/DISPLAY — so a cron pull works only while
+the desktop session is up and the agent is warm.
+
 zstd compression is worth it: a 63.8 MB/s raw link carried this at ~320 MB/s
 effective (6.4 GB in 20 s). Then clean up the source:
 
@@ -104,6 +119,34 @@ findings with the oracle" rather than like a bug. Normalise first:
 ```sql
 replace(v.file_path, '/home/brandon/toolchain/' || rr.project || '/', '')
 ```
+
+**…and the absolute rows use *two* different roots, so that `replace` alone is
+not enough across full history** (verified on dev-921, 2026-08-28, 15,936,907
+`realworld_violations` rows). `realworld_runs.hostname` + `scanned_at` show a
+clean era boundary:
+
+| Root | Rows | Producers | Scanned |
+|---|---:|---|---|
+| `/home/brandon/toolchain/…` | 11,820,911 | `dev-41` (r720), `dev-workstation` | 2026-06-10 → 2026-08-28 |
+| `/home/brandon/data/…` | 4,104,797 | `dev-41`, `10.0.0.63` (dev-107), `local` | 2026-03-20 → 2026-04-19 |
+| repo-relative (already) | 11,199 | `audit-ingest` | 2026-06-16 |
+
+The single-`replace` recipe above is **correct for current-era runs** (anything
+from 2026-06-10 on) and is the right thing to use for a fresh delta-adjudication.
+But run against the whole table it silently leaves the 4.1 M pre-2026-04-19 rows
+absolute, so they still fail to join and drop out of the denominator — 26 % of
+the table vanishing in exactly the way this gotcha warns about, one layer down.
+When a query spans history, strip either root:
+
+```sql
+replace(replace(v.file_path,
+  '/home/brandon/toolchain/' || rr.project || '/', ''),
+  '/home/brandon/data/'      || rr.project || '/', '')
+```
+
+Or scope the query to `rr.scanned_at >= '2026-06-10'` and keep the simple form.
+Check before assuming — `select distinct substr(file_path,1,24) …` costs nothing
+and the failure is silent.
 
 **Absolute paths encode the *producing* node's checkout root.** Because
 `realworld_violations` stores absolute paths, rows carry whatever `BENCH_ROOT`
