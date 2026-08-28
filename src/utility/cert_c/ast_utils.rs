@@ -106,6 +106,15 @@ pub fn find_containing_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
 /// every read of a for-loop variable (in the condition, the update, or the
 /// body) fail to resolve back to its own declaration.
 ///
+/// A scope's own declaration search is preprocessor-transparent: `#ifdef
+/// X ... #endif` is textual inclusion, not a new C scope, so `int color;`
+/// written inside one has the same enclosing-block scope as if it were
+/// written directly — a read anywhere else in that same block (inside a
+/// different `#ifdef`/`#else` branch, or after the `#endif` entirely) must
+/// still resolve back to it. Scanning only literal `declaration`-kind
+/// direct children would miss any declaration nested one or more
+/// `preproc_if`/`preproc_ifdef`/`preproc_elif`/`preproc_else` levels down.
+///
 /// Stops at the function body (does not resolve to a parameter — callers
 /// needing that should also check `is_function_parameter` separately).
 pub fn find_enclosing_declaration_for_identifier<'a>(
@@ -118,23 +127,42 @@ pub fn find_enclosing_declaration_for_identifier<'a>(
         let scope = query::find_ancestor(search_from, |n| {
             matches!(n.kind(), "compound_statement" | "for_statement")
         })?;
-        let mut best: Option<Node<'a>> = None;
-        for i in 0..scope.child_count() {
-            let Some(child) = scope.child(i) else {
-                continue;
-            };
-            if child.kind() == "declaration"
-                && child.start_byte() < ident_node.start_byte()
-                && declaration_binds_name(&child, name, source)
-                && best.is_none_or(|b: Node<'a>| child.start_byte() > b.start_byte())
-            {
-                best = Some(child);
-            }
-        }
+        let mut declarations = Vec::new();
+        collect_declarations_transparent_to_preproc(&scope, &mut declarations);
+        let best = declarations
+            .into_iter()
+            .filter(|child| {
+                child.start_byte() < ident_node.start_byte()
+                    && declaration_binds_name(child, name, source)
+            })
+            .max_by_key(|child| child.start_byte());
         if best.is_some() {
             return best;
         }
         search_from = scope;
+    }
+}
+
+/// Collect every `declaration` directly inside `scope`, transparently
+/// descending into any nested `#if`/`#ifdef`/`#elif`/`#else` branch (any
+/// depth) — see [`find_enclosing_declaration_for_identifier`] for why.
+fn collect_declarations_transparent_to_preproc<'a>(scope: &Node<'a>, out: &mut Vec<Node<'a>>) {
+    let condition_id = scope.child_by_field_name("condition").map(|n| n.id());
+    let name_id = scope.child_by_field_name("name").map(|n| n.id());
+    for i in 0..scope.child_count() {
+        let Some(child) = scope.child(i) else {
+            continue;
+        };
+        if Some(child.id()) == condition_id || Some(child.id()) == name_id {
+            continue;
+        }
+        match child.kind() {
+            "declaration" => out.push(child),
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" => {
+                collect_declarations_transparent_to_preproc(&child, out);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1144,5 +1172,36 @@ mod tests {
             inner_decl_text.contains("= 5"),
             "expected the inner shadowing declaration, got: {inner_decl_text}"
         );
+    }
+
+    /// A declaration written inside a `#ifdef`/`#endif` block has the same
+    /// enclosing scope as one written directly -- textual inclusion, not a
+    /// new C scope. A read anywhere else in that enclosing block (inside
+    /// the same `#ifdef` branch, or after the `#endif` entirely) must still
+    /// resolve back to it, not fail to resolve just because the
+    /// declaration is nested one level inside a `preproc_ifdef` rather than
+    /// being a direct child of the enclosing `compound_statement`.
+    #[test]
+    fn test_find_enclosing_declaration_for_identifier_inside_ifdef() {
+        let (tree, source) = parse_c_code(
+            "int f(int x) { \
+             #ifdef NEED_AP_MLME\n\
+             int color = x;\n\
+             #endif\n\
+             return color; }",
+        );
+        let root = tree.root_node();
+        let idents = query::find_descendants_of_kind(root, "identifier");
+        let use_color = idents
+            .iter()
+            .rev()
+            .find(|n| get_node_text(n, &source) == "color")
+            .unwrap();
+        let resolved = find_enclosing_declaration_for_identifier(use_color, "color", &source);
+        assert!(
+            resolved.is_some(),
+            "expected the ifdef-nested declaration to resolve"
+        );
+        assert_eq!(resolved.unwrap().kind(), "declaration");
     }
 }
