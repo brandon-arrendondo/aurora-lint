@@ -90,13 +90,21 @@ pub fn find_containing_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     query::nearest_ancestor_of_kind(*node, "function_definition")
 }
 
-/// Walk up from `ident_node` through enclosing `compound_statement` blocks to
-/// find the nearest `declaration` that binds `name`, preferring the latest
-/// (highest byte offset) such declaration before `ident_node`'s own position
-/// within each block. Correctly disambiguates shadowed re-declarations of the
-/// same name in sibling or nested blocks — unlike a whole-function text/regex
-/// scan, which cannot tell two different declarations of the same identifier
+/// Walk up from `ident_node` through enclosing scopes — `compound_statement`
+/// blocks and `for_statement` init clauses — to find the nearest
+/// `declaration` that binds `name`, preferring the latest (highest byte
+/// offset) such declaration before `ident_node`'s own position within each
+/// scope. Correctly disambiguates shadowed re-declarations of the same name
+/// in sibling or nested blocks — unlike a whole-function text/regex scan,
+/// which cannot tell two different declarations of the same identifier
 /// apart.
+///
+/// `for (int i = 0; i < n; i++) { ... }` declares `i` as a direct child of
+/// the `for_statement` itself, not of any `compound_statement` — its scope
+/// is the whole for-statement (condition, update, and body). A search that
+/// only scanned `compound_statement` children would never find it, making
+/// every read of a for-loop variable (in the condition, the update, or the
+/// body) fail to resolve back to its own declaration.
 ///
 /// Stops at the function body (does not resolve to a parameter — callers
 /// needing that should also check `is_function_parameter` separately).
@@ -107,10 +115,12 @@ pub fn find_enclosing_declaration_for_identifier<'a>(
 ) -> Option<Node<'a>> {
     let mut search_from = *ident_node;
     loop {
-        let block = query::find_ancestor(search_from, |n| n.kind() == "compound_statement")?;
+        let scope = query::find_ancestor(search_from, |n| {
+            matches!(n.kind(), "compound_statement" | "for_statement")
+        })?;
         let mut best: Option<Node<'a>> = None;
-        for i in 0..block.child_count() {
-            let Some(child) = block.child(i) else {
+        for i in 0..scope.child_count() {
+            let Some(child) = scope.child(i) else {
                 continue;
             };
             if child.kind() == "declaration"
@@ -124,7 +134,7 @@ pub fn find_enclosing_declaration_for_identifier<'a>(
         if best.is_some() {
             return best;
         }
-        search_from = block;
+        search_from = scope;
     }
 }
 
@@ -1079,5 +1089,60 @@ mod tests {
         assert_eq!(get_type_size("int"), 4);
         assert_eq!(get_type_size("long"), 8);
         assert_eq!(get_type_size("int *"), 8);
+    }
+
+    /// `find_enclosing_declaration_for_identifier` must resolve a
+    /// `for (int i = ...; ...) { ... }` loop variable's declaration for
+    /// every occurrence within the for-statement (condition, update, and
+    /// body) -- not just ones inside a nested `compound_statement`. The
+    /// declaration is a direct child of `for_statement`, one level away
+    /// from any `compound_statement`, which an earlier version of this
+    /// function never looked at (task 386 regression, fixed alongside).
+    #[test]
+    fn test_find_enclosing_declaration_for_identifier_for_loop_var() {
+        let (tree, source) =
+            parse_c_code("void f(void) { for (int i = 0; i < 10; i++) { use(i); } }");
+        let root = tree.root_node();
+        let idents = query::find_descendants_of_kind(root, "identifier");
+        let occurrences: Vec<_> = idents
+            .iter()
+            .filter(|n| get_node_text(n, &source) == "i")
+            .collect();
+        // declarator, condition, update, and the body's use(i) -- 4 total.
+        assert_eq!(occurrences.len(), 4);
+        let decl_node = occurrences[0];
+        for occurrence in &occurrences[1..] {
+            let resolved = find_enclosing_declaration_for_identifier(occurrence, "i", &source);
+            assert!(
+                resolved.is_some(),
+                "expected occurrence at byte {} to resolve to the for-loop's own declaration",
+                occurrence.start_byte()
+            );
+            let resolved = resolved.unwrap();
+            assert!(resolved.start_byte() <= decl_node.start_byte());
+            assert_eq!(resolved.kind(), "declaration");
+        }
+    }
+
+    /// A shadowing re-declaration inside the loop body must still win over
+    /// the for-loop's own declaration -- the widened for_statement search
+    /// must not short-circuit the existing nearest-scope-wins behavior.
+    #[test]
+    fn test_find_enclosing_declaration_for_identifier_shadow_in_loop_body() {
+        let (tree, source) =
+            parse_c_code("void f(void) { for (int i = 0; i < 10; i++) { int i = 5; use(i); } }");
+        let root = tree.root_node();
+        let idents = query::find_descendants_of_kind(root, "identifier");
+        let use_i = idents
+            .iter()
+            .rev()
+            .find(|n| get_node_text(n, &source) == "i")
+            .unwrap();
+        let resolved = find_enclosing_declaration_for_identifier(use_i, "i", &source).unwrap();
+        let inner_decl_text = get_node_text(&resolved, &source);
+        assert!(
+            inner_decl_text.contains("= 5"),
+            "expected the inner shadowing declaration, got: {inner_decl_text}"
+        );
     }
 }
