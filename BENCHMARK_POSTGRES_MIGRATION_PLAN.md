@@ -4,6 +4,21 @@ Implementation plan for task **638**. Written on dev-921 2026-08-28 against the
 live database; every count, size and line reference below was measured, not
 estimated. Intended for the implementing agent on r720.
 
+**2026-08-29: MIGRATION COMPLETE.** Postgres provisioned on r720, schema +
+25.7M rows migrated and verified, `bench/db.py` ported and validated (a
+full Juliet + real-world benchmark run, byte-identical to the prior SQLite
+results), restricted `sqc_writer` role in place, production traffic wired
+via `.env`'s `SQC_BENCH_DSN`, and NAS-2's automated `pg_dump` backup is
+live (first full dump succeeded 2026-08-29 16:39:46–16:42:58 EDT, 455 MB,
+all 12 tables + 9 sequences present; recurring boot + daily schedule,
+14-dump retention on NAS-2's ZFS pool). See §7 for the `sqc_backup` role
+and the firewall/sequence-grant fixes this surfaced. Task 638 marked done.
+
+One residual, explicitly not yet done: NAS-2 has no Postgres server to
+`pg_restore` into, so the dump is verified by TOC (every table/sequence
+present) but not by a real restore-and-row-count check. Worth doing once,
+opportunistically, on a machine that has a Postgres instance — not blocking.
+
 **2026-08-28: all three open decisions below resolved.**
 - §0: **(B) shim** — SQLite stays default, Postgres opt-in via DSN.
 - §2: duplicate `realworld_runs` pairs merged (49→48, 51→50 by run_id
@@ -487,6 +502,31 @@ tested in §4/§5.
   backup again). Verified the read-only boundary still holds: `sqc_backup`
   can read a sequence's `last_value`, but `nextval()` and every table write
   still correctly `permission denied`.
+
+  **DONE 2026-08-29: NAS-2 confirmed independently, first backup landed.**
+  All 9 sequences readable; `ALTER DEFAULT PRIVILEGES` correctly bound to
+  `defaclrole = sqc_migrate` (`ACL {sqc_backup=r/sqc_migrate}`) so future
+  migrations' sequences inherit the grant automatically. Read-only boundary
+  re-confirmed from NAS-2's side too: `nextval(...)` and
+  `CREATE TABLE public._nas2_write_probe(...)` both correctly denied.
+  First full backup: `systemd` unit `sqc-pgbackup.service` on NAS-2,
+  2026-08-29 16:39:46–16:42:58 EDT, exit 0 —
+  `sqc_bench-20260829T203946Z.dump`, 455 MB, `pg_dump -Fc`, 192s; TOC shows
+  all 12 tables + 9 sequences present, `violations`/`realworld_violations`
+  both carrying data. Ongoing: full dump 5 min after every boot + daily
+  ~03:20 local, 14-dump retention on NAS-2's ZFS pool.
+
+  **Residual, not yet done**: the TOC proves every table/sequence is
+  *present*, not that each carries the *expected row count* — the
+  definitive check is a real `pg_restore` into a scratch DB, which NAS-2
+  can't do (no Postgres server there). Worth doing once, opportunistically,
+  on a machine that has one (e.g. r720 itself, restoring a copy of the
+  dump). Not blocking task closure.
+
+  **Do not revert** the `pg_allowed` firewall rule or the sequence grants —
+  the backup depends on both. If a future migration ever changes the
+  schema owner away from `sqc_migrate`, the default-privileges binding
+  needs updating to match, or new sequences will silently break the dump.
 
   **Real gap found and fixed**: r720's own inbound `nftables` firewall
   (`/etc/nftables.conf`) has policy `drop` on `input` and previously allowed
