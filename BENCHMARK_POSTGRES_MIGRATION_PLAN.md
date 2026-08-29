@@ -350,7 +350,46 @@ most, because its output goes into the paper.
 
 ---
 
-## 6. Cutover and rollback
+## 6. Cutover and rollback — full Juliet + real-world validation DONE 2026-08-29
+
+The plan's own gate ("do not delete `data/benchmarks.db` until Postgres has
+survived a full Juliet run plus a real-world run") is now satisfied on
+r720, with `.env`'s `SQC_BENCH_DSN` pointing this host at Postgres via the
+`sqc_writer` role.
+
+- **Juliet** (fast mode, `sqc-0.4.301-8af0fca9`): 79/79 CWE scans completed,
+  0 failed, correctly written to Postgres. Compared against the last
+  fast-mode run (`sqc-0.4.290-077ecceb` — the immediately preceding run,
+  0.4.297/299/300, all used **full** mode, so aren't a same-mode
+  comparison): **TP +0, FP +0** — byte-identical detection output, exactly
+  as expected since no Rust rule code changed. Timing is up ~19%, plausibly
+  because r720 is now also running the Postgres server itself alongside
+  everything else from this session.
+- **Real-world** (sqc-only, 9 codebases: curl, hostap, libcrc, lua,
+  mosquitto, pureftpd, raylib, sel4, sqlite): 25 result rows (9 sqc + 8
+  cppcheck + 8 clang-tidy carried forward from history), 69,291 violation
+  rows, all correctly landed in Postgres. `realworld-score` runs clean
+  against it (ground_truth join works against freshly-Postgres-inserted
+  data, not just the bulk-migrated rows from §4).
+
+**Real finding from this validation, worth keeping**: the real-world run's
+data landed in **local SQLite** on the first attempt, not Postgres, even
+though `.env`'s `SQC_BENCH_DSN` was already set. Root cause: a long-lived
+MCP server process (`realworld_server.py`) had been running since before
+`.env` existed, and its own `BenchDB()` instance was constructed once at
+that process's startup — Python doesn't re-read environment variables or
+re-run `bench/config.py`'s dotenv loader for an already-running process.
+Juliet's run was unaffected because its actual DB writes happen inside a
+fresh `python -m bench juliet` subprocess, which reads `.env` fresh on
+every invocation. **Any node's MCP servers must be restarted after a
+`SQC_BENCH_DSN`/`.env` change** — a plain CLI invocation doesn't need this
+(each one is a fresh interpreter), but a long-running MCP server does.
+Confirmed fixed: restarted both MCP servers, migrated/cleaned the
+misplaced SQLite rows, re-ran the real-world sweep, and this time it
+correctly landed in Postgres (identical row/violation counts to the first,
+misplaced attempt — same real scan, right database this time).
+
+### Original cutover and rollback notes
 
 - **Do not run this while a benchmark is running** (`CLAUDE.md` protocol —
   the runner writes continuously).
