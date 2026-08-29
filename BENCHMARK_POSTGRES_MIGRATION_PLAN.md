@@ -463,6 +463,30 @@ tested in §4/§5.
   means holding everything — do not skip it.
 - **Backups:** NAS-2 pulls its own `pg_dump` on boot over 5432 — no SSH, no
   passphrase-gated TPM key, no human. Rationale in the notes repo.
+  **2026-08-29: role + network access done.** `sqc_backup` role created
+  (`SELECT`-only on every table, including `ground_truth` — a backup
+  consumer needs to read everything to dump it, unlike `sqc_writer` which
+  has no business touching the oracle at all;
+  `bench/postgres_migration/06_backup_role.sql`). Handoff brief with
+  connection details given to the NAS-2 agent to build the actual
+  boot-triggered `pg_dump` automation.
+
+  **Real gap found and fixed**: r720's own inbound `nftables` firewall
+  (`/etc/nftables.conf`) has policy `drop` on `input` and previously allowed
+  only loopback/established/ICMP/DHCP/SSH (from two explicit IP allow-lists)
+  — **no rule permitted TCP 5432 at all**, from anywhere. This was missed
+  because r720 was originally scoped as an outbound-only *client* to a DB
+  hosted elsewhere (dev-921, per the original host decision) — the pivot to
+  hosting Postgres *on* r720 itself never got cross-checked against r720's
+  own inbound firewall. Every connectivity test up to this point only
+  worked because it was over `localhost`, which bypasses `iifname "eno1"`
+  matching entirely — so this was invisible until an actual external host
+  (NAS-2) was about to be tested. Fixed by adding a `pg_allowed` set
+  (10.0.0.15 only, mirroring the existing `lan_ssh_allowed`/`wg_ssh_allowed`
+  pattern) and one rule (`iifname "eno1" tcp dport 5432 ip saddr @pg_allowed
+  accept`) to `/etc/nftables.conf`, reloaded via `nft -f`. Scoped to NAS-2
+  only for now — add other IPs to `pg_allowed` when `sqc_writer` nodes
+  (e.g. dev-921) actually need inbound access too.
 
 ---
 
