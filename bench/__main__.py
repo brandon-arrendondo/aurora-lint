@@ -382,13 +382,15 @@ def cmd_realworld_unlabeled(args):
         return
     findings = db.get_unlabeled_findings(
         target_id, rule_id=args.rule, project=args.project,
-        limit=args.limit, seed=args.seed, file=args.file)
+        limit=args.limit, seed=args.seed, file=args.file,
+        enforce_scope=not args.no_scope)
     if args.json:
         print(json.dumps(findings, indent=2, default=str))
         return
     print(f"{len(findings)} unlabeled finding(s) in run #{target_id}"
           + (f" for {args.rule}" if args.rule else "")
-          + (f" in {args.project}" if args.project else ""))
+          + (f" in {args.project}" if args.project else "")
+          + ("" if args.no_scope else " (in-scope only; pass --no-scope for raw)"))
     for f in findings:
         print(f"  {f['rule_id']:<10} {f['project']}/{f['file_path']}:"
               f"{f['line']}  {f['message'] or ''}")
@@ -704,6 +706,10 @@ def main():
     p_unl.add_argument("--file", default=None,
                        help="Filter to one project-relative file (file-at-a-"
                             "time workflow: pull all findings in this file)")
+    p_unl.add_argument("--no-scope", action="store_true",
+                       help="Don't apply each project's scope_include/"
+                            "scope_exclude predicate (task 636) -- show the "
+                            "raw unfiltered set, including out-of-scope files")
     p_unl.add_argument("--json", action="store_true", help="Emit JSON")
     p_unl.set_defaults(func=cmd_realworld_unlabeled)
 

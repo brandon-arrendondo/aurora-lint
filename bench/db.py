@@ -1903,14 +1903,22 @@ class BenchDB:
 
     def get_unlabeled_findings(self, run_id: int, rule_id: str = None,
                                project: str = None, limit: int = None,
-                               seed: int = None, file: str = None) -> list[dict]:
+                               seed: int = None, file: str = None,
+                               enforce_scope: bool = True) -> list[dict]:
         """Distinct findings from a run with no ground-truth label yet.
 
         Feeds the incremental adjudication loop: scan -> pull unlabeled ->
         adjudicate (Claude/manual) -> insert_ground_truth_labels. Matching is
         per the run's own codebase_commit, so re-adjudication is only needed
         when the pinned commit changes.
+
+        `enforce_scope` (task 636, default True) drops findings outside each
+        project's data/benchmark_repos.json scope_include/scope_exclude --
+        the single largest source of wasted adjudication effort (task 420
+        measured 63% of a raw pull as out-of-scope noise). Pass False
+        (CLI: --no-scope) to see the raw unfiltered set.
         """
+        from bench.corpus import in_scope
         results = {r["project"]: r for r in self.get_realworld_results(run_id)
                    if r["tool"] == "sqc"}
         out = []
@@ -1941,6 +1949,8 @@ class BenchDB:
                 for r in cur.fetchall():
                     rel = self.project_relpath(proj, r["file_path"])
                     if file and rel != file:
+                        continue
+                    if enforce_scope and not in_scope(proj, rel):
                         continue
                     if (rel, r["line"], r["rule_id"]) in labeled:
                         continue

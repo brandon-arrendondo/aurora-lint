@@ -39,6 +39,7 @@ Independently of status, three contamination flags are reported:
               ~250k lines to every sqlite scan.
 """
 
+import fnmatch
 import json
 import subprocess
 from pathlib import Path
@@ -57,6 +58,33 @@ _ORDER = ["MISSING", "NOT_GIT", "PIN_ABSENT", "DRIFTED", "UNPINNED", "OK"]
 def load_repos():
     """The pinned name/repo/version triples, shared with the ansible playbook."""
     return json.loads(REPOS_JSON.read_text())["repos"]
+
+
+def project_scope(project):
+    """This project's (scope_include, scope_exclude) glob lists, or (None, None)
+    if it declares no scope (whole-repo audits: libcrc, raylib)."""
+    for e in load_repos():
+        if e["name"] == project:
+            return e.get("scope_include"), e.get("scope_exclude")
+    return None, None
+
+
+def in_scope(project, relpath):
+    """Task 636: is `relpath` (project-relative, as returned by
+    BenchDB.project_relpath) inside this project's oracle scope?
+
+    The machine-readable mirror of precision_audit/<project>/README.md's
+    '## Scope' section -- see data/benchmark_repos.json's own comment.
+    A project with no scope_include declared is unrestricted.
+    """
+    include, exclude = project_scope(project)
+    if not include:
+        return True
+    if not any(fnmatch.fnmatch(relpath, pat) for pat in include):
+        return False
+    if exclude and any(fnmatch.fnmatch(relpath, pat) for pat in exclude):
+        return False
+    return True
 
 
 def _git(path, *args):
