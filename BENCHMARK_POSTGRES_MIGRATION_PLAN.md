@@ -471,6 +471,23 @@ tested in §4/§5.
   connection details given to the NAS-2 agent to build the actual
   boot-triggered `pg_dump` automation.
 
+  **Follow-up 2026-08-29: sequence grants.** NAS-2's agent installed the
+  boot + daily `pg_dump -Fc` timer, but a full dump failed immediately —
+  `permission denied for sequence audited_files_id_seq`. `pg_dump` reads
+  every sequence's `last_value`/`is_called` to record its position, which
+  needs `SELECT` on the sequence itself; table-level `SELECT` doesn't cover
+  it, and `--schema-only` (the quick connectivity test run earlier) never
+  exercises this path since it skips sequence values entirely — so this
+  was invisible until NAS-2 actually tried a full dump. Fixed:
+  `GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO sqc_backup;` (covers
+  the 9 existing sequences) plus `ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT ON SEQUENCES TO sqc_backup;` (run as `sqc_migrate`, so it
+  covers sequences from *future* migrations run by that same role —
+  without it, the next migration adding a table would silently break the
+  backup again). Verified the read-only boundary still holds: `sqc_backup`
+  can read a sequence's `last_value`, but `nextval()` and every table write
+  still correctly `permission denied`.
+
   **Real gap found and fixed**: r720's own inbound `nftables` firewall
   (`/etc/nftables.conf`) has policy `drop` on `input` and previously allowed
   only loopback/established/ICMP/DHCP/SSH (from two explicit IP allow-lists)
