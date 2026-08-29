@@ -12,6 +12,10 @@ Commands:
   realworld-import-labels CSV --run R      Append TP/FP labels to the oracle
   realworld-unlabeled [RUN]                Findings lacking a ground-truth label
   ground-truth                             Ground-truth label inventory
+  calibration-sample [--n N] [--seed S]    Blind stratified sample of already-
+                                            labeled findings for a 2nd verdict
+  calibration-import CSV                   Import a filled-in calibration batch
+  calibration-report                       Claude-vs-human agreement report
   concurrency-context [--project P]        CON03/07/33-C precision split by
                                             concurrency-context evidence
   corpus-check                             Verify every real-world checkout is
@@ -419,6 +423,84 @@ def cmd_ground_truth(args):
     print(f"{'TOTAL':<10} {'':<12} {'':<12} {'':>4} {'':>4} {'':>4} {tot:>6}")
 
 
+def cmd_calibration_sample(args):
+    import csv
+    db = BenchDB()
+    rows = db.sample_calibration_batch(n=args.n, seed=args.seed)
+    if not rows:
+        print("No non-manual ground-truth rows to sample from.")
+        return
+    with open(args.out, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=[
+            "gt_id", "project", "file_path", "line", "rule_id", "message",
+            "verdict", "reason"])
+        w.writeheader()
+        for r in rows:
+            w.writerow({
+                "gt_id": r["gt_id"], "project": r["project"],
+                "file_path": r["file_path"], "line": r["line"],
+                "rule_id": r["rule_id"], "message": r["message"] or "",
+                "verdict": "", "reason": "",
+            })
+    n_projects = len({r["project"] for r in rows})
+    n_rules = len({r["rule_id"] for r in rows})
+    print(f"Wrote {len(rows)} row(s) across {n_projects} project(s), "
+          f"{n_rules} rule(s) to {args.out}")
+    print("This is BLIND: the existing ground_truth verdict is not shown. "
+          "Read the actual code at each project/file_path:line, fill in "
+          "'verdict' (TP/FP/uncertain) and 'reason', then re-run with "
+          "'calibration-import'.")
+
+
+def cmd_calibration_import(args):
+    import csv
+    from datetime import datetime
+    db = BenchDB()
+    adjudicated_at = args.date or datetime.now().isoformat()
+    labels, blank = [], 0
+    for row in csv.DictReader(open(args.csv)):
+        verdict = (row.get("verdict") or "").strip()
+        if not verdict:
+            blank += 1
+            continue
+        labels.append({
+            "gt_id": int(row["gt_id"]),
+            "verdict": verdict,
+            "adjudicator": args.adjudicator,
+            "reason": row.get("reason") or None,
+            "source": args.source,
+            "adjudicated_at": adjudicated_at,
+        })
+    res = db.insert_calibration_labels(labels)
+    print(f"Imported from {args.csv}: inserted {res['inserted']}, "
+          f"skipped {res['skipped']} (already labeled by this adjudicator), "
+          f"missing_gt {res['missing_gt']}")
+    if blank:
+        print(f"  ({blank} row(s) had no verdict filled in, left for later)")
+
+
+def cmd_calibration_report(args):
+    db = BenchDB()
+    rep = db.calibration_agreement_report()
+    if args.json:
+        print(json.dumps(rep, indent=2, default=str))
+        return
+    if not rep["n"]:
+        print("No calibration labels yet. Run 'calibration-sample', have a "
+              "human re-adjudicate it blind, then 'calibration-import'.")
+        return
+    print(f"Overall agreement: {rep['agree']}/{rep['n']} "
+          f"({rep['overall_agreement_pct']:.1f}%)\n")
+    print(f"{'Rule':<12} {'N':>5} {'Agree':>6} {'Pct':>7}")
+    print("-" * 32)
+    for r in rep["by_rule"]:
+        pct = f"{r['agreement_pct']:.1f}%" if r["agreement_pct"] is not None else "-"
+        print(f"{r['rule_id']:<12} {r['n']:>5} {r['agree']:>6} {pct:>7}")
+    print("\nConfusion (original_verdict -> calibration_verdict):")
+    for k, v in sorted(rep["confusion"].items(), key=lambda kv: -kv[1]):
+        print(f"  {k:<20} {v}")
+
+
 def cmd_concurrency_context(args):
     from bench.concurrency_context import (
         CONCURRENCY_RULES,
@@ -718,6 +800,39 @@ def main():
                           help="Inventory of ground-truth labels")
     p_gt.add_argument("--json", action="store_true", help="Emit JSON")
     p_gt.set_defaults(func=cmd_ground_truth)
+
+    # calibration-sample (task 637)
+    p_cs = sub.add_parser(
+        "calibration-sample",
+        help="Blind stratified sample of already-labeled ground-truth rows "
+             "for a second, independent adjudicator")
+    p_cs.add_argument("--n", type=int, default=180,
+                      help="Total rows to sample (default: 180)")
+    p_cs.add_argument("--seed", type=int, default=None,
+                      help="Sample reproducibly with this seed")
+    p_cs.add_argument("--out", default="calibration_batch.csv",
+                      help="Output CSV path (default: calibration_batch.csv)")
+    p_cs.set_defaults(func=cmd_calibration_sample)
+
+    # calibration-import (task 637)
+    p_ci = sub.add_parser(
+        "calibration-import",
+        help="Import a filled-in calibration batch (verdict/reason columns)")
+    p_ci.add_argument("csv", help="Filled-in CSV from calibration-sample")
+    p_ci.add_argument("--adjudicator", default="manual",
+                      help="Who produced these verdicts (default: manual)")
+    p_ci.add_argument("--source", default="calibration",
+                      help="Provenance tag (default: calibration)")
+    p_ci.add_argument("--date", default=None,
+                      help="Adjudication date (ISO; default: now)")
+    p_ci.set_defaults(func=cmd_calibration_import)
+
+    # calibration-report (task 637)
+    p_cr = sub.add_parser(
+        "calibration-report",
+        help="Claude-vs-human agreement report from calibration_labels")
+    p_cr.add_argument("--json", action="store_true", help="Emit JSON")
+    p_cr.set_defaults(func=cmd_calibration_report)
 
     # concurrency-context (task 607)
     p_cc = sub.add_parser(

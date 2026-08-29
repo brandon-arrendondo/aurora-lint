@@ -237,6 +237,34 @@ CREATE INDEX IF NOT EXISTS idx_gt_lookup
     ON ground_truth(project, codebase_commit, rule_id);
 CREATE INDEX IF NOT EXISTS idx_gt_verdict ON ground_truth(verdict);
 
+-- Task 637: a second, independent verdict on a finding ALREADY labeled in
+-- ground_truth, so Claude-vs-human adjudicator agreement can be measured.
+-- Side table rather than relaxing ground_truth's UNIQUE(...) -- the oracle's
+-- one-label-per-finding invariant stays intact for every precision/recall
+-- query already written against it; a calibration round just adds rows here
+-- that reference the original by gt_id. original_verdict/original_adjudicator
+-- are captured at insert time (not read live) so a later re-adjudication of
+-- the ground_truth row can't quietly rewrite what this round was actually
+-- compared against.
+CREATE TABLE IF NOT EXISTS calibration_labels (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    gt_id               INTEGER NOT NULL REFERENCES ground_truth(id),
+    project             TEXT NOT NULL,
+    codebase_commit     TEXT NOT NULL,
+    file_path           TEXT NOT NULL,
+    line                INTEGER NOT NULL,
+    rule_id             TEXT NOT NULL,
+    verdict             TEXT NOT NULL,           -- this round's verdict
+    adjudicator         TEXT NOT NULL,           -- who produced THIS verdict
+    reason              TEXT,
+    source              TEXT,                    -- e.g. 'calibration_batch1'
+    adjudicated_at      TEXT NOT NULL,
+    original_verdict    TEXT NOT NULL,           -- ground_truth.verdict, snapshotted
+    original_adjudicator TEXT,                   -- ground_truth.adjudicator, snapshotted
+    UNIQUE(gt_id, adjudicator)
+);
+CREATE INDEX IF NOT EXISTS idx_calib_lookup ON calibration_labels(rule_id, project);
+
 -- File-at-a-time audit: a row here means the file was exhaustively swept
 -- (every sqc finding in it labeled, AND read independently for missed bugs).
 -- This is the atomic "done" unit; the audited-file set grows monotonically
@@ -1702,6 +1730,178 @@ class BenchDB:
             cur.execute(f"SELECT * FROM ground_truth {where} "
                         "ORDER BY project, rule_id, file_path, line", params)
             return [dict(r) for r in cur.fetchall()]
+
+    def sample_calibration_batch(self, n: int = 180, seed: int = None,
+                                 per_stratum_cap: int = 12,
+                                 exclude_adjudicators: tuple = ("manual",)
+                                 ) -> list[dict]:
+        """Task 637: a stratified, BLIND sample of already-labeled ground_truth
+        rows for a second, independent adjudicator to re-verdict.
+
+        Strata are (project, rule_id) pairs among non-manual-adjudicated rows
+        (default excludes 'manual' -- the point is measuring the Claude
+        labeler against a human, so the human's own prior manual labels are
+        not eligible re-adjudication targets). Sampling takes the highest-
+        volume strata first (proportional coverage of where the oracle's
+        mass actually is), capped per stratum so one mega-bucket (e.g.
+        hostap/DCL13-C at 4,873 rows) can't crowd out the rest, then samples
+        within each stratum with `seed` for reproducibility.
+
+        Returns rows WITHOUT verdict/reason/adjudicator -- those live only in
+        ground_truth until insert_calibration_labels() snapshots them
+        alongside the new verdict, so nothing here leaks the label being
+        re-judged. Each row carries the opaque `gt_id` needed to import a
+        verdict back with insert_calibration_labels().
+        """
+        import random
+        rng = random.Random(seed)
+        excl = ",".join("?" for _ in exclude_adjudicators)
+        with self._cursor() as cur:
+            cur.execute(f"""
+                SELECT project, rule_id, COUNT(*) c FROM ground_truth
+                WHERE adjudicator NOT IN ({excl}) OR adjudicator IS NULL
+                GROUP BY project, rule_id
+                ORDER BY c DESC
+            """, exclude_adjudicators)
+            strata = [dict(r) for r in cur.fetchall()]
+
+            picked = []
+            for s in strata:
+                if len(picked) >= n:
+                    break
+                cur.execute(f"""
+                    SELECT id, project, codebase_commit, file_path, line,
+                           rule_id
+                    FROM ground_truth
+                    WHERE project = ? AND rule_id = ?
+                      AND (adjudicator NOT IN ({excl}) OR adjudicator IS NULL)
+                """, (s["project"], s["rule_id"], *exclude_adjudicators))
+                rows = [dict(r) for r in cur.fetchall()]
+                take = min(per_stratum_cap, len(rows), n - len(picked))
+                picked.extend(rng.sample(rows, take))
+        rng.shuffle(picked)
+        for r in picked:
+            r["gt_id"] = r.pop("id")
+            r["message"] = self._finding_message(
+                r["project"], r["file_path"], r["line"], r["rule_id"])
+        return picked
+
+    def _finding_message(self, project: str, file_path: str, line: int,
+                         rule_id: str) -> str:
+        """Best-effort sqc message text for a (project, file_path, line,
+        rule_id) triple, from the most recent real-world run that has it.
+        Cosmetic context for a calibration reviewer only -- returns None if
+        no run currently carries this finding (e.g. a since-fixed rule)."""
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT rv.message
+                FROM realworld_violations rv
+                JOIN realworld_results rr ON rr.id = rv.result_id
+                WHERE rr.project = ? AND rr.tool = 'sqc'
+                  AND rv.rule_id = ? AND rv.line = ?
+                  AND rv.file_path LIKE ?
+                ORDER BY rr.id DESC LIMIT 1
+            """, (project, rule_id, line, f"%/{file_path}"))
+            row = cur.fetchone()
+            return row["message"] if row else None
+
+    def insert_calibration_labels(self, labels: list[dict]) -> dict:
+        """Insert second-round verdicts from a calibration batch.
+
+        Each label needs: gt_id, verdict, adjudicator. Optional: reason,
+        source, adjudicated_at (defaults to now). original_verdict/
+        original_adjudicator are snapshotted from ground_truth at insert
+        time, not read live later, so a subsequent re-adjudication of the
+        ground_truth row can't retroactively change what this round is
+        scored against. Skips (does not overwrite) an existing
+        (gt_id, adjudicator) pair.
+        """
+        from datetime import datetime
+        if not labels:
+            return {"inserted": 0, "skipped": 0, "missing_gt": 0}
+        now = datetime.now().isoformat()
+        inserted = skipped = missing_gt = 0
+        with self._cursor() as cur:
+            for lbl in labels:
+                cur.execute("""
+                    SELECT project, codebase_commit, file_path, line,
+                           rule_id, verdict, adjudicator
+                    FROM ground_truth WHERE id = ?
+                """, (lbl["gt_id"],))
+                gt = cur.fetchone()
+                if gt is None:
+                    missing_gt += 1
+                    continue
+                cur.execute("""
+                    SELECT 1 FROM calibration_labels
+                    WHERE gt_id = ? AND adjudicator = ?
+                """, (lbl["gt_id"], lbl["adjudicator"]))
+                if cur.fetchone() is not None:
+                    skipped += 1
+                    continue
+                cur.execute("""
+                    INSERT INTO calibration_labels
+                        (gt_id, project, codebase_commit, file_path, line,
+                         rule_id, verdict, adjudicator, reason, source,
+                         adjudicated_at, original_verdict, original_adjudicator)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (lbl["gt_id"], gt["project"], gt["codebase_commit"],
+                      gt["file_path"], gt["line"], gt["rule_id"],
+                      lbl["verdict"], lbl["adjudicator"], lbl.get("reason"),
+                      lbl.get("source"), lbl.get("adjudicated_at") or now,
+                      gt["verdict"], gt["adjudicator"]))
+                inserted += 1
+        return {"inserted": inserted, "skipped": skipped,
+                "missing_gt": missing_gt}
+
+    def calibration_agreement_report(self) -> dict:
+        """Overall + per-rule Claude-vs-human agreement from calibration_labels.
+
+        Compares each row's `verdict` (the calibration round's fresh,
+        blind re-adjudication) against its snapshotted `original_verdict`
+        (what ground_truth said when the row was sampled). Reports raw
+        agreement plus a confusion breakdown, per rule and overall -- see
+        task 637: this is the only measurement anywhere of whether the
+        94.6%-Claude-labeled oracle is trustworthy.
+        """
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT rule_id, verdict, original_verdict
+                FROM calibration_labels
+            """)
+            rows = [dict(r) for r in cur.fetchall()]
+        if not rows:
+            return {"n": 0, "overall_agreement_pct": None, "by_rule": [],
+                     "confusion": {}}
+
+        def agreement(rs):
+            n = len(rs)
+            agree = sum(1 for r in rs if r["verdict"] == r["original_verdict"])
+            return n, agree, (100.0 * agree / n if n else None)
+
+        confusion = {}
+        for r in rows:
+            key = (r["original_verdict"], r["verdict"])
+            confusion[key] = confusion.get(key, 0) + 1
+
+        by_rule = {}
+        for r in rows:
+            by_rule.setdefault(r["rule_id"], []).append(r)
+        by_rule_report = []
+        for rule_id, rs in sorted(by_rule.items(),
+                                  key=lambda kv: -len(kv[1])):
+            n, agree, pct = agreement(rs)
+            by_rule_report.append({
+                "rule_id": rule_id, "n": n, "agree": agree,
+                "agreement_pct": pct,
+            })
+
+        n, agree, pct = agreement(rows)
+        return {
+            "n": n, "agree": agree, "overall_agreement_pct": pct,
+            "by_rule": by_rule_report,
+            "confusion": {f"{k[0]}->{k[1]}": v for k, v in confusion.items()},
+        }
 
     def ground_truth_coverage(self) -> list[dict]:
         """Per-(project, commit, rule) label counts for a quick inventory."""
