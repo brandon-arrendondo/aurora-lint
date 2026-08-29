@@ -14,7 +14,10 @@ Commands:
   ground-truth                             Ground-truth label inventory
   calibration-sample [--n N] [--seed S]    Blind stratified sample of already-
                                             labeled findings for a 2nd verdict
+                                            (--gavel: emit gavel-import JSON
+                                            with source excerpts instead)
   calibration-import CSV                   Import a filled-in calibration batch
+  calibration-import-gavel EXPORT.JSON     Import a gavel adjudicated export
   calibration-report                       Claude-vs-human agreement report
   concurrency-context [--project P]        CON03/07/33-C precision split by
                                             concurrency-context evidence
@@ -423,6 +426,23 @@ def cmd_ground_truth(args):
     print(f"{'TOTAL':<10} {'':<12} {'':<12} {'':>4} {'':>4} {'':>4} {tot:>6}")
 
 
+def _code_excerpt(project, file_path, line, before=15, after=10):
+    """A source window around `line` for a gavel `code` field. Reads from
+    the pinned checkout under BENCH_ROOT -- not from any run's stored
+    text, so it reflects the file as it stands right now. Returns
+    (excerpt, start_line); (None, line) if the file can't be read (moved
+    checkout, drifted pin -- see corpus-check)."""
+    from bench.config import BENCH_ROOT
+    path = BENCH_ROOT / project / file_path
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return None, line
+    start = max(1, line - before)
+    end = min(len(lines), line + after)
+    return "\n".join(lines[start - 1:end]), start
+
+
 def cmd_calibration_sample(args):
     import csv
     db = BenchDB()
@@ -430,26 +450,60 @@ def cmd_calibration_sample(args):
     if not rows:
         print("No non-manual ground-truth rows to sample from.")
         return
-    with open(args.out, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=[
-            "gt_id", "project", "file_path", "line", "rule_id", "message",
-            "verdict", "reason"])
-        w.writeheader()
+
+    if args.gavel:
+        items, missing_code = [], 0
         for r in rows:
-            w.writerow({
-                "gt_id": r["gt_id"], "project": r["project"],
-                "file_path": r["file_path"], "line": r["line"],
-                "rule_id": r["rule_id"], "message": r["message"] or "",
-                "verdict": "", "reason": "",
+            code, start_line = _code_excerpt(
+                r["project"], r["file_path"], r["line"])
+            if code is None:
+                missing_code += 1
+            items.append({
+                "external_id": str(r["gt_id"]),
+                "title": r["message"] or f"{r['rule_id']} finding",
+                "rule_id": r["rule_id"],
+                "language": "c",
+                "file_path": f"{r['project']}/{r['file_path']}",
+                "start_line": start_line,
+                "code": code or "(source unreadable -- see project/file_path "
+                                "above and read it directly; corpus-check "
+                                "may show a drifted/missing checkout)",
             })
+        with open(args.out, "w") as f:
+            json.dump(items, f, indent=2)
+        if missing_code:
+            print(f"  ! {missing_code} item(s) had unreadable source "
+                  "(run 'python -m bench corpus-check')")
+    else:
+        with open(args.out, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=[
+                "gt_id", "project", "file_path", "line", "rule_id", "message",
+                "verdict", "reason"])
+            w.writeheader()
+            for r in rows:
+                w.writerow({
+                    "gt_id": r["gt_id"], "project": r["project"],
+                    "file_path": r["file_path"], "line": r["line"],
+                    "rule_id": r["rule_id"], "message": r["message"] or "",
+                    "verdict": "", "reason": "",
+                })
+
     n_projects = len({r["project"] for r in rows})
     n_rules = len({r["rule_id"] for r in rows})
     print(f"Wrote {len(rows)} row(s) across {n_projects} project(s), "
-          f"{n_rules} rule(s) to {args.out}")
-    print("This is BLIND: the existing ground_truth verdict is not shown. "
-          "Read the actual code at each project/file_path:line, fill in "
-          "'verdict' (TP/FP/uncertain) and 'reason', then re-run with "
-          "'calibration-import'.")
+          f"{n_rules} rule(s) to {args.out}"
+          + (" (gavel import format)" if args.gavel else ""))
+    if args.gavel:
+        print(f"Import with: gavel import {args.out}. This is BLIND -- no "
+              "verdict field is populated, and gavel has no slot for one "
+              "during review. After adjudication, export with "
+              "'gavel export --status adjudicated -o verdicts.json' and "
+              "import back with 'calibration-import-gavel verdicts.json'.")
+    else:
+        print("This is BLIND: the existing ground_truth verdict is not "
+              "shown. Read the actual code at each project/file_path:line, "
+              "fill in 'verdict' (TP/FP/uncertain) and 'reason', then "
+              "re-run with 'calibration-import'.")
 
 
 def cmd_calibration_import(args):
@@ -477,6 +531,50 @@ def cmd_calibration_import(args):
           f"missing_gt {res['missing_gt']}")
     if blank:
         print(f"  ({blank} row(s) had no verdict filled in, left for later)")
+
+
+# gavel's verdict.decision (compliant/violation/false_positive/
+# needs_more_context/uncertain) -> ground_truth's TP/FP/uncertain. compliant
+# and needs_more_context have no equivalent here and are skipped, not
+# guessed at -- see gavel's docs/data-model.md#decision-vocabulary.
+_GAVEL_DECISION_MAP = {"violation": "TP", "false_positive": "FP",
+                       "uncertain": "uncertain"}
+
+
+def cmd_calibration_import_gavel(args):
+    db = BenchDB()
+    items = json.load(open(args.export_json))
+    labels, skipped_unmapped, skipped_no_verdict = [], 0, 0
+    for item in items:
+        verdict = item.get("verdict")
+        if not verdict:
+            skipped_no_verdict += 1
+            continue
+        decision = _GAVEL_DECISION_MAP.get(verdict.get("decision"))
+        if decision is None:
+            skipped_unmapped += 1
+            continue
+        ext_id = item.get("external_id")
+        if not ext_id:
+            continue
+        labels.append({
+            "gt_id": int(ext_id),
+            "verdict": decision,
+            "adjudicator": verdict.get("reviewer") or args.adjudicator,
+            "reason": verdict.get("rationale"),
+            "source": "gavel",
+            "adjudicated_at": verdict.get("reviewed_at"),
+        })
+    res = db.insert_calibration_labels(labels)
+    print(f"Imported from {args.export_json}: inserted {res['inserted']}, "
+          f"skipped {res['skipped']} (already labeled by this adjudicator), "
+          f"missing_gt {res['missing_gt']}")
+    if skipped_no_verdict:
+        print(f"  ({skipped_no_verdict} item(s) not yet adjudicated in gavel)")
+    if skipped_unmapped:
+        print(f"  ({skipped_unmapped} item(s) used a decision "
+              "(compliant/needs_more_context) with no ground_truth "
+              "equivalent -- left out, not guessed at)")
 
 
 def cmd_calibration_report(args):
@@ -811,7 +909,13 @@ def main():
     p_cs.add_argument("--seed", type=int, default=None,
                       help="Sample reproducibly with this seed")
     p_cs.add_argument("--out", default="calibration_batch.csv",
-                      help="Output CSV path (default: calibration_batch.csv)")
+                      help="Output path (default: calibration_batch.csv; "
+                           "use a .json extension with --gavel)")
+    p_cs.add_argument("--gavel", action="store_true",
+                      help="Emit gavel-import JSON (external_id=gt_id, "
+                           "embedded source excerpt) instead of the plain "
+                           "CSV, for review with 'gavel import'/'gavel "
+                           "review' instead of hand-editing a CSV")
     p_cs.set_defaults(func=cmd_calibration_sample)
 
     # calibration-import (task 637)
@@ -826,6 +930,16 @@ def main():
     p_ci.add_argument("--date", default=None,
                       help="Adjudication date (ISO; default: now)")
     p_ci.set_defaults(func=cmd_calibration_import)
+
+    # calibration-import-gavel (task 637)
+    p_cig = sub.add_parser(
+        "calibration-import-gavel",
+        help="Import a gavel 'export --status adjudicated' JSON file")
+    p_cig.add_argument("export_json", help="Output of 'gavel export'")
+    p_cig.add_argument("--adjudicator", default="manual",
+                       help="Fallback adjudicator name if an item's "
+                            "verdict.reviewer is empty (default: manual)")
+    p_cig.set_defaults(func=cmd_calibration_import_gavel)
 
     # calibration-report (task 637)
     p_cr = sub.add_parser(
