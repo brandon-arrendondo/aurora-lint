@@ -363,7 +363,42 @@ most, because its output goes into the paper.
 
 ---
 
-## 7. Deployment notes
+## 7. Deployment notes — restricted writer role DONE 2026-08-29
+
+`sqc_writer` role created (superuser step, since `CREATE ROLE` needs it) and
+granted (`bench/postgres_migration/05_writer_role.sql`, run as `sqc_migrate`
+— the owner of every table below):
+
+- `SELECT, INSERT, UPDATE, DELETE` on the 8 tables the automated runner
+  actually writes: `runs`, `cwe_scans`, `violations`, `cwe_metrics`,
+  `rule_cwe_breakdown`, `realworld_runs`, `realworld_results`,
+  `realworld_violations`.
+- `SELECT`-only on `ground_truth`, `audited_files`, `audit_corpus_meta`,
+  `oracle_versions` — all four are written only by the adjudication/
+  oracle-management workflow (`import_labels`, `freeze_oracle_version`,
+  etc.), never by the runner. `SELECT` keeps `realworld-score`'s
+  `ground_truth` join working for a writer-role connection.
+- No `DROP` grant (only the owner/superuser can drop a table it doesn't own
+  — nothing to explicitly revoke).
+
+**Correction to this section's original wording**: it said "no
+`DELETE`/`DROP`" for the writing role. Reading every `DELETE`/`UPDATE` site
+in `bench/db.py` before writing the grants (not re-deriving the original
+note) showed `DELETE` is actually required — the runner deletes stale child
+rows on a resumed CWE scan (`violations`/`cwe_metrics`/`rule_cwe_breakdown`)
+and on a real-world re-ingest (`realworld_violations`) before re-inserting.
+`DROP` is still correctly excluded.
+
+Verified both at the SQL level and through the app: `sqc_writer` can read
+`ground_truth` (89,060 rows) but `UPDATE`/`INSERT` on it fails with
+`permission denied`; `DROP TABLE runs` fails with `must be owner`; a real
+`INSERT`+`DELETE` transaction against `runs` succeeds. Ran
+`BenchDB.create_realworld_run()` and `insert_realworld_result()` (including
+its `ON CONFLICT DO UPDATE` upsert path) end-to-end through `SQC_BENCH_DSN`
+pointed at `sqc_writer` — works identically to the `sqc_migrate` path
+tested in §4/§5.
+
+### Original deployment notes
 
 - **Host: RESOLVED 2026-08-28 — r720.** See task 638 and the notes-repo
   `parallel_nodes_plan.md` for the original reasoning (dev-921 was the
