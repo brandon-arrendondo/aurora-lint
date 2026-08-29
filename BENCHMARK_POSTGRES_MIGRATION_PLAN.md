@@ -252,7 +252,40 @@ it alone.
 
 ---
 
-## 4. Data migration
+## 4/5. Data migration + verification — DONE 2026-08-28
+
+Postgres 15.19 provisioned on r720 (this host). Schema, load, indexing,
+sequence reset and full verification are all done — scripts live in
+`bench/postgres_migration/` (`01_schema.sql`, `02_indexes.sql`,
+`03_load.sh`, `04_reset_sequences.sql`), run in that order.
+
+- **Row counts**: all 12 tables verified exact match, sqlite vs. Postgres —
+  `violations` 9,561,021, `realworld_violations` 16,150,545, `ground_truth`
+  89,060, etc. (counts grew from the plan's original snapshot — background
+  benchmark/adjudication activity continued through the day, not a
+  migration discrepancy).
+- **Load mechanics**: `sqlite3 -csv -header` piped straight into
+  `psql \copy` per table, parent-before-child order, indexes built after
+  the load (13 indexes, 53s total — far cheaper than building them against
+  the load).
+- **Sequences**: reset via `setval(pg_get_serial_sequence(...), max(id))`
+  for all 9 identity tables; confirmed live by inserting a real row through
+  `BenchDB.create_realworld_run()` against the migrated Postgres DB — got
+  id 207, correctly past the reset ceiling of 206, no collision.
+- **Functional equivalence** (the part of §5 that actually matters): ran
+  `python -m bench runs`, `status`, `compare`, and — the one the plan flags
+  as most important, because a `ground_truth`-join bug would silently
+  produce plausible-but-wrong precision numbers rather than an error —
+  `realworld-score`, against both backends via `SQC_BENCH_DSN` and diffed
+  the output. **Byte-identical.**
+
+Not yet done: `mcp_servers`/CI wiring to actually route production traffic
+at the Postgres instance (this was ad hoc verification against a
+migration-role connection, not the production credential/role setup in
+§7's Roles section below), and the r720→NAS-2 backup pull once NAS-2 is
+back online.
+
+### Original plan (superseded above where narrower)
 
 Order matters — FKs are enforced unconditionally in Postgres.
 
