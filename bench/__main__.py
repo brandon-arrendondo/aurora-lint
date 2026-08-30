@@ -426,10 +426,25 @@ def cmd_ground_truth(args):
     print(f"{'TOTAL':<10} {'':<12} {'':<12} {'':>4} {'':>4} {'':>4} {tot:>6}")
 
 
-def _code_excerpt(project, file_path, line, before=15, after=10):
-    """A source window around `line` for a gavel `code` field. Reads from
-    the pinned checkout under BENCH_ROOT -- not from any run's stored
-    text, so it reflects the file as it stands right now. Returns
+def _code_excerpt(project, file_path, line):
+    """The enclosing function's full text for a gavel `code` field -- a
+    fixed line window isn't enough context to judge most findings (a
+    reviewer needs to see the whole function, not 15/10 lines around one
+    line of it). gavel now scrolls, so there's no size reason to trim it.
+
+    Bounds the region by the nearest top-level '}' (column 0) before and
+    after `line` -- the same heuristic verified in task 166's context-
+    enrichment experiment (see docs/design or that task's notes: an
+    earlier signature-regex extractor silently produced SMALLER regions
+    on sqlite's multi-line signatures ending '){' on their own line; this
+    column-0-brace bound sidesteps that by not caring how the signature is
+    written at all). Not a real parse -- a string/char literal or comment
+    containing a column-0 '}' can still fool it -- but it's a closer
+    approximation of 'the function' than a fixed window, and wrong in the
+    same rare direction (too much context) rather than too little.
+
+    Reads from the pinned checkout under BENCH_ROOT -- not from any run's
+    stored text, so it reflects the file as it stands right now. Returns
     (excerpt, start_line); (None, line) if the file can't be read (moved
     checkout, drifted pin -- see corpus-check)."""
     from bench.config import BENCH_ROOT
@@ -438,9 +453,24 @@ def _code_excerpt(project, file_path, line, before=15, after=10):
         lines = path.read_text(errors="replace").splitlines()
     except OSError:
         return None, line
-    start = max(1, line - before)
-    end = min(len(lines), line + after)
-    return "\n".join(lines[start - 1:end]), start
+    idx = line - 1
+    if not (0 <= idx < len(lines)):
+        return None, line
+
+    start = 0
+    for i in range(idx - 1, -1, -1):
+        if lines[i].startswith("}"):
+            start = i + 1
+            break
+    end = len(lines) - 1
+    for i in range(idx, len(lines)):
+        if lines[i].startswith("}"):
+            end = i
+            break
+    while start < end and not lines[start].strip():
+        start += 1
+
+    return "\n".join(lines[start:end + 1]), start + 1
 
 
 def cmd_calibration_sample(args):
