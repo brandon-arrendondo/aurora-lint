@@ -1,4 +1,4 @@
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, is_dereference_expression};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use tree_sitter::Node;
@@ -82,6 +82,61 @@ pub fn lvalue_of(node: &Node, source: &str) -> Option<LValue> {
         }
         _ => None,
     }
+}
+
+/// Same traversal as [`lvalue_of`], additionally reporting whether
+/// unwrapping crossed a pointer *dereference* (`*p`) as opposed to a pure
+/// address-of (`&p`) or a subscript/paren/cast unwrap. `lvalue_of` treats
+/// `*p` and `&p` identically (both parse as `pointer_expression` in this
+/// grammar, and both are "identity-preserving" for canonical-storage
+/// purposes) -- but a caller that cares whether the resulting `LValue` is
+/// reached *through* a pointer (e.g. an ownership rule that must not
+/// conflate freeing `p` with freeing `*p`) needs that bit, hence a second
+/// entry point rather than baking it into `LValue`'s own `Eq`/`Hash` shape
+/// (task 584), which every existing `AliasMap`/`HashSet<LValue>` caller
+/// relies on to collapse structurally-identical storage locations.
+#[allow(dead_code)]
+pub fn lvalue_of_crossing_deref(node: &Node, source: &str) -> Option<(LValue, bool)> {
+    fn walk(node: &Node, source: &str, crossed: &mut bool) -> Option<LValue> {
+        match node.kind() {
+            "identifier" => Some(LValue::Var(get_node_text(node, source).to_string())),
+            "field_expression" => {
+                let base_node = node.child_by_field_name("argument")?;
+                let base = walk(&base_node, source, crossed)?;
+                let field_node = node.child_by_field_name("field")?;
+                let field_name = get_node_text(&field_node, source).to_string();
+                Some(LValue::Field(Rc::new(base), field_name))
+            }
+            "pointer_expression" => {
+                if is_dereference_expression(node, source) {
+                    *crossed = true;
+                }
+                let base_node = node.child_by_field_name("argument")?;
+                walk(&base_node, source, crossed)
+            }
+            "subscript_expression" => {
+                let base_node = node.child_by_field_name("argument")?;
+                walk(&base_node, source, crossed)
+            }
+            "parenthesized_expression" => {
+                for i in 0..node.child_count() {
+                    let child = node.child(i)?;
+                    if child.kind() != "(" && child.kind() != ")" {
+                        return walk(&child, source, crossed);
+                    }
+                }
+                None
+            }
+            "cast_expression" => {
+                let value = node.child_by_field_name("value")?;
+                walk(&value, source, crossed)
+            }
+            _ => None,
+        }
+    }
+    let mut crossed = false;
+    let lv = walk(node, source, &mut crossed)?;
+    Some((lv, crossed))
 }
 
 /// Single-hop alias table: `alias -> target`.
@@ -181,6 +236,21 @@ mod tests {
         map.insert(b.clone(), a.clone());
         // Must terminate rather than looping forever.
         let _ = resolve_canonical(&map, &a);
+    }
+
+    #[test]
+    fn crossing_deref_distinguishes_star_from_amp() {
+        let (tree1, src1) = parse_expr("*p;");
+        let n1 = first_expr_node(&tree1, &src1, "pointer_expression");
+        let (lv1, crossed1) = lvalue_of_crossing_deref(&n1, &src1).expect("lvalue");
+        assert_eq!(lv1, LValue::Var("p".to_string()));
+        assert!(crossed1);
+
+        let (tree2, src2) = parse_expr("&p;");
+        let n2 = first_expr_node(&tree2, &src2, "pointer_expression");
+        let (lv2, crossed2) = lvalue_of_crossing_deref(&n2, &src2).expect("lvalue");
+        assert_eq!(lv2, LValue::Var("p".to_string()));
+        assert!(!crossed2);
     }
 
     #[test]

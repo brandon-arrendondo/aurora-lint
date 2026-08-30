@@ -373,48 +373,16 @@ impl Con34C {
         {
             return Self::declaration_is_static(&decl, source);
         }
-        Self::global_declaration_is_static(ident_node, var_name, source)
+        // Fallback for file-scope (global) declarations, which
+        // `find_enclosing_declaration_for_identifier` intentionally does not
+        // resolve to (it only walks enclosing `compound_statement` blocks).
+        ast_utils::find_global_declaration_for_identifier(ident_node, var_name, source)
+            .is_some_and(|decl| Self::declaration_is_static(&decl, source))
     }
 
     /// True if a `declaration` node carries the `static` storage-class specifier.
     fn declaration_is_static(decl: &Node, source: &str) -> bool {
-        (0..decl.child_count()).any(|i| {
-            decl.child(i).is_some_and(|c| {
-                c.kind() == "storage_class_specifier" && get_node_text(&c, source) == "static"
-            })
-        })
-    }
-
-    /// Fallback for file-scope (global) declarations, which
-    /// `find_enclosing_declaration_for_identifier` intentionally does not
-    /// resolve to (it only walks enclosing `compound_statement` blocks).
-    fn global_declaration_is_static(ident_node: &Node, var_name: &str, source: &str) -> bool {
-        let mut top = *ident_node;
-        while let Some(p) = top.parent() {
-            top = p;
-        }
-        (0..top.child_count()).any(|i| {
-            top.child(i).is_some_and(|decl| {
-                decl.kind() == "declaration"
-                    && Self::declaration_is_static(&decl, source)
-                    && Self::declaration_binds_name(&decl, var_name, source)
-            })
-        })
-    }
-
-    /// True if a `declaration` node binds `name` via a direct declarator or
-    /// an `init_declarator`, including comma-separated multi-declarators.
-    fn declaration_binds_name(decl: &Node, name: &str, source: &str) -> bool {
-        (0..decl.child_count()).any(|i| {
-            decl.child(i).is_some_and(|child| {
-                let declarator = match child.kind() {
-                    "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
-                    "identifier" | "pointer_declarator" | "array_declarator" => child,
-                    _ => return false,
-                };
-                declarator_identifier(&declarator, source).as_deref() == Some(name)
-            })
-        })
+        ast_utils::declaration_has_storage_class(decl, "static", source)
     }
 
     fn is_likely_allocated_param(&self, var_name: &str) -> bool {

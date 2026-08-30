@@ -682,7 +682,7 @@ fn identifier_is_declared_pointer(ident_node: &Node, name: &str, source: &str) -
         ast_utils::IdentifierBinding::Parameter(ptype) => classify_type_text(&ptype),
         ast_utils::IdentifierBinding::Local(decl) | ast_utils::IdentifierBinding::Global(decl) => {
             let declarator = declaration_declarator_for(&decl, name, source)?;
-            if null_state::is_pointer_declarator(&declarator) {
+            if null_state::is_pointer_or_array_declarator(&declarator) {
                 return Some(true);
             }
             // A structural non-pointer declarator (bare identifier or array)

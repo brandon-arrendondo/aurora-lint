@@ -250,8 +250,10 @@ pub fn resolve_identifier_binding<'a>(
 
 /// Extract the type text (tokens before the declarator) of a `declaration`
 /// node, e.g. `time_t x;` -> `"time_t"`, `static unsigned int x;` ->
-/// `"static unsigned int"`.
-fn declaration_type_text(decl: &Node, source: &str) -> String {
+/// `"static unsigned int"`. Public because this exact scan was independently
+/// hand-rolled in ARR39-C, MSC15-C, and FIO34-C (task 387/584) before being
+/// consolidated here.
+pub fn declaration_type_text(decl: &Node, source: &str) -> String {
     (0..decl.child_count())
         .filter_map(|i| decl.child(i))
         .take_while(|c| {
@@ -263,6 +265,49 @@ fn declaration_type_text(decl: &Node, source: &str) -> String {
         .map(|c| get_node_text(&c, source))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// True if a `declaration` node carries the given `type_qualifier` (e.g.
+/// `"const"`, `"volatile"`) as a direct child. Only looks at the
+/// declaration's own qualifiers, not a specific declarator's — matches the
+/// pattern already used by callers checking e.g. `const char *ptr;`.
+pub fn declaration_has_qualifier(decl: &Node, qualifier: &str, source: &str) -> bool {
+    (0..decl.child_count()).any(|i| {
+        decl.child(i)
+            .is_some_and(|c| c.kind() == "type_qualifier" && get_node_text(&c, source) == qualifier)
+    })
+}
+
+/// True if a `declaration` node carries the given `storage_class_specifier`
+/// (e.g. `"static"`, `"extern"`) as a direct child.
+pub fn declaration_has_storage_class(decl: &Node, storage_class: &str, source: &str) -> bool {
+    (0..decl.child_count()).any(|i| {
+        decl.child(i).is_some_and(|c| {
+            c.kind() == "storage_class_specifier" && get_node_text(&c, source) == storage_class
+        })
+    })
+}
+
+/// True if `node` is a `*p`-style dereference. `*p` and `&p` both parse as
+/// `pointer_expression` in this grammar, disambiguated only by the
+/// `operator` field's text -- conflating them is a real FP source (task
+/// 391's MEM33-C fix, MEM30-C's `scope_derefs_var`), so this is the shared
+/// primitive rather than each rule re-deriving the field check.
+pub fn is_dereference_expression(node: &Node, source: &str) -> bool {
+    node.kind() == "pointer_expression"
+        && node
+            .child_by_field_name("operator")
+            .is_some_and(|o| get_node_text(&o, source) == "*")
+}
+
+/// True if `node` is a `&p`-style address-of expression. See
+/// [`is_dereference_expression`].
+#[allow(dead_code)]
+pub fn is_address_of_expression(node: &Node, source: &str) -> bool {
+    node.kind() == "pointer_expression"
+        && node
+            .child_by_field_name("operator")
+            .is_some_and(|o| get_node_text(&o, source) == "&")
 }
 
 /// Convenience wrapper over [`resolve_identifier_binding`] for callers that

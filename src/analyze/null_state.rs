@@ -347,7 +347,9 @@ fn process_declaration_null(
             "pointer_declarator" | "identifier" => {
                 // Bare uninitialized pointer: "int *ptr;"
                 let var_name = get_identifier_from_declarator(&child, source);
-                if !var_name.is_empty() && is_pointer_declarator(&child) && !contains_array(&child)
+                if !var_name.is_empty()
+                    && is_pointer_or_array_declarator(&child)
+                    && !contains_array(&child)
                 {
                     declared_pointers.insert(var_name.clone());
                     state.insert(var_name, NullState::PossiblyNull);
@@ -375,7 +377,7 @@ fn process_init_declarator_null(
     if var_name.is_empty() {
         return;
     }
-    let is_ptr = is_pointer_declarator(&declarator) && !contains_array(&declarator);
+    let is_ptr = is_pointer_or_array_declarator(&declarator) && !contains_array(&declarator);
     if is_ptr {
         declared_pointers.insert(var_name.clone());
     }
@@ -914,7 +916,7 @@ fn collect_file_scope_pointer_decls(
                     if let Some(declarator) = child.child(j) {
                         if declarator.kind() == "init_declarator" {
                             if let Some(decl) = declarator.child_by_field_name("declarator") {
-                                if is_pointer_declarator(&decl) && !contains_array(&decl) {
+                                if is_pointer_or_array_declarator(&decl) && !contains_array(&decl) {
                                     let name = get_identifier_from_declarator(&decl, source);
                                     if !name.is_empty() {
                                         global_vars.insert(name.clone());
@@ -932,7 +934,8 @@ fn collect_file_scope_pointer_decls(
                                     }
                                 }
                             }
-                        } else if is_pointer_declarator(&declarator) && !contains_array(&declarator)
+                        } else if is_pointer_or_array_declarator(&declarator)
+                            && !contains_array(&declarator)
                         {
                             // Direct declarator without init (e.g., `static char *p;`)
                             let name = get_identifier_from_declarator(&declarator, source);
@@ -1550,7 +1553,7 @@ fn collect_param_pointer_state(
                         if let Some(param_decl) = param.child_by_field_name("declarator") {
                             let name = get_identifier_from_declarator(&param_decl, source);
                             if !name.is_empty()
-                                && (is_pointer_declarator(&param_decl)
+                                && (is_pointer_or_array_declarator(&param_decl)
                                     || param_text.contains('*')
                                     || param_text.starts_with("FILE")
                                     || name.contains("callback"))
@@ -1673,14 +1676,26 @@ pub fn is_cast_to_null(node: &Node, source: &str) -> bool {
 }
 
 /// Whether `declarator` is, or nests, a pointer or array declarator.
-pub fn is_pointer_declarator(declarator: &Node) -> bool {
+///
+/// Not the same predicate as
+/// `declarator_utils::is_pointer_declarator` (task 584): that one asks
+/// "does a `pointer_declarator` occur anywhere in this tree", so a bare
+/// array (`int arr[10];`, no pointer anywhere) is `false`. This one
+/// short-circuits `true` at the first `array_declarator` it sees, so a
+/// bare array is `true` here. Most call sites in this file pair this with
+/// `!contains_array(..)`, which cancels the difference back out to "has a
+/// pointer_declarator and is not an array" -- but `EXP34-C` calls this one
+/// alone (arrays decay to pointers at a call site, which is the case it
+/// wants to treat as "declared pointer"), so the two functions cannot be
+/// collapsed into one without changing that behavior.
+pub fn is_pointer_or_array_declarator(declarator: &Node) -> bool {
     match declarator.kind() {
         "pointer_declarator" => true,
         "array_declarator" => true,
         _ => {
             for i in 0..declarator.child_count() {
                 if let Some(child) = declarator.child(i) {
-                    if is_pointer_declarator(&child) {
+                    if is_pointer_or_array_declarator(&child) {
                         return true;
                     }
                 }

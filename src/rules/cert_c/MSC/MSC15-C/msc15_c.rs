@@ -31,64 +31,17 @@ impl Msc15C {
         Msc15C
     }
 
-    /// Extract the type text (tokens before the declarator) of a `declaration`
-    /// node, e.g. `unsigned int x;` -> `"unsigned int"`.
-    fn type_text_for_decl(decl: &Node, source: &str) -> String {
-        (0..decl.child_count())
-            .filter_map(|i| decl.child(i))
-            .take_while(|c| {
-                !matches!(
-                    c.kind(),
-                    "identifier" | "init_declarator" | "pointer_declarator" | "array_declarator"
-                )
-            })
-            .map(|c| ast_utils::get_node_text(&c, source))
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    /// Fallback for file-scope (global) declarations, which
-    /// `find_enclosing_declaration_for_identifier` intentionally does not
-    /// resolve to (it only walks enclosing `compound_statement` blocks).
-    fn global_decl_is_unsigned(&self, ident_node: &Node, name: &str, source: &str) -> bool {
-        let mut top = *ident_node;
-        while let Some(p) = top.parent() {
-            top = p;
-        }
-        for i in 0..top.child_count() {
-            let Some(decl) = top.child(i) else { continue };
-            if decl.kind() != "declaration" {
-                continue;
-            }
-            let has_name = query::find_descendants_of_kind(decl, "identifier")
-                .iter()
-                .any(|n| ast_utils::get_node_text(n, source) == name);
-            if has_name && ast_utils::is_unsigned_type(&Self::type_text_for_decl(&decl, source)) {
-                return true;
-            }
-        }
-        false
-    }
-
     /// Resolve whether the identifier at this specific use site is declared
     /// (locally, as a parameter, or at file scope) with an unsigned type.
     /// Scope- and shadowing-aware: two different functions (or blocks)
     /// declaring a same-named variable of a different type are not conflated.
+    /// Uses the shared `ast_utils::resolve_identifier_type` fallback chain
+    /// (task 387/584) rather than hand-rolling the local/parameter/global
+    /// resolution independently.
     fn declared_type_is_unsigned(&self, ident: &Node, source: &str) -> bool {
         let name = ast_utils::get_node_text(ident, source);
-        if let Some(decl) =
-            ast_utils::find_enclosing_declaration_for_identifier(ident, name, source)
-        {
-            return ast_utils::is_unsigned_type(&Self::type_text_for_decl(&decl, source));
-        }
-        if let Some(func) = ast_utils::find_containing_function(ident) {
-            if let Some(params) = ast_utils::get_function_parameters(&func, source) {
-                if let Some((_, ptype)) = params.iter().find(|(n, _)| n == name) {
-                    return ast_utils::is_unsigned_type(ptype) || ptype.contains("unsigned");
-                }
-            }
-        }
-        self.global_decl_is_unsigned(ident, name, source)
+        ast_utils::resolve_identifier_type(ident, name, source)
+            .is_some_and(|t| ast_utils::is_unsigned_type(&t) || t.contains("unsigned"))
     }
 
     fn traverse(&self, root: &Node, source: &str, violations: &mut Vec<RuleViolation>) {

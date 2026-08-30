@@ -152,7 +152,7 @@ impl Env34C {
         if let Some(decl) =
             ast_utils::find_enclosing_declaration_for_identifier(left_node, var_name, source)
         {
-            return Self::declaration_has_const_qualifier(&decl, source);
+            return ast_utils::declaration_has_qualifier(&decl, "const", source);
         }
 
         // Not a local declaration -- check whether it's a `const`-qualified
@@ -165,20 +165,6 @@ impl Env34C {
             }
         }
 
-        false
-    }
-
-    /// True if a `declaration` node carries a `const` type qualifier among
-    /// its direct children (same pattern as `is_const_pointer_declarator`
-    /// below, which checks the init-declarator's parent declaration).
-    fn declaration_has_const_qualifier(decl: &Node, source: &str) -> bool {
-        for i in 0..decl.child_count() {
-            if let Some(child) = decl.child(i) {
-                if child.kind() == "type_qualifier" && get_node_text(&child, source) == "const" {
-                    return true;
-                }
-            }
-        }
         false
     }
 

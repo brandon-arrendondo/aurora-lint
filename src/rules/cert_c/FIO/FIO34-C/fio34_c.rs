@@ -19,10 +19,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{
-    find_containing_function, find_enclosing_declaration_for_identifier, get_function_parameters,
-    get_node_text, is_function_parameter,
-};
+use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -326,22 +323,9 @@ impl Fio34C {
         if node.kind() != "identifier" {
             return false;
         }
-        let var_name = get_node_text(node, source);
-        let var_name = var_name.trim();
-
-        if let Some(decl) = find_enclosing_declaration_for_identifier(node, var_name, source) {
-            return Self::declaration_type_is_char(&decl, source);
-        }
-        if let Some(func) = find_containing_function(node) {
-            if is_function_parameter(&func, var_name, source) {
-                if let Some(params) = get_function_parameters(&func, source) {
-                    if let Some((_, param_type)) = params.iter().find(|(n, _)| n == var_name) {
-                        return Self::type_text_is_char(param_type);
-                    }
-                }
-            }
-        }
-        false
+        let var_name = get_node_text(node, source).trim();
+        ast_utils::resolve_identifier_type(node, var_name, source)
+            .is_some_and(|t| Self::type_text_is_char(&t))
     }
 
     /// Helper: Check if a variable is of wchar_t type (should be wint_t for getwc)
@@ -352,40 +336,9 @@ impl Fio34C {
         if node.kind() != "identifier" {
             return false;
         }
-        let var_name = get_node_text(node, source);
-        let var_name = var_name.trim();
-
-        if let Some(decl) = find_enclosing_declaration_for_identifier(node, var_name, source) {
-            return Self::declaration_type_is_wchar(&decl, source);
-        }
-        if let Some(func) = find_containing_function(node) {
-            if is_function_parameter(&func, var_name, source) {
-                if let Some(params) = get_function_parameters(&func, source) {
-                    if let Some((_, param_type)) = params.iter().find(|(n, _)| n == var_name) {
-                        return Self::type_text_is_wchar(param_type);
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    /// Extract the type-specifier text of a `declaration` node (everything
-    /// before the declarator), e.g. `char c;` -> `"char"`, `unsigned char
-    /// *p;` -> `"unsigned char"`. Mirrors the pattern used by ARR39-C's
-    /// `declaration_type_for_name`.
-    fn declaration_type_text(decl: &Node, source: &str) -> String {
-        (0..decl.child_count())
-            .filter_map(|i| decl.child(i))
-            .take_while(|c| {
-                !matches!(
-                    c.kind(),
-                    "identifier" | "init_declarator" | "pointer_declarator" | "array_declarator"
-                )
-            })
-            .map(|c| get_node_text(&c, source))
-            .collect::<Vec<_>>()
-            .join(" ")
+        let var_name = get_node_text(node, source).trim();
+        ast_utils::resolve_identifier_type(node, var_name, source)
+            .is_some_and(|t| Self::type_text_is_wchar(&t))
     }
 
     /// True if the type text is `char`/`unsigned char`/`signed char` (and
@@ -398,14 +351,6 @@ impl Fio34C {
     /// True if the type text is `wchar_t`.
     fn type_text_is_wchar(type_text: &str) -> bool {
         type_text.trim().contains("wchar_t")
-    }
-
-    fn declaration_type_is_char(decl: &Node, source: &str) -> bool {
-        Self::type_text_is_char(&Self::declaration_type_text(decl, source))
-    }
-
-    fn declaration_type_is_wchar(decl: &Node, source: &str) -> bool {
-        Self::type_text_is_wchar(&Self::declaration_type_text(decl, source))
     }
 
     /// Check for casts to char of character input function results

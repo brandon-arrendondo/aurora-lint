@@ -1,6 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{self, get_identifier_from_declarator, get_node_text};
+use crate::utility::cert_c::ast_utils::{self, get_identifier_from_declarator};
 use crate::utility::cert_c::declarator_utils::{is_array_declarator, is_pointer_declarator};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
@@ -611,17 +611,7 @@ impl Arr39C {
     /// Handles comma-separated multi-declarator declarations (`char *a, b;`)
     /// where declarators can differ in pointer-ness.
     fn declaration_type_for_name(decl: &Node, name: &str, source: &str) -> Option<(String, bool)> {
-        let type_text: String = (0..decl.child_count())
-            .filter_map(|i| decl.child(i))
-            .take_while(|c| {
-                !matches!(
-                    c.kind(),
-                    "identifier" | "init_declarator" | "pointer_declarator" | "array_declarator"
-                )
-            })
-            .map(|c| get_node_text(&c, source))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let type_text = ast_utils::declaration_type_text(decl, source);
 
         for i in 0..decl.child_count() {
             let Some(child) = decl.child(i) else { continue };
