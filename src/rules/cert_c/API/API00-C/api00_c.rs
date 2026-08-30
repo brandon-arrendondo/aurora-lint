@@ -456,7 +456,14 @@ impl Api00C {
     /// - if (!ptr) return;
     /// - if (ptr == NULL) return;
     /// - if (!ptr || !ptr2) return;
-    /// - assert(ptr != NULL);
+    ///
+    /// Deliberately does NOT accept a bare `assert(ptr != NULL)`/`ASSERT(...)`
+    /// as validation (task 646): assert calls compile to nothing under
+    /// NDEBUG/release builds, so they don't satisfy API00-C's requirement
+    /// that the check survive into production code. Confirmed empirically by
+    /// task 644's full ground-truth re-audit: the single largest driver of
+    /// mislabeled API00-C false positives was exactly this -- a compiled-out
+    /// assert being credited as real validation.
     ///
     /// Uses an explicit stack instead of recursion: this only descends into
     /// preprocessor-block children, so it's bounded by preprocessor nesting
@@ -483,12 +490,6 @@ impl Api00C {
                         validated,
                     ),
                     "return_statement" => Self::check_return_statement_validation(
-                        &child,
-                        pointer_params,
-                        source,
-                        validated,
-                    ),
-                    "expression_statement" => Self::check_assert_expression_validation(
                         &child,
                         pointer_params,
                         source,
@@ -585,26 +586,6 @@ impl Api00C {
                 || stmt_text.contains(&format!("!{}", param))
                 || stmt_text.contains(&format!("! {}", param))
             {
-                validated.insert(param.clone());
-            }
-        }
-    }
-
-    /// `expression_statement` case of [`check_validation_patterns`]: an
-    /// `assert()`/`ASSERT()` call that mentions both the parameter and
-    /// `NULL` counts as validation.
-    fn check_assert_expression_validation(
-        child: &Node,
-        pointer_params: &[String],
-        source: &str,
-        validated: &mut HashSet<String>,
-    ) {
-        let stmt_text = get_node_text(child, source);
-        if !stmt_text.contains("assert") && !stmt_text.contains("ASSERT") {
-            return;
-        }
-        for param in pointer_params {
-            if stmt_text.contains(param) && stmt_text.contains("NULL") {
                 validated.insert(param.clone());
             }
         }
