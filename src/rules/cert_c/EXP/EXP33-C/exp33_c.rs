@@ -10,7 +10,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state::{self, InitAnalysisResult, InitState, InitStateMap};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -396,6 +396,91 @@ fn is_function_macro_output_arg(
     false
 }
 
+/// The nearest enclosing `#ifdef`/`#ifndef` guard around `node`, as a key
+/// combining the directive spelling and the guarded macro name (e.g.
+/// `"#ifdef:CONFIG_ELOOP_SELECT"`) so `#ifdef X` and `#ifndef X` -- opposite
+/// conditions -- never compare equal. `tree-sitter-c` parses both directives
+/// as the same `preproc_ifdef` node kind (field `name` for the macro,
+/// `alternative` for a trailing `#else`/`#elif`), distinguished only by the
+/// literal leading token. Returns `None` when `node` is in the `#else`/`#elif`
+/// alternative of the nearest conditional (a different, unrelated branch) or
+/// there is no enclosing conditional before `boundary` (the function body).
+/// See [`all_write_sites_ifdef_correlated`] for why this matters (task 590).
+fn enclosing_ifdef_guard_key(node: &Node, boundary: &Node, source: &str) -> Option<String> {
+    let mut current = *node;
+    while current.id() != boundary.id() {
+        let parent = current.parent()?;
+        if parent.kind() == "preproc_ifdef" {
+            let is_alt = parent
+                .child_by_field_name("alternative")
+                .is_some_and(|alt| alt.id() == current.id());
+            if is_alt {
+                return None;
+            }
+            let directive = parent.child(0).map(|c| get_node_text(&c, source))?;
+            let name = parent.child_by_field_name("name")?;
+            return Some(format!("{directive}:{}", get_node_text(&name, source)));
+        }
+        if parent.id() == boundary.id() {
+            return None;
+        }
+        current = parent;
+    }
+    None
+}
+
+/// True if `var_name` has at least one write site in `body` (a plain
+/// `var = …` assignment, or `var = …` as part of its own declaration) and
+/// EVERY such write site sits under the identical `#ifdef`/`#ifndef` guard
+/// as `read_guard_key` (from [`enclosing_ifdef_guard_key`] at the read site).
+///
+/// Motivation (task 590): sqc has no preprocessor, so
+/// `cfg::process_preproc_conditional` models each `#ifdef GUARD ... #endif`
+/// occurrence as an independent "maybe compiled, maybe not" branch+join.
+/// When a variable's only writes AND the read in question are all under the
+/// textually identical guard, that independence assumption is wrong -- one
+/// macro's defined-ness is a single fixed fact for the whole translation
+/// unit, so every occurrence of `GUARD` resolves the same way, and the
+/// dataflow's MaybeUninitialized is a modeling artifact, not a real risk.
+/// Conservative by construction: any write with no guard at all, a
+/// DIFFERENT guard, or zero writes found at all, returns `false` (keep
+/// flagging as before) -- this only suppresses the exact correlated shape.
+fn all_write_sites_ifdef_correlated(
+    body: &Node,
+    var_name: &str,
+    read_guard_key: &str,
+    source: &str,
+) -> bool {
+    let mut found_any = false;
+    for assign in query::find_descendants_of_kind(*body, "assignment_expression") {
+        let Some(left) = assign.child_by_field_name("left") else {
+            continue;
+        };
+        if left.kind() != "identifier" || get_node_text(&left, source) != var_name {
+            continue;
+        }
+        found_any = true;
+        match enclosing_ifdef_guard_key(&assign, body, source) {
+            Some(key) if key == read_guard_key => {}
+            _ => return false,
+        }
+    }
+    for init_decl in query::find_descendants_of_kind(*body, "init_declarator") {
+        let Some(declarator) = init_decl.child_by_field_name("declarator") else {
+            continue;
+        };
+        if get_identifier_from_declarator(&declarator, source) != var_name {
+            continue;
+        }
+        found_any = true;
+        match enclosing_ifdef_guard_key(&init_decl, body, source) {
+            Some(key) if key == read_guard_key => {}
+            _ => return false,
+        }
+    }
+    found_any
+}
+
 /// Append-style functions that both read (find the existing null terminator)
 /// and write their first argument. `get_output_arg_indices` models arg 0 as
 /// pure output so ordinary reads of it don't false-positive elsewhere; this
@@ -678,6 +763,29 @@ fn check_identifier_read(
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // sqc has no preprocessor, so an `#ifdef GUARD ... #endif` block is
+    // modeled as possibly-compiled-or-possibly-skipped, independently at
+    // each occurrence (see `cfg::process_preproc_conditional`). When a
+    // variable is written ONLY inside one or more `#ifdef`/`#ifndef` blocks
+    // and this read sits inside a block with the textually IDENTICAL guard
+    // (same directive, same macro name), the two are not actually
+    // independent: `GUARD`'s defined-ness is one fixed fact for the whole
+    // translation unit, so in every real compiled configuration the write
+    // and this read either both happen or both don't. Flagging
+    // MaybeUninitialized here is an artifact of modeling each occurrence as
+    // an independent coin flip, not a real risk (task 590; hostap's
+    // eloop_run: `rfds` is declared+malloc'd only under
+    // `#ifdef CONFIG_ELOOP_SELECT` and read here under the identical
+    // guard). Scoped to MaybeUninitialized only -- a bare Uninitialized
+    // read (no write anywhere) is unaffected by this and still flagged.
+    if matches!(info.state, InitState::MaybeUninitialized) {
+        if let Some(read_guard) = enclosing_ifdef_guard_key(node, body, source) {
+            if all_write_sites_ifdef_correlated(body, &var_name, &read_guard, source) {
+                return;
             }
         }
     }
