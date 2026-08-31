@@ -96,3 +96,13 @@ anyhow = "1.0"
 # build artifact. Line-tables-only keeps backtraces/line numbers useful
 # for `cargo test`/`cargo build` while cutting target/ growth drastically.
 debug = "line-tables-only"
+
+# Dependencies are never stepped through; their line tables are pure target/
+# weight. Own-crate debug info (above) is what backtraces actually need.
+[profile.dev.package."*"]
+debug = false
+
+# Same for build scripts and their deps (winres/walkdir/serde/toml compiled
+# for the host, then run once).
+[profile.dev.build-override]
+debug = false
