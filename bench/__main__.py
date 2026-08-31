@@ -358,7 +358,7 @@ def cmd_realworld_score(args):
 
 def cmd_realworld_import_labels(args):
     import csv
-    from datetime import datetime
+    from datetime import datetime, timezone
     db = BenchDB()
 
     # Map project -> codebase_commit from the run the audit was sampled against.
@@ -373,7 +373,7 @@ def cmd_realworld_import_labels(args):
 
     rows = list(csv.DictReader(open(args.csv)))
     labels, skipped_no_commit = [], 0
-    adjudicated_at = args.date or datetime.now().isoformat()
+    adjudicated_at = args.date or datetime.now(timezone.utc).isoformat()
     for row in rows:
         project = row["project"]
         commit = commits.get(project)
@@ -562,9 +562,9 @@ def cmd_calibration_sample(args):
 
 def cmd_calibration_import(args):
     import csv
-    from datetime import datetime
+    from datetime import datetime, timezone
     db = BenchDB()
-    adjudicated_at = args.date or datetime.now().isoformat()
+    adjudicated_at = args.date or datetime.now(timezone.utc).isoformat()
     labels, blank = [], 0
     for row in csv.DictReader(open(args.csv)):
         verdict = (row.get("verdict") or "").strip()

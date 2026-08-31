@@ -673,7 +673,7 @@ def run_tool(tool: str, cwe_list: list[str] | None = None,
 
     # Save results
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_path = RESULTS_DIR / f"{tool}_{timestamp}.json"
     out_path.write_text(json.dumps(results, indent=2))
 

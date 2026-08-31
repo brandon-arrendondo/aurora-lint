@@ -11,7 +11,7 @@ separate benchmarking_db repo -- this module has no knowledge of it.
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1085,7 +1085,7 @@ class BenchDB:
             The realworld_runs row id.
         """
         import os
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         # Parse version/commit from dir name: sqc-{version}-{sha}
         parts = version_dir.split("-", 2)
@@ -1099,7 +1099,7 @@ class BenchDB:
             run_id = self.create_realworld_run(
                 sqc_version=version,
                 commit_sha=commit,
-                scanned_at=datetime.now().isoformat(),
+                scanned_at=datetime.now(timezone.utc).isoformat(),
                 hostname=machine.get("hostname"),
                 cpu_model=machine.get("cpu_model"),
                 cpu_cores=machine.get("cpu_cores"),
@@ -1593,10 +1593,10 @@ class BenchDB:
 
         Returns {'inserted': n, 'updated': n, 'skipped': n}.
         """
-        from datetime import datetime
+        from datetime import datetime, timezone
         if not labels:
             return {"inserted": 0, "updated": 0, "skipped": 0}
-        now = datetime.now().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         inserted = updated = skipped = 0
         with self._cursor() as cur:
             for lbl in labels:
@@ -1734,10 +1734,10 @@ class BenchDB:
         scored against. Skips (does not overwrite) an existing
         (gt_id, adjudicator) pair.
         """
-        from datetime import datetime
+        from datetime import datetime, timezone
         if not labels:
             return {"inserted": 0, "skipped": 0, "missing_gt": 0}
-        now = datetime.now().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         inserted = skipped = missing_gt = 0
         with self._cursor() as cur:
             for lbl in labels:
@@ -2129,7 +2129,7 @@ class BenchDB:
         finding in the file lacks a label — "done" requires every finding
         adjudicated. Returns a summary including any unlabeled findings.
         """
-        from datetime import datetime
+        from datetime import datetime, timezone
         run = self.get_realworld_run(run_id)
         if not run:
             return {"error": f"Run {run_id} not found"}
@@ -2161,7 +2161,7 @@ class BenchDB:
         n_fp = sum(l["verdict"] == "FP" for l in labels)
         n_unc = sum(l["verdict"] == "uncertain" for l in labels)
         n_fn = sum(l["verdict"] == "FN" for l in labels)
-        now = datetime.now().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         with self._cursor() as cur:
             cur.execute("""
                 INSERT INTO audited_files
@@ -2210,7 +2210,7 @@ class BenchDB:
 
     def set_corpus_scope(self, project: str, commit: str,
                          total_inscope_files: int, scope_note: str = None):
-        from datetime import datetime
+        from datetime import datetime, timezone
         with self._cursor() as cur:
             cur.execute("""
                 INSERT INTO audit_corpus_meta
@@ -2222,7 +2222,7 @@ class BenchDB:
                     scope_note=excluded.scope_note,
                     updated_at=excluded.updated_at
             """, (project, commit, total_inscope_files, scope_note,
-                  datetime.now().isoformat()))
+                  datetime.now(timezone.utc).isoformat()))
 
     def get_corpus_meta(self) -> dict:
         """{(project, commit): {total_inscope_files, scope_note}}."""
@@ -2295,9 +2295,9 @@ class BenchDB:
         """Snapshot the audited corpus (coverage + P/R) under a version tag for
         citation. Re-freezing the same version overwrites it."""
         import json as _json
-        from datetime import datetime
+        from datetime import datetime, timezone
         snap = {
-            "frozen_at": datetime.now().isoformat(),
+            "frozen_at": datetime.now(timezone.utc).isoformat(),
             "run_id": run_id,
             "score": self.score_audited_corpus(run_id),
         }
