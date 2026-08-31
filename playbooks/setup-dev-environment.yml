@@ -1,0 +1,151 @@
+---
+# Ansible playbook: base development environment for a node that will work
+# on tools_sqc itself (not just run benchmarks).
+#
+# Covers the three things CLAUDE.md/docs/benchmark-setup.rst assume are
+# already present but never actually provision:
+#   - Rust toolchain (rustup) -- rust-toolchain.toml pins channel 1.95.0 +
+#     clippy/rustfmt/rust-analyzer; rustup picks that up automatically the
+#     first time cargo/rustc runs inside the repo.
+#   - Native build deps for `cargo build` itself -- git2's vendored
+#     libgit2-sys build needs a C toolchain, cmake, and pkg-config even
+#     though sqc is otherwise pure Rust.
+#   - Docs toolchain -- docs/conf.py builds with Sphinx + sphinx_rtd_theme
+#     (HTML) and LaTeX/texlive (PDF); neither is installed by any existing
+#     playbook or documented anywhere in docs/.
+#   - invoke (pyinvoke) -- CLAUDE.md's version-bump workflow runs
+#     `invoke bump-version --new-version X.Y.Z`; there's a tasks.py at the
+#     repo root but nothing that installs the `invoke` package itself.
+#
+# NOT covered here, deliberately:
+#   - ansible itself. Bootstrapping the tool this playbook runs under from
+#     inside itself is circular -- install it before running this playbook,
+#     e.g. `sudo apt install -y ansible` or `pipx install ansible-core`.
+#   - Comparison tools (cppcheck, clang-tidy, Infer, Frama-C -- see
+#     install-static-analyzers.yml and docs/benchmark-setup.rst), the 9
+#     real-world codebase checkouts (see setup-benchmark-repos.yml),
+#     third-party library -I headers for those checkouts (also
+#     benchmark-setup.rst), and editor/terminal conveniences (vim, htop,
+#     tmux) -- none of those are dependencies of building or testing sqc.
+#
+# Usage:
+#   ansible-playbook playbooks/setup-dev-environment.yml -i "localhost," -c local \
+#     --ask-become-pass
+#   # Or into an existing/shared venv instead of a new dedicated one:
+#   ansible-playbook playbooks/setup-dev-environment.yml -i "localhost," -c local \
+#     --ask-become-pass -e dev_venv=~/data-enterprise/venv
+
+- name: Set up a tools_sqc development node
+  hosts: all
+  vars:
+    project_dir: "{{ playbook_dir }}/.."
+    # Override with -e dev_venv=... (e.g. an existing venv shared across
+    # repos, like ~/data-enterprise/venv) to install into it instead of
+    # creating a new dedicated one.
+    dev_venv: "{{ ansible_env.HOME }}/.venvs/sqc-dev"
+
+  tasks:
+    # ── Native build deps (cargo build itself) ───────────────────────────
+
+    - name: Install native build dependencies (git2-sys vendored libgit2 build)
+      become: true
+      apt:
+        name:
+          - build-essential
+          - cmake
+          - pkg-config
+          - libssl-dev
+          - zlib1g-dev
+        state: present
+        update_cache: true
+
+    # ── Rust toolchain ────────────────────────────────────────────────────
+
+    - name: Check if rustup is already installed
+      stat:
+        path: "{{ ansible_env.HOME }}/.cargo/bin/rustup"
+      register: rustup_bin
+
+    - name: Install rustup (non-interactive, default profile)
+      shell: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+          sh -s -- -y --default-toolchain none
+      args:
+        executable: /bin/bash
+      when: not rustup_bin.stat.exists
+
+    - name: Install the pinned toolchain + components from rust-toolchain.toml
+      command: "{{ ansible_env.HOME }}/.cargo/bin/rustup show"
+      args:
+        chdir: "{{ project_dir }}"
+      changed_when: false
+      # `rustup show`, run from inside the repo, reads rust-toolchain.toml
+      # and installs the pinned channel + components (clippy, rustfmt,
+      # rust-analyzer) on first invocation if not already present.
+
+    - name: Verify cargo is on PATH via rustup's shim
+      command: "{{ ansible_env.HOME }}/.cargo/bin/cargo --version"
+      args:
+        chdir: "{{ project_dir }}"
+      register: cargo_version_out
+      changed_when: false
+
+    - name: Confirm sqc itself builds
+      command: "{{ ansible_env.HOME }}/.cargo/bin/cargo build --release"
+      args:
+        chdir: "{{ project_dir }}"
+      register: cargo_build_out
+      changed_when: "'Compiling sqc' in cargo_build_out.stderr or 'Finished' in cargo_build_out.stderr"
+
+    # ── Docs toolchain (Sphinx HTML + LaTeX/PDF) + invoke ────────────────
+
+    - name: Install python3-venv and LaTeX toolchain for docs builds
+      become: true
+      apt:
+        name:
+          - python3-venv
+          - texlive-full
+        state: present
+        update_cache: true
+
+    - name: Create a dedicated venv for dev tooling (docs build + invoke)
+      command: python3 -m venv "{{ dev_venv }}"
+      args:
+        creates: "{{ dev_venv }}/bin/activate"
+
+    - name: Install Sphinx, the RTD theme, and invoke into the dev venv
+      pip:
+        name:
+          - sphinx
+          - sphinx-rtd-theme
+          - invoke
+        virtualenv: "{{ dev_venv }}"
+        state: present
+
+    - name: Verify the docs build (HTML)
+      command: >-
+        {{ dev_venv }}/bin/sphinx-build -b html
+        {{ project_dir }}/docs /tmp/sqc-docs-check
+      register: sphinx_check
+      changed_when: false
+
+    - name: Verify invoke sees tasks.py
+      command: "{{ dev_venv }}/bin/invoke --list"
+      args:
+        chdir: "{{ project_dir }}"
+      register: invoke_check
+      changed_when: false
+
+    # ── Summary ──────────────────────────────────────────────────────────
+
+    - name: Development environment summary
+      debug:
+        msg:
+          - "cargo:  {{ cargo_version_out.stdout }}"
+          - "dev venv: {{ dev_venv }}"
+          - ""
+          - "Activate the dev venv for docs builds and invoke tasks:"
+          - "  source {{ dev_venv }}/bin/activate"
+          - "  sphinx-build -b html docs docs/_build/html"
+          - "  sphinx-build -b latex docs docs/_build/latex && make -C docs/_build/latex"
+          - "  invoke bump-version --new-version X.Y.Z"
