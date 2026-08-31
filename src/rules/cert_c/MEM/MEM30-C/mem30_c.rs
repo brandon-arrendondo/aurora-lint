@@ -1768,6 +1768,10 @@ impl MemoryAnalyzer {
                         self.check_for_loop_pattern(&n, source, violations);
                         push_children(&mut stack, &n, source, &no_skip);
                     }
+                    "labeled_statement" => {
+                        self.reset_state_if_label_unreachable_by_fallthrough(&n);
+                        push_children(&mut stack, &n, source, &no_skip);
+                    }
                     "field_expression" => {
                         // Check for field access on freed memory (ptr->field)
                         self.check_field_access(&n, source, violations);
@@ -2061,6 +2065,36 @@ impl MemoryAnalyzer {
     /// real-world C (curl ldap.c / fopen.c, mosquitto ctrl_shell_*.c), where
     /// error branches free-then-`goto cleanup` / free-then-`break` (task 181
     /// pattern 2). The merge only recognized `return` before.
+    /// This walker processes a function body as one linear sequence,
+    /// threading free-tracking state through textual/AST order (if/switch
+    /// are the only forks). A label whose immediately preceding sibling
+    /// statement unconditionally diverges (return/goto/continue, or a bare
+    /// break) can only be reached via a `goto NAME;` elsewhere in the
+    /// function -- NOT by falling through from that preceding statement,
+    /// since it never falls through at all. Carrying forward the state
+    /// accumulated up to that point is therefore wrong: e.g. hostap's
+    /// eap_sim.c pattern (task 630) frees `resp` on the normal post-loop
+    /// fallthrough path, `return`s, and an `invalid:` label after that
+    /// return (reached only via a forward `goto invalid;` from inside the
+    /// loop) frees the SAME variable again on its own, mutually exclusive
+    /// path -- not a real double-free, but the linear walk sees the second
+    /// free right after the first with no reset in between. Reset the
+    /// free/realloc tracking state before processing the label's target
+    /// statement in that case.
+    fn reset_state_if_label_unreachable_by_fallthrough(&mut self, label_node: &Node) {
+        let Some(prev) = label_node.prev_named_sibling() else {
+            return;
+        };
+        if !Self::control_flow_diverges(&prev, true) {
+            return;
+        }
+        self.freed_vars.clear();
+        self.freed_at.clear();
+        self.nullified_vars.clear();
+        self.realloc_updated.clear();
+        self.realloc_invalidated.clear();
+    }
+
     fn unconditionally_diverges(&self, node: &Node) -> bool {
         Self::control_flow_diverges(node, true)
     }
