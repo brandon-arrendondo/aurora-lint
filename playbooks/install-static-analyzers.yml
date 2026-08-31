@@ -1,5 +1,6 @@
 ---
-# Ansible playbook: Install Infer and Frama-C on Debian 12 (bookworm)
+# Ansible playbook: Install Infer and Frama-C on Debian 12 (bookworm) or
+# Ubuntu 24.04 (noble)
 #
 # Usage:
 #   ansible-playbook playbooks/install-static-analyzers.yml --ask-become-pass
@@ -12,7 +13,7 @@
 #   infer --version
 #   frama-c -eva file.c
 
-- name: Install Infer and Frama-C on Debian 12
+- name: Install Infer and Frama-C on Debian 12 / Ubuntu 24.04
   hosts: all
   vars:
     infer_version: "1.2.0"
@@ -28,6 +29,11 @@
         path: "{{ infer_install_dir }}/bin/infer"
       register: infer_bin
 
+    - name: Check whether libtinfo.so.5 already exists (Infer links against it)
+      stat:
+        path: /usr/lib/x86_64-linux-gnu/libtinfo.so.5
+      register: libtinfo5_before
+
     - name: Install libtinfo5 (Infer links against libtinfo.so.5)
       become: true
       apt:
@@ -35,6 +41,21 @@
         state: present
       register: libtinfo5_apt
       failed_when: false
+      when: not libtinfo5_before.stat.exists
+      # Package present on Debian 12 (bookworm); REMOVED entirely on Ubuntu
+      # 24.04 (noble) -- there this always fails with "no package matching
+      # libtinfo5", not a distinguishable rc. The apt module does not
+      # reliably set `.rc` on a package-not-found failure (unlike a real
+      # command failure), so gating the symlink fallback on
+      # `libtinfo5_apt.rc` silently skipped it here: the fallback never ran,
+      # `infer --version` failed on the missing .so, and it looked like a
+      # clean, silent success. Gate on the actual filesystem state instead
+      # (below), which is true regardless of how the apt attempt failed.
+
+    - name: Re-check libtinfo.so.5 after the install attempt
+      stat:
+        path: /usr/lib/x86_64-linux-gnu/libtinfo.so.5
+      register: libtinfo5_after
 
     - name: Symlink libtinfo.so.6 as libtinfo.so.5 (fallback if libtinfo5 unavailable)
       become: true
@@ -42,7 +63,7 @@
         src: /usr/lib/x86_64-linux-gnu/libtinfo.so.6
         dest: /usr/lib/x86_64-linux-gnu/libtinfo.so.5
         state: link
-      when: libtinfo5_apt.rc is defined and libtinfo5_apt.rc != 0
+      when: not libtinfo5_after.stat.exists
 
     - name: Download Infer v{{ infer_version }} tarball
       get_url:
