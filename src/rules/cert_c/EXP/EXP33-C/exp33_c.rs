@@ -172,14 +172,41 @@ impl CertRule for Exp33C {
                     let mut invoked = HashSet::new();
                     collect_invoked_macro_names(node, source, &macros, &mut invoked);
                     let mut out_params = HashMap::new();
+                    let cross_file_summaries = self.cross_file_summaries.borrow();
                     for name in invoked {
-                        let idx = crate::analyze::macro_expand::macro_output_param_indices(
+                        let mut idx = crate::analyze::macro_expand::macro_output_param_indices(
                             &macros, &name,
                         );
+                        // No output arg from the macro's own body text? It may
+                        // still be a "pure forwarding" macro (curl's
+                        // `Curl_rand(a,b,c)` -> `Curl_rand_bytes(a,b,c)`) whose
+                        // forwarded function genuinely writes through one of
+                        // those args, per its own (already-computed)
+                        // FunctionSummary -- task 589.
+                        if idx.is_empty() {
+                            if let Some((callee, param_map)) =
+                                crate::analyze::macro_expand::macro_forwarding_target(
+                                    &macros, &name,
+                                )
+                            {
+                                if let Some(summary) = cross_file_summaries.get(&callee) {
+                                    let mut mapped: Vec<usize> = summary
+                                        .modifies_params
+                                        .iter()
+                                        .filter_map(|&callee_idx| {
+                                            param_map.get(callee_idx).copied().flatten()
+                                        })
+                                        .collect();
+                                    mapped.sort_unstable();
+                                    idx = mapped;
+                                }
+                            }
+                        }
                         if !idx.is_empty() {
                             out_params.insert(name, idx);
                         }
                     }
+                    drop(cross_file_summaries);
                     *self.macro_output_params.borrow_mut() = out_params;
                 }
             }

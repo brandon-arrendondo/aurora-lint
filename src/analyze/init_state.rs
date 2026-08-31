@@ -1233,6 +1233,11 @@ fn try_process_macro_output_params(
     let args = crate::analyze::macro_semantics::positional_args(node);
     for &idx in out_indices {
         if let Some(arg) = args.get(idx) {
+            // curl's `Curl_rand(data, (unsigned char *)rnd, rnd_size)` casts
+            // the output arg to match the forwarded function's real
+            // parameter type (task 589) -- unwrap it before checking for a
+            // bare identifier, or the cast node shape hides `rnd` entirely.
+            let arg = unwrap_cast(*arg);
             if arg.kind() == "identifier" {
                 let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
                 if let Some(info) = state.get_mut(name) {
@@ -1243,6 +1248,19 @@ fn try_process_macro_output_params(
         }
     }
     true
+}
+
+/// Unwrap any number of leading `(Type)` casts to the innermost operand,
+/// e.g. `(unsigned char *)rnd` -> `rnd`, `(int)(long)x` -> `x`.
+fn unwrap_cast(node: Node) -> Node {
+    let mut n = node;
+    while n.kind() == "cast_expression" {
+        let Some(inner) = n.child_by_field_name("value") else {
+            break;
+        };
+        n = inner;
+    }
+    n
 }
 
 /// Cross-file (in-repo) functions known from prescan `FunctionSummary::modifies_params`
@@ -1837,6 +1855,7 @@ fn get_text(_parent: &Node, child: &Node, source: &str) -> String {
 
 /// Extract variable name from function argument (handles &var, var).
 fn extract_var_from_arg(arg: &Node, source: &str) -> String {
+    let arg = &unwrap_cast(*arg);
     if arg.kind() == "pointer_expression" {
         let text = arg.utf8_text(source.as_bytes()).unwrap_or("");
         if text.starts_with('&') {
@@ -2322,6 +2341,45 @@ mod tests {
         assert!(
             !info.unwrap().state.is_unsafe(),
             "parse should be Initialized via the cross-file output-param call, even though the call sits inside an if-condition and 'parse' is a plain top-level declaration"
+        );
+    }
+
+    #[test]
+    fn test_macro_output_param_marks_initialized_through_cast() {
+        // task 589: curl's `Curl_rand(data, (unsigned char *)rnd, rnd_size)`
+        // casts the output arg to match the forwarded function's real
+        // parameter type. The macro-output-param index (1, "rnd") must still
+        // mark `rnd` Initialized even though the argument node at that
+        // position is a cast_expression, not a bare identifier.
+        let code = r#"
+        void foo(void) {
+            unsigned int *rnd;
+            if (Curl_rand(data, (unsigned char *)rnd, rnd_size) == 0)
+                use(rnd[0]);
+        }
+        "#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let func = tree.root_node().child(0).unwrap();
+        let body = func.child_by_field_name("body").unwrap();
+        let cfg = build_function_cfg(&func, code).unwrap();
+
+        let mut macro_output_params = HashMap::new();
+        macro_output_params.insert("Curl_rand".to_string(), vec![1usize]);
+        let config = InitAnalysisConfig {
+            macro_output_params,
+            ..Default::default()
+        };
+
+        let result =
+            analyze_init_states_with_statics(&cfg, &func, code, &InitStateMap::new(), &config);
+        let use_pos = code.find("rnd[0]").unwrap();
+        let info = get_var_info_at_with_config(&result, &cfg, &body, code, "rnd", use_pos, &config);
+        assert!(info.is_some());
+        assert!(
+            !info.unwrap().state.is_unsafe(),
+            "rnd should be Initialized via the macro-output-param call, even through the cast wrapping it"
         );
     }
 

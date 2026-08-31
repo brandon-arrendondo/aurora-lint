@@ -740,6 +740,146 @@ fn find_genuine_eq_after(chars: &[char], from: usize) -> Option<usize> {
     None
 }
 
+/// A "pure forwarding" macro: one whose entire body is a single call to
+/// another (real, non-macro) function, passing each of its own parameters
+/// through -- verbatim or wrapped in casts/parens -- as call arguments,
+/// possibly interleaved with extra literal arguments the macro adds itself.
+/// curl's `#define Curl_rand(a, b, c) Curl_rand_bytes(a, TRUE, b, c)` is the
+/// motivating case (task 589): the macro's own body has no assignment for
+/// [`macro_output_param_indices`] to see, but the forwarded function
+/// (`Curl_rand_bytes`) genuinely writes through one of those args, per its
+/// `FunctionSummary::modifies_params`. Callers resolve output-param indices
+/// for a forwarding macro by mapping the forwarded function's
+/// `modifies_params` (callee-argument-position-indexed) back through
+/// `param_map` to the macro's own parameter indices.
+///
+/// Returns `(forwarded_function_name, param_map)` where `param_map[i]` is
+/// `Some(j)` when the callee's `i`-th argument is (after stripping
+/// casts/grouping parens) exactly the macro's `j`-th own parameter,
+/// unmodified -- and `None` when that argument position is something else
+/// (a literal, an expression combining/transforming params, etc). This is
+/// deliberately conservative: a macro that recombines or drops a parameter
+/// before forwarding does not get positional credit for that argument, so a
+/// caller can never misattribute a write to the wrong macro parameter.
+pub fn macro_forwarding_target(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+) -> Option<(String, Vec<Option<usize>>)> {
+    let m = table.get(name)?;
+    if m.params.is_empty() {
+        return None;
+    }
+    let sentinels: Vec<String> = (0..m.params.len())
+        .map(|i| format!("__SQC_MFWD_{i}__"))
+        .collect();
+    let expanded = expand_invocation(table, name, &sentinels)?;
+    let body = expanded.trim().trim_end_matches(';').trim();
+
+    // Must be exactly one call expression: NAME(args), nothing else around it.
+    let open = body.find('(')?;
+    if !body.ends_with(')') {
+        return None;
+    }
+    let callee = body[..open].trim();
+    if callee.is_empty()
+        || !callee.starts_with(is_ident_start)
+        || !callee.chars().all(is_ident_char)
+    {
+        return None;
+    }
+    // Refuse chains into another macro -- callers resolve one hop via a real
+    // FunctionSummary, not another expansion.
+    if table.contains_key(callee) {
+        return None;
+    }
+
+    let args_text = &body[open + 1..body.len() - 1];
+    let args = split_top_level_commas(args_text);
+    let param_map = args
+        .iter()
+        .map(|arg| {
+            let unwrapped = unwrap_cast_and_parens(arg.trim());
+            sentinels.iter().position(|s| s == unwrapped)
+        })
+        .collect();
+    Some((callee.to_string(), param_map))
+}
+
+/// Split `text` on top-level commas (depth 0 parens), trimming nothing --
+/// callers trim each piece themselves. Empty input yields an empty `Vec`
+/// (zero arguments), matching a niladic call `f()`.
+fn split_top_level_commas(text: &str) -> Vec<&str> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b',' if depth == 0 => {
+                out.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&text[start..]);
+    out
+}
+
+/// Strip outer grouping parens and cast expressions from `s`, repeatedly:
+/// `(rnd)` -> `rnd`, `(unsigned char *)rnd` -> `rnd`,
+/// `((unsigned char *)(rnd))` -> `rnd`. Anything else (an operator, a
+/// function call, more than one token left after stripping a leading
+/// parenthesized group) is left as-is, since it can no longer be a bare
+/// parameter reference.
+fn unwrap_cast_and_parens(s: &str) -> &str {
+    let mut s = s.trim();
+    if !s.is_ascii() {
+        // Byte offsets below are computed over `chars()`; only valid to
+        // slice `s` with them when every char is one byte. Non-ASCII text
+        // in this position is not a bare parameter reference anyway.
+        return s;
+    }
+    loop {
+        if !s.starts_with('(') {
+            return s;
+        }
+        let chars: Vec<char> = s.chars().collect();
+        let mut depth = 0i32;
+        let mut close = None;
+        for (i, &c) in chars.iter().enumerate() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else { return s };
+        if close == chars.len() - 1 {
+            // The whole string is one parenthesized group: `(rnd)`.
+            s = s[1..s.len() - 1].trim();
+        } else {
+            // A leading group followed by more text: a cast, `(T)rest`.
+            let rest = s[close + 1..].trim();
+            if rest.is_empty() {
+                return s;
+            }
+            s = rest;
+        }
+    }
+}
+
 /// Deallocation functions recognized by [`macro_frees_param_indices`].
 const DEALLOC_FUNCTIONS: &[&str] = &["free", "fclose", "close"];
 
@@ -1271,6 +1411,54 @@ mod tests {
     fn frees_param_unrelated_macro_is_empty() {
         let t = table("#define MIN(x,y) (((x) < (y)) ? (x) : (y))\n");
         assert!(macro_frees_param_indices(&t, "MIN").is_empty());
+    }
+
+    #[test]
+    fn forwarding_target_curl_rand_shape() {
+        // curl's real (non-DEBUGBUILD) shape:
+        // #define Curl_rand(a, b, c) Curl_rand_bytes(a, b, c)
+        let t = table("#define Curl_rand(a, b, c) Curl_rand_bytes(a, b, c)\n");
+        let (callee, map) = macro_forwarding_target(&t, "Curl_rand").expect("forwarding");
+        assert_eq!(callee, "Curl_rand_bytes");
+        assert_eq!(map, vec![Some(0), Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn forwarding_target_curl_rand_debug_shape_with_literal_and_cast() {
+        // curl's DEBUGBUILD shape adds a literal arg and the real call site
+        // wraps the buffer arg in a cast: Curl_rand(data, (unsigned char *)rnd, rnd_size)
+        let t = table("#define Curl_rand(a, b, c) Curl_rand_bytes(a, TRUE, b, c)\n");
+        let (callee, map) = macro_forwarding_target(&t, "Curl_rand").expect("forwarding");
+        assert_eq!(callee, "Curl_rand_bytes");
+        // arg0 -> macro param 0 (a), arg1 is the literal TRUE (no mapping),
+        // arg2 -> macro param 1 (b), arg3 -> macro param 2 (c).
+        assert_eq!(map, vec![Some(0), None, Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn forwarding_target_rejects_transformed_param() {
+        // Not a pure passthrough: the callee sees `a+1`, not the bare param.
+        let t = table("#define BUMP_CALL(a) real_fn(a+1)\n");
+        let (callee, map) = macro_forwarding_target(&t, "BUMP_CALL").expect("forwarding");
+        assert_eq!(callee, "real_fn");
+        assert_eq!(map, vec![None]);
+    }
+
+    #[test]
+    fn forwarding_target_none_for_non_call_body() {
+        let t = table("#define MIN(x,y) (((x) < (y)) ? (x) : (y))\n");
+        assert!(macro_forwarding_target(&t, "MIN").is_none());
+    }
+
+    #[test]
+    fn forwarding_target_none_when_callee_is_itself_a_macro() {
+        let t = table("#define INNER(a) real_fn(a)\n#define OUTER(a) INNER(a)\n");
+        // OUTER expands (via rescan) all the way through INNER to real_fn, so
+        // this should resolve straight to the real function, not stop at the
+        // intermediate macro name.
+        let (callee, map) = macro_forwarding_target(&t, "OUTER").expect("forwarding");
+        assert_eq!(callee, "real_fn");
+        assert_eq!(map, vec![Some(0)]);
     }
 
     #[test]

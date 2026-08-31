@@ -910,6 +910,40 @@ fn check_returns_null(body: &Node, source: &str) -> bool {
     false
 }
 
+/// True if `body_text` writes through `param_name` via a bare dereference
+/// assignment, `*param_name = …`, tolerating an intervening `++`/`--`
+/// (`*param_name++ = …`) between the identifier and the `=`. Excludes
+/// comparison operators (`==`, `!=`, `<=`, `>=`) the same way the plain
+/// `*param =` check historically did.
+///
+/// The walking-pointer buffer-fill idiom this exists for --
+/// `*rnd++ = (unsigned char)(r & 0xFF);` -- is curl's `Curl_rand_bytes`
+/// (task 589/456: `EXP33-C`'s macro-forwarding fix for `Curl_rand` only
+/// pays off once the forwarded function's own summary actually recognizes
+/// its write). A literal `"*{param} ="` substring match (the previous
+/// check) misses this because of the `++` in between.
+fn body_has_deref_write(body_text: &str, param_name: &str) -> bool {
+    let pattern = format!("*{param_name}");
+    let mut search_from = 0;
+    while let Some(rel) = body_text[search_from..].find(&pattern) {
+        let pos = search_from + rel;
+        let after = pos + pattern.len();
+        search_from = after;
+        let rest = body_text[after..].trim_start();
+        let rest = rest
+            .strip_prefix("++")
+            .or_else(|| rest.strip_prefix("--"))
+            .unwrap_or(rest)
+            .trim_start();
+        if let Some(after_eq) = rest.strip_prefix('=') {
+            if !after_eq.starts_with('=') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Analyze how parameters are used in the function body. `body_text` may be
 /// a boundary-truncated slice of `body`'s source (see `analyze_function`);
 /// `collect_param_passthroughs` walks `body` itself and applies its own
@@ -1072,7 +1106,7 @@ fn analyze_param_usage(
         // would wrongly claim the callee initializes/writes the param. Require
         // an actual assignment operator after the arrow/subscript on the same
         // line, mirroring ARR00-C's own write-vs-read line scan.
-        if body_text.contains(&format!("*{} =", param_name))
+        if body_has_deref_write(body_text, param_name)
             || line_has_arrow_or_subscript_write(body_text, param_name)
             || is_fd_set_macro_write(body, source, param_name)
         {
@@ -2213,6 +2247,42 @@ mod tests {
         let summaries = parse_and_summarize(code);
         let summary = summaries.get("fill").unwrap();
         assert!(summary.modifies_params.contains(&0));
+    }
+
+    #[test]
+    fn test_modifies_params_detects_walking_pointer_deref_write() {
+        // curl's Curl_rand_bytes shape (task 589): `*rnd++ = value;` -- a
+        // bare deref-write with a post-increment interposed between the
+        // identifier and `=`, which a literal `"*rnd ="` substring match
+        // misses entirely.
+        let code = r#"
+        void fill_random(unsigned char *rnd, size_t num) {
+            while (num) {
+                *rnd++ = 0x42;
+                num--;
+            }
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let summary = summaries.get("fill_random").unwrap();
+        assert!(summary.modifies_params.contains(&0));
+    }
+
+    #[test]
+    fn test_modifies_params_deref_write_excludes_comparison() {
+        let code = r#"
+        void check(int *p) {
+            if (*p == 5) {
+                do_thing();
+            }
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let summary = summaries.get("check").unwrap();
+        assert!(
+            !summary.modifies_params.contains(&0),
+            "*p == 5 is a comparison, not a write"
+        );
     }
 
     #[test]
