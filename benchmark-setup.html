@@ -134,7 +134,7 @@ and configuring real-world codebases for benchmarking.</p>
 <h2>Benchmark Host Layout<a class="headerlink" href="#benchmark-host-layout" title="Link to this heading"></a></h2>
 <p>Every benchmark node needs one directory – <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code> (default
 <code class="docutils literal notranslate"><span class="pre">~/toolchain</span></code>) – holding the Juliet suite and every real-world codebase
-checkout. <code class="docutils literal notranslate"><span class="pre">bench/config.py</span></code> and <code class="docutils literal notranslate"><span class="pre">mcp_servers/realworld_server.py</span></code> both
+checkout. <code class="docutils literal notranslate"><span class="pre">bench/config.py</span></code> and <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> both
 read this from the <code class="docutils literal notranslate"><span class="pre">SQC_BENCH_ROOT</span></code> environment variable, or from a
 <code class="docutils literal notranslate"><span class="pre">.env</span></code> file at the repo root (copy <code class="docutils literal notranslate"><span class="pre">.env.example</span></code> – it’s gitignored, so
 each machine sets its own).</p>
@@ -296,7 +296,7 @@ sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w
 </div>
 <section id="per-project-include-paths">
 <h3>Per-Project Include Paths<a class="headerlink" href="#per-project-include-paths" title="Link to this heading"></a></h3>
-<p>The benchmark MCP server passes these automatically via the <code class="docutils literal notranslate"><span class="pre">includes</span></code> field in
+<p>The real-world runner passes these automatically via the <code class="docutils literal notranslate"><span class="pre">includes</span></code> field in
 each codebase’s config:</p>
 <table class="docutils align-default">
 <thead>
@@ -337,7 +337,7 @@ D-Bus, libgcrypt, libpcap</p></td>
 <section id="pinned-source-commits">
 <h3>Pinned Source Commits<a class="headerlink" href="#pinned-source-commits" title="Link to this heading"></a></h3>
 <p>All benchmark results are run against these exact commits – the full set of
-projects in <code class="docutils literal notranslate"><span class="pre">mcp_servers/realworld_server.py</span></code>’s <code class="docutils literal notranslate"><span class="pre">CODEBASES</span></code> registry
+projects in <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code>’s <code class="docutils literal notranslate"><span class="pre">CODEBASES</span></code> registry
 (which stores paths and per-tool flags, not the pins).</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -540,7 +540,7 @@ git<span class="w"> </span>clone<span class="w"> </span>https://github.com/seL4/
 checkout path for ad hoc manual runs. If you provisioned codebases via
 <code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code>, substitute
 <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT/&lt;project&gt;</span></code> (default <code class="docutils literal notranslate"><span class="pre">~/toolchain/&lt;project&gt;</span></code>) instead
-– that’s the path the MCP servers themselves read.</p>
+– that’s the path <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> itself reads.</p>
 </div>
 <section id="sqc">
 <h3>sqc<a class="headerlink" href="#sqc" title="Link to this heading"></a></h3>

@@ -138,9 +138,10 @@ real-world for noise reduction</p></li>
 </ul>
 <p><strong>Benchmark cadence</strong>:</p>
 <ul class="simple">
-<li><p><strong>After every significant rule change</strong>: Juliet benchmark (MCP server, ~10 min)</p></li>
-<li><p><strong>After version milestones</strong>: Full real-world benchmark (MCP server, all 9
-codebases; sqc on all 9, cppcheck/clang-tidy on the original 7)</p></li>
+<li><p><strong>After every significant rule change</strong>: Juliet benchmark (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">juliet</span></code>, ~10 min)</p></li>
+<li><p><strong>After version milestones</strong>: Full real-world benchmark (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span>
+<span class="pre">realworld-run</span></code>, all 9 codebases; sqc on all 9, cppcheck/clang-tidy on the
+original 7)</p></li>
 <li><p><strong>cppcheck/clang-tidy results are stable</strong> across sqc changes — run once and cache</p></li>
 </ul>
 </section>
