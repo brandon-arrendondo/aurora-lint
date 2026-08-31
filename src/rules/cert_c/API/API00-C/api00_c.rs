@@ -57,14 +57,12 @@ use tree_sitter::Node;
 
 pub struct Api00C {
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
-    dispatch_table_callbacks: RefCell<HashSet<String>>,
 }
 
 impl Api00C {
     pub fn new() -> Self {
         Self {
             function_summaries: RefCell::new(HashMap::new()),
-            dispatch_table_callbacks: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -92,7 +90,6 @@ impl CertRule for Api00C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
-        *self.dispatch_table_callbacks.borrow_mut() = context.dispatch_table_callbacks.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -116,21 +113,29 @@ impl Api00C {
             return;
         }
 
-        // Skip dispatch-table-registered callbacks (task 594, extending task
-        // 169's internal-contract suppression): a non-static function whose
-        // name is registered as a bare value in an aggregate initializer
-        // (e.g. pure-ftpd's `{ "mysql", pw_mysql_parse, pw_mysql_check,
-        // pw_mysql_exit }` auth_list entry) and that is never invoked
-        // directly by name anywhere in the project is reachable only through
-        // the single indirect call site that walks that table. Its contract
-        // is established at registration the same way a directly-called
-        // internal helper's is — it isn't a public API entry point just
-        // because it can't be marked `static` (cross-TU visibility is
-        // required for the table to reference it).
-        let func_name = self.get_function_name(function_node, source);
-        if self.dispatch_table_callbacks.borrow().contains(&func_name) {
-            return;
-        }
+        // NOTE (task 628): a prior version of this rule exempted
+        // dispatch-table-registered callbacks here (task 594, "reachable
+        // only through the table, so its contract is established at
+        // registration") -- removed. Task 644's full re-audit of API00-C's
+        // ground_truth FP set found this exact "the caller guarantees
+        // non-null" argument was wrong 87% of the time across the
+        // codebase (assert()-only guards were being credited as real
+        // validation, and reachable-only-via-a-trusted-caller was accepted
+        // without checking whether the function itself still lacked any
+        // defensive check). Concretely, hostap's wpas_dbus_handler_*
+        // dispatch table registers handlers that dereference a global/
+        // struct parameter with zero NULL check in the function body
+        // (e.g. wpas_dbus_handler_expect_disconnect's `global->ifaces`),
+        // and task 644's stricter "is it dereferenced unguarded, full
+        // stop" standard correctly re-flagged 33 of these as TP. Exempting
+        // dispatch-bound functions from API00-C reintroduces exactly the
+        // caller-contract blind spot task 644 just spent 33 audit batches
+        // correcting, so this rule no longer treats dispatch-table
+        // registration as a validation exemption. See
+        // docs/design/internal-capability-catalog.md /
+        // ProjectContext::dispatch_table_callbacks for the (still valid,
+        // still computed) primitive itself -- only this rule's use of it
+        // as an API00-C exemption is removed.
 
         // Get function parameters (handle nested declarators for pointer-returning functions)
         let params = match self.extract_function_parameters(function_node, source) {
