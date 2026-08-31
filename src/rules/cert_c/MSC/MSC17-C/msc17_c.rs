@@ -102,9 +102,13 @@ impl Msc17C {
     }
 
     /// Recognizes a terminating statement, descending into brace-wrapped
-    /// case bodies (`case X: { ...; break; }`) and into if/else where every
-    /// arm terminates. An `if` with no `else` can fall through either way,
-    /// so it is never treated as terminating.
+    /// case bodies (`case X: { ...; break; }`), into if/else where every
+    /// arm terminates, and into a `#if`/`#ifdef`/`#elif` chain where every
+    /// arm (including a mandatory `#else`) terminates — same rule as
+    /// if/else, since a case section hidden behind a conditional that
+    /// *can* compile away with no `#else` can fall through either way. An
+    /// `if` with no `else`, or a `#if`/`#ifdef` with no `#else`, is
+    /// therefore never treated as terminating (task 633).
     fn terminates_section(&self, node: &Node) -> bool {
         match node.kind() {
             "break_statement" | "return_statement" | "continue_statement" | "goto_statement" => {
@@ -124,8 +128,43 @@ impl Msc17C {
                 let alt_stmt = alternative.named_child(0).unwrap_or(alternative);
                 self.terminates_section(&consequence) && self.terminates_section(&alt_stmt)
             }
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" => {
+                let Some(alternative) = node.child_by_field_name("alternative") else {
+                    return false;
+                };
+                self.last_meaningful_preproc_body_child(node)
+                    .map(|n| self.terminates_section(&n))
+                    .unwrap_or(false)
+                    && self.terminates_section(&alternative)
+            }
+            "preproc_else" => self
+                .last_meaningful_preproc_body_child(node)
+                .map(|n| self.terminates_section(&n))
+                .unwrap_or(false),
             _ => false,
         }
+    }
+
+    /// Last non-comment child of a `#if`/`#ifdef`/`#elif`/`#else` node that
+    /// is part of its own branch body — i.e. not its `condition`/`name`
+    /// field or its `alternative` (the next `#elif`/`#else` in the chain).
+    fn last_meaningful_preproc_body_child<'a>(&self, node: &Node<'a>) -> Option<Node<'a>> {
+        let condition_id = node.child_by_field_name("condition").map(|n| n.id());
+        let name_id = node.child_by_field_name("name").map(|n| n.id());
+        let alternative_id = node.child_by_field_name("alternative").map(|n| n.id());
+        let mut cursor = node.walk();
+        let mut last = None;
+        for child in node.named_children(&mut cursor) {
+            let id = Some(child.id());
+            if id == condition_id || id == name_id || id == alternative_id {
+                continue;
+            }
+            if child.kind() == "comment" {
+                continue;
+            }
+            last = Some(child);
+        }
+        last
     }
 
     /// Wording (beyond "fall[ ]through") that documents *why* a case section
