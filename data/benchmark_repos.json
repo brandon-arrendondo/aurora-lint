@@ -41,7 +41,7 @@
         "ext/jni/**", "ext/wasm/**",
         "src/tclsqlite.c", "src/tclsqlite.h",
         "ext/fts5/fts5_test_tok.c", "ext/fts5/fts5_test_mi.c",
-        "ext/session/session_speed_test.c"
+        "ext/session/session_speed_test.c", "ext/fts3/fts3_test.c"
       ]
     },
     {
