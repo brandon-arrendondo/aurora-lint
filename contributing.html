@@ -59,6 +59,7 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Contributing</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#adding-a-new-cert-c-rule">Adding a New CERT C Rule</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#build-requirements">Build Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#development-node-setup">Development Node Setup</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
@@ -151,6 +152,29 @@ and <code class="docutils literal notranslate"><span class="pre">tests/pass/</sp
 <span class="n">cargo</span> <span class="n">fmt</span>               <span class="c1"># Format code</span>
 </pre></div>
 </div>
+</section>
+<section id="development-node-setup">
+<h2>Development Node Setup<a class="headerlink" href="#development-node-setup" title="Link to this heading"></a></h2>
+<p>To provision a fresh Ubuntu 24.04 node for working on tools_sqc (as opposed
+to just running benchmarks – see <a class="reference external" href="benchmark-setup.html">Benchmark Setup</a>
+for that), install Ansible first (<code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">apt</span> <span class="pre">install</span> <span class="pre">-y</span> <span class="pre">ansible</span></code> or
+<code class="docutils literal notranslate"><span class="pre">pipx</span> <span class="pre">install</span> <span class="pre">ansible-core</span></code> – a playbook can’t provision the tool it
+runs under), then run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-playbook<span class="w"> </span>playbooks/setup-dev-environment.yml<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ask-become-pass
+</pre></div>
+</div>
+<p>This installs the Rust toolchain (rustup, picking up the channel and
+components pinned in <code class="docutils literal notranslate"><span class="pre">rust-toolchain.toml</span></code>), the native build dependencies
+<code class="docutils literal notranslate"><span class="pre">git2</span></code>’s vendored libgit2 build needs (a C toolchain, cmake, pkg-config),
+and – into a venv at <code class="docutils literal notranslate"><span class="pre">~/.venvs/sqc-dev</span></code> by default – the Sphinx + LaTeX
+toolchain this guide itself is built with plus <code class="docutils literal notranslate"><span class="pre">invoke</span></code> (for the
+<code class="docutils literal notranslate"><span class="pre">invoke</span> <span class="pre">bump-version</span></code> workflow). Point it at an existing/shared venv
+instead with <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">dev_venv=&lt;path&gt;</span></code>, e.g. <code class="docutils literal notranslate"><span class="pre">-e</span> <span class="pre">dev_venv=~/data-enterprise/venv</span></code>.</p>
+<p>It does not install comparison tools (cppcheck, clang-tidy, Infer, Frama-C –
+see <a class="reference external" href="benchmark-setup.html">Benchmark Setup</a>), clone the real-world
+benchmark checkouts, or install editor/terminal conveniences (vim, htop,
+tmux) – none of those are dependencies of building or testing sqc itself.</p>
 </section>
 </section>
 
