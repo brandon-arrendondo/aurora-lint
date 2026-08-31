@@ -36,3 +36,4 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ARR00-C.+Understand+how+arrays+work"
 cwe = ["CWE-119", "CWE-123", "CWE-125", "CWE-129"]
+related = ["ARR30-C"]

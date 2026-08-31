@@ -37,3 +37,4 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR00-C.+Adopt+and+implement+a+consistent+and+comprehensive+error-handling+policy"
 cwe = ["CWE-391", "CWE-544"]
+related = ["ERR33-C"]

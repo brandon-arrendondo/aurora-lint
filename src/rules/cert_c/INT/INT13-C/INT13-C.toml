@@ -30,3 +30,4 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT13-C.+Use+bitwise+operators+only+on+unsigned+operands"
 cwe = ["CWE-682"]
+related = ["INT14-C", "MSC14-C"]

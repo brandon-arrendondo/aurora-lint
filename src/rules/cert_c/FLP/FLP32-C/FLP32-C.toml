@@ -23,3 +23,4 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/FLP32-C.+Prevent+or+detect+domain+and+range+errors+in+math+functions"
 cwe = ["CWE-682", "CWE-391"]
+related = ["ERR33-C"]

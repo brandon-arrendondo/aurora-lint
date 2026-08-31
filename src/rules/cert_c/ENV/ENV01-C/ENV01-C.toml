@@ -27,3 +27,4 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ENV01-C.+Do+not+make+assumptions+about+the+size+of+an+environment+variable"
 cwe = ["CWE-119", "CWE-123", "CWE-125"]
+related = ["MEM05-C"]

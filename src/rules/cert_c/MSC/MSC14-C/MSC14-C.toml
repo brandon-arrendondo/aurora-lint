@@ -32,3 +32,4 @@ enabled = true
 [references]
 wiki = "https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc14-c"
 cwe = []
+related = ["INT13-C"]

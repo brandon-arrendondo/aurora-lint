@@ -1,6 +1,51 @@
 # Cross-rule overlap: policy and decision
 
-**Status:** DECIDED (2026-08-27, task 625). Rollout is task 626.
+**Status:** DECIDED (2026-08-27, task 625). Rollout DONE (2026-08-30, task 626).
+
+## Rollout (task 626)
+
+`[references] related = ["RULE-ID", ...]` (the sketch's default-outcome field)
+is now populated in 27 rule TOMLs: the top measured co-located/disagreement
+pairs from task 625's canonical queries, minus two clusters deliberately
+excluded from this pass because they trace to a different root cause than
+overlap —
+
+- Every `API00-C`-anchored pair (587+ co-located lines): confirmed
+  location-coincidence (both rules anchor to the same line for unrelated
+  reasons), tracked as task 628. Re-run the co-location query after 628 lands
+  before deciding whether any `API00-C` pair is genuine overlap.
+- Every `MSC24-C`-anchored pair other than `STR31-C`/`STR32-C` (this doc's own
+  counterexample): 97% of `MSC24-C`'s FPs trace to two rule-content bugs
+  (task 629), which inflate its disagreement counts with other rules
+  independent of genuine overlap. `MSC24-C`/`STR31-C`(+`STR32-C`) is kept
+  since it's the flagship validated example above, not a task-629 symptom.
+
+Tagged pairs (all `related`, none cleared the `defers_to` bar):
+`ARR00-C`↔`ARR30-C`, `ARR38-C`↔`INT32-C`, `CON33-C`↔`CON34-C`,
+`DCL15-C`↔`DCL19-C`, `ENV01-C`↔`MEM05-C`, `ERR00-C`↔`ERR33-C`,
+`ERR07-C`↔`ERR34-C`, `INT13-C`↔`INT14-C`, `INT14-C`↔`INT34-C`,
+`MSC24-C`↔`STR31-C`/`STR32-C`, and the `PRE00-C`/`PRE01-C`/`PRE02-C`/
+`PRE10-C`/`PRE12-C` macro-hygiene cluster (all pairwise — CERT's own
+macro-authoring recommendations naturally co-fire on the same badly-written
+macro).
+
+The `defers_to`+`rationale` schema (declared exceptions) exists in this doc's
+sketch but was **not instantiated for any pair** — re-examining the 5 known
+ad-hoc deference sites against this bar (below) found none of them clear it.
+All 4 cross-rule sites were reclassified `related` (not `defers_to`) with
+their code comments updated to point here; the 5th (`MEM30-C`'s own comment)
+is intra-rule traversal-path dedup — the same rule would emit the literal
+same finding twice via two internal code paths without it — not a cross-rule
+policy matter, and was left as a code comment only.
+
+No detection-behavior change shipped in this rollout (no rule's matched-call
+list, type classification, or emitted violations changed) — `related` is
+purely informational metadata, so no delta-adjudication is triggered by it.
+The three no-op stubs among the 4 reclassified sites (`ARR38-C`'s
+`check_unbounded_string_function`, `ERR33-C`'s excluded math-function list,
+`INT08-C`'s excluded `int` type) remain no-ops; un-suppressing any of them
+later **would** be a detection-behavior change requiring delta-adjudication,
+and each updated comment says so.
 
 ## Policy
 

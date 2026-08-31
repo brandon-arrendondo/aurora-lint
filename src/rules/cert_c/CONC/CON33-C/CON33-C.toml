@@ -38,3 +38,4 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/CON33-C.+Avoid+race+conditions+when+using+library+functions"
 cwe = ["CWE-330", "CWE-377", "CWE-676"]
+related = ["CON34-C"]

@@ -24,3 +24,4 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/PRE02-C.+Macro+replacement+lists+should+be+parenthesized"
+related = ["PRE00-C", "PRE01-C", "PRE10-C", "PRE12-C"]

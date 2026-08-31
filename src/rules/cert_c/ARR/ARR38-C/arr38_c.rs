@@ -1330,6 +1330,15 @@ impl Arr38C {
         // forming invalid pointers through size mismatches and buffer overflows,
         // not on general unsafe function usage.
         // No-op to avoid duplicate violations with STR31-C.
+        //
+        // Recorded in this rule's TOML as `[references] related = [...,
+        // "STR31-C"]` (task 626, cross-rule overlap policy:
+        // docs/design/cross-rule-overlap.md). This is a `related` tag, not a
+        // validated `defers_to` exception -- task 625 found only 8
+        // ground-truth-labeled co-located lines for this pair (all agree-FP),
+        // far short of the "every labeled instance" subsumption bar. If this
+        // no-op is ever implemented, it is a detection-behavior change and
+        // needs delta-adjudication before any precision claim.
     }
 
     fn check_io_function(

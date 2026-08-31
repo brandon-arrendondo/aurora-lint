@@ -23,3 +23,4 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/PRE01-C.+Use+parentheses+within+macros+around+parameter+names"
+related = ["PRE00-C", "PRE02-C", "PRE10-C", "PRE12-C"]

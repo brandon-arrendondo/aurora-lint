@@ -31,3 +31,4 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/STR32-C.+Do+not+pass+a+non-null-terminated+character+sequence+to+a+library+function+that+expects+a+string"
 cwe = ["CWE-119", "CWE-123", "CWE-125", "CWE-170"]
+related = ["MSC24-C"]

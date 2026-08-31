@@ -30,3 +30,4 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ARR38-C.+Guarantee+that+library+functions+do+not+form+invalid+pointers"
 cwe = ["CWE-121", "CWE-124", "CWE-126", "CWE-127", "CWE-805", "CWE-119", "CWE-123", "CWE-125", "CWE-129"]
+related = ["INT32-C", "STR31-C"]

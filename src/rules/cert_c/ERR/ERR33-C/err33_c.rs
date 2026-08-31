@@ -545,7 +545,15 @@ impl Err33C {
             // Character classification that can fail
             "mblen" | "mbtowc" | "wctomb" |
 
-            // Math functions covered by FLP32-C — removed to avoid double-flagging
+            // Math functions covered by FLP32-C — removed to avoid double-flagging.
+            // Recorded in this rule's TOML as `[references] related = [...,
+            // "FLP32-C"]` (task 626, cross-rule overlap policy:
+            // docs/design/cross-rule-overlap.md). This is a `related` tag,
+            // not a validated `defers_to` exception -- task 625 found zero
+            // ground-truth-labeled co-located data for this pair. If math
+            // functions are ever added back to this list, it is a
+            // detection-behavior change and needs delta-adjudication before
+            // any precision claim.
 
             // Environment
             "getenv" | "putenv" | "setenv" |

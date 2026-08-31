@@ -29,3 +29,4 @@ enabled = true
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/ERR07-C.+Prefer+functions+that+support+error+checking+over+equivalent+functions+that+don%27t"
 cwe = ["CWE-20", "CWE-79", "CWE-89", "CWE-91", "CWE-94", "CWE-114", "CWE-601", "CWE-676"]
+related = ["ERR34-C"]

@@ -174,6 +174,15 @@ impl Int08C {
     /// Per CERT INT08-C, narrow types are those smaller than int:
     /// char, short, and their signed/unsigned variants.
     /// int itself is NOT narrow - overflow on int is covered by INT32-C.
+    ///
+    /// Recorded in this rule's TOML as `[references] related = ["INT32-C"]`
+    /// (task 626, cross-rule overlap policy:
+    /// docs/design/cross-rule-overlap.md). This is a `related` tag, not a
+    /// validated `defers_to` exception -- task 625 found only 16
+    /// ground-truth-labeled co-located lines for this pair (all agree-FP),
+    /// far short of the "every labeled instance" subsumption bar. If `int`
+    /// is ever added back to the narrow-type set, it is a detection-behavior
+    /// change and needs delta-adjudication before any precision claim.
     fn is_narrow_integer_type(&self, type_name: &str) -> bool {
         matches!(
             type_name,
