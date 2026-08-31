@@ -228,13 +228,25 @@ Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
 ## Code Navigation (clew)
 
 This repo is indexed by [`clew`](https://github.com/tvanfossen/clew), registered as
-the `clew` MCP server in `.mcp.json` (gitignored — each machine runs its own
-`clew init --repo-root <path-to-this-repo>` once; see the clew repo's README).
+the `clew` MCP server in `.mcp.json` (gitignored -- each machine runs `clew init`
+once to write it; see the clew repo's README). `clew init` only registers the MCP
+server -- it does not itself install anything, so each machine also needs the
+`clew-trace` package installed (e.g. into the shared dev venv from
+`playbooks/setup-dev-environment.yml`) for the `clew-mcp` command the config
+points at to actually resolve.
 It builds a queryable symbol database (call graph, threads, locks, requirements,
 file docs) from rustdoc + tree-sitter, served over four tools: `dossier` (everything
 about one named symbol — signature, body, callers/callees, locks held, in one call),
 `search` (find a name, or a whole layer like `corpus='locks'`/`corpus='threads'`),
 `index` (admin: `status`/`refresh`), `propose_declaration`.
+
+**No manual indexing step is required.** The database lives outside the repo, under
+`~/.local/state/clew/targets/<name>-<hash>/`, and the MCP tools build it themselves
+on first use if it doesn't exist yet -- so a freshly-provisioned node with no
+`~/.local/state/clew` is expected, not broken, until an agent there actually calls
+`dossier`/`search`/`index` for the first time. To build it eagerly instead of
+waiting for that first call (e.g. to warm it before a benchmark run), run
+`python -m clew --output clew.db --repo-root .` from the venv clew is installed in.
 
 **Prefer `dossier`/`search` over `grep`/`Read` for "what calls X", "where is Y
 defined", "what locks does this function hold" style questions** — one call
