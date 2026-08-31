@@ -22,6 +22,12 @@
 //! same calls -- MSC24-C's concern (deprecated API) is orthogonal to
 //! theirs (provable buffer safety).
 //!
+//! `sscanf` was removed from this list (task 629): it is not on CERT's
+//! actual MSC24-C obsolescent-function table, and its suggested
+//! replacement (`sscanf_s()`) is an optional, rarely-implemented Annex K
+//! extension unavailable on glibc -- flagging it was a 100% FP class (47
+//! of hostap's ctrl_iface.c findings alone, per task 625's ground_truth).
+//!
 //! CERT C reference:
 //! https://wiki.sei.cmu.edu/confluence/display/c/MSC24-C.+Do+not+use+deprecated+or+obsolescent+functions
 
@@ -38,7 +44,6 @@ const OBSOLESCENT_FUNCS: &[(&str, &str)] = &[
     ("sprintf", "sprintf_s() (or snprintf())"),
     ("vsprintf", "vsprintf_s() (or vsnprintf())"),
     ("scanf", "scanf_s()"),
-    ("sscanf", "sscanf_s()"),
     ("fscanf", "fscanf_s()"),
     ("strtok", "strtok_s()"),
     ("asctime", "asctime_s()"),
