@@ -25,7 +25,7 @@ enabled = true
 
 
 [rules.cert_c.API05-C]
-enabled = true
+enabled = false  # ZERO real-world adoption of C99 conformant-array-param syntax found anywhere the suite has checked (task 194: 11+ repos + raylib + monocypher, zero genuine uses); ground_truth measures 2445 FP / 2 TP (0.08%) across all 8 oracles combined, and the 2 "TP" instances are the identical pointer+size-param shape every other adjudicator called a stylistic non-issue -- categorical policy exclusion (task 628), not FP suppression; see `todo-sqlite-cli show 194` for the synthetic-fixture positive-validation track this rule still has
 
 
 [rules.cert_c.API07-C]
