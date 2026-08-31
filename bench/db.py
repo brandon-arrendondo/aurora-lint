@@ -1129,16 +1129,29 @@ class BenchDB:
         if not violations:
             return
         with self._cursor() as cur:
-            cur.executemany("""
-                INSERT INTO realworld_violations
-                    (result_id, rule_id, file_path, line, column_num,
-                     severity, message, suggestion, requires_manual_review)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, [(result_id, v["rule_id"], v["file"], v["line"],
-                   v.get("column", 0), v.get("severity"),
-                   v.get("message"), v.get("suggestion"),
-                   1 if v.get("requires_manual_review") else 0)
-                  for v in violations])
+            self._insert_realworld_violations_cur(cur, result_id, violations)
+
+    def _insert_realworld_violations_cur(self, cur, result_id: int,
+                                          violations: list[dict]) -> None:
+        """Same as `insert_realworld_violations`, but reuses a cursor already
+        inside an open transaction (task 655) — lets `ingest_realworld_run`
+        do its DELETE + result-row upsert + per-violation insert as one
+        atomic unit instead of two separate transactions, which is what let
+        two concurrent ingests of the same (run_id, project, tool) both see
+        "nothing to delete yet" and each insert their own full violation set,
+        doubling (or worse) the stored rows."""
+        if not violations:
+            return
+        cur.executemany("""
+            INSERT INTO realworld_violations
+                (result_id, rule_id, file_path, line, column_num,
+                 severity, message, suggestion, requires_manual_review)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [(result_id, v["rule_id"], v["file"], v["line"],
+               v.get("column", 0), v.get("severity"),
+               v.get("message"), v.get("suggestion"),
+               1 if v.get("requires_manual_review") else 0)
+              for v in violations])
 
     def ingest_realworld_run(self, version_dir: str, results_path: str,
                               machine: dict = None,
@@ -1239,6 +1252,28 @@ class BenchDB:
 
             result_id = None
             with self._cursor() as cur:
+                if self._is_postgres:
+                    # Serialize concurrent ingests of the same (run_id,
+                    # project, 'sqc') triple (task 655): the background
+                    # completion watcher, a manual re-ingest, and an
+                    # overlapping run_all's own watcher can all race to
+                    # ingest the same result. Each used to open its own
+                    # transaction for the DELETE-then-upsert below and a
+                    # SEPARATE one for the per-violation INSERT (via the
+                    # public insert_realworld_violations), so two concurrent
+                    # callers could each see "nothing to delete yet" before
+                    # either had inserted its own violations, and both
+                    # inserts landed -- doubling (or, with a third racer,
+                    # tripling) the stored rows despite violation_count
+                    # staying correct (computed once, up front, from the
+                    # JSON). An advisory lock held for the rest of this
+                    # transaction (auto-released at commit/rollback) makes a
+                    # second concurrent call block here until the first
+                    # call's delete+upsert+insert has fully committed.
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(?))",
+                        (f"realworld_ingest:{run_id}:{project}:sqc",),
+                    )
                 # Drop any prior sqc row's violations for this (run, project)
                 # first, so a merge/re-ingest never duplicates or orphans
                 # findings — the upsert below updates the parent row in place
@@ -1266,9 +1301,11 @@ class BenchDB:
                       codebase_commit))
                 result_id = cur.fetchone()["id"]
 
-            # Insert per-violation detail
-            if result_id and violations:
-                self.insert_realworld_violations(result_id, violations)
+                # Insert per-violation detail in the SAME transaction as the
+                # delete+upsert above (task 655) -- see the advisory-lock
+                # comment above for why this can't be its own transaction.
+                if result_id and violations:
+                    self._insert_realworld_violations_cur(cur, result_id, violations)
 
         return run_id
 
