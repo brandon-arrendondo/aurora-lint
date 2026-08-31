@@ -474,7 +474,26 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// was a bare name-shape guess about a variable that cannot be a pointer
     /// (see `collect_value_only_locals`).
     fn track_allocation(&mut self, var_name: String, info: AllocInfo) -> bool {
-        if self.value_only_locals.contains(&var_name)
+        let guard_name = var_name.clone();
+        self.track_allocation_guarded(var_name, guard_name, info)
+    }
+
+    /// Like `track_allocation`, but checks `value_only_locals` against
+    /// `guard_name` rather than the tracked `var_name` key itself. Needed
+    /// for a struct-field/array-element target (`fc_ret.remainder = ...`),
+    /// where the tracked key is the whole field expression's text but the
+    /// pointer-evidence guard is about the *root* variable's declared shape
+    /// (`fc_ret`) -- without this split, a field assignment on a plain
+    /// value-type local never matches anything in `value_only_locals`
+    /// (which only ever holds bare declared identifiers), so the guard
+    /// silently never fires for the field-target path (task 651).
+    fn track_allocation_guarded(
+        &mut self,
+        var_name: String,
+        guard_name: String,
+        info: AllocInfo,
+    ) -> bool {
+        if self.value_only_locals.contains(&guard_name)
             && self.is_name_heuristic_allocator(&info.alloc_type)
         {
             return false;
@@ -1206,10 +1225,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         return;
                     }
                     let var_name = ast_utils::get_node_text_owned(&left, source);
+                    let guard_name = self
+                        .root_identifier_of_lvalue(&left, source)
+                        .map(|(root, _)| root)
+                        .unwrap_or_else(|| var_name.clone());
                     let pos = right.start_position();
                     let alloc_type = self.get_allocation_type(&right, source);
-                    self.allocated_memory.insert(
-                        var_name.clone(),
+                    self.track_allocation_guarded(
+                        var_name,
+                        guard_name,
                         AllocInfo {
                             line: pos.row + 1,
                             column: pos.column + 1,
