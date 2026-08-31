@@ -1,6 +1,0 @@
-mcp[cli]>=1.0.0
-
-# Optional: only needed on a node that sets SQC_BENCH_DSN to use the shared
-# Postgres benchmark DB instead of the default local SQLite file (see
-# BENCHMARK_POSTGRES_MIGRATION_PLAN.md). Not required for normal single-node use.
-psycopg[binary]>=3.1

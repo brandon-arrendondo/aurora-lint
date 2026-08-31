@@ -11,7 +11,7 @@
     "on project+commit+file+line+rule). Re-pin only alongside a re-adjudication.",
     "",
     "'name' is also the checkout directory basename and the CODEBASES registry",
-    "key in mcp_servers/realworld_server.py -- bench/db.py's result-filename",
+    "key in bench/realworld_runner.py -- bench/db.py's result-filename",
     "parsing requires all three to match, which is why pure-ftpd is checked out",
     "as 'pureftpd' (no hyphen).",
     "",

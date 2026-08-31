@@ -45,7 +45,7 @@ def _read_cargo_version():
 #                                               version out of Cargo.toml at
 #                                               build time (grep), so they
 #                                               auto-track and need no edit
-#   - bench/, mcp_servers/                    -> read Cargo.toml at runtime
+#   - bench/                                   -> read Cargo.toml at runtime
 VERSION_FILES = [
     # (path, pattern, replacement-template)
     ("Cargo.toml", r'^(version = ")' + SEMVER + r'(")', r"\g<1>{new}\g<2>"),

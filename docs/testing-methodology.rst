@@ -29,9 +29,10 @@ SqC is benchmarked on two axes:
 
 **Benchmark cadence**:
 
-- **After every significant rule change**: Juliet benchmark (MCP server, ~10 min)
-- **After version milestones**: Full real-world benchmark (MCP server, all 9
-  codebases; sqc on all 9, cppcheck/clang-tidy on the original 7)
+- **After every significant rule change**: Juliet benchmark (``python -m bench juliet``, ~10 min)
+- **After version milestones**: Full real-world benchmark (``python -m bench
+  realworld-run``, all 9 codebases; sqc on all 9, cppcheck/clang-tidy on the
+  original 7)
 - **cppcheck/clang-tidy results are stable** across sqc changes — run once and cache
 
 Unit Tests

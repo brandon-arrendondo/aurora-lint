@@ -2,7 +2,15 @@
 
 ## Benchmark Workflow (CRITICAL)
 
-See `docs/index.rst` (Benchmark Setup / Running Benchmarks sections) for full MCP server tool reference and troubleshooting.
+See `docs/index.rst` (Benchmark Setup / Running Benchmarks sections) for the full CLI reference and troubleshooting.
+
+Benchmarks run via the `bench` CLI against a local SQLite DB (`data/benchmarks.db`)
+— no server process, no shared infrastructure. Anyone cloning this repo gets a
+working benchmark setup with nothing beyond `cargo build --release` and the
+codebase checkouts in `docs/benchmark-setup.rst`. (The maintainer's own
+shared/multi-node Postgres instance, used to aggregate results across several
+machines, lives entirely in a separate `benchmarking_db` repo — this repo has
+no knowledge of it and never will; keep it that way in anything you add here.)
 
 ### Data Storage
 
@@ -19,26 +27,33 @@ backfilled. New runs write directly to this database.
 
 ### Running Benchmarks
 
-The MCP server (`mcp_servers/server.py`) launches `python -m bench juliet` which:
+Everything runs synchronously in your own terminal — no server process, no
+async polling. `python -m bench juliet`:
 - Uses **fast mode by default** (per-CWE manifests, CWE-matched rules only)
 - Runs CWEs in parallel via `ProcessPoolExecutor`
 - Writes results directly to SQLite (no intermediate text files)
 - Supports resume: re-running skips already-completed CWEs
 
-CLI alternative (not through MCP):
 ```bash
 python -m bench juliet [--full] [--jobs N]
 python -m bench status [RUN_ID]
 python -m bench compare BASE TARGET
 python -m bench runs
 python -m bench corpus-check   # are the real-world checkouts still pinned?
+
+# Real-world (sqc + cppcheck + clang-tidy against real C codebases; local,
+# sequential — see bench/realworld_runner.py). Defaults to sqc against every
+# codebase; narrow with --tool/--codebase.
+python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C]
+python -m bench realworld [RUN]        # FP dashboard
+python -m bench realworld-score [RUN]  # measured precision/recall vs oracle
 ```
 
 **Run `python -m bench corpus-check` before any real-world run or precision
 claim** (task 619). The pins live in `data/benchmark_repos.json` (single
 source of truth, shared with `playbooks/setup-benchmark-repos.yml`), but
 provisioning pins a checkout *once* and nothing keeps it there — a `git pull`
-on a tracking-branch checkout drifts it silently, and `realworld_server.py`
+on a tracking-branch checkout drifts it silently, and the real-world runner
 records whatever SHA it finds rather than asserting the expected one. Since
 `ground_truth` is keyed on `(project, commit, file, line, rule)`, findings
 from a drifted tree fall outside the precision/recall denominator in either
@@ -61,11 +76,12 @@ scan while staying invisible to `git status`.
 
 3. **Wait for completion**: Fast-mode Juliet benchmarks take ~32-40 minutes.
    Real-world sqc-only takes ~10-15 minutes. Full Juliet suite
-   takes ~40-50 minutes. Check status with `get_status()` no more than once
-   every 5 minutes.
+   takes ~40-50 minutes. Check status with `python -m bench status` no more
+   than once every 5 minutes (or just watch it -- it runs in your terminal).
 
-4. **Compare runs**: After a benchmark completes, use `compare_runs()` to compare
-   against previous runs. Use `get_cwe_detail()` for per-CWE deep dives.
+4. **Compare runs**: After a benchmark completes, use `python -m bench compare`
+   to compare against previous runs. `python -m bench status RUN_ID` for a
+   per-run summary.
    Historical runs are available with suffix `-historical` (e.g., `sqc-0.3.17-historical`).
 
 5. **Workflow sequence**:
@@ -116,9 +132,10 @@ scan while staying invisible to `git status`.
 
 ### Querying Results
 
-The MCP tools (`get_results`, `get_cwe_detail`, `compare_runs`, `list_runs`) query
-SQLite first, falling back to legacy text files for old runs. 46 Juliet runs
-(v0.2.1 through current) and 21 real-world runs are in the database.
+The `bench` CLI (`status`, `compare`, `runs`, `realworld`, `realworld-score`)
+queries SQLite first, falling back to legacy text files for old runs. 46
+Juliet runs (v0.2.1 through current) and 21 real-world runs are in the
+database.
 
 ---
 
@@ -204,7 +221,6 @@ Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
 - `src/rules/cert_c/` - CERT C rule implementations
 - `src/analyze/` - Analysis infrastructure (CFG, null state, VRA, prescan)
 - `bench/` - Benchmark infrastructure (runner, analyzer, SQLite DB, CLI)
-- `mcp_servers/` - MCP servers for Juliet and real-world benchmarks
 - `data/` - Benchmark database (benchmarks.db), prescan caches
 - `scripts/` - Workflow helpers, coverage gate
 - `docs/` - Developer guide (index.rst), bibliography

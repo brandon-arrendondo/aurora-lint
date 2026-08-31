@@ -2,7 +2,7 @@
 
 Why this exists (task 619): the pinned SHAs were recorded only in
 `playbooks/setup-benchmark-repos.yml`, which runs once at provisioning time.
-Nothing ever re-checked them, and `mcp_servers/realworld_server.py` records
+Nothing ever re-checked them, and `bench/realworld_runner.py` records
 whatever SHA it finds at scan time rather than asserting the expected one. So a
 checkout that drifted -- or was cloned by hand onto a tracking branch and later
 pulled -- silently produces findings at (file, line) pairs the `ground_truth`

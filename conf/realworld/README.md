@@ -2,8 +2,8 @@
 
 Each real-world benchmark codebase gets its own sqc rules manifest here, the
 real-world analog of a project shipping its own `sqc-rules.toml` (cf.
-`d_lib_common/conf/sqc-rules.toml`). The real-world MCP server
-(`mcp_servers/realworld_server.py`) reads the per-codebase manifest named in the
+`d_lib_common/conf/sqc-rules.toml`). The real-world runner
+(`bench/realworld_runner.py`) reads the per-codebase manifest named in the
 `CODEBASES[<name>]["sqc"]["manifest"]` registry entry and reuses it for **every**
 run of that codebase, so rules that do not apply are ignored consistently —
 exactly as you would configure sqc on a real project.
@@ -72,9 +72,8 @@ oversight.
 
 ## Auto-scoring
 
-After every real-world run completes, the MCP server's `get_status()` ingests
-the results and **auto-scores** them against the oracle (`_auto_score_run`),
-writing a `<run-dir>.score.json` sidecar and surfacing a one-line measured
-precision/recall in the status payload (`"measured": ...`). Scoring only joins
+When `python -m bench realworld-run` finishes, it ingests the results and
+**auto-scores** them against the oracle, writing a `<run-dir>.score.json`
+sidecar and printing a one-line measured precision/recall. Scoring only joins
 findings to *existing* labels — it never adjudicates new findings (that needs
 judgment). Re-run scoring any time with `python -m bench realworld-score <RUN>`.

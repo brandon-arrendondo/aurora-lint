@@ -7,6 +7,10 @@ Commands:
   compare BASE TARGET                      Compare two runs
   runs                                     List all runs
   realworld [RUN] [--compare BASE]         Real-world FP dashboard
+  realworld-run [--tool T,T] [--codebase C,C] [--compile-commands]
+                                            Run sqc/cppcheck/clang-tidy against
+                                            real codebases (local, sequential),
+                                            ingest + score against the oracle
   realworld-runs                           List real-world benchmark runs
   realworld-score [RUN]                    Measured precision/recall vs oracle
   realworld-import-labels CSV --run R      Append TP/FP labels to the oracle
@@ -37,6 +41,26 @@ def cmd_juliet(args):
     from bench.runner import run_benchmark
     run_benchmark(fast=not args.full, jobs=args.jobs, keep_csv=args.keep_csv,
                   compile_commands=args.compile_commands)
+
+
+def cmd_realworld_run(args):
+    from bench.realworld_runner import CODEBASES, VALID_TOOLS, run_and_ingest
+
+    tools = [t.strip().lower() for t in args.tool.split(",")] if args.tool else ["sqc"]
+    for t in tools:
+        if t not in VALID_TOOLS:
+            print(f"Unknown tool '{t}'. Must be one of: {', '.join(VALID_TOOLS)}")
+            return
+    codebases = ([c.strip().lower() for c in args.codebase.split(",")]
+                 if args.codebase else sorted(CODEBASES))
+    for cb in codebases:
+        if cb not in CODEBASES:
+            print(f"Unknown codebase '{cb}'. Must be one of: {', '.join(sorted(CODEBASES))}")
+            return
+
+    print(f"Running {'+'.join(tools)} against {len(codebases)} codebase(s): "
+          f"{', '.join(codebases)}\n")
+    run_and_ingest(tools, codebases, compile_commands=args.compile_commands)
 
 
 def cmd_status(args):
@@ -869,6 +893,19 @@ def main():
     p_rw.add_argument("--compact", action="store_true",
                       help="Skip per-project rule breakdown")
     p_rw.set_defaults(func=cmd_realworld)
+
+    # realworld-run
+    p_rw_run = sub.add_parser(
+        "realworld-run",
+        help="Run sqc/cppcheck/clang-tidy against real codebases, ingest + score")
+    p_rw_run.add_argument("--tool", default=None,
+                          help="Comma-separated: sqc,cppcheck,clang-tidy (default: sqc)")
+    p_rw_run.add_argument("--codebase", default=None,
+                          help="Comma-separated codebase key(s) (default: all)")
+    p_rw_run.add_argument("--compile-commands", action="store_true",
+                          help="sqc only: pass --compile-commands using the codebase's "
+                               "compile_commands.json")
+    p_rw_run.set_defaults(func=cmd_realworld_run)
 
     # realworld-runs
     p_rw_runs = sub.add_parser("realworld-runs", help="List real-world runs")

@@ -21,7 +21,7 @@ Thumbs.db
 .todo-sqlite-cli
 .env
 sqc-results.json
-mcp_servers/remote_hosts.json
+results/
 *.log
 test-summary.md
 rules_templates/cwe/

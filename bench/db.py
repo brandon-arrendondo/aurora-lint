@@ -1,11 +1,14 @@
 """SQLite database for benchmark results.
 
 Single persistent DB at data/benchmarks.db with WAL mode for concurrent
-read (MCP server) + write (runner).
+read (MCP server) + write (runner). SQLite-only, deliberately: this is the
+zero-setup path for an individual running a Juliet or real-world benchmark
+locally, with no shared-infrastructure dependency. The maintainer's shared
+Postgres instance (multi-node querying/queueing) lives entirely in the
+separate benchmarking_db repo -- this module has no knowledge of it.
 """
 
 import json
-import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -13,80 +16,6 @@ from pathlib import Path
 from typing import Any
 
 from bench.config import BENCH_ROOT, DB_PATH
-
-# Backend selection: SQLite is the default and needs no setup; set this DSN
-# to opt a node into the shared Postgres instance instead (see
-# BENCHMARK_POSTGRES_MIGRATION_PLAN.md §0 — this is a deliberate choice, not
-# a hard cut, to keep a single-node contributor's workflow at zero setup).
-DSN_ENV_VAR = "SQC_BENCH_DSN"
-
-
-def _to_pg_placeholders(sql: str) -> str:
-    """Translate this module's sqlite `?` positional placeholders to
-    psycopg's `%s`. Safe as a blind replace: no SQL text in this module
-    embeds a literal `%` (the only `%` usage is inside bound *parameter*
-    values, e.g. LIKE f"%{x}%", which never touches the SQL string itself)."""
-    return sql.replace("?", "%s")
-
-
-class _PGCursor:
-    """Shim so call sites written against sqlite3's cursor API — execute,
-    executemany, fetchone/fetchall, name-based row access — work unchanged
-    against a psycopg3 cursor. Row access uses psycopg's dict_row, so
-    `row["col"]` matches sqlite3.Row's behavior; this module never does
-    integer indexing on a row (verified — no `row[0]`-style access exists)."""
-
-    def __init__(self, cur):
-        self._cur = cur
-
-    def execute(self, sql, params=()):
-        self._cur.execute(_to_pg_placeholders(sql), params)
-        return self
-
-    def executemany(self, sql, seq_of_params):
-        self._cur.executemany(_to_pg_placeholders(sql), seq_of_params)
-        return self
-
-    def fetchone(self):
-        return self._cur.fetchone()
-
-    def fetchall(self):
-        return self._cur.fetchall()
-
-    def __iter__(self):
-        return iter(self._cur)
-
-    @property
-    def rowcount(self):
-        return self._cur.rowcount
-
-
-class _PGConnection:
-    """Shim over a psycopg3 connection so BenchDB's sqlite3-shaped call
-    sites (conn.execute, conn.commit/rollback/close, conn.cursor()) work
-    unchanged. conn.executescript is deliberately NOT provided — see
-    _ensure_schema, which skips the SQLite-syntax _SCHEMA DDL for this
-    backend entirely (Postgres schema comes from the migration tooling)."""
-
-    def __init__(self, conn):
-        self._conn = conn
-
-    def execute(self, sql, params=()):
-        cur = self._conn.cursor()
-        cur.execute(_to_pg_placeholders(sql), params)
-        return _PGCursor(cur)
-
-    def cursor(self):
-        return _PGCursor(self._conn.cursor())
-
-    def commit(self):
-        self._conn.commit()
-
-    def rollback(self):
-        self._conn.rollback()
-
-    def close(self):
-        self._conn.close()
 
 
 def _wall_seconds(started_at: str, finished_at: str) -> float | None:
@@ -326,17 +255,9 @@ class BenchDB:
 
     def __init__(self, db_path: Path | str | None = None):
         self._db_path = str(db_path or DB_PATH)
-        self._dsn = os.environ.get(DSN_ENV_VAR)
-        self._is_postgres = bool(self._dsn)
         self._ensure_schema()
 
     def _connect(self):
-        if self._is_postgres:
-            import psycopg
-            from psycopg.rows import dict_row
-
-            conn = psycopg.connect(self._dsn, row_factory=dict_row)
-            return _PGConnection(conn)
         conn = sqlite3.connect(self._db_path, timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -356,33 +277,14 @@ class BenchDB:
             conn.close()
 
     def _table_columns(self, conn, table: str) -> set[str]:
-        """Column names for `table`, from whichever backend `conn` is on.
-
-        SQLite's PRAGMA table_info has no Postgres equivalent; Postgres's
-        information_schema has no SQLite equivalent. Isolating the one
-        branch here keeps every _ensure_schema migration below
-        backend-agnostic.
-        """
-        if self._is_postgres:
-            rows = conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = ?", (table,)).fetchall()
-            return {r["column_name"] for r in rows}
+        """Column names for `table` -- used by the migration checks below so
+        a schema from an older version of this module self-heals."""
         return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
 
     def _ensure_schema(self):
         conn = self._connect()
         try:
-            if self._is_postgres:
-                # Postgres schema is created by the migration tooling (see
-                # BENCHMARK_POSTGRES_MIGRATION_PLAN.md §2/§4), not by this
-                # SQLite-syntax DDL (AUTOINCREMENT etc. isn't valid there).
-                # The column-migration checks below still run — they're
-                # backend-agnostic via _table_columns — so a Postgres schema
-                # that predates a later ALTER still self-heals the same way.
-                pass
-            else:
-                conn.executescript(_SCHEMA)
+            conn.executescript(_SCHEMA)
             # Migrations for columns added after a table already exists
             # (CREATE TABLE IF NOT EXISTS does not update existing tables).
             cols = self._table_columns(conn, "realworld_results")
@@ -1252,28 +1154,6 @@ class BenchDB:
 
             result_id = None
             with self._cursor() as cur:
-                if self._is_postgres:
-                    # Serialize concurrent ingests of the same (run_id,
-                    # project, 'sqc') triple (task 655): the background
-                    # completion watcher, a manual re-ingest, and an
-                    # overlapping run_all's own watcher can all race to
-                    # ingest the same result. Each used to open its own
-                    # transaction for the DELETE-then-upsert below and a
-                    # SEPARATE one for the per-violation INSERT (via the
-                    # public insert_realworld_violations), so two concurrent
-                    # callers could each see "nothing to delete yet" before
-                    # either had inserted its own violations, and both
-                    # inserts landed -- doubling (or, with a third racer,
-                    # tripling) the stored rows despite violation_count
-                    # staying correct (computed once, up front, from the
-                    # JSON). An advisory lock held for the rest of this
-                    # transaction (auto-released at commit/rollback) makes a
-                    # second concurrent call block here until the first
-                    # call's delete+upsert+insert has fully committed.
-                    cur.execute(
-                        "SELECT pg_advisory_xact_lock(hashtext(?))",
-                        (f"realworld_ingest:{run_id}:{project}:sqc",),
-                    )
                 # Drop any prior sqc row's violations for this (run, project)
                 # first, so a merge/re-ingest never duplicates or orphans
                 # findings — the upsert below updates the parent row in place
@@ -1302,8 +1182,9 @@ class BenchDB:
                 result_id = cur.fetchone()["id"]
 
                 # Insert per-violation detail in the SAME transaction as the
-                # delete+upsert above (task 655) -- see the advisory-lock
-                # comment above for why this can't be its own transaction.
+                # delete+upsert above (task 655) -- keeps a re-ingest atomic
+                # so a crash mid-ingest can't leave a result row with no
+                # violations or a stale partial set.
                 if result_id and violations:
                     self._insert_realworld_violations_cur(cur, result_id, violations)
 
@@ -2465,3 +2346,4 @@ class BenchDB:
                         (f"%{ident}%",))
             row = cur.fetchone()
             return row["run_id"] if row else None
+

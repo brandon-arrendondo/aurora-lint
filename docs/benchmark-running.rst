@@ -77,56 +77,11 @@ Pre-Benchmark Checklist
 - All code changes committed
 - Version bumped in ``Cargo.toml`` (for Juliet)
 - ``cargo build --release`` successful
-- No other benchmark currently running (``get_status()``)
-- Previous results compared if needed (``compare_runs()``)
+- No other benchmark currently running (it's your terminal -- you'll know)
+- Previous results compared if needed (``python -m bench compare``)
 
-Juliet Benchmark Tools
-----------------------
-
-==========================================  =================================================
-Tool                                        Purpose
-==========================================  =================================================
-``run_benchmark(mode, compile_commands)``   Start benchmark (``"fast"`` default or ``"full"``;
-                                            ``compile_commands=True`` adds ``--compile-commands``)
-``get_status``                              Check progress (%, ETA, recent CWEs)
-``get_results(sort_by, run)``               Aggregated TP/FP across completed CWEs
-``get_cwe_detail(cwe_id, run)``             TP/FP breakdown for a specific CWE
-``list_runs``                               List all benchmark runs
-``compare_runs(base, target)``              Compare two runs (TP/FP deltas)
-``compare_cwe(cwe_id, base, target)``       Compare a CWE between two runs
-``cancel_benchmark``                        Kill a running benchmark
-``clear_results``                           Remove old result directories
-``reanalyze_run(run)``                      Re-run analysis on existing CSVs
-==========================================  =================================================
-
-Typical Juliet workflow::
-
-    1. run_benchmark()                          # Start (fast mode)
-    2. get_status()                             # Check progress (every 5 min)
-    3. get_results()                            # After completion: summary
-    4. get_results(sort_by="fp_count")          # Top FP rules
-    5. get_cwe_detail(cwe_id="476")             # Deep dive
-    6. compare_runs(base="sqc-0.3.17-historical", target="latest")
-    7. list_runs()                              # All available runs
-
-Run identifiers accepted by query tools:
-
-- ``"latest"`` -- most recent run (default)
-- Full run name: ``"sqc-0.3.20-abc1234"``
-- Commit SHA: ``"abc1234"``
-- Historical runs: ``"sqc-0.3.17-historical"``
-
-**Notes**:
-
-- ``run_benchmark()`` returns immediately -- use ``get_status()`` to monitor
-- If a benchmark is already running, ``run_benchmark()`` returns the existing PID
-- **Fast mode** (default): per-CWE manifests, CWE-matched rules only. ~10x faster
-- **Full mode**: all 305 enabled rules against every CWE. Higher noise ratio
-- Results from ``get_results()`` only include completed CWEs
-- Resume: interrupted runs skip already-completed CWEs on re-run
-
-CLI Alternative
-~~~~~~~~~~~~~~~
+Juliet Benchmark
+-----------------
 
 .. code-block:: bash
 
@@ -136,11 +91,30 @@ CLI Alternative
     python -m bench runs
     python -m bench corpus-check [--json]   # real-world checkouts still pinned?
 
+Run identifiers accepted by ``status``/``compare``:
+
+- ``"latest"`` -- most recent run (default)
+- Full run name: ``"sqc-0.3.20-abc1234"``
+- Commit SHA: ``"abc1234"``
+- Historical runs: ``"sqc-0.3.17-historical"``
+
+**Notes**:
+
+- ``python -m bench juliet`` blocks until the run finishes -- background it
+  yourself (``nohup ... &``, a second terminal, ``tmux``) to keep working
+  while it runs
+- **Fast mode** (default): per-CWE manifests, CWE-matched rules only. ~10x faster
+- **Full mode**: all 305 enabled rules against every CWE. Higher noise ratio
+- Resume: interrupted runs skip already-completed CWEs on re-run
+- Per-CWE/per-rule detail beyond what ``status``/``compare`` print is a direct
+  ``sqlite3 data/benchmarks.db`` query away (``cwe_scans``, ``violations``,
+  ``rule_cwe_breakdown``) -- there's no separate CLI subcommand for it
+
 Compile-Database Runs
 ~~~~~~~~~~~~~~~~~~~~~
 
-``--compile-commands`` (CLI) / ``compile_commands=True`` (MCP) makes a run pass
-sqc's ``--compile-commands`` flag, adding the build's include search paths and
+``--compile-commands`` makes a run pass sqc's ``--compile-commands`` flag,
+adding the build's include search paths and
 ``-D`` macro state to the cross-file context. It is **off by default** -- a
 plain run is unchanged.
 
@@ -183,36 +157,45 @@ indistinguishable from a genuine "the compile DB made no difference" result.
    real-world corpora, whose databases carry genuine per-project include trees
    and ``-D`` state.
 
-Real-World Benchmark Tools
---------------------------
+Real-World Benchmark
+---------------------
 
-==========================================  =================================================
-Tool                                        Purpose
-==========================================  =================================================
-``run_analysis``                            Run one tool against one codebase
-``run_all``                                 Run all tool x codebase combinations (or filter)
-``get_status``                              Show status of all tracked runs
-``get_results``                             Parse and display results
-``compare_runs``                            Compare results between two versions
-``list_runs``                               List all version directories
-``cancel_run``                              Cancel a specific or all active runs
-``purge_run``                               Remove stale/zombie runs
-``clear_results``                           Remove old result directories
-``deploy_sqc``                              Deploy sqc binary + manifest to remote hosts
-==========================================  =================================================
+Local and sequential, by design: one person running one benchmark in their
+own terminal, against their own SQLite DB. See ``bench/realworld_runner.py``.
+
+.. code-block:: bash
+
+    python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C] [--compile-commands]
+    python -m bench realworld [RUN] [--compare BASE]   # FP dashboard
+    python -m bench realworld-runs                     # list runs
+    python -m bench realworld-score [RUN]               # measured precision/recall
+
+``realworld-run`` defaults to ``sqc`` against every codebase; narrow either
+flag as needed. It blocks until every requested combo finishes, then ingests
+the sqc results and scores them against the oracle -- no separate ingest
+step, no polling.
 
 Supported tools: ``sqc``, ``cppcheck``, ``clang-tidy``
 
 Supported codebases: ``libcrc``, ``sqlite``, ``mosquitto``, ``curl``, ``hostap``,
-``lua``, ``raylib``, ``pure-ftpd``, ``sel4`` (sqc-only for the latter two —
+``lua``, ``raylib``, ``pureftpd``, ``sel4`` (sqc-only for the latter two —
 no cppcheck/clang-tidy baseline yet)
+
+.. note::
+
+   Remote-host execution (SSH) and background/concurrent run tracking
+   existed in this module's MCP-server predecessor and were deliberately
+   dropped when it became a plain synchronous script -- neither applies to
+   one person running one benchmark locally. If you need to run against a
+   fleet of remote hosts, that's the kind of thing the maintainer's
+   ``benchmarking_db`` infrastructure is for, not this repo.
 
 Per-Codebase Rule Configs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Each codebase may carry its own sqc rules manifest in ``conf/realworld/`` (the
-real-world analog of a project shipping its own ``sqc-rules.toml``). The MCP
-server reuses it for **every** run of that codebase via the
+real-world analog of a project shipping its own ``sqc-rules.toml``). The
+runner reuses it for **every** run of that codebase via the
 ``CODEBASES[<name>]["sqc"]["manifest"]`` registry entry, so rules that do not
 apply are ignored consistently. A codebase with no entry falls back to the
 shared base ``rules_templates/rules-benchmark.toml``. The config is the
@@ -227,7 +210,7 @@ Per-Codebase Scan Scope
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 Each codebase's ``CODEBASES[<name>]["sqc"]["extra_args"]`` entry in
-``mcp_servers/realworld_server.py`` also carries ``--exclude`` globs that
+``bench/realworld_runner.py`` also carries ``--exclude`` globs that
 scope the scan to the *shipped product*, not the whole checked-out repo —
 test harnesses, build tooling, vendored/bundled code, and companion tools
 (fuzzers, example plugins, separate CLI utilities) are excluded so they don't
@@ -257,18 +240,19 @@ denominator no longer matches what's being scanned).
 Auto-Scoring
 ~~~~~~~~~~~~~
 
-When a real-world run completes, ``get_status()`` ingests it and **auto-scores**
-it against the oracle: it writes a ``<run-dir>.score.json`` sidecar and returns
-a one-line measured precision/recall in the status payload (``"measured"``).
-Scoring only joins findings to *existing* labels — it never adjudicates new
-findings. Re-run any time with ``python -m bench realworld-score <RUN>``.
+When ``realworld-run`` finishes, it ingests the sqc results and **auto-scores**
+them against the oracle: it writes a ``<run-dir>.score.json`` sidecar and
+prints a one-line measured precision/recall. Scoring only joins findings to
+*existing* labels — it never adjudicates new findings. Re-run any time with
+``python -m bench realworld-score <RUN>``.
 
-Typical real-world workflow::
+Typical real-world workflow:
 
-    1. run_all(tool="sqc")           # Run sqc against all 7 codebases
-    2. get_status()                  # Monitor progress
-    3. get_results()                 # View all results
-    4. compare_runs(base="0.2.6", target="0.2.7")
+.. code-block:: bash
+
+    python -m bench realworld-run --tool sqc          # blocks until every codebase is done
+    python -m bench realworld latest                   # view results
+    python -m bench realworld latest --compare 0.2.6   # compare against a prior run
 
 Real-World Ground-Truth Oracle (measured precision/recall)
 ----------------------------------------------------------
@@ -373,20 +357,18 @@ Comparing Across Runs
 Juliet
 ~~~~~~
 
-::
+.. code-block:: bash
 
-    compare_runs(base="sqc-0.3.17-historical", target="latest")
-    compare_cwe(cwe_id="476", base="sqc-0.3.14-historical", target="latest")
+    python -m bench compare sqc-0.3.17-historical latest
 
 Positive FP delta = regression. Negative = improvement.
 
 Real-World
 ~~~~~~~~~~
 
-::
+.. code-block:: bash
 
-    compare_runs(base_version="0.2.6", target_version="0.2.7")
-    compare_runs(base_version="0.2.6", target_version="0.2.7", tool="sqc", codebase="sqlite")
+    python -m bench realworld 0.2.7 --compare 0.2.6
 
 Competitor Benchmarks (Infer / Frama-C)
 ----------------------------------------
@@ -472,10 +454,12 @@ Troubleshooting
 =======================================  =============================================
 Issue                                    Solution
 =======================================  =============================================
-"Benchmark already running"              ``get_status()``, then ``cancel_benchmark()``
-Old results consuming disk               ``clear_results()``
+"Benchmark already running"              It's synchronous and runs in your terminal --
+                                          Ctrl-C the process if you meant to stop it
+Old results consuming disk               ``rm -rf results/realworld/<version_dir>``
 Results show wrong version               Ensure version bump + commit before build
-SQLite locked                            WAL handles concurrent reads; check for zombies
+SQLite locked                            WAL handles concurrent reads; check for a
+                                          leftover process still holding the file open
 Historical run not found                 Data predates SQLite migration; not available
 =======================================  =============================================
 

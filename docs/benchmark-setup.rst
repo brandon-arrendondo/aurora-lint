@@ -9,7 +9,7 @@ Benchmark Host Layout
 
 Every benchmark node needs one directory -- ``$SQC_BENCH_ROOT`` (default
 ``~/toolchain``) -- holding the Juliet suite and every real-world codebase
-checkout. ``bench/config.py`` and ``mcp_servers/realworld_server.py`` both
+checkout. ``bench/config.py`` and ``bench/realworld_runner.py`` both
 read this from the ``SQC_BENCH_ROOT`` environment variable, or from a
 ``.env`` file at the repo root (copy ``.env.example`` -- it's gitignored, so
 each machine sets its own).
@@ -197,7 +197,7 @@ One-liner for all hosts:
 Per-Project Include Paths
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The benchmark MCP server passes these automatically via the ``includes`` field in
+The real-world runner passes these automatically via the ``includes`` field in
 each codebase's config:
 
 ===========  ============================================  ============================
@@ -218,7 +218,7 @@ Pinned Source Commits
 ~~~~~~~~~~~~~~~~~~~~~
 
 All benchmark results are run against these exact commits -- the full set of
-projects in ``mcp_servers/realworld_server.py``'s ``CODEBASES`` registry
+projects in ``bench/realworld_runner.py``'s ``CODEBASES`` registry
 (which stores paths and per-tool flags, not the pins).
 
 .. note::
@@ -395,7 +395,7 @@ Running Each Tool Manually
     checkout path for ad hoc manual runs. If you provisioned codebases via
     ``playbooks/setup-benchmark-repos.yml``, substitute
     ``$SQC_BENCH_ROOT/<project>`` (default ``~/toolchain/<project>``) instead
-    -- that's the path the MCP servers themselves read.
+    -- that's the path ``bench/realworld_runner.py`` itself reads.
 
 sqc
 ~~~
