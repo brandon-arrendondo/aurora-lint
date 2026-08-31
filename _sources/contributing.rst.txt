@@ -85,11 +85,33 @@ This installs the Rust toolchain (rustup, picking up the channel and
 components pinned in ``rust-toolchain.toml``), the native build dependencies
 ``git2``'s vendored libgit2 build needs (a C toolchain, cmake, pkg-config),
 and -- into a venv at ``~/.venvs/sqc-dev`` by default -- the Sphinx + LaTeX
-toolchain this guide itself is built with plus ``invoke`` (for the
-``invoke bump-version`` workflow). Point it at an existing/shared venv
+toolchain this guide itself is built with, ``invoke`` (for the
+``invoke bump-version`` workflow), ``pre-commit`` (installed as this
+checkout's git hook -- see CLAUDE.md's "Git Commit Rules"), and
+``clew-trace`` (the package behind the ``clew-mcp`` command ``.mcp.json``
+points at -- see CLAUDE.md's "Code Navigation (clew)" for registering the
+MCP server itself with ``clew init``, a separate, per-machine step this
+playbook does not run for you). Point the venv at an existing/shared one
 instead with ``-e dev_venv=<path>``, e.g. ``-e dev_venv=~/data-enterprise/venv``.
 
-It does not install comparison tools (cppcheck, clang-tidy, Infer, Frama-C --
-see `Benchmark Setup <benchmark-setup.html>`_), clone the real-world
-benchmark checkouts, or install editor/terminal conveniences (vim, htop,
-tmux) -- none of those are dependencies of building or testing sqc itself.
+It also installs and schedules a disk-guard cron (``cargo-sweep`` +
+``scripts/cargo-target-gc.sh``, nightly at 03:30) that caps ``target/``
+growth -- skip it on a node with plenty of headroom with
+``-e install_disk_guard=false``. This exists because two otherwise
+identically-provisioned dev nodes were found to have diverged on exactly
+this (2026-08-31): one had the cron, one didn't, and the one without it had
+an unbounded ``target/`` and a manually-patched ``Cargo.toml`` disabling
+dependency debug info as an ad hoc workaround.
+
+It does not install comparison tools -- cppcheck and clang-tidy (apt
+packages, see `Benchmark Setup <benchmark-setup.html>`_) or Infer/Frama-C
+(``playbooks/install-static-analyzers.yml``) -- clone the real-world
+benchmark checkouts or the Juliet test suite (also `Benchmark Setup
+<benchmark-setup.html>`_ -- a node that only needs the benchmark code as
+reference, not to run benchmarks, can skip both and just copy an existing
+node's ``$SQC_BENCH_ROOT`` directory over), or install editor/terminal
+conveniences (vim, htop, tmux). A node doing rule-development work that
+compares sqc's output against these tools' still needs
+``install-static-analyzers.yml`` run separately -- none of that is a
+dependency of building or testing sqc *itself*, which is this playbook's
+only scope.
