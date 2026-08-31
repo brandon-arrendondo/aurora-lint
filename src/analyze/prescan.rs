@@ -680,6 +680,23 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
     let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
     collect_global_writers(root, source, &file_statics, &mut global_writers);
 
+    // Single-file counterpart of the project-wide dispatch-table-callback
+    // computation in `prescan_project` (task 594/628): lets a rule test
+    // (`// sqc-test: prescan`) exercise the same exemption without needing
+    // the full multi-file prescan.
+    let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
+    collect_call_graph(root, source, &mut call_graph);
+    let mut initializer_function_refs: HashSet<String> = HashSet::new();
+    collect_initializer_function_refs(root, source, &mut initializer_function_refs);
+    let directly_called: HashSet<&str> = call_graph
+        .values()
+        .flat_map(|callees| callees.iter().map(|s| s.as_str()))
+        .collect();
+    let dispatch_table_callbacks: HashSet<String> = initializer_function_refs
+        .into_iter()
+        .filter(|name| known_functions.contains(name) && !directly_called.contains(name.as_str()))
+        .collect();
+
     ProjectContext {
         known_functions,
         function_summaries,
@@ -688,6 +705,8 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         struct_field_types,
         packed_structs,
         global_writers,
+        call_graph,
+        dispatch_table_callbacks,
         ..ProjectContext::default()
     }
 }
@@ -779,13 +798,35 @@ fn collect_function_names(node: &Node, source: &str, names: &mut HashSet<String>
     }
 }
 
+/// Unwrap `cast_expression` (and `parenthesized_expression`) layers to reach
+/// the underlying identifier, if any. A dispatch table registered through a
+/// function-pointer-typed cast — `(WPADBusMethodHandler)
+/// wpas_dbus_handler_create_interface` (hostap's dbus method table) — parses
+/// as `cast_expression` wrapping the identifier, not a bare `identifier`;
+/// without unwrapping, every such registration is invisible to
+/// `dispatch_table_callbacks` and API00-C keeps validating the callback as
+/// if it were a normal, externally-reachable function (task 628).
+fn unwrap_to_identifier(node: Node<'_>) -> Option<Node<'_>> {
+    let mut current = node;
+    loop {
+        match current.kind() {
+            "identifier" => return Some(current),
+            "cast_expression" => current = current.child_by_field_name("value")?,
+            "parenthesized_expression" => current = current.named_child(0)?,
+            _ => return None,
+        }
+    }
+}
+
 /// Collect every bare identifier that appears as a value inside an
 /// `initializer_list` (aggregate initializer) anywhere in the tree — the
 /// dispatch-table registration idiom, e.g.
-/// `{ "mysql", pw_mysql_parse, pw_mysql_check, pw_mysql_exit }` or a
-/// designated `.check = pw_mysql_check`. A function's address decays
-/// implicitly from its bare name, so no `&` is needed for this to be a
-/// function-pointer registration.
+/// `{ "mysql", pw_mysql_parse, pw_mysql_check, pw_mysql_exit }`, a
+/// designated `.check = pw_mysql_check`, or the same shape through a
+/// function-pointer cast (`(WPADBusMethodHandler)
+/// wpas_dbus_handler_create_interface`, task 628). A function's address
+/// decays implicitly from its bare name, so no `&` is needed for this to be
+/// a function-pointer registration.
 ///
 /// This over-collects (a plain identifier constant sitting in a struct
 /// literal isn't necessarily a function), which is fine: the caller
@@ -795,23 +836,14 @@ fn collect_initializer_function_refs(node: &Node, source: &str, out: &mut HashSe
     if node.kind() == "initializer_list" {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            match child.kind() {
-                "identifier" => {
-                    if let Ok(name) = child.utf8_text(source.as_bytes()) {
-                        out.insert(name.to_string());
-                    }
+            let value = match child.kind() {
+                "initializer_pair" => child.child_by_field_name("value"),
+                _ => Some(child),
+            };
+            if let Some(ident) = value.and_then(unwrap_to_identifier) {
+                if let Ok(name) = ident.utf8_text(source.as_bytes()) {
+                    out.insert(name.to_string());
                 }
-                "initializer_pair" => {
-                    // Designated initializer: `.field = value` or `[idx] = value`.
-                    if let Some(value) = child.child_by_field_name("value") {
-                        if value.kind() == "identifier" {
-                            if let Ok(name) = value.utf8_text(source.as_bytes()) {
-                                out.insert(name.to_string());
-                            }
-                        }
-                    }
-                }
-                _ => {}
             }
         }
     }
