@@ -38,7 +38,9 @@
       "scope_include": ["src/**", "ext/**"],
       "scope_exclude": [
         "src/test*.c", "src/test_*.h", "ext/*/test_*.c", "ext/*/test_*.h",
-        "ext/jni/**", "ext/wasm/**"
+        "ext/jni/**", "ext/wasm/**",
+        "src/tclsqlite.c", "src/tclsqlite.h",
+        "ext/fts5/fts5_test_tok.c"
       ]
     },
     {
