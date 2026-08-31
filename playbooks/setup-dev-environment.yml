@@ -16,6 +16,18 @@
 #   - invoke (pyinvoke) -- CLAUDE.md's version-bump workflow runs
 #     `invoke bump-version --new-version X.Y.Z`; there's a tasks.py at the
 #     repo root but nothing that installs the `invoke` package itself.
+#   - pre-commit + the git hook it installs -- CLAUDE.md requires every
+#     pre-commit hook to pass before a commit; nothing previously installed
+#     the tool or ran `pre-commit install` in the repo.
+#   - clew-trace -- .mcp.json (gitignored, written by `clew init` -- see
+#     CLAUDE.md's Code Navigation section) points at the `clew-mcp` command;
+#     without the package installed that command doesn't resolve and the
+#     clew MCP server silently fails to start.
+#   - cargo-sweep + a nightly cron job bounding cargo's target/ growth --
+#     found missing entirely on one of two otherwise-identically-provisioned
+#     dev nodes (2026-08-31), which is exactly the kind of silent drift this
+#     playbook exists to prevent. Small-disk nodes need this; a node with
+#     plenty of headroom can skip it (`-e install_disk_guard=false`).
 #
 # NOT covered here, deliberately:
 #   - ansible itself. Bootstrapping the tool this playbook runs under from
@@ -34,6 +46,9 @@
 #   # Or into an existing/shared venv instead of a new dedicated one:
 #   ansible-playbook playbooks/setup-dev-environment.yml -i "localhost," -c local \
 #     --ask-become-pass -e dev_venv=~/data-enterprise/venv
+#   # Skip the disk-guard cron on a node with plenty of headroom:
+#   ansible-playbook playbooks/setup-dev-environment.yml -i "localhost," -c local \
+#     --ask-become-pass -e install_disk_guard=false
 
 - name: Set up a tools_sqc development node
   hosts: all
@@ -43,6 +58,7 @@
     # repos, like ~/data-enterprise/venv) to install into it instead of
     # creating a new dedicated one.
     dev_venv: "{{ ansible_env.HOME }}/.venvs/sqc-dev"
+    install_disk_guard: true
 
   tasks:
     # ── Native build deps (cargo build itself) ───────────────────────────
@@ -113,12 +129,14 @@
       args:
         creates: "{{ dev_venv }}/bin/activate"
 
-    - name: Install Sphinx, the RTD theme, and invoke into the dev venv
+    - name: Install Sphinx, the RTD theme, invoke, pre-commit, and clew-trace into the dev venv
       pip:
         name:
           - sphinx
           - sphinx-rtd-theme
           - invoke
+          - pre-commit
+          - clew-trace
         virtualenv: "{{ dev_venv }}"
         state: present
 
@@ -136,6 +154,62 @@
       register: invoke_check
       changed_when: false
 
+    - name: Install the pre-commit git hook into this checkout
+      command: "{{ dev_venv }}/bin/pre-commit install"
+      args:
+        chdir: "{{ project_dir }}"
+      register: precommit_install
+      changed_when: "'installing' in precommit_install.stdout | lower"
+
+    - name: Verify clew-mcp resolves (the command .mcp.json points at)
+      command: "{{ dev_venv }}/bin/clew-mcp --help"
+      register: clew_mcp_check
+      changed_when: false
+      failed_when: false
+      # clew init itself (writing .mcp.json) is a per-machine, per-agent-session
+      # step documented in CLAUDE.md's Code Navigation section, not something
+      # this playbook does on your behalf -- this only confirms the command
+      # that config will point at actually exists once you do run it.
+
+    # ── Disk guard (cargo-sweep + nightly target/ cap) ───────────────────
+
+    - name: Install cargo-sweep
+      command: "{{ ansible_env.HOME }}/.cargo/bin/cargo install cargo-sweep --locked"
+      args:
+        creates: "{{ ansible_env.HOME }}/.cargo/bin/cargo-sweep"
+      when: install_disk_guard | bool
+
+    - name: Ensure ~/bin exists
+      file:
+        path: "{{ ansible_env.HOME }}/bin"
+        state: directory
+        mode: "0755"
+      when: install_disk_guard | bool
+
+    - name: Install the cargo-target-gc.sh script
+      copy:
+        src: "{{ project_dir }}/scripts/cargo-target-gc.sh"
+        dest: "{{ ansible_env.HOME }}/bin/cargo-target-gc.sh"
+        mode: "0755"
+      when: install_disk_guard | bool
+
+    - name: Create ~/.local/state for the gc log
+      file:
+        path: "{{ ansible_env.HOME }}/.local/state"
+        state: directory
+        mode: "0755"
+      when: install_disk_guard | bool
+
+    - name: Schedule nightly cargo-target-gc.sh via cron
+      cron:
+        name: "cargo-target-gc"
+        minute: "30"
+        hour: "3"
+        job: >-
+          PATH=$HOME/.cargo/bin:/usr/bin:/bin $HOME/bin/cargo-target-gc.sh
+          >> $HOME/.local/state/cargo-target-gc.log 2>&1
+      when: install_disk_guard | bool
+
     # ── Summary ──────────────────────────────────────────────────────────
 
     - name: Development environment summary
@@ -143,9 +217,15 @@
         msg:
           - "cargo:  {{ cargo_version_out.stdout }}"
           - "dev venv: {{ dev_venv }}"
+          - "pre-commit hook: {{ precommit_install.stdout | default('installed') }}"
+          - "clew-mcp: {{ 'OK' if clew_mcp_check.rc == 0 else 'NOT ON PATH -- check the dev venv install' }}"
+          - "disk guard cron: {{ 'installed (nightly 03:30)' if install_disk_guard | bool else 'skipped (-e install_disk_guard=false)' }}"
           - ""
           - "Activate the dev venv for docs builds and invoke tasks:"
           - "  source {{ dev_venv }}/bin/activate"
           - "  sphinx-build -b html docs docs/_build/html"
           - "  sphinx-build -b latex docs docs/_build/latex && make -C docs/_build/latex"
           - "  invoke bump-version --new-version X.Y.Z"
+          - ""
+          - "Register the clew MCP server once per machine (see CLAUDE.md):"
+          - "  cd {{ project_dir }} && {{ dev_venv }}/bin/clew init"
