@@ -849,10 +849,7 @@ def cmd_corpus_check(args):
 
 
 def cmd_render_docs(args):
-    from bench.render_docs import (PROJECT_COVERAGE_WARN,
-                                    UNLABELED_FRACTION_WARN, render_all,
-                                    realworld_project_count,
-                                    published_realworld_project_count,
+    from bench.render_docs import (render_all, realworld_citation_warnings,
                                     resolve_latest_fast_juliet_run)
     db = BenchDB()
 
@@ -873,24 +870,12 @@ def cmd_render_docs(args):
             print(f"Juliet run '{args.juliet_run}' not found.")
             sys.exit(1)
 
-    score = db.score_realworld_run(realworld_run_id)
-    unlabeled = score["overall"].get("unlabeled_fraction") or 0.0
-    if unlabeled > UNLABELED_FRACTION_WARN and not args.force:
-        print(f"Real-world run #{realworld_run_id} is {unlabeled:.1%} "
-              "unlabeled -- its precision/recall likely isn't safely "
-              "measured yet (see CLAUDE.md's delta-adjudication protocol). "
-              "Delta-adjudicate first, or pass --force to cite it anyway.")
-        sys.exit(1)
-
-    this_count = realworld_project_count(db, realworld_run_id)
-    published_count = published_realworld_project_count()
-    if (published_count and this_count
-            and this_count < published_count * PROJECT_COVERAGE_WARN
-            and not args.force):
-        print(f"Real-world run #{realworld_run_id} only covers "
-              f"{this_count} project(s), vs {published_count} in the "
-              "currently-published table -- likely a narrow/targeted scan, "
-              "not a full-suite run. Pass --force to cite it anyway.")
+    warnings = realworld_citation_warnings(db, realworld_run_id)
+    if warnings and not args.force:
+        print(f"Real-world run #{realworld_run_id}:")
+        for w in warnings:
+            print(f"  - {w}")
+        print("Pass --force to cite it anyway.")
         sys.exit(1)
 
     try:

@@ -107,6 +107,37 @@ def published_realworld_project_count() -> int | None:
     return len([p for p in m.group(1).split(",") if p.strip()])
 
 
+def realworld_citation_warnings(db, realworld_run_id: int) -> list[str]:
+    """Reasons NOT to cite this run without an explicit override, or [] if
+    it's safely citable as-is.
+
+    Shared by every caller of `render_all` (tools_sqc's own `render-docs`
+    CLI, and any other script pointing these functions at a differently-
+    backed `db`, e.g. a Postgres-backed refresh run from the benchmark
+    node) so the guard logic lives in exactly one place rather than being
+    re-implemented per caller.
+    """
+    warnings = []
+
+    score = db.score_realworld_run(realworld_run_id)
+    unlabeled = score["overall"].get("unlabeled_fraction") or 0.0
+    if unlabeled > UNLABELED_FRACTION_WARN:
+        warnings.append(
+            f"{unlabeled:.1%} unlabeled -- its precision/recall likely "
+            "isn't safely measured yet (see CLAUDE.md's delta-adjudication "
+            "protocol). Delta-adjudicate first, or force past this.")
+
+    this_count = realworld_project_count(db, realworld_run_id)
+    published_count = published_realworld_project_count()
+    if published_count and this_count and this_count < published_count * PROJECT_COVERAGE_WARN:
+        warnings.append(
+            f"only covers {this_count} project(s), vs {published_count} in "
+            "the currently-published table -- likely a narrow/targeted "
+            "scan, not a full-suite run.")
+
+    return warnings
+
+
 def _zero_fp_cwe_lists(per_cwe: list[dict]) -> tuple[list[str], list[str]]:
     """(with-detections, zero-detection) CWE id lists, ordered by numeric id.
 
