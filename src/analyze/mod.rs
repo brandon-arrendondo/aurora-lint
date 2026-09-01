@@ -19,6 +19,8 @@ pub mod init_state;
 pub mod label_preproc_guard;
 pub mod macro_expand;
 pub mod macro_semantics;
+/// Noreturn-function detection shared by CFG construction (task 648).
+pub mod noreturn;
 pub mod null_state;
 /// Points-to/alias analysis: resolving an lvalue expression to the set of
 /// storage locations it may refer to.
@@ -765,7 +767,8 @@ pub fn collect_function_cfgs(
     cfgs: &mut HashMap<usize, cfg::FunctionCfg>,
 ) {
     let constants = const_eval::collect_macro_constants(node, source);
-    collect_function_cfgs_with_constants(node, source, cfgs, &constants);
+    let noreturn_names = noreturn::collect_noreturn_function_names(node, source);
+    collect_function_cfgs_with_constants(node, source, cfgs, &constants, &noreturn_names);
 }
 
 fn collect_function_cfgs_with_constants(
@@ -773,16 +776,21 @@ fn collect_function_cfgs_with_constants(
     source: &str,
     cfgs: &mut HashMap<usize, cfg::FunctionCfg>,
     constants: &const_eval::MacroConstantMap,
+    noreturn_names: &std::collections::HashSet<String>,
 ) {
     if node.kind() == "function_definition" {
-        if let Some(function_cfg) = cfg::build_function_cfg_with_constants(node, source, constants)
-        {
+        if let Some(function_cfg) = cfg::build_function_cfg_with_constants_and_noreturn(
+            node,
+            source,
+            constants,
+            noreturn_names,
+        ) {
             cfgs.insert(node.start_byte(), function_cfg);
         }
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            collect_function_cfgs_with_constants(&child, source, cfgs, constants);
+            collect_function_cfgs_with_constants(&child, source, cfgs, constants, noreturn_names);
         }
     }
 }

@@ -6,7 +6,8 @@
 //! control flow between blocks (fallthrough, branches, back edges, returns).
 
 use super::const_eval::MacroConstantMap;
-use std::collections::HashMap;
+use super::noreturn;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 /// Unique identifier for a basic block within a function CFG.
@@ -119,10 +120,18 @@ struct CfgBuilder {
     function_start_byte: usize,
     /// File-level constants (static const int, #define) for condition evaluation.
     constants: MacroConstantMap,
+    /// Names of functions known not to return to their caller (task 648) --
+    /// a call to one of these terminates the current block exactly like a
+    /// `return` statement.
+    noreturn_names: HashSet<String>,
 }
 
 impl CfgBuilder {
-    fn new(function_start_byte: usize, constants: MacroConstantMap) -> Self {
+    fn new(
+        function_start_byte: usize,
+        constants: MacroConstantMap,
+        noreturn_names: HashSet<String>,
+    ) -> Self {
         let entry_block = BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -140,6 +149,7 @@ impl CfgBuilder {
             pending_gotos: Vec::new(),
             function_start_byte,
             constants,
+            noreturn_names,
         }
     }
 
@@ -265,6 +275,18 @@ impl CfgBuilder {
                         }
                     }
                 }
+            }
+            "expression_statement"
+                if noreturn::is_noreturn_call_statement(node, source, &self.noreturn_names) =>
+            {
+                // A call to a known-noreturn function terminates this block
+                // exactly like an explicit `return` (task 648) -- e.g.
+                // `if (!ptr) { slowpath(...); } /* unreachable fallthrough */`
+                // where `slowpath` is declared `NORETURN`.
+                self.add_statement(node.start_byte(), node.end_byte());
+                let exit_block = self.new_block();
+                self.add_edge(self.current_block, exit_block, CfgEdge::Return);
+                self.current_block = self.new_block(); // Unreachable block after the call
             }
             _ => {
                 // Regular statement: add to current block
@@ -905,10 +927,26 @@ pub fn build_function_cfg(func_node: &Node, source: &str) -> Option<FunctionCfg>
 
 /// Build a CFG with file-level constant resolution (static const int, #define).
 /// This enables dead-branch pruning for patterns like `if(STATIC_CONST_TRUE)`.
+/// Does not model any noreturn-call terminations -- callers that have a
+/// whole-file AST available and want that (the main analysis driver) should
+/// use [`build_function_cfg_with_constants_and_noreturn`] instead.
 pub fn build_function_cfg_with_constants(
     func_node: &Node,
     source: &str,
     constants: &MacroConstantMap,
+) -> Option<FunctionCfg> {
+    build_function_cfg_with_constants_and_noreturn(func_node, source, constants, &HashSet::new())
+}
+
+/// Same as [`build_function_cfg_with_constants`], additionally treating a
+/// call to any function named in `noreturn_names` as terminating its block
+/// like a `return` statement (task 648). `noreturn_names` is normally
+/// [`noreturn::collect_noreturn_function_names`] run once per file.
+pub fn build_function_cfg_with_constants_and_noreturn(
+    func_node: &Node,
+    source: &str,
+    constants: &MacroConstantMap,
+    noreturn_names: &HashSet<String>,
 ) -> Option<FunctionCfg> {
     if func_node.kind() != "function_definition" {
         return None;
@@ -919,7 +957,11 @@ pub fn build_function_cfg_with_constants(
         return None;
     }
 
-    let mut builder = CfgBuilder::new(func_node.start_byte(), constants.clone());
+    let mut builder = CfgBuilder::new(
+        func_node.start_byte(),
+        constants.clone(),
+        noreturn_names.clone(),
+    );
     builder.build_from_compound_statement(&body, source);
     Some(builder.build())
 }

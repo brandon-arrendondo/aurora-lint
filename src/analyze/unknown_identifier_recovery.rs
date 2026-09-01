@@ -165,6 +165,26 @@ fn blank_range(source: &str, start: usize, end: usize) -> String {
     String::from_utf8(bytes).unwrap_or_else(|_| source.to_string())
 }
 
+/// Same as [`blank_range`], but if the identifier being blanked is a known
+/// noreturn-attribute macro name (task 648 -- e.g. seL4's
+/// `void NORETURN slowpath(...)`, where `NORETURN` has no local `#define`
+/// for `empty_macro_blank` to find and expands to
+/// `__attribute__((noreturn))` in a header this single-file parse never
+/// sees), write `crate::analyze::noreturn::MARKER` in its place instead of
+/// plain blanking -- the same length-preserving recoverable-marker idiom
+/// task 663 introduced for label-guarded preprocessor directives. Every
+/// other unknown identifier is blanked exactly as before; only this
+/// specific, safe, fixed name list gets the marker treatment.
+fn blank_or_mark_noreturn(source: &str, start: usize, end: usize) -> String {
+    let trimmed = source[start..end].trim();
+    if crate::analyze::noreturn::NORETURN_ATTRIBUTE_MACRO_NAMES.contains(&trimmed) {
+        if let Some(marked) = crate::analyze::noreturn::write_marker(source, start, end) {
+            return marked;
+        }
+    }
+    blank_range(source, start, end)
+}
+
 /// Depth-first search for a `preproc_if`/`preproc_ifdef`/`preproc_elif`-style
 /// conditional node whose entire guarded content is a single ERROR-wrapped
 /// bare brace (`{` or `}`). This is the dual-C/C++-header idiom for
@@ -281,7 +301,7 @@ pub fn parse_with_recovery(parser: &mut Parser, source: String) -> Option<(Tree,
             break;
         }
         if let Some((start, end)) = find_blankable_identifier_error(&tree.root_node(), &text) {
-            text = blank_range(&text, start, end);
+            text = blank_or_mark_noreturn(&text, start, end);
         } else if let Some(((s1, e1), (s2, e2))) =
             find_blankable_preproc_brace_error(&tree.root_node(), &text)
         {
