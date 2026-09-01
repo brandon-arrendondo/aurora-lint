@@ -660,6 +660,45 @@ impl Exp36C {
             ("uint8_t *", 1),
             ("int8_t", 1),
             ("int8_t *", 1),
+            // Linux/hostap-style fixed-width kernel typedefs (u8/u16/u32/u64,
+            // s8/s16/s32/s64, and the byte-order-tagged be16/le16/be32/le32/
+            // be64/le64 wrappers around u16/u32/u64) — same alignment as the
+            // stdint types they're defined from. Absent these, an unmatched
+            // pointer type fell through to the "assume 4-byte alignment"
+            // default below, fabricating an alignment-1-to-4 violation for
+            // every `u8 *`/`s8 *` cast — a single root cause behind a large,
+            // recurring EXP36-C false-positive class across the hostap
+            // corpus (see data/precision_audit/hostap/categorical_patterns.md,
+            // e.g. `taxonomy.c:73`/`upnp_xml.c:125`/driver_ndis.c's `(const u8 *)`
+            // casts/eap_server_tls_common.c's `test_sha384`).
+            ("u8", 1),
+            ("u8 *", 1),
+            ("s8", 1),
+            ("s8 *", 1),
+            ("u16", 2),
+            ("u16 *", 2),
+            ("s16", 2),
+            ("s16 *", 2),
+            ("be16", 2),
+            ("be16 *", 2),
+            ("le16", 2),
+            ("le16 *", 2),
+            ("u32", 4),
+            ("u32 *", 4),
+            ("s32", 4),
+            ("s32 *", 4),
+            ("be32", 4),
+            ("be32 *", 4),
+            ("le32", 4),
+            ("le32 *", 4),
+            ("u64", 8),
+            ("u64 *", 8),
+            ("s64", 8),
+            ("s64 *", 8),
+            ("be64", 8),
+            ("be64 *", 8),
+            ("le64", 8),
+            ("le64 *", 8),
             ("short", 2),
             ("short *", 2),
             ("unsigned short", 2),
