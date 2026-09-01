@@ -38,6 +38,7 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval::{self, MacroConstantMap};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
@@ -55,12 +56,19 @@ pub struct Int10C {
     /// unsigned even though `type_map` only records the alias name as
     /// written (task 657).
     typedef_types: RefCell<HashMap<String, String>>,
+    /// Project-wide compile-time constants (enum constants, `#define`s,
+    /// file-scope `static const`), populated by `set_project_context` and
+    /// merged with per-file constants in `check`. Lets a modulo operand
+    /// that's an enum constant with a provably non-negative *value* clear
+    /// the check even when its enum *type* is signed (task 673).
+    project_macros: RefCell<MacroConstantMap>,
 }
 
 impl Int10C {
     pub fn new() -> Self {
         Self {
             typedef_types: RefCell::new(HashMap::new()),
+            project_macros: RefCell::new(MacroConstantMap::new()),
         }
     }
 }
@@ -88,12 +96,15 @@ impl CertRule for Int10C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
+        *self.project_macros.borrow_mut() = context.macro_constants.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         let type_map = overflow_helpers::collect_variable_types(node, source);
-        self.check_modulo_usage(node, source, &mut violations, &type_map);
+        let macros =
+            const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
+        self.check_modulo_usage(node, source, &mut violations, &type_map, &macros);
         violations
     }
 }
@@ -105,6 +116,7 @@ impl Int10C {
         source: &str,
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
+        macros: &MacroConstantMap,
     ) {
         // Scope type_map per function to avoid cross-function name collisions
         // (e.g., a same-named variable of a different signedness in a different
@@ -128,7 +140,7 @@ impl Int10C {
                         };
 
                     // Check if this is a signed modulo operation
-                    if self.is_potentially_signed_modulo(&n, source, scoped_type_map) {
+                    if self.is_potentially_signed_modulo(&n, source, scoped_type_map, macros) {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             message: "Modulo operator used with potentially signed operands. \
@@ -159,6 +171,7 @@ impl Int10C {
         modulo_node: &Node,
         source: &str,
         type_map: &HashMap<String, String>,
+        macros: &MacroConstantMap,
     ) -> bool {
         // Get left and right operands
         let left = modulo_node.child_by_field_name("left");
@@ -185,6 +198,20 @@ impl Int10C {
         // Check type_map for identifiers within each operand
         if self.operand_has_unsigned_type(&left_node, source, type_map)
             || self.operand_has_unsigned_type(&right_node, source, type_map)
+        {
+            return false;
+        }
+
+        // An operand identifier whose *value* resolves to a compile-time
+        // constant (an enum constant, `#define`, or file-scope `static
+        // const`) that's non-negative can't produce a negative remainder,
+        // regardless of its declared type's signedness -- e.g. an
+        // `interrupt_t` enum constant set to a macro like `IRQ_INT_OFFSET`
+        // (0x20) is provably non-negative even though the enum itself has
+        // an unrelated negative member (`int_invalid = -1`) and is
+        // therefore a signed type overall (task 673).
+        if self.operand_is_nonnegative_constant(&left_node, source, macros)
+            || self.operand_is_nonnegative_constant(&right_node, source, macros)
         {
             return false;
         }
@@ -249,6 +276,32 @@ impl Int10C {
                 let text = get_node_text(&n, source);
                 if self.looks_unsigned(&text) {
                     return true;
+                }
+            }
+            false
+        })
+        .is_some()
+    }
+
+    /// Check if any identifier in the operand resolves, via compile-time
+    /// constant folding, to a known non-negative value. Deliberately
+    /// scoped to *identifier* operands only (an enum constant, `#define`,
+    /// or `static const` name) — not to bare integer literals written
+    /// directly in the modulo expression, since a literal on one side
+    /// (e.g. `x % 60`) says nothing about whether the *other*, unresolved
+    /// operand can be negative, and treating it as safe would suppress
+    /// genuine findings (task 673).
+    fn operand_is_nonnegative_constant(
+        &self,
+        node: &Node,
+        source: &str,
+        macros: &MacroConstantMap,
+    ) -> bool {
+        query::find_first_descendant(*node, |n| {
+            if n.kind() == "identifier" {
+                let name = get_node_text(&n, source);
+                if let Some(&value) = macros.get(name) {
+                    return value >= 0;
                 }
             }
             false
