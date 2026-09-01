@@ -409,7 +409,11 @@ fn is_function_macro_output_arg(
 fn enclosing_ifdef_guard_key(node: &Node, boundary: &Node, source: &str) -> Option<String> {
     let mut current = *node;
     while current.id() != boundary.id() {
-        let parent = current.parent()?;
+        let Some(parent) = current.parent() else {
+            // No `preproc_ifdef` ancestor found before running out of tree
+            // -- same "give up" case as reaching `boundary` below.
+            return blanked_label_guard_key(node, boundary, source);
+        };
         if parent.kind() == "preproc_ifdef" {
             let is_alt = parent
                 .child_by_field_name("alternative")
@@ -422,9 +426,63 @@ fn enclosing_ifdef_guard_key(node: &Node, boundary: &Node, source: &str) -> Opti
             return Some(format!("{directive}:{}", get_node_text(&name, source)));
         }
         if parent.id() == boundary.id() {
-            return None;
+            // No real `preproc_ifdef` ancestor -- fall back to the
+            // text-level marker `label_preproc_guard::blank_label_guarded_preproc`
+            // leaves behind when it removes a label-adjacent
+            // `#ifdef`/`#ifndef` guard's AST node entirely (task 663).
+            // Without this, a read site inside such a guard reports `None`
+            // even though a real, unblanked occurrence of the identical
+            // macro elsewhere in the function correctly resolves via the
+            // path above -- defeating `all_write_sites_ifdef_correlated`
+            // purely because of *how* the read's guard happened to parse.
+            return blanked_label_guard_key(node, boundary, source);
         }
         current = parent;
+    }
+    None
+}
+
+/// Text-level fallback for [`enclosing_ifdef_guard_key`]: scan `source`
+/// backward, line by line, from `node`'s own line up to (not past)
+/// `boundary`'s start line, looking for a marker left by
+/// `label_preproc_guard::blank_label_guarded_preproc` (task 663 -- kept
+/// manually in sync with that module's `open_marker`/`CLOSE_MARKER`
+/// formats: `"/*G{d|n}:{NAME}*/"` opening, `"/*E*/"` closing).
+///
+/// The first marker encountered going backward decides the answer: an open
+/// marker means `node` is still inside that guard (return its key, in the
+/// same `"{directive}:{name}"` format the AST-based path above produces, so
+/// it compares equal to a real, unblanked occurrence of the same macro); a
+/// close marker means `node` is past an unrelated, already-closed guard
+/// (return `None` rather than incorrectly matching something earlier).
+/// Reaching `boundary` without finding either also returns `None`.
+fn blanked_label_guard_key(node: &Node, boundary: &Node, source: &str) -> Option<String> {
+    let node_line = node.start_position().row;
+    let boundary_line = boundary.start_position().row;
+    if node_line <= boundary_line {
+        return None;
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    for line in lines.get(boundary_line..node_line)?.iter().rev() {
+        let trimmed = line.trim();
+        if trimmed == "/*E*/" {
+            return None;
+        }
+        if let Some(rest) = trimmed.strip_prefix("/*G") {
+            let Some(rest) = rest.strip_suffix("*/") else {
+                continue;
+            };
+            let mut parts = rest.splitn(2, ':');
+            let (Some(sigil), Some(name)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            let directive = match sigil {
+                "d" => "#ifdef",
+                "n" => "#ifndef",
+                _ => continue,
+            };
+            return Some(format!("{directive}:{name}"));
+        }
     }
     None
 }

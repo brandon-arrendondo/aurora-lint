@@ -99,6 +99,73 @@ fn blank_line(out: &mut [u8], line_start: usize, line_len: usize) {
     }
 }
 
+/// Extract the directive keyword (`"#ifdef"`/`"#ifndef"`) and the guarded
+/// macro name from a directive line's left-trimmed text, e.g.
+/// `"#ifdef CONFIG_ELOOP_SELECT"` -> `("#ifdef", "CONFIG_ELOOP_SELECT")`.
+/// Returns `None` for a bare `#if EXPR` (an arbitrary expression, not a
+/// single macro name -- `enclosing_ifdef_guard_key` in EXP33-C only
+/// correlates `preproc_ifdef` nodes, i.e. `#ifdef`/`#ifndef`, so there is
+/// nothing to encode for `#if` here either; see task 663).
+fn directive_keyword_and_name(trimmed: &str) -> Option<(&'static str, &str)> {
+    let (keyword, after) = if let Some(rest) = trimmed.strip_prefix("#ifdef") {
+        ("#ifdef", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("#ifndef") {
+        ("#ifndef", rest)
+    } else {
+        return None;
+    };
+    let name = after.split_whitespace().next()?;
+    Some((keyword, name))
+}
+
+/// A same-length-or-shorter marker comment recording `"{keyword}:{name}"`
+/// (`d`/`n` sigil for `#ifdef`/`#ifndef`, since both directives parse to the
+/// same `preproc_ifdef` AST node and the key must distinguish them). Never
+/// longer than the shortest possible real directive line spelling it could
+/// replace (`"#ifdef X"`/`"#ifndef X"`), so it always fits.
+///
+/// Recoverable by `crate::rules::cert_c::exp33_c::blanked_label_guard_key`
+/// (name kept in sync manually -- see that function's doc comment) when an
+/// `#ifdef`/`#ifndef`-guarded read site's `preproc_ifdef` ancestor was
+/// removed by [`blank_label_guarded_preproc`], so ifdef/write correlation
+/// (task 590) can still recognize the read as sharing the same guard as a
+/// write under a real, unblanked occurrence of the identical macro
+/// elsewhere in the function (task 663).
+fn open_marker(keyword: &str, name: &str) -> Option<String> {
+    let sigil = match keyword {
+        "#ifdef" => 'd',
+        "#ifndef" => 'n',
+        _ => return None,
+    };
+    Some(format!("/*G{sigil}:{name}*/"))
+}
+
+/// Paired with [`open_marker`]: marks where the blanked guard's `#endif`
+/// was, so a backward text scan looking for the marker above knows it has
+/// exited an unrelated, already-closed guard rather than still being inside
+/// the one it's looking for.
+const CLOSE_MARKER: &str = "/*E*/";
+
+/// Write `marker` left-aligned into `out[line_start..line_start+line_len]`,
+/// space-padding the remainder, when it fits within `line_len` bytes;
+/// otherwise fall back to a full blank ([`blank_line`]) -- length is
+/// preserved either way, and a marker that doesn't fit just means this one
+/// occurrence loses recoverability (degrades to the pre-task-663 behavior),
+/// not a parse failure.
+fn write_marker_or_blank(out: &mut [u8], line_start: usize, line_len: usize, marker: Option<&str>) {
+    if let Some(marker) = marker {
+        if marker.len() <= line_len {
+            let region = &mut out[line_start..line_start + line_len];
+            region[..marker.len()].copy_from_slice(marker.as_bytes());
+            for b in &mut region[marker.len()..] {
+                *b = b' ';
+            }
+            return;
+        }
+    }
+    blank_line(out, line_start, line_len);
+}
+
 /// Blank the `#if`/`#ifdef`/`#ifndef` + matching `#endif` directive lines
 /// that open immediately after a bare goto-label line, per the module docs
 /// above. Length-preserving.
@@ -156,8 +223,26 @@ pub fn blank_label_guarded_preproc(source: &str) -> String {
         };
 
         if !has_branch {
-            blank_line(&mut out, line_starts[i], lines[i].len());
-            blank_line(&mut out, line_starts[end_idx], lines[end_idx].len());
+            // Only emit the close marker when the open marker actually fit
+            // on its own line -- an orphaned "/*E*/" with no matching open
+            // marker is harmless (a backward scan starting inside this
+            // region would never reach it, since it sits after every
+            // guarded line), but there is no reason to write one.
+            let open_text = directive_keyword_and_name(trimmed)
+                .and_then(|(keyword, name)| open_marker(keyword, name))
+                .filter(|m| m.len() <= lines[i].len());
+            write_marker_or_blank(
+                &mut out,
+                line_starts[i],
+                lines[i].len(),
+                open_text.as_deref(),
+            );
+            write_marker_or_blank(
+                &mut out,
+                line_starts[end_idx],
+                lines[end_idx].len(),
+                open_text.as_ref().map(|_| CLOSE_MARKER),
+            );
         }
 
         i += 1;
@@ -315,5 +400,75 @@ out:
 }
 ";
         assert_eq!(blank_label_guarded_preproc(src), src);
+    }
+
+    #[test]
+    fn leaves_a_recoverable_marker_encoding_the_guard() {
+        // Task 663: the blanked directive lines must not become pure
+        // whitespace -- EXP33-C's ifdef/write correlation needs to recover
+        // which macro guarded a read site whose `preproc_ifdef` ancestor
+        // this pass removed.
+        let src = "\
+void f(void) {
+    goto out;
+out:
+#ifdef CONFIG_ELOOP_SELECT
+    os_free(rfds);
+#endif
+    return;
+}
+";
+        let fixed = blank_label_guarded_preproc(src);
+        assert!(
+            fixed.contains("/*Gd:CONFIG_ELOOP_SELECT*/"),
+            "missing open marker in: {fixed:?}"
+        );
+        assert!(
+            fixed.contains("/*E*/"),
+            "missing close marker in: {fixed:?}"
+        );
+        // Still parses clean and preserves length -- a comment is as much
+        // valid trivia as whitespace.
+        assert!(parses_clean(src));
+        assert_eq!(fixed.len(), src.len());
+    }
+
+    #[test]
+    fn marker_distinguishes_ifdef_from_ifndef() {
+        let src_ifdef = "\
+void f(void) {
+    goto out;
+out:
+#ifdef X
+    os_free(rfds);
+#endif
+    return;
+}
+";
+        let src_ifndef = src_ifdef.replace("#ifdef X", "#ifndef X");
+        assert!(blank_label_guarded_preproc(src_ifdef).contains("/*Gd:X*/"));
+        assert!(blank_label_guarded_preproc(&src_ifndef).contains("/*Gn:X*/"));
+    }
+
+    #[test]
+    fn no_marker_for_bare_if_expression() {
+        // A bare `#if EXPR` has no single macro name to encode, and
+        // EXP33-C's correlation only ever looks at `preproc_ifdef`
+        // (`#ifdef`/`#ifndef`) nodes in the first place -- falls back to a
+        // plain blank, same as before task 663.
+        let src = "\
+void f(void) {
+    goto out;
+out:
+#if defined(X) && Y > 2
+    os_free(rfds);
+#endif
+    return;
+}
+";
+        let fixed = blank_label_guarded_preproc(src);
+        assert!(!fixed.contains("/*G"));
+        assert!(!fixed.contains("/*E*/"));
+        assert!(parses_clean(src));
     }
 }
