@@ -74,6 +74,18 @@ pub struct RangeAnalysisResult {
     /// Callee return ranges used during analysis (retained for intra-block replay
     /// in `get_var_range_at` / `eval_expr_range_at`).
     pub(crate) return_ranges: HashMap<String, ValueRange>,
+    /// Per-block running range-map state after each statement, keyed by that
+    /// statement's end byte, built once (per block) from the converged entry
+    /// state. Lets [`get_all_var_ranges_at`] binary-search for the state at a
+    /// given offset instead of replaying the block prefix from scratch on
+    /// every query -- the O(n) per-call cost was making any VRA-consuming
+    /// rule O(n^2) in statements-per-block (task 669).
+    block_checkpoints: HashMap<BlockId, Vec<(usize, RangeMap)>>,
+    /// Every statement's byte range across all blocks, sorted by start byte,
+    /// for O(log n) "which block contains this offset" lookup in
+    /// [`get_all_var_ranges_at`] (replacing a linear scan over every
+    /// statement in the function, also part of task 669's O(n) per query).
+    statement_index: Vec<(usize, usize, BlockId)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,10 +1356,30 @@ pub fn analyze_value_ranges(
         .filter_map(|(name, s)| s.return_range.map(|r| (name.clone(), r)))
         .collect();
 
+    // Build per-block replay checkpoints and the cross-block statement index
+    // once here (from the now-converged entry ranges), so point queries in
+    // `get_all_var_ranges_at` no longer replay each block prefix from
+    // scratch (task 669).
+    let replay_summaries = build_replay_summaries(&return_ranges);
+    let mut block_checkpoints: HashMap<BlockId, Vec<(usize, RangeMap)>> = HashMap::new();
+    let mut statement_index: Vec<(usize, usize, BlockId)> = Vec::new();
+    for block in &cfg.blocks {
+        let entry = entry_ranges.get(&block.id).cloned().unwrap_or_default();
+        let checkpoints =
+            build_block_checkpoints(&entry, block, &body, source, macros, &replay_summaries);
+        block_checkpoints.insert(block.id, checkpoints);
+        for &(start, end) in &block.statements {
+            statement_index.push((start, end, block.id));
+        }
+    }
+    statement_index.sort_by_key(|&(start, _, _)| start);
+
     RangeAnalysisResult {
         block_entry_ranges: entry_ranges,
         block_exit_ranges: exit_ranges,
         return_ranges,
+        block_checkpoints,
+        statement_index,
     }
 }
 
@@ -1357,6 +1389,8 @@ fn empty_range_result() -> RangeAnalysisResult {
         block_entry_ranges: HashMap::new(),
         block_exit_ranges: HashMap::new(),
         return_ranges: HashMap::new(),
+        block_checkpoints: HashMap::new(),
+        statement_index: Vec::new(),
     }
 }
 
@@ -1551,44 +1585,157 @@ pub fn eval_expr_range_at(
 pub fn get_all_var_ranges_at(
     result: &RangeAnalysisResult,
     cfg: &FunctionCfg,
-    body: &Node,
-    source: &str,
-    macros: &MacroConstantMap,
+    _body: &Node,
+    _source: &str,
+    _macros: &MacroConstantMap,
     byte_offset: usize,
 ) -> Option<VarRangeMap> {
-    let block = find_block_containing(cfg, byte_offset)?;
-    let entry = result.block_entry_ranges.get(&block.id)?;
-    let replay_summaries = build_replay_summaries(&result.return_ranges);
-    let mut state = entry.clone();
-    let empty_types = HashMap::new();
-    for &(start, end) in &block.statements {
-        // Stop before the statement containing the offset: its own effects
-        // (e.g. `data = data + 1`, or an opaque switch whose case holds the
-        // checked expression) must not be applied before evaluation.
-        if end > byte_offset {
-            break;
+    let block_id = find_block_id_containing(result, cfg, byte_offset)?;
+    let entry = result.block_entry_ranges.get(&block_id)?;
+    // Find the state after the last statement whose end <= byte_offset --
+    // i.e. every statement up to but not including the one containing the
+    // offset (its own effects, e.g. `data = data + 1`, must not be applied
+    // before evaluation). Precomputed once per block in `analyze_value_ranges`
+    // instead of replayed here on every call (task 669).
+    let state = match result.block_checkpoints.get(&block_id) {
+        Some(checkpoints) => {
+            let idx = checkpoints.partition_point(|&(end, _)| end <= byte_offset);
+            if idx == 0 {
+                entry
+            } else {
+                &checkpoints[idx - 1].1
+            }
         }
-        if let Some(stmt_node) = find_node_at_range(body, start, end) {
-            process_statement_for_ranges(
-                &stmt_node,
-                source,
-                macros,
-                &replay_summaries,
-                &mut state,
-                &empty_types,
-            );
-        }
-    }
+        None => entry,
+    };
     if state.is_empty() {
         None
     } else {
-        Some(extract_var_ranges_from_state(&state))
+        Some(extract_var_ranges_from_state(state))
     }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Build the running range-map state after each statement in `block`, keyed
+/// by that statement's end byte, starting from `entry`. One forward pass per
+/// block, done once in `analyze_value_ranges` rather than once per query
+/// (task 669).
+fn build_block_checkpoints(
+    entry: &RangeMap,
+    block: &BasicBlock,
+    body: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    replay_summaries: &HashMap<String, FunctionSummary>,
+) -> Vec<(usize, RangeMap)> {
+    let mut state = entry.clone();
+    let empty_types = HashMap::new();
+    let stmt_nodes = resolve_block_statement_nodes(body, block);
+    let mut checkpoints = Vec::with_capacity(block.statements.len());
+    for (i, &(_start, end)) in block.statements.iter().enumerate() {
+        if let Some(stmt_node) = stmt_nodes[i] {
+            process_statement_for_ranges(
+                &stmt_node,
+                source,
+                macros,
+                replay_summaries,
+                &mut state,
+                &empty_types,
+            );
+        }
+        checkpoints.push((end, state.clone()));
+    }
+    checkpoints
+}
+
+/// Resolve every statement node in `block` in one pass, instead of calling
+/// [`find_node_at_range`] once per statement (which re-descends from `body`'s
+/// root every time -- O(1)+O(2)+...+O(n) to resolve n siblings, quadratic in
+/// statements-per-block on its own regardless of the query-side fix above;
+/// task 669).
+///
+/// A basic block's statements are, by construction, a straight-line run with
+/// no branches between them, so they are almost always literal siblings
+/// under one enclosing node (e.g. the body of the same `if`/`for`/switch
+/// `case`). Find that common enclosing node once (via `find_node_at_range`
+/// over the block's full byte span, relying on its existing "best containing
+/// node" fallback), then walk its children exactly once, matching them
+/// against `block.statements` in order. Any statement that doesn't line up
+/// with that single-parent assumption falls back to the original per-node
+/// lookup, so correctness never depends on the assumption holding.
+fn resolve_block_statement_nodes<'a>(body: &Node<'a>, block: &BasicBlock) -> Vec<Option<Node<'a>>> {
+    let n = block.statements.len();
+    let mut nodes: Vec<Option<Node<'a>>> = vec![None; n];
+    if n == 0 {
+        return nodes;
+    }
+    let block_start = block.statements[0].0;
+    let block_end = block.statements[n - 1].1;
+    let Some(scope) = find_node_at_range(body, block_start, block_end) else {
+        for (i, &(start, end)) in block.statements.iter().enumerate() {
+            nodes[i] = find_node_at_range(body, start, end);
+        }
+        return nodes;
+    };
+
+    let mut stmt_idx = 0;
+    for i in 0..scope.child_count() {
+        if stmt_idx >= n {
+            break;
+        }
+        let Some(child) = scope.child(i) else {
+            continue;
+        };
+        let (start, end) = block.statements[stmt_idx];
+        if child.start_byte() == start && child.end_byte() == end {
+            nodes[stmt_idx] = Some(child);
+            stmt_idx += 1;
+        } else if child.start_byte() <= start && child.end_byte() >= end {
+            nodes[stmt_idx] = find_node_at_range(&child, start, end);
+            stmt_idx += 1;
+        }
+    }
+    // Anything not resolved by the single-pass walk (single-parent assumption
+    // didn't hold) falls back to the original, always-correct lookup.
+    for (i, &(start, end)) in block.statements.iter().enumerate() {
+        if nodes[i].is_none() {
+            nodes[i] = find_node_at_range(body, start, end);
+        }
+    }
+    nodes
+}
+
+/// Find the id of the block containing a given byte offset, via the
+/// function-wide statement index (binary search) with a fallback linear scan
+/// over block byte ranges for offsets that fall outside any statement (e.g.
+/// an empty block). Semantically equivalent to `find_block_containing` but
+/// O(log n) instead of O(n) in statements-per-function (task 669).
+fn find_block_id_containing(
+    result: &RangeAnalysisResult,
+    cfg: &FunctionCfg,
+    byte_offset: usize,
+) -> Option<BlockId> {
+    let idx = result
+        .statement_index
+        .partition_point(|&(start, _, _)| start <= byte_offset);
+    if idx > 0 {
+        let (start, end, block_id) = result.statement_index[idx - 1];
+        if byte_offset >= start && byte_offset < end {
+            return Some(block_id);
+        }
+    }
+    cfg.blocks
+        .iter()
+        .find(|block| {
+            block.byte_range.0 > 0
+                && byte_offset >= block.byte_range.0
+                && byte_offset < block.byte_range.1
+        })
+        .map(|b| b.id)
+}
 
 /// Find the block containing a given byte offset.
 fn find_block_containing(cfg: &FunctionCfg, byte_offset: usize) -> Option<&BasicBlock> {
