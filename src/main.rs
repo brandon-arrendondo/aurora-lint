@@ -312,7 +312,10 @@ fn run() -> Result<i32> {
     let project_source = ProjectSource::open(path)?;
     println!("Detected {} at: {}", project_source.source_type(), path);
 
-    let manifest = load_manifest(manifest_path)?;
+    let mut manifest = load_manifest(manifest_path)?;
+    if let Some(ref rules) = rule_filter {
+        manifest.restrict_to(rules);
+    }
 
     // Handle suppression generation
     if let Some(gen_spec) = generate_suppression {
@@ -372,9 +375,6 @@ fn run() -> Result<i32> {
     // Post-analysis filtering
     if let Some(ref min_sev) = min_severity {
         violations.retain(|v| v.severity >= *min_sev);
-    }
-    if let Some(ref rules) = rule_filter {
-        violations.retain(|v| rules.contains(&v.rule_id));
     }
 
     // Print violations to stdout
