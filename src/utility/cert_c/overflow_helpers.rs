@@ -24,9 +24,9 @@
 //! provably-unsigned `%` operands as signed. `INT10-C` now calls this
 //! module's version directly instead of maintaining a parallel, buggier one.
 
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, is_unsigned_type};
 use lang_parsing_substrate::query;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 /// Build a `{variable/parameter name -> type string}` map from a function's
@@ -406,6 +406,38 @@ pub fn is_short_unsigned_typedef(s: &str) -> bool {
     matches!(s, "u8" | "u16" | "u32" | "u64" | "u128")
 }
 
+/// Recursively resolve a (possibly multi-level) typedef chain -- e.g.
+/// `paddr_t` -> `word_t` -> `unsigned long` -- to decide whether the type it
+/// ultimately names is unsigned. `typedef_types` is a one-level alias map
+/// (`ProjectContext::typedef_types`, merged from cross-file prescan data with
+/// the current file's own typedefs); this walks it until it hits a type
+/// `is_unsigned_type`/`is_short_unsigned_typedef` already recognizes, a name
+/// with no further mapping (opaque/unresolved -- not proven unsigned), or a
+/// cycle. Depth-capped at 16, which is far beyond any real typedef chain, as
+/// a second guard against a malformed or self-referential alias map.
+///
+/// Conservative on unknown, matching every other signedness check here: a
+/// chain that bottoms out in something other than a recognized unsigned type
+/// (a struct, an opaque macro-derived name, an unresolvable alias) returns
+/// `false` rather than guessing.
+pub fn typedef_chain_is_unsigned(type_name: &str, typedef_types: &HashMap<String, String>) -> bool {
+    let mut current = type_name.trim().to_string();
+    let mut seen = HashSet::new();
+    for _ in 0..16 {
+        if is_unsigned_type(&current) || is_short_unsigned_typedef(&current) {
+            return true;
+        }
+        if !seen.insert(current.clone()) {
+            return false;
+        }
+        match typedef_types.get(&current) {
+            Some(next) => current = next.trim().to_string(),
+            None => return false,
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +460,32 @@ mod tests {
     fn short_unsigned_typedef() {
         assert!(is_short_unsigned_typedef("u32"));
         assert!(!is_short_unsigned_typedef("uint32_t"));
+    }
+
+    #[test]
+    fn typedef_chain_resolves_multi_level_alias() {
+        // word_t -> unsigned long, paddr_t -> word_t (seL4's actual shape).
+        let mut typedefs = HashMap::new();
+        typedefs.insert("word_t".to_string(), "unsigned long".to_string());
+        typedefs.insert("paddr_t".to_string(), "word_t".to_string());
+        assert!(typedef_chain_is_unsigned("paddr_t", &typedefs));
+        assert!(typedef_chain_is_unsigned("word_t", &typedefs));
+    }
+
+    #[test]
+    fn typedef_chain_rejects_signed_and_unresolvable() {
+        let mut typedefs = HashMap::new();
+        typedefs.insert("index_t".to_string(), "int".to_string());
+        assert!(!typedef_chain_is_unsigned("index_t", &typedefs));
+        assert!(!typedef_chain_is_unsigned("opaque_t", &typedefs));
+    }
+
+    #[test]
+    fn typedef_chain_does_not_loop_on_a_cycle() {
+        let mut typedefs = HashMap::new();
+        typedefs.insert("a_t".to_string(), "b_t".to_string());
+        typedefs.insert("b_t".to_string(), "a_t".to_string());
+        assert!(!typedef_chain_is_unsigned("a_t", &typedefs));
     }
 
     #[test]
