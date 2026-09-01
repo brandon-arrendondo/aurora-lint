@@ -488,11 +488,53 @@ both the `command` and `arguments` forms, shell quoting, `-U`, function-like
 include of a vendored header becomes reachable and contributes both a constant
 and a function-like macro). Full lib suite green (3852 tests).
 
-**Not yet done — required before any precision claim:** the §8 validation plan.
-Neither the Juliet runner nor `realworld_server.py` passes `--compile-commands`
-yet, so no benchmark has exercised this path. Note the §8 gate applies with a
-twist here: because this flag can only *add* macro/header knowledge, it changes
-what existing rules resolve, which per CLAUDE.md's delta-adjudication protocol
-means findings can move to `(file, line)` pairs outside the `ground_truth`
-denominator. Treat a compile-DB run as a changed-rule delta, not a like-for-like
-comparison.
+The §8 gate applies here with a twist: because this flag can only *add*
+macro/header knowledge, it changes what existing rules resolve, which per
+CLAUDE.md's delta-adjudication protocol means findings can move to
+`(file, line)` pairs outside the `ground_truth` denominator. A compile-DB run
+is a changed-rule delta, not a like-for-like comparison.
+
+### Measured on the real-world corpus (2026-09-01, sqc 0.4.320 @742e92a6)
+
+First end-to-end measurement, after generating a compile database for all 9
+projects on the benchmark host (`playbooks/setup-compile-commands.yml`; all 10
+databases, Juliet included, load with **no** `missing_include_paths` warning).
+A/B pair on the same binary: `sqc-0.4.320-742e92a6` vs `…-cdb`.
+
+**The flag is very nearly a no-op on this corpus: 62,035 → 61,981 findings
+(−54, −0.09%), with scan times unchanged** (e.g. hostap 446.7s → 445.3s).
+curl, libcrc, lua, raylib and sqlite did not move by a single finding.
+
+Everything that moved, by rule, with its `ground_truth` verdict:
+
+| project | Δ | rule | labeled |
+|---|---:|---|---|
+| hostap | −2 | EXP34-C | 2 FP |
+| pureftpd | −39 | DCL31-C | 1 FP, 38 unlabeled |
+| sel4 | −27 / −1 | INT34-C / INT33-C | 3 FP, 25 unlabeled |
+| mosquitto | +1 | API00-C | 1 FP |
+| sel4 | +16 | ARR30-C | 14 unlabeled |
+
+Net over the labeled subset: −6 FP, +1 FP. **No TP moved in either
+direction** — so nothing regressed, but the effect is far too small to justify
+running the corpus with the flag by default.
+
+Why so small is worth knowing before investing further: 4 of the 9 benchmark
+projects (sqlite, mosquitto, curl, hostap) already hand-feed `-I /usr/include`
+and friends in `bench/realworld_runner.py`'s `CODEBASES`, and
+`prescan_directories` already crosses project headers without any `-I` at all.
+The database was largely telling sqc things it already knew.
+
+**Caveat found in the sel4 numbers — a compile DB is one build configuration.**
+sel4's database is configured `KernelPlatform=pc99 KernelArch=x86`, but every
+finding it moved is in `src/arch/arm/` or `src/arch/riscv/`. The mechanism:
+`-I <build>/gen_config` makes the x86 build's `gen_config/kernel/gen_config.h`
+reachable, which defines `CONFIG_MAX_NUM_NODES 1`; sqc then folds
+`static word_t mpidr_map[CONFIG_MAX_NUM_NODES]` in `arch/arm/machine/gic_v3.c`
+to a one-element array and reports ARR30-C on indexing it. The values are
+correct *for x86*, applied to source that would only ever compile under a
+different configuration. This is the "merged, not scoped per-TU" approximation
+in the module docs, but sharper than that phrasing suggests: on a multi-target
+project the approximation crosses architectures, not just translation units.
+It is not a reason to avoid the flag on single-target projects; it is a reason
+not to read a multi-arch project's compile-DB delta as a straight improvement.
