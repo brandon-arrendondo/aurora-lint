@@ -522,7 +522,15 @@ fn process_declaration(
                     }
                 }
                 "pointer_declarator" | "array_declarator" => {
-                    // `int *p;` or `int arr[10];` without initializer
+                    // `int *p;` or `int arr[10];` without initializer --
+                    // but NOT a pointer-returning function prototype
+                    // (`extern const char *NAME(Params);` also parses as a
+                    // pointer_declarator, wrapping a function_declarator
+                    // rather than a plain identifier). See
+                    // `is_function_declarator_chain`.
+                    if is_function_declarator_chain(&child) {
+                        continue;
+                    }
                     let var_name = get_declarator_name(&child, source);
                     if !var_name.is_empty() {
                         tracked_vars.insert(var_name.clone());
@@ -1794,6 +1802,30 @@ fn get_declarator_name(node: &Node, source: &str) -> String {
         }
     }
     String::new()
+}
+
+/// True if `node` (a pointer_declarator/array_declarator) wraps a
+/// `function_declarator` anywhere down its `declarator` chain -- i.e. this
+/// is a function prototype (`extern const char *NAME(Params);`), not a
+/// variable declaration, even though its outermost shape (pointer/array
+/// wrapping) matches the variable-declarator arms in `process_declaration`.
+/// `get_declarator_name` recurses on node kind alone and finds a name
+/// either way, which is exactly why a pointer-returning function prototype
+/// declared inside a function body used to get tracked as an uninitialized
+/// pointer variable (task 461 category 8 -- sqlite's tclsqlite.c:
+/// `extern const char *TCLSH_INIT_PROC(Tcl_Interp*);` under `#if
+/// defined(TCLSH_INIT_PROC)`, later called as `zScript =
+/// TCLSH_INIT_PROC(interp);` and flagged as reading an uninitialized
+/// "variable").
+fn is_function_declarator_chain(node: &Node) -> bool {
+    match node.kind() {
+        "function_declarator" => true,
+        "pointer_declarator" | "array_declarator" => node
+            .child_by_field_name("declarator")
+            .map(|d| is_function_declarator_chain(&d))
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 fn is_array_declarator(node: &Node) -> bool {

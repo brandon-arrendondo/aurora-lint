@@ -137,10 +137,42 @@ fn blank_occurrences(source: &str, names: &HashSet<String>) -> String {
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
 }
 
+/// Fallthrough-annotation macro names that are safe to blank even when this
+/// file has no local `#define` for them at all, because their definition
+/// lives in a header this pass never sees (task 461 category 8; sqlite's
+/// `vdbe.c` uses `deliberate_fall_through` ~11 times but only `#define`s it
+/// in `sqliteInt.h`, so [`find_empty_object_macros`] -- which only scans
+/// this file's own text -- never finds it, and the bare identifier
+/// immediately preceding a `case`/`default` label with no separating `;`
+/// (the real, intended shape: `/* no break */ deliberate_fall_through` on
+/// its own line) sends tree-sitter-c into ERROR recovery that invents a
+/// bogus declaration whose declared name is literally `case`, tracked by
+/// EXP33-C's init-state analysis as an uninitialized variable and flagged
+/// wherever the real `case` keyword happens to reappear later in the same
+/// (often huge, single-function) switch).
+///
+/// Safe unconditionally, not just when a local `#define` confirms it's
+/// empty: `deliberate_fall_through` is sqlite's portable
+/// fallthrough-annotation idiom (`sqliteInt.h` defines it as either nothing,
+/// or `__attribute__((fallthrough));` -- a complete, self-terminated
+/// statement -- depending on compiler support). Either expansion means the
+/// real, preprocessed token stream never has a bare identifier directly
+/// abutting a `case`/`default` label with no separator; this text shape
+/// only arises here because sqc has no preprocessor, so blanking it can
+/// only ever recover structure, never remove something a rule could
+/// otherwise have used (a fallthrough annotation carries no dataflow
+/// meaning for EXP33-C either way).
+const KNOWN_CROSS_FILE_EMPTY_MACROS: &[&str] = &["deliberate_fall_through"];
+
 /// Blank every empty object-like macro's usages throughout `source`. See
 /// module docs for why. Returns `source` unchanged if none are found.
 pub fn blank_empty_object_macros(source: &str) -> String {
-    let names = find_empty_object_macros(source);
+    let mut names = find_empty_object_macros(source);
+    for &name in KNOWN_CROSS_FILE_EMPTY_MACROS {
+        if source.contains(name) {
+            names.insert(name.to_string());
+        }
+    }
     blank_occurrences(source, &names)
 }
 
@@ -191,6 +223,34 @@ mod tests {
         // are on #ifndef/#endif directive lines -- must never be blanked,
         // or a reserved-identifier check on the guard name (DCL37-C) breaks.
         let src = "#ifndef _MY_HEADER_H_\n#define _MY_HEADER_H_\n\nint x;\n\n#endif /* _MY_HEADER_H_ */\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn blanks_known_cross_file_fallthrough_marker_with_no_local_define() {
+        // No `#define deliberate_fall_through` anywhere in this source --
+        // its definition lives in a header this pass never sees. Must still
+        // be blanked so tree-sitter-c doesn't misparse the bare identifier
+        // immediately preceding the `case` label (no separating `;`).
+        let src = concat!(
+            "static void f(int len, unsigned char *z, unsigned long long v) {\n",
+            "  switch (len) {\n",
+            "    default: z[1] = (unsigned char)v;\n",
+            "             /* no break */ deliberate_fall_through\n",
+            "    case 1:  z[0] = (unsigned char)v;\n",
+            "  }\n",
+            "}\n",
+        );
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(!out.contains("deliberate_fall_through"));
+        assert!(out.contains("case 1:"));
+    }
+
+    #[test]
+    fn leaves_source_alone_when_cross_file_marker_absent() {
+        let src = "int x = 1;\nint y = 2;\n";
         let out = blank_empty_object_macros(src);
         assert_eq!(out, src);
     }
