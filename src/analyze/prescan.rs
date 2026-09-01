@@ -27,6 +27,7 @@ struct FilePrescanResult {
     macro_aliases: HashMap<String, String>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     struct_field_types: HashMap<String, HashMap<String, String>>,
+    typedef_types: HashMap<String, String>,
     packed_structs: HashSet<String>,
     packed_struct_candidates: Vec<(String, String)>,
     packed_macro_names: HashSet<String>,
@@ -66,6 +67,7 @@ impl FilePrescanResult {
             macro_aliases: HashMap::new(),
             function_macros: HashMap::new(),
             struct_field_types: HashMap::new(),
+            typedef_types: HashMap::new(),
             packed_structs: HashSet::new(),
             packed_struct_candidates: Vec::new(),
             packed_macro_names: HashSet::new(),
@@ -148,6 +150,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         result.macro_aliases.extend(file_aliases);
 
         collect_struct_definitions(&root, &source, &mut result.struct_field_types);
+        collect_typedef_aliases(&root, &source, &mut result.typedef_types);
         collect_packed_structs(
             &root,
             &source,
@@ -261,6 +264,7 @@ pub fn prescan_directories(
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
         HashMap::new();
     let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut typedef_types: HashMap<String, String> = HashMap::new();
     let mut packed_structs: HashSet<String> = HashSet::new();
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
     let mut packed_macro_names: HashSet<String> = HashSet::new();
@@ -360,6 +364,7 @@ pub fn prescan_directories(
             function_macros.entry(name).or_insert(m);
         }
         struct_field_types.extend(r.struct_field_types);
+        typedef_types.extend(r.typedef_types);
         packed_structs.extend(r.packed_structs);
         packed_struct_candidates.extend(r.packed_struct_candidates);
         packed_macro_names.extend(r.packed_macro_names);
@@ -533,6 +538,7 @@ pub fn prescan_directories(
         macro_aliases,
         function_macros,
         struct_field_types,
+        typedef_types,
         packed_structs,
         defined_macro_names,
         global_constants,
@@ -697,6 +703,8 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
 
     let mut struct_field_types = HashMap::new();
     collect_struct_definitions(root, source, &mut struct_field_types);
+    let mut typedef_types = HashMap::new();
+    collect_typedef_aliases(root, source, &mut typedef_types);
     let mut packed_structs = HashSet::new();
     let mut packed_struct_candidates = Vec::new();
     collect_packed_structs(
@@ -754,6 +762,7 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         macro_constants: macros,
         function_macros,
         struct_field_types,
+        typedef_types,
         packed_structs,
         global_writers,
         call_graph,
@@ -4378,6 +4387,74 @@ fn collect_from_typedef(
                         struct_field_types.insert(alias, fields);
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Collect simple scalar `typedef` aliases: `typedef <type> <name>;`, mapping
+/// `name -> <type>`'s text exactly as written (one level). Mirrors
+/// `collect_struct_definitions`'s traversal shape so the two run over the
+/// same top-level declaration set. Struct/union/enum-bodied typedefs are
+/// deliberately excluded here (`collect_struct_definitions`/
+/// `collect_from_typedef` already handle those); this only feeds the scalar
+/// signedness chain a name like `word_t` or `paddr_t` actually walks (task
+/// 657 -- see `ProjectContext::typedef_types` and
+/// `overflow_helpers::typedef_chain_is_unsigned`).
+fn collect_typedef_aliases(node: &Node, source: &str, typedef_types: &mut HashMap<String, String>) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "type_definition" => {
+                    collect_from_simple_typedef(&child, source, typedef_types);
+                }
+                kind if kind.starts_with("preproc_")
+                    || kind == "linkage_specification"
+                    || kind == "declaration_list" =>
+                {
+                    collect_typedef_aliases(&child, source, typedef_types);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A `type_definition` whose right-hand type is a bare primitive/sized/named
+/// type (not a struct/union/enum body) and whose declarator is a plain alias
+/// name (not a pointer/array/function typedef, which don't participate in a
+/// scalar signedness chain and are intentionally skipped, same as
+/// `collect_from_typedef`'s struct-pointer case).
+fn collect_from_simple_typedef(
+    node: &Node,
+    source: &str,
+    typedef_types: &mut HashMap<String, String>,
+) {
+    let Some(type_node) = node.child_by_field_name("type") else {
+        return;
+    };
+    if !matches!(
+        type_node.kind(),
+        "primitive_type" | "sized_type_specifier" | "type_identifier"
+    ) {
+        return;
+    }
+    let type_text = get_node_text(&type_node, source).trim().to_string();
+    if type_text.is_empty() {
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for declarator in node.children_by_field_name("declarator", &mut cursor) {
+        // A simple typedef's alias name is lexed as `type_identifier` (the C
+        // grammar tracks known typedef names); pointer/array/function
+        // declarators wrap it in another node kind and are skipped.
+        if declarator.kind() == "type_identifier" {
+            let name = get_node_text(&declarator, source).to_string();
+            if !name.is_empty() {
+                typedef_types
+                    .entry(name)
+                    .or_insert_with(|| type_text.clone());
             }
         }
     }

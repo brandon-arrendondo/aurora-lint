@@ -20,6 +20,11 @@ pub struct Int32C {
     project_macros: RefCell<MacroConstantMap>,
     current_macros: RefCell<MacroConstantMap>,
     struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
+    /// One-level typedef alias map (`word_t` -> `unsigned long`, `paddr_t` ->
+    /// `word_t`, ...), populated project-wide by `set_project_context`.
+    /// Resolved recursively by `overflow_helpers::typedef_chain_is_unsigned`
+    /// in `classify_declared_type` (task 657).
+    typedef_types: RefCell<HashMap<String, String>>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
@@ -49,6 +54,7 @@ impl Int32C {
             project_macros: RefCell::new(MacroConstantMap::new()),
             current_macros: RefCell::new(MacroConstantMap::new()),
             struct_field_types: RefCell::new(HashMap::new()),
+            typedef_types: RefCell::new(HashMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
             function_summaries: RefCell::new(HashMap::new()),
@@ -95,6 +101,7 @@ impl CertRule for Int32C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
+        *self.typedef_types.borrow_mut() = context.typedef_types.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.global_writers.borrow_mut() = context.global_writers.clone();
     }
@@ -187,7 +194,7 @@ impl Int32C {
                     self.check_increment_decrement(&candidate, source, violations, scoped_type_map);
                 }
                 "call_expression" => {
-                    self.check_function_call(&candidate, source, violations);
+                    self.check_function_call(&candidate, source, violations, scoped_type_map);
                 }
                 _ => {}
             }
@@ -1252,7 +1259,13 @@ impl Int32C {
         }
     }
 
-    fn check_function_call(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_function_call(
+        &self,
+        node: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+        type_map: &HashMap<String, String>,
+    ) {
         if let Some(function_node) = node.child_by_field_name("function") {
             let function_name = get_node_text(&function_node, source);
 
@@ -1262,7 +1275,13 @@ impl Int32C {
                     self.check_allocation_overflow(node, source, function_name, violations);
                 }
                 "memcpy" | "memmove" | "memset" => {
-                    self.check_memory_function_overflow(node, source, function_name, violations);
+                    self.check_memory_function_overflow(
+                        node,
+                        source,
+                        function_name,
+                        violations,
+                        type_map,
+                    );
                 }
                 "abs" | "labs" | "llabs" => {
                     self.check_abs_overflow(node, source, function_name, violations);
@@ -1384,6 +1403,7 @@ impl Int32C {
         source: &str,
         function_name: &str,
         violations: &mut Vec<RuleViolation>,
+        type_map: &HashMap<String, String>,
     ) {
         // Check size arguments for arithmetic that might overflow
         let size_arg_idx: usize = match function_name {
@@ -1408,6 +1428,20 @@ impl Int32C {
                         // sizeof(...) always yields size_t, no signed overflow.
                         // contains_arithmetic() false-matches the `*` in `sizeof(*ctx)`.
                         if arg_node.kind() == "sizeof_expression" {
+                            return;
+                        }
+                        // This checker is otherwise purely text/VRA-shape-based and
+                        // never consults the declared-type map, so a genuinely
+                        // unsigned size computation (a word_t/paddr_t-typedef-family
+                        // struct-field subtraction, e.g. seL4's `ui_p_regs.end -
+                        // ui_p_regs.start`) had no way to be recognized as safe --
+                        // wrap-on-negative there is well-defined unsigned behavior,
+                        // not an INT32-C concern. Reuses the same declared-type
+                        // classification (now typedef-chain-aware) the other
+                        // arithmetic checks already use (task 657).
+                        if arg_node.kind() == "binary_expression"
+                            && self.infer_type(&arg_node, source, type_map) == "unsigned"
+                        {
                             return;
                         }
                         let arg_text = get_node_text(&arg_node, source);
@@ -1641,6 +1675,16 @@ impl Int32C {
     /// `not_applicable`.
     fn classify_declared_type(&self, declared_type: &str) -> String {
         if self.is_unsigned_type(declared_type) {
+            return "unsigned".to_string();
+        }
+        // `declared_type` is the alias name exactly as written (e.g.
+        // "word_t", "paddr_t") -- `is_unsigned_type` only recognizes it
+        // directly if it happens to spell out "unsigned"/"uint"/"size_t".
+        // Resolve the full, possibly multi-level and cross-file typedef
+        // chain before falling through to the signed/not_applicable
+        // guesses below (task 657).
+        if overflow_helpers::typedef_chain_is_unsigned(declared_type, &self.typedef_types.borrow())
+        {
             return "unsigned".to_string();
         }
         if declared_type == "int8_t" {
