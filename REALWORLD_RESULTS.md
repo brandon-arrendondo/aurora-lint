@@ -1,6 +1,6 @@
 # SqC — Real-World Benchmark Results
 
-**Last Updated**: 2026-08-26
+**Last Updated**: 2026-09-01
 
 Automated benchmark results across 9 real-world C codebases using sqc, plus
 cppcheck and clang-tidy on the original 7.
@@ -36,7 +36,7 @@ in-scope file predicate changed, not a regression.
 | **pure-ftpd** | 53 | 33,301 | 5,855 | 12 | 109 |
 | **seL4** | 184 | 87,223 | 4,959 | — | — |
 
-**Now scored** — see "Latest Adjudicated Results (sqc v0.4.258)" below.
+**Now scored** — see "Previous Adjudicated Results (sqc v0.4.258)" below.
 Task 532's delta-adjudication (completed 2026-08-25) closed the gap between
 this raw run and the last validly-measured v0.4.120 baseline; `seL4` still
 has thin label coverage (81 labels from initial onboarding, later expanded
@@ -44,7 +44,50 @@ to a 10% sample under task 552) and `pure-ftpd`'s 10% sample is task 551.
 
 ---
 
-## Latest Adjudicated Results (sqc v0.4.258)
+## Latest Adjudicated Results (sqc v0.4.313)
+
+Run #217, commit `c4dad129`, scanned 2026-09-01. Precision/recall moved from
+the v0.4.258 baseline below via incremental ground-truth adjudication and
+rule-logic FP-reduction work across the ~55 intervening releases (see the
+`ground_truth` table / task history for per-commit detail — this session
+didn't do the adjudicating, just the citation refresh). `seL4`'s scan scope
+narrowed (184→183 files, 87,223→49,957 LOC, first reflected at v0.4.260) the
+same way `sqlite`'s did earlier — an in-scope file predicate change, not a
+regression.
+
+<!-- BENCH:REALWORLD_LATEST:START -->
+### Violation Counts — All Three Tools
+
+| Project | C Files | LOC | sqc | cppcheck | clang-tidy |
+|---------|--------:|----:|----:|--------:|-----------:|
+| **curl** | 222 | 186,220 | 7,243 | 556 | 116 |
+| **hostap** | 430 | 589,724 | 27,460 | 1,761 | 1,710 |
+| **libcrc** | 9 | 1,034 | 364 | 40 | 2 |
+| **lua** | 33 | 31,470 | 2,655 | 49 | 107 |
+| **mosquitto** | 120 | 39,368 | 2,602 | 277 | 44 |
+| **pure-ftpd** | 53 | 33,301 | 5,385 | 12 | 109 |
+| **raylib** | 17 | 56,107 | 4,421 | 1,060 | 469 |
+| **seL4** | 183 | 49,957 | 2,647 | — | — |
+| **sqlite** | 81 | 181,604 | 16,152 | 503 | 137 |
+| **Total** | **1,148** | **1,168,785** | **68,929** | **4,258** | **2,694** |
+
+Aggregate measured precision (adjudicated oracle, `bench realworld-score 217`): **24.1%** (TP 13,353 / 55,528 labeled of 62,886 findings), **recall 94.2%** (13,353 / 14,182 known TPs flagged); label coverage 55,528 / 62,886 findings (88.3%; 39 matched labels are "uncertain" and excluded from precision).
+<!-- BENCH:REALWORLD_LATEST:END -->
+
+Regenerate the table + precision/recall paragraph above with
+`python -m bench render-docs --realworld-run RUN` (see `bench/render_docs.py`);
+the header, "Run #N..." sentence and the note below stay hand-written since
+they cite which tasks did the adjudicating.
+
+> The bulk of the remaining 7,358 unlabeled findings (11.7%) is still the
+> deliberately-unsampled majority of `pure-ftpd` (4,257 unlabeled, task 578)
+> and `seL4` (1,981 unlabeled, task 579), plus a long tail spread across
+> `sqlite` (756), `curl` (170), `mosquitto` (104) and smaller — not a gap in
+> this measurement's validity for the rules/projects it does cover.
+
+---
+
+## Previous Adjudicated Results (sqc v0.4.258) — superseded by v0.4.313 above
 
 Run #187, commit `8cb0c4ba`, scanned 2026-08-24. Delta-adjudicated against
 the v0.4.120 baseline below per CLAUDE.md's delta-adjudication protocol
@@ -70,14 +113,14 @@ now with `pure-ftpd`'s cppcheck/clang-tidy columns filled in (12 / 109).
 | **Total** | **1,149** | **1,206,051** | **80,231** | **4,258** | **2,694** |
 
 Aggregate measured precision (adjudicated oracle, `bench realworld-score 187`):
-**16.6%** (TP 10,559 / 63,608 labeled of 73,718 findings), **recall 97.4%**
-(10,559 / 10,839 known TPs flagged); label coverage 63,649 / 73,718 findings
-(86.3%; 41 matched labels are "uncertain" and excluded from precision).
+**16.6%** (TP 10,576 / 63,674 labeled of 73,718 findings), **recall 97.4%**
+(10,576 / 10,863 known TPs flagged); label coverage 63,674 / 73,718 findings
+(86.4%; 41 matched labels are "uncertain" and excluded from precision).
 Total sqc finding volume is down 28% from the v0.4.120 baseline's 104,733
 (despite more rules enabled) — real FP-reduction landing on real-world code,
 not just less scanning.
 
-> The bulk of the remaining 10,069 unlabeled findings (13.7%) is the
+> The bulk of the remaining 10,044 unlabeled findings (13.6%) is the
 > deliberately-unsampled 90% of `pure-ftpd` (task 578) and `seL4` (task 579),
 > plus pre-existing long-tail rule gaps outside task 532's scope — not a gap
 > in this measurement's validity for the rules/projects it does cover.

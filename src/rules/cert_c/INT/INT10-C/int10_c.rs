@@ -38,14 +38,32 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
-pub struct Int10C;
+pub struct Int10C {
+    /// One-level typedef alias map (`word_t` -> `unsigned long`, `paddr_t` ->
+    /// `word_t`, ...), populated project-wide by `set_project_context`.
+    /// Resolved recursively by `overflow_helpers::typedef_chain_is_unsigned`
+    /// so a multi-level, cross-file typedef family is recognized as
+    /// unsigned even though `type_map` only records the alias name as
+    /// written (task 657).
+    typedef_types: RefCell<HashMap<String, String>>,
+}
+
+impl Int10C {
+    pub fn new() -> Self {
+        Self {
+            typedef_types: RefCell::new(HashMap::new()),
+        }
+    }
+}
 
 impl CertRule for Int10C {
     fn rule_id(&self) -> &'static str {
@@ -66,6 +84,10 @@ impl CertRule for Int10C {
 
     fn cert_id(&self) -> &'static str {
         "INT10-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.typedef_types.borrow_mut() = context.typedef_types.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -188,6 +210,7 @@ impl Int10C {
         source: &str,
         type_map: &HashMap<String, String>,
     ) -> bool {
+        let typedef_types = self.typedef_types.borrow();
         query::find_first_descendant(*node, |n| {
             if n.kind() == "identifier" {
                 let name = get_node_text(&n, source);
@@ -195,7 +218,29 @@ impl Int10C {
                     return t.contains("size_t")
                         || t.contains("unsigned")
                         || t.contains("uint")
-                        || overflow_helpers::is_short_unsigned_typedef(t);
+                        || overflow_helpers::is_short_unsigned_typedef(t)
+                        // `t` is the alias name as written (e.g. "word_t",
+                        // "paddr_t") -- resolve the full, possibly
+                        // cross-file typedef chain before giving up (task
+                        // 657).
+                        || overflow_helpers::typedef_chain_is_unsigned(t, &typedef_types);
+                }
+            }
+            // `sizeof(...)` always yields `size_t`, regardless of the sized
+            // expression's own type.
+            if n.kind() == "sizeof_expression" {
+                return true;
+            }
+            // An explicit cast to a typedef'd name (e.g. `(seL4_Word)&x`) --
+            // resolve the cast's target type through the same typedef chain.
+            if n.kind() == "cast_expression" {
+                if let Some(type_node) = n.child_by_field_name("type") {
+                    let cast_type = get_node_text(&type_node, source);
+                    if cast_type.contains("unsigned")
+                        || overflow_helpers::typedef_chain_is_unsigned(cast_type, &typedef_types)
+                    {
+                        return true;
+                    }
                 }
             }
             // For field expressions like self->field, we can't resolve the type

@@ -1353,15 +1353,21 @@ class BenchDB:
                 row = cur.fetchone()
                 return row["id"] if row else None
 
-            # Exact ID match
+            # Exact ID match. A purely-numeric identifier means "this row id"
+            # and nothing else -- return here (found or not) rather than
+            # falling through to the version/commit/notes fallbacks below,
+            # which can otherwise silently match an unrelated run whose
+            # version/commit/notes happens to contain that numeral as a
+            # substring (e.g. "208" spuriously matching v0.4.208's run when
+            # id 208 doesn't exist).
             try:
                 int_id = int(ident)
+            except ValueError:
+                int_id = None
+            if int_id is not None:
                 cur.execute("SELECT id FROM realworld_runs WHERE id = ?", (int_id,))
                 row = cur.fetchone()
-                if row:
-                    return row["id"]
-            except ValueError:
-                pass
+                return row["id"] if row else None
 
             # Version match (e.g. "0.3.28")
             cur.execute("""

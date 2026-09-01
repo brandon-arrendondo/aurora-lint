@@ -141,6 +141,23 @@ pub struct ProjectContext {
     /// instead (task 652).
     #[serde(default)]
     pub value_only_globals: HashSet<String>,
+    /// One-level `typedef` alias map: `alias name -> underlying type text as
+    /// written` (e.g. `"paddr_t" -> "word_t"`, `"word_t" -> "unsigned long"`),
+    /// collected across every scanned `.c`/`.h` file. Simple scalar aliases
+    /// only (`typedef <type> <name>;`) -- struct/union/enum-bodied typedefs
+    /// are tracked separately by `struct_field_types`, and pointer/array/
+    /// function typedefs are excluded since they don't participate in a
+    /// scalar signedness chain.
+    ///
+    /// A typedef's declaring header is frequently not the file that uses the
+    /// alias (seL4's `word_t` family: `paddr_t`/`pptr_t`/`vptr_t`/`seL4_Word`
+    /// each typedef onto `word_t`, sometimes from an arch-specific header
+    /// different from where `word_t` itself is defined), so resolving one
+    /// level locally isn't enough -- a consumer must walk this map
+    /// recursively (see `overflow_helpers::typedef_chain_is_unsigned`) and
+    /// project-wide (task 657).
+    #[serde(default)]
+    pub typedef_types: HashMap<String, String>,
 }
 
 impl ProjectContext {
@@ -185,6 +202,7 @@ impl ProjectContext {
             || !self.macro_constants.is_empty()
             || !self.struct_field_types.is_empty()
             || !self.header_declared_functions.is_empty()
+            || !self.typedef_types.is_empty()
     }
 
     /// Save prescan context to a binary cache file.

@@ -137,6 +137,37 @@ queries SQLite first, falling back to legacy text files for old runs. 46
 Juliet runs (v0.2.1 through current) and 21 real-world runs are in the
 database.
 
+### Refreshing Published Doc Numbers
+
+If asked to "refresh the benchmark numbers" (README.md's Benchmark
+Highlights table, JULIET_RESULTS.md's Current State, REALWORLD_RESULTS.md's
+Latest Adjudicated Results): `python -m bench render-docs --realworld-run
+RUN [--juliet-run RUN] [--check]` regenerates those tables from local
+`data/benchmarks.db`, bounded by `<!-- BENCH:*:START/END -->` markers —
+everything outside a marker (narrative, task citations, history) is
+hand-written and untouched. `--realworld-run` has no default on purpose:
+pass a run you know is validly adjudicated (see the delta-adjudication
+protocol above), not just whatever's newest. This is what any clone can
+run, with no dependency beyond this repo.
+
+**On the benchmark node specifically**, local `data/benchmarks.db` is only
+this checkout's own scratch history and reliably falls behind the shared
+`sqc_bench` Postgres instance every machine's runs feed into (see this
+file's opening note). Before citing local numbers as "current" on this
+node, check whether `benchmarking_db`'s `bin/refresh_tools_sqc_docs.py` (in
+that sibling repo — see its README) is the better source instead: it calls
+this repo's own `bench/render_docs.py` rendering functions, just pointed at
+Postgres rather than local SQLite, so the output is identical in shape —
+only the data backing it is more current. Nothing in this repo's own code
+gains Postgres awareness either way.
+
+Either path: review the diff before committing. The tool only ever
+rewrites marker-bounded blocks; a real refresh usually also means updating
+the hand-written run/task citation just above each block (e.g. promoting a
+new "Latest Adjudicated Results" section and demoting the old one to
+"Previous", as REALWORLD_RESULTS.md already does for prior versions) —
+that's a judgment call the tool deliberately leaves alone.
+
 ---
 
 ## Task tracking
