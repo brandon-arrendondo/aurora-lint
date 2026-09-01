@@ -164,8 +164,7 @@ mod tests {
     fn parse_expr(src: &str) -> (tree_sitter::Tree, String) {
         let source = format!("void f(void) {{ {} }}", src);
         let mut parser = CParser::new().expect("parser");
-        let tree = parser.parse_source(&source).expect("parse");
-        (tree, source)
+        parser.parse_source(&source).expect("parse")
     }
 
     fn first_expr_node<'a>(tree: &'a tree_sitter::Tree, source: &str, kind: &str) -> Node<'a> {

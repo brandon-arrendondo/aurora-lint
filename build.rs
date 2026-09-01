@@ -746,7 +746,7 @@ fn generate_test_function(
         f,
         "    let mut parser = CParser::new().expect(\"Failed to create parser\");"
     )?;
-    writeln!(f, "    let tree = parser.parse_source(&source)")?;
+    writeln!(f, "    let (tree, source) = parser.parse_source(&source)")?;
     writeln!(
         f,
         "        .unwrap_or_else(|e| panic!(\"Failed to parse {{:?}}: {{}}\", test_path, e));"

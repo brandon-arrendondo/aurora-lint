@@ -263,7 +263,7 @@ impl CompileDb {
         let source = self.define_directives();
 
         let mut parser = CParser::new()?;
-        let tree = parser.parse_source(&source)?;
+        let (tree, source) = parser.parse_source(&source)?;
         let root = tree.root_node();
 
         let mut added = 0usize;

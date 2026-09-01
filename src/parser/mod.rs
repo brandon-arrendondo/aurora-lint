@@ -75,18 +75,25 @@ impl CParser {
     }
 
     /// Parse `source` directly (no file read), applying the same
-    /// source-repair passes as [`Self::parse_file`].
-    #[allow(dead_code)]
-    pub fn parse_source(&mut self, source: &str) -> Result<Tree> {
+    /// source-repair passes as [`Self::parse_file`], and returning the
+    /// (possibly repaired) source alongside the tree -- callers MUST use
+    /// this returned string for any subsequent `get_node_text`-style byte
+    /// extraction, not the original `source` argument. A repair pass is
+    /// length- and line-count-preserving but not necessarily *content*-
+    /// preserving on the lines it rewrites (e.g. `label_preproc_guard`
+    /// leaves a recoverable marker comment rather than blank whitespace,
+    /// task 663), so text sliced from the wrong string at an otherwise
+    /// correct byte range can silently return stale content.
+    pub fn parse_source(&mut self, source: &str) -> Result<(Tree, String)> {
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(source);
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
-        let (tree, _) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
+        let (tree, source) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
             &mut self.parser,
             source,
         )
         .context("Failed to parse source code")?;
-        Ok(tree)
+        Ok((tree, source))
     }
 }
 

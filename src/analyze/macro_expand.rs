@@ -1081,8 +1081,8 @@ mod tests {
 
     fn table(src: &str) -> HashMap<String, FunctionMacro> {
         let mut p = CParser::new().unwrap();
-        let tree = p.parse_source(src).unwrap();
-        collect_function_macros(&tree.root_node(), src)
+        let (tree, src) = p.parse_source(src).unwrap();
+        collect_function_macros(&tree.root_node(), &src)
     }
 
     #[test]
@@ -1470,13 +1470,13 @@ mod tests {
                    int f(void) { return 1 } }\n\
                    #define recovered_free(ptr) free(ptr)\n";
         let mut p = CParser::new().unwrap();
-        let tree = p.parse_source(src).unwrap();
+        let (tree, src) = p.parse_source(src).unwrap();
         let ast_only = {
             let mut out = HashMap::new();
-            collect_rec(&tree.root_node(), src, &mut out);
+            collect_rec(&tree.root_node(), &src, &mut out);
             out
         };
-        let merged = collect_function_macros(&tree.root_node(), src);
+        let merged = collect_function_macros(&tree.root_node(), &src);
         // Whatever the AST pass managed, the merged set must contain the wrapper.
         assert!(
             merged.contains_key("recovered_free"),
