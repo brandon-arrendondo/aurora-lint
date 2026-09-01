@@ -1161,7 +1161,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC10-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.MSC11-C]
 enabled = true
@@ -1197,7 +1197,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC23-C]
-enabled = false
+enabled = true
 
 [rules.cert_c.MSC24-C]
 enabled = true
