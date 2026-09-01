@@ -31,12 +31,27 @@ impl CertRule for Int08C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Collect variable declarations with their types
-        let mut variables: HashMap<String, (String, usize)> = HashMap::new();
-        self.collect_declarations(node, source, &mut variables);
-
-        // Find arithmetic expressions on narrow integer types
-        self.check_arithmetic_expressions(node, source, &variables, &mut violations);
+        // Each function gets its own `variables` scope: a same-named
+        // variable in a different function is a different object, and
+        // `collect_declarations` doesn't even see parameter declarations
+        // (only `declaration`-kind locals), so a stale entry from one
+        // function (e.g. a narrow `char c`) could leak into an unrelated
+        // same-named variable in another function (e.g. an `int c`
+        // parameter) and misfire here (task 418). Scope both the
+        // collection and the check per `function_definition`, mirroring
+        // EXP39-C/STR32-C's per-function reset pattern.
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+        if functions.is_empty() {
+            let mut variables: HashMap<String, (String, usize)> = HashMap::new();
+            self.collect_declarations(node, source, &mut variables);
+            self.check_arithmetic_expressions(node, source, &variables, &mut violations);
+        } else {
+            for func in functions {
+                let mut variables: HashMap<String, (String, usize)> = HashMap::new();
+                self.collect_declarations(&func, source, &mut variables);
+                self.check_arithmetic_expressions(&func, source, &variables, &mut violations);
+            }
+        }
 
         violations
     }
