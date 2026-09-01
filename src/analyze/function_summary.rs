@@ -471,6 +471,42 @@ fn find_nested_function_boundary(node: &Node, source: &str) -> Option<usize> {
     None
 }
 
+/// True if `func_node` (a whole `function_definition`) sits inside a
+/// preprocessor conditional branch (`#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`).
+/// sqc has no preprocessor, so when a function has one definition guarded by
+/// such a branch and another unconditional (or differently-guarded)
+/// definition of the same name, only one is ever really compiled in — but
+/// both get parsed and their facts unioned into one cross-file
+/// `FunctionSummary` (needed for cases like hostap's `os_free`, whose
+/// several platform-variant bodies all agree). That union is unsound when a
+/// conditional definition is a semantically different fallback rather than a
+/// same-behavior variant: hostap's `eapol_supp_sm.h` declares the real
+/// `eapol_sm_init` under `#if IEEE8021X_EAPOL` but also provides a
+/// `#else`-guarded stub `eapol_sm_init` that unconditionally
+/// `free(ctx)`s and returns a dummy sentinel. Crediting that stub's
+/// unconditional free into the summary poisoned every call site of the
+/// *real* `eapol_sm_init` with a phantom already-freed `ctx`, which then
+/// made MEM30-C flag three independent, mutually-exclusive
+/// `if (...) { os_free(ctx); return -1; }` early-return checks in
+/// `wpa_supplicant/eapol_test.c` as double-freeing each other (task 654).
+/// Excluding a conditional definition's free-crediting facts from the
+/// summary is conservative in the same direction as the rest of MEM30-C:
+/// worst case it silently loses a real MUST-free fact (a false negative),
+/// never gains a phantom one (a false positive).
+fn function_definition_is_preproc_conditional(func_node: &Node) -> bool {
+    let mut current = *func_node;
+    while let Some(parent) = current.parent() {
+        if matches!(
+            parent.kind(),
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else"
+        ) {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
 /// Analyze a single function definition to produce its summary.
 ///
 /// `taint_source_aliases` names any macro identifier whose target resolves to
@@ -614,6 +650,7 @@ fn analyze_function(
             body_text,
             &params,
             function_macros,
+            !function_definition_is_preproc_conditional(func_node),
             &mut summary,
         );
 
@@ -1065,9 +1102,17 @@ fn analyze_param_usage(
     body_text: &str,
     params: &[String],
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    credit_frees: bool,
     summary: &mut FunctionSummary,
 ) {
-    credit_frees_params(body, source, params, summary);
+    // Gated on `credit_frees`: a definition inside a preprocessor
+    // conditional (see `function_definition_is_preproc_conditional`) may be
+    // a mutually-exclusive alternate body, not a same-behavior variant, so
+    // its free-related facts must not be unioned into the cross-file
+    // summary as if they always held (task 654).
+    if credit_frees {
+        credit_frees_params(body, source, params, summary);
+    }
 
     for (idx, param_name) in params.iter().enumerate() {
         if param_name.is_empty() {
@@ -1130,8 +1175,11 @@ fn analyze_param_usage(
 
     // Detect direct field frees off a parameter: free(param->field) or
     // free((*param)->field) (the double-pointer-deref idiom used by
-    // `void destroy(T **param)` style destructors).
-    collect_frees_param_fields(body, source, params, function_macros, summary);
+    // `void destroy(T **param)` style destructors). Gated on `credit_frees`
+    // for the same reason as `credit_frees_params` above.
+    if credit_frees {
+        collect_frees_param_fields(body, source, params, function_macros, summary);
+    }
 }
 
 /// POSIX fd_set macros (`FD_ZERO`, `FD_SET`, `FD_CLR`) write through their
