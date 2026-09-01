@@ -121,6 +121,26 @@ pub struct ProjectContext {
     /// `docs/design/con03-con07-isr-thread-reachability.md`).
     #[serde(default)]
     pub concurrency_reachable: HashSet<String>,
+    /// Names of project-wide (file-scope, non-local) variables declared with
+    /// a plain, non-pointer/non-array/non-function type -- across every
+    /// scanned `.c` AND `.h` file, extern declarations included, since the
+    /// `extern` forward-declaration and the actual definition are typically
+    /// in different files. A name is excluded if it is ever declared with a
+    /// pointer or array declarator anywhere in the project (conservative:
+    /// only one true global object can exist per name at link time, so
+    /// disagreement means something this heuristic shouldn't guess about).
+    ///
+    /// Mirrors MEM31-C's per-function `value_only_locals`
+    /// (`collect_value_only_locals`) but at project scope: seL4's
+    /// `current_lookup_fault`/`current_fault` globals are `extern`-declared
+    /// in a header and assigned via a bitfield-generator `_new()` value
+    /// constructor (`current_lookup_fault = lookup_fault_new(...)`) from
+    /// several other translation units, with no local declaration in any of
+    /// them -- MEM31-C's per-function pointer-evidence guard can't see a
+    /// declaration at all in that shape, so it needs this project-wide set
+    /// instead (task 652).
+    #[serde(default)]
+    pub value_only_globals: HashSet<String>,
 }
 
 impl ProjectContext {

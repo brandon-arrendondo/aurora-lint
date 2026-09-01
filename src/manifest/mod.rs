@@ -170,6 +170,24 @@ impl RuleManifest {
             self.rules.brules.get_mut(rule_id)
         }
     }
+
+    /// Disables every rule not named in `rule_ids` (e.g. from `--rules`),
+    /// so callers that only want a subset (single-rule debugging, targeted
+    /// re-scans) skip the disabled rules' work entirely -- including
+    /// expensive shared setup like VRA, which is only computed when at
+    /// least one *enabled* rule needs it. Intersects with the manifest
+    /// rather than overriding it: a rule the manifest already has disabled
+    /// stays disabled even if named in `rule_ids`, matching the pre-existing
+    /// `--rules` semantics (it never ran, so it never appeared in the
+    /// post-analysis filter's output either).
+    pub fn restrict_to(&mut self, rule_ids: &std::collections::HashSet<String>) {
+        for (id, config) in self.rules.cert_c.iter_mut() {
+            config.enabled = config.enabled && rule_ids.contains(id);
+        }
+        for (id, config) in self.rules.brules.iter_mut() {
+            config.enabled = config.enabled && rule_ids.contains(id);
+        }
+    }
 }
 
 impl Default for RuleManifest {
