@@ -1565,7 +1565,10 @@ impl Arr30C {
         param_name: &str,
         source: &str,
     ) -> bool {
-        let func_text = &source[func_node.start_byte()..func_node.end_byte()];
+        let func_text = Self::text_sans_comments_and_strings(*func_node, source);
+        // \b-anchored so a short param name (n, i, sz) can't match as a
+        // substring of an unrelated longer identifier (task 512/678).
+        let param_b = format!(r"\b{}\b", regex::escape(param_name));
 
         // Check for various bounds checking patterns:
         // 1. if (param < size) or if (param >= size) return
@@ -1575,10 +1578,9 @@ impl Arr30C {
         // IMPORTANT: Check for OFF-BY-ONE errors first!
         // Pattern: if (size < param) is WRONG - should be if (size <= param)
         // This is an off-by-one error common in realloc/resize code
-        let off_by_one_pattern =
-            format!(r"\bif\s*\(\s*\w+\s*<\s*{}\s*\)", regex::escape(param_name));
+        let off_by_one_pattern = format!(r"\bif\s*\(\s*\w+\s*<\s*{}\s*\)", param_b);
         if let Ok(re) = regex::Regex::new(&off_by_one_pattern) {
-            if re.is_match(func_text) {
+            if re.is_match(&func_text) {
                 // Found "if (size < param)" pattern - this is INSUFFICIENT bounds checking
                 // It should be "if (size <= param)" to properly handle the case where size == param
                 return false;
@@ -1586,16 +1588,16 @@ impl Arr30C {
         }
 
         let bounds_patterns = [
-            format!(r"{}\s*<\s*\w+", regex::escape(param_name)), // param < size
-            format!(r"\w+\s*>\s*{}", regex::escape(param_name)), // size > param
-            format!(r"{}\s*>=\s*\w+", regex::escape(param_name)), // param >= size (with return/check)
-            format!(r"\w+\s*<=\s*{}", regex::escape(param_name)), // size <= param (correct for realloc)
-            format!(r"if\s*\([^)]*{}", regex::escape(param_name)), // if statement with param
+            format!(r"{}\s*<\s*\w+", param_b),   // param < size
+            format!(r"\w+\s*>\s*{}", param_b),   // size > param
+            format!(r"{}\s*>=\s*\w+", param_b),  // param >= size (with return/check)
+            format!(r"\w+\s*<=\s*{}", param_b),  // size <= param (correct for realloc)
+            format!(r"if\s*\([^)]*{}", param_b), // if statement with param
         ];
 
         for pattern in &bounds_patterns {
             if let Ok(re) = regex::Regex::new(pattern) {
-                if re.is_match(func_text) {
+                if re.is_match(&func_text) {
                     return true;
                 }
             }
@@ -1617,14 +1619,16 @@ impl Arr30C {
                             let func_name = &source[name_node.start_byte()..name_node.end_byte()];
 
                             // Search function body for calls to itself
-                            let func_text = &source[func_node.start_byte()..func_node.end_byte()];
+                            let func_text = Self::text_sans_comments_and_strings(func_node, source);
 
                             // Look for function calls in the body (skip the declaration part)
-                            // Pattern: function_name(
-                            let call_pattern = format!(r"{}\s*\(", regex::escape(func_name));
+                            // Pattern: function_name( — \b-anchored so a name that's a
+                            // substring of another identifier (e.g. "foo" inside "myfoo")
+                            // can't inflate the match count (task 512/678).
+                            let call_pattern = format!(r"\b{}\s*\(", regex::escape(func_name));
                             if let Ok(re) = regex::Regex::new(&call_pattern) {
                                 // Count matches - if more than 1, it's recursive (declaration + call)
-                                let matches: Vec<_> = re.find_iter(func_text).collect();
+                                let matches: Vec<_> = re.find_iter(&func_text).collect();
                                 return matches.len() > 1;
                             }
                         }
@@ -1649,7 +1653,7 @@ impl Arr30C {
         }
 
         if let Some(func_node) = find_containing_function(subscript_node) {
-            let func_text = &source[func_node.start_byte()..func_node.end_byte()];
+            let func_text = Self::text_sans_comments_and_strings(func_node, source);
 
             // Get function name for recursive call pattern
             let func_name = match self.get_function_name(&func_node, source) {
@@ -1658,21 +1662,23 @@ impl Arr30C {
             };
 
             // Look for recursive calls with index modifications like: func(arr, index + 2, ...)
-            // Pattern: function_name(.*index \+ \d+
+            // Pattern: function_name(.*index \+ \d+ — \b-anchored on both the
+            // function and index names so neither can match as a substring of
+            // an unrelated longer identifier (task 512/678).
             let modification_pattern = format!(
-                r"{}\s*\([^)]*{}\s*\+\s*(\d+)",
+                r"\b{}\s*\([^)]*\b{}\s*\+\s*(\d+)",
                 regex::escape(&func_name),
                 regex::escape(index_text)
             );
             if let Ok(re) = regex::Regex::new(&modification_pattern) {
-                if let Some(caps) = re.captures(func_text) {
+                if let Some(caps) = re.captures(&func_text) {
                     if let Some(increment) = caps.get(1) {
                         if let Ok(inc_val) = increment.as_str().parse::<usize>() {
                             // Check if there's a depth limit
                             // Look for patterns like: if (depth > N) return
                             let depth_pattern = r"if\s*\(\s*\w+\s*>\s*(\d+)\s*\)";
                             if let Ok(depth_re) = regex::Regex::new(depth_pattern) {
-                                if let Some(depth_caps) = depth_re.captures(func_text) {
+                                if let Some(depth_caps) = depth_re.captures(&func_text) {
                                     if let Some(max_depth) = depth_caps.get(1) {
                                         if let Ok(max_d) = max_depth.as_str().parse::<usize>() {
                                             // Calculate maximum index: inc_val * max_d
@@ -5142,18 +5148,21 @@ impl Arr30C {
 
     /// Check if a function parameter has a lower bound check (>= 0 or > -1)
     fn has_lower_bound_check(&self, func_node: &Node, param_name: &str, source: &str) -> bool {
-        let func_text = &source[func_node.start_byte()..func_node.end_byte()];
+        let func_text = Self::text_sans_comments_and_strings(*func_node, source);
+        // \b-anchored so a short param name can't match as a substring of an
+        // unrelated longer identifier (task 512/678).
+        let param_b = format!(r"\b{}\b", regex::escape(param_name));
 
         // Look for patterns like: if (param >= 0) or if (param > -1) or if (0 <= param)
         let lower_bound_patterns = [
-            format!(r"{}\s*>=\s*0", regex::escape(param_name)),
-            format!(r"{}\s*>\s*-1", regex::escape(param_name)),
-            format!(r"0\s*<=\s*{}", regex::escape(param_name)),
+            format!(r"{}\s*>=\s*0", param_b),
+            format!(r"{}\s*>\s*-1", param_b),
+            format!(r"0\s*<=\s*{}", param_b),
         ];
 
         for pattern in &lower_bound_patterns {
             if let Ok(re) = regex::Regex::new(pattern) {
-                if re.is_match(func_text) {
+                if re.is_match(&func_text) {
                     return true;
                 }
             }
