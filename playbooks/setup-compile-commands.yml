@@ -42,6 +42,14 @@
 # compile_commands.json. Delete that file (or the project's `.cc_build`
 # scratch dir for the CMake-based ones) to force regeneration after a pin
 # bump or a build-flag change.
+#
+# The CMake configure guards deliberately name the GENERATED BUILD SYSTEM
+# (Makefile, or build.ninja for sel4) and not CMakeCache.txt: cmake writes the
+# cache before it can fail, so a configure that dies partway leaves a cache
+# behind. Guarding on the cache made a *failed* configure look complete on the
+# next run, which then failed with `gmake: Makefile: No such file or
+# directory` -- observed for real when mosquitto's configure hit the xsltproc
+# FATAL_ERROR that -DWITH_DOCS=OFF now avoids.
 
 - name: Generate compile_commands.json for every benchmark corpus
   hosts: all
@@ -127,15 +135,22 @@
         force: false
         mode: "0644"
 
+    # --output puts the database at the CHECKOUT ROOT even though the build
+    # runs in wpa_supplicant/. bench/config.py's compile_db_for() looks for
+    # <checkout>/compile_commands.json, and bench/realworld_runner.py treats a
+    # missing one as a hard error -- a DB left in the subdirectory would fail
+    # every hostap --compile-commands run. Entry paths are absolute, so the
+    # file's own location does not affect what it resolves.
     - name: hostap - build wpa_supplicant under bear to capture compile_commands.json
       shell: |
         set -e
         make clean || true
-        bear -- make -j"$(nproc)" wpa_supplicant
+        bear --output {{ bench_root }}/hostap/compile_commands.json -- \
+          make -j"$(nproc)" wpa_supplicant
       args:
         chdir: "{{ bench_root }}/hostap/wpa_supplicant"
         executable: /bin/bash
-        creates: "{{ bench_root }}/hostap/wpa_supplicant/compile_commands.json"
+        creates: "{{ bench_root }}/hostap/compile_commands.json"
 
     - name: hostap - restore checkout to pristine (keep compile_commands.json, drop scratch .config)
       shell: |
@@ -182,9 +197,9 @@
       command: >-
         cmake -S {{ bench_root }}/mosquitto -B {{ cc_build_root }}/mosquitto
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-        -DWITH_TLS=OFF -DWITH_WEBSOCKETS=OFF -DWITH_TESTS=OFF
+        -DWITH_TLS=OFF -DWITH_WEBSOCKETS=OFF -DWITH_TESTS=OFF -DWITH_DOCS=OFF
       args:
-        creates: "{{ cc_build_root }}/mosquitto/CMakeCache.txt"
+        creates: "{{ cc_build_root }}/mosquitto/Makefile"
 
     - name: mosquitto - build
       command: cmake --build {{ cc_build_root }}/mosquitto --clean-first -j{{ ansible_processor_vcpus | default(4) }}
@@ -206,7 +221,7 @@
         -DCURL_USE_OPENSSL=OFF -DCURL_DISABLE_LDAP=ON
         -DUSE_LIBIDN2=OFF -DUSE_NGHTTP2=OFF -DCURL_ZSTD=OFF
       args:
-        creates: "{{ cc_build_root }}/curl/CMakeCache.txt"
+        creates: "{{ cc_build_root }}/curl/Makefile"
 
     - name: curl - build
       command: cmake --build {{ cc_build_root }}/curl -j{{ ansible_processor_vcpus | default(4) }}
@@ -226,7 +241,7 @@
         cmake -S {{ bench_root }}/raylib -B {{ cc_build_root }}/raylib
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
       args:
-        creates: "{{ cc_build_root }}/raylib/CMakeCache.txt"
+        creates: "{{ cc_build_root }}/raylib/Makefile"
 
     - name: raylib - build
       command: cmake --build {{ cc_build_root }}/raylib -j{{ ansible_processor_vcpus | default(4) }}
@@ -296,7 +311,7 @@
         -DKernelPlatform=pc99 -DKernelArch=x86 -DKernelWordSize=64
         -DCROSS_COMPILER_PREFIX=
       args:
-        creates: "{{ cc_build_root }}/sel4/CMakeCache.txt"
+        creates: "{{ cc_build_root }}/sel4/build.ninja"
 
     - name: sel4 - build (generates the *_gen.h headers the DB references)
       command: cmake --build {{ cc_build_root }}/sel4 -j{{ ansible_processor_vcpus | default(4) }}
