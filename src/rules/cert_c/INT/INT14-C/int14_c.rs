@@ -145,6 +145,21 @@ impl Int14C {
     /// Extract variable names used in an expression
     fn extract_variables(node: &Node, source: &str, vars: &mut HashSet<String>) {
         for n in query::find_descendants_of_kind(*node, "identifier") {
+            // Skip a call_expression's callee identifier: `le_to_host16(x) & mask`
+            // and `le_to_host16(x) * 8` both contain the identifier
+            // `le_to_host16`, but it names the function being called, not a
+            // variable holding a value -- collecting it here misattributed a
+            // "mixed bitwise and arithmetic" finding to the macro/function
+            // name instead of the actual variable receiving the result
+            // (task 462, hostap wmm.c:251: `duration = (le_to_host16(...) &
+            // 0x7fff) * 8 / ...`).
+            if let Some(parent) = n.parent() {
+                if parent.kind() == "call_expression"
+                    && parent.child_by_field_name("function") == Some(n)
+                {
+                    continue;
+                }
+            }
             vars.insert(get_node_text(&n, source).to_string());
         }
     }
