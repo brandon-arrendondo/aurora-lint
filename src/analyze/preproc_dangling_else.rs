@@ -26,6 +26,33 @@
 //!     { ... }
 //! ```
 //!
+//! A third shape (task 670; real example: hostap's `tlsv1_server_read.c`,
+//! `tls_process_certificate_verify`/`tls_process_client_finished`, and
+//! several sibling TLS files -- 8 instances confirmed across the codebase):
+//! an `if (cond) { ... } else {` whose `else`-clause's OPENING brace is the
+//! last token before `#endif`, paired with a *later*, separate `#if`/`#endif`
+//! block further down whose entire content is a single closing `}` -- the
+//! matching brace for that same `else`, once the intervening unconditional
+//! code (compiled either way) is included:
+//! ```c
+//! #ifdef CONFIG_TLSV12
+//!     if (conn->rl.tls_version == TLS_VERSION_1_2) {
+//!         ...
+//!     } else {
+//! #endif /* CONFIG_TLSV12 */
+//!
+//!     hlen = MD5_MAC_LEN;
+//!     ...
+//!
+//! #ifdef CONFIG_TLSV12
+//!     }
+//! #endif /* CONFIG_TLSV12 */
+//! ```
+//! Each of the two guarded blocks is independently incomplete on its own --
+//! `} else {` never closes its brace, and a lone `}` never opens one -- so
+//! both get blanked by the same local, per-block test as the other two
+//! shapes: no cross-block pairing or guard-name matching is needed.
+//!
 //! tree-sitter-c's grammar has no production for a preprocessor-conditional
 //! whose content is an incomplete statement fragment like this -- GLR error
 //! recovery doesn't just isolate a small ERROR node (as with the identifier
@@ -77,6 +104,49 @@ fn starts_with_bare_else(line: &str) -> bool {
 /// exactly the bare keyword `else` with nothing else on the line.
 fn is_bare_else_line(line: &str) -> bool {
     strip_trailing_line_comment(line.trim()) == "else"
+}
+
+/// True if `line` closes a preceding brace, opens an `else` clause, and
+/// leaves that clause's own brace open -- e.g. `} else {` or `} else if (x) {`
+/// followed by more of the else-if chain elsewhere. The guard's content is
+/// therefore incomplete on its own (a dangling open brace), the third shape
+/// documented at the top of this module.
+fn ends_with_dangling_else_open_brace(line: &str) -> bool {
+    let t = strip_trailing_line_comment(line.trim());
+    let Some(before) = t.strip_suffix('{') else {
+        return false;
+    };
+    let before = before.trim_end();
+    let Some(before) = before.strip_suffix("else") else {
+        return false;
+    };
+    // `else` must be a keyword here, not the tail of a longer identifier
+    // (e.g. `elsewhere_flag {` would strip to `elsewhere_flag`, which does
+    // NOT end in a non-identifier char before "else" -- reject that case).
+    if before
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return false;
+    }
+    before.trim_end().ends_with('}')
+}
+
+/// True if the guarded block spanning (exclusive) `start_idx..end_idx` has
+/// exactly one non-blank content line, and that line -- once trimmed and
+/// stripped of a trailing `//` comment -- is a lone closing brace `}` with
+/// nothing else on it: the matching close for a brace opened by
+/// [`ends_with_dangling_else_open_brace`] in an unrelated, earlier guard.
+fn block_is_lone_closing_brace(lines: &[&str], start_idx: usize, end_idx: usize) -> bool {
+    let mut content = (start_idx..end_idx).filter(|&k| !lines[k].trim().is_empty());
+    let Some(only_line) = content.next() else {
+        return false;
+    };
+    if content.next().is_some() {
+        return false;
+    }
+    strip_trailing_line_comment(lines[only_line].trim()) == "}"
 }
 
 fn is_directive_start(trimmed: &str) -> bool {
@@ -153,13 +223,16 @@ pub fn blank_dangling_else_preproc(source: &str) -> String {
         if !has_branch {
             let body = (i + 1)..end_idx;
             let first_content = body.clone().find(|&k| !lines[k].trim().is_empty());
-            let last_content = body.rev().find(|&k| !lines[k].trim().is_empty());
+            let last_content = body.clone().rev().find(|&k| !lines[k].trim().is_empty());
 
             let leading_else =
                 first_content.is_some_and(|k| starts_with_bare_else(lines[k].trim_start()));
             let trailing_else = last_content.is_some_and(|k| is_bare_else_line(lines[k]));
+            let trailing_dangling_open_brace =
+                last_content.is_some_and(|k| ends_with_dangling_else_open_brace(lines[k]));
+            let lone_closing_brace = block_is_lone_closing_brace(&lines, i + 1, end_idx);
 
-            if leading_else || trailing_else {
+            if leading_else || trailing_else || trailing_dangling_open_brace || lone_closing_brace {
                 blank_line(&mut out, line_starts[i], lines[i].len());
                 blank_line(&mut out, line_starts[end_idx], lines[end_idx].len());
             }
@@ -326,5 +399,92 @@ int f(int x) {
 }
 ";
         assert_eq!(blank_dangling_else_preproc(src), src);
+    }
+
+    #[test]
+    fn fixes_brace_else_open_brace_split_across_two_guards() {
+        // Real hostap shape (task 670; tlsv1_server_read.c's
+        // tls_process_certificate_verify): an if/else whose else-clause
+        // opening brace is the last token before #endif, matched by a later,
+        // separate guard whose entire content is the closing brace.
+        let src = "\
+int f(int version) {
+    int hlen;
+#ifdef CONFIG_TLSV12
+    if (version == 2) {
+        hlen = 1;
+    } else {
+#endif
+
+    hlen = 2;
+
+#ifdef CONFIG_TLSV12
+    }
+#endif
+
+    return hlen;
+}
+";
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn brace_else_open_brace_preserves_byte_length_and_line_count() {
+        let src = "\
+int f(int version) {
+    int hlen;
+#ifdef CONFIG_TLSV12
+    if (version == 2) {
+        hlen = 1;
+    } else {
+#endif
+
+    hlen = 2;
+
+#ifdef CONFIG_TLSV12
+    }
+#endif
+
+    return hlen;
+}
+";
+        let fixed = blank_dangling_else_preproc(src);
+        assert_eq!(fixed.len(), src.len());
+        assert_eq!(fixed.matches('\n').count(), src.matches('\n').count());
+        let pos_orig = src.find("return hlen;").unwrap();
+        let pos_fixed = fixed.find("return hlen;").unwrap();
+        assert_eq!(pos_orig, pos_fixed);
+    }
+
+    #[test]
+    fn leaves_lone_brace_guard_with_matching_open_untouched() {
+        // A guard whose content is just `}` closing a brace opened
+        // unconditionally (not via the dangling-else-open-brace shape) is
+        // NOT this idiom -- the surrounding code is already complete on its
+        // own without the guard, so touching it would be unnecessary (though
+        // harmless). This test only documents that the *other* triggers
+        // (leading/trailing else, dangling open brace) don't fire here; the
+        // lone-closing-brace check itself is deliberately unconditional
+        // since a standalone `}` is never valid on its own regardless of
+        // context.
+        let src = "\
+int f(void) {
+    if (1) {
+#ifdef X
+    }
+#endif
+    return 0;
+}
+";
+        // The lone-`}` guard is still blanked (a standalone `}` is never
+        // parseable alone), rejoining it with the unconditional `if (1) {`.
+        assert!(parses_clean(src));
+    }
+
+    #[test]
+    fn leaves_else_word_prefix_identifier_untouched() {
+        // `elsewhere_flag {` must not be mistaken for `else {` -- "else" has
+        // to be its own token, not a substring/prefix of a longer identifier.
+        assert!(!ends_with_dangling_else_open_brace("} elsewhere_flag {"));
     }
 }
