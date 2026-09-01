@@ -519,6 +519,32 @@ Net over the labeled subset: −6 FP, +1 FP. **No TP moved in either
 direction** — so nothing regressed, but the effect is far too small to justify
 running the corpus with the flag by default.
 
+**Delta-adjudicated 2026-09-01** (`data/precision_audit/sel4/`
+`import_delta_compile_db_task623.csv`, 39 labels, source
+`delta_compile_db_task623`). Applying each project's `scope_include` predicate
+first, per CLAUDE.md, removed the largest raw chunk before any reading:
+pure-ftpd's 38 DCL31-C removals are all in `src/ftpd.c`, and that oracle covers
+only its six SQL-logging files (it was onboarded as a CWE-89 client oracle), so
+they are out of scope rather than unlabeled. That left 39, all sel4 `src/**`,
+all adjudicated **FP**:
+
+- the 24 INT34-C + 1 INT33-C *removals* — shift amounts are `seL4_PageBits`=12,
+  `seL4_PageTableBits`=12, `seL4_LargePageBits`=21, `seL4_HugePageBits`=30, all
+  far below the operand width (and still so at x86-32's 22), and
+  `CONFIG_WORD_SIZE`=64 is a nonzero constant. sqc warned only because the
+  macro was opaque, which is precisely the FP class this flag exists to kill.
+- the 14 ARR30-C *additions* — each indexes an array declared
+  `[CONFIG_MAX_NUM_NODES]` by a CPU index bounded by construction
+  (`CURRENT_CPU_INDEX()`, or a `core_id` carrying
+  `assert(core_id < CONFIG_MAX_NUM_NODES)`), plus `ksDomSchedule[index]` whose
+  caller range-checks against the array's own size.
+
+With the delta labeled, the scored comparison is (run #211 plain vs #212 cdb):
+precision **18.9% → 18.9%**, recall **95.0% → 95.0%** (10321/10864 both), and
+per rule corpus-wide INT34-C 6 TP/217 FP → 6 TP/190 FP, INT33-C 337 → 336 FP,
+ARR30-C 980 → 994 FP. Net −15 FP out of ~44,000, and **no TP lost**. The flag
+is safe and directionally correct; it is simply not worth a default.
+
 Why so small is worth knowing before investing further: 4 of the 9 benchmark
 projects (sqlite, mosquitto, curl, hostap) already hand-feed `-I /usr/include`
 and friends in `bench/realworld_runner.py`'s `CODEBASES`, and

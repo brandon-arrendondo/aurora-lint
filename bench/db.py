@@ -1389,7 +1389,25 @@ class BenchDB:
             if row:
                 return row["id"]
 
-            # Notes substring match (e.g. "sqc-0.3.28-ae46ae3c")
+            # Notes match (e.g. "sqc-0.3.28-ae46ae3c"). Anchored to the END
+            # of the notes first, because a plain substring match cannot
+            # address a run whose id is a prefix of another's: notes read
+            # "ingested from <run_id>", so "%sqc-0.4.320-742e92a6%" matches
+            # both that run and its "-cdb" sibling, and ORDER BY id DESC then
+            # silently returns the sibling. That defeats the whole point of
+            # the compile-database run suffix (bench/config.py's
+            # apply_run_suffix), which exists so a with/without pair on one
+            # sqc build stays two addressable runs.
+            cur.execute("""
+                SELECT id FROM realworld_runs
+                WHERE notes LIKE ?
+                ORDER BY id DESC LIMIT 1
+            """, (f"%{ident}",))
+            row = cur.fetchone()
+            if row:
+                return row["id"]
+
+            # Fall back to an unanchored substring match.
             cur.execute("""
                 SELECT id FROM realworld_runs
                 WHERE notes LIKE ?
