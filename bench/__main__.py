@@ -27,6 +27,10 @@ Commands:
                                             concurrency-context evidence
   corpus-check                             Verify every real-world checkout is
                                             still on its pinned commit
+  render-docs --realworld-run R [--juliet-run R] [--check] [--force]
+                                            Regenerate the DB-derived tables in
+                                            README/JULIET_RESULTS/
+                                            REALWORLD_RESULTS.md
 """
 
 import argparse
@@ -844,6 +848,77 @@ def cmd_corpus_check(args):
     sys.exit(report(bench_root=args.bench_root, as_json=args.json))
 
 
+def cmd_render_docs(args):
+    from bench.render_docs import (PROJECT_COVERAGE_WARN,
+                                    UNLABELED_FRACTION_WARN, render_all,
+                                    realworld_project_count,
+                                    published_realworld_project_count,
+                                    resolve_latest_fast_juliet_run)
+    db = BenchDB()
+
+    realworld_run_id = db.resolve_realworld_run(args.realworld_run)
+    if not realworld_run_id:
+        print(f"Real-world run '{args.realworld_run}' not found.")
+        sys.exit(1)
+
+    if args.juliet_run in (None, "latest"):
+        juliet_run_id = resolve_latest_fast_juliet_run(db)
+        if not juliet_run_id:
+            print("No completed fast-mode Juliet run found; pass --juliet-run "
+                  "explicitly.")
+            sys.exit(1)
+    else:
+        juliet_run_id = db.resolve_run(args.juliet_run)
+        if not juliet_run_id:
+            print(f"Juliet run '{args.juliet_run}' not found.")
+            sys.exit(1)
+
+    score = db.score_realworld_run(realworld_run_id)
+    unlabeled = score["overall"].get("unlabeled_fraction") or 0.0
+    if unlabeled > UNLABELED_FRACTION_WARN and not args.force:
+        print(f"Real-world run #{realworld_run_id} is {unlabeled:.1%} "
+              "unlabeled -- its precision/recall likely isn't safely "
+              "measured yet (see CLAUDE.md's delta-adjudication protocol). "
+              "Delta-adjudicate first, or pass --force to cite it anyway.")
+        sys.exit(1)
+
+    this_count = realworld_project_count(db, realworld_run_id)
+    published_count = published_realworld_project_count()
+    if (published_count and this_count
+            and this_count < published_count * PROJECT_COVERAGE_WARN
+            and not args.force):
+        print(f"Real-world run #{realworld_run_id} only covers "
+              f"{this_count} project(s), vs {published_count} in the "
+              "currently-published table -- likely a narrow/targeted scan, "
+              "not a full-suite run. Pass --force to cite it anyway.")
+        sys.exit(1)
+
+    try:
+        rendered = render_all(db, juliet_run_id, realworld_run_id)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    changed = {path: text for path, text in rendered.items()
+               if path.read_text() != text}
+
+    if args.check:
+        if not changed:
+            print("Up to date.")
+            return
+        print("Out of date:")
+        for path in changed:
+            print(f"  {path}")
+        sys.exit(1)
+
+    if not changed:
+        print("Already up to date.")
+        return
+    for path, text in changed.items():
+        path.write_text(text)
+        print(f"Updated {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="bench",
@@ -1089,6 +1164,24 @@ def main():
                         help="Override BENCH_ROOT for this check")
     p_cchk.add_argument("--json", action="store_true", help="Emit JSON")
     p_cchk.set_defaults(func=cmd_corpus_check)
+
+    p_rd = sub.add_parser(
+        "render-docs",
+        help="Regenerate the DB-derived tables in README/JULIET_RESULTS/"
+             "REALWORLD_RESULTS.md")
+    p_rd.add_argument("--realworld-run", required=True,
+                      help="Real-world run to cite (no default -- must be an "
+                           "explicitly-chosen, validly-adjudicated run)")
+    p_rd.add_argument("--juliet-run", default="latest",
+                      help="Juliet run to cite (default: latest completed "
+                           "fast-mode run)")
+    p_rd.add_argument("--check", action="store_true",
+                      help="Report whether the docs are stale; exit nonzero "
+                           "if so, without writing")
+    p_rd.add_argument("--force", action="store_true",
+                      help="Cite the real-world run even if its unlabeled "
+                           "fraction is high")
+    p_rd.set_defaults(func=cmd_render_docs)
 
     args = parser.parse_args()
     if not args.command:

@@ -1,10 +1,10 @@
 # SqC - Software Code Quality
 
-A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC checks 306 rules across 17 categories, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
+A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC checks 307 rules across 17 categories, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
 ## Key Features
 
-- **306 CERT C rules** enabled by default (311 implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
+- **307 CERT C rules** enabled by default (311 implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
 - **Optional interactive terminal UI** for browsing and managing violations (build with `--features tui`)
 - **Multiple export formats**: CSV, XLSX, JSON, SARIF 2.1.0
 - **CI/CD ready**: exit codes, severity thresholds, diff-only mode, SARIF output
@@ -13,24 +13,29 @@ A static analysis tool for C code compliance with [SEI CERT C Coding Standards](
 
 ## Benchmark Highlights
 
+<!-- BENCH:HIGHLIGHTS:START -->
 | Metric | Value |
 |--------|-------|
-| **Juliet TP Rate** | 87.7% (v0.4.249) |
+| **Juliet TP Rate** | 87.7% (v0.4.301) |
 | **Juliet CWEs Scanned** | 79 (fast mode, CWE-matched rules) |
-| **100% Precision CWEs** | 44 (zero false positives, with real detections) |
-| **Per-File Detection** | 38.0% (19,101 / 50,256 files) |
-| **Real-World Precision / Recall** | 16.6% / 97.4% (v0.4.258, run #187, 86.3% label coverage) |
-| **Real-World Projects** | libcrc, sqlite, mosquitto, curl, hostap, lua, raylib, pure-ftpd, seL4 |
+| **100% Precision CWEs** | 43 (zero false positives, with real detections) |
+| **Per-File Detection** | 38.0% (19,079 / 50,256 files) |
+| **Real-World Precision / Recall** | 24.1% / 94.2% (v0.4.313, run #217, 88.3% label coverage) |
+| **Real-World Projects** | curl, hostap, libcrc, lua, mosquitto, pure-ftpd, raylib, seL4, sqlite |
+<!-- BENCH:HIGHLIGHTS:END -->
+
+Regenerate this table with `python -m bench render-docs --realworld-run RUN`
+(see `bench/render_docs.py`) after a version bump or a fresh delta-adjudication.
 
 Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) and [REALWORLD_RESULTS.md](REALWORLD_RESULTS.md) for details.
 
 > **Note**: the real-world precision/recall figure is pinned to the last
-> ground-truth-adjudicated run (v0.4.258, run #187 — task 532's delta
-> adjudication vs. the prior v0.4.120 baseline, 6.2%/91.7%). Rule-logic
-> commits landed since v0.4.258 aren't reflected here; a current figure
-> requires delta-adjudicating the newer unlabeled findings first (see
-> CLAUDE.md's delta-adjudication protocol) before it can be safely
-> republished.
+> validly-adjudicated run (v0.4.313, run #217 — 11.7% of its findings are
+> still unlabeled, mostly `pure-ftpd`/`seL4`'s deliberately-unsampled 90%;
+> see REALWORLD_RESULTS.md). Rule-logic commits landed since v0.4.313 aren't
+> reflected here; a current figure requires delta-adjudicating the newer
+> unlabeled findings first (see CLAUDE.md's delta-adjudication protocol)
+> before it can be safely republished.
 
 ## Installation
 
@@ -103,7 +108,7 @@ directories for cross-file context and never restricts what gets analyzed.
 sqc /path/to/project --manifest my-rules.toml
 ```
 
-The default manifest (`rules_templates/rules-all.toml`) enables 306 of the 311 implemented rules. See the [Developer Guide](docs/index.rst) for the manifest format.
+The default manifest (`rules_templates/rules-all.toml`) enables 307 of the 311 implemented rules. See the [Developer Guide](docs/index.rst) for the manifest format.
 
 ## Quick CI Example
 
