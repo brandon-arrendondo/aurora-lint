@@ -539,6 +539,30 @@ fn all_write_sites_ifdef_correlated(
     found_any
 }
 
+/// True if `body` contains an object-like `#define var_name ...`
+/// (`preproc_def` whose `name` field spells `var_name`) anywhere. This is
+/// almost always the alternative branch of an `#ifdef`/`#ifndef` whose
+/// other branch assigns a same-named real variable, e.g. sqlite's
+/// `#ifndef SQLITE_OMIT_TRIGGER pTrigger = sqlite3TriggersExist(...); #else
+/// # define pTrigger 0 #endif`. sqc has no preprocessor, so a later,
+/// unconditional read of `var_name` after the `#endif` looks like a join of
+/// "assigned in one branch, untouched in the other" -- MaybeUninitialized.
+/// But that's not a real risk in any actually-compiled configuration:
+/// whichever branch's guard condition holds, either the variable is
+/// assigned directly, or it is `#define`d to a constant that the
+/// preprocessor substitutes at every later use (including this read) for
+/// the rest of the translation unit -- so in that configuration this
+/// "read" is never actually of the declared variable at all (task 461
+/// category 5; sqlite's insert.c/delete.c/update.c pTrigger/tmask/isView).
+fn has_macro_shadow_definition(body: &Node, var_name: &str, source: &str) -> bool {
+    query::find_descendants_of_kind(*body, "preproc_def")
+        .iter()
+        .any(|def| {
+            def.child_by_field_name("name")
+                .is_some_and(|n| get_node_text(&n, source) == var_name)
+        })
+}
+
 /// Append-style functions that both read (find the existing null terminator)
 /// and write their first argument. `get_output_arg_indices` models arg 0 as
 /// pure output so ordinary reads of it don't false-positive elsewhere; this
@@ -846,6 +870,9 @@ fn check_identifier_read(
                 return;
             }
         }
+        if has_macro_shadow_definition(body, &var_name, source) {
+            return;
+        }
     }
 
     reported.insert(var_name.clone());
@@ -1142,6 +1169,27 @@ fn is_read_context(
         return false;
     }
 
+    // Preprocessor-directive name identifiers are not C-expression reads at
+    // all: `# define pTrigger 0` inside a conditionally-compiled `#else`
+    // branch parses to a `preproc_def` whose `name` field is an `identifier`
+    // node holding the same text as an unrelated tracked variable declared
+    // in the surrounding function. sqc has no preprocessor, so this
+    // directive's tokens land as ordinary descendants of the function body
+    // and fell through to the catch-all `_ => true` below, misflagging the
+    // `#define` line itself as a read of that variable (task 461 category
+    // 5 -- real-world sqlite insert.c/delete.c/update.c: `#ifndef
+    // SQLITE_OMIT_TRIGGER ... #else # define pTrigger 0 ... #endif`).
+    // Function-like macros (`preproc_function_def`) and their parameter
+    // list (`preproc_params`), and `#undef NAME`, have the same shape.
+    if let Some(parent) = node.parent() {
+        if matches!(
+            parent.kind(),
+            "preproc_def" | "preproc_function_def" | "preproc_params" | "preproc_undef"
+        ) {
+            return false;
+        }
+    }
+
     // The declared name of a declaration is never itself a read, whether or
     // not it has an initializer — `Foo *pCaller;` and `Mem *pMem = expr;`
     // both just bring storage into existence at that point. The direct
@@ -1188,8 +1236,16 @@ fn is_read_context(
         "subscript_expression" => false,
         // Parameter declaration — not a read
         "parameter_declaration" => false,
-        // Cast expression — reading the value
-        "cast_expression" => true,
+        // Cast expression — reading the value, EXCEPT the `(void)x;`
+        // discard idiom (a bare identifier cast straight to `void`): the
+        // standard "suppress unused-variable warning" convention, which
+        // GCC/Clang special-case to never actually load the operand's
+        // value when it's a plain identifier -- so this is not a real
+        // content read regardless of what follows (task 461 category 10;
+        // curl's ldap.c/mbedtls.c `(void)ldap_option;` / `(void)ldap_ca;`
+        // on an `#else` branch that never assigned them, immediately
+        // before an error-return path).
+        "cast_expression" => !is_void_discard_cast(&parent, node, source),
         // Condition expressions — reading
         "binary_expression" | "unary_expression" | "conditional_expression" => true,
         // Function call argument — usually a read, but check for output args
@@ -1288,6 +1344,26 @@ fn is_read_in_assignment(parent: &Node, node: &Node, source: &str) -> bool {
         }
     }
     false // Simple assignment (=) — write only
+}
+
+/// True if `cast` is exactly `(void)node` -- `node` is the cast's bare
+/// `value` operand and the cast's type is plain `void` (no pointer/array
+/// wrapping, e.g. NOT `(void *)x`). This is the standard idiom for
+/// silencing an "unused variable" warning without reading it: GCC/Clang
+/// special-case a plain-identifier operand here to skip emitting a load,
+/// so per real compiler behavior (not just intent) this never actually
+/// reads the variable's content.
+fn is_void_discard_cast(cast: &Node, node: &Node, source: &str) -> bool {
+    let Some(value) = cast.child_by_field_name("value") else {
+        return false;
+    };
+    if value.id() != node.id() {
+        return false;
+    }
+    let Some(type_node) = cast.child_by_field_name("type") else {
+        return false;
+    };
+    get_node_text(&type_node, source).trim() == "void"
 }
 
 /// `*x` is always a dereference read. `&var` is a read only when passed to a
