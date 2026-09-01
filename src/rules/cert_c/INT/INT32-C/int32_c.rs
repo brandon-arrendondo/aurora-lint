@@ -33,6 +33,14 @@ pub struct Int32C {
     /// operand). Cleared at the start of each `check()` (node ids are unique only
     /// within one parse tree).
     risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
+    /// Per-function memo of `get_sanitized_node_text`, keyed by the containing
+    /// function's tree-sitter node id. `has_function_level_overflow_check_scoped`
+    /// re-sanitized (a full AST descendant walk to blank comments/strings) the
+    /// same function's text once per risky-operand candidate; on a function
+    /// with many candidates that was O(candidates * function_size) = O(n^2).
+    /// Cleared at the start of each `check()`, same as `risky_vars_cache`
+    /// (task 672).
+    function_text_cache: RefCell<HashMap<usize, std::rc::Rc<str>>>,
 }
 
 impl Int32C {
@@ -46,6 +54,7 @@ impl Int32C {
             function_summaries: RefCell::new(HashMap::new()),
             global_writers: RefCell::new(HashMap::new()),
             risky_vars_cache: RefCell::new(HashMap::new()),
+            function_text_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -113,6 +122,7 @@ impl CertRule for Int32C {
         // Risky-var memo is keyed on tree-sitter node ids, which are only unique
         // within a single parse tree — reset it for each file.
         self.risky_vars_cache.borrow_mut().clear();
+        self.function_text_cache.borrow_mut().clear();
 
         self.check_node(node, source, &mut violations, &type_map);
         violations
@@ -2459,8 +2469,16 @@ impl Int32C {
             if parent.kind() == "function_definition" {
                 // Sanitized so a comment/string literal elsewhere in the
                 // function can't spoof an overflow-guard pattern and
-                // silently suppress a real violation.
-                let func_text = get_sanitized_node_text(&parent, source);
+                // silently suppress a real violation. Memoized per function
+                // (task 672): this used to re-walk the whole function body
+                // for every risky-operand candidate.
+                let func_text = {
+                    let mut cache = self.function_text_cache.borrow_mut();
+                    cache
+                        .entry(parent.id())
+                        .or_insert_with(|| get_sanitized_node_text(&parent, source).into())
+                        .clone()
+                };
 
                 // First: do the patterns even exist in this function?
                 if !patterns.iter().all(|p| func_text.contains(p)) {

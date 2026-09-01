@@ -296,17 +296,22 @@ fn apply_range_transfer(
     local_types: &HashMap<String, VarType>,
 ) -> RangeMap {
     let mut state = entry.clone();
-    for &(start, end) in &block.statements {
-        if let Some(stmt_node) = find_node_at_range(body, start, end) {
-            process_statement_for_ranges(
-                &stmt_node,
-                source,
-                macros,
-                summaries,
-                &mut state,
-                local_types,
-            );
-        }
+    // Resolve every statement in this block in one linear pass rather than
+    // calling `find_node_at_range` (which re-descends from `body`'s root
+    // every time) once per statement -- the same O(n^2)-per-block-visit
+    // pattern fixed for the query path in task 669 (task 672 follow-up).
+    for stmt_node in resolve_block_statement_nodes(body, block)
+        .into_iter()
+        .flatten()
+    {
+        process_statement_for_ranges(
+            &stmt_node,
+            source,
+            macros,
+            summaries,
+            &mut state,
+            local_types,
+        );
     }
     state
 }
@@ -1660,9 +1665,16 @@ fn build_block_checkpoints(
 /// A basic block's statements are, by construction, a straight-line run with
 /// no branches between them, so they are almost always literal siblings
 /// under one enclosing node (e.g. the body of the same `if`/`for`/switch
-/// `case`). Find that common enclosing node once (via `find_node_at_range`
-/// over the block's full byte span, relying on its existing "best containing
-/// node" fallback), then walk its children exactly once, matching them
+/// `case`, or the function body itself for a top-level flat run). Resolve
+/// just the first statement (one `find_node_at_range` call, O(depth)) and
+/// use its actual AST parent as that common scope -- notably NOT the node
+/// found by looking up the block's combined first..last byte span, which
+/// fails whenever the block's statements are direct children of `body`
+/// itself (the plain flat-function case): no single node other than `body`
+/// contains that whole combined span, `body`'s own range never matches
+/// exactly (it includes the braces), so that lookup always falls through to
+/// the O(n) fallback below on precisely the common case this exists to
+/// avoid. Then walk the parent's children exactly once, matching them
 /// against `block.statements` in order. Any statement that doesn't line up
 /// with that single-parent assumption falls back to the original per-node
 /// lookup, so correctness never depends on the assumption holding.
@@ -1672,14 +1684,14 @@ fn resolve_block_statement_nodes<'a>(body: &Node<'a>, block: &BasicBlock) -> Vec
     if n == 0 {
         return nodes;
     }
-    let block_start = block.statements[0].0;
-    let block_end = block.statements[n - 1].1;
-    let Some(scope) = find_node_at_range(body, block_start, block_end) else {
+    let (first_start, first_end) = block.statements[0];
+    let Some(first_node) = find_node_at_range(body, first_start, first_end) else {
         for (i, &(start, end)) in block.statements.iter().enumerate() {
             nodes[i] = find_node_at_range(body, start, end);
         }
         return nodes;
     };
+    let scope = first_node.parent().unwrap_or(*body);
 
     let mut stmt_idx = 0;
     for i in 0..scope.child_count() {
