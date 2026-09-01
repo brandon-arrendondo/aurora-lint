@@ -53,30 +53,45 @@ impl CertRule for Pos39C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Track multi-byte integer variables
-        let mut multi_byte_vars: HashMap<String, String> = HashMap::new();
+        // Each function gets its own scope for all three tracking maps: a
+        // same-named variable in a different function is a different
+        // object. `find_multi_byte_vars` doesn't see parameter
+        // declarations (only `declaration`-kind locals), so a stale
+        // "declared as uint32_t somewhere in this file" entry from one
+        // function could leak into an unrelated same-named *plain* `int`
+        // variable in another function and misfire the recv-without-
+        // conversion check there -- confirmed via a minimal repro where
+        // `func_b`'s plain `int id` got reported as "uint32_t" solely
+        // because an unrelated `func_a` happened to declare a `uint32_t
+        // id` elsewhere in the file (task 418). `converted_vars` has the
+        // same cross-function leak in the opposite direction (a
+        // conversion in one function could mask a missing conversion on
+        // an unrelated same-named variable in another). Scope all three
+        // passes per `function_definition`, mirroring EXP39-C/STR32-C's
+        // per-function reset pattern.
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+        let scopes: Vec<Node> = if functions.is_empty() {
+            vec![*node]
+        } else {
+            functions
+        };
 
-        // Track variables that have byte order conversion
-        let mut converted_vars: HashSet<String> = HashSet::new();
+        for scope in scopes {
+            let mut multi_byte_vars: HashMap<String, String> = HashMap::new();
+            let mut converted_vars: HashSet<String> = HashSet::new();
+            let mut received_vars: HashMap<String, (usize, usize)> = HashMap::new();
 
-        // Track recv/recvfrom calls on multi-byte variables
-        let mut received_vars: HashMap<String, (usize, usize)> = HashMap::new();
-
-        // First pass: find variable declarations
-        self.find_multi_byte_vars(node, source, &mut multi_byte_vars);
-
-        // Second pass: find byte order conversions
-        self.find_byte_order_conversions(node, source, &mut converted_vars);
-
-        // Third pass: find recv calls and check for conversions
-        self.find_recv_calls(
-            node,
-            source,
-            &multi_byte_vars,
-            &converted_vars,
-            &mut received_vars,
-            &mut violations,
-        );
+            self.find_multi_byte_vars(&scope, source, &mut multi_byte_vars);
+            self.find_byte_order_conversions(&scope, source, &mut converted_vars);
+            self.find_recv_calls(
+                &scope,
+                source,
+                &multi_byte_vars,
+                &converted_vars,
+                &mut received_vars,
+                &mut violations,
+            );
+        }
 
         violations
     }

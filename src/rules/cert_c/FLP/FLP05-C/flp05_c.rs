@@ -51,9 +51,24 @@ impl CertRule for Flp05C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        // Map of variable names to their types
-        let mut var_types: HashMap<String, String> = HashMap::new();
-        self.check_node(node, source, &mut violations, &mut var_types);
+        // Each function gets its own `var_types` scope: a same-named
+        // variable in a different function is a different object, and
+        // `process_declaration` doesn't even see parameter declarations
+        // (only `declaration`-kind local vars), so a stale entry from one
+        // function's local (e.g. `float x`) could otherwise leak into
+        // another function's unrelated same-named parameter or local
+        // (task 418). Scope the whole-source walk per `function_definition`,
+        // mirroring EXP39-C/STR32-C's per-function reset pattern.
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+        if functions.is_empty() {
+            let mut var_types: HashMap<String, String> = HashMap::new();
+            self.check_node(node, source, &mut violations, &mut var_types);
+        } else {
+            for func in functions {
+                let mut var_types: HashMap<String, String> = HashMap::new();
+                self.check_node(&func, source, &mut violations, &mut var_types);
+            }
+        }
         violations
     }
 }

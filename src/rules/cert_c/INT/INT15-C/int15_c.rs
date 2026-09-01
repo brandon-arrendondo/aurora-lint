@@ -59,58 +59,73 @@ impl CertRule for Int15C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-        let mut typedef_names: HashSet<String> = HashSet::new();
-        let mut var_types: HashMap<String, String> = HashMap::new();
 
-        // First pass: collect typedefs and variable types
-        self.collect_info(node, source, &mut typedef_names, &mut var_types);
+        // Typedef names are legitimately program-wide, so collect those once
+        // over the whole translation unit. But `var_types` (used only by the
+        // scanf-argument check) must NOT be: a same-named variable in a
+        // different function is a different object, and this collector
+        // doesn't even see parameter declarations (only `declaration`-kind
+        // locals), so a stale entry from one function (e.g. a local
+        // `myint_t x`) could leak into an unrelated same-named variable
+        // (e.g. an `int x` parameter) in another function and misfire the
+        // scanf check there (task 418). Scope `var_types` per
+        // `function_definition`, mirroring EXP39-C/STR32-C's per-function
+        // reset pattern.
+        let typedef_names = self.collect_typedef_names(node, source);
 
-        // Second pass: check for violations
-        self.check_violations(node, source, &mut violations, &typedef_names, &var_types);
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+        if functions.is_empty() {
+            let var_types = self.collect_var_types(node, source);
+            self.check_violations(node, source, &mut violations, &typedef_names, &var_types);
+        } else {
+            for func in functions {
+                let var_types = self.collect_var_types(&func, source);
+                self.check_violations(&func, source, &mut violations, &typedef_names, &var_types);
+            }
+        }
         violations
     }
 }
 
 impl Int15C {
-    fn collect_info(
-        &self,
-        node: &Node,
-        source: &str,
-        typedef_names: &mut HashSet<String>,
-        var_types: &mut HashMap<String, String>,
-    ) {
-        for n in query::find_descendants_of_kinds(*node, &["type_definition", "declaration"]) {
-            if n.kind() == "type_definition" {
-                // Collect typedef names
-                for i in 0..n.child_count() {
-                    if let Some(child) = n.child(i) {
-                        if child.kind() == "type_identifier" {
-                            let name = get_node_text(&child, source).to_string();
-                            typedef_names.insert(name);
-                        }
+    fn collect_typedef_names(&self, node: &Node, source: &str) -> HashSet<String> {
+        let mut typedef_names = HashSet::new();
+        for n in query::find_descendants_of_kind(*node, "type_definition") {
+            for i in 0..n.child_count() {
+                if let Some(child) = n.child(i) {
+                    if child.kind() == "type_identifier" {
+                        let name = get_node_text(&child, source).to_string();
+                        typedef_names.insert(name);
                     }
                 }
-            } else {
-                // Collect variable declarations with typedef types
-                if let Some(type_node) = n.child_by_field_name("type") {
-                    let type_text = get_node_text(&type_node, source).to_string();
-                    // Look for declarators
-                    for i in 0..n.child_count() {
-                        if let Some(child) = n.child(i) {
-                            if child.kind() == "identifier" {
-                                let var_name = get_node_text(&child, source).to_string();
+            }
+        }
+        typedef_names
+    }
+
+    fn collect_var_types(&self, node: &Node, source: &str) -> HashMap<String, String> {
+        let mut var_types = HashMap::new();
+        for n in query::find_descendants_of_kind(*node, "declaration") {
+            // Collect variable declarations with typedef types
+            if let Some(type_node) = n.child_by_field_name("type") {
+                let type_text = get_node_text(&type_node, source).to_string();
+                // Look for declarators
+                for i in 0..n.child_count() {
+                    if let Some(child) = n.child(i) {
+                        if child.kind() == "identifier" {
+                            let var_name = get_node_text(&child, source).to_string();
+                            var_types.insert(var_name, type_text.clone());
+                        } else if child.kind() == "init_declarator" {
+                            if let Some(decl) = child.child_by_field_name("declarator") {
+                                let var_name = get_node_text(&decl, source).to_string();
                                 var_types.insert(var_name, type_text.clone());
-                            } else if child.kind() == "init_declarator" {
-                                if let Some(decl) = child.child_by_field_name("declarator") {
-                                    let var_name = get_node_text(&decl, source).to_string();
-                                    var_types.insert(var_name, type_text.clone());
-                                }
                             }
                         }
                     }
                 }
             }
         }
+        var_types
     }
 
     fn check_violations(

@@ -54,25 +54,46 @@ impl CertRule for Int01C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Track size_t/rsize_t parameters and variables
-        let mut size_t_vars: HashSet<String> = HashSet::new();
-        // Track int variables
-        let mut int_vars: HashMap<String, (usize, usize)> = HashMap::new();
+        // Each function gets its own `size_t_vars`/`int_vars` scope: a
+        // same-named variable in a different function is a different
+        // object. Both maps were previously built by a single
+        // whole-translation-unit walk, so a `size_t` parameter in one
+        // function (e.g. `func_a(size_t len)`) could sit in `size_t_vars`
+        // right alongside an unrelated same-named *plain* `int` local in a
+        // different function (e.g. `func_b`'s `int len`), which
+        // `find_int_size_t_comparisons` then reads as "an int compared
+        // with size_t" for an ordinary int-to-int comparison in `func_b`
+        // that never involves `func_a` at all (task 418; confirmed with a
+        // minimal repro). Scope both maps and their two consuming checks
+        // per `function_definition`, mirroring EXP39-C/STR32-C's
+        // per-function reset pattern.
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+        let scopes: Vec<Node> = if functions.is_empty() {
+            vec![*node]
+        } else {
+            functions
+        };
 
-        // Find size_t/rsize_t variables (parameters and locals)
-        self.find_size_t_vars(node, source, &mut size_t_vars);
+        for scope in scopes {
+            let mut size_t_vars: HashSet<String> = HashSet::new();
+            let mut int_vars: HashMap<String, (usize, usize)> = HashMap::new();
 
-        // Find int variables
-        self.find_int_vars(node, source, &mut int_vars);
+            self.find_size_t_vars(&scope, source, &mut size_t_vars);
+            self.find_int_vars(&scope, source, &mut int_vars);
+            self.find_int_size_t_comparisons(
+                &scope,
+                source,
+                &size_t_vars,
+                &int_vars,
+                &mut violations,
+            );
+            self.check_size_variable_usage(&scope, source, &size_t_vars, &mut violations);
+        }
 
-        // Find comparisons between int and size_t
-        self.find_int_size_t_comparisons(node, source, &size_t_vars, &int_vars, &mut violations);
-
-        // Check for function parameters representing sizes that don't use size_t
+        // Parameter-name-based check is self-contained per parameter_list
+        // and doesn't consume either cross-function map, so it can run
+        // once over the whole translation unit as before.
         self.check_size_params(node, source, &mut violations);
-
-        // Check for variables used as sizes (in malloc/alloc calls) that aren't size_t
-        self.check_size_variable_usage(node, source, &size_t_vars, &mut violations);
 
         violations
     }

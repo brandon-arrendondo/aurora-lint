@@ -666,10 +666,24 @@ impl CertRule for Fio47C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // Collect variable types from the entire translation unit first
-        let var_types = self.collect_variable_types(node, source);
-
-        self.check_node(node, source, &mut violations, &var_types);
+        // Each function gets its own `var_types` scope: a same-named
+        // variable in a different function is a different object. Scoping
+        // `collect_variable_types` to the whole translation unit let a
+        // stale entry from one function (e.g. `float x`) leak into an
+        // unrelated same-named variable in another function (e.g. an
+        // `int x` parameter), producing a bogus format-specifier type
+        // mismatch there (task 418). Scope per `function_definition`,
+        // mirroring EXP39-C/STR32-C's per-function reset pattern.
+        let functions = query::find_descendants_of_kind(*node, "function_definition");
+        if functions.is_empty() {
+            let var_types = self.collect_variable_types(node, source);
+            self.check_node(node, source, &mut violations, &var_types);
+        } else {
+            for func in functions {
+                let var_types = self.collect_variable_types(&func, source);
+                self.check_node(&func, source, &mut violations, &var_types);
+            }
+        }
         violations
     }
 }
