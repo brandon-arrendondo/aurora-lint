@@ -505,19 +505,25 @@ A/B pair on the same binary: `sqc-0.4.320-742e92a6` vs `…-cdb`.
 (−54, −0.09%), with scan times unchanged** (e.g. hostap 446.7s → 445.3s).
 curl, libcrc, lua, raylib and sqlite did not move by a single finding.
 
-Everything that moved, by rule, with its `ground_truth` verdict:
+Everything that moved, by rule, with its verdict from the **shared
+`sqc_bench` oracle** (see the provenance note below — an earlier revision of
+this section quoted a local SQLite scratch DB that was 316 sel4 labels behind,
+and got two things wrong as a result):
 
-| project | Δ | rule | labeled |
+| project | Δ | rule | verdict |
 |---|---:|---|---|
 | hostap | −2 | EXP34-C | 2 FP |
-| pureftpd | −39 | DCL31-C | 1 FP, 38 unlabeled |
-| sel4 | −27 / −1 | INT34-C / INT33-C | 3 FP, 25 unlabeled |
-| mosquitto | +1 | API00-C | 1 FP |
-| sel4 | +16 | ARR30-C | 14 unlabeled |
+| pureftpd | −39 | DCL31-C | 1 FP, 38 unlabeled (out of scope — see below) |
+| sel4 | −28 | INT34-C / INT33-C | all 28 FP |
+| mosquitto | +1 | API00-C | **1 TP** |
+| sel4 | +14 | ARR30-C | 14 FP |
 
-Net over the labeled subset: −6 FP, +1 FP. **No TP moved in either
-direction** — so nothing regressed, but the effect is far too small to justify
-running the corpus with the flag by default.
+Net over the labeled subset: **−31 FP, +14 FP, +1 TP** — a net −17 false
+positives and one newly-detected real bug (`mosquitto lib/tls_mosq.c:53`,
+labeled TP by `task-644-full-reaudit`). The flag is therefore a small
+*improvement* in both directions rather than the FP-only wash the first pass
+reported; it is still far too small to justify running the corpus with the flag
+by default.
 
 **Delta-adjudicated 2026-09-01** (`data/precision_audit/sel4/`
 `import_delta_compile_db_task623.csv`, 39 labels, source
@@ -539,11 +545,26 @@ all adjudicated **FP**:
   `assert(core_id < CONFIG_MAX_NUM_NODES)`), plus `ksDomSchedule[index]` whose
   caller range-checks against the array's own size.
 
-With the delta labeled, the scored comparison is (run #211 plain vs #212 cdb):
-precision **18.9% → 18.9%**, recall **95.0% → 95.0%** (10321/10864 both), and
-per rule corpus-wide INT34-C 6 TP/217 FP → 6 TP/190 FP, INT33-C 337 → 336 FP,
-ARR30-C 980 → 994 FP. Net −15 FP out of ~44,000, and **no TP lost**. The flag
-is safe and directionally correct; it is simply not worth a default.
+With the delta labeled, the scored comparison against the shared oracle
+(runs #219 plain vs #220 cdb there) is precision **24.3% → 24.3%**, recall
+**93.7% → 93.7%**, with detected true positives **13,298 → 13,299** and the
+labeled subset 54,702 → 54,686 of 62,035 → 61,981 findings. Per rule
+corpus-wide: INT34-C 6 TP/217 FP → 6 TP/**190** FP (2.7% → 3.1%), INT33-C
+337 → 336 FP, ARR30-C 980 → **994** FP. The flag is safe and directionally
+correct; it is simply not worth a default.
+
+**Provenance, and why the numbers here were corrected once.** The first
+revision of this section quoted precision 18.9% / recall 95.0% and "no TP
+moved". Those came from this checkout's local `data/benchmarks.db`, which on
+the benchmark node is scratch and falls behind the shared `sqc_bench` Postgres
+that every node's runs feed into — at the time it held 609 sel4 labels against
+the oracle's 925, and neither A/B run had been ingested there at all. Scoring
+against the real oracle changes the absolute precision by 5.4 points and flips
+the mosquitto API00-C addition from FP to TP. CLAUDE.md's "Refreshing Published
+Doc Numbers" section warns about exactly this; the delta findings, per-rule
+counts and FP verdicts were unaffected, because those come from the two runs'
+own JSON and from source reading rather than from whichever store holds the
+labels.
 
 Why so small is worth knowing before investing further: 4 of the 9 benchmark
 projects (sqlite, mosquitto, curl, hostap) already hand-feed `-I /usr/include`
