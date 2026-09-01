@@ -3,6 +3,7 @@ use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::macro_expand::FunctionMacro;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
@@ -25,6 +26,12 @@ pub struct Int32C {
     /// Resolved recursively by `overflow_helpers::typedef_chain_is_unsigned`
     /// in `classify_declared_type` (task 657).
     typedef_types: RefCell<HashMap<String, String>>,
+    /// Function-like macro definitions, project-wide (task 676). Lets
+    /// `infer_type` recognize a call-like operand (e.g. seL4's `BIT(n)`) as
+    /// unsigned via `macro_yields_unsigned_constant` rather than falling
+    /// through to "unknown" and flagging a signed-overflow FP on
+    /// arithmetic that's actually unsigned.
+    function_macros: RefCell<HashMap<String, FunctionMacro>>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
@@ -55,6 +62,7 @@ impl Int32C {
             current_macros: RefCell::new(MacroConstantMap::new()),
             struct_field_types: RefCell::new(HashMap::new()),
             typedef_types: RefCell::new(HashMap::new()),
+            function_macros: RefCell::new(HashMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
             function_summaries: RefCell::new(HashMap::new()),
@@ -102,6 +110,7 @@ impl CertRule for Int32C {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
+        *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.global_writers.borrow_mut() = context.global_writers.clone();
     }
@@ -1636,6 +1645,18 @@ impl Int32C {
             return t;
         }
 
+        // Call-like operand invoking a function-like macro (e.g. seL4's
+        // `BIT(n)` -> `(UL_CONST(1) << (n))`): sqc has no preprocessor, so
+        // this looked like an ordinary unresolvable call and fell through
+        // to "unknown", making a signed-looking operand on the other side
+        // of `-`/`+` look risky even though the macro's own definition
+        // makes the result an unsigned constant (task 676).
+        if node.kind() == "call_expression" {
+            if let Some(t) = self.infer_type_from_macro_call(node, source) {
+                return t;
+            }
+        }
+
         // Field expressions (e.g., s->count): try to resolve via struct field type database
         if node.kind() == "field_expression" {
             return self.infer_field_expression_type(node, source, type_map);
@@ -1666,6 +1687,110 @@ impl Int32C {
         // For variables NOT in the type map, default to unknown instead of signed
         // This prevents false positives on variables whose type we can't determine
         "unknown".to_string()
+    }
+
+    /// If `node` (a `call_expression`) invokes a known function-like macro
+    /// that yields an unsigned constant, per
+    /// [`Self::macro_yields_unsigned_constant`], classify it `"unsigned"`.
+    /// Otherwise `None` (fall through to the rest of `infer_type`'s chain).
+    fn infer_type_from_macro_call(&self, node: &Node, source: &str) -> Option<String> {
+        let func = node.child_by_field_name("function")?;
+        if func.kind() != "identifier" {
+            return None;
+        }
+        let name = get_node_text(&func, source);
+        let macros = self.function_macros.borrow();
+        if Self::is_unsigned_constant_helper_name(name)
+            || Self::macro_yields_unsigned_constant(&macros, name, 4)
+        {
+            return Some("unsigned".to_string());
+        }
+        None
+    }
+
+    /// Names of well-known "make this an unsigned constant" helper macros —
+    /// the standard idiom (also seen as `_UL`/`_AC(x, UL)` in the Linux
+    /// kernel; seL4's own `util.h` names them `UL_CONST`/`ULL_CONST`) for
+    /// defining an integer literal with a specific unsigned suffix via
+    /// token-pasting (`PASTE(x, ul)` -> `1ul`) so the same header also
+    /// parses under a raw assembler (`#define UL_CONST(x) x`, no suffix,
+    /// under `#ifdef __ASSEMBLER__`). sqc has no preprocessor and never
+    /// expands `#`/`##` (`macro_expand`'s deliberate scope cut — real cpp
+    /// semantics needed), and its "first `#define` wins" tie-break across
+    /// `#ifdef` branches happens to pick the assembler branch here (it's
+    /// textually first), which would otherwise misclassify the constant as
+    /// plain (signed) `int`. Recognized by name instead: whichever branch
+    /// sqc's macro table resolved to, invoking a macro with one of these
+    /// names is-by-convention always meant to produce an unsigned value in
+    /// every real (non-assembler) C translation unit -- the only kind sqc
+    /// ever scans.
+    fn is_unsigned_constant_helper_name(name: &str) -> bool {
+        matches!(
+            name,
+            "UL_CONST" | "ULL_CONST" | "U_CONST" | "UINT_CONST" | "U64_CONST"
+        )
+    }
+
+    /// True if `name`'s own definition in `macros` directly, or
+    /// transitively through nested macro calls it invokes (bounded by
+    /// `depth`), invokes a macro matching
+    /// [`Self::is_unsigned_constant_helper_name`]. Pure text scan over
+    /// already-collected macro bodies (`FunctionMacro.body`) -- doesn't
+    /// need full parameter substitution/rescanning since only the STATIC
+    /// structure of which macro calls which matters here, not any
+    /// particular call site's actual argument values (e.g. seL4's `BIT(n)`
+    /// = `(UL_CONST(1) << (n))` is unsigned for every `n`, and `MASK(n)` =
+    /// `(BIT(n) - UL_CONST(1))` transitively so via `BIT`).
+    fn macro_yields_unsigned_constant(
+        macros: &HashMap<String, FunctionMacro>,
+        name: &str,
+        depth: u32,
+    ) -> bool {
+        if depth == 0 {
+            return false;
+        }
+        let Some(m) = macros.get(name) else {
+            return false;
+        };
+        for tok in Self::call_like_identifier_tokens(&m.body) {
+            if Self::is_unsigned_constant_helper_name(&tok) {
+                return true;
+            }
+            if tok != name
+                && macros.contains_key(&tok)
+                && Self::macro_yields_unsigned_constant(macros, &tok, depth - 1)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Every identifier token in `text` that is immediately followed
+    /// (ignoring whitespace) by `(` -- i.e. looks like a macro/function
+    /// call site within a macro's replacement-list text.
+    fn call_like_identifier_tokens(text: &str) -> Vec<String> {
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i].is_ascii_alphabetic() || chars[i] == '_' {
+                let start = i;
+                while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                    i += 1;
+                }
+                let mut j = i;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                if j < chars.len() && chars[j] == '(' {
+                    out.push(chars[start..i].iter().collect());
+                }
+            } else {
+                i += 1;
+            }
+        }
+        out
     }
 
     /// Classify a resolved declared-type string (from the type map or a
