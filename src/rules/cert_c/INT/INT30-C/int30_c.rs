@@ -8,6 +8,7 @@ use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
@@ -278,6 +279,16 @@ impl Int30C {
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
     ) {
+        // INT30-C concerns unsigned integer WRAP (well-defined, but usually
+        // unintended). C's usual arithmetic conversions promote the whole
+        // expression to float/double the moment either operand is
+        // float-typed, at which point there is no unsigned wrap at all — so
+        // skip float-typed operations entirely. Mirrors INT32-C's
+        // operands_are_floating gate (task 643).
+        if self.operands_are_floating(node, source, type_map) {
+            return;
+        }
+
         if let Some(operator) = self.get_operator(node, source) {
             match operator.as_str() {
                 "+" => self.check_addition(node, source, violations, type_map),
@@ -296,6 +307,13 @@ impl Int30C {
         violations: &mut Vec<RuleViolation>,
         type_map: &HashMap<String, String>,
     ) {
+        // See check_binary_operation: skip compound assignments whose
+        // operand types make this floating-point arithmetic, not unsigned
+        // wrap.
+        if self.operands_are_floating(node, source, type_map) {
+            return;
+        }
+
         if let Some(operator) = self.get_assignment_operator(node, source) {
             match operator.as_str() {
                 "+=" => self.check_compound_addition(node, source, violations, type_map),
@@ -305,6 +323,38 @@ impl Int30C {
                 _ => {}
             }
         }
+    }
+
+    /// Best-effort: does this expression have floating-point type? Delegates
+    /// to the shared [`float_typing`] engine, supplying INT30-C's struct
+    /// field map.
+    fn expr_is_float(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> bool {
+        let sft = self.struct_field_types.borrow();
+        float_typing::expr_is_float(node, source, type_map, &sft)
+    }
+
+    /// True if `node`'s left or right operand is float-typed, making this a
+    /// floating-point operation rather than the unsigned-wrap arithmetic
+    /// INT30-C covers. Shared by [`check_binary_operation`] and
+    /// [`check_assignment_operation`], both of which have `left`/`right`
+    /// fields.
+    fn operands_are_floating(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> bool {
+        if let Some(l) = node.child_by_field_name("left") {
+            if self.expr_is_float(&l, source, type_map) {
+                return true;
+            }
+        }
+        if let Some(r) = node.child_by_field_name("right") {
+            if self.expr_is_float(&r, source, type_map) {
+                return true;
+            }
+        }
+        false
     }
 
     fn check_addition(
