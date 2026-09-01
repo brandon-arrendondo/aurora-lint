@@ -23,11 +23,14 @@
 #     CLAUDE.md's Code Navigation section) points at the `clew-mcp` command;
 #     without the package installed that command doesn't resolve and the
 #     clew MCP server silently fails to start.
-#   - cargo-sweep + a nightly cron job bounding cargo's target/ growth --
+#   - cargo-sweep + an hourly cron job bounding cargo's target/ growth --
 #     found missing entirely on one of two otherwise-identically-provisioned
 #     dev nodes (2026-08-31), which is exactly the kind of silent drift this
-#     playbook exists to prevent. Small-disk nodes need this; a node with
-#     plenty of headroom can skip it (`-e install_disk_guard=false`).
+#     playbook exists to prevent. Hourly (not nightly) per task 661: cargo
+#     never collects old incremental sessions on its own, so a long gap
+#     between passes lets target/ accrete well past MAX_TARGET_GB between
+#     checks. Small-disk nodes need this; a node with plenty of headroom
+#     can skip it (`-e install_disk_guard=false`).
 #
 # NOT covered here, deliberately:
 #   - ansible itself. Bootstrapping the tool this playbook runs under from
@@ -200,11 +203,10 @@
         mode: "0755"
       when: install_disk_guard | bool
 
-    - name: Schedule nightly cargo-target-gc.sh via cron
+    - name: Schedule hourly cargo-target-gc.sh via cron
       cron:
         name: "cargo-target-gc"
-        minute: "30"
-        hour: "3"
+        minute: "17"
         job: >-
           PATH=$HOME/.cargo/bin:/usr/bin:/bin $HOME/bin/cargo-target-gc.sh
           >> $HOME/.local/state/cargo-target-gc.log 2>&1
@@ -219,7 +221,7 @@
           - "dev venv: {{ dev_venv }}"
           - "pre-commit hook: {{ precommit_install.stdout | default('installed') }}"
           - "clew-mcp: {{ 'OK' if clew_mcp_check.rc == 0 else 'NOT ON PATH -- check the dev venv install' }}"
-          - "disk guard cron: {{ 'installed (nightly 03:30)' if install_disk_guard | bool else 'skipped (-e install_disk_guard=false)' }}"
+          - "disk guard cron: {{ 'installed (hourly :17)' if install_disk_guard | bool else 'skipped (-e install_disk_guard=false)' }}"
           - ""
           - "Activate the dev venv for docs builds and invoke tasks:"
           - "  source {{ dev_venv }}/bin/activate"
