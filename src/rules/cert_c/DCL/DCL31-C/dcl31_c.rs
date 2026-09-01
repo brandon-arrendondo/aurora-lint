@@ -74,6 +74,25 @@ impl Dcl31C {
             ) {
                 has_explicit_type = true;
             }
+            // `macro_type_specifier` (tree-sitter-c's node for a leading
+            // `IDENTIFIER(args)` in a declaration's type position) only ever
+            // appears for actual call-shaped text -- it's never how a
+            // genuinely missing type parses (that's a bare `identifier`/
+            // `type_identifier`, no parens). In practice it shows up when a
+            // trailing or leading GCC-style attribute macro invocation
+            // (`ALIGN(...)`, `VISIBLE`, `SKIM_BSS`) confuses the grammar
+            // into splitting off a bogus extra `declaration` for the
+            // attribute tail (task 650, seL4 e.g. `pml4e_t arr[N]
+            // ALIGN(BIT(X)) VISIBLE;` -> a real `pml4e_t arr[N]` declaration
+            // plus a second, spurious `ALIGN(BIT(X)) VISIBLE;` "declaration"
+            // with no recognizable type). Since sqc can't tell that shape
+            // apart from a real macro-based declaration without expanding
+            // the macro, treat its presence as satisfying "has a type" --
+            // conservative in both directions, and this rule's low-severity,
+            // implicit-int-shaped intent was never about macro internals.
+            if kind == "macro_type_specifier" {
+                has_explicit_type = true;
+            }
             // type_identifier could be a typedef or could be the variable name
             // if tree-sitter is confused about implicit int
             if kind == "type_identifier" {
