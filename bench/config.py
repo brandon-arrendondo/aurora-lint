@@ -24,8 +24,16 @@ def _load_dotenv(path: Path) -> None:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
+        value = value.strip()
+        # Only strip a quote pair that wraps the WHOLE value -- a value like
+        # a Postgres DSN can legitimately contain a single-quoted substring
+        # (password='has a space') that doesn't wrap the whole line;
+        # unconditionally stripping one trailing quote character truncated
+        # that password by one char and broke psycopg's conninfo parser.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
         if key and key not in os.environ:
-            os.environ[key] = value.strip().strip('"').strip("'")
+            os.environ[key] = value
 
 
 _load_dotenv(PROJECT_DIR / ".env")
