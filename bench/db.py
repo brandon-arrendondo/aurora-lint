@@ -29,6 +29,12 @@ def _wall_seconds(started_at: str, finished_at: str) -> float | None:
     return round((end - start).total_seconds(), 1)
 
 
+# Configuration-variant token, kept in step with bench/config.py's
+# COMPILE_DB_RUN_SUFFIX (the "-cdb" a compile-database run appends to its
+# run_id). Duplicated as a literal rather than imported so this module stays
+# importable on its own.
+_COMPILE_DB_VARIANT = "cdb"
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 _SCHEMA = """
@@ -112,14 +118,31 @@ CREATE TABLE IF NOT EXISTS rule_cwe_breakdown (
 
 CREATE TABLE IF NOT EXISTS realworld_runs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- The canonical run identifier ("sqc-0.4.320-742e92a6-cdb"). Before this
+    -- column existed it lived only inside the free-text `notes`, so addressing
+    -- a run by its id meant substring-matching prose -- which could not
+    -- distinguish a run from one whose id merely extends it (see
+    -- resolve_realworld_run). NULL for six pre-ingest historical rows whose
+    -- notes never carried an id.
+    run_id          TEXT,
     sqc_version     TEXT NOT NULL,
+    -- The real commit SHA, and nothing else. A configuration variant belongs
+    -- in `variant`, not glued onto the end of this: an exact-SHA lookup that
+    -- silently skips half an A/B pair is worse than no lookup.
     commit_sha      TEXT,
+    -- Configuration this run used, NULL for a default run. "cdb" = run with
+    -- --compile-commands (bench/config.py COMPILE_DB_RUN_SUFFIX).
+    variant         TEXT,
     scanned_at      TEXT,
     hostname        TEXT,
     cpu_model       TEXT,
     cpu_cores       INTEGER,
     notes           TEXT
 );
+-- The identity indexes are NOT declared here: _SCHEMA runs before
+-- _migrate_realworld_run_identity, so on a pre-migration database they would
+-- reference a column that does not exist yet. That function creates them for
+-- fresh and migrated databases alike.
 
 CREATE TABLE IF NOT EXISTS realworld_results (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -318,6 +341,100 @@ class BenchDB:
             conn.commit()
         finally:
             conn.close()
+        self._migrate_realworld_run_identity()
+
+    def _migrate_realworld_run_identity(self):
+        """Give `realworld_runs` a first-class identity (run_id + variant).
+
+        Rebuilds the table rather than ALTER-ing it, because the old schema
+        carries a table-level ``UNIQUE(sqc_version, commit_sha)`` that SQLite
+        cannot drop in place -- and it has to go. That constraint was only
+        satisfiable for an A/B pair because the variant suffix was being stored
+        *inside* ``commit_sha`` ("742e92a6-cdb"), an accident of
+        ``ingest_realworld_run`` splitting the results-directory name with
+        maxsplit 2. The cost was that ``WHERE commit_sha = '742e92a6'`` matched
+        only the plain half of a pair, silently.
+
+        Migration is a no-op once `run_id` exists, so this is safe to call on
+        every connect. Existing rows are backfilled from what they already
+        carry: `run_id` out of the "ingested from <id>" notes (NULL for the six
+        historical rows predating that convention), `variant` and a cleaned
+        `commit_sha` out of the polluted SHA.
+        """
+        conn = self._connect()
+        try:
+            if "run_id" in self._table_columns(conn, "realworld_runs"):
+                self._create_realworld_identity_indexes(conn)
+                conn.commit()
+                return
+            # PRAGMA foreign_keys is a no-op inside a transaction, and the
+            # child table realworld_results REFERENCES realworld_runs(id), so
+            # it must be disabled around the drop/rename. Row ids are
+            # preserved, so every child row stays pointed at its own parent.
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("BEGIN")
+            conn.execute("""
+                CREATE TABLE realworld_runs_new (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id          TEXT,
+                    sqc_version     TEXT NOT NULL,
+                    commit_sha      TEXT,
+                    variant         TEXT,
+                    scanned_at      TEXT,
+                    hostname        TEXT,
+                    cpu_model       TEXT,
+                    cpu_cores       INTEGER,
+                    notes           TEXT
+                )
+            """)
+            conn.execute("""
+                INSERT INTO realworld_runs_new
+                    (id, run_id, sqc_version, commit_sha, variant,
+                     scanned_at, hostname, cpu_model, cpu_cores, notes)
+                SELECT
+                    id,
+                    CASE WHEN notes LIKE 'ingested from %'
+                         THEN substr(notes, length('ingested from ') + 1)
+                    END,
+                    sqc_version,
+                    CASE WHEN commit_sha LIKE '%-' || ?
+                         THEN substr(commit_sha, 1,
+                                     length(commit_sha) - length(?) - 1)
+                         ELSE commit_sha END,
+                    CASE WHEN commit_sha LIKE '%-' || ? THEN ? END,
+                    scanned_at, hostname, cpu_model, cpu_cores, notes
+                FROM realworld_runs
+            """, (_COMPILE_DB_VARIANT,) * 4)
+            conn.execute("DROP TABLE realworld_runs")
+            conn.execute("ALTER TABLE realworld_runs_new RENAME TO realworld_runs")
+            self._create_realworld_identity_indexes(conn)
+            violations = list(conn.execute("PRAGMA foreign_key_check"))
+            if violations:
+                conn.execute("ROLLBACK")
+                raise RuntimeError(
+                    "realworld_runs identity migration would orphan "
+                    f"{len(violations)} child row(s); left unchanged")
+            conn.execute("COMMIT")
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.close()
+
+    @staticmethod
+    def _create_realworld_identity_indexes(conn):
+        """One row per run identifier, and one per (version, commit, variant).
+
+        The second replaces the old table-level ``UNIQUE(sqc_version,
+        commit_sha)``: with a clean SHA an A/B pair collides on it, and
+        COALESCE keeps the original protection for default runs while letting
+        a variant run sit alongside its sibling. SQLite treats NULLs in a
+        unique index as distinct, which is what the historical rows with no
+        `run_id` need.
+        """
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_rw_runs_run_id "
+                     "ON realworld_runs(run_id)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_rw_runs_identity "
+                     "ON realworld_runs(sqc_version, commit_sha, "
+                     "COALESCE(variant, ''))")
 
     # ── Run CRUD ──────────────────────────────────────────────────────────
 
@@ -976,14 +1093,25 @@ class BenchDB:
     def create_realworld_run(self, sqc_version: str, commit_sha: str = None,
                              scanned_at: str = None, hostname: str = None,
                              cpu_model: str = None, cpu_cores: int = None,
-                             notes: str = None) -> int:
+                             notes: str = None, run_id: str = None,
+                             variant: str = None) -> int:
+        """Insert a real-world run row and return its numeric id.
+
+        `run_id` is the canonical identifier ("sqc-0.4.320-742e92a6-cdb") and
+        `variant` the configuration it names ("cdb", or None for a default
+        run). Pass the true SHA in `commit_sha` -- never the SHA with a variant
+        suffix glued on, which is what this table used to store and what made
+        an exact-SHA lookup skip half of an A/B pair.
+        """
         with self._cursor() as cur:
             cur.execute("""
                 INSERT INTO realworld_runs
-                    (sqc_version, commit_sha, scanned_at, hostname, cpu_model, cpu_cores, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (run_id, sqc_version, commit_sha, variant, scanned_at,
+                     hostname, cpu_model, cpu_cores, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
-            """, (sqc_version, commit_sha, scanned_at, hostname, cpu_model, cpu_cores, notes))
+            """, (run_id, sqc_version, commit_sha, variant, scanned_at,
+                  hostname, cpu_model, cpu_cores, notes))
             return cur.fetchone()["id"]
 
     def insert_realworld_result(self, run_id: int, project: str, tool: str,
@@ -1069,7 +1197,11 @@ class BenchDB:
             machine: optional dict with hostname, cpu_model, cpu_cores
             durations: optional dict mapping codebase name to elapsed seconds
             metrics: optional dict mapping codebase name to {c_files, loc}
-            run_id: optional existing realworld_runs id to merge into instead
+            run_id: optional existing realworld_runs *numeric row id* to merge
+                into instead of creating a row. Note this is not the same
+                thing as the `run_id` TEXT column, which holds the canonical
+                identifier ("sqc-0.4.320-742e92a6-cdb") and is set below from
+                `version_dir`.
                 of creating a new run row. Lets a later (more complete) sweep
                 fill in projects a partial earlier ingest missed.
             only_projects: optional set of project names to restrict ingest to
@@ -1087,10 +1219,16 @@ class BenchDB:
         import os
         from datetime import datetime, timezone
 
-        # Parse version/commit from dir name: sqc-{version}-{sha}
+        # Parse version/commit/variant from dir name:
+        # sqc-{version}-{sha}[-{variant}]. A SHA is hex, so the first "-" in
+        # the third field can only start a variant suffix -- splitting it off
+        # here is what keeps commit_sha a real SHA.
         parts = version_dir.split("-", 2)
         version = parts[1] if len(parts) > 1 else version_dir
         commit = parts[2] if len(parts) > 2 else None
+        variant = None
+        if commit and "-" in commit:
+            commit, variant = commit.split("-", 1)
 
         machine = machine or {}
         durations = durations or {}
@@ -1104,6 +1242,11 @@ class BenchDB:
                 cpu_model=machine.get("cpu_model"),
                 cpu_cores=machine.get("cpu_cores"),
                 notes=f"ingested from {version_dir}",
+                # create_realworld_run's `run_id` is the TEXT identifier
+                # column; the numeric row id it returns is what this local
+                # `run_id` becomes.
+                run_id=version_dir,
+                variant=variant,
             )
 
         results_dir = Path(results_path)
@@ -1369,21 +1512,34 @@ class BenchDB:
                 row = cur.fetchone()
                 return row["id"] if row else None
 
+            # Exact run identifier (e.g. "sqc-0.4.320-742e92a6-cdb"). First
+            # of the string matches, so an id that is a strict prefix of
+            # another ("...-742e92a6" vs "...-742e92a6-cdb") still addresses
+            # its own run rather than the longer one.
+            cur.execute(
+                "SELECT id FROM realworld_runs WHERE run_id = ?", (ident,))
+            row = cur.fetchone()
+            if row:
+                return row["id"]
+
             # Version match (e.g. "0.3.28")
             cur.execute("""
                 SELECT id FROM realworld_runs
                 WHERE sqc_version = ?
-                ORDER BY id DESC LIMIT 1
+                ORDER BY variant IS NOT NULL, id DESC LIMIT 1
             """, (ident,))
             row = cur.fetchone()
             if row:
                 return row["id"]
 
-            # Commit SHA match
+            # Commit SHA match. Now that a variant run stores the same SHA
+            # as the default run it was paired with, this is ambiguous by
+            # construction -- resolve it to the DEFAULT run, since a variant
+            # is always reachable by its own explicit run_id.
             cur.execute("""
                 SELECT id FROM realworld_runs
                 WHERE commit_sha = ?
-                ORDER BY id DESC LIMIT 1
+                ORDER BY variant IS NOT NULL, id DESC LIMIT 1
             """, (ident,))
             row = cur.fetchone()
             if row:
