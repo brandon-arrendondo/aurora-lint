@@ -6,6 +6,7 @@ use crate::parser::CParser;
 use crate::progress::ProgressReporter;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::declarator_utils;
 
 use anyhow::Result;
 use lang_parsing_substrate::query;
@@ -42,6 +43,15 @@ struct FilePrescanResult {
     callsite_field_buf_args: HashMap<String, Vec<Vec<HashMap<String, usize>>>>,
     callsite_taint_args: HashMap<String, Vec<Vec<bool>>>,
     source_path: Option<PathBuf>,
+    /// File-scope variable names declared here with a plain (non-pointer,
+    /// non-array, non-function) declarator -- candidates for
+    /// `ProjectContext::value_only_globals`. Merged across all files, then
+    /// reconciled against `pointer_named_globals` (see that field).
+    value_only_global_candidates: HashSet<String>,
+    /// File-scope variable names declared here with a pointer or array
+    /// declarator, anywhere in the project -- disqualifies the name from
+    /// `value_only_global_candidates` project-wide.
+    pointer_named_globals: HashSet<String>,
 }
 
 impl FilePrescanResult {
@@ -72,6 +82,8 @@ impl FilePrescanResult {
             callsite_field_buf_args: HashMap::new(),
             callsite_taint_args: HashMap::new(),
             source_path: None,
+            value_only_global_candidates: HashSet::new(),
+            pointer_named_globals: HashSet::new(),
         }
     }
 }
@@ -153,6 +165,17 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
 
         collect_global_constants(&root, &source, &mut result.global_constants);
         collect_constant_return_functions(&root, &source, &mut result.global_constants);
+
+        // Runs for both headers and .c files: an extern forward-declaration
+        // (typically in a header) and the real definition (typically in a
+        // .c file) both need to be seen to resolve a global's declared
+        // shape (task 652).
+        collect_value_only_global_candidates(
+            &root,
+            &source,
+            &mut result.value_only_global_candidates,
+            &mut result.pointer_named_globals,
+        );
 
         if !is_header {
             collect_global_var_null_states(&root, &source, &mut result.global_var_null_states);
@@ -257,6 +280,8 @@ pub fn prescan_directories(
     let mut callsite_taint_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
     let mut source_files: Vec<PathBuf> = Vec::new();
     let mut file_functions: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    let mut value_only_global_candidates: HashSet<String> = HashSet::new();
+    let mut pointer_named_globals: HashSet<String> = HashSet::new();
 
     for r in file_results {
         known_functions.extend(r.known_functions);
@@ -377,7 +402,19 @@ pub fn prescan_directories(
         if let Some(path) = r.source_path {
             source_files.push(path);
         }
+
+        value_only_global_candidates.extend(r.value_only_global_candidates);
+        pointer_named_globals.extend(r.pointer_named_globals);
     }
+
+    // A name only qualifies project-wide if it was never seen with a
+    // pointer/array declarator anywhere -- a plain declaration in one file
+    // and a pointer one in another would mean two unrelated things sharing
+    // a name (e.g. a `static` local elsewhere), not the same global.
+    let value_only_globals: HashSet<String> = value_only_global_candidates
+        .difference(&pointer_named_globals)
+        .cloned()
+        .collect();
 
     // Phase 4: post-processing passes (require fully-merged data, stay sequential)
 
@@ -506,6 +543,7 @@ pub fn prescan_directories(
         // actually walks `#include` directives against the `-I` search path.
         unresolved_project_headers: HashSet::new(),
         concurrency_reachable,
+        value_only_globals,
     })
 }
 
@@ -680,6 +718,19 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
     let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
     collect_global_writers(root, source, &file_statics, &mut global_writers);
 
+    let mut value_only_global_candidates: HashSet<String> = HashSet::new();
+    let mut pointer_named_globals: HashSet<String> = HashSet::new();
+    collect_value_only_global_candidates(
+        root,
+        source,
+        &mut value_only_global_candidates,
+        &mut pointer_named_globals,
+    );
+    let value_only_globals: HashSet<String> = value_only_global_candidates
+        .difference(&pointer_named_globals)
+        .cloned()
+        .collect();
+
     // Single-file counterpart of the project-wide dispatch-table-callback
     // computation in `prescan_project` (task 594/628): lets a rule test
     // (`// sqc-test: prescan`) exercise the same exemption without needing
@@ -707,6 +758,7 @@ pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
         global_writers,
         call_graph,
         dispatch_table_callbacks,
+        value_only_globals,
         ..ProjectContext::default()
     }
 }
@@ -3696,14 +3748,140 @@ fn collect_global_var_null_states(
 }
 
 /// Find file-scope non-static, non-extern pointer declarations.
-fn collect_prescan_pointer_globals(
+/// Collect file-scope variable declarations (translation-unit-level, `extern`
+/// included) into `candidates` (plain, non-pointer/non-array declarator) or
+/// `pointer_named` (pointer or array declarator) by name. Runs on both `.c`
+/// and `.h` files -- an `extern TYPE name;` forward declaration commonly
+/// lives in a header while the real `TYPE name;` definition lives in a `.c`
+/// file, and either occurrence alone establishes the declared shape. Feeds
+/// `ProjectContext::value_only_globals` after cross-file reconciliation in
+/// `prescan_directories` (task 652).
+///
+/// A `typedef`, `struct`/`union`/`enum` tag declaration, or function
+/// prototype has no matching declarator kind here and is silently skipped --
+/// only real variable declarators (`identifier`, `pointer_declarator`,
+/// `array_declarator`, or the declarator field of an `init_declarator`) are
+/// considered.
+fn collect_value_only_global_candidates(
     node: &Node,
+    source: &str,
+    candidates: &mut HashSet<String>,
+    pointer_named: &mut HashSet<String>,
+) {
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        match child.kind() {
+            "declaration" => {
+                let mut cursor = child.walk();
+                for gc in child.children(&mut cursor) {
+                    let declarator = match gc.kind() {
+                        "init_declarator" => gc.child_by_field_name("declarator"),
+                        "pointer_declarator" | "identifier" | "array_declarator" => Some(gc),
+                        _ => None,
+                    };
+                    let Some(d) = declarator else { continue };
+                    let name = ast_utils::get_identifier_from_declarator(&d, source);
+                    if name.is_empty() {
+                        continue;
+                    }
+                    if declarator_utils::is_pointer_declarator(&d)
+                        || declarator_utils::is_array_declarator(&d)
+                    {
+                        pointer_named.insert(name);
+                    } else {
+                        candidates.insert(name);
+                    }
+                }
+            }
+            k if k.starts_with("preproc_") => {
+                collect_value_only_global_candidates(&child, source, candidates, pointer_named);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `has_extern`/`has_static`/`has_pointer` for a `declaration` node's direct
+/// children, as used by [`collect_prescan_pointer_globals`] to decide
+/// whether it names a candidate file-scope pointer definition (skip
+/// `extern` — defined elsewhere — and `static` — file-local).
+fn declaration_storage_flags(decl: &Node, source: &str) -> (bool, bool, bool) {
+    let mut has_extern = false;
+    let mut has_static = false;
+    let mut has_pointer = false;
+    for j in 0..decl.child_count() {
+        let Some(tc) = decl.child(j) else { continue };
+        if tc.kind() == "storage_class_specifier" {
+            let text = tc.utf8_text(source.as_bytes()).unwrap_or("");
+            if text == "extern" {
+                has_extern = true;
+            }
+            if text == "static" {
+                has_static = true;
+            }
+        }
+        if tc.kind() == "pointer_declarator" || tc.kind() == "init_declarator" {
+            has_pointer = true;
+        }
+    }
+    (has_extern, has_static, has_pointer)
+}
+
+/// Record one `init_declarator`/`pointer_declarator` child of a
+/// [`collect_prescan_pointer_globals`]-candidate `declaration` into
+/// `global_vars`/`states`, if it's actually a pointer declarator.
+fn record_pointer_global_declarator(
+    decl: &Node,
     source: &str,
     global_vars: &mut HashSet<String>,
     states: &mut HashMap<String, NullState>,
 ) {
     use crate::analyze::null_state;
 
+    match decl.kind() {
+        "init_declarator" => {
+            if !has_pointer_in_declarator(decl) {
+                return;
+            }
+            let name = extract_declarator_name(decl, source);
+            if name.is_empty() {
+                return;
+            }
+            global_vars.insert(name.clone());
+            let Some(value) = decl.child_by_field_name("value") else {
+                return;
+            };
+            let vtext = value
+                .utf8_text(source.as_bytes())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let state = if null_state::is_null_value(&vtext) {
+                NullState::DefinitelyNull
+            } else {
+                NullState::NotNull
+            };
+            let existing = states.get(&name).copied().unwrap_or(NullState::Unknown);
+            states.insert(name, existing.join(state));
+        }
+        "pointer_declarator" => {
+            // Bare pointer declarator without init — no initializer, leave
+            // its NullState as Unknown.
+            let name = extract_declarator_name(decl, source);
+            if !name.is_empty() {
+                global_vars.insert(name);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_prescan_pointer_globals(
+    node: &Node,
+    source: &str,
+    global_vars: &mut HashSet<String>,
+    states: &mut HashMap<String, NullState>,
+) {
     for i in 0..node.child_count() {
         let child = match node.child(i) {
             Some(c) => c,
@@ -3711,66 +3889,14 @@ fn collect_prescan_pointer_globals(
         };
         match child.kind() {
             "declaration" => {
-                // Collect type qualifiers and storage class
-                let mut has_extern = false;
-                let mut has_static = false;
-                let mut has_pointer = false;
-                for j in 0..child.child_count() {
-                    if let Some(tc) = child.child(j) {
-                        if tc.kind() == "storage_class_specifier" {
-                            let text = tc.utf8_text(source.as_bytes()).unwrap_or("");
-                            if text == "extern" {
-                                has_extern = true;
-                            }
-                            if text == "static" {
-                                has_static = true;
-                            }
-                        }
-                        if tc.kind() == "pointer_declarator" || tc.kind() == "init_declarator" {
-                            has_pointer = true;
-                        }
-                    }
-                }
-                // Skip extern (defined elsewhere) and static (file-local)
+                let (has_extern, has_static, has_pointer) =
+                    declaration_storage_flags(&child, source);
                 if has_extern || has_static || !has_pointer {
                     continue;
                 }
-                // Extract pointer declarators with optional initializer
                 for j in 0..child.child_count() {
                     if let Some(decl) = child.child(j) {
-                        if decl.kind() == "init_declarator" {
-                            // Check that it's a pointer type
-                            if !has_pointer_in_declarator(&decl) {
-                                continue;
-                            }
-                            let name = extract_declarator_name(&decl, source);
-                            if name.is_empty() {
-                                continue;
-                            }
-                            global_vars.insert(name.clone());
-                            if let Some(value) = decl.child_by_field_name("value") {
-                                let vtext = value
-                                    .utf8_text(source.as_bytes())
-                                    .unwrap_or("")
-                                    .trim()
-                                    .to_string();
-                                let state = if null_state::is_null_value(&vtext) {
-                                    NullState::DefinitelyNull
-                                } else {
-                                    NullState::NotNull
-                                };
-                                let existing =
-                                    states.get(&name).copied().unwrap_or(NullState::Unknown);
-                                states.insert(name, existing.join(state));
-                            }
-                        } else if decl.kind() == "pointer_declarator" {
-                            // Bare pointer declarator without init
-                            let name = extract_declarator_name(&decl, source);
-                            if !name.is_empty() {
-                                global_vars.insert(name);
-                                // No initializer — leave as Unknown
-                            }
-                        }
+                        record_pointer_global_declarator(&decl, source, global_vars, states);
                     }
                 }
             }

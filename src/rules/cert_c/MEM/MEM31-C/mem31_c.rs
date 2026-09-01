@@ -12,12 +12,14 @@ use tree_sitter::Node;
 
 pub struct Mem31C {
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    value_only_globals: RefCell<HashSet<String>>,
 }
 
 impl Mem31C {
     pub fn new() -> Self {
         Self {
             function_summaries: RefCell::new(HashMap::new()),
+            value_only_globals: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -45,15 +47,17 @@ impl CertRule for Mem31C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.value_only_globals.borrow_mut() = context.value_only_globals.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         let summaries = self.function_summaries.borrow();
+        let value_only_globals = self.value_only_globals.borrow();
 
         // Analyze each function independently for memory leaks
         for func in query::find_descendants_of_kind(*node, "function_definition") {
-            let mut analyzer = MemoryLeakAnalyzer::new(&summaries);
+            let mut analyzer = MemoryLeakAnalyzer::new(&summaries, &value_only_globals);
             analyzer.analyze_function(&func, source, &mut violations);
         }
 
@@ -113,6 +117,13 @@ struct MemoryLeakAnalyzer<'a> {
     // allocation stored into one of them is not an allocation at all
     // (task 580).
     value_only_locals: HashSet<String>,
+    // Project-wide value-only globals (`ProjectContext::value_only_globals`,
+    // task 652): the cross-file counterpart of `value_only_locals` for a
+    // name-heuristic allocation stored straight into a genuine global/extern
+    // variable with no local declaration in this function at all (e.g.
+    // seL4's `current_lookup_fault = lookup_fault_new(...)`, assigned from
+    // several translation units, declared only via `extern` in a header).
+    value_only_globals: &'a HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -203,7 +214,10 @@ fn push_children<'a>(stack: &mut Vec<Frame<'a>>, node: &Node<'a>) {
 }
 
 impl<'a> MemoryLeakAnalyzer<'a> {
-    fn new(function_summaries: &'a HashMap<String, FunctionSummary>) -> Self {
+    fn new(
+        function_summaries: &'a HashMap<String, FunctionSummary>,
+        value_only_globals: &'a HashSet<String>,
+    ) -> Self {
         Self {
             allocated_memory: HashMap::new(),
             freed_memory: HashMap::new(),
@@ -222,6 +236,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             deref_allocated_params: HashSet::new(),
             static_variables: HashSet::new(),
             value_only_locals: HashSet::new(),
+            value_only_globals,
         }
     }
 
@@ -478,7 +493,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         self.track_allocation_guarded(var_name, guard_name, info)
     }
 
-    /// Like `track_allocation`, but checks `value_only_locals` against
+    /// Like `track_allocation`, but checks `value_only_locals` (and its
+    /// project-wide counterpart `value_only_globals`, task 652) against
     /// `guard_name` rather than the tracked `var_name` key itself. Needed
     /// for a struct-field/array-element target (`fc_ret.remainder = ...`),
     /// where the tracked key is the whole field expression's text but the
@@ -493,7 +509,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         guard_name: String,
         info: AllocInfo,
     ) -> bool {
-        if self.value_only_locals.contains(&guard_name)
+        if (self.value_only_locals.contains(&guard_name)
+            || self.value_only_globals.contains(&guard_name))
             && self.is_name_heuristic_allocator(&info.alloc_type)
         {
             return false;
