@@ -120,16 +120,63 @@ structural problem that has nothing to do with rule quality:
    already isolated in real-world code, not a separate Juliet-specific
    failure mode.
 
-3. **Open, unresolved by this pass:** whether Juliet's CWE-362/364/366/367
+3. **Resolved 2026-09-01 (task 606):** whether Juliet's CWE-362/364/366/367
    templates actually construct a genuine multi-thread/signal/ISR
-   execution context (spawning a second thread, registering a real
-   signal handler) or merely demonstrate the API-misuse *pattern* in a
-   single execution path — MITRE's Juliet suite is widely known for the
-   latter pattern generally, but confirming it here requires reading the
-   actual test-case source, and **the Juliet corpus is not present on
-   this machine** (`data/benchmarks.db` here is a gitignored, per-machine
-   stub — see §4). This is the one open question in this plan that
-   needs the benchmark node, not the write-up.
+   execution context, or merely demonstrate the API-misuse *pattern* in a
+   single execution path. Answer is **mixed, not uniform** — direct
+   inspection of the corpus at `~/toolchain/benchmarks/juliet-test-suite-c`
+   (present on the dev-149 node; earlier assumed absent from every non-home
+   node, corrected here):
+   - **CWE-362** has no test-case directory in this corpus at all — not a
+     testable CWE for Juliet purposes, full stop.
+   - **CWE-364** (Signal Handler Race Condition, 18 files, all one "basic"
+     flow-variant family): every file registers a *real* `signal()`
+     handler pointing at a real handler function. But **none of the 18
+     ever call `raise()`** — the handler is installed but never actually
+     delivered/invoked during the test run. The "flaw" is a pure
+     ordering/non-atomicity pattern (free-then-NULL bracketing a
+     `signal()` call) demonstrated on a single execution path, not an
+     exercised race. (Not currently CWE-mapped to CON03/07/33-C anyway —
+     see the table in §1.)
+   - **CWE-366** (Race Condition Within Thread, 36 files) is the **one
+     genuine exception**: every `_bad`/`good1` pair spawns two real OS
+     threads via `stdThreadCreate()`
+     (`testcasesupport/std_thread.c` — a thin, real wrapper around
+     `pthread_create`/`_beginthreadex`), both actually run concurrently
+     against the shared `gBadInt`/`gGoodInt`, and are joined before the
+     function returns. This is a genuinely constructed, genuinely
+     exercised concurrent execution context, not just a pattern. This is
+     CON07-C's mapped CWE (§1 table).
+   - **CWE-367** (TOC/TOU, 36 files) and **CWE-377** (Insecure Temporary
+     File, 144 files, CON33-C's mapped CWE) are both **purely
+     single-execution-path** in every file and every flow variant
+     checked: no thread creation, no `signal`/`sigaction`, no `fork`
+     anywhere. `access()`/`stat()` then `open()`/`write()` (CWE-367), or
+     a predictable-filename call (CWE-377), all run sequentially with no
+     second actor. The real-world exploit for both requires an external
+     attacker process racing the check/use or filename-prediction window
+     — Juliet never constructs or models that actor.
+
+   **Consequence for "is a Juliet-based score salvageable for
+   CON03/07/33-C at all":** still no, but for CWE-specific rather than
+   corpus-wide reasons. CON03-C stays moot (no CWE mapping at all, §2.1).
+   CON33-C's mapping is to CWE-377, which never constructs a real race in
+   any variant — no version of CON33-C, however context-aware, could be
+   validated against this corpus, because the corpus itself never creates
+   the concurrent actor the rule is supposed to detect. CON07-C's mapping
+   to CWE-366 is the one case where the underlying execution is real, but
+   the thread-creation call is indirected through a wrapper function name
+   (`stdThreadCreate`) rather than a literal `pthread_create`/
+   `CreateThread` call in the testcase file itself — a literal-name-list
+   reachability check (the shape task 608 would implement) would need to
+   resolve that wrapper (in a separate TU, `testcasesupport/std_thread.c`)
+   back to a real thread-creation primitive to get credit here. Confirmed
+   CON07-C's current implementation does no such check at all (`grep` for
+   `pthread_create`/`thread_creat` in `con07_c.rs` returns nothing),
+   consistent with §1's "no reachability primitive" finding. Net: even
+   the one salvageable case requires cross-TU call resolution that
+   doesn't exist yet — not a quick win, and not worth pursuing ahead of
+   task 608 if that ever gets scoped.
 
 ---
 
@@ -190,13 +237,14 @@ not built here):
    nothing about that protocol, it just confirms these rules should be
    measured there rather than via Juliet.
 
-3. **Follow-on task A (discovery, needs the benchmark/home node):**
-   directly inspect Juliet's CWE-362/364/366/367/377 test-case source to
-   settle §2.3 — do these templates ever construct a real second thread /
-   registered signal handler, or only demonstrate the API-misuse pattern
-   single-threaded. This determines whether a Juliet-based concurrency
-   score is salvageable at all or should be dropped for these rules
-   permanently.
+3. **Follow-on task A — DONE (task 606, 2026-09-01):** directly inspected
+   Juliet's CWE-362/364/366/367/377 test-case source; results folded into
+   §2.3 above. Verdict: not salvageable for CON33-C (its CWE-377 mapping
+   never constructs a real race in any variant) or CON03-C (no mapping at
+   all); theoretically salvageable for CON07-C (its CWE-366 mapping does
+   construct real concurrent threads) but only after cross-TU
+   wrapper-call resolution that doesn't exist yet — not worth building
+   ahead of task 608.
 
 4. **Follow-on task B (harness change, not a rule change):** add a
    concurrency-context-evidence tag to the bench/adjudication pipeline —
