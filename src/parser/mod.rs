@@ -49,6 +49,17 @@ impl CParser {
         // unconditionally rather than gated on a parse error being present.
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
 
+        // Task 647: blank a #if/#ifdef/#ifndef + matching #endif pair that
+        // opens immediately after a bare goto-label line -- tree-sitter-c's
+        // `labeled_statement` grammar rule requires exactly one statement
+        // right after the label and has no alternative for a preprocessor
+        // directive there, so GLR error recovery mis-parses the first
+        // guarded statement into a bogus declaration and silently detaches
+        // every later statement in the block from its #ifdef ancestor.
+        // Purely text-level and length-preserving, so it runs
+        // unconditionally like the pass above.
+        let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
+
         // Task 437: if a parse error remains (e.g. an externally-defined
         // attribute macro with no local #define for the pass above to
         // find), iteratively blank single-token unknown-identifier ERROR
@@ -69,6 +80,7 @@ impl CParser {
     pub fn parse_source(&mut self, source: &str) -> Result<Tree> {
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(source);
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
+        let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
         let (tree, _) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
             &mut self.parser,
             source,

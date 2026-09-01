@@ -14,6 +14,9 @@ pub mod dataflow;
 pub mod empty_macro_blank;
 pub mod function_summary;
 pub mod init_state;
+/// Pre-parse repair for a label immediately followed by an `#ifdef`/`#if`
+/// block -- `tree-sitter-c`'s `labeled_statement` can't parse that shape.
+pub mod label_preproc_guard;
 pub mod macro_expand;
 pub mod macro_semantics;
 pub mod null_state;
