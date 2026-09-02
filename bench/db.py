@@ -2058,6 +2058,15 @@ class BenchDB:
         only_project: optional project name to scope scoring to a single
         project (e.g. when comparing one codebase's rule deltas against
         ground_truth rather than the whole multi-project run).
+
+        The returned `overall` reports label coverage on BOTH bases rather
+        than leaving the ratio to callers: `label_coverage_pct` over every
+        finding the run emitted (`run_findings`, the basis the published docs
+        cite), and `label_coverage_pct_scored` over only the findings that had
+        an oracle to be measured against (`run_findings_scored`). Computing it
+        here is deliberate -- the two denominators differ whenever a run
+        covers a project with no labels at its commit, and a hand-rolled
+        `labeled_total / run_findings` at the call site silently mixes them.
         """
         run = self.get_realworld_run(run_id)
         if not run:
@@ -2080,6 +2089,13 @@ class BenchDB:
         # rule_id -> aggregated counters
         rules: dict[str, dict] = {}
         projects = []
+        # Findings from projects this run could actually score: a matching
+        # codebase_commit AND at least one ground-truth label at it. Always
+        # <= the raw total; the gap is findings that had no oracle to be
+        # measured against. Same definition as benchmarking_db's task-708
+        # `_scored` keys -- the two must not drift, since bench/render_docs.py
+        # consumes whichever dict its caller supplies.
+        scored_run_findings = 0
 
         def bump(rid):
             return rules.setdefault(rid, {
@@ -2109,6 +2125,7 @@ class BenchDB:
                                  "tp": 0, "fp": 0, "uncertain": 0})
                 continue
 
+            scored_run_findings += run_finding_count
             p_tp = p_fp = p_unc = p_tp_labels = p_tp_detected = 0
             for lbl in labels:
                 rid = lbl["rule_id"]
@@ -2191,6 +2208,30 @@ class BenchDB:
             "unlabeled_count": overall_unlabeled_count,
             "unlabeled_fraction": (round(overall_unlabeled_count / overall_run_findings, 3)
                                    if overall_run_findings else None),
+            # RAW vs SCORED basis, mirroring benchmarking_db (task 708) so a
+            # caller handed either dict reads the same key names with the same
+            # meaning. Unsuffixed finding counts stay RAW -- every finding the
+            # run emitted, including from projects with no commit or no labels
+            # at it -- so callers predating this keep the meaning they had.
+            #
+            # `labeled_total` is necessarily a scored-basis numerator (only a
+            # scoreable project can contribute a label), so dividing it by the
+            # raw `run_findings` mixes bases. Both ratios are precomputed here
+            # rather than left to callers, which is how that mix kept getting
+            # rebuilt by hand at the call site: `label_coverage_pct` answers
+            # "how much of this run has been adjudicated at all" (the figure
+            # the published docs cite), `label_coverage_pct_scored` answers
+            # "within the corpus that has an oracle, how much is labeled".
+            # They diverge exactly when a run covers a project with no labels
+            # at its commit.
+            "run_findings_raw": overall_run_findings,
+            "run_findings_scored": scored_run_findings,
+            "label_coverage_pct": (
+                round(overall_labeled_total / overall_run_findings * 100, 1)
+                if overall_run_findings else 0.0),
+            "label_coverage_pct_scored": (
+                round(overall_labeled_total / scored_run_findings * 100, 1)
+                if scored_run_findings else 0.0),
         }
         per_rule.sort(key=lambda x: x["labeled_total"], reverse=True)
         return {

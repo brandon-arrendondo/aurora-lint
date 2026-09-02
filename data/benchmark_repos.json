@@ -19,11 +19,21 @@
     "each project's precision_audit/<project>/README.md '## Scope' section --",
     "fnmatch glob lists matched against the project-relative path bench/db.py",
     "already normalizes findings to (project_relpath()). No 'scope_include' key",
-    "means unrestricted (whole-repo audits: libcrc, raylib). Include is a",
+    "means unrestricted (whole-repo audit: libcrc only). Include is a",
     "whitelist; exclude further narrows it. 'bench realworld-unlabeled' applies",
     "this by default (see bench/corpus.py:in_scope); pass --no-scope to opt out.",
     "Re-derive from the README, don't hand-edit ad hoc -- these two must stay",
-    "in sync (the README is the human-readable rationale, this is what code runs)."
+    "in sync (the README is the human-readable rationale, this is what code runs).",
+    "",
+    "These are FNMATCH patterns, not shell globs: '*' crosses '/'. So 'src/**'",
+    "and 'src/*' are the same thing (everything under src/ at any depth), and",
+    "a pattern like raylib's 'src/*.c' matches src/external/glfw/src/init.c",
+    "too -- which is why raylib needs an explicit 'src/external/*' exclude to",
+    "land on its audited 23 files rather than 121. Any consumer that",
+    "re-implements this predicate with true recursive-glob semantics (where",
+    "'*' stops at '/') must keep the excludes, not just the includes: the two",
+    "semantics agree on every entry here only because each exclude is written",
+    "to be a no-op under the stricter one."
   ],
   "repos": [
     {
@@ -81,16 +91,15 @@
     {
       "name": "raylib",
       "repo": "https://github.com/raysan5/raylib.git",
-      "version": "962bbfc6bfbd7a5acd08e21314fcfa161003a589"
+      "version": "962bbfc6bfbd7a5acd08e21314fcfa161003a589",
+      "scope_include": ["src/*.c", "src/*.h", "src/platforms/*.c"],
+      "scope_exclude": ["src/external/*"]
     },
     {
       "name": "pureftpd",
       "repo": "https://github.com/jedisct1/pure-ftpd.git",
       "version": "cc28bff52ca28e1d122a2142bf37f2dc578f4d3e",
-      "scope_include": [
-        "src/log_mysql.c", "src/log_mysql.h", "src/log_mysql_p.h",
-        "src/log_pgsql.c", "src/log_pgsql.h", "src/log_pgsql_p.h"
-      ]
+      "scope_include": ["src/**", "puredb/**"]
     },
     {
       "name": "sel4",

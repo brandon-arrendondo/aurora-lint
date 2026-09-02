@@ -883,7 +883,13 @@ def cmd_render_docs(args):
             print(f"Juliet run '{args.juliet_run}' not found.")
             sys.exit(1)
 
-    warnings = realworld_citation_warnings(db, realworld_run_id)
+    # Scored once here and threaded through, rather than re-derived inside
+    # each renderer: the guard and the published numbers must describe the
+    # same scoring pass, and render_docs no longer asks `db` to compute
+    # metrics at all (task 707 -- see that module's CROSS-REPO CONTRACT).
+    rw_score = db.score_realworld_run(realworld_run_id)
+
+    warnings = realworld_citation_warnings(db, realworld_run_id, rw_score)
     if warnings and not args.force:
         print(f"Real-world run #{realworld_run_id}:")
         for w in warnings:
@@ -892,7 +898,7 @@ def cmd_render_docs(args):
         sys.exit(1)
 
     try:
-        rendered = render_all(db, juliet_run_id, realworld_run_id)
+        rendered = render_all(db, juliet_run_id, realworld_run_id, rw_score)
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)

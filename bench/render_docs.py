@@ -11,14 +11,52 @@ Every function here takes `db` as a plain argument and never imports a
 concrete DB class -- callers decide what `db` is (see `bench/__main__.py`'s
 `render-docs` command, which always uses `bench.db.BenchDB` against the local
 SQLite file, same as every other `bench` subcommand).
+
+CROSS-REPO CONTRACT (task 707). The other caller is `benchmarking_db`'s
+`bin/refresh_tools_sqc_docs.py`, which imports these functions and hands them
+its own Postgres-backed handle so the same blocks render from the shared
+multi-node database. That makes `db` an implicit protocol owned by this
+module, and it used to be an undeclared one: a foreign class with ~90 methods
+was satisfying it by accident, and any method added here became a silent
+cross-repo break found at runtime. Two things fix that, and both are load-
+bearing rather than cosmetic:
+
+  1. `BenchDBLike` below declares the *entire* required surface. It is six
+     read-only run/result accessors. Adding a call to anything outside it is
+     a breaking change to another repo and belongs in that list first.
+  2. Scoring is no longer asked of `db` at all. Precision/recall over a
+     historical run is the benchmark DB's metric to compute, not this
+     module's to request, so callers pass the already-computed
+     `score_realworld_run(...)` result as a plain dict (`rw_score`). The
+     contract for the interesting half is now a data shape, which can be
+     captured in a fixture and tested without a database of either kind.
 """
 
 from __future__ import annotations
 
 import re
 import tomllib
+from typing import Protocol
 
 from bench.config import PROJECT_DIR
+
+
+class BenchDBLike(Protocol):
+    """The complete `db` surface this module uses. See CROSS-REPO CONTRACT.
+
+    Deliberately excludes `score_realworld_run`: its result is passed in as
+    `rw_score` instead. Structural, so no implementation needs to import or
+    subclass anything -- `bench.db.BenchDB` and `bench_db.BenchDB` both
+    satisfy it as they stand.
+    """
+
+    def get_run(self, run_id: str) -> dict: ...
+    def get_run_summary(self, run_id: str) -> dict: ...
+    def list_runs(self) -> list[dict]: ...
+    def get_realworld_run(self, run_id: int) -> dict: ...
+    def get_realworld_results(self, run_id: int) -> list[dict]: ...
+    def list_realworld_runs(self) -> list[dict]: ...
+
 
 RULES_ALL_TOML = PROJECT_DIR / "rules_templates" / "rules-all.toml"
 
@@ -54,7 +92,7 @@ def display_project(project: str) -> str:
     return PROJECT_DISPLAY_NAMES.get(project, project)
 
 
-def realworld_project_count(db, realworld_run_id: int) -> int:
+def realworld_project_count(db: BenchDBLike, realworld_run_id: int) -> int:
     results = db.get_realworld_results(realworld_run_id)
     return len({r["project"] for r in results if r["tool"] == "sqc"})
 
@@ -67,7 +105,7 @@ def rule_counts() -> dict:
     return {"implemented": len(rules), "enabled": enabled}
 
 
-def resolve_latest_fast_juliet_run(db) -> str | None:
+def resolve_latest_fast_juliet_run(db: BenchDBLike) -> str | None:
     """Most recent completed fast-mode Juliet run.
 
     Every published "current state" table has always cited a fast-mode run
@@ -107,9 +145,12 @@ def published_realworld_project_count() -> int | None:
     return len([p for p in m.group(1).split(",") if p.strip()])
 
 
-def realworld_citation_warnings(db, realworld_run_id: int) -> list[str]:
+def realworld_citation_warnings(db: BenchDBLike, realworld_run_id: int,
+                                rw_score: dict) -> list[str]:
     """Reasons NOT to cite this run without an explicit override, or [] if
     it's safely citable as-is.
+
+    `rw_score` is the caller's `score_realworld_run(realworld_run_id)` result.
 
     Shared by every caller of `render_all` (tools_sqc's own `render-docs`
     CLI, and any other script pointing these functions at a differently-
@@ -119,8 +160,7 @@ def realworld_citation_warnings(db, realworld_run_id: int) -> list[str]:
     """
     warnings = []
 
-    score = db.score_realworld_run(realworld_run_id)
-    unlabeled = score["overall"].get("unlabeled_fraction") or 0.0
+    unlabeled = rw_score["overall"].get("unlabeled_fraction") or 0.0
     if unlabeled > UNLABELED_FRACTION_WARN:
         warnings.append(
             f"{unlabeled:.1%} unlabeled -- its precision/recall likely "
@@ -168,7 +208,8 @@ def _cwe_list_str(ids: list[str]) -> str:
     return f"CWE-{nums[0]}" + (", " + ", ".join(nums[1:]) if len(nums) > 1 else "")
 
 
-def render_readme_highlights(db, juliet_run_id: str, realworld_run_id: int) -> str:
+def render_readme_highlights(db: BenchDBLike, juliet_run_id: str,
+                             realworld_run_id: int, rw_score: dict) -> str:
     juliet = db.get_run_summary(juliet_run_id)
     ca = juliet["cwe_aware"]
     juliet_run = db.get_run(juliet_run_id)
@@ -176,14 +217,12 @@ def render_readme_highlights(db, juliet_run_id: str, realworld_run_id: int) -> s
     mode_word = "fast" if juliet_run["mode"] == "fast" else "full"
     with_detections, zero_detection = _zero_fp_cwe_lists(juliet["per_cwe"])
 
-    rw_score = db.score_realworld_run(realworld_run_id)
     overall = rw_score["overall"]
     rw_run = db.get_realworld_run(realworld_run_id)
     rw_results = db.get_realworld_results(realworld_run_id)
     projects = sorted({display_project(r["project"]) for r in rw_results
                        if r["tool"] == "sqc"}, key=str.lower)
-    coverage_pct = round(overall["labeled_total"] / overall["run_findings"] * 100, 1) \
-        if overall["run_findings"] else 0.0
+    coverage_pct = overall.get("label_coverage_pct") or 0.0
 
     lines = [
         "| Metric | Value |",
@@ -203,7 +242,7 @@ def render_readme_highlights(db, juliet_run_id: str, realworld_run_id: int) -> s
     return "\n".join(lines)
 
 
-def render_juliet_current_state(db, juliet_run_id: str) -> str:
+def render_juliet_current_state(db: BenchDBLike, juliet_run_id: str) -> str:
     juliet = db.get_run_summary(juliet_run_id)
     s, ca = juliet["summary"], juliet["cwe_aware"]
     run = db.get_run(juliet_run_id)
@@ -247,7 +286,8 @@ def render_juliet_current_state(db, juliet_run_id: str) -> str:
     return "\n".join(lines)
 
 
-def _backfill_from_history(db, by_project: dict, max_scan_runs: int = 60) -> None:
+def _backfill_from_history(db: BenchDBLike, by_project: dict,
+                           max_scan_runs: int = 60) -> None:
     """Fill in missing C-files/LOC and cppcheck/clang-tidy counts from recent
     run history.
 
@@ -282,7 +322,8 @@ def _backfill_from_history(db, by_project: dict, max_scan_runs: int = 60) -> Non
         needed = {p for p in needed if missing(p)}
 
 
-def render_realworld_latest(db, realworld_run_id: int) -> str:
+def render_realworld_latest(db: BenchDBLike, realworld_run_id: int,
+                            rw_score: dict) -> str:
     results = db.get_realworld_results(realworld_run_id)
     by_project: dict[str, dict] = {}
     for r in results:
@@ -319,10 +360,8 @@ def render_realworld_latest(db, realworld_run_id: int) -> str:
         f"| **Total** | **{tot_files:,}** | **{tot_loc:,}** | "
         f"{tot_cells[0]} | {tot_cells[1]} | {tot_cells[2]} |")
 
-    score = db.score_realworld_run(realworld_run_id)
-    overall = score["overall"]
-    coverage_pct = round(overall["labeled_total"] / overall["run_findings"] * 100, 1) \
-        if overall["run_findings"] else 0.0
+    overall = rw_score["overall"]
+    coverage_pct = overall.get("label_coverage_pct") or 0.0
     lines += [
         "",
         f"Aggregate measured precision (adjudicated oracle, "
@@ -339,15 +378,23 @@ def render_realworld_latest(db, realworld_run_id: int) -> str:
     return "\n".join(lines)
 
 
-def render_all(db, juliet_run_id: str, realworld_run_id: int) -> dict:
-    """Returns {path: new_text} for every doc with a marker pair found."""
+def render_all(db: BenchDBLike, juliet_run_id: str, realworld_run_id: int,
+               rw_score: dict) -> dict:
+    """Returns {path: new_text} for every doc with a marker pair found.
+
+    `rw_score` is the caller's `score_realworld_run(realworld_run_id)` result;
+    pass the same dict given to `realworld_citation_warnings` so the guard and
+    the rendered numbers describe one scoring pass rather than two.
+    """
     blocks = {
         README: [("BENCH:HIGHLIGHTS",
-                  render_readme_highlights(db, juliet_run_id, realworld_run_id))],
+                  render_readme_highlights(db, juliet_run_id,
+                                           realworld_run_id, rw_score))],
         JULIET_RESULTS: [("BENCH:JULIET_CURRENT",
                           render_juliet_current_state(db, juliet_run_id))],
         REALWORLD_RESULTS: [("BENCH:REALWORLD_LATEST",
-                             render_realworld_latest(db, realworld_run_id))],
+                             render_realworld_latest(db, realworld_run_id,
+                                                     rw_score))],
     }
     out = {}
     for path, regions in blocks.items():
