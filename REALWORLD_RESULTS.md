@@ -92,7 +92,7 @@ reduced scanning.
 Scan time over a comparable window fell from 23.5 min to 16.8 min across the
 nine projects (run #212, v0.4.305 → run #220, v0.4.320; both recorded a
 complete 9-of-9 set of per-project durations). Run #226 itself recorded no
-durations — see task 699 — so it cannot be cited for timing, and neither can
+durations — see task 715 — so it cannot be cited for timing, and neither can
 runs #216–218 or #221–226.
 
 > The bulk of the remaining 7,337 unlabeled findings (11.8%) is still the
