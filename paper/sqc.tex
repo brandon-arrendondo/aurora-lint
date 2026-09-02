@@ -59,8 +59,14 @@ files across 79 CWE categories) and 9 real-world open-source C codebases
 totaling 1.21 million lines of code.  Through iterative
 refinement---including cross-file function summaries, value-range analysis,
 and CFG-based dead-branch pruning---the true positive rate improved from
-41.1\% to 87.7\%, with 44 of 79 CWEs achieving 100\% precision (zero
-false positives).  On a five-tool comparison against cppcheck, clang-tidy,
+41.1\% to 87.1\%, with 43 of 79 CWEs achieving 100\% precision (zero
+false positives).  Detection breadth, however, remains the binding
+constraint: SqC flags 12.9\% of the suite's planted flaw lines, and
+40\% of its 311 rules have no true-positive evidence on either
+benchmark---a limit of the evaluation corpora as much as of the tool,
+since the real-world set is mature, warning-clean code while SqC's
+distinguishing property is that it needs no build system and tolerates
+source that does not compile.  On a five-tool comparison against cppcheck, clang-tidy,
 Infer, and Frama-C, SqC covers 5--13$\times$ more CWE categories while
 now exceeding clang-tidy outright on three of fifteen overlapping CWEs
 (integer overflow/underflow and integer-overflow-to-buffer-overflow) and

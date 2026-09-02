@@ -1,6 +1,6 @@
 # SqC — Juliet Benchmark Results
 
-**Last Updated**: 2026-08-29
+**Last Updated**: 2026-09-02
 **Benchmark**: [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) for C/C++
 
 > **Note**: This file tracks current state only. All benchmark results are
@@ -14,18 +14,18 @@
 ---
 
 <!-- BENCH:JULIET_CURRENT:START -->
-## Current State (v0.4.301)
+## Current State (v0.4.321)
 
-Run `sqc-0.4.301-8af0fca9`, completed 2026-08-29 (fast mode, ~31 min wall time).
+Run `sqc-0.4.321-daff4cf0`, completed 2026-09-02 (fast mode, ~27 min wall time).
 
 | Metric | Value |
 |--------|-------|
 | **Rules Implemented** | 311 CERT C rules (307 enabled by default) |
 | **Juliet CWEs Scanned** | 79 (fast mode, CWE-matched rules) |
-| **True Positives** | 22,239 |
-| **False Positives** | 3,117 |
-| **TP Rate** | **87.7%** |
-| **Per-file Detection Rate** | 38.0% (19,079 / 50,256 files) |
+| **True Positives** | 22,210 |
+| **False Positives** | 3,288 |
+| **TP Rate** | **87.1%** |
+| **Per-file Detection Rate** | 38.0% (19,073 / 50,256 files) |
 | **Zero-FP CWEs** | 43 of 79 (with real detections; 13 more scanned CWEs have zero detections) |
 | **Benchmark Mode** | Fast (per-CWE manifests, 0.0% noise) |
 
@@ -37,7 +37,7 @@ Run `sqc-0.4.301-8af0fca9`, completed 2026-08-29 (fast mode, ~31 min wall time).
 Regenerate this section with `python -m bench render-docs` (defaults to the
 latest completed fast-mode run; see `bench/render_docs.py`).
 
-### Recent Progress (fast-mode benchmarks, v0.3.20 → v0.4.301)
+### Recent Progress (fast-mode benchmarks, v0.3.20 → v0.4.321)
 
 | Version | CWEs Scanned | TP | FP | TP Rate |
 |---------|-------------:|---:|---:|--------:|
@@ -46,14 +46,36 @@ latest completed fast-mode run; see `bench/render_docs.py`).
 | v0.4.84 | 74 | 21,759 | 4,250 | 83.7% |
 | v0.4.116 | 74 | 21,770 | 4,220 | 83.8% |
 | v0.4.249 | 79 | 22,261 | 3,121 | 87.7% |
-| **v0.4.301** | **79** | **22,239** | **3,117** | **87.7%** |
+| v0.4.301 | 79 | 22,239 | 3,117 | 87.7% |
+| **v0.4.321** | **79** | **22,210** | **3,288** | **87.1%** |
 
 The rise from ~48% (v0.3.37) to 87.7% (v0.4.249) spans dozens of releases of
 targeted rule and false-positive work (const-eval value-range analysis,
 cross-file prescan, macro-expansion, taint tracking, and per-rule tuning) plus
 11 additional CWEs added to the fast-mode manifest set since v0.4.116. TP rate
-has held flat from v0.4.249 to v0.4.301 (~50 further releases) — recent work
-in that window targeted real-world precision, not Juliet. Use
-`python -m bench compare BASE TARGET` to inspect any specific pair of
-versions, or see [`docs/juliet-history.rst`](docs/juliet-history.rst) for the
-full narrative of every intermediate round.
+has been flat-to-slightly-down from v0.4.249 through v0.4.321 (~70 further
+releases, 87.7% → 87.1%) — work in that window targeted real-world precision,
+not Juliet, and the 0.6-point dip is the cost of that trade rather than a
+Juliet regression to chase. Use `python -m bench compare BASE TARGET` to
+inspect any specific pair of versions, or see
+[`docs/juliet-history.rst`](docs/juliet-history.rst) for the full narrative of
+every intermediate round.
+
+### The TP rate is not the ceiling signal — the flaw-hit rate is
+
+87.1% is the share of sqc's Juliet findings that are true positives. It says
+how clean the output is, not how much of the suite's planted defect set sqc
+actually locates. That second number is the **flaw-hit rate: 12.9%**
+(17,100 of 132,406 flaw lines hit, v0.4.321), and it has not moved in weeks.
+
+Both figures are real, and quoting only the first overstates the tool. The
+per-file detection rate (38.0%, 19,073 of 50,256 files) sits between them:
+sqc flags something in over a third of flawed files, but lands on the
+specific planted flaw line in about an eighth of cases. When judging
+headroom, the flaw-hit rate is the honest signal, and it is the one to watch
+for movement.
+
+Note also that Juliet exercises only part of the suite: 127 rules have any
+Juliet true positive. See
+[README.md's rule-suite coverage section](README.md#rule-suite-coverage) for
+what that leaves unmeasured across the full 311.

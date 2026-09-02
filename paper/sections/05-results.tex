@@ -17,14 +17,18 @@ the Juliet Test Suite in fast mode.
 Rules implemented & 311 \\
 CWEs scanned (fast mode) & 79 \\
 Test files & 50,256 \\
-True Positives & 22,261 \\
-False Positives & 3,121 \\
-TP Rate (precision) & 87.7\% \\
+True Positives & 22,210 \\
+False Positives & 3,288 \\
+TP Rate (precision) & 87.1\% \\
 Per-file detection rate & 38.0\% \\
-100\% precision CWEs & 44 \\
+Flaw-hit rate & 12.9\% \\
+100\% precision CWEs & 43 \\
 \bottomrule
 \end{tabular}
-\caption{SqC v0.4.249 Juliet benchmark summary (fast mode).}
+\caption{SqC v0.4.321 Juliet benchmark summary (fast mode).  The TP
+rate describes output cleanliness; the flaw-hit rate---the share of
+the suite's 132,406 planted flaw lines SqC flags---describes detection
+breadth, and is the binding constraint (\cref{sec:limitations}).}
 \label{tab:juliet-summary}
 \end{table}
 
@@ -32,8 +36,8 @@ Per-file detection rate & 38.0\% \\
 
 The 79 CWEs tested fall into five tiers, shown in
 \cref{tab:precision-tiers}.  The distribution is encouraging: the
-44 CWEs at 100\% precision and the 22 at high precision together are
-84\% of scored CWEs, and no CWE falls below 33\%; the 12 zero-detection
+43 CWEs at 100\% precision and the 22 at high precision together are
+82\% of scored CWEs, and no CWE falls below 33\%; the 13 zero-detection
 CWEs (rules mapped to them but no Juliet testcase triggers a finding)
 are a distinct category from low precision, not a failure mode.
 
@@ -44,23 +48,23 @@ are a distinct category from low precision, not a failure mode.
 \toprule
 \textbf{Tier} & \textbf{CWEs} & \textbf{TP Rate} & \textbf{TP} \\
 \midrule
-100\% Precision & 44 & 100\% & 9,835 \\
-High ($>$50\%) & 22 & 50--99\% & 12,418 \\
+100\% Precision & 43 & 100\% & 9,817 \\
+High ($>$50\%) & 22 & 50--99\% & 12,385 \\
 Medium (33--50\%) & 1 & 33--50\% & 8 \\
 Low ($<$33\%) & 0 & --- & 0 \\
-Zero Detection & 12 & --- & 0 \\
+Zero Detection & 13 & --- & 0 \\
 \midrule
-\textbf{Total} & \textbf{79}\textsuperscript{$\dagger$} & & \textbf{22,261} \\
+\textbf{Total} & \textbf{79}\textsuperscript{$\dagger$} & & \textbf{22,210} \\
 \bottomrule
 \end{tabular}
-\caption{CWE distribution by precision tier (fast mode, v0.4.249).
-\textsuperscript{$\dagger$}All 79 scanned CWEs; the 12 with zero
+\caption{CWE distribution by precision tier (fast mode, v0.4.321).
+\textsuperscript{$\dagger$}All 79 scanned CWEs; the 13 with zero
 detection contribute 0 TP.}
 \label{tab:precision-tiers}
 \end{table}
 
-\Cref{tab:perfect-cwes} lists the 44 CWEs with 100\% precision (out of
-79 scanned; a further 12 are mapped rules with zero Juliet detections
+\Cref{tab:perfect-cwes} lists the 43 CWEs with 100\% precision (out of
+79 scanned; a further 13 are mapped rules with zero Juliet detections
 rather than false positives).  These represent vulnerability classes
 where SqC produces zero false positives on Juliet---every reported
 violation is a true defect on this benchmark.  Notably, CWE-190
@@ -105,12 +109,12 @@ CWE-563 & Unused Variable & 272 \\
 CWE-590 & Free Memory Not on Heap & 240 \\
 CWE-789 & Uncontrolled Mem Alloc & 190 \\
 CWE-398 & Indicator of Poor Code Quality & 162 \\
-\multicolumn{2}{@{}l}{\emph{+ 30 more CWEs}} & 1,405 \\
+\multicolumn{2}{@{}l}{\emph{+ 29 more CWEs}} & 1,387 \\
 \midrule
-\textbf{Total} & & \textbf{9,835} \\
+\textbf{Total} & & \textbf{9,817} \\
 \bottomrule
 \end{tabular}
-\caption{CWEs with 100\% precision (zero false positives), v0.4.249.}
+\caption{CWEs with 100\% precision (zero false positives), v0.4.321.}
 \label{tab:perfect-cwes}
 \end{table}
 
@@ -371,40 +375,60 @@ regression.
 \toprule
 \textbf{Project} & \textbf{sqc} & \textbf{cppcheck} & \textbf{clang-tidy} \\
 \midrule
-libcrc & 395 & 40 & 2 \\
-lua & 3,047 & 49 & 107 \\
-raylib & 4,749 & 1,060 & 469 \\
-mosquitto & 2,970 & 277 & 44 \\
-curl & 8,582 & 556 & 116 \\
-sqlite & 18,922 & 503 & 137 \\
-hostap & 30,752 & 1,761 & 1,710 \\
-pure-ftpd & 5,855 & 12 & 109 \\
-seL4 & 4,959 & --- & --- \\
+libcrc & 364 & 40 & 2 \\
+lua & 2,616 & 49 & 107 \\
+raylib & 4,353 & 1,060 & 469 \\
+mosquitto & 2,588 & 277 & 44 \\
+curl & 7,201 & 556 & 116 \\
+sqlite & 15,718 & 503 & 137 \\
+hostap & 27,255 & 1,761 & 1,710 \\
+pure-ftpd & 5,339 & 12 & 109 \\
+seL4 & 2,619 & --- & --- \\
 \midrule
-\textbf{Total} & \textbf{80,231} & \textbf{4,258} & \textbf{2,694} \\
+\textbf{Total} & \textbf{68,053} & \textbf{4,258} & \textbf{2,694} \\
 \bottomrule
 \end{tabular}
-\caption{Violation counts (sqc v0.4.249, cppcheck v2.10, clang-tidy
+\caption{Violation counts (sqc v0.4.325, cppcheck v2.10, clang-tidy
 v21.1.6).  Excluding seL4 (no competitor baseline), SqC's total is
-75,272 across the other 8 projects --- an $\sim$18--28$\times$
+65,434 across the other 8 projects --- an $\sim$15--24$\times$
 difference vs.\ cppcheck/clang-tidy, reflecting SqC's 311-rule coverage
-vs.\ $\sim$20 checks in competitors.  SqC's own total dropped 28\% from
-the v0.4.120 figure (104,733 across the original 7 projects) despite
-covering more rules, from the FP-reduction work in
-\cref{sec:fp-reduction} landing on real-world code, not just Juliet.}
+vs.\ $\sim$20 checks in competitors.  On the original 7 projects alone
+--- the only like-for-like comparison --- SqC's total fell 43\%, from
+104,733 at v0.4.120 to 60,095 here, despite covering more rules: the
+FP-reduction work in \cref{sec:fp-reduction} landing on real-world
+code, not just Juliet.}
 \label{tab:realworld-results}
 \end{table}
 
 Beyond raw violation volume, what matters is what fraction of these
 findings are real: scored against a hand-adjudicated ground-truth
 oracle spanning all 9 projects (\cref{sec:ground-truth-snapshot}), aggregate
-measured precision is 16.6\% (TP 10,561 of 63,608 labeled findings) with
-97.4\% recall (10,561 of 10,841 known true positives flagged), at 86.3\%
-label coverage (63,649 of 73,718 total findings labeled;
-run \texttt{sqc-0.4.258}). As with the Juliet 100\%-precision figures
-in \cref{tab:perfect-cwes}, this aggregate number should be read scoped
-to its oracle rather than as a universal precision claim
-(\cref{sec:limitations}).
+measured precision is 24.3\% (TP 13,294 of 54,691 labeled findings) with
+93.7\% recall (13,294 of 14,184 known true positives flagged), at 88.2\%
+label coverage (54,691 of 62,028 in-scope findings labeled;
+run \texttt{sqc-0.4.325}, run \#226). Over the preceding seven days, on
+the same oracle, precision rose from 22.1\% and total findings fell from
+69,532 to 62,028 while recall held (94.2\%$\to$93.7\%): roughly 7,500
+false positives removed in a week without a corresponding recall cost.
+
+Two qualifications belong with these numbers rather than in a footnote.
+First, the recall figure is measured against \emph{known} true
+positives --- defects already present in the oracle. No exhaustive
+false-negative hunt exists; past audits deliberately scoped their FN
+searches to specific bug categories. True recall is unknown and lower
+than 93.7\%.  Second, 11.8\% of findings remain unlabeled, concentrated
+in the two projects deliberately sampled at 10\% rather than
+exhaustively audited (pure-ftpd, seL4). Both label out well below the
+corpus average (seL4 9.5\%, sqlite 11.1\% sample precision against
+24.3\% aggregate), so completing them should \emph{lower} measured
+precision by an estimated 1--2 points. We state that in advance so the
+expected dip is not later misread as a regression.
+
+As with the Juliet 100\%-precision figures in \cref{tab:perfect-cwes},
+this aggregate should be read scoped to its oracle rather than as a
+universal precision claim, and \cref{sec:corpus-maturity} explains why
+its \emph{per-rule} decomposition in particular does not support
+rule-quality conclusions.
 
 \Cref{tab:realworld-timing} reports analysis throughput.  Each tool was
 run serially---one process at a time, with the full machine to itself---so

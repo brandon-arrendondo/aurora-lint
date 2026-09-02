@@ -6,9 +6,11 @@ We have presented SqC, a static analysis tool implementing 311 CERT C
 rules across 17 categories.  Through tree-sitter-based parsing,
 control-flow graph construction, null-state dataflow analysis,
 value-range analysis, and inter-procedural function summaries
-(including cross-function taint propagation), SqC achieves an 83.8\%
-true positive rate on the Juliet benchmark with 48 CWEs at 100\%
-precision.  On a five-tool comparison, SqC surpasses Frama-C
+(including cross-function taint propagation), SqC achieves an 87.1\%
+true positive rate on the Juliet benchmark with 43 CWEs at 100\%
+precision, while flagging 12.9\% of the suite's planted flaw
+lines---detection breadth, not output cleanliness, being the limit
+that remains.  On a five-tool comparison, SqC surpasses Frama-C
 (79.5\% vs.\ 61.0\% on overlapping CWEs) and now beats clang-tidy
 outright on three of those CWEs, while covering 5--12$\times$
 more vulnerability categories.
@@ -42,7 +44,11 @@ a real ownership or alias model answers and a same-function heuristic
 cannot.  Future work therefore includes: a parameter-ownership model
 for MEM31-C; a broader audit of which other rules would benefit from
 the registry-based macro-expansion engine now used by MEM30/31-C and
-EXP33-C; alias analysis for pointer-related rules generally; and
+EXP33-C; scoring the existing per-rule fixture corpus as a third
+benchmark tier, since 40\% of SqC's rules have no true-positive
+evidence on either current benchmark and no further adjudication of a
+mature-code corpus can supply it (\cref{sec:corpus-maturity}); alias
+analysis for pointer-related rules generally; and
 further expanding the cross-function taint infrastructure --- CWE-78
 (OS command injection) now achieves 100\% precision via caller-aware
 ENV03-C suppression and return-value propagation, and the same summary

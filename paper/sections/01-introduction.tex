@@ -28,6 +28,24 @@ the iterative process used to reduce false positives, and the results of
 evaluating SqC against both a standardized benchmark and real-world
 codebases.
 
+SqC's distinguishing property is that it requires no build system, no
+compilation database, and no preprocessing step, and it tolerates source
+that does not compile.  This shapes what it is \emph{for}: the intended
+deployment is newer, less mature, in-progress code wired into CI/CD
+early---at the point where a build may not yet exist and a
+compilation-database-dependent analyzer cannot run at all.  We state this
+at the outset because it is in tension with how the tool is necessarily
+evaluated.  Both of our benchmark corpora are the opposite population:
+Juliet is synthetic, and the nine real-world projects are mature,
+actively maintained, warning-clean C chosen precisely because they are
+demanding false-positive tests.  Locating genuine defects in SQLite,
+curl and hostap demonstrates the tool's reach, and we report it as a
+demonstration rather than as the representative case.  The consequence,
+developed in \cref{sec:corpus-maturity}, is that some measurements---per-rule
+real-world precision in particular---describe the corpus more than they
+describe the rule, and we flag those explicitly rather than letting the
+aggregates speak for the whole suite.
+
 The rest of this paper is organized as follows.  \Cref{sec:background}
 covers the CERT C standard and the Juliet benchmark.
 \Cref{sec:architecture} describes SqC's architecture.

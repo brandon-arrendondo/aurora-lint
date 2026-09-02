@@ -1,6 +1,6 @@
 # SqC — Real-World Benchmark Results
 
-**Last Updated**: 2026-09-01
+**Last Updated**: 2026-09-02
 
 Automated benchmark results across 9 real-world C codebases using sqc, plus
 cppcheck and clang-tidy on the original 7.
@@ -44,18 +44,124 @@ to a 10% sample under task 552) and `pure-ftpd`'s 10% sample is task 551.
 
 ---
 
-## Latest Adjudicated Results (sqc v0.4.313)
+## Latest Adjudicated Results (sqc v0.4.325)
 
-Run #217, commit `c4dad129`, scanned 2026-09-01. Precision/recall moved from
-the v0.4.258 baseline below via incremental ground-truth adjudication and
-rule-logic FP-reduction work across the ~55 intervening releases (see the
-`ground_truth` table / task history for per-commit detail — this session
-didn't do the adjudicating, just the citation refresh). `seL4`'s scan scope
+Run #226, commit `0c889c2d`, scanned 2026-09-02. Precision/recall moved from
+the v0.4.313 baseline below via continued rule-logic FP-reduction across the
+~12 intervening releases. Every finding that moved relative to run #224 is
+labeled, which is why this run — rather than simply the newest — is the one
+cited (see CLAUDE.md's delta-adjudication protocol). `seL4`'s scan scope
 narrowed (184→183 files, 87,223→49,957 LOC, first reflected at v0.4.260) the
 same way `sqlite`'s did earlier — an in-scope file predicate change, not a
 regression.
 
+**Read the precision figure with the corpus in mind** — see
+"[What this corpus can and cannot measure](#what-this-corpus-can-and-cannot-measure)"
+below before quoting any per-rule number from it.
+
 <!-- BENCH:REALWORLD_LATEST:START -->
+### Violation Counts — All Three Tools
+
+| Project | C Files | LOC | sqc | cppcheck | clang-tidy |
+|---------|--------:|----:|----:|--------:|-----------:|
+| **curl** | 222 | 186,220 | 7,201 | 556 | 116 |
+| **hostap** | 430 | 589,724 | 27,255 | 1,761 | 1,710 |
+| **libcrc** | 9 | 1,034 | 364 | 40 | 2 |
+| **lua** | 33 | 31,470 | 2,616 | 49 | 107 |
+| **mosquitto** | 120 | 39,368 | 2,588 | 277 | 44 |
+| **pure-ftpd** | 53 | 33,301 | 5,339 | 12 | 109 |
+| **raylib** | 17 | 56,107 | 4,353 | 1,060 | 469 |
+| **seL4** | 183 | 49,957 | 2,619 | — | — |
+| **sqlite** | 81 | 181,604 | 15,718 | 503 | 137 |
+| **Total** | **1,148** | **1,168,785** | **68,053** | **4,258** | **2,694** |
+
+Aggregate measured precision (adjudicated oracle, `bench realworld-score 226`): **24.3%** (TP 13,294 / 54,691 labeled of 62,028 findings), **recall 93.7%** (13,294 / 14,184 known TPs flagged); label coverage 54,691 / 62,028 findings (88.2%; 39 matched labels are "uncertain" and excluded from precision).
+<!-- BENCH:REALWORLD_LATEST:END -->
+
+Regenerate the table + precision/recall paragraph above with
+`python -m bench render-docs --realworld-run RUN` (see `bench/render_docs.py`);
+the header, "Run #N..." sentence and the note below stay hand-written since
+they cite which tasks did the adjudicating.
+
+**Week-over-week, against the same oracle** (run #193, v0.4.273, scanned
+2026-08-26 → run #226): precision 22.1% → 24.3%, findings 69,532 → 62,028,
+recall essentially flat (94.2% → 93.7%). That is ~7,500 findings removed in
+seven days with recall held — real FP reduction landing on real code, not
+reduced scanning.
+
+Scan time over a comparable window fell from 23.5 min to 16.8 min across the
+nine projects (run #212, v0.4.305 → run #220, v0.4.320; both recorded a
+complete 9-of-9 set of per-project durations). Run #226 itself recorded no
+durations — see task 699 — so it cannot be cited for timing, and neither can
+runs #216–218 or #221–226.
+
+> The bulk of the remaining 7,337 unlabeled findings (11.8%) is still the
+> deliberately-unsampled majority of `pure-ftpd` (4,218 unlabeled, task 578)
+> and `seL4` (1,949 unlabeled, task 579), plus a long tail spread across
+> `sqlite` (781), `curl` (183), `mosquitto` (104), `hostap` (88) and smaller
+> — not a gap in this measurement's validity for the rules/projects it does
+> cover. Scope-enforced (task 636) and de-duplicated on
+> `(file, line, rule)`, that debt is much smaller than the raw count
+> suggests: 2,602 distinct in-scope unlabeled findings, of which `seL4`
+> alone is 2,126 (82%) and `pure-ftpd` only 211.
+
+**Clearing that debt will most likely lower the headline number, not raise
+it.** Both remaining sampling tasks cover projects that label out well below
+the corpus average — `seL4` at 9.5% and `sqlite` at 11.1% sample precision
+against 24.3% aggregate — so finishing 578 and 579 should dilute measured
+precision by roughly 1–2 points. That is adjudication debt being paid, not a
+regression, and it should not be read as one when it lands.
+
+### What this corpus can and cannot measure
+
+The nine projects are mature, actively maintained, warning-clean C. That
+makes them a demanding FP test and a credible source of real bug reports —
+several findings here became upstream fixes. It also makes them the
+*opposite* population from sqc's nominal use case.
+
+sqc needs no build system and tolerates source that does not compile. That
+is its differentiator, and it means the code it is designed for is newer,
+less mature, in-progress work wired into CI/CD early — not released
+software. Finding real defects in sqlite, curl and hostap demonstrates the
+tool's reach and belongs in the record as exactly that: a demonstration, not
+the representative case.
+
+Two consequences that this file's aggregate numbers otherwise obscure:
+
+1. **A per-rule real-world precision of 0% is often a statement about the
+   corpus, not the rule.** Any rule whose defect cannot survive review in a
+   codebase like these is structurally incapable of producing a true
+   positive here. `DCL31-C` is the worked example: 364 findings, 324
+   labeled, 0 TP — which reads as 0.0% precision. That figure measures
+   sqc's header reachability, not the rule's quality. `mosquitto` alone goes
+   from 1,365 `DCL31-C` findings with no `-I` to 0 with `-I /usr/include`.
+   The rule guards a genuine defect — under C89 an implicit declaration
+   makes the compiler assume `int f()`, so the return type is misread, no
+   argument checking happens, and a returned pointer is truncated on LP64;
+   C99 removed implicit declarations and C23 makes them an error — on code
+   this corpus does not contain. Quoting that number as a rule-quality
+   measure is a category error (task 692).
+2. **Rule applicability is the user's lever, by design.** Manifest scoping
+   and suppression exist so the user decides which rules apply to their
+   code; detection logic deliberately does not make that call (the
+   surface-don't-silence principle). A Linux-only corpus should not run the
+   `WIN*` rules, for the same reason — a zero there is correct, not a gap.
+
+See the rule-coverage section in [README.md](README.md#rule-suite-coverage)
+for how much of the rule suite these two effects leave unvalidated.
+
+---
+
+## Previous Adjudicated Results (sqc v0.4.313) — superseded by v0.4.325 above
+
+Run #217, commit `c4dad129`, scanned 2026-09-01. Precision/recall moved from
+the v0.4.258 baseline below via incremental ground-truth adjudication and
+rule-logic FP-reduction work across the ~55 intervening releases (see the
+`ground_truth` table / task history for per-commit detail). `seL4`'s scan
+scope narrowed (184→183 files, 87,223→49,957 LOC, first reflected at
+v0.4.260) the same way `sqlite`'s did earlier — an in-scope file predicate
+change, not a regression.
+
 ### Violation Counts — All Three Tools
 
 | Project | C Files | LOC | sqc | cppcheck | clang-tidy |
@@ -72,18 +178,6 @@ regression.
 | **Total** | **1,148** | **1,168,785** | **68,929** | **4,258** | **2,694** |
 
 Aggregate measured precision (adjudicated oracle, `bench realworld-score 217`): **24.1%** (TP 13,353 / 55,528 labeled of 62,886 findings), **recall 94.2%** (13,353 / 14,182 known TPs flagged); label coverage 55,528 / 62,886 findings (88.3%; 39 matched labels are "uncertain" and excluded from precision).
-<!-- BENCH:REALWORLD_LATEST:END -->
-
-Regenerate the table + precision/recall paragraph above with
-`python -m bench render-docs --realworld-run RUN` (see `bench/render_docs.py`);
-the header, "Run #N..." sentence and the note below stay hand-written since
-they cite which tasks did the adjudicating.
-
-> The bulk of the remaining 7,358 unlabeled findings (11.7%) is still the
-> deliberately-unsampled majority of `pure-ftpd` (4,257 unlabeled, task 578)
-> and `seL4` (1,981 unlabeled, task 579), plus a long tail spread across
-> `sqlite` (756), `curl` (170), `mosquitto` (104) and smaller — not a gap in
-> this measurement's validity for the rules/projects it does cover.
 
 ---
 

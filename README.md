@@ -16,11 +16,11 @@ A static analysis tool for C code compliance with [SEI CERT C Coding Standards](
 <!-- BENCH:HIGHLIGHTS:START -->
 | Metric | Value |
 |--------|-------|
-| **Juliet TP Rate** | 87.7% (v0.4.301) |
+| **Juliet TP Rate** | 87.1% (v0.4.321) |
 | **Juliet CWEs Scanned** | 79 (fast mode, CWE-matched rules) |
 | **100% Precision CWEs** | 43 (zero false positives, with real detections) |
-| **Per-File Detection** | 38.0% (19,079 / 50,256 files) |
-| **Real-World Precision / Recall** | 24.1% / 94.2% (v0.4.313, run #217, 88.3% label coverage) |
+| **Per-File Detection** | 38.0% (19,073 / 50,256 files) |
+| **Real-World Precision / Recall** | 24.3% / 93.7% (v0.4.325, run #226, 88.2% label coverage) |
 | **Real-World Projects** | curl, hostap, libcrc, lua, mosquitto, pure-ftpd, raylib, seL4, sqlite |
 <!-- BENCH:HIGHLIGHTS:END -->
 
@@ -30,12 +30,56 @@ Regenerate this table with `python -m bench render-docs --realworld-run RUN`
 Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) and [REALWORLD_RESULTS.md](REALWORLD_RESULTS.md) for details.
 
 > **Note**: the real-world precision/recall figure is pinned to the last
-> validly-adjudicated run (v0.4.313, run #217 — 11.7% of its findings are
+> validly-adjudicated run (v0.4.325, run #226 — 11.8% of its findings are
 > still unlabeled, mostly `pure-ftpd`/`seL4`'s deliberately-unsampled 90%;
-> see REALWORLD_RESULTS.md). Rule-logic commits landed since v0.4.313 aren't
+> see REALWORLD_RESULTS.md). Rule-logic commits landed since v0.4.325 aren't
 > reflected here; a current figure requires delta-adjudicating the newer
 > unlabeled findings first (see CLAUDE.md's delta-adjudication protocol)
 > before it can be safely republished.
+>
+> **Recall is measured against *known* true positives**, not against all
+> defects present. There is no exhaustive false-negative hunt behind the
+> 93.7% — past audits scoped their FN searches to specific bug categories.
+> True recall is unknown and lower.
+
+### Rule-suite coverage
+
+Precision and recall above are aggregates over the rules that actually fire
+on the benchmark corpora. They say nothing about the rest of the suite, and
+the rest of the suite is substantial (measured 2026-09-02, run #226):
+
+| | Rules |
+|---|---:|
+| Implemented | **311** (307 enabled by default) |
+| Have true-positive evidence somewhere | **186** — 127 from Juliet, 144 from real-world TP/FN labels |
+| **No true-positive evidence anywhere** | **125 (40%)** |
+| &nbsp;&nbsp;· fire on the corpus, but have only ever produced FPs | 65 |
+| &nbsp;&nbsp;· never fire on the nine projects at all | 60 |
+
+A rule in that last group has never been shown to detect anything real —
+but that is usually a statement about the corpora, not about the rule. The
+nine real-world projects are mature, warning-clean C, which is the opposite
+population from sqc's nominal use case (newer, in-progress, possibly
+non-compiling code wired into CI/CD early — sqc needs no build system, which
+is the whole point). A rule whose defect cannot survive review in released
+software is structurally incapable of scoring a true positive there. The 60
+never-firing rules include `WIN02-C` and `WIN30-C` — Windows rules against
+Linux-only corpora, categorically inapplicable rather than broken. See
+[REALWORLD_RESULTS.md](REALWORLD_RESULTS.md#what-this-corpus-can-and-cannot-measure)
+for the `DCL31-C` worked example of why a per-rule 0.0% here is a category
+error.
+
+The material to close this gap already exists in the repo: **1,959
+must-detect** fixtures (`src/rules/cert_c/*/*/tests/fail/*.c`, across 306
+rules) and **1,568 must-not-detect** fixtures
+(`src/rules/cert_c/*/*/tests/pass/*.c`, across 308 rules), labeled by
+construction — 309 distinct rules carry at least one. 121 of the 125
+unvalidated rules already have a must-detect fixture — only `ENV04-C`,
+`FLP01-C`, `MSC18-C` and `MSC25-C` have none.
+Today those fixtures run only as pass/fail unit tests and feed no measured
+metric, so a rule can be fully exercised by tests and still read as having
+no detection evidence. Scoring them as a third benchmark tier is tracked as
+tasks 693–696.
 
 ## Installation
 
