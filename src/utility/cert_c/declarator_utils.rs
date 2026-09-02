@@ -81,7 +81,6 @@ pub fn is_pointer_declarator(node: &Node) -> bool {
 /// // int (*fn)(int);   // returns true
 /// // int *ptr;         // returns false
 /// ```
-#[allow(dead_code)]
 pub fn is_function_declarator(node: &Node) -> bool {
     has_declarator_of_kind(node, "function_declarator")
 }

@@ -1,7 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::points_to::lvalue_of;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::{ast_utils, declarator_utils};
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -790,6 +790,17 @@ fn analyze_parameter(param: &Node, source: &str) -> Option<(String, bool, bool, 
                     }
                 }
                 "pointer_declarator" => {
+                    // Function-pointer-typed parameter (e.g. `void (*cb)(int)`,
+                    // `char **(*completion_cb)(void *, const char *, int)`).
+                    // DCL13-C is about pointers to DATA not changed by the
+                    // function; const on a function-pointer *type* qualifies
+                    // the pointer variable itself, not the pointee (code), so
+                    // it doesn't carry the same meaning CERT intends here and
+                    // isn't idiomatic C. Skip it entirely rather than
+                    // flagging it as an unmodified pointer (task 642).
+                    if declarator_utils::is_function_declarator(&child) {
+                        continue;
+                    }
                     is_pointer = true;
                     param_name = ast_utils::get_identifier_from_declarator(&child, source);
                     if !param_name.is_empty() {
@@ -799,6 +810,11 @@ fn analyze_parameter(param: &Node, source: &str) -> Option<(String, bool, bool, 
                     }
                 }
                 "array_declarator" => {
+                    // Array of function pointers (e.g. `void (*cbs[])(int)`) —
+                    // same rationale as the pointer_declarator case above.
+                    if declarator_utils::is_function_declarator(&child) {
+                        continue;
+                    }
                     is_pointer = true; // Arrays decay to pointers in function parameters
                     param_name = ast_utils::get_identifier_from_declarator(&child, source);
                     if !param_name.is_empty() {
