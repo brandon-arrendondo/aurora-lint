@@ -16,6 +16,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
+use crate::utility::cert_c::declarator_utils;
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -159,6 +160,17 @@ impl Dcl31C {
                 }
             }
         }
+        // Function-pointer-typed parameters (e.g. `int (*xToken)(void*, int)`
+        // in sqlite's callback style) are directly callable by name inside
+        // the function body. They never reach the branch above because a
+        // `parameter_declaration` node's kind is neither "function_definition"
+        // nor "declaration", so they were falling through as apparently
+        // undeclared calls (task 691).
+        if node.kind() == "function_definition" {
+            for name in function_pointer_param_names(node, source) {
+                self.declared_functions.borrow_mut().insert(name);
+            }
+        }
         // Track function-like macro names (#define FOO(...) ...)
         // so that macro invocations aren't flagged as undeclared functions.
         if node.kind() == "preproc_function_def" {
@@ -169,25 +181,30 @@ impl Dcl31C {
         }
     }
 
-    /// Extract function name from declarator
+    /// Extract function name from declarator.
+    ///
+    /// `T name = value;` — the declaration's "declarator" field is the
+    /// `init_declarator` wrapping the real declarator, not the declarator
+    /// itself. Without unwrapping it here, an initialized local (including a
+    /// function-pointer local like `int (*xLocal)(int) = 0;`) is silently
+    /// never tracked (task 691). Delegates everything else to
+    /// `ast_utils::get_identifier_from_declarator`, which already handles
+    /// `function_declarator`/`pointer_declarator`/`array_declarator`/
+    /// `parenthesized_declarator` recursion (needed for the parenthesized
+    /// `(*name)` shape of a function-pointer declarator) and plain
+    /// identifiers.
     fn extract_function_name(&self, node: &Node, source: &str) -> Option<String> {
-        match node.kind() {
-            "function_declarator" => {
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    return self.extract_function_name(&declarator, source);
-                }
-            }
-            "pointer_declarator" => {
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    return self.extract_function_name(&declarator, source);
-                }
-            }
-            "identifier" => {
-                return Some(get_node_text(node, source).to_string());
-            }
-            _ => {}
+        let node = if node.kind() == "init_declarator" {
+            node.child_by_field_name("declarator")?
+        } else {
+            *node
+        };
+        let name = ast_utils::get_identifier_from_declarator(&node, source);
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
         }
-        None
     }
 
     /// Check for implicit function declaration in call expression
@@ -386,6 +403,62 @@ fn is_macro_like_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Names of function-pointer-typed parameters declared by `func_node`'s own
+/// parameter list (e.g. `xToken` in `int (*xToken)(void*, int, ...)`).
+/// Does not descend into a parameter's own declarator subtree beyond what's
+/// needed to find its identifier, so a parameter that is itself a
+/// function-pointer-returning-function-pointer still resolves to one name,
+/// and a *nested* function pointer's own (unrelated) parameter list is never
+/// mistaken for `func_node`'s.
+fn function_pointer_param_names(func_node: &Node, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let Some(func_declarator) = func_node
+        .child_by_field_name("declarator")
+        .and_then(|d| unwrap_to_function_declarator(&d))
+    else {
+        return names;
+    };
+    let Some(param_list) = func_declarator.child_by_field_name("parameters") else {
+        return names;
+    };
+    for i in 0..param_list.child_count() {
+        let Some(param) = param_list.child(i) else {
+            continue;
+        };
+        if param.kind() != "parameter_declaration" {
+            continue;
+        }
+        for j in 0..param.child_count() {
+            let Some(child) = param.child(j) else {
+                continue;
+            };
+            if matches!(
+                child.kind(),
+                "pointer_declarator" | "array_declarator" | "function_declarator"
+            ) && declarator_utils::is_function_declarator(&child)
+            {
+                if let Some(name) = ast_utils::find_identifier_in_declarator(&child, source) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Find a function's own `function_declarator` (the one carrying its
+/// parameter list), skipping through a pointer-return-type wrapper
+/// (`char *foo(...)` parses as `pointer_declarator(function_declarator)`).
+fn unwrap_to_function_declarator<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+    match node.kind() {
+        "function_declarator" => Some(*node),
+        "pointer_declarator" => node
+            .child_by_field_name("declarator")
+            .and_then(|d| unwrap_to_function_declarator(&d)),
+        _ => None,
+    }
 }
 
 /// Returns true if the node is nested inside a preprocessor conditional block
