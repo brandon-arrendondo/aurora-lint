@@ -481,6 +481,26 @@ def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
         cmd.extend(["-d", path])
     if compile_db:
         cmd.extend(["--compile-commands", compile_db])
+    # ─── MEASUREMENT BRANCH ONLY — DO NOT MERGE (task 688) ────────────────
+    # This branch exists solely so the benchmark queue can run one real-world
+    # sweep with --system-includes on. The queue worker's realworld path only
+    # knows how to pass --codebase and --compile-commands, and it is a systemd
+    # daemon with no signal handling, so teaching it a new flag would mean
+    # SIGTERMing a live Juliet job. Flipping the flag on in the runner and
+    # queueing this ref sidesteps that entirely.
+    #
+    # Deliberately NOT routed through bench/config.py's variant suffix: the
+    # worker computes the results directory as f"sqc-{version}-{sha}" with no
+    # variant, so a suffix here would make it look for a directory that does
+    # not exist and mark the job failed (the same pre-existing bug that breaks
+    # queued realworld+compile_commands jobs). This branch's own commit SHA is
+    # what distinguishes its run.
+    #
+    # The baseline to compare against is a plain realworld run at the branch
+    # point (54fd4373) -- identical sqc, identical rules, differing only in
+    # whether this flag is passed.
+    cmd.append("--system-includes")
+    # ─────────────────────────────────────────────────────────────────────
     cmd.extend(extra)
     cmd.extend(includes)
     return cmd
