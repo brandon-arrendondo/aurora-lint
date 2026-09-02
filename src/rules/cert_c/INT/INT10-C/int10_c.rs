@@ -38,8 +38,11 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::const_eval::{self, MacroConstantMap};
+use crate::analyze::cfg::FunctionCfg;
+use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::value_range::RangeAnalysisResult;
+use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::overflow_helpers;
@@ -62,6 +65,16 @@ pub struct Int10C {
     /// that's an enum constant with a provably non-negative *value* clear
     /// the check even when its enum *type* is signed (task 673).
     project_macros: RefCell<MacroConstantMap>,
+    /// `project_macros` merged with the current file's own `#define`s, kept
+    /// for the duration of `check` so the VRA range lookup can resolve
+    /// macro-valued identifiers the same way the rest of the rule does.
+    current_macros: RefCell<MacroConstantMap>,
+    /// Per-function CFGs and value-range results, supplied by the driver
+    /// because [`needs_vra`] is true. Used to prove a signed *dividend* is
+    /// non-negative at the modulo site -- e.g. a local `int` derived from a
+    /// guard-bounded parameter (task 674).
+    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
 }
 
 impl Int10C {
@@ -69,6 +82,9 @@ impl Int10C {
         Self {
             typedef_types: RefCell::new(HashMap::new()),
             project_macros: RefCell::new(MacroConstantMap::new()),
+            current_macros: RefCell::new(MacroConstantMap::new()),
+            function_cfgs: RefCell::new(HashMap::new()),
+            vra_results: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -99,12 +115,28 @@ impl CertRule for Int10C {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
     }
 
+    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
+        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    }
+
+    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
+        *self.vra_results.borrow_mut() = results.clone();
+    }
+
+    fn needs_vra(&self) -> bool {
+        true
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         let type_map = overflow_helpers::collect_variable_types(node, source);
-        let macros =
+        *self.current_macros.borrow_mut() =
             const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
+        // Held immutably for the whole walk; `vra_var_ranges_at` borrows the
+        // same cell immutably again, which is fine.
+        let macros = self.current_macros.borrow();
         self.check_modulo_usage(node, source, &mut violations, &type_map, &macros);
+        drop(macros);
         violations
     }
 }
@@ -216,6 +248,19 @@ impl Int10C {
             return false;
         }
 
+        // A signed dividend that VRA can prove non-negative at this point
+        // can't yield a negative remainder: C99 6.5.5p6 truncates toward
+        // zero, so `a % b` carries the sign of `a` whatever `b`'s sign is.
+        // This is what catches a local `int` whose non-negativity comes from
+        // enclosing guard flow rather than from its declared type -- e.g.
+        // seL4's `int normal_irq = irq - NORMAL_IRQ_OFFSET;` inside an
+        // `else if` reached only after `if (irq < NORMAL_IRQ_OFFSET) return;`
+        // (task 674). Deliberately dividend-only: a non-negative *divisor*
+        // proves nothing (`-5 % 3 == -2`).
+        if self.dividend_is_nonnegative_by_vra(&left_node, source, macros) {
+            return false;
+        }
+
         // Field expressions (e.g., self->field) — we can't resolve struct member
         // types without struct definitions, so don't assume signed
         if left_node.kind() == "field_expression" || right_node.kind() == "field_expression" {
@@ -307,6 +352,40 @@ impl Int10C {
             false
         })
         .is_some()
+    }
+
+    /// True when value-range analysis proves the modulo's *dividend* is
+    /// non-negative at this expression. Returns false whenever VRA is
+    /// unavailable (no CFG for the enclosing function, no converged range for
+    /// an operand identifier) or the range is only partially known, so the
+    /// rule's behavior is unchanged wherever the ranges aren't there.
+    fn dividend_is_nonnegative_by_vra(
+        &self,
+        left_node: &Node,
+        source: &str,
+        macros: &MacroConstantMap,
+    ) -> bool {
+        let var_ranges = match self.vra_var_ranges_at(left_node, source) {
+            Some(r) => r,
+            None => return false,
+        };
+        match const_eval::try_evaluate_range(left_node, source, macros, &var_ranges) {
+            Some(range) => range.min >= 0,
+            None => false,
+        }
+    }
+
+    /// VRA-derived variable ranges in effect at `expr_node`, replaying the
+    /// containing block so an assignment earlier in the same block (the
+    /// common `int t = a - b; ... t % n` shape) is visible here.
+    fn vra_var_ranges_at(&self, expr_node: &Node, source: &str) -> Option<VarRangeMap> {
+        vra_access::var_ranges_replay_at(
+            &self.function_cfgs.borrow(),
+            &self.vra_results.borrow(),
+            expr_node,
+            source,
+            &self.current_macros.borrow(),
+        )
     }
 
     /// Check if an expression appears to use unsigned types

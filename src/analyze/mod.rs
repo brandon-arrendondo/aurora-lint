@@ -538,6 +538,7 @@ fn analyze_one_file(
             &root_node,
             &source,
             &context.function_summaries,
+            &context.macro_constants,
         );
 
         // Extract suppressions from the current file
@@ -688,19 +689,31 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
 }
 
 /// Compute VRA for all functions if any enabled rule needs it.
-fn compute_vra_if_needed(
+///
+/// `pub(crate)` so the generated rule tests in
+/// `src/rules/cert_c/integration/` can build the same VRA state the real
+/// scan does -- a rule whose FP suppression depends on value ranges is
+/// otherwise untestable from a `.c` fixture (task 674).
+pub(crate) fn compute_vra_if_needed(
     needs_vra: bool,
     function_cfgs: &HashMap<usize, cfg::FunctionCfg>,
     root_node: &tree_sitter::Node,
     source: &str,
     prescan_summaries: &HashMap<String, function_summary::FunctionSummary>,
+    project_macros: &const_eval::MacroConstantMap,
 ) -> HashMap<usize, value_range::RangeAnalysisResult> {
     if !needs_vra || function_cfgs.is_empty() {
         return HashMap::new();
     }
 
-    // Only compute macros and same-file summaries when VRA is actually needed
-    let macros = const_eval::collect_macro_constants(root_node, source);
+    // Only compute macros and same-file summaries when VRA is actually needed.
+    // Project-wide macros (from prescan) are merged under the current file's
+    // own `#define`s, which win on collision. Without the project half, a
+    // guard written against a header-defined constant -- `if (irq <
+    // NORMAL_IRQ_OFFSET) return;` where that macro lives in a driver header
+    // -- refined nothing, so every variable derived from the guarded one
+    // stayed at its full type range for the rest of the function (task 674).
+    let macros = const_eval::merged_macro_constants(project_macros, root_node, source);
     let mut file_summaries = function_summary::compute_summaries(
         root_node,
         source,
@@ -975,7 +988,14 @@ mod tests {
         let code = "void f(void) {}";
         let (tree, source) = parse_c(code);
         let summaries = HashMap::new();
-        let results = compute_vra_if_needed(false, &cfgs, &tree.root_node(), &source, &summaries);
+        let results = compute_vra_if_needed(
+            false,
+            &cfgs,
+            &tree.root_node(),
+            &source,
+            &summaries,
+            &const_eval::MacroConstantMap::new(),
+        );
         assert!(results.is_empty());
     }
 
@@ -985,7 +1005,14 @@ mod tests {
         let code = "void f(void) {}";
         let (tree, source) = parse_c(code);
         let summaries = HashMap::new();
-        let results = compute_vra_if_needed(true, &cfgs, &tree.root_node(), &source, &summaries);
+        let results = compute_vra_if_needed(
+            true,
+            &cfgs,
+            &tree.root_node(),
+            &source,
+            &summaries,
+            &const_eval::MacroConstantMap::new(),
+        );
         assert!(results.is_empty());
     }
 
