@@ -513,8 +513,55 @@ unresolvable.
 `or_insert` that `-D` flags get. Pointing the resolver at the system header
 tree therefore lets a libc macro win over a project macro of the same name.
 That is pre-existing behavior for any `-I` path, but this flag is the first
-thing to aim it at all of `/usr/include`, so a delta from it wants measuring
-rather than assuming.
+thing to aim it at all of `/usr/include`. Measured below; no sign of it.
+
+### Measured (2026-09-02, sqc 0.4.323, runs #224 vs #225)
+
+A/B on one binary, differing only in whether the runner passes the flag:
+
+| | plain (#224) | `--system-includes` (#225) |
+|---|---|---|
+| findings | 68,085 | 68,075 |
+| precision | 24.3% | 24.3% |
+| recall | 93.7% | 93.7% |
+| detected TPs | 13,296 | 13,296 |
+
+**Ten findings out of 68,000 — 0.015%.** pureftpd −6, raylib −4, the other
+seven projects identical. By rule: DCL31-C −22 (real declarations now
+reachable), ARR30-C +8 and INT32-C +4 (newly foldable constants). Not one
+detected true positive moved.
+
+**The first attempt at this measurement was wrong, and instructively so.** Runs
+#222/#223, taken before task 690 was fixed, showed −362 findings and looked
+like a large FP win. It was not: 374 of it was DCL31-C being *silently
+disabled*, because adding `/usr/include` to the search path tripped the
+unresolved-project-header gate (see task 690 —
+`is_missing_project_header` counted a system directory as evidence about the
+project). The rule was reporting nothing at all, including genuine violations.
+Once that was fixed, the same flag's real effect is −10.
+
+### What this retires
+
+Both halves of Phase 4 are now measured on the real-world corpus, and both are
+non-factors: the compile database at −0.09% of findings, system includes at
+−0.015%, neither moving precision or recall. §1 of this document motivated the
+whole line of work as *"recurring, codebase-independent false positives rooted
+in sqc's inability to see through C macros"*, and that framing was right about
+the FP class — but the reachability half of it is done and it bought almost
+nothing measurable here. What did move real-world numbers was per-rule
+structural work (task 553's MSC17-C fix alone: −81% of that rule's findings).
+
+Two honest reasons the payoff is small, both worth knowing before anyone
+re-opens this:
+- `prescan_directories` already crosses project headers with no `-I` at all,
+  and four of the nine benchmark projects already hand-feed `-I /usr/include`
+  in `bench/realworld_runner.py`'s `CODEBASES`. The engine was mostly being
+  told what it already knew.
+- The macros that were genuinely out of reach (`NULL`, `offsetof`, `va_list`,
+  `bool`) are ones few rules key decisions on, so making them reachable changes
+  little. The flag is still correct, cheap and worth keeping opt-in for a user
+  whose project genuinely depends on system-header macros; it is simply not a
+  precision lever for this corpus.
 
 ### Validation status
 
