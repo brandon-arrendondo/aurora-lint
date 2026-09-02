@@ -469,16 +469,52 @@ keep in sync.
   no-op that still looks like it worked. `CompileDb::missing_include_paths`
   drives a CLI warning instead.
 
-### Known gap (deliberate)
+### The system-header gap, and how it was closed (task 623)
 
 A compile database contains the flags a build *passes*, so it does **not**
-contain the compiler's implicit system header directories. `<sys/queue.h>` —
-the §5(D) motivating example — lives only in `/usr/include` and is therefore
-still out of reach; the §5(D) registry remains the answer for it. Closing this
-needs the compiler's default search list (`cc -E -Wp,-v -`), which is why
-`CompileDb::compilers` records the compiler executables. Left as a follow-up:
-it reintroduces a subprocess, and the project-header win should be measured on
-its own first.
+contain the compiler's implicit system header directories — the compiler
+already knows them. That was left as a deliberate follow-up, gated on measuring
+the project-header win on its own first (done: see below, −0.09%).
+
+`src/analyze/system_includes.rs` + `--system-includes` now closes it by asking
+the compiler for its own search list (`echo | cc -E -Wp,-v -x c -`, parsed
+between the `#include <...> search starts here:` and `End of search list.`
+markers) and appending what it reports, lowest priority, after everything the
+user or the database named. With a database, every distinct compiler it names is
+asked — which is what `CompileDb::compilers` was recorded for. Without one, the
+platform default `cc` is asked, so the flag is useful with no compile database
+at all. A compiler that cannot be run (a cross-compiler absent from the analysis
+host) warns and is skipped.
+
+Kept behind its **own** flag, separate from `--compile-commands`, for two
+reasons: it spawns a subprocess, which is the one §5(C) con this phase was
+scoped to avoid, and keeping it separate is what lets a later measurement
+attribute a delta to this rather than to the database.
+
+**What it actually reaches.** Not `<sys/queue.h>` — the §5(D) motivating
+example turned out to live in `/usr/include`, which four of the nine benchmark
+projects hand-feed via `-I` in `bench/realworld_runner.py`'s `CODEBASES`
+already. The directories nothing reached before are the other two: the Debian
+multiarch directory (`/usr/include/x86_64-linux-gnu`, 398 headers), which holds
+glibc's `bits/*.h` so a `<bits/...>` include from an otherwise-reachable header
+dead-ends without it; and the gcc internal directory (124 headers), which is
+where `stdarg.h`, `stddef.h` and `stdbool.h` *actually* live, since glibc does
+not ship them. So `NULL`, `offsetof`, `va_list` and `bool`/`true`/`false` were
+never harvested from their real definitions.
+
+Verified end to end on a three-line file including `<stdarg.h>`, `<stddef.h>`
+and `<sys/queue.h>`: the saved prescan context goes from **152 bytes holding
+nothing** to 21,353 bytes holding 608 symbols, among them `NULL`, `offsetof`,
+`va_list` and `SLIST_HEAD`. Without the flag all three includes are simply
+unresolvable.
+
+**Caveat carried forward.** `resolve_includes` harvests header macros with
+`macro_constants.extend(...)` — override semantics, unlike the gap-filling
+`or_insert` that `-D` flags get. Pointing the resolver at the system header
+tree therefore lets a libc macro win over a project macro of the same name.
+That is pre-existing behavior for any `-I` path, but this flag is the first
+thing to aim it at all of `/usr/include`, so a delta from it wants measuring
+rather than assuming.
 
 ### Validation status
 

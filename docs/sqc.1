@@ -1,6 +1,6 @@
 .\" sqc - Software Code Quality
 .\" Man page for sqc(1)
-.TH SQC 1 "September 2026" "sqc 0.4.315" "User Commands"
+.TH SQC 1 "September 2026" "sqc 0.4.322" "User Commands"
 .SH NAME
 sqc \- CERT C compliance checker for C source code
 .SH SYNOPSIS
@@ -33,6 +33,23 @@ times. For best results, include all source directories in the project.
 \fB\-I\fR, \fB\-\-include\-path\fR \fIDIR\fR
 Include search paths for resolving \fB#include\fR directives, analogous to the
 compiler \fB\-I\fR flag. May be specified multiple times.
+.TP
+\fB\-\-compile\-commands\fR \fIFILE\fR
+Read include search paths (\fB\-I\fR, \fB\-isystem\fR, \fB\-iquote\fR,
+\fB\-idirafter\fR) and command-line macros (\fB\-D\fR, \fB\-U\fR) out of a
+\fIcompile_commands.json\fR and feed them to the pre-scan. Optional: sqc needs
+no build system, and without this flag behavior is unchanged. No preprocessor is
+run and the parse tree is untouched, so findings keep their source locations.
+Paths in a database are absolute; if it was generated on another host, sqc warns
+rather than silently resolving nothing.
+.TP
+\fB\-\-system\-includes\fR
+Also search the compiler's own built-in system header directories, discovered by
+asking it (\fBcc \-E \-Wp,\-v \-\fR) and appended at lowest priority. A
+compile database lists only the flags a build \fIpasses\fR, so it can never
+contain these; with one, each compiler the database names is asked, and without
+one the platform default \fBcc\fR is. Off by default because it spawns a
+compiler. A compiler that cannot be run is reported and skipped, not fatal.
 .TP
 \fB\-\-suppress\-file\fR \fIFILE\fR
 Path to a

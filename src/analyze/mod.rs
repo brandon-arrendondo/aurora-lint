@@ -32,6 +32,9 @@ pub mod prescan;
 pub mod relevance;
 /// Inline `SQC-SUPPRESS` comment parsing and suppression-file matching.
 pub mod suppression;
+/// Recovering the compiler's *implicit* system header directories
+/// (`cc -E -Wp,-v -`), which a `compile_commands.json` can never contain.
+pub mod system_includes;
 pub mod unknown_identifier_recovery;
 pub mod value_range;
 pub mod vra_access;

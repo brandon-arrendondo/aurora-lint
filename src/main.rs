@@ -120,6 +120,12 @@ fn run() -> Result<i32> {
                 .value_name("FILE"),
         )
         .arg(
+            Arg::new("system_includes")
+                .long("system-includes")
+                .help("Also search the compiler's own built-in system header directories, found by asking it (cc -E -Wp,-v -). Off by default: it spawns a compiler. Works with or without --compile-commands, which can never contain these paths")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
             Arg::new("exclude")
                 .long("exclude")
                 .help("Exclude files matching this path glob from analysis (repeatable, e.g. --exclude '**/onelua.c' --exclude 'testes/**')")
@@ -263,6 +269,46 @@ fn run() -> Result<i32> {
         }
         None => None,
     };
+    // The compiler's built-in directories go last: they are the lowest-priority
+    // half of a real compiler's search order, and anything the user or the
+    // build named explicitly should still win.
+    if matches.get_flag("system_includes") {
+        // A compile database records which compiler built each file, which is
+        // the right one to ask. Without one there is nothing to go on but the
+        // platform default.
+        let compilers: Vec<String> = match &compile_db {
+            Some(db) if !db.compilers.is_empty() => db.compilers.clone(),
+            _ => vec![analyze::system_includes::DEFAULT_COMPILER.to_string()],
+        };
+        let sys = analyze::system_includes::query(&compilers);
+        let mut added = 0usize;
+        for p in &sys.paths {
+            if !include_paths.contains(p) {
+                include_paths.push(p.clone());
+                added += 1;
+            }
+        }
+        eprintln!(
+            "System include directories: {} from {} ({})",
+            added,
+            if sys.queried.len() == 1 {
+                "compiler".to_string()
+            } else {
+                format!("{} compilers", sys.queried.len())
+            },
+            if sys.queried.is_empty() {
+                "none answered".to_string()
+            } else {
+                sys.queried.join(", ")
+            },
+        );
+        // A compiler that could not be asked is reported rather than swallowed:
+        // otherwise a cross-compiler missing from the analysis host looks
+        // identical to one that genuinely has no system directories.
+        for (compiler, reason) in &sys.failed {
+            eprintln!("Warning: could not query '{compiler}' for its system include directories ({reason}); its built-in headers stay out of reach.");
+        }
+    }
     let excludes: Vec<String> = matches
         .get_many::<String>("exclude")
         .map(|vals| vals.cloned().collect())
