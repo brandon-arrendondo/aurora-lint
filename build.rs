@@ -766,6 +766,22 @@ fn generate_test_function(
             "    crate::analyze::collect_function_cfgs(&tree.root_node(), &source, &mut function_cfgs);"
         )?;
         writeln!(f, "    rule.set_function_cfgs(&function_cfgs);")?;
+        // A rule whose suppression logic reads value ranges (INT10-C's
+        // guard-bounded-dividend check, INT30/31/32-C, ARR30-C) needs the
+        // same VRA state the real scan builds, or its PASS fixtures fail
+        // for want of ranges rather than for a real regression (task 674).
+        writeln!(
+            f,
+            "    let vra_results = crate::analyze::compute_vra_if_needed("
+        )?;
+        writeln!(f, "        rule.needs_vra(),")?;
+        writeln!(f, "        &function_cfgs,")?;
+        writeln!(f, "        &tree.root_node(),")?;
+        writeln!(f, "        &source,")?;
+        writeln!(f, "        &context.function_summaries,")?;
+        writeln!(f, "        &context.macro_constants,")?;
+        writeln!(f, "    );")?;
+        writeln!(f, "    rule.set_vra_results(&vra_results);")?;
         writeln!(f, "    ")?;
     }
 
