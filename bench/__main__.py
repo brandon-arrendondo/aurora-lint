@@ -224,13 +224,13 @@ def cmd_realworld(args):
 
     # Header
     print(f"Real-world FP Dashboard — v{run['sqc_version']}"
-          f" ({run.get('commit_sha', '?')[:8]})")
+          f" ({_run_ident(run)})")
     if base_id and "base_run" in dashboard:
         base = dashboard["base_run"]
         delta = dashboard["total_delta"]
         sign = "+" if delta >= 0 else ""
         print(f"  vs v{base['sqc_version']}"
-              f" ({base.get('commit_sha', '?')[:8]})"
+              f" ({_run_ident(base)})"
               f": {sign}{delta} ({sign}{delta / dashboard['base_total'] * 100:.1f}%)"
               if dashboard["base_total"] > 0
               else f"  vs v{base['sqc_version']}")
@@ -272,19 +272,32 @@ def cmd_realworld(args):
         print()
 
 
+def _run_ident(run: dict) -> str:
+    """Render a run's version+commit, with its configuration variant when it
+    has one.
+
+    A variant run shares its version and commit with the default run it was
+    paired against (that is the point of an A/B pair), so printing the SHA
+    alone would render the two identically.
+    """
+    sha = (run.get("commit_sha") or "?")[:8]
+    variant = run.get("variant")
+    return f"{sha}+{variant}" if variant else sha
+
+
 def cmd_realworld_runs(args):
     db = BenchDB()
     runs = db.list_realworld_runs()
     if not runs:
         print("No real-world runs found.")
         return
-    print(f"{'ID':>4}  {'Version':<10} {'Commit':<10} {'Scanned At':<20} {'Host'}")
-    print("-" * 65)
+    print(f"{'ID':>4}  {'Version':<10} {'Commit':<14} {'Scanned At':<20} {'Host'}")
+    print("-" * 69)
     for r in runs:
-        sha = (r.get("commit_sha") or "—")[:8]
+        ident = _run_ident(r) if r.get("commit_sha") else "—"
         scanned = (r.get("scanned_at") or "—")[:19]
         host = r.get("hostname") or "—"
-        print(f"{r['id']:>4}  {r['sqc_version']:<10} {sha:<10} {scanned:<20} {host}")
+        print(f"{r['id']:>4}  {r['sqc_version']:<10} {ident:<14} {scanned:<20} {host}")
 
 
 def cmd_realworld_score(args):
@@ -306,7 +319,7 @@ def cmd_realworld_score(args):
     run = result["run"]
     o = result["overall"]
     print(f"Real-world measured precision/recall — v{run['sqc_version']}"
-          f" ({(run.get('commit_sha') or '?')[:8]})  run #{target_id}")
+          f" ({_run_ident(run)})  run #{target_id}")
     print("(scored against ground-truth labels for each project's pinned commit)")
     print()
 
