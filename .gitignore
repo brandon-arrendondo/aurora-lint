@@ -20,6 +20,7 @@ Thumbs.db
 # SqC specific
 .todo-sqlite-cli
 .env
+.env.*
 sqc-results.json
 results/
 *.log
@@ -83,3 +84,9 @@ PARALLEL_NODES_ISSUES.md
 # verdicts.json coming out are meant to be committed/imported
 data/precision_audit/*/.gavel/
 data/precision_audit/*/gavel.db
+
+# Security disclosure packages: embargoed/unfixed vuln reports addressed to
+# upstream maintainers. Kept on disk, never committed. (Swept into git by
+# mistake 2026-09-02; removed from tip in the same session.)
+data/precision_audit/*/disclosure_package/
+data/precision_audit/*/*-disclosure-package-*.zip
