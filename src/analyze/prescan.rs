@@ -23,6 +23,10 @@ struct FilePrescanResult {
     function_summaries: HashMap<String, FunctionSummary>,
     call_graph: HashMap<String, HashSet<String>>,
     ambiguous_call_targets: HashSet<String>,
+    /// Names of `static`-qualified function *definitions* in this file
+    /// (task 299): used at merge time to detect the same bare name defined
+    /// as two unrelated internal-linkage functions in different files.
+    local_static_functions: HashSet<String>,
     macro_constants: HashMap<String, i64>,
     macro_aliases: HashMap<String, String>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
@@ -63,6 +67,7 @@ impl FilePrescanResult {
             function_summaries: HashMap::new(),
             call_graph: HashMap::new(),
             ambiguous_call_targets: HashSet::new(),
+            local_static_functions: HashSet::new(),
             macro_constants: HashMap::new(),
             macro_aliases: HashMap::new(),
             function_macros: HashMap::new(),
@@ -146,6 +151,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
 
         collect_call_graph(&root, &source, &mut result.call_graph);
         collect_ambiguous_call_targets(&root, &source, &mut result.ambiguous_call_targets);
+        collect_static_function_names(&root, &source, &mut result.local_static_functions);
 
         result.macro_aliases.extend(file_aliases);
 
@@ -259,6 +265,7 @@ pub fn prescan_directories(
     let mut function_summaries: HashMap<String, FunctionSummary> = HashMap::new();
     let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
     let mut ambiguous_call_targets: HashSet<String> = HashSet::new();
+    let mut static_defining_files: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     let mut macro_constants: HashMap<String, i64> = HashMap::new();
     let mut macro_aliases: HashMap<String, String> = HashMap::new();
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
@@ -357,6 +364,14 @@ pub fn prescan_directories(
             call_graph.entry(caller).or_default().extend(callees);
         }
         ambiguous_call_targets.extend(r.ambiguous_call_targets);
+        if let Some(path) = &r.source_path {
+            for name in &r.local_static_functions {
+                static_defining_files
+                    .entry(name.clone())
+                    .or_default()
+                    .insert(path.clone());
+            }
+        }
 
         macro_constants.extend(r.macro_constants);
         macro_aliases.extend(r.macro_aliases);
@@ -410,6 +425,25 @@ pub fn prescan_directories(
 
         value_only_global_candidates.extend(r.value_only_global_candidates);
         pointer_named_globals.extend(r.pointer_named_globals);
+    }
+
+    // A `static` function has internal linkage: it cannot be called from a
+    // different translation unit, so two files defining a same-named static
+    // are two unrelated functions, not the same node. Unioning their callee
+    // sets under one bare-name key (the loop above) fabricates cross-file
+    // call edges that don't exist -- e.g. curl's docs/examples/ each define
+    // their own `static void timer_cb(...)` (task 299, surfaced by task
+    // 297's call-graph migration finding more of these collisions than the
+    // old hand-rolled walk did). Drop the merged entry for any name defined
+    // `static` in more than one file and mark it ambiguous, so existing
+    // consumers (MSC04-C's cycle DFS, concurrency reachability) stop
+    // trusting edges into it -- the same treatment task 562 already gives
+    // callback/field-dispatch ambiguity.
+    for (name, files) in &static_defining_files {
+        if files.len() > 1 {
+            call_graph.remove(name);
+            ambiguous_call_targets.insert(name.clone());
+        }
     }
 
     // A name only qualifies project-wide if it was never seen with a
@@ -811,6 +845,26 @@ fn has_static_specifier(node: &Node, source: &str) -> bool {
         }
     }
     false
+}
+
+/// Collect the names of every `static`-qualified function *definition* in
+/// this file (not prototypes) -- used at cross-file merge time to detect the
+/// same bare name defined as two unrelated internal-linkage functions in
+/// different files (task 299).
+fn collect_static_function_names(node: &Node, source: &str, names: &mut HashSet<String>) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "function_definition" {
+                if has_static_specifier(&child, source) {
+                    if let Some(name) = extract_function_name_from_declarator(&child, source) {
+                        names.insert(name);
+                    }
+                }
+            } else {
+                collect_static_function_names(&child, source, names);
+            }
+        }
+    }
 }
 
 /// Extract function names from `function_definition` and `declaration` nodes.
@@ -6013,6 +6067,34 @@ no_mem:
         assert!(ctx.known_functions.contains("func_a"));
         assert!(ctx.known_functions.contains("func_b"));
         assert!(ctx.call_graph.get("func_a").unwrap().contains("func_b"));
+    }
+
+    #[test]
+    fn test_prescan_directories_drops_colliding_static_call_graph_node() {
+        // Two files each define their own unrelated `static timer_cb` (task
+        // 299's curl docs/examples pattern) -- a `static` function has
+        // internal linkage, so these must never be merged into one node.
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("a.c"),
+            "static void timer_cb(void) { helper_a(); } void run_a(void) { timer_cb(); }",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.c"),
+            "static void timer_cb(void) { helper_b(); }",
+        )
+        .unwrap();
+        let dirs = vec![dir.path().to_string_lossy().to_string()];
+        let ctx = prescan_directories(&dirs, None, false).unwrap();
+        assert!(
+            !ctx.call_graph.contains_key("timer_cb"),
+            "colliding same-named static's call-graph node should be dropped, not unioned"
+        );
+        assert!(ctx.ambiguous_call_targets.contains("timer_cb"));
+        // The edge recording that run_a calls (some) timer_cb is untouched --
+        // only the merged callee-set node for the colliding name is dropped.
+        assert!(ctx.call_graph.get("run_a").unwrap().contains("timer_cb"));
     }
 
     #[test]
