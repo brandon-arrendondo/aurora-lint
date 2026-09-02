@@ -42,6 +42,11 @@ Full Command Reference
                                        compile_commands.json (optional; improves cross-file
                                        macro/header coverage for projects that already have
                                        a compile database)
+          --system-includes            Also search the compiler's own built-in system header
+                                       directories, found by asking it (cc -E -Wp,-v -).
+                                       Off by default: it spawns a compiler. Usable with or
+                                       without --compile-commands, which can never contain
+                                       these paths
       -v, --verbose                    Increase output verbosity (repeat for more detail;
                                        -v shows per-rule scanning progress)
           --save-prescan <FILE>        Save prescan context to a binary cache file
@@ -122,6 +127,43 @@ feeds them to the pre-scan that already exists:
 
 Because the parse tree is untouched, every finding keeps the source location it
 always had, and the ``PRE*`` rules still audit macros as written.
+
+Reaching the Compiler's Own Headers
+-----------------------------------
+
+A compile database lists the flags a build *passes*, so it can never contain the
+compiler's built-in search directories — the compiler already knows them.
+``--system-includes`` recovers them by asking the compiler itself
+(``cc -E -Wp,-v -``) and appending what it reports, lowest priority, after
+everything you or the database named::
+
+    sqc src/ -d src/ --system-includes
+    sqc src/ -d src/ --compile-commands build/compile_commands.json --system-includes
+
+With a compile database, each distinct compiler the database names is asked (so
+a cross-compiled project gets *its* toolchain's directories); without one, the
+platform default ``cc`` is asked. A compiler that cannot be run — a
+cross-compiler absent from the analysis host, say — produces a warning and is
+skipped, never an error.
+
+It is off by default for two reasons: it spawns a compiler, which the rest of
+the analysis pipeline never does, and it is worth being able to measure its
+effect separately from the database's.
+
+What it actually reaches, on a typical Linux host, is the two directories
+nothing else does. ``/usr/include`` is commonly passed by hand already, but the
+multiarch directory (``/usr/include/x86_64-linux-gnu``) holds glibc's
+``bits/*.h``, so a ``<bits/...>`` include from an otherwise-reachable header
+dead-ends without it; and the gcc internal directory is where ``stdarg.h``,
+``stddef.h`` and ``stdbool.h`` *actually* live, since glibc does not ship them.
+Without the flag, ``NULL``, ``offsetof``, ``va_list`` and ``bool``/``true``/
+``false`` are never harvested from their real definitions.
+
+One caveat worth knowing: ``#include`` resolution lets a later header's macro
+override an earlier one of the same name, so pointing it at the whole system
+header tree allows a libc macro to win over a project macro that shares its
+name. That is how any ``-I`` path has always behaved; this flag is simply the
+first thing to aim it at all of ``/usr/include``.
 
 Two properties worth knowing:
 

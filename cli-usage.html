@@ -48,6 +48,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#full-command-reference">Full Command Reference</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#cross-file-analysis">Cross-File Analysis</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#using-a-compile-database">Using a Compile Database</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#reaching-the-compiler-s-own-headers">Reaching the Compiler’s Own Headers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#file-exclusion">File Exclusion</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#export-formats">Export Formats</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#severity-filtering">Severity Filtering</a></li>
@@ -136,6 +137,11 @@ Options:
                                    compile_commands.json (optional; improves cross-file
                                    macro/header coverage for projects that already have
                                    a compile database)
+      --system-includes            Also search the compiler&#39;s own built-in system header
+                                   directories, found by asking it (cc -E -Wp,-v -).
+                                   Off by default: it spawns a compiler. Usable with or
+                                   without --compile-commands, which can never contain
+                                   these paths
   -v, --verbose                    Increase output verbosity (repeat for more detail;
                                    -v shows per-rule scanning progress)
       --save-prescan &lt;FILE&gt;        Save prescan context to a binary cache file
@@ -211,6 +217,39 @@ types join the cross-file context.</p></li>
 </ul>
 <p>Because the parse tree is untouched, every finding keeps the source location it
 always had, and the <code class="docutils literal notranslate"><span class="pre">PRE*</span></code> rules still audit macros as written.</p>
+</section>
+<section id="reaching-the-compiler-s-own-headers">
+<h2>Reaching the Compiler’s Own Headers<a class="headerlink" href="#reaching-the-compiler-s-own-headers" title="Link to this heading"></a></h2>
+<p>A compile database lists the flags a build <em>passes</em>, so it can never contain the
+compiler’s built-in search directories — the compiler already knows them.
+<code class="docutils literal notranslate"><span class="pre">--system-includes</span></code> recovers them by asking the compiler itself
+(<code class="docutils literal notranslate"><span class="pre">cc</span> <span class="pre">-E</span> <span class="pre">-Wp,-v</span> <span class="pre">-</span></code>) and appending what it reports, lowest priority, after
+everything you or the database named:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">sqc</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">--</span><span class="n">system</span><span class="o">-</span><span class="n">includes</span>
+<span class="n">sqc</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">--</span><span class="nb">compile</span><span class="o">-</span><span class="n">commands</span> <span class="n">build</span><span class="o">/</span><span class="n">compile_commands</span><span class="o">.</span><span class="n">json</span> <span class="o">--</span><span class="n">system</span><span class="o">-</span><span class="n">includes</span>
+</pre></div>
+</div>
+<p>With a compile database, each distinct compiler the database names is asked (so
+a cross-compiled project gets <em>its</em> toolchain’s directories); without one, the
+platform default <code class="docutils literal notranslate"><span class="pre">cc</span></code> is asked. A compiler that cannot be run — a
+cross-compiler absent from the analysis host, say — produces a warning and is
+skipped, never an error.</p>
+<p>It is off by default for two reasons: it spawns a compiler, which the rest of
+the analysis pipeline never does, and it is worth being able to measure its
+effect separately from the database’s.</p>
+<p>What it actually reaches, on a typical Linux host, is the two directories
+nothing else does. <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> is commonly passed by hand already, but the
+multiarch directory (<code class="docutils literal notranslate"><span class="pre">/usr/include/x86_64-linux-gnu</span></code>) holds glibc’s
+<code class="docutils literal notranslate"><span class="pre">bits/*.h</span></code>, so a <code class="docutils literal notranslate"><span class="pre">&lt;bits/...&gt;</span></code> include from an otherwise-reachable header
+dead-ends without it; and the gcc internal directory is where <code class="docutils literal notranslate"><span class="pre">stdarg.h</span></code>,
+<code class="docutils literal notranslate"><span class="pre">stddef.h</span></code> and <code class="docutils literal notranslate"><span class="pre">stdbool.h</span></code> <em>actually</em> live, since glibc does not ship them.
+Without the flag, <code class="docutils literal notranslate"><span class="pre">NULL</span></code>, <code class="docutils literal notranslate"><span class="pre">offsetof</span></code>, <code class="docutils literal notranslate"><span class="pre">va_list</span></code> and <code class="docutils literal notranslate"><span class="pre">bool</span></code>/<code class="docutils literal notranslate"><span class="pre">true</span></code>/
+<code class="docutils literal notranslate"><span class="pre">false</span></code> are never harvested from their real definitions.</p>
+<p>One caveat worth knowing: <code class="docutils literal notranslate"><span class="pre">#include</span></code> resolution lets a later header’s macro
+override an earlier one of the same name, so pointing it at the whole system
+header tree allows a libc macro to win over a project macro that shares its
+name. That is how any <code class="docutils literal notranslate"><span class="pre">-I</span></code> path has always behaved; this flag is simply the
+first thing to aim it at all of <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code>.</p>
 <p>Two properties worth knowing:</p>
 <ul class="simple">
 <li><p><strong>Build flags never override real source.</strong> A <code class="docutils literal notranslate"><span class="pre">-D</span></code> only supplies a macro
