@@ -2151,8 +2151,16 @@ impl TerminalUI {
         let c_files = project_source.get_c_files()?;
 
         if !self.include_paths.is_empty() {
-            let _ =
-                prescan::resolve_includes(&c_files, &self.include_paths, &mut context, None, true);
+            let mut project_roots: Vec<String> = vec![self.repo_path.clone()];
+            project_roots.extend(self.directories.iter().cloned());
+            let _ = prescan::resolve_includes(
+                &c_files,
+                &self.include_paths,
+                &project_roots,
+                &mut context,
+                None,
+                true,
+            );
         }
 
         if context.has_cross_file_data() {

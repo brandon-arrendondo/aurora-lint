@@ -739,6 +739,7 @@ mod tests {
         super::super::prescan::resolve_includes(
             &[c_file.to_string_lossy().to_string()],
             &db.include_paths,
+            &[root.to_string_lossy().to_string()],
             &mut ctx,
             None,
             false,

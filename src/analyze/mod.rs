@@ -310,7 +310,19 @@ fn load_project_context(
         } else {
             project_source.get_c_files()?
         };
-        prescan::resolve_includes(&c_files, include_paths, &mut context, progress, needs_vra)?;
+        // The project is the tree being scanned plus any -d directory: a
+        // search root outside it cannot make an unresolvable include a
+        // *project* header (task 690).
+        let mut project_roots: Vec<String> = vec![project_source.get_root_path().to_string()];
+        project_roots.extend(directories.iter().cloned());
+        prescan::resolve_includes(
+            &c_files,
+            include_paths,
+            &project_roots,
+            &mut context,
+            progress,
+            needs_vra,
+        )?;
     }
 
     // Fold in the build's `-D` macro state last, so that any macro the real
