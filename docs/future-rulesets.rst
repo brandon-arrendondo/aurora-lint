@@ -6,6 +6,35 @@ This page documents embedded coding standards and rule families that predate or
 complement MISRA and could be added to SqC in the future. All listed rules are
 freely implementable — they come from open/public-domain standards.
 
+Why CERT C Is The Base Standard
+================================
+
+Everything below is framed as complementing MISRA, which only makes sense once
+you know why MISRA is not what SqC implements. It is a fit-to-domain choice,
+not a fallback:
+
+- **CERT C is open.** Public and freely implementable, so every rule SqC
+  enforces can be read and checked against the analyzer's behaviour. That is
+  load-bearing for this repo specifically: the false-positive work is
+  reviewable because a reader can look up what the rule actually says, and the
+  ground-truth oracle's TP/FP verdicts are arguable against a published text
+  rather than a licensed one.
+- **The overlap with MISRA is strong.** The two address the same defect
+  classes for the most part. CERT C reaches further into security — untrusted
+  input, integer conversion, resource lifetime — while MISRA reaches further
+  into language-subsetting discipline.
+- **The residual difference targets a different industry.** MISRA's
+  mandatory/required/advisory apparatus, its subsetting rules and its
+  certification-oriented deviation process exist to satisfy a certification
+  body in automotive, medical and aerospace software. SqC was built for
+  consumer home devices, where the goal is finding real defects in
+  production-intent C. CERT C covers that without the certification overhead.
+
+So the question this page answers is not "what would we add if we could afford
+MISRA" but "which open standards add coverage CERT C does not already give
+us". Two rules on that list are already implemented — see the note under
+The Power of 10 Rules below.
+
 The Power of 10 Rules (NASA JPL, 2006)
 =======================================
 
@@ -23,6 +52,18 @@ statically analyse. They complement MISRA C guidelines.
 8. **Limited preprocessor use** — limit to file inclusion and simple macros.
 9. **Limited pointer complexity** — max 2 levels of dereferencing.
 10. **Compiler warnings + static analysis** — compile with all warnings enabled; use static analysis tools.
+
+.. note::
+
+   **Rules 3 and 9 are already implemented**, as ``BRULE-060`` (no dynamic
+   memory allocation after initialisation) and ``BRULE-065`` (no excessive
+   pointer indirection) in ``src/rules/brules/``. They are the only non-CERT-C
+   rules SqC ships, and they are enabled through
+   ``src/rules/brules/rules-all.toml`` rather than the CERT C manifests. The
+   rest of the Power of Ten remains a candidate: rules 1, 2, 4, 6 and 8 are
+   plausibly checkable with the AST and CFG infrastructure already here, while
+   5 (assertion density) and 10 (build flags) are not really analyzer rules at
+   all.
 
 JPL Institutional Coding Standard (2009)
 =========================================

@@ -2,6 +2,39 @@
 
 A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC checks 307 rules across 17 categories, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
+## Why CERT C
+
+SqC targets the [SEI CERT C Coding
+Standard](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard)
+rather than MISRA C, and that is a deliberate fit-to-domain choice rather than
+a fallback.
+
+**CERT C is open.** The standard is public and freely implementable, so the
+rules a tool enforces can be read, argued with, and checked against the
+analyzer's behaviour by anyone. Every rule SqC implements cites its CERT C
+entry, and the false-positive work in this repo is legible for the same
+reason — you can look up what the rule actually says.
+
+**The overlap with MISRA is strong.** The two standards address the same
+defect classes for the most part; CERT C reaches further into security
+(untrusted input, integer conversion, resource lifetime) while MISRA reaches
+further into language-subsetting discipline.
+
+**The remaining difference is aimed somewhere else.** MISRA's extra rigour —
+the mandatory/required/advisory apparatus, the subsetting rules, the
+certification-oriented deviation process — is built for automotive, medical
+and aerospace software, where a certification body has to be satisfied. SqC
+was built for consumer home devices, where the goal is finding real defects in
+production-intent C, and CERT C covers that need without the certification
+overhead.
+
+Two rules from NASA JPL's [Power of
+Ten](docs/future-rulesets.rst) are also implemented alongside CERT C
+(`BRULE-060` no dynamic allocation after initialisation, `BRULE-065` no
+excessive pointer indirection). See
+[`docs/future-rulesets.rst`](docs/future-rulesets.rst) for other open
+standards that could be added and why they were not needed first.
+
 ## Key Features
 
 - **307 CERT C rules** enabled by default (311 implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
@@ -253,10 +286,16 @@ For advanced usage, CI/CD integration details, interactive UI reference, testing
 |------|----------|
 | [Developer Guide](docs/index.rst) | Advanced usage, CI/CD, UI reference, testing, architecture, contributing |
 | [`docs/juliet-history.rst`](docs/juliet-history.rst) | Juliet benchmark data: TP/FP history, per-CWE results |
+| [`docs/future-rulesets.rst`](docs/future-rulesets.rst) | Why CERT C is the base standard, and which open standards could be added |
+| [CONTRIBUTORS.md](CONTRIBUTORS.md) | Who built this |
 
 ## AI Assistance
 
 This project was developed with assistance from [Claude](https://claude.ai) (Anthropic). Claude was used throughout the development process for code generation, rule implementation, analysis, and documentation.
+
+Claude is deliberately not listed as a commit co-author — the acknowledgement
+belongs once, here, rather than repeated across several thousand commit
+messages. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the people involved.
 
 ## License
 
