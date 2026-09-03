@@ -33,6 +33,12 @@ bearing rather than cosmetic:
 
 `rw_score` fields this module reads:
 
+  - `overall.published_basis` / `overall.definition_version` -- the basis the
+    figures were computed on, printed in the rendered block by `_basis_line`.
+    Supplied by benchmarking_db's metrics layer (task 701); ABSENT from this
+    repo's local scorer, which is a supported case and prints a "not recorded"
+    line rather than nothing. Read with `.get`.
+
   - `overall.unlabeled_fraction`, `per_rule`, `per_project`
   - `unscoreable` -- list[dict], each `{project, reason, excluded_findings}`:
     projects dropped from every figure because no codebase_commit was
@@ -373,6 +379,46 @@ def _backfill_from_history(db: BenchDBLike, by_project: dict,
         needed = {p for p in needed if missing(p)}
 
 
+def _basis_line(overall: dict) -> str:
+    """One line naming the basis the figures above were computed on.
+
+    A single-basis dict is not a single-basis DOCUMENT. Only this block is
+    generated; the "Previous" sections in REALWORLD_RESULTS.md are
+    hand-written prose carrying whatever basis was published at the time, and
+    nothing recorded what that was. So the first canonical refresh puts run
+    226 at 24.2% directly above run 217 at 24.1% and it reads as a 0.1-point
+    improvement that is entirely the denominator moving -- 11 figures shift
+    together (recall 93.8 -> 93.9 goes UP because the denominator loses 95
+    out-of-scope real-bug labels while the numerator loses 82).
+
+    No assertion can catch that from either repo: those lines are not
+    generated and carry no basis to compare against. What the generated block
+    CAN do is state its own, so the comparison becomes checkable instead of
+    merely wrong. That is the whole job of this line.
+
+    When the basis is absent -- which is the normal case for this repo's local
+    SQLite scorer, since `published_basis` comes from benchmarking_db's
+    metrics layer -- it says so explicitly rather than printing nothing.
+    Omitting the line on absence would reproduce the exact defect it exists to
+    fix, and it usefully makes a locally-rendered block visibly different from
+    a canonical one: CLAUDE.md forbids committing local figures as project
+    numbers, and until now nothing made such a paste identifiable on sight.
+    """
+    basis = overall.get("published_basis")
+    version = overall.get("definition_version")
+    if not basis:
+        return ("_Basis: **not recorded** — rendered from a scorer that does "
+                "not declare one (this repo's local SQLite path). These "
+                "figures describe one checkout's runs, not the project's "
+                "measurements; do not cite them as project results._")
+    suffix = f", definitions `{version}`" if version else ""
+    return (f"_Basis: `{basis}`{suffix}. Figures on a different basis are not "
+            "comparable to these — a precision or recall delta against a "
+            "previously-published run is only meaningful if that run's basis "
+            "matches, and the hand-written sections below predate basis "
+            "labelling._")
+
+
 def render_realworld_latest(db: BenchDBLike, realworld_run_id: int,
                             rw_score: dict) -> str:
     results = db.get_realworld_results(realworld_run_id)
@@ -425,6 +471,8 @@ def render_realworld_latest(db: BenchDBLike, realworld_run_id: int,
         f"{overall['run_findings']:,} findings ({coverage_pct}%; "
         f"{overall['labeled_uncertain']:,} matched labels are \"uncertain\" "
         "and excluded from precision).",
+        "",
+        _basis_line(overall),
     ]
     return "\n".join(lines)
 
