@@ -1131,36 +1131,6 @@ impl Arr38C {
         }
     }
 
-    #[allow(dead_code)]
-    fn check_three_arg_size(
-        &self,
-        args: &[String],
-        node: &Node,
-        _source: &str,
-        function_name: &str,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        let size_arg = &args[2];
-
-        // Check for dangerous size calculation patterns
-        if self.is_dangerous_size_calculation(size_arg) {
-            let start_point = node.start_position();
-            violations.push(RuleViolation {
-                rule_id: self.rule_id().to_string(),
-                severity: Severity::High,
-                message: format!(
-                    "Function '{}' called with potentially invalid size calculation",
-                    function_name
-                ),
-                file_path: String::new(),
-                line: start_point.row + 1,
-                column: start_point.column + 1,
-                suggestion: Some("Ensure size argument does not exceed buffer bounds".to_string()),
-                ..Default::default()
-            });
-        }
-    }
-
     fn check_string_size_parameter(
         &self,
         args: &[String],
