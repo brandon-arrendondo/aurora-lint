@@ -312,8 +312,17 @@ def cmd_realworld_score(args):
         print(f"Error: {result['error']}")
         return
 
+    # Computed before the --json branch: the exit code has to be the same on
+    # both paths. A script doing `realworld-score --json > out.json && cite`
+    # would otherwise get a clean status on a partial score, which is the
+    # silent failure this is here to prevent -- the field being present in
+    # the JSON is only a signal to a reader who thought to look for it.
+    unscoreable = result.get("unscoreable_projects") or []
+
     if args.json:
         print(json.dumps(result, indent=2, default=str))
+        if unscoreable:
+            sys.exit(1)
         return
 
     run = result["run"]
@@ -322,6 +331,25 @@ def cmd_realworld_score(args):
           f" ({_run_ident(run)})  run #{target_id}")
     print("(scored against ground-truth labels for each project's pinned commit)")
     print()
+
+    # Before the numbers, not after. A project with no codebase_commit is not
+    # scored at all, and every figure below silently excludes it -- so the
+    # table reads as a complete picture of a run that is missing a chunk. This
+    # used to be one line in the Warnings block at the very bottom, under a
+    # full table, which is the weakest place to put "these numbers are not
+    # what they appear to be". Exits nonzero for the same reason: a caller
+    # that scripts this should not get a clean status on a partial score.
+    if unscoreable:
+        n = sum(u["run_findings"] for u in unscoreable)
+        print(f"!! {len(unscoreable)} project(s) COULD NOT BE SCORED — no "
+              f"codebase_commit recorded ({n:,} findings excluded from every "
+              "figure below):")
+        for u in unscoreable:
+            print(f"     {u['project']}  ({u['run_findings']:,} findings)")
+        print("   The run's ingest found no scan-time commit for these. "
+              "Re-ingest with a\n   sidecar, or treat this run as partial "
+              "-- do not cite these numbers as\n   full-suite.")
+        print()
 
     def pct(v):
         return f"{v:.1f}%" if v is not None else "—"
@@ -371,6 +399,9 @@ def cmd_realworld_score(args):
         print("Warnings:")
         for w in result["warnings"]:
             print(f"  ! {w}")
+
+    if unscoreable:
+        sys.exit(1)
 
 
 def _validate_label_rows(rows, args):
