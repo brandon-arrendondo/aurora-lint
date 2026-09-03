@@ -358,6 +358,42 @@ ground-truth audit, check whether its scope notes call for new
 and the live scan’s actual scope means dashboard numbers include findings
 that were never meant to be measured (or, more subtly, that the ground-truth
 denominator no longer matches what’s being scanned).</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p><strong>That mismatch is not hypothetical, and it is measured.</strong> Scope is
+declared in <em>three</em> places per codebase and nothing keeps them in sync:
+the <code class="docutils literal notranslate"><span class="pre">--exclude</span></code> globs here (what sqc reads), <code class="docutils literal notranslate"><span class="pre">scope_include</span></code> /
+<code class="docutils literal notranslate"><span class="pre">scope_exclude</span></code> in <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code> (what the oracle may
+adjudicate), and the <code class="docutils literal notranslate"><span class="pre">##</span> <span class="pre">Scope</span></code> section of
+<code class="docutils literal notranslate"><span class="pre">data/precision_audit/&lt;codebase&gt;/README.md</span></code> (the rationale the other
+two claim to derive from).</p>
+<p>Audited across all nine codebases, six agree and three do not — always
+in the same direction, with the scan wider than the scope, so sqc emits
+findings that can never be labelled: <strong>sqlite 992, mosquitto 168, curl
+144</strong>. That is 1,304 findings, roughly a fifth of that run’s whole
+unlabelled pool, unadjudicable by construction. They depress label
+coverage permanently, with work nobody is allowed to do.</p>
+<p>The sharpest case is one category of file treated two ways in the same
+suite: curl excludes <code class="docutils literal notranslate"><span class="pre">include/**</span></code> here, so its installed public
+headers are never scanned, while mosquitto does not, so its public
+headers <em>are</em> scanned and then declared out of scope by the oracle.</p>
+<p>So when you touch either list, change both — and prefer making this one
+derive from <code class="docutils literal notranslate"><span class="pre">benchmark_repos.json</span></code>, which is already the declared
+single source of truth for the pins and is already read by
+<code class="docutils literal notranslate"><span class="pre">setup-benchmark-repos.yml</span></code> and <code class="docutils literal notranslate"><span class="pre">corpus-check</span></code>. <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code>
+asserts both directions of drift on every run
+(<code class="docutils literal notranslate"><span class="pre">_check_scope_within_scan</span></code> and <code class="docutils literal notranslate"><span class="pre">_check_scan_within_scope</span></code>); the
+per-codebase reasoning and the audit results live in that repo’s
+<code class="docutils literal notranslate"><span class="pre">docs/corpus-scope.md</span></code>, since it owns the scope predicate.</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><code class="docutils literal notranslate"><span class="pre">benchmark_repos.json</span></code>’s globs are <strong>path-aware</strong>: <code class="docutils literal notranslate"><span class="pre">*</span></code> stops at
+<code class="docutils literal notranslate"><span class="pre">/</span></code> and <code class="docutils literal notranslate"><span class="pre">**</span></code> crosses it, so <code class="docutils literal notranslate"><span class="pre">src/**</span></code> and <code class="docutils literal notranslate"><span class="pre">src/*.c</span></code> are different
+things. The <code class="docutils literal notranslate"><span class="pre">--exclude</span></code> globs here are sqc’s own and follow sqc’s
+rules; do not assume the two spellings are interchangeable when copying
+a pattern between the files.</p>
+</div>
 </section>
 <section id="auto-scoring">
 <h3>Auto-Scoring<a class="headerlink" href="#auto-scoring" title="Link to this heading"></a></h3>
