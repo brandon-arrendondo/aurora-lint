@@ -263,8 +263,8 @@ that's a judgment call the tool deliberately leaves alone.
 This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 `.todo-sqlite-cli` marker at the repo root.
 
-**This DB holds the TOOL's backlog only.** Until 2026-09-03 both repos'
-markers pointed at this one file, so `benchmarking_db`'s oracle, metrics and
+**This DB holds the TOOL's backlog only.** Until 2026-09-03 every repo's
+marker pointed at this one file, so `benchmarking_db`'s oracle, metrics and
 benchmark-host work sat in here — which meant `next` handed you a P1 whose
 actionable half lived in another repo, and a stranger cloning sqc inherited
 the whole maintainer backlog along with it (the DB is committed). 22 active
@@ -272,22 +272,53 @@ tasks moved to `benchmarking_db/todo-sqlite-cli.db`; display ids and UUIDs
 were preserved, because ids like 701 are cited in commit messages, code
 comments and this file. Completed history was not duplicated — it stays here.
 
+**The paper's backlog left the same way, later the same day.** Its four
+active tasks (#9, #378, #463, #723) moved to
+`sqc_paper/todo-sqlite-cli.db`, again with ids and UUIDs preserved, and
+again leaving completed history here unduplicated (the 13 done
+`paper`-tagged tasks — 7, 8, 141, 147, 148, 152, 202, 205, 225, 422, 533,
+581, 697 — are still in this DB). Paper-finalization work is tracked
+**there** now: do not `add` or reopen it here. There are three task DBs.
+
 So: adjudication, ground_truth quality, corpus acquisition/scope, derived
-metrics and Postgres/backup infra are asked over there, and rule behaviour,
-FP/FN work, docs and packaging are asked here. Same clone-experience test as
+metrics and Postgres/backup infra are asked in `benchmarking_db`; paper
+drafting, figures, wording and submission in `sqc_paper`; rule behaviour,
+FP/FN work, docs and packaging here. Same clone-experience test as
 everywhere else in this file — would a stranger cloning this repo need it to
 evaluate sqc on their own codebase? A dependency edge that would have crossed
-the split is recorded in the task's own details as prose, since two DBs
-cannot enforce one (tasks 9, 723 and 700 are the three).
+a split is recorded in the task's own details as prose, since separate DBs
+cannot enforce one. Three such edges exist: `sqc_paper`'s 9 and 723 both
+reach into this repo (723 edits this README as well as the paper), and
+`benchmarking_db`'s 700 waits on this repo's 675.
 
-**Display ids now collide across the two repos.** Each DB allocates from its
-own sequence, so a bare "task 731" is ambiguous: 731 is the ARR38-C
-delta-adjudication in `benchmarking_db`, and the next task added here will
-also be 731. Demonstrated immediately — a stray `add` in this repo took 731
-within minutes of the split. When citing a task in a commit message, code
-comment or cross-repo message, say which repo unless it is obviously local.
-Task UUIDs remain globally unique and are still the real identity; ids 1-730
-predate the split and are unambiguous.
+**Display ids collide across all three repos.** Each DB allocates from its
+own sequence, so a bare "task 731" is three-ways ambiguous: 731 is the
+ARR38-C delta-adjudication in `benchmarking_db`, and the next task added
+here will also be 731. Demonstrated immediately — a stray `add` in this repo
+took 731 within minutes of the first split. When citing a task in a commit
+message, code comment or cross-repo message, **say which repo**, always;
+"obviously local" stopped being a safe judgement once there were three
+sequences. Task UUIDs remain globally unique and are still the real
+identity; ids 1-730 predate the splits and are unambiguous, which is why
+`sqc_paper`'s 9/378/463/723 are safe to cite bare.
+
+**Two nodes working concurrently collide on new ids routinely, not rarely.**
+Four collisions happened on 2026-09-03 within about an hour, and the fix is
+always `renumber` plus repairing whatever prose named the number:
+
+- 760 was allocated here for a `bench/db.py` fix and by the other node for
+  an MSC13-C delta-adjudication; mine renumbered to 762.
+- 761 was allocated here for a test-suite gap and by the other node for an
+  ARR38-C delta-adjudication; mine renumbered to 763.
+- 762 was then allocated by the other node for an INT13-C
+  delta-adjudication; theirs renumbered to 765.
+
+Each time, a commit message or code comment already named the old number. So
+the rule is not just "allocate before you cite" — it is **prefer not to cite
+a number at all**: write "the follow-up task" and let the UUID-backed
+`Related:` line carry the identity, which survives every renumber. The one
+place a number is unavoidable is a code comment, and that is exactly where a
+renumber leaves it stale.
 
 **Before planning or coding, ask the DB:**
 
@@ -418,7 +449,7 @@ Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
 | `README.md` | Tool overview, installation, usage, CLI reference |
 | `docs/index.rst` | Developer guide: advanced usage, CI/CD, benchmarks, testing, contributing |
 | `docs/design/*.md` | Scoping docs for in-progress/completed capabilities (e.g. macro-expansion, project-relevance-gating). Not in the Sphinx toctree — read directly. **Their "Status" header goes stale once the work ships**; check `todo-sqlite-cli show <task>` for the real status before trusting the header, and check whether the feature needs a mention in `docs/cli-usage.rst`/`docs/architecture.rst` once it ships. |
-| `../sqc_paper/` | **The paper, in its own repo since 2026-09-03** (moved with `git subtree split`, so its 40 commits came along). Same reason benchmarking moved out: a stranger cloning sqc to evaluate it on their own code does not need a paper draft. Numbers in it must trace to Postgres via `benchmarking_db` — see that repo's README. Its figure generator moved to `benchmarking_db/bin/` and is broken pending a port (their task 732). The paper's own tasks (#9, #378, #463, #723) stayed in this repo's DB. |
+| `../sqc_paper/` | **The paper, in its own repo since 2026-09-03** (moved with `git subtree split`, so its 40 commits came along). Same reason benchmarking moved out: a stranger cloning sqc to evaluate it on their own code does not need a paper draft. Numbers in it must trace to Postgres via `benchmarking_db` — see that repo's README. Its figure generator moved to `benchmarking_db/bin/` and is broken pending a port (their task 732). Its own backlog moved with it on 2026-09-03 (see Task tracking): tasks #9, #378, #463 and #723 live in `sqc_paper/todo-sqlite-cli.db` now, not here. |
 | `docs/design/gate-status-sop.md` | Weekly read on how close sqc is to the maintenance-mode gate (#463) and a publishable paper (#9). Run it *here* — it spans all three repos and its "Repos this SOP spans" table says which check lives where. |
 | `docs/design/internal-capability-catalog.md` | Browsable-by-concept catalog of every reusable primitive in `src/utility/cert_c/*.rs`/`src/analyze/*.rs` (macro detection, declarator resolution, lvalue/aliasing, VRA, CFG, function summaries, suppression, cross-file `ProjectContext`). Read this before writing any new AST/text heuristic — see Code Navigation below. |
 
