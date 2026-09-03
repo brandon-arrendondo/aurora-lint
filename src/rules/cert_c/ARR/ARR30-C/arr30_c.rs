@@ -164,6 +164,23 @@ const VARINT_READERS: &[&str] = &[
     "fts5GetVarint32",
 ];
 
+/// Identifier-name substrings that [`subtree_has_bound_named_identifier`]
+/// accepts as evidence a bounds check is present.
+///
+/// The match is a substring, not a whole token, and that is inherited
+/// behavior rather than a choice: any name merely *containing* one of these
+/// (`silence`, `discount`, `calendar`) counts as a bounds check and can
+/// suppress a real violation. Recorded as a false-negative risk in section
+/// 6.2 of docs/design/arr30-arr38-buffer-size-scoping.md; narrowing it to
+/// token equality is a behavior change and deliberately not bundled with
+/// the task-679 dedup.
+const BOUND_NAME_SUBSTRINGS: &[&str] = &["size", "length", "count"];
+
+/// As [`BOUND_NAME_SUBSTRINGS`], plus the abbreviated `len` that
+/// `check_while_loop_pointer_increment` additionally accepts. Kept as its
+/// own list so the two call sites' differing sensitivity stays explicit.
+const BOUND_NAME_SUBSTRINGS_WITH_LEN: &[&str] = &["size", "length", "count", "len"];
+
 impl CertRule for Arr30C {
     fn rule_id(&self) -> &'static str {
         "ARR30-C"
@@ -1763,18 +1780,8 @@ impl Arr30C {
         }
 
         // Check for function-level bounds checking (parameter validation).
-        // Matched against each identifier's own text, not the whole function's
-        // raw span, so a comment or string literal mentioning "size"/"length"/
-        // "count" can't fake a bounds check that isn't actually there.
         if let Some(func_node) = find_containing_function(node) {
-            let has_bound_named_identifier =
-                query::find_descendants_of_kind(func_node, "identifier")
-                    .iter()
-                    .any(|id| {
-                        let text = &source[id.start_byte()..id.end_byte()];
-                        text.contains("size") || text.contains("length") || text.contains("count")
-                    });
-            if has_bound_named_identifier {
+            if subtree_has_bound_named_identifier(func_node, source, BOUND_NAME_SUBSTRINGS) {
                 return true;
             }
         }
@@ -3582,15 +3589,8 @@ impl Arr30C {
                         )
                     })
                 });
-        let has_bound_named_identifier = query::find_descendants_of_kind(condition, "identifier")
-            .iter()
-            .any(|id| {
-                let text = &source[id.start_byte()..id.end_byte()];
-                text.contains("size")
-                    || text.contains("length")
-                    || text.contains("count")
-                    || text.contains("len")
-            });
+        let has_bound_named_identifier =
+            subtree_has_bound_named_identifier(condition, source, BOUND_NAME_SUBSTRINGS_WITH_LEN);
         let has_bounds_check = has_relational_comparison || has_bound_named_identifier;
 
         if !has_bounds_check {
@@ -6806,6 +6806,25 @@ fn strlen_argument(expr: &str) -> Option<&str> {
         return None;
     }
     Some(arg)
+}
+
+/// True when any `identifier` in `root`'s subtree has a name containing one
+/// of `bound_substrings` -- the "an identifier named like a bound implies a
+/// bounds check" heuristic, shared by `has_dynamic_bounds_check` (whole
+/// containing function) and `check_while_loop_pointer_increment` (the loop
+/// condition alone).
+///
+/// Matched against each identifier node's own text rather than the subtree's
+/// raw span, so a comment or string literal mentioning "size"/"length"/
+/// "count" cannot fake a bounds check. See [`BOUND_NAME_SUBSTRINGS`] for why
+/// the per-name test is a substring match.
+fn subtree_has_bound_named_identifier(root: Node, source: &str, bound_substrings: &[&str]) -> bool {
+    query::find_descendants_of_kind(root, "identifier")
+        .iter()
+        .any(|id| {
+            let text = &source[id.start_byte()..id.end_byte()];
+            bound_substrings.iter().any(|s| text.contains(s))
+        })
 }
 
 fn find_param_list_node<'a>(node: &Node<'a>) -> Option<Node<'a>> {
