@@ -3,6 +3,7 @@ use crate::analyze::buffer_size;
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, find_containing_function, get_node_text};
+use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1373,8 +1374,9 @@ impl Arr38C {
                 }
             }
 
-            // Check for hardcoded struct sizes (e.g., using 16 instead of sizeof(struct obj))
-            // The size argument should use sizeof() for struct-based operations
+            // Check for hardcoded struct sizes (e.g., using 16 instead of
+            // sizeof(struct foo)). The size argument should use sizeof() for
+            // struct-based operations.
             let resolved_size = size_vars.get(size_arg.trim()).unwrap_or(size_arg);
             if !resolved_size.contains("sizeof(") {
                 // Check if it's a hardcoded number that might be a struct size assumption
@@ -1382,7 +1384,7 @@ impl Arr38C {
                     // Common struct sizes that indicate hardcoded assumptions
                     if (8..=64).contains(&size_val) && size_val % 4 == 0 {
                         // Likely a hardcoded struct size - check if buffer is struct-based
-                        if buf_arg.contains("struct") || source.contains("struct obj") {
+                        if Self::buffer_is_struct_typed(buf_arg, node, source) {
                             let start_point = node.start_position();
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
@@ -2407,6 +2409,44 @@ impl Arr38C {
         }
 
         false
+    }
+
+    /// True when `buf_arg`'s underlying variable is declared with a struct
+    /// type in the function containing `node`.
+    ///
+    /// Replaces the two weaker tests this used to be (task 685):
+    ///
+    /// - `buf_arg.contains("struct")` read the argument's *name*, not its
+    ///   type, so a `char *structured_buf` counted as struct-based.
+    /// - `source.contains("struct obj")` was a whole-file literal search for
+    ///   one test fixture's type name. It matched nothing at all in Juliet,
+    ///   and in the real-world corpus matched only unrelated substrings --
+    ///   `struct object##_T` in a Vulkan macro and `struct objc_super` in the
+    ///   Obj-C runtime, both in vendored raylib headers -- so it could only
+    ///   ever manufacture false positives.
+    ///
+    /// Resolving the declared type via the shared
+    /// `overflow_helpers::collect_variable_types` map keeps the real defect
+    /// the fixture encodes (a hardcoded byte count for a struct whose padding
+    /// may differ) while dropping both text heuristics.
+    ///
+    /// A typedef'd struct (`mystruct_t buf;`) resolves to its type_identifier
+    /// and reads as non-struct: a deliberate miss rather than a guess, since
+    /// nothing here resolves typedefs.
+    fn buffer_is_struct_typed(buf_arg: &str, node: &Node, source: &str) -> bool {
+        let Some(func) = find_containing_function(node) else {
+            return false;
+        };
+        // Reduce `&objs` / `objs[0]` / `objs` to the bare variable name.
+        let Some(name) = buf_arg
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .find(|t| !t.is_empty())
+        else {
+            return false;
+        };
+        overflow_helpers::collect_variable_types(&func, source)
+            .get(name)
+            .is_some_and(|declared_type| declared_type.contains("struct"))
     }
 
     /// Check if there's validation for a size parameter.
