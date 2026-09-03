@@ -64,6 +64,11 @@
   hosts: all
   vars:
     project_dir: "{{ playbook_dir }}/.."
+    # The sibling benchmarking repo, which since 2026-09-03 keeps its OWN
+    # todo-sqlite-cli.db and therefore needs the same repo-local git config as
+    # this one. Skipped silently when not present: a node that only clones
+    # tools_sqc is a supported setup, and most are.
+    benchmarking_db_dir: "{{ playbook_dir }}/../../benchmarking_db"
     # Override with -e dev_venv=... (e.g. an existing venv shared across
     # repos, like ~/data-enterprise/venv) to install into it instead of
     # creating a new dedicated one.
@@ -177,15 +182,26 @@
     # clone gets neither, and nothing in the repo makes their absence visible
     # until it bites.
 
+    - name: Detect which repos keep a committed todo-sqlite-cli.db
+      stat:
+        path: "{{ item }}/.git"
+      register: todo_repos
+      loop:
+        - "{{ project_dir }}"
+        - "{{ benchmarking_db_dir }}"
+
     - name: Tune pack settings for the tracked todo-sqlite-cli.db
       community.general.git_config:
-        name: "{{ item.name }}"
-        value: "{{ item.value }}"
+        name: "{{ item.1.name }}"
+        value: "{{ item.1.value }}"
         scope: local
-        repo: "{{ project_dir }}"
-      loop:
-        - { name: pack.window, value: "250" }
-        - { name: pack.depth, value: "100" }
+        repo: "{{ item.0.item }}"
+      when: item.0.stat.exists
+      loop: "{{ todo_repos.results | product([
+                  {'name': 'pack.window', 'value': '250'},
+                  {'name': 'pack.depth',  'value': '100'}]) | list }}"
+      loop_control:
+        label: "{{ item.0.item | basename }} {{ item.1.name }}"
       # todo-sqlite-cli.db is a ~2.3 MiB SQLite file committed on nearly every
       # task change -- 692 of 3,571 commits as of 2026-09-03. Git's default
       # pack.window of 10 is far too small to find a good delta base among
@@ -202,13 +218,18 @@
 
     - name: Register the todo-sqlite-cli merge driver
       community.general.git_config:
-        name: "{{ item.name }}"
-        value: "{{ item.value }}"
+        name: "{{ item.1.name }}"
+        value: "{{ item.1.value }}"
         scope: local
-        repo: "{{ project_dir }}"
-      loop:
-        - { name: merge.todo-sqlite-cli.name, value: "todo-sqlite-cli 3-way merge driver" }
-        - { name: merge.todo-sqlite-cli.driver, value: "todo-sqlite-cli git-merge-driver %O %A %B" }
+        repo: "{{ item.0.item }}"
+      when: item.0.stat.exists
+      loop: "{{ todo_repos.results | product([
+                  {'name': 'merge.todo-sqlite-cli.name',
+                   'value': 'todo-sqlite-cli 3-way merge driver'},
+                  {'name': 'merge.todo-sqlite-cli.driver',
+                   'value': 'todo-sqlite-cli git-merge-driver %O %A %B'}]) | list }}"
+      loop_control:
+        label: "{{ item.0.item | basename }} {{ item.1.name }}"
       # .gitattributes maps `todo-sqlite-cli.db merge=todo-sqlite-cli` and IS
       # committed, but the driver it names is repo-local config that is not.
       # Without this, git falls back to the binary default and leaves the DB
