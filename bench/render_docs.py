@@ -258,6 +258,40 @@ def _cwe_list_str(ids: list[str]) -> str:
     return f"CWE-{nums[0]}" + (", " + ", ".join(nums[1:]) if len(nums) > 1 else "")
 
 
+def _basis_cell(overall: dict) -> str:
+    """The basis the real-world figures were computed on, as a table cell.
+
+    dbbd7f84 put this under REALWORLD_RESULTS.md's generated block; e4469380
+    retired that file and the line went with it, on the reasoning that the
+    hazard -- canonical figures landing directly above hand-written prose
+    carrying an older, unrecorded basis -- died with the document. It did not.
+    It moved here, and it had already fired: a7f2771e refreshed this table to
+    24.2% / 93.9% / 89.8% coverage and left the caveat paragraph eight lines
+    below saying 93.7% recall and 11.8% unlabeled -- both exact fossils of the
+    pre-canonical basis (100 - 88.2 = 11.8). README stated two recalls for one
+    run.
+
+    The prose is now written so it restates no generated number, which removes
+    that particular collision. This cell is the general guard: any figure not
+    on the named basis is not comparable to these, and a reader can see which
+    basis they are holding instead of inferring it from the commit that last
+    touched the file.
+
+    Absent basis -- the normal case for this repo's local SQLite scorer, since
+    `published_basis` comes from benchmarking_db's metrics layer -- prints
+    "not recorded" rather than nothing. Printing nothing is the defect this
+    exists to prevent, and stating it makes a locally-rendered table visibly
+    distinct from a canonical one, which is the first actual enforcement of
+    CLAUDE.md's rule against committing local figures as project numbers.
+    """
+    basis = overall.get("published_basis")
+    version = overall.get("definition_version")
+    if not basis:
+        return ("**not recorded** — local scorer; describes one checkout's "
+                "runs, not a project measurement")
+    return f"`{basis}`" + (f" (definitions `{version}`)" if version else "")
+
+
 def render_readme_highlights(db: BenchDBLike, juliet_run_id: str,
                              realworld_run_id: int, rw_score: dict) -> str:
     juliet = db.get_run_summary(juliet_run_id)
@@ -288,6 +322,7 @@ def render_readme_highlights(db: BenchDBLike, juliet_run_id: str,
         f"{overall['recall_pct']}% (v{rw_run['sqc_version']}, run #{realworld_run_id}, "
         f"{coverage_pct}% label coverage) |",
         f"| **Real-World Projects** | {', '.join(projects)} |",
+        f"| **Basis** | {_basis_cell(overall)} |",
     ]
     return "\n".join(lines)
 

@@ -30,17 +30,24 @@ Regenerate this table with `python -m bench render-docs --realworld-run RUN`
 Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) for Juliet details; real-world figures are in the Benchmark Highlights table below, and the full history is in `sqc_bench` Postgres (see `benchmarking_db`).
 
 > **Note**: the real-world precision/recall figure is pinned to the last
-> validly-adjudicated run (v0.4.325, run #226 — 11.8% of its findings are
-> still unlabeled, mostly `pure-ftpd`/`seL4`'s deliberately-unsampled 90%).
-> Rule-logic commits landed since v0.4.325 aren't
-> reflected here; a current figure requires delta-adjudicating the newer
-> unlabeled findings first (see CLAUDE.md's delta-adjudication protocol)
-> before it can be safely republished.
+> validly-adjudicated run, and its unlabeled remainder is mostly
+> `pure-ftpd`/`seL4`'s deliberately-unsampled 90%. Rule-logic commits landed
+> since that run aren't reflected; a current figure requires
+> delta-adjudicating the newer unlabeled findings first (see CLAUDE.md's
+> delta-adjudication protocol) before it can be safely republished.
 >
 > **Recall is measured against *known* true positives**, not against all
 > defects present. There is no exhaustive false-negative hunt behind the
-> 93.7% — past audits scoped their FN searches to specific bug categories.
-> True recall is unknown and lower.
+> recall figure — past audits scoped their FN searches to specific bug
+> categories. True recall is unknown and lower.
+>
+> This note deliberately restates no number from the table above. It used to
+> carry the run's version, its unlabeled percentage and the recall figure, and
+> when the table was refreshed onto the canonical basis those three did not
+> move with it: the table said 93.9% recall and 89.8% coverage while this
+> paragraph still said 93.7% and 11.8% unlabeled, eight lines apart, for the
+> same run. A caveat's job is to say what the number does not cover, which it
+> can do without repeating the number.
 
 ### Rule-suite coverage
 
