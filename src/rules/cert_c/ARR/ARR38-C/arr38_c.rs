@@ -3,6 +3,7 @@ use crate::analyze::buffer_size;
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, find_containing_function, get_node_text};
+use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1131,36 +1132,6 @@ impl Arr38C {
         }
     }
 
-    #[allow(dead_code)]
-    fn check_three_arg_size(
-        &self,
-        args: &[String],
-        node: &Node,
-        _source: &str,
-        function_name: &str,
-        violations: &mut Vec<RuleViolation>,
-    ) {
-        let size_arg = &args[2];
-
-        // Check for dangerous size calculation patterns
-        if self.is_dangerous_size_calculation(size_arg) {
-            let start_point = node.start_position();
-            violations.push(RuleViolation {
-                rule_id: self.rule_id().to_string(),
-                severity: Severity::High,
-                message: format!(
-                    "Function '{}' called with potentially invalid size calculation",
-                    function_name
-                ),
-                file_path: String::new(),
-                line: start_point.row + 1,
-                column: start_point.column + 1,
-                suggestion: Some("Ensure size argument does not exceed buffer bounds".to_string()),
-                ..Default::default()
-            });
-        }
-    }
-
     fn check_string_size_parameter(
         &self,
         args: &[String],
@@ -1403,8 +1374,9 @@ impl Arr38C {
                 }
             }
 
-            // Check for hardcoded struct sizes (e.g., using 16 instead of sizeof(struct obj))
-            // The size argument should use sizeof() for struct-based operations
+            // Check for hardcoded struct sizes (e.g., using 16 instead of
+            // sizeof(struct foo)). The size argument should use sizeof() for
+            // struct-based operations.
             let resolved_size = size_vars.get(size_arg.trim()).unwrap_or(size_arg);
             if !resolved_size.contains("sizeof(") {
                 // Check if it's a hardcoded number that might be a struct size assumption
@@ -1412,7 +1384,7 @@ impl Arr38C {
                     // Common struct sizes that indicate hardcoded assumptions
                     if (8..=64).contains(&size_val) && size_val % 4 == 0 {
                         // Likely a hardcoded struct size - check if buffer is struct-based
-                        if buf_arg.contains("struct") || source.contains("struct obj") {
+                        if Self::buffer_is_struct_typed(buf_arg, node, source) {
                             let start_point = node.start_position();
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
@@ -1642,7 +1614,7 @@ impl Arr38C {
 
                     // Check for type mismatch in element size
                     // e.g., using sizeof(long) for an int array
-                    if self.is_type_size_mismatch(base_arg, size_arg, source) {
+                    if self.is_type_size_mismatch(base_arg, size_arg, node, source) {
                         let start_point = node.start_position();
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
@@ -2133,7 +2105,7 @@ impl Arr38C {
         }
 
         // Check for user-controlled sizes (Heartbleed-like vulnerability)
-        if self.is_potentially_user_controlled_in_source(size_arg, source) {
+        if self.is_potentially_user_controlled_in_source(size_arg, node, source) {
             let start_point = node.start_position();
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
@@ -2380,8 +2352,27 @@ impl Arr38C {
 
     /// Check if a size value might be user-controlled (Heartbleed-like)
     /// This is conservative but catches obvious patterns
-    fn is_potentially_user_controlled_in_source(&self, size_arg: &str, source: &str) -> bool {
+    fn is_potentially_user_controlled_in_source(
+        &self,
+        size_arg: &str,
+        node: &Node,
+        source: &str,
+    ) -> bool {
         let size_arg = size_arg.trim();
+
+        // Scope every text search below to the enclosing function. `source` is
+        // the whole file, and both helpers this feeds were reading it as though
+        // it were the containing function: is_unvalidated_function_parameter
+        // takes `source.find('{')` as "the end of the function signature",
+        // which on whole-file input is the FIRST function's opening brace in
+        // the file regardless of which function the call site is in; and
+        // has_size_validation's substring search let an `if (n > ...)` in any
+        // function suppress the warning for a same-named parameter in every
+        // function. Same scoping is_short_string_source already applies a few
+        // dozen lines below, for the same reason.
+        let scoped_source = find_containing_function(node)
+            .map(|f| &source[f.start_byte()..f.end_byte()])
+            .unwrap_or(source);
 
         // Check if it's a simple variable (not sizeof, not a calculation)
         if !size_arg.contains("sizeof(")
@@ -2403,7 +2394,7 @@ impl Arr38C {
             for name in &suspicious_names {
                 if size_arg == *name {
                     // Check if there's validation in the source
-                    if self.has_size_validation(size_arg, source) {
+                    if self.has_size_validation(size_arg, scoped_source) {
                         return false;
                     }
                     return true;
@@ -2412,7 +2403,7 @@ impl Arr38C {
 
             // Check if size_arg is a function parameter that's used directly
             // Pattern: void func(..., type size_arg) { ... memcpy(..., size_arg); }
-            if self.is_unvalidated_function_parameter(size_arg, source) {
+            if self.is_unvalidated_function_parameter(size_arg, scoped_source) {
                 return true;
             }
         }
@@ -2420,7 +2411,50 @@ impl Arr38C {
         false
     }
 
-    /// Check if there's validation for a size parameter
+    /// True when `buf_arg`'s underlying variable is declared with a struct
+    /// type in the function containing `node`.
+    ///
+    /// Replaces the two weaker tests this used to be (task 685):
+    ///
+    /// - `buf_arg.contains("struct")` read the argument's *name*, not its
+    ///   type, so a `char *structured_buf` counted as struct-based.
+    /// - `source.contains("struct obj")` was a whole-file literal search for
+    ///   one test fixture's type name. It matched nothing at all in Juliet,
+    ///   and in the real-world corpus matched only unrelated substrings --
+    ///   `struct object##_T` in a Vulkan macro and `struct objc_super` in the
+    ///   Obj-C runtime, both in vendored raylib headers -- so it could only
+    ///   ever manufacture false positives.
+    ///
+    /// Resolving the declared type via the shared
+    /// `overflow_helpers::collect_variable_types` map keeps the real defect
+    /// the fixture encodes (a hardcoded byte count for a struct whose padding
+    /// may differ) while dropping both text heuristics.
+    ///
+    /// A typedef'd struct (`mystruct_t buf;`) resolves to its type_identifier
+    /// and reads as non-struct: a deliberate miss rather than a guess, since
+    /// nothing here resolves typedefs.
+    fn buffer_is_struct_typed(buf_arg: &str, node: &Node, source: &str) -> bool {
+        let Some(func) = find_containing_function(node) else {
+            return false;
+        };
+        // Reduce `&objs` / `objs[0]` / `objs` to the bare variable name.
+        let Some(name) = buf_arg
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .find(|t| !t.is_empty())
+        else {
+            return false;
+        };
+        overflow_helpers::collect_variable_types(&func, source)
+            .get(name)
+            .is_some_and(|declared_type| declared_type.contains("struct"))
+    }
+
+    /// Check if there's validation for a size parameter.
+    ///
+    /// `source` must already be scoped to the containing function -- this is a
+    /// plain substring search, so whole-file input lets a validation in one
+    /// function suppress the warning for a same-named parameter in every
+    /// other function (task 682). Callers scope via `find_containing_function`.
     fn has_size_validation(&self, size_arg: &str, source: &str) -> bool {
         // Look for validation in if-statement conditions only
         let validation_patterns = [
@@ -2440,7 +2474,13 @@ impl Arr38C {
         false
     }
 
-    /// Check if a variable is a function parameter used without validation
+    /// Check if a variable is a function parameter used without validation.
+    ///
+    /// `source` must already be scoped to the containing function: the
+    /// signature lookup below takes the first `{` in `source` as the end of
+    /// the parameter list, which is only that function's opening brace when
+    /// `source` is that one function (task 682). Callers scope via
+    /// `find_containing_function`.
     fn is_unvalidated_function_parameter(&self, size_arg: &str, source: &str) -> bool {
         // Look for function parameter patterns
         // Pattern: type func(..., unsigned int user_size) or similar
@@ -2576,12 +2616,35 @@ impl Arr38C {
         None
     }
 
-    /// Check for type size mismatch (e.g., sizeof(long) for int array)
-    fn is_type_size_mismatch(&self, array_arg: &str, size_arg: &str, source: &str) -> bool {
+    /// Check for type size mismatch (e.g., sizeof(long) for int array).
+    ///
+    /// The declaration lookup is scoped to the function containing `node`: it
+    /// is a substring search for a hardcoded declaration shape, so on
+    /// whole-file input a same-named array declared with a different type in
+    /// an unrelated function could trigger or suppress the verdict for this
+    /// one (task 683).
+    ///
+    /// The pattern set itself remains narrow -- eight `type name[` / `type*name`
+    /// spacing variants, so typedef'd element types, multi-declarator lines and
+    /// pointer-to-array declarations are all missed. That is pre-existing
+    /// brittleness recorded in section 7.1 #2, not addressed here.
+    fn is_type_size_mismatch(
+        &self,
+        array_arg: &str,
+        size_arg: &str,
+        node: &Node,
+        source: &str,
+    ) -> bool {
         // Extract the type from sizeof(type)
         if let Some(sizeof_type) = self.extract_sizeof_type(size_arg) {
             // Check if the array was declared with a different type
             let array_name = array_arg.trim();
+
+            // Scope to the enclosing function so an unrelated function's
+            // same-named array can't decide this call site's verdict.
+            let scoped_source = find_containing_function(node)
+                .map(|f| &source[f.start_byte()..f.end_byte()])
+                .unwrap_or(source);
 
             // Look for array declaration in source
             // Pattern: type array_name[
@@ -2597,7 +2660,7 @@ impl Arr38C {
             ];
 
             for pattern in &patterns {
-                if source.contains(pattern) {
+                if scoped_source.contains(pattern) {
                     // Extract the declared type
                     if let Some(decl_type) = pattern.split_whitespace().next() {
                         // Check if sizeof type differs from declared type

@@ -164,6 +164,23 @@ const VARINT_READERS: &[&str] = &[
     "fts5GetVarint32",
 ];
 
+/// Identifier-name substrings that [`subtree_has_bound_named_identifier`]
+/// accepts as evidence a bounds check is present.
+///
+/// The match is a substring, not a whole token, and that is inherited
+/// behavior rather than a choice: any name merely *containing* one of these
+/// (`silence`, `discount`, `calendar`) counts as a bounds check and can
+/// suppress a real violation. Recorded as a false-negative risk in section
+/// 6.2 of docs/design/arr30-arr38-buffer-size-scoping.md; narrowing it to
+/// token equality is a behavior change and deliberately not bundled with
+/// the task-679 dedup.
+const BOUND_NAME_SUBSTRINGS: &[&str] = &["size", "length", "count"];
+
+/// As [`BOUND_NAME_SUBSTRINGS`], plus the abbreviated `len` that
+/// `check_while_loop_pointer_increment` additionally accepts. Kept as its
+/// own list so the two call sites' differing sensitivity stays explicit.
+const BOUND_NAME_SUBSTRINGS_WITH_LEN: &[&str] = &["size", "length", "count", "len"];
+
 impl CertRule for Arr30C {
     fn rule_id(&self) -> &'static str {
         "ARR30-C"
@@ -1763,18 +1780,8 @@ impl Arr30C {
         }
 
         // Check for function-level bounds checking (parameter validation).
-        // Matched against each identifier's own text, not the whole function's
-        // raw span, so a comment or string literal mentioning "size"/"length"/
-        // "count" can't fake a bounds check that isn't actually there.
         if let Some(func_node) = find_containing_function(node) {
-            let has_bound_named_identifier =
-                query::find_descendants_of_kind(func_node, "identifier")
-                    .iter()
-                    .any(|id| {
-                        let text = &source[id.start_byte()..id.end_byte()];
-                        text.contains("size") || text.contains("length") || text.contains("count")
-                    });
-            if has_bound_named_identifier {
+            if subtree_has_bound_named_identifier(func_node, source, BOUND_NAME_SUBSTRINGS) {
                 return true;
             }
         }
@@ -3495,7 +3502,11 @@ impl Arr30C {
     }
 
     /// Find the `parameter_declaration` inside `func_declarator`'s
-    /// `parameter_list` whose text mentions `offset` by name.
+    /// `parameter_list` that declares `offset`, matched on identifier token
+    /// boundaries rather than as a raw substring -- a short offset name
+    /// (`i`, `n`, `sz`) would otherwise match inside an unrelated longer
+    /// parameter's name or type and return the wrong declaration. Same token
+    /// split `is_function_parameter_any_return` already uses.
     fn find_matching_param_declaration<'a>(
         func_declarator: &Node<'a>,
         offset: &str,
@@ -3514,7 +3525,10 @@ impl Arr30C {
                     continue;
                 }
                 let param_text = &source[param_decl.start_byte()..param_decl.end_byte()];
-                if param_text.contains(offset) {
+                if param_text
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|w| w == offset)
+                {
                     return Some(param_decl);
                 }
             }
@@ -3575,15 +3589,8 @@ impl Arr30C {
                         )
                     })
                 });
-        let has_bound_named_identifier = query::find_descendants_of_kind(condition, "identifier")
-            .iter()
-            .any(|id| {
-                let text = &source[id.start_byte()..id.end_byte()];
-                text.contains("size")
-                    || text.contains("length")
-                    || text.contains("count")
-                    || text.contains("len")
-            });
+        let has_bound_named_identifier =
+            subtree_has_bound_named_identifier(condition, source, BOUND_NAME_SUBSTRINGS_WITH_LEN);
         let has_bounds_check = has_relational_comparison || has_bound_named_identifier;
 
         if !has_bounds_check {
@@ -4031,50 +4038,14 @@ impl Arr30C {
     /// is a cast-alias of such a parameter (`const unsigned char *aIn =
     /// (const unsigned char*)a;`).
     fn collect_param_decode_buffers(&self, func_node: &Node, source: &str) -> HashSet<String> {
-        let mut bufs = HashSet::new();
-        let declarator = match func_node.child_by_field_name("declarator") {
-            Some(d) => d,
-            None => return bufs,
-        };
-        let param_list = match find_param_list_node(&declarator) {
-            Some(p) => p,
-            None => return bufs,
-        };
-
-        // Ordered (name, is_const_char_ptr, is_int_scalar) for each parameter.
-        let mut params: Vec<(Option<String>, bool, bool)> = Vec::new();
-        for i in 0..param_list.child_count() {
-            let param = match param_list.child(i) {
-                Some(p) if p.kind() == "parameter_declaration" => p,
-                _ => continue,
-            };
-            let text = &source[param.start_byte()..param.end_byte()];
-            let is_ptr = text.contains('*');
-            let is_ccp = is_ptr && text.contains("char") && text.contains("const");
-            let is_int = !is_ptr && Self::type_text_is_int_scalar(text);
-            let name = param
-                .child_by_field_name("declarator")
-                .and_then(|d| find_identifier_in_declarator(&d, source));
-            params.push((name, is_ccp, is_int));
-        }
-
-        for idx in 0..params.len() {
-            let (name, is_ccp, _) = &params[idx];
-            if !*is_ccp {
-                continue;
-            }
-            let name = match name {
-                Some(n) => n,
-                None => continue,
-            };
-            // Paired-length convention: a (buf, len) pair places the integer
-            // length immediately after the pointer. Without that, treat the
-            // buffer as length-unbounded.
-            let next_is_len = params.get(idx + 1).map(|p| p.2).unwrap_or(false);
-            if !next_is_len {
-                bufs.insert(name.clone());
-            }
-        }
+        // Same length-unpaired `const char *` parameter scan the
+        // interprocedural helper-overread summary needs; this call site wants
+        // the names as a set and does not care about their positions.
+        let mut bufs: HashSet<String> =
+            Self::const_char_ptr_params_without_length(func_node, source)
+                .into_iter()
+                .map(|(name, _position)| name)
+                .collect();
 
         if !bufs.is_empty() {
             // A couple of passes resolve `aIn = (cast)a; q = aIn;` chains.
@@ -4294,6 +4265,13 @@ impl Arr30C {
     /// that has no paired length parameter (the next parameter is not an integer
     /// scalar). Position counts only `parameter_declaration` children, matching the
     /// positional index of named call-site arguments.
+    ///
+    /// The paired-length convention this encodes: a `(buf, len)` pair places
+    /// the integer length immediately after the pointer, so a `const char *`
+    /// not followed by an integer scalar is treated as length-unbounded.
+    ///
+    /// Single implementation of that scan for the file (task 680) --
+    /// `collect_param_decode_buffers` reuses it and discards the positions.
     fn const_char_ptr_params_without_length(
         func_node: &Node,
         source: &str,
@@ -6799,6 +6777,25 @@ fn strlen_argument(expr: &str) -> Option<&str> {
         return None;
     }
     Some(arg)
+}
+
+/// True when any `identifier` in `root`'s subtree has a name containing one
+/// of `bound_substrings` -- the "an identifier named like a bound implies a
+/// bounds check" heuristic, shared by `has_dynamic_bounds_check` (whole
+/// containing function) and `check_while_loop_pointer_increment` (the loop
+/// condition alone).
+///
+/// Matched against each identifier node's own text rather than the subtree's
+/// raw span, so a comment or string literal mentioning "size"/"length"/
+/// "count" cannot fake a bounds check. See [`BOUND_NAME_SUBSTRINGS`] for why
+/// the per-name test is a substring match.
+fn subtree_has_bound_named_identifier(root: Node, source: &str, bound_substrings: &[&str]) -> bool {
+    query::find_descendants_of_kind(root, "identifier")
+        .iter()
+        .any(|id| {
+            let text = &source[id.start_byte()..id.end_byte()];
+            bound_substrings.iter().any(|s| text.contains(s))
+        })
 }
 
 fn find_param_list_node<'a>(node: &Node<'a>) -> Option<Node<'a>> {
