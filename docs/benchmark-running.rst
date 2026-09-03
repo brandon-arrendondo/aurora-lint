@@ -238,6 +238,45 @@ and the live scan's actual scope means dashboard numbers include findings
 that were never meant to be measured (or, more subtly, that the ground-truth
 denominator no longer matches what's being scanned).
 
+.. warning::
+
+    **That mismatch is not hypothetical, and it is measured.** Scope is
+    declared in *three* places per codebase and nothing keeps them in sync:
+    the ``--exclude`` globs here (what sqc reads), ``scope_include`` /
+    ``scope_exclude`` in ``data/benchmark_repos.json`` (what the oracle may
+    adjudicate), and the ``## Scope`` section of
+    ``data/precision_audit/<codebase>/README.md`` (the rationale the other
+    two claim to derive from).
+
+    Audited across all nine codebases, six agree and three do not — always
+    in the same direction, with the scan wider than the scope, so sqc emits
+    findings that can never be labelled: **sqlite 992, mosquitto 168, curl
+    144**. That is 1,304 findings, roughly a fifth of that run's whole
+    unlabelled pool, unadjudicable by construction. They depress label
+    coverage permanently, with work nobody is allowed to do.
+
+    The sharpest case is one category of file treated two ways in the same
+    suite: curl excludes ``include/**`` here, so its installed public
+    headers are never scanned, while mosquitto does not, so its public
+    headers *are* scanned and then declared out of scope by the oracle.
+
+    So when you touch either list, change both — and prefer making this one
+    derive from ``benchmark_repos.json``, which is already the declared
+    single source of truth for the pins and is already read by
+    ``setup-benchmark-repos.yml`` and ``corpus-check``. ``benchmarking_db``
+    asserts both directions of drift on every run
+    (``_check_scope_within_scan`` and ``_check_scan_within_scope``); the
+    per-codebase reasoning and the audit results live in that repo's
+    ``docs/corpus-scope.md``, since it owns the scope predicate.
+
+.. note::
+
+    ``benchmark_repos.json``'s globs are **path-aware**: ``*`` stops at
+    ``/`` and ``**`` crosses it, so ``src/**`` and ``src/*.c`` are different
+    things. The ``--exclude`` globs here are sqc's own and follow sqc's
+    rules; do not assume the two spellings are interchangeable when copying
+    a pattern between the files.
+
 Auto-Scoring
 ~~~~~~~~~~~~~
 
