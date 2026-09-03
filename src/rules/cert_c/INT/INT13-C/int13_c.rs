@@ -137,24 +137,31 @@ impl Int13C {
                 let op_text = get_node_text(&op, source);
 
                 // Check for bitwise operators
-                if matches!(op_text.trim(), "<<" | ">>" | "&" | "|" | "^") {
+                let op = op_text.trim();
+                if matches!(op, "<<" | ">>" | "&" | "|" | "^") {
                     // Get the operands
                     if let (Some(left), Some(right)) = (
                         node.child_by_field_name("left"),
                         node.child_by_field_name("right"),
                     ) {
-                        // Check both operands for signed types
+                        // For a shift, only the LEFT operand (the value being
+                        // shifted) is INT13-C's concern -- a signed shift
+                        // COUNT (right) is INT34-C's territory (task 754).
+                        // `&`/`|`/`^` have no such asymmetry, so both
+                        // operands still matter there.
                         if let Some(violation) =
-                            self.check_operand_type(&left, source, variables, op_text.trim())
+                            self.check_operand_type(&left, source, variables, op)
                         {
                             violations.push(violation);
                             return; // Only report once per expression
                         }
-                        if let Some(violation) =
-                            self.check_operand_type(&right, source, variables, op_text.trim())
-                        {
-                            violations.push(violation);
-                            return; // Only report once per expression
+                        if !matches!(op, "<<" | ">>") {
+                            if let Some(violation) =
+                                self.check_operand_type(&right, source, variables, op)
+                            {
+                                violations.push(violation);
+                                return; // Only report once per expression
+                            }
                         }
                     }
                 }
@@ -224,9 +231,77 @@ impl Int13C {
     }
 
     /// Extract variable name from an expression node
+    /// Resolve the variable whose signedness this bitwise operand's VALUE
+    /// actually depends on.
+    ///
+    /// Unlike a blind "first identifier anywhere in the subtree" scan, this
+    /// never descends into a nested shift's RIGHT (count) operand at ANY
+    /// depth: a shift count is INT34-C's concern, not INT13-C's, so a
+    /// variable used only to select how far to shift must never be reported
+    /// as the operand whose signedness matters here -- whether it's the
+    /// top-level shift being checked (`check_bitwise_operations` already
+    /// skips that case) or a shift buried inside a larger operand, e.g.
+    /// `exclMask & (1<<i)`: the right operand `(1<<i)` is itself a shift, so
+    /// only ITS left side (`1`, a constant) is examined -- `i` is never
+    /// reachable, exactly as if this expression had been the top-level
+    /// check (task 754).
+    ///
+    /// A non-shift binary operand (`x*xRatio`, `sz&0x0001`) has no such
+    /// asymmetry, so its left side is tried first, then its right --
+    /// recursing with this same rule, so a shift nested inside an arithmetic
+    /// operand is still shift-count-safe at any depth.
     fn extract_variable_name(&self, node: &Node, source: &str) -> Option<String> {
-        query::find_first_descendant(*node, |n| n.kind() == "identifier")
+        let node = Self::unwrap_operand(*node);
+
+        if node.kind() == "identifier" {
+            return Some(get_node_text(&node, source).trim().to_string());
+        }
+
+        if node.kind() == "binary_expression" {
+            let op = node
+                .child_by_field_name("operator")
+                .map(|o| get_node_text(&o, source).trim().to_string());
+            let left = node.child_by_field_name("left");
+            let right = node.child_by_field_name("right");
+
+            if matches!(op.as_deref(), Some("<<") | Some(">>")) {
+                return left.and_then(|l| self.extract_variable_name(&l, source));
+            }
+
+            if let Some(name) = left.and_then(|l| self.extract_variable_name(&l, source)) {
+                return Some(name);
+            }
+            return right.and_then(|r| self.extract_variable_name(&r, source));
+        }
+
+        // Any other node shape (unary expressions, array subscripts, ...)
+        // falls back to the original broad scan, so existing coverage for
+        // those shapes is unaffected.
+        query::find_first_descendant(node, |n| n.kind() == "identifier")
             .map(|n| get_node_text(&n, source).trim().to_string())
+    }
+
+    /// Unwrap `(expr)` and `(type)expr` wrappers to reach the underlying
+    /// expression node.
+    fn unwrap_operand<'a>(mut node: Node<'a>) -> Node<'a> {
+        loop {
+            match node.kind() {
+                "parenthesized_expression" => {
+                    if let Some(inner) = node.child(1) {
+                        node = inner;
+                        continue;
+                    }
+                }
+                "cast_expression" => {
+                    if let Some(value) = node.child_by_field_name("value") {
+                        node = value;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            return node;
+        }
     }
 
     /// Check if a type is a signed integer type
