@@ -376,6 +376,37 @@ def cmd_realworld_score(args):
 def cmd_realworld_import_labels(args):
     import csv
     from datetime import datetime, timezone
+    from bench.config import DB_PATH
+
+    # Adjudication is expensive and its output is easy to strand. This command
+    # is the only writer of the ground_truth oracle, and it writes to local
+    # SQLite -- which for a maintainer running against a shared/aggregated
+    # oracle elsewhere is a scratch file, not the oracle they meant. Nothing
+    # used to say so, and a batch imported here simply did not exist anywhere
+    # that mattered.
+    #
+    # This is not hypothetical: task 671's EXP33-C delta (18 labels, 2026-09-01)
+    # was imported here, never reached the shared oracle, and was found only on
+    # 2026-09-02 while deciding whether this DB could be deleted. It was 15
+    # labels away from being thrown out with the file.
+    #
+    # The flag does not forbid local writes -- a one-off node that clones the
+    # repo and runs a local-only benchmark is a supported use, and this is its
+    # oracle. It just makes "local" a thing you state rather than a default you
+    # fall into. Deliberately no knowledge here of what the other store is or
+    # how to reach it: that seam stays one-way (see CLAUDE.md).
+    if not args.local_oracle:
+        print("Refusing to write ground-truth labels without --local-oracle.\n")
+        print(f"  Destination would be: {DB_PATH}\n")
+        print("This is a local SQLite store private to this checkout. Labels\n"
+              "written here do not reach any shared or aggregated oracle, and\n"
+              "adjudication effort stranded here is easy to lose.\n")
+        print("  - Local-only benchmarking on this machine? Re-run with "
+              "--local-oracle.\n"
+              "  - Feeding a shared oracle? Import through that system "
+              "instead; this command cannot.")
+        return
+
     db = BenchDB()
 
     # Map project -> codebase_commit from the run the audit was sampled against.
@@ -414,7 +445,8 @@ def cmd_realworld_import_labels(args):
 
     res = db.insert_ground_truth_labels(
         labels, on_conflict="update" if args.update else "ignore")
-    print(f"Imported from {args.csv} (commits pinned to run #{src_run_id}):")
+    print(f"Imported from {args.csv} into LOCAL oracle {DB_PATH}")
+    print(f"  (commits pinned to run #{src_run_id})")
     print(f"  inserted {res['inserted']}, updated {res['updated']}, "
           f"skipped {res['skipped']} (already labeled)")
     if skipped_no_commit:
@@ -1016,6 +1048,11 @@ def main():
     p_imp.add_argument("--update", action="store_true",
                        help="Overwrite existing labels (re-adjudication) "
                             "instead of skipping them")
+    p_imp.add_argument("--local-oracle", action="store_true",
+                       help="Required. Confirms you mean this checkout's "
+                            "local SQLite oracle, which is a scratch store "
+                            "private to this machine -- labels written here "
+                            "do NOT reach any shared/aggregated oracle")
     p_imp.set_defaults(func=cmd_realworld_import_labels)
 
     # realworld-unlabeled
