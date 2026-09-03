@@ -31,14 +31,22 @@ bearing rather than cosmetic:
      contract for the interesting half is now a data shape, which can be
      captured in a fixture and tested without a database of either kind.
 
-`rw_score` fields this module reads: `overall.unlabeled_fraction`,
-`per_rule`, `per_project`, and `unscoreable_projects` (each entry
-`{project, run_findings}` -- projects dropped from every figure because no
-codebase_commit was recorded). The last is read with `.get`, so a scorer
-that predates it degrades to "no such projects" rather than raising; a
-scorer that HAS such projects and does not report them will publish a table
-short a codebase, which is the failure this contract exists to make
-impossible to hit by accident.
+`rw_score` fields this module reads:
+
+  - `overall.unlabeled_fraction`, `per_rule`, `per_project`
+  - `unscoreable` -- list[dict], each `{project, reason, excluded_findings}`:
+    projects dropped from every figure because no codebase_commit was
+    recorded. THIS is the one the guard reads.
+  - `unscoreable_projects` -- list[str], the same projects by name only. The
+    `_projects` suffix means "names" on both sides; the counts live on the
+    dicts. Not read here, listed so the two are not confused again: reading
+    the name list as dicts raises TypeError, which `.get` does not prevent
+    because the field is present, just differently shaped.
+
+`unscoreable` is read with `.get`, so a scorer predating it degrades to "no
+such projects" rather than raising. A scorer that HAS such projects and does
+not report them will publish a table short a codebase, which is the failure
+this contract exists to make impossible to hit by accident.
 """
 
 from __future__ import annotations
@@ -177,14 +185,25 @@ def realworld_citation_warnings(db: BenchDBLike, realworld_run_id: int,
     # only knew about unlabeled fraction and project coverage, so this walked
     # straight past it.
     #
-    # `.get` rather than `[...]`: this function is shared with a
-    # Postgres-backed caller on the benchmark node (see CROSS-REPO CONTRACT),
-    # and a guard that raises KeyError against a slightly older scorer would
-    # fail the publish for the wrong reason.
-    unscoreable = rw_score.get("unscoreable_projects") or []
+    # `unscoreable`, NOT `unscoreable_projects`: the first is list[dict], the
+    # second is list[str] of names. Reading the wrong one crashed
+    # benchmarking_db's publishing path with `TypeError: string indices must
+    # be integers` -- which is the sharper version of the lesson that put this
+    # guard here. `.get` protects against the field being ABSENT; it does
+    # nothing about the field being present in a different SHAPE, and this
+    # function runs against two repos' scorers. A guard that dies on its own
+    # input is worse than one that is missing: it has a caller, a test and a
+    # plausible read, and the error it raises tells an operator nothing about
+    # their data.
+    #
+    # `.get` is still right for absence (an older scorer predating the field),
+    # and the two shapes are now identical on both sides rather than merely
+    # tolerated here -- shape-sniffing would have preserved the divergence
+    # instead of ending it.
+    unscoreable = rw_score.get("unscoreable") or []
     if unscoreable:
         names = ", ".join(u["project"] for u in unscoreable)
-        n = sum(u.get("run_findings") or 0 for u in unscoreable)
+        n = sum(u.get("excluded_findings") or 0 for u in unscoreable)
         warnings.append(
             f"{len(unscoreable)} project(s) could not be scored -- no "
             f"codebase_commit recorded ({names}; {n:,} findings excluded "

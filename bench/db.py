@@ -2090,6 +2090,18 @@ class BenchDB:
         # list rather than another free-text warning so a caller can act on it:
         # the run's aggregate silently excludes these projects, and a footnote
         # under a complete-looking table is not enough signal for that.
+        #
+        # Shape matches benchmarking_db's scorer exactly, and deliberately:
+        # `unscoreable` is list[dict] carrying the detail, `unscoreable_projects`
+        # is list[str] of names only. Their `_projects` suffix means "names"
+        # throughout (basis.scored_projects / unscored_projects), and
+        # render_docs' guard is shared by both repos' publishing paths, so one
+        # convention has to win. Theirs did: it predates this, it is applied
+        # consistently, and it is documented in their score_realworld_run
+        # docstring. This field emitted list[dict] under the `_projects` name
+        # for one day (2026-09-03) and crashed their caller with a TypeError --
+        # a shape mismatch that `.get` cannot catch, since the field was
+        # present and wrongly shaped rather than absent.
         unscoreable = []
         # rule_id -> aggregated counters
         rules: dict[str, dict] = {}
@@ -2113,8 +2125,11 @@ class BenchDB:
             present = run_keys.get(project, set())
             run_finding_count = len(present)
             if not commit:
-                unscoreable.append({"project": project,
-                                    "run_findings": run_finding_count})
+                unscoreable.append({
+                    "project": project,
+                    "reason": "no codebase_commit recorded",
+                    "excluded_findings": run_finding_count,
+                })
                 warnings.append(
                     f"{project}: run has no codebase_commit recorded; "
                     f"cannot match labels ({run_finding_count} findings "
@@ -2246,7 +2261,8 @@ class BenchDB:
             "run": run, "run_id": run_id,
             "overall": overall, "per_rule": per_rule,
             "per_project": projects, "warnings": warnings,
-            "unscoreable_projects": unscoreable,
+            "unscoreable": unscoreable,
+            "unscoreable_projects": [u["project"] for u in unscoreable],
         }
 
     def get_unlabeled_findings(self, run_id: int, rule_id: str = None,

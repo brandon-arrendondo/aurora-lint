@@ -317,7 +317,9 @@ def cmd_realworld_score(args):
     # would otherwise get a clean status on a partial score, which is the
     # silent failure this is here to prevent -- the field being present in
     # the JSON is only a signal to a reader who thought to look for it.
-    unscoreable = result.get("unscoreable_projects") or []
+    # `unscoreable` (list[dict]), not `unscoreable_projects` (list[str] of
+    # names) -- see score_realworld_run. The two differ by shape, not content.
+    unscoreable = result.get("unscoreable") or []
 
     if args.json:
         print(json.dumps(result, indent=2, default=str))
@@ -340,12 +342,13 @@ def cmd_realworld_score(args):
     # what they appear to be". Exits nonzero for the same reason: a caller
     # that scripts this should not get a clean status on a partial score.
     if unscoreable:
-        n = sum(u["run_findings"] for u in unscoreable)
+        n = sum(u.get("excluded_findings") or 0 for u in unscoreable)
         print(f"!! {len(unscoreable)} project(s) COULD NOT BE SCORED — no "
               f"codebase_commit recorded ({n:,} findings excluded from every "
               "figure below):")
         for u in unscoreable:
-            print(f"     {u['project']}  ({u['run_findings']:,} findings)")
+            print(f"     {u['project']}  "
+                  f"({u.get('excluded_findings') or 0:,} findings)")
         print("   The run's ingest found no scan-time commit for these. "
               "Re-ingest with a\n   sidecar, or treat this run as partial "
               "-- do not cite these numbers as\n   full-suite.")
