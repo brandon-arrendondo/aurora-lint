@@ -258,9 +258,11 @@ figure. SqC's own overall TP rate has since risen to 83.8% (see above); it
 is not directly comparable to the 67.5% row without re-running the other
 four tools on the same 15-CWE, 28,488-file slice.*
 
-SqC achieves 100% precision (zero FP) on 48 of 74 benchmarked CWEs as of
-v0.4.116 (see ``JULIET_RESULTS.md``), including CWE-690, CWE-761, CWE-78,
-and CWE-190. Broadest CWE coverage (74+ CWEs benchmarked vs clang-tidy's 15
+SqC achieved 100% precision (zero FP) on 48 of 74 benchmarked CWEs as of
+v0.4.116 (a frozen figure from this study, not re-measured since; see
+README.md's Benchmark Highlights for the current 100%-precision-CWE count),
+including CWE-690, CWE-761, CWE-78, and CWE-190. Broadest CWE coverage
+(74+ CWEs benchmarked vs clang-tidy's 15
 in the frozen study above).
 
 **Key context**: Tools on average find ~20% of weaknesses in Juliet

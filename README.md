@@ -28,7 +28,7 @@ A static analysis tool for C code compliance with [SEI CERT C Coding Standards](
 Regenerate this table with `python -m bench render-docs --realworld-run RUN`
 (see `bench/render_docs.py`) after a version bump or a fresh delta-adjudication.
 
-Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) for Juliet details; real-world figures are in the Benchmark Highlights table below, and the full history is in `sqc_bench` Postgres (see `benchmarking_db`).
+Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases — see the Benchmark Highlights table below and [`docs/juliet-history.rst`](docs/juliet-history.rst) for the full round-by-round Juliet history; the complete record for both is `sqc_bench` Postgres (see `benchmarking_db`).
 
 > **Note**: the real-world precision/recall figure is pinned to the last
 > validly-adjudicated run, and its unlabeled remainder is mostly
@@ -49,6 +49,31 @@ Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SA
 > paragraph still said 93.7% and 11.8% unlabeled, eight lines apart, for the
 > same run. A caveat's job is to say what the number does not cover, which it
 > can do without repeating the number.
+
+### Juliet TP rate is not the ceiling signal — the flaw-hit rate is
+
+**Juliet TP Rate** above is the share of sqc's Juliet findings that are true
+positives. It says how clean the output is, not how much of the suite's
+planted defect set sqc actually locates. That second question is the
+**flaw-hit rate** — the fraction of Juliet's known flaw lines sqc lands a
+finding on — and it moves independently: as of v0.4.321 it was 12.9%
+(17,100 of 132,406 flaw lines), essentially flat for weeks while the TP
+rate above was moving. Quoting only the TP rate overstates the tool; this
+paragraph is not auto-refreshed with the table above (deliberately, per the
+lesson in the note above this section — see `python -m bench compare` or
+`sqc_bench` Postgres for the current figure), so treat the number here as
+illustrative of the *gap*, not as a current measurement.
+
+Per-file detection rate (in the table above) sits between the two: sqc
+flags something in over a third of flawed files, but lands on the specific
+planted flaw line in roughly an eighth of cases. When judging headroom, the
+flaw-hit rate is the honest signal to watch for movement, not the TP rate.
+
+Juliet also exercises only part of the rule suite — 127 rules have any
+Juliet true positive, out of 311 implemented. See "Rule-suite coverage"
+below for what that leaves unmeasured, and
+[`docs/juliet-history.rst`](docs/juliet-history.rst) for the full
+round-by-round version history behind the table above.
 
 ### Rule-suite coverage
 
@@ -227,7 +252,7 @@ For advanced usage, CI/CD integration details, interactive UI reference, testing
 | File | Contents |
 |------|----------|
 | [Developer Guide](docs/index.rst) | Advanced usage, CI/CD, UI reference, testing, architecture, contributing |
-| [JULIET_RESULTS.md](JULIET_RESULTS.md) | Juliet benchmark data: TP/FP history, per-CWE results |
+| [`docs/juliet-history.rst`](docs/juliet-history.rst) | Juliet benchmark data: TP/FP history, per-CWE results |
 
 ## AI Assistance
 

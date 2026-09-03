@@ -1,11 +1,15 @@
-"""Regenerate the DB-derived presentation blocks in README.md and
-JULIET_RESULTS.md.
+"""Regenerate the DB-derived presentation block in README.md.
 
-Each file has one or more `<!-- BENCH:NAME:START -->` / `<!-- BENCH:NAME:END
--->` marker pairs bracketing a block that is a pure projection of a benchmark
-DB (plus `rules_templates/rules-all.toml`'s rule counts) -- nothing outside a
-marker pair is ever touched, so hand-written narrative/history sections stay
-hand-written.
+The one file has one `<!-- BENCH:NAME:START -->` / `<!-- BENCH:NAME:END -->`
+marker pair bracketing a block that is a pure projection of a benchmark DB
+-- nothing outside a marker pair is ever touched, so hand-written narrative
+sections stay hand-written.
+
+(This used to also cover JULIET_RESULTS.md and REALWORLD_RESULTS.md, each
+with its own generated block. Both retired 2026-09-03 once every figure they
+generated had become redundant with this one table plus `data/benchmarks.db`
+/`sqc_bench` Postgres -- see git history for `render_juliet_current_state`/
+`render_realworld_latest` if you need the old block shapes.)
 
 Every function here takes `db` as a plain argument and never imports a
 concrete DB class -- callers decide what `db` is (see `bench/__main__.py`'s
@@ -57,10 +61,9 @@ this contract exists to make impossible to hit by accident.
 from __future__ import annotations
 
 import re
-import tomllib
 from typing import Protocol
 
-from bench.config import PROJECT_DIR, RULES_ALL_TOML
+from bench.config import PROJECT_DIR
 
 
 class BenchDBLike(Protocol):
@@ -81,7 +84,6 @@ class BenchDBLike(Protocol):
 
 
 README = PROJECT_DIR / "README.md"
-JULIET_RESULTS = PROJECT_DIR / "JULIET_RESULTS.md"
 
 # Above this fraction of a real-world run's findings being unlabeled, its
 # precision/recall is more "unmeasured" than "measured" -- see CLAUDE.md's
@@ -114,14 +116,6 @@ def display_project(project: str) -> str:
 def realworld_project_count(db: BenchDBLike, realworld_run_id: int) -> int:
     results = db.get_realworld_results(realworld_run_id)
     return len({r["project"] for r in results if r["tool"] == "sqc"})
-
-
-def rule_counts() -> dict:
-    with RULES_ALL_TOML.open("rb") as f:
-        data = tomllib.load(f)
-    rules = data["rules"]["cert_c"]
-    enabled = sum(1 for v in rules.values() if v.get("enabled"))
-    return {"implemented": len(rules), "enabled": enabled}
 
 
 def resolve_latest_fast_juliet_run(db: BenchDBLike) -> str | None:
@@ -254,15 +248,6 @@ def _zero_fp_cwe_lists(per_cwe: list[dict]) -> tuple[list[str], list[str]]:
     return with_detections, zero_detection
 
 
-def _cwe_list_str(ids: list[str]) -> str:
-    """'CWE-78, 114, 188, ...' -- prefix once, bare numbers after (matches
-    the existing hand-written style in JULIET_RESULTS.md)."""
-    if not ids:
-        return "none"
-    nums = [i.split("-")[-1] for i in ids]
-    return f"CWE-{nums[0]}" + (", " + ", ".join(nums[1:]) if len(nums) > 1 else "")
-
-
 def _basis_cell(overall: dict) -> str:
     """The basis the real-world figures were computed on, as a table cell.
 
@@ -332,50 +317,6 @@ def render_readme_highlights(db: BenchDBLike, juliet_run_id: str,
     return "\n".join(lines)
 
 
-def render_juliet_current_state(db: BenchDBLike, juliet_run_id: str) -> str:
-    juliet = db.get_run_summary(juliet_run_id)
-    s, ca = juliet["summary"], juliet["cwe_aware"]
-    run = db.get_run(juliet_run_id)
-    rule_c = rule_counts()
-    with_detections, zero_detection = _zero_fp_cwe_lists(juliet["per_cwe"])
-    is_fast = run["mode"] == "fast"
-    mode_word = "fast" if is_fast else "full"
-    mode_label = "Fast (per-CWE manifests" if is_fast else "Full (all rules"
-
-    wall_min = round(s["wall_s"] / 60) if s.get("wall_s") else None
-    wall_str = f", ~{wall_min} min wall time" if wall_min else ""
-
-    lines = [
-        f"## Current State (v{run['sqc_version']})",
-        "",
-        f"Run `{juliet_run_id}`, completed "
-        f"{s.get('finished_at', '')[:10]} ({mode_word} mode{wall_str}).",
-        "",
-        "| Metric | Value |",
-        "|--------|-------|",
-        f"| **Rules Implemented** | {rule_c['implemented']} CERT C rules "
-        f"({rule_c['enabled']} enabled by default) |",
-        f"| **Juliet CWEs Scanned** | {s['cwes_analyzed']} ({mode_word} mode, CWE-matched rules) |",
-        f"| **True Positives** | {ca['cwe_matched_tp']:,} |",
-        f"| **False Positives** | {ca['cwe_matched_fp']:,} |",
-        f"| **TP Rate** | **{ca['cwe_matched_tp_rate_pct']}%** |",
-        f"| **Per-file Detection Rate** | {ca['per_file_rate_pct']}% "
-        f"({ca['per_file_detected']:,} / {ca['per_file_total']:,} files) |",
-        f"| **Zero-FP CWEs** | {len(with_detections)} of {s['cwes_analyzed']} "
-        f"(with real detections; {len(zero_detection)} more scanned CWEs "
-        "have zero detections) |",
-        f"| **Benchmark Mode** | {mode_label}, "
-        f"{ca['noise_ratio_pct']}% noise) |",
-        "",
-        f"**100% precision, with detections ({len(with_detections)})**: "
-        f"{_cwe_list_str(with_detections)}.",
-        "",
-        f"**Zero-detection CWEs** (rules mapped but 0 violations, "
-        f"{len(zero_detection)}): {_cwe_list_str(zero_detection)}.",
-    ]
-    return "\n".join(lines)
-
-
 def render_all(db: BenchDBLike, juliet_run_id: str, realworld_run_id: int,
                rw_score: dict) -> dict:
     """Returns {path: new_text} for every doc with a marker pair found.
@@ -388,8 +329,6 @@ def render_all(db: BenchDBLike, juliet_run_id: str, realworld_run_id: int,
         README: [("BENCH:HIGHLIGHTS",
                   render_readme_highlights(db, juliet_run_id,
                                            realworld_run_id, rw_score))],
-        JULIET_RESULTS: [("BENCH:JULIET_CURRENT",
-                          render_juliet_current_state(db, juliet_run_id))],
     }
     out = {}
     for path, regions in blocks.items():

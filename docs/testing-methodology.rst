@@ -156,7 +156,9 @@ SqC achieves 100% precision (zero false positives) on 48 CWEs including:
 High-precision (>80% TP rate) on several additional CWEs including CWE-191
 (98.5%), CWE-127 (81.5%), and CWE-675 (93.0%).
 
-See ``JULIET_RESULTS.md`` for full per-CWE breakdowns.
+See :doc:`juliet-history` for per-CWE tier breakdowns, or query
+``data/benchmarks.db``/``sqc_bench`` Postgres (``get_cwe_detail``) for the
+full current per-CWE data.
 
 FP Reduction History
 ~~~~~~~~~~~~~~~~~~~~

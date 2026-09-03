@@ -28,8 +28,8 @@ Commands:
   corpus-check                             Verify every real-world checkout is
                                             still on its pinned commit
   render-docs --realworld-run R [--juliet-run R] [--check] [--force]
-                                            Regenerate the DB-derived tables in
-                                            README.md/JULIET_RESULTS.md
+                                            Regenerate the DB-derived table in
+                                            README.md
 """
 
 import argparse
@@ -1321,7 +1321,7 @@ def main():
 
     p_rd = sub.add_parser(
         "render-docs",
-        help="Regenerate the DB-derived tables in README.md/JULIET_RESULTS.md")
+        help="Regenerate the DB-derived table in README.md")
     p_rd.add_argument("--realworld-run", required=True,
                       help="Real-world run to cite (no default -- must be an "
                            "explicitly-chosen, validly-adjudicated run)")

@@ -48,8 +48,8 @@ SQLite Schema
    * - ``ground_truth``
      - Adjudicated TP/FP oracle keyed on (project, commit, file, line, rule)
 
-Historical data from ``JULIET_RESULTS.md`` and ``REALWORLD_RESULTS.md`` (the
-latter retired 2026-09-03 once this backfill made it redundant with
+Historical data from ``JULIET_RESULTS.md`` and ``REALWORLD_RESULTS.md``
+(both retired 2026-09-03 once this backfill made them redundant with
 Postgres) has been backfilled into the database.
 
 Benchmark Workflow Protocol
@@ -313,7 +313,7 @@ Delta-Adjudication Gate
 .. important::
 
     Before citing a precision/recall claim ("precision held", "FP reduced",
-    a paper table row) for a rule whose detection logic just changed, **run
+    a published table row) for a rule whose detection logic just changed, **run
     a delta-adjudication pass on that rule's new findings first.**
 
 ``ground_truth`` labels are snapshotted at `(project, commit, file, line,
