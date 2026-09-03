@@ -56,6 +56,7 @@
 <li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Future Rulesets Beyond CERT C</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#why-cert-c-is-the-base-standard">Why CERT C Is The Base Standard</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#the-power-of-10-rules-nasa-jpl-2006">The Power of 10 Rules (NASA JPL, 2006)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#jpl-institutional-coding-standard-2009">JPL Institutional Coding Standard (2009)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#multi-threading-concurrency">Multi-threading / Concurrency</a></li>
@@ -105,6 +106,34 @@
 <p>This page documents embedded coding standards and rule families that predate or
 complement MISRA and could be added to SqC in the future. All listed rules are
 freely implementable — they come from open/public-domain standards.</p>
+<section id="why-cert-c-is-the-base-standard">
+<h2>Why CERT C Is The Base Standard<a class="headerlink" href="#why-cert-c-is-the-base-standard" title="Link to this heading"></a></h2>
+<p>Everything below is framed as complementing MISRA, which only makes sense once
+you know why MISRA is not what SqC implements. It is a fit-to-domain choice,
+not a fallback:</p>
+<ul class="simple">
+<li><p><strong>CERT C is open.</strong> Public and freely implementable, so every rule SqC
+enforces can be read and checked against the analyzer’s behaviour. That is
+load-bearing for this repo specifically: the false-positive work is
+reviewable because a reader can look up what the rule actually says, and the
+ground-truth oracle’s TP/FP verdicts are arguable against a published text
+rather than a licensed one.</p></li>
+<li><p><strong>The overlap with MISRA is strong.</strong> The two address the same defect
+classes for the most part. CERT C reaches further into security — untrusted
+input, integer conversion, resource lifetime — while MISRA reaches further
+into language-subsetting discipline.</p></li>
+<li><p><strong>The residual difference targets a different industry.</strong> MISRA’s
+mandatory/required/advisory apparatus, its subsetting rules and its
+certification-oriented deviation process exist to satisfy a certification
+body in automotive, medical and aerospace software. SqC was built for
+consumer home devices, where the goal is finding real defects in
+production-intent C. CERT C covers that without the certification overhead.</p></li>
+</ul>
+<p>So the question this page answers is not “what would we add if we could afford
+MISRA” but “which open standards add coverage CERT C does not already give
+us”. Two rules on that list are already implemented — see the note under
+The Power of 10 Rules below.</p>
+</section>
 <section id="the-power-of-10-rules-nasa-jpl-2006">
 <h2>The Power of 10 Rules (NASA JPL, 2006)<a class="headerlink" href="#the-power-of-10-rules-nasa-jpl-2006" title="Link to this heading"></a></h2>
 <p>Created by Gerard J. Holzmann at NASA’s Jet Propulsion Laboratory, these 10
@@ -122,6 +151,18 @@ statically analyse. They complement MISRA C guidelines.</p>
 <li><p><strong>Limited pointer complexity</strong> — max 2 levels of dereferencing.</p></li>
 <li><p><strong>Compiler warnings + static analysis</strong> — compile with all warnings enabled; use static analysis tools.</p></li>
 </ol>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Rules 3 and 9 are already implemented</strong>, as <code class="docutils literal notranslate"><span class="pre">BRULE-060</span></code> (no dynamic
+memory allocation after initialisation) and <code class="docutils literal notranslate"><span class="pre">BRULE-065</span></code> (no excessive
+pointer indirection) in <code class="docutils literal notranslate"><span class="pre">src/rules/brules/</span></code>. They are the only non-CERT-C
+rules SqC ships, and they are enabled through
+<code class="docutils literal notranslate"><span class="pre">src/rules/brules/rules-all.toml</span></code> rather than the CERT C manifests. The
+rest of the Power of Ten remains a candidate: rules 1, 2, 4, 6 and 8 are
+plausibly checkable with the AST and CFG infrastructure already here, while
+5 (assertion density) and 10 (build flags) are not really analyzer rules at
+all.</p>
+</div>
 </section>
 <section id="jpl-institutional-coding-standard-2009">
 <h2>JPL Institutional Coding Standard (2009)<a class="headerlink" href="#jpl-institutional-coding-standard-2009" title="Link to this heading"></a></h2>
