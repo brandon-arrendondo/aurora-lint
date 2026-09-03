@@ -662,6 +662,44 @@ def _count_c_source(cfg: dict) -> tuple[int, int]:
     return c_files, loc
 
 
+def _count_sqc_scanned(cfg: dict) -> tuple[int, int]:
+    """(c_files, loc) for the fileset sqc itself walked: the same scan_path
+    `_build_sqc_cmd` passes, minus the same --exclude globs.
+
+    Distinct from `_count_c_source`, which counts the curated cppcheck
+    source_dirs so the LOC denominator is comparable across the three tools.
+    The two diverge wherever sqc scans outside those dirs -- sqlite (cppcheck
+    reads src/ only, sqc also reads ext/**) and curl are the wide cases. This
+    is the figure that pairs with duration_s, since it is the corpus the clock
+    was actually running over.
+
+    Note this is NOT the oracle scope predicate (`bench.corpus.in_scope`):
+    that filters *findings* at scoring time (task 636) and is never applied to
+    the scan, so it cannot describe what a scan cost.
+    """
+    path = str(cfg["path"])
+    scan_path = cfg["sqc"].get("scan_path")
+    scan_path = _expand([scan_path], path)[0] if scan_path else path
+    excludes = _sqc_exclude_patterns(cfg)
+    c_files = 0
+    loc = 0
+    for root, _dirs, files in os.walk(scan_path):
+        for f in files:
+            if not f.endswith((".c", ".h")):
+                continue
+            fp = os.path.join(root, f)
+            if any(p.search(fp.replace("\\", "/")) for p in excludes):
+                continue
+            if f.endswith(".c"):
+                c_files += 1
+            try:
+                with open(fp, "rb") as fh:
+                    loc += sum(1 for _ in fh)
+            except OSError:
+                pass
+    return c_files, loc
+
+
 # ── Running one combo ─────────────────────────────────────────────────────────
 
 def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
@@ -733,6 +771,31 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
                 proc = subprocess.run(cmd, stdout=result_fh, stderr=log_fh)
 
     duration = round(time.time() - start, 1)
+
+    # Task 699: persist the per-project scan facts into the sidecar. These are
+    # only true at scan time, and the queue worker cannot recover them -- it
+    # shells out to `python -m bench realworld-run` once for every project, so
+    # it sees one wall time and no per-project split. The sidecar is the only
+    # transport that survives that subprocess boundary.
+    #
+    # `c_files`/`loc` deliberately stay on the _count_c_source basis, which is
+    # what every existing realworld_results row already means; changing the
+    # basis under a column of that name would put two definitions in one
+    # column. The as-scanned figures ride alongside under their own names.
+    scanned_c_files, scanned_loc = _count_sqc_scanned(cfg)
+    cmp_c_files, cmp_loc = _count_c_source(cfg)
+    meta = {
+        "codebase_commit": codebase_sha,
+        "duration_s": float(duration),
+        "c_files": cmp_c_files,
+        "loc": cmp_loc,
+        "metrics_basis": "cppcheck_source_dirs+sqc_excludes",
+        "scanned_c_files": scanned_c_files,
+        "scanned_loc": scanned_loc,
+        "scanned_basis": "sqc_scan_path+sqc_excludes",
+    }
+    (version_dir / f"{run_id}.meta.json").write_text(json.dumps(meta))
+
     parsed = _parse_result_file(result_file) if result_file.exists() else {"total": 0, "error": "no output file"}
     ok = proc.returncode == 0 and "error" not in parsed
     print(f"{'ok' if ok else 'FAILED'} ({duration}s, {parsed.get('total', 0)} findings)"
