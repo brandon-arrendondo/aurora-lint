@@ -243,7 +243,11 @@ impl Msc17C {
     /// conditionals so a `case` label or terminator hidden behind an
     /// `#ifdef` still lands in the right segment instead of being either
     /// missed entirely or tacked onto the previous segment as a bogus
-    /// trailing item.
+    /// trailing item. Bare preprocessor directives (`#define`, `#include`,
+    /// ...) — including ones sitting inside their own case-less `#ifdef`
+    /// guard between two switch cases — are dropped rather than attached to
+    /// either segment: they have no runtime control-flow effect, so they
+    /// must never stand in for the real last statement/terminator.
     fn collect_segments<'a>(
         &self,
         container: &Node<'a>,
@@ -286,6 +290,20 @@ impl Msc17C {
                 let items = self.case_body_items(&child);
                 segments.push((child, items));
                 just_closed_preproc_branch = false;
+            } else if child.kind().starts_with("preproc_") {
+                // A directive with no runtime effect (`#define`, `#include`,
+                // ...) sitting between two case labels — often itself inside
+                // its own unrelated `#ifdef` guard, e.g. sqlite's
+                // `#ifndef SQLITE_INTEGRITY_CHECK_ERROR_MAX / #define ... /
+                // #endif` sitting between two switch cases with no case
+                // label of its own. It never terminates or falls through
+                // anything, so attaching it as the previous case's trailing
+                // item made a `#define` masquerade as that case's last
+                // statement — sqlite's `PragTyp_CASE_SENSITIVE_LIKE` (whose
+                // real terminator is its own `break;`) was reported as a
+                // fallthrough because `preproc_def` isn't a recognized
+                // terminator. Drop it, same as the endif-annotation comment
+                // above.
             } else if just_closed_preproc_branch
                 && child.kind() == "comment"
                 && !self.is_fallthrough_comment(&child, source)
