@@ -42,16 +42,74 @@ impl Msc13C {
     }
 
     /// Collect all local variable declarations in a function body.
-    /// Returns (name, declaration_line, has_initializer, decl_start_byte).
-    /// `decl_start_byte` is the byte offset of the specific `declaration`
-    /// node that bound this name, so a later read can be checked against
-    /// the exact declaration it resolves to rather than just its name —
-    /// disambiguating same-named shadowing declarations in nested blocks
-    /// (task 386).
-    fn collect_local_vars(&self, body: &Node, source: &str) -> Vec<(String, usize, bool, usize)> {
+    /// Returns (name, declaration_line, has_initializer, decl_start_byte,
+    /// enclosing_scope_start_byte). `decl_start_byte` is the byte offset of
+    /// the specific `declaration` node that bound this name, so a later
+    /// read can be checked against the exact declaration it resolves to
+    /// rather than just its name — disambiguating same-named shadowing
+    /// declarations in nested blocks (task 386). `enclosing_scope_start_byte`
+    /// is the byte offset of the nearest real C scope (`compound_statement`/
+    /// `for_statement`) containing the declaration, preprocessor-transparent
+    /// like `find_enclosing_declaration_for_identifier`'s own scope search —
+    /// used to group same-scope, same-name declarations split across
+    /// mutually exclusive `#if`/`#elif`/`#else` branches (task 751).
+    fn collect_local_vars(
+        &self,
+        body: &Node,
+        source: &str,
+    ) -> Vec<(String, usize, bool, usize, Option<usize>)> {
         let mut vars = Vec::new();
         self.walk_for_declarations(body, source, &mut vars);
         vars
+    }
+
+    /// Nearest enclosing C scope containing `node`, as its start byte.
+    /// Preprocessor-transparent: walks past `preproc_if`/`preproc_elif`/
+    /// `preproc_else` ancestors, the same way `find_enclosing_declaration_
+    /// for_identifier`'s own scope search does, so two declarations of the
+    /// same name in different branches of one `#if`/`#elif`/`#else` chain
+    /// (or in separate but effectively mutually exclusive `#ifdef`/`#ifndef`
+    /// pairs) resolve to the same scope rather than looking unrelated.
+    fn enclosing_scope_start(node: &Node) -> Option<usize> {
+        let mut cur = node.parent();
+        while let Some(n) = cur {
+            if matches!(n.kind(), "compound_statement" | "for_statement") {
+                return Some(n.start_byte());
+            }
+            cur = n.parent();
+        }
+        None
+    }
+
+    /// Group declarations gathered by `collect_local_vars` that are
+    /// mutually-exclusive preprocessor alternatives of one another: same
+    /// enclosing scope, same name (task 751). C forbids two unconditional
+    /// declarations of the same name in one scope, so any two same-scope,
+    /// same-name declarations found here are necessarily each guarded by
+    /// some combination of `#if`/`#ifdef`/`#elif`/`#else`/`#ifndef` that
+    /// only ever compiles one of them — they should be treated as one
+    /// liveness entity, so a read resolving to any one of them counts as a
+    /// read of all of them. Returns a map from each declaration's own
+    /// `decl_start_byte` to the full list of `decl_start_byte`s in its
+    /// group (a singleton list when the declaration has no alternatives).
+    fn build_decl_start_to_group(
+        &self,
+        local_vars: &[(String, usize, bool, usize, Option<usize>)],
+    ) -> HashMap<usize, Vec<usize>> {
+        let mut by_key: HashMap<(Option<usize>, &str), Vec<usize>> = HashMap::new();
+        for (name, _, _, decl_start, scope_start) in local_vars {
+            by_key
+                .entry((*scope_start, name.as_str()))
+                .or_default()
+                .push(*decl_start);
+        }
+        let mut out = HashMap::new();
+        for group in by_key.into_values() {
+            for &d in &group {
+                out.insert(d, group.clone());
+            }
+        }
+        out
     }
 
     /// Names of variables whose reaching-definitions liveness can be judged
@@ -96,10 +154,10 @@ impl Msc13C {
                 let decl_start = node.start_byte();
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
-                        self.extract_declared_names(&child, source, decl_start, &mut vars);
+                        self.extract_declared_names(&child, source, decl_start, None, &mut vars);
                     }
                 }
-                names.extend(vars.into_iter().map(|(name, _, _, _)| name));
+                names.extend(vars.into_iter().map(|(name, _, _, _, _)| name));
             }
         }
 
@@ -116,7 +174,7 @@ impl Msc13C {
         &self,
         node: &Node,
         source: &str,
-        vars: &mut Vec<(String, usize, bool, usize)>,
+        vars: &mut Vec<(String, usize, bool, usize, Option<usize>)>,
     ) {
         if node.kind() == "declaration" {
             // Skip function declarations and extern/typedef
@@ -134,9 +192,10 @@ impl Msc13C {
                 // Don't flag extern/typedef declarations or malformed parses
             } else {
                 let decl_start = node.start_byte();
+                let scope_start = Self::enclosing_scope_start(node);
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
-                        self.extract_declared_names(&child, source, decl_start, vars);
+                        self.extract_declared_names(&child, source, decl_start, scope_start, vars);
                     }
                 }
             }
@@ -157,27 +216,46 @@ impl Msc13C {
         node: &Node,
         source: &str,
         decl_start: usize,
-        vars: &mut Vec<(String, usize, bool, usize)>,
+        scope_start: Option<usize>,
+        vars: &mut Vec<(String, usize, bool, usize, Option<usize>)>,
     ) {
         match node.kind() {
             "init_declarator" => {
                 if let Some(declarator) = node.child_by_field_name("declarator") {
                     let name = get_identifier_from_declarator(&declarator, source);
                     if !name.is_empty() {
-                        vars.push((name, node.start_position().row + 1, true, decl_start));
+                        vars.push((
+                            name,
+                            node.start_position().row + 1,
+                            true,
+                            decl_start,
+                            scope_start,
+                        ));
                     }
                 }
             }
             // Plain identifier declaration: `int x;`
             "identifier" => {
                 let name = get_node_text(node, source).to_string();
-                vars.push((name, node.start_position().row + 1, false, decl_start));
+                vars.push((
+                    name,
+                    node.start_position().row + 1,
+                    false,
+                    decl_start,
+                    scope_start,
+                ));
             }
             // Pointer/array declarator without init: `int *p;`, `int arr[10];`
             "pointer_declarator" | "array_declarator" => {
                 let name = get_identifier_from_declarator(node, source);
                 if !name.is_empty() {
-                    vars.push((name, node.start_position().row + 1, false, decl_start));
+                    vars.push((
+                        name,
+                        node.start_position().row + 1,
+                        false,
+                        decl_start,
+                        scope_start,
+                    ));
                 }
             }
             // Skip function_declarator (function declarations, not variables)
@@ -192,21 +270,25 @@ impl Msc13C {
     /// - The declarator in a declaration
     /// - The operand of address-of (&) used as an out-parameter
     ///
-    /// `decl_start`, when given, is the byte offset of the specific
-    /// declaration this count is for; an occurrence is only counted when it
-    /// actually resolves (via `find_enclosing_declaration_for_identifier`)
-    /// to that same declaration, not a same-named shadowing declaration in
-    /// a nested or sibling block (task 386). `None` falls back to unscoped
-    /// name matching, for callers that can't resolve a specific declaration.
+    /// `decl_starts`, when given, are the byte offset(s) of the specific
+    /// declaration(s) this count is for; an occurrence is only counted when
+    /// it actually resolves (via `find_enclosing_declaration_for_identifier`)
+    /// to one of those declarations, not a same-named shadowing declaration
+    /// in a nested or sibling block (task 386). More than one byte offset
+    /// means the declarations are mutually-exclusive preprocessor
+    /// alternatives of one another treated as a single liveness entity
+    /// (task 751) -- a read resolving to any of them counts as a read of
+    /// all of them. `None` falls back to unscoped name matching, for
+    /// callers that can't resolve a specific declaration.
     fn count_reads(
         &self,
         body: &Node,
         source: &str,
         var_name: &str,
-        decl_start: Option<usize>,
+        decl_starts: Option<&[usize]>,
     ) -> usize {
         let mut count = 0;
-        self.walk_for_reads(body, source, var_name, decl_start, &mut count);
+        self.walk_for_reads(body, source, var_name, decl_starts, &mut count);
         count
     }
 
@@ -215,17 +297,17 @@ impl Msc13C {
         node: &Node,
         source: &str,
         var_name: &str,
-        decl_start: Option<usize>,
+        decl_starts: Option<&[usize]>,
         count: &mut usize,
     ) {
         if node.kind() == "identifier" {
             let text = get_node_text(node, source);
             if text == var_name && self.is_read_context(node, source) {
-                let in_scope = match decl_start {
+                let in_scope = match decl_starts {
                     None => true,
-                    Some(target) => {
+                    Some(targets) => {
                         find_enclosing_declaration_for_identifier(node, var_name, source)
-                            .is_some_and(|d| d.start_byte() == target)
+                            .is_some_and(|d| targets.contains(&d.start_byte()))
                     }
                 };
                 if in_scope {
@@ -238,7 +320,7 @@ impl Msc13C {
             if let Some(child) = node.child(i) {
                 // Don't recurse into nested function definitions
                 if child.kind() != "function_definition" {
-                    self.walk_for_reads(&child, source, var_name, decl_start, count);
+                    self.walk_for_reads(&child, source, var_name, decl_starts, count);
                 }
             }
         }
@@ -382,10 +464,19 @@ impl Msc13C {
     ) {
         // Collect all local variable declarations
         let local_vars = self.collect_local_vars(body, source);
+        // Same-scope, same-name declarations split across mutually
+        // exclusive `#if`/`#elif`/`#else` branches are one liveness entity
+        // (task 751): group them so a read resolving to any one of them
+        // counts as a read of all of them.
+        let decl_groups = self.build_decl_start_to_group(&local_vars);
 
         // Check each declared variable for reads
-        for (name, line, has_init, decl_start) in &local_vars {
-            let reads = self.count_reads(body, source, name, Some(*decl_start));
+        for (name, line, has_init, decl_start, _scope_start) in &local_vars {
+            let targets = decl_groups
+                .get(decl_start)
+                .cloned()
+                .unwrap_or_else(|| vec![*decl_start]);
+            let reads = self.count_reads(body, source, name, Some(&targets));
             if reads == 0 {
                 let msg = if *has_init {
                     format!("Variable '{}' is initialized but never read.", name)
@@ -408,7 +499,7 @@ impl Msc13C {
         // Dead store detection: an assignment whose value never reaches a
         // read on any executable path before being overwritten or the
         // function exiting.
-        self.check_dead_stores(func_node, body, source, violations);
+        self.check_dead_stores(func_node, &decl_groups, body, source, violations);
     }
 
     /// Detect dead stores using the real CFG + reaching-definitions
@@ -438,12 +529,15 @@ impl Msc13C {
     fn check_dead_stores(
         &self,
         func_node: &Node,
+        decl_groups: &HashMap<usize, Vec<usize>>,
         body: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
         match cfg_mod::build_function_cfg(func_node, source) {
-            Some(cfg) => self.check_dead_stores_cfg(func_node, &cfg, body, source, violations),
+            Some(cfg) => {
+                self.check_dead_stores_cfg(func_node, &cfg, decl_groups, body, source, violations)
+            }
             None => self.check_dead_stores_in_blocks(body, source, violations),
         }
     }
@@ -463,6 +557,7 @@ impl Msc13C {
         &self,
         func_node: &Node,
         cfg: &FunctionCfg,
+        decl_groups: &HashMap<usize, Vec<usize>>,
         body: &Node,
         source: &str,
         violations: &mut Vec<RuleViolation>,
@@ -551,7 +646,9 @@ impl Msc13C {
             // read of an unrelated same-named shadowing variable elsewhere
             // in the function doesn't suppress this report.
             let decl_start = self.declaration_scope_for_definition(cfg, def, body, source);
-            if self.count_reads(body, source, &def.variable, decl_start) == 0 {
+            let targets =
+                decl_start.map(|d| decl_groups.get(&d).cloned().unwrap_or_else(|| vec![d]));
+            if self.count_reads(body, source, &def.variable, targets.as_deref()) == 0 {
                 continue;
             }
             let line = Self::line_for_byte(source, def.byte_offset);
