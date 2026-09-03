@@ -275,6 +275,15 @@ evaluate sqc on their own codebase? A dependency edge that would have crossed
 the split is recorded in the task's own details as prose, since two DBs
 cannot enforce one (tasks 9, 723 and 700 are the three).
 
+**Display ids now collide across the two repos.** Each DB allocates from its
+own sequence, so a bare "task 731" is ambiguous: 731 is the ARR38-C
+delta-adjudication in `benchmarking_db`, and the next task added here will
+also be 731. Demonstrated immediately — a stray `add` in this repo took 731
+within minutes of the split. When citing a task in a commit message, code
+comment or cross-repo message, say which repo unless it is obviously local.
+Task UUIDs remain globally unique and are still the real identity; ids 1-730
+predate the split and are unambiguous.
+
 **Before planning or coding, ask the DB:**
 
 - `todo-sqlite-cli next` — the single task to work on right now.
