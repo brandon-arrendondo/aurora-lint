@@ -415,8 +415,7 @@ def _get_codebase_sha(path: Path) -> str | None:
     abbreviated SHA fails the whole ingest after the scan has already run --
     run 227 lost 18 minutes that way on 2026-09-02. Both sqc_bench tables are
     fully migrated to 40-char (3,287 realworld_results and 89,412 ground_truth
-    rows, no short ones left), so this is the only remaining producer of the
-    old format.
+    rows, no short ones left).
 
     Local data/benchmarks.db is gitignored, so a fresh clone starts empty and
     is consistent from its first run; this checkout's own SQLite scratch still
@@ -860,7 +859,7 @@ def run_and_ingest(tools: list[str], codebases: list[str],
                 continue
             cfg = CODEBASES[r["codebase"]]
             c_files, loc = _count_c_source(cfg)
-            commit = r.get("codebase_commit") or db.live_codebase_commit(r["codebase"])
+            commit = r.get("codebase_commit")
             db.insert_realworld_result(run_id, r["codebase"], r["tool"],
                                        c_files, loc, r["total"], r["duration_s"], commit)
 

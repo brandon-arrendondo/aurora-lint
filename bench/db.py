@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from bench.config import BENCH_ROOT, DB_PATH
+from bench.config import DB_PATH
 
 
 def _wall_seconds(started_at: str, finished_at: str) -> float | None:
@@ -1134,25 +1134,6 @@ class BenchDB:
             """, (run_id, project, tool, c_files, loc, violation_count,
                   duration_s, codebase_commit))
 
-    @staticmethod
-    def live_codebase_commit(project: str) -> str | None:
-        """Short HEAD SHA of a benchmark codebase checkout under BENCH_ROOT.
-
-        Fallback for runs that predate scan-time capture; only valid on the
-        machine that hosts the checkouts.
-        """
-        import subprocess
-        path = BENCH_ROOT / project
-        if not path.exists():
-            return None
-        try:
-            out = subprocess.run(
-                ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
-                capture_output=True, text=True, timeout=10)
-            return out.stdout.strip() or None
-        except Exception:
-            return None
-
     def insert_realworld_violations(self, result_id: int,
                                       violations: list[dict]) -> None:
         """Bulk insert per-violation detail for a realworld result."""
@@ -1281,9 +1262,28 @@ class BenchDB:
             c_files = proj_metrics.get("c_files", 0) or 0
             loc = proj_metrics.get("loc", 0) or 0
 
-            # Codebase commit: prefer the scan-time sidecar written by the
-            # MCP server; fall back to the live checkout (valid because the
-            # checkouts exist solely for this benchmark).
+            # Codebase commit: the scan-time sidecar is the ONLY source. There
+            # used to be a fallback here that ran `git rev-parse --short HEAD`
+            # against the live checkout; it was removed (2026-09-03) because it
+            # answered a different question than the one asked. The checkout's
+            # HEAD *now* is not the commit the run scanned -- a re-ingest of an
+            # older directory, or any checkout that drifted between scan and
+            # ingest (which corpus-check exists because they silently do),
+            # would have the run attributed to a commit it never saw. Since
+            # ground_truth is keyed on codebase_commit, that quietly moves
+            # findings into or out of the precision/recall denominator with no
+            # error anywhere -- strictly worse than not knowing.
+            #
+            # It also emitted the abbreviated form, so it was the surviving
+            # producer of the format that aborted run 227's ingest against
+            # sqc_bench's CHECK (codebase_commit ~ '^[0-9a-f]{40}$'). Making it
+            # full-SHA would have fixed that symptom and kept the fabricated
+            # provenance, which is the more expensive of the two bugs.
+            #
+            # NULL is the truthful answer, and score_realworld_run already
+            # handles it: it warns "run has no codebase_commit recorded;
+            # cannot match labels" and leaves the run unscored, so the run is
+            # visibly unscoreable rather than confidently mis-scored.
             codebase_commit = None
             meta_file = json_file.with_name(json_file.stem + ".meta.json")
             if meta_file.exists():
@@ -1292,8 +1292,6 @@ class BenchDB:
                         open(meta_file)).get("codebase_commit")
                 except (OSError, json.JSONDecodeError):
                     pass
-            if not codebase_commit:
-                codebase_commit = self.live_codebase_commit(project)
 
             result_id = None
             with self._cursor() as cur:
