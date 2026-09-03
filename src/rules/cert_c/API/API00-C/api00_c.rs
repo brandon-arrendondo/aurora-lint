@@ -883,6 +883,14 @@ impl Api00C {
     /// free(NULL) is a no-op per C11 7.22.3.3. realloc(NULL, size) is equivalent
     /// to malloc(size) per C11 7.22.3.5. These functions do NOT need callers to
     /// validate pointer arguments before calling.
+    ///
+    /// `dbus_set_error`/`dbus_set_error_const` (libdbus, `DBusError *error` at
+    /// param 0) are documented to silently ignore a NULL `DBusError *` — the
+    /// idiomatic way to report an error the caller has declared it doesn't
+    /// want (libdbus's own `dbus_set_error` doc: "If error is NULL, does
+    /// nothing"). Not reachable via `checks_null_params`/interprocedural
+    /// summaries since libdbus isn't in the scanned tree, so it has to be
+    /// declared here rather than inferred (task 742).
     fn is_null_accepting_stdlib(func_name: &str, arg_idx: usize) -> bool {
         matches!(
             (func_name, arg_idx),
@@ -891,6 +899,8 @@ impl Api00C {
                 | ("cfree", 0)
                 | ("Memory_Free", 0)
                 | ("Memory_Realloc", 0)
+                | ("dbus_set_error", 0)
+                | ("dbus_set_error_const", 0)
         )
     }
 
