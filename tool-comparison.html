@@ -1,0 +1,512 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Comparison To Other Tools &mdash; SqC  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Juliet Benchmark History" href="juliet-history.html" />
+    <link rel="prev" title="Testing Methodology" href="testing-methodology.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            SqC
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Comparison To Other Tools</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#the-tools">The Tools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#coverage-is-the-difference">Coverage Is The Difference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#juliet-on-the-overlap">Juliet, On The Overlap</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#speed">Speed</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#real-world-precision-per-rule">Real-World Precision, Per Rule</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#what-the-trade-actually-is">What The Trade Actually Is</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">SqC</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Comparison To Other Tools</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/tool-comparison.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="comparison-to-other-tools">
+<h1>Comparison To Other Tools<a class="headerlink" href="#comparison-to-other-tools" title="Link to this heading"></a></h1>
+<p>Where SqC sits against the other static analysers you would consider for C.
+The short version is in <code class="docutils literal notranslate"><span class="pre">README.md</span></code>’s <strong>Alternatives</strong> section; this page is
+the measurement behind it.</p>
+<p>Read the coverage table first. Per-CWE precision is only meaningful on the
+CWEs a given tool actually covers, and those sets differ by a factor of five.</p>
+<section id="the-tools">
+<h2>The Tools<a class="headerlink" href="#the-tools" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 14.0%" />
+<col style="width: 20.0%" />
+<col style="width: 12.0%" />
+<col style="width: 14.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>Version measured</p></th>
+<th class="head"><p>Needs a build?</p></th>
+<th class="head"><p>CERT C rules</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference external" href="https://github.com/brandon-arrendondo/tools_sqc">SqC</a></p></td>
+<td><p>0.4.321 / 0.4.332</p></td>
+<td><p><strong>No</strong></p></td>
+<td><p>311 implemented</p></td>
+<td><p>tree-sitter, no preprocessor. Uses <code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code> and
+<code class="docutils literal notranslate"><span class="pre">-I</span></code>/<code class="docutils literal notranslate"><span class="pre">-D</span></code> when given; never requires them.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://cppcheck.sourceforge.io/">cppcheck</a></p></td>
+<td><p>2.10</p></td>
+<td><p>No</p></td>
+<td><p>~20 via <code class="docutils literal notranslate"><span class="pre">--addon=cert</span></code></p></td>
+<td><p>Runs unbuilt like SqC. The cert addon is <strong>not</strong> enabled in our runs,
+so its ids are native (<code class="docutils literal notranslate"><span class="pre">nullPointer</span></code>, <code class="docutils literal notranslate"><span class="pre">uninitvar</span></code>).</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://clang.llvm.org/extra/clang-tidy/">clang-tidy</a></p></td>
+<td><p>LLVM 21.1</p></td>
+<td><p><strong>Yes</strong></p></td>
+<td><p>~20 native <code class="docutils literal notranslate"><span class="pre">cert-*</span></code> checks</p></td>
+<td><p>Wants a compilation database; without correct flags it fails or
+silently under-reports.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://frama-c.com/">Frama-C</a></p></td>
+<td><p>32.0 (Germanium)</p></td>
+<td><p><strong>Yes</strong></p></td>
+<td><p>n/a (abstract interpretation, not rule-indexed)</p></td>
+<td><p>Requires preprocessed input. Sound-by-design, so it reports more.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://fbinfer.com/">Infer</a></p></td>
+<td><p>v1.2.0</p></td>
+<td><p><strong>Yes</strong></p></td>
+<td><p>n/a (bug-type indexed)</p></td>
+<td><p>Captures a compilation, then analyses.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="coverage-is-the-difference">
+<h2>Coverage Is The Difference<a class="headerlink" href="#coverage-is-the-difference" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 16.0%" />
+<col style="width: 14.0%" />
+<col style="width: 14.0%" />
+<col style="width: 56.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>Juliet CWEs</p></th>
+<th class="head"><p>Real-world</p></th>
+<th class="head"></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>SqC</p></td>
+<td><p><strong>79</strong></p></td>
+<td><p>9 projects</p></td>
+<td><p>311 CERT C rules across 17 categories</p></td>
+</tr>
+<tr class="row-odd"><td><p>clang-tidy</p></td>
+<td><p>16</p></td>
+<td><p>8 projects</p></td>
+<td><p>~20 <code class="docutils literal notranslate"><span class="pre">cert-*</span></code> checks</p></td>
+</tr>
+<tr class="row-even"><td><p>cppcheck</p></td>
+<td><p>16</p></td>
+<td><p>8 projects</p></td>
+<td><p>~20 CERT mappings via an addon we do not enable</p></td>
+</tr>
+<tr class="row-odd"><td><p>Infer</p></td>
+<td><p>11</p></td>
+<td><p><strong>none</strong></p></td>
+<td><p>Memory-safety and concurrency bug types</p></td>
+</tr>
+<tr class="row-even"><td><p>Frama-C</p></td>
+<td><p>6</p></td>
+<td><p><strong>none</strong></p></td>
+<td><p>Value analysis; not organised as rules</p></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>TODO</strong> — Frama-C and Infer have never been run against the real-world
+suite; both are build-based, and three of the nine corpora are not
+trivially buildable on the benchmark host. Tracked as tools_sqc task 767.</p>
+</div>
+</section>
+<section id="juliet-on-the-overlap">
+<h2>Juliet, On The Overlap<a class="headerlink" href="#juliet-on-the-overlap" title="Link to this heading"></a></h2>
+<p>Juliet is the only benchmark where every tool can be scored the same way: the
+suite labels its own planted defects, so TP/FP needs no adjudication. This is
+SqC v0.4.321 (run <code class="docutils literal notranslate"><span class="pre">sqc-0.4.321-daff4cf0</span></code>) against each competitor on the
+CWEs that competitor covers — precision, so higher is better.</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 13.3%" />
+<col style="width: 11.1%" />
+<col style="width: 11.1%" />
+<col style="width: 11.1%" />
+<col style="width: 13.3%" />
+<col style="width: 13.3%" />
+<col style="width: 13.3%" />
+<col style="width: 13.3%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>CWE</p></th>
+<th class="head"><p>SqC TP</p></th>
+<th class="head"><p>SqC FP</p></th>
+<th class="head"><p>SqC</p></th>
+<th class="head"><p>clang-tidy</p></th>
+<th class="head"><p>cppcheck</p></th>
+<th class="head"><p>Frama-C</p></th>
+<th class="head"><p>Infer</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>121</p></td>
+<td><p>2518</p></td>
+<td><p>848</p></td>
+<td><p>74.8%</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>40.6%</p></td>
+<td><p>–</p></td>
+<td><p>38.8%</p></td>
+</tr>
+<tr class="row-odd"><td><p>122</p></td>
+<td><p>1495</p></td>
+<td><p>291</p></td>
+<td><p>83.7%</p></td>
+<td><p><strong>98.8%</strong></p></td>
+<td><p>45.0%</p></td>
+<td><p>–</p></td>
+<td><p>37.8%</p></td>
+</tr>
+<tr class="row-even"><td><p>124</p></td>
+<td><p>652</p></td>
+<td><p>268</p></td>
+<td><p>70.9%</p></td>
+<td><p><strong>97.0%</strong></p></td>
+<td><p>40.5%</p></td>
+<td><p>–</p></td>
+<td><p>33.9%</p></td>
+</tr>
+<tr class="row-odd"><td><p>127</p></td>
+<td><p>720</p></td>
+<td><p>100</p></td>
+<td><p>87.8%</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>42.7%</p></td>
+<td><p>–</p></td>
+<td><p>33.9%</p></td>
+</tr>
+<tr class="row-even"><td><p>190</p></td>
+<td><p>1498</p></td>
+<td><p>0</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>27.5%</p></td>
+<td><p>58.1%</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>191</p></td>
+<td><p>1211</p></td>
+<td><p>18</p></td>
+<td><p>98.5%</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>27.2%</p></td>
+<td><p>63.1%</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-even"><td><p>197</p></td>
+<td><p>468</p></td>
+<td><p>0</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>40.0%</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>369</p></td>
+<td><p>544</p></td>
+<td><p>342</p></td>
+<td><p>61.4%</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>27.4%</p></td>
+<td><p>43.4%</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-even"><td><p>401</p></td>
+<td><p>779</p></td>
+<td><p>391</p></td>
+<td><p>66.6%</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>25.7%</p></td>
+<td><p>–</p></td>
+<td><p>54.7%</p></td>
+</tr>
+<tr class="row-odd"><td><p>415</p></td>
+<td><p>468</p></td>
+<td><p>288</p></td>
+<td><p>61.9%</p></td>
+<td><p><strong>84.2%</strong></p></td>
+<td><p>33.8%</p></td>
+<td><p>–</p></td>
+<td><p>63.0%</p></td>
+</tr>
+<tr class="row-even"><td><p>416</p></td>
+<td><p>367</p></td>
+<td><p>36</p></td>
+<td><p><strong>91.1%</strong></p></td>
+<td><p>60.3%</p></td>
+<td><p>29.8%</p></td>
+<td><p>–</p></td>
+<td><p>2.0%</p></td>
+</tr>
+<tr class="row-odd"><td><p>476</p></td>
+<td><p>370</p></td>
+<td><p>175</p></td>
+<td><p>67.9%</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>39.7%</p></td>
+<td><p>64.2%</p></td>
+<td><p>66.1%</p></td>
+</tr>
+<tr class="row-even"><td><p>680</p></td>
+<td><p>352</p></td>
+<td><p>0</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>40.8%</p></td>
+<td><p>82.6%</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>690</p></td>
+<td><p>558</p></td>
+<td><p>0</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>45.7%</p></td>
+<td><p>–</p></td>
+<td><p>60.0%</p></td>
+</tr>
+<tr class="row-even"><td><p>761</p></td>
+<td><p>276</p></td>
+<td><p>0</p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p><strong>100.0%</strong></p></td>
+<td><p>45.7%</p></td>
+<td><p>–</p></td>
+<td><p>58.1%</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>clang-tidy wins the overlap, and it is not close.</strong> On the 16 CWEs it
+covers: clang-tidy 13,952 TP / 116 FP (99.2%), SqC 12,276 TP / 2,757 FP
+(81.7%). It is at 100% on eleven of them, and it finds <em>more</em> true positives
+than SqC does on the same CWEs.</p>
+<p>Two things soften that without overturning it. 1,170 of clang-tidy’s findings
+(8%) are <code class="docutils literal notranslate"><span class="pre">unknown</span></code> — neither matched to a planted flaw nor confidently
+outside one — against 75 for cppcheck and 0 for Frama-C and Infer. And it
+gets there by compiling the code, which is the trade described below.</p>
+<p>SqC leads on CWE-416 (use-after-free, 91.1% vs 60.3%) and matches at 100% on
+six CWEs. Everywhere else on the overlap it is behind, and that is the honest
+read: <strong>SqC’s case is not that it is more precise than clang-tidy on the
+sixteen CWEs clang-tidy checks. It is the other 63 CWEs, the other 290 rules,
+and not needing your build.</strong></p>
+</section>
+<section id="speed">
+<h2>Speed<a class="headerlink" href="#speed" title="Link to this heading"></a></h2>
+<p>Real-world suite, 8 projects, run 215:</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 18.0%" />
+<col style="width: 18.0%" />
+<col style="width: 20.0%" />
+<col style="width: 44.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>Findings</p></th>
+<th class="head"><p>Wall clock</p></th>
+<th class="head"></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>SqC</p></td>
+<td><p>69,354</p></td>
+<td><p>~1,190 s</p></td>
+<td><p>See the TODO below — run 215 recorded 0.0 s for two projects.</p></td>
+</tr>
+<tr class="row-odd"><td><p>clang-tidy</p></td>
+<td><p>2,694</p></td>
+<td><p>501 s</p></td>
+<td><p>Excludes the time to produce a compilation database.</p></td>
+</tr>
+<tr class="row-even"><td><p>cppcheck</p></td>
+<td><p>4,258</p></td>
+<td><p><strong>11,452 s</strong></p></td>
+<td><p>Over 3 hours. mosquitto alone took 3,578 s.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>TODO</strong> — run 215’s SqC rows for <code class="docutils literal notranslate"><span class="pre">hostap</span></code> and <code class="docutils literal notranslate"><span class="pre">sqlite</span></code> both record
+<code class="docutils literal notranslate"><span class="pre">duration_s</span> <span class="pre">=</span> <span class="pre">0.0</span></code>, so its recorded SqC total is 490.9 s. The ~1,190 s
+above substitutes those two projects’ run-229 figures (450.4 s and
+253.1 s), which mixes runs and is therefore not a citable number. Quoting
+the 490.9 s would be wrong in SqC’s favour, which is worse. Tracked as
+benchmarking_db task 740.</p>
+</div>
+<p>On Juliet, where CWE subsets differ: cppcheck 895 s over 16 CWEs, clang-tidy
+5,944 s over 16, Infer 5,019 s over 11, Frama-C 9,914 s over 6.</p>
+</section>
+<section id="real-world-precision-per-rule">
+<h2>Real-World Precision, Per Rule<a class="headerlink" href="#real-world-precision-per-rule" title="Link to this heading"></a></h2>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>TODO</strong> — this section cannot be written yet.</p>
+<p><code class="docutils literal notranslate"><span class="pre">realworld_violations</span></code> holds 17.5M SqC rows and <strong>zero</strong> for cppcheck or
+clang-tidy. The runner’s <code class="docutils literal notranslate"><span class="pre">_parse_cppcheck_xml</span></code> and
+<code class="docutils literal notranslate"><span class="pre">_parse_clang_tidy_txt</span></code> return a count per check id and discard file and
+line, so there is no coordinate to adjudicate — and a count cannot be
+labelled TP or FP by anyone. Competitor real-world precision is therefore
+unmeasured, and the Juliet table above is the only cross-tool precision
+figure that exists.</p>
+<p>cppcheck additionally needs a native-id-to-CERT-C mapping (or
+<code class="docutils literal notranslate"><span class="pre">--addon=cert</span></code> enabled) before a per-rule table is even expressible.</p>
+<p>Tracked as tools_sqc task 766 (capture) and benchmarking_db task 740
+(ingest, plus the <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> key collision that adjudicating a
+second tool at the same coordinate would create).</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>TODO</strong> — the competitor Juliet runs are from 2026-04-03/04 and the SqC
+run is from 2026-09-02. Competitor versions move slowly and five months of
+SqC improvement makes the comparison generous to SqC rather than to a
+rival, so the direction is safe — but a single-date table is what a
+reader deserves. Tracked as tools_sqc task 768.</p>
+</div>
+</section>
+<section id="what-the-trade-actually-is">
+<h2>What The Trade Actually Is<a class="headerlink" href="#what-the-trade-actually-is" title="Link to this heading"></a></h2>
+<p>Every tool that beats SqC on precision above does it by compiling the code.
+clang-tidy, Frama-C and Infer all need a working build and correct flags;
+with a real preprocessor they know which branches exist, what a macro
+expands to, and what a type is, and they are right more often as a result.</p>
+<p>SqC parses source as written. That is why it runs on a partial checkout, a
+tree you cannot build, or a file that was generated a moment ago — and it is
+also why it has a macro-expansion engine, a suppression system, and a
+false-positive backlog as substantial as its rule backlog. The precision gap
+on those sixteen CWEs is the price of the property that makes it useful
+elsewhere.</p>
+<p>cppcheck is the honest control here: it also runs unbuilt, and on the same
+sixteen CWEs it scores 36.4% to SqC’s 81.7%, at roughly ten times the wall
+clock.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="testing-methodology.html" class="btn btn-neutral float-left" title="Testing Methodology" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="juliet-history.html" class="btn btn-neutral float-right" title="Juliet Benchmark History" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

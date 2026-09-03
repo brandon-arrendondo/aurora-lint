@@ -19,7 +19,7 @@
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Juliet Benchmark History" href="juliet-history.html" />
+    <link rel="next" title="Comparison To Other Tools" href="tool-comparison.html" />
     <link rel="prev" title="Interactive Console UI" href="interactive-ui.html" /> 
 </head>
 
@@ -75,8 +75,12 @@
 <li class="toctree-l3"><a class="reference internal" href="#known-rule-implementation-gaps">Known Rule Implementation Gaps</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="#benchmark-caveats-and-rule-suite-coverage">Benchmark Caveats And Rule-Suite Coverage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#juliet-tp-rate-is-not-the-ceiling-signal-the-flaw-hit-rate-is">Juliet TP rate is not the ceiling signal — the flaw-hit rate is</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#rule-suite-coverage">Rule-suite coverage</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
 <li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
@@ -690,6 +694,117 @@ regardless of whether null-termination is manually added afterward.</p></li>
 </ul>
 </section>
 </section>
+<section id="benchmark-caveats-and-rule-suite-coverage">
+<h2>Benchmark Caveats And Rule-Suite Coverage<a class="headerlink" href="#benchmark-caveats-and-rule-suite-coverage" title="Link to this heading"></a></h2>
+<p>Moved out of <code class="docutils literal notranslate"><span class="pre">README.md</span></code> (2026-09-03), which should say how well SqC works
+rather than how the measurement is constructed. These are the caveats a
+maintainer or a reviewer needs; see <a class="reference internal" href="tool-comparison.html"><span class="doc">Comparison To Other Tools</span></a> for how SqC scores
+against other analysers.</p>
+<p>Numbers below are <strong>not</strong> auto-refreshed with README’s highlights table, and
+that is deliberate: a caveat whose job is to say what a figure does not cover
+can do that without restating the figure. An earlier version of these notes
+carried the run’s version, its unlabeled percentage and the recall figure, and
+when the table was refreshed onto the canonical basis those three did not move
+with it — the table said 93.9% recall and 89.8% coverage while the prose eight
+lines below still said 93.7% and 11.8%. Treat any number here as illustrative
+of a <em>gap</em>, and <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">compare</span></code> or <code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres as the
+current measurement.</p>
+<p>Published figures are pinned to the last validly-adjudicated run. Rule-logic
+commits landed since that run are not reflected, and a current figure requires
+delta-adjudicating the newer unlabeled findings first — the protocol for that
+lives in the repository’s agent instructions, not here, because it is a
+maintainer workflow rather than a user-facing one.</p>
+</section>
+<section id="juliet-tp-rate-is-not-the-ceiling-signal-the-flaw-hit-rate-is">
+<h2>Juliet TP rate is not the ceiling signal — the flaw-hit rate is<a class="headerlink" href="#juliet-tp-rate-is-not-the-ceiling-signal-the-flaw-hit-rate-is" title="Link to this heading"></a></h2>
+<p><strong>Juliet TP Rate</strong> above is the share of sqc’s Juliet findings that are true
+positives. It says how clean the output is, not how much of the suite’s
+planted defect set sqc actually locates. That second question is the
+<strong>flaw-hit rate</strong> — the fraction of Juliet’s known flaw lines sqc lands a
+finding on — and it moves independently: as of v0.4.321 it was 12.9%
+(17,100 of 132,406 flaw lines), essentially flat for weeks while the TP
+rate above was moving. Quoting only the TP rate overstates the tool; this
+paragraph is not auto-refreshed with the table above (deliberately, per the
+lesson in the note above this section — see <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">compare</span></code> or
+<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres for the current figure), so treat the number here as
+illustrative of the <em>gap</em>, not as a current measurement.</p>
+<p>Per-file detection rate (in the table above) sits between the two: sqc
+flags something in over a third of flawed files, but lands on the specific
+planted flaw line in roughly an eighth of cases. When judging headroom, the
+flaw-hit rate is the honest signal to watch for movement, not the TP rate.</p>
+<p>Juliet also exercises only part of the rule suite — 127 rules have any
+Juliet true positive, out of 311 implemented. See “Rule-suite coverage”
+below for what that leaves unmeasured, and
+[<code class="docutils literal notranslate"><span class="pre">docs/juliet-history.rst</span></code>](docs/juliet-history.rst) for the full
+round-by-round version history behind the table above.</p>
+</section>
+<section id="rule-suite-coverage">
+<h2>Rule-suite coverage<a class="headerlink" href="#rule-suite-coverage" title="Link to this heading"></a></h2>
+<p>Precision and recall above are aggregates over the rules that actually fire
+on the benchmark corpora. They say nothing about the rest of the suite, and
+the rest of the suite is substantial (measured 2026-09-02, run #226):</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 62.0%" />
+<col style="width: 38.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"></th>
+<th class="head"><p>Rules</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Implemented</p></td>
+<td><p><strong>311</strong> (307 enabled by default)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Have true-positive evidence somewhere</p></td>
+<td><p><strong>186</strong> — 127 from Juliet, 144 from real-world TP/FN labels</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>No true-positive evidence anywhere</strong></p></td>
+<td><p><strong>125 (40%)</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p>· fire on the corpus, but have only ever produced FPs</p></td>
+<td><p>65</p></td>
+</tr>
+<tr class="row-even"><td><p>· never fire on the nine projects at all</p></td>
+<td><p>60</p></td>
+</tr>
+</tbody>
+</table>
+<p>A rule in that last group has never been shown to detect anything real —
+but that is usually a statement about the corpora, not about the rule. The
+nine real-world projects are mature, warning-clean C, which is the opposite
+population from sqc’s nominal use case (newer, in-progress, possibly
+non-compiling code wired into CI/CD early — sqc needs no build system, which
+is the whole point). A rule whose defect cannot survive review in released
+software is structurally incapable of scoring a true positive there. The 60
+never-firing rules include <code class="docutils literal notranslate"><span class="pre">WIN02-C</span></code> and <code class="docutils literal notranslate"><span class="pre">WIN30-C</span></code> — Windows rules against
+Linux-only corpora, categorically inapplicable rather than broken (rule
+applicability is the user’s lever, by design: manifest scoping and
+suppression exist so the user decides which rules apply to their code,
+rather than detection logic silently deciding for them).</p>
+<p><strong>Worked example of why a per-rule 0.0% is sometimes a corpus artifact, not
+a rule defect</strong> (task 692): <code class="docutils literal notranslate"><span class="pre">DCL31-C</span></code> shows 364 findings, 324 labeled, 0
+TP — 0.0% precision. That figure measures sqc’s header reachability, not
+the rule’s quality. <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code> alone goes from 1,365 <code class="docutils literal notranslate"><span class="pre">DCL31-C</span></code> findings
+with no <code class="docutils literal notranslate"><span class="pre">-I</span></code> to 0 with <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code>. The rule guards a genuine defect —
+under C89 an implicit declaration makes the compiler assume <code class="docutils literal notranslate"><span class="pre">int</span> <span class="pre">f()</span></code>, so
+the return type is misread, no argument checking happens, and a returned
+pointer is truncated on LP64; C99 removed implicit declarations and C23
+makes them an error — on code this corpus does not contain. Quoting that
+number as a rule-quality measure is a category error.</p>
+<p>The material to close this gap already exists in the repo: <strong>1,959
+must-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/fail/*.c</span></code>, across 306
+rules) and <strong>1,568 must-not-detect</strong> fixtures
+(<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/pass/*.c</span></code>, across 308 rules), labeled by
+construction — 309 distinct rules carry at least one. 121 of the 125
+unvalidated rules already have a must-detect fixture — only <code class="docutils literal notranslate"><span class="pre">ENV04-C</span></code>,
+<code class="docutils literal notranslate"><span class="pre">FLP01-C</span></code>, <code class="docutils literal notranslate"><span class="pre">MSC18-C</span></code> and <code class="docutils literal notranslate"><span class="pre">MSC25-C</span></code> have none.
+Today those fixtures run only as pass/fail unit tests and feed no measured
+metric, so a rule can be fully exercised by tests and still read as having
+no detection evidence. Scoring them as a third benchmark tier is tracked as
+tasks 693–696.</p>
+</section>
 </section>
 
 
@@ -697,7 +812,7 @@ regardless of whether null-termination is manually added afterward.</p></li>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="interactive-ui.html" class="btn btn-neutral float-left" title="Interactive Console UI" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="juliet-history.html" class="btn btn-neutral float-right" title="Juliet Benchmark History" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="tool-comparison.html" class="btn btn-neutral float-right" title="Comparison To Other Tools" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>
