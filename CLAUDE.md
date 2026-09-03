@@ -309,12 +309,46 @@ to be wrong (back to pending, clears `started_at`).
 preserving prior context. `edit <id> --details "..."` REPLACES the entire
 details body instead (discards what was there) — only use it when you mean
 to overwrite, not to log progress. `--add-tag`/`--rm-tag`,
-`--add-dep`/`--rm-dep`, `--title`, `--priority` are also available on `edit`.
+`--add-dep`/`--rm-dep`, `--add-related`/`--rm-related`,
+`--location`/`--clear-location`, `--gate`/`--no-gate`, `--title`,
+`--priority` are also available on `edit`.
 
 **When a new task surfaces:**
 `todo-sqlite-cli add "title" --details "..." --tag <area> --priority <1-5>`
 (1 = highest). `--depends-on <id>` links prerequisites; tasks with unmet
 deps are skipped by `next` and shown `[blocked]` in `list`.
+
+**Use `--related` instead of naming a task id in prose (v3.2.0).** A
+`--related <id>` link is mutual, appears on both tasks' `show` as
+`Related: ...`, and is stored by UUID — so it FOLLOWS a `renumber` (verified:
+a link displayed as `Related: 2` re-displayed as `Related: 99` after the
+target was renumbered). That is the fix for the failure this file used to
+document by hand: task 731's details still say "read every '728' above as
+730" because a hand-written id went stale when two nodes collided on a
+display id. Prose ids do not survive renumbering; `--related` does. An
+unknown id is REJECTED (`error: related task N: task N not found`), so a link
+is never left dangling.
+
+Use `--depends-on` when the other task must land FIRST (it gates `next`);
+use `--related` for "these are the same defect / same cohort / read these
+together", which is most cross-references. Neither works across the two
+repos — an id must exist in the same DB — so a cross-repo edge is still
+recorded as prose, and that is now the ONLY case where prose is correct.
+
+**`--location <text>` flags work that can only be done on a specific node**,
+shown as an `@location` suffix in `list`. The established value is
+`benchmark-node` (role, deliberately not the hostname `dev-41`/`r720`, so it
+survives the hardware being replaced), meaning the task needs a Postgres
+write against `sqc_bench` or a corpus checkout. It replaces the
+"Benchmark node only" line that tasks 733/735 carried in their details.
+Note it is DISPLAY-ONLY today — `list` has no `--location` filter and `next`
+does not skip on it — so keep it high-signal: in `benchmarking_db`
+benchmark-node is close to the default, and the useful information is which
+tasks there are portable (they stay unmarked).
+
+`--gate` marks a checkpoint on an external condition rather than work to be
+done; gates are skipped by `next` and never flagged stale by `aging`, and
+`list --kind gate` gives a readiness dashboard of open ones.
 
 Original task IDs (prior to the 2026-04-20 import) are preserved
 as `plan-id:NN` tags.
