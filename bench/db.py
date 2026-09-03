@@ -2084,6 +2084,13 @@ class BenchDB:
                 for proj, keys in run_keys.items()}
 
         warnings = []
+        # Projects this run could not score AT ALL because no codebase_commit
+        # was recorded -- a data defect, not a normal state, and distinct from
+        # "scored, but nothing was labeled at that commit". Kept as its own
+        # list rather than another free-text warning so a caller can act on it:
+        # the run's aggregate silently excludes these projects, and a footnote
+        # under a complete-looking table is not enough signal for that.
+        unscoreable = []
         # rule_id -> aggregated counters
         rules: dict[str, dict] = {}
         projects = []
@@ -2106,9 +2113,12 @@ class BenchDB:
             present = run_keys.get(project, set())
             run_finding_count = len(present)
             if not commit:
+                unscoreable.append({"project": project,
+                                    "run_findings": run_finding_count})
                 warnings.append(
                     f"{project}: run has no codebase_commit recorded; "
-                    "cannot match labels")
+                    f"cannot match labels ({run_finding_count} findings "
+                    "excluded from every figure below)")
                 continue
             labels = self.get_ground_truth_labels(project, commit)
             if restrict_files is not None:
@@ -2236,6 +2246,7 @@ class BenchDB:
             "run": run, "run_id": run_id,
             "overall": overall, "per_rule": per_rule,
             "per_project": projects, "warnings": warnings,
+            "unscoreable_projects": unscoreable,
         }
 
     def get_unlabeled_findings(self, run_id: int, rule_id: str = None,
