@@ -20,7 +20,7 @@ A static analysis tool for C code compliance with [SEI CERT C Coding Standards](
 | **Juliet CWEs Scanned** | 79 (fast mode, CWE-matched rules) |
 | **100% Precision CWEs** | 43 (zero false positives, with real detections) |
 | **Per-File Detection** | 38.0% (19,073 / 50,256 files) |
-| **Real-World Precision / Recall** | 24.3% / 93.7% (v0.4.325, run #226, 88.2% label coverage) |
+| **Real-World Precision / Recall** | 24.2% / 93.9% (v0.4.325, run #226, 89.8% label coverage) |
 | **Real-World Projects** | curl, hostap, libcrc, lua, mosquitto, pure-ftpd, raylib, seL4, sqlite |
 <!-- BENCH:HIGHLIGHTS:END -->
 

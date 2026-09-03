@@ -75,7 +75,9 @@ below before quoting any per-rule number from it.
 | **sqlite** | 81 | 181,604 | 15,718 | 503 | 137 |
 | **Total** | **1,148** | **1,168,785** | **68,053** | **4,258** | **2,694** |
 
-Aggregate measured precision (adjudicated oracle, `bench realworld-score 226`): **24.3%** (TP 13,294 / 54,691 labeled of 62,028 findings), **recall 93.7%** (13,294 / 14,184 known TPs flagged); label coverage 54,691 / 62,028 findings (88.2%; 39 matched labels are "uncertain" and excluded from precision).
+Aggregate measured precision (adjudicated oracle, `bench realworld-score 226`): **24.2%** (TP 13,270 / 54,789 labeled of 60,992 findings), **recall 93.9%** (13,270 / 14,134 known TPs flagged); label coverage 54,789 / 60,992 findings (89.8%; 39 matched labels are "uncertain" and excluded from precision).
+
+_Basis: `distinct/scored-projects/in_scope`, definitions `1`. Figures on a different basis are not comparable to these — a precision or recall delta against a previously-published run is only meaningful if that run's basis matches, and the hand-written sections below predate basis labelling._
 <!-- BENCH:REALWORLD_LATEST:END -->
 
 Regenerate the table + precision/recall paragraph above with
