@@ -156,7 +156,9 @@ SqC achieves 100% precision (zero false positives) on 48 CWEs including:
 High-precision (>80% TP rate) on several additional CWEs including CWE-191
 (98.5%), CWE-127 (81.5%), and CWE-675 (93.0%).
 
-See ``JULIET_RESULTS.md`` for full per-CWE breakdowns.
+See :doc:`juliet-history` for per-CWE tier breakdowns, or query
+``data/benchmarks.db``/``sqc_bench`` Postgres (``get_cwe_detail``) for the
+full current per-CWE data.
 
 FP Reduction History
 ~~~~~~~~~~~~~~~~~~~~
@@ -216,8 +218,15 @@ The difference reflects rule coverage breadth, not false positive rate.
 **Measured precision/recall**: 6.2% precision / 91.7% recall against the
 adjudicated ground-truth oracle (``python -m bench realworld-score 118``) —
 the empirical floor across all 7 projects, not a raw violation-count
-comparison. See ``REALWORLD_RESULTS.md`` for the full version history,
-per-rule breakdowns, and oracle methodology.
+comparison, from a run superseded many times since. Current figures are in
+README.md's Benchmark Highlights table; the full version history and
+per-rule breakdowns live in ``sqc_bench`` Postgres, queryable via
+``benchmarking_db``'s MCP servers or, on the benchmark host, its CLI (see
+that repo's README) -- not in a hand-maintained file here
+(``REALWORLD_RESULTS.md``, which carried this role until it was retired
+2026-09-03). Oracle methodology, including the DCL31-C worked example of
+why a per-rule 0.0% can be a corpus artifact rather than a rule defect, is
+in README.md's "Rule-suite coverage" section.
 
 Cross-Tool Comparison Methodology
 ----------------------------------

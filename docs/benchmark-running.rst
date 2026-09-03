@@ -48,8 +48,9 @@ SQLite Schema
    * - ``ground_truth``
      - Adjudicated TP/FP oracle keyed on (project, commit, file, line, rule)
 
-Historical data from ``JULIET_RESULTS.md`` and ``REALWORLD_RESULTS.md`` has been
-backfilled into the database.
+Historical data from ``JULIET_RESULTS.md`` and ``REALWORLD_RESULTS.md``
+(both retired 2026-09-03 once this backfill made them redundant with
+Postgres) has been backfilled into the database.
 
 Benchmark Workflow Protocol
 ---------------------------
@@ -312,7 +313,7 @@ Delta-Adjudication Gate
 .. important::
 
     Before citing a precision/recall claim ("precision held", "FP reduced",
-    a paper table row) for a rule whose detection logic just changed, **run
+    a published table row) for a rule whose detection logic just changed, **run
     a delta-adjudication pass on that rule's new findings first.**
 
 ``ground_truth`` labels are snapshotted at `(project, commit, file, line,
@@ -471,8 +472,14 @@ Resolved Issues
   with depth limit.
 
 - **STR31-C ``detect_manual_string_loop`` Runaway** (Fixed 2026-02-25): Caused
-  36--49% of all violations on 3 of 5 real-world projects. File-wide fallback
-  removed; pattern matching restricted to loop condition and body.
+  36--49% of all violations on 3 of 5 real-world projects. Root cause: the
+  final fallback iterated every line in the source file looking for
+  ``memcpy`` + ``strlen``/``string``, so one match anywhere caused every loop
+  to generate a violation -- ``jimsh0.c`` alone produced 180,297 violations.
+  Fix: deleted the file-wide fallback, restricted matching to the loop
+  condition and body, improved ``is_string_memcpy``. After the fix,
+  ``jimsh0.c``'s STR31-C count dropped from 180,297 to 10. (Migrated here
+  2026-09-03 from ``REALWORLD_RESULTS.md``, retired that day.)
 
 - **Output Buffer Saturation**: SqC emits one status line per rule per file
   (~100 rules × N files). Always suppress or redirect output during scans::

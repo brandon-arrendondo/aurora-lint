@@ -1,11 +1,15 @@
-"""Regenerate the DB-derived presentation blocks in README.md,
-JULIET_RESULTS.md and REALWORLD_RESULTS.md.
+"""Regenerate the DB-derived presentation block in README.md.
 
-Each file has one or more `<!-- BENCH:NAME:START -->` / `<!-- BENCH:NAME:END
--->` marker pairs bracketing a block that is a pure projection of a benchmark
-DB (plus `rules_templates/rules-all.toml`'s rule counts) -- nothing outside a
-marker pair is ever touched, so hand-written narrative/history sections stay
-hand-written.
+The one file has one `<!-- BENCH:NAME:START -->` / `<!-- BENCH:NAME:END -->`
+marker pair bracketing a block that is a pure projection of a benchmark DB
+-- nothing outside a marker pair is ever touched, so hand-written narrative
+sections stay hand-written.
+
+(This used to also cover JULIET_RESULTS.md and REALWORLD_RESULTS.md, each
+with its own generated block. Both retired 2026-09-03 once every figure they
+generated had become redundant with this one table plus `data/benchmarks.db`
+/`sqc_bench` Postgres -- see git history for `render_juliet_current_state`/
+`render_realworld_latest` if you need the old block shapes.)
 
 Every function here takes `db` as a plain argument and never imports a
 concrete DB class -- callers decide what `db` is (see `bench/__main__.py`'s
@@ -34,11 +38,10 @@ bearing rather than cosmetic:
 `rw_score` fields this module reads:
 
   - `overall.published_basis` / `overall.definition_version` -- the basis the
-    figures were computed on, printed in the rendered block by `_basis_line`.
+    figures were computed on, printed as a table row by `_basis_cell`.
     Supplied by benchmarking_db's metrics layer (task 701); ABSENT from this
-    repo's local scorer, which is a supported case and prints a "not recorded"
-    line rather than nothing. Read with `.get`.
-
+    repo's local scorer, which is a supported case and prints "not recorded"
+    rather than nothing. Read with `.get`.
   - `overall.unlabeled_fraction`, `per_rule`, `per_project`
   - `unscoreable` -- list[dict], each `{project, reason, excluded_findings}`:
     projects dropped from every figure because no codebase_commit was
@@ -58,10 +61,9 @@ this contract exists to make impossible to hit by accident.
 from __future__ import annotations
 
 import re
-import tomllib
 from typing import Protocol
 
-from bench.config import PROJECT_DIR, RULES_ALL_TOML
+from bench.config import PROJECT_DIR
 
 
 class BenchDBLike(Protocol):
@@ -82,8 +84,6 @@ class BenchDBLike(Protocol):
 
 
 README = PROJECT_DIR / "README.md"
-JULIET_RESULTS = PROJECT_DIR / "JULIET_RESULTS.md"
-REALWORLD_RESULTS = PROJECT_DIR / "REALWORLD_RESULTS.md"
 
 # Above this fraction of a real-world run's findings being unlabeled, its
 # precision/recall is more "unmeasured" than "measured" -- see CLAUDE.md's
@@ -116,14 +116,6 @@ def display_project(project: str) -> str:
 def realworld_project_count(db: BenchDBLike, realworld_run_id: int) -> int:
     results = db.get_realworld_results(realworld_run_id)
     return len({r["project"] for r in results if r["tool"] == "sqc"})
-
-
-def rule_counts() -> dict:
-    with RULES_ALL_TOML.open("rb") as f:
-        data = tomllib.load(f)
-    rules = data["rules"]["cert_c"]
-    enabled = sum(1 for v in rules.values() if v.get("enabled"))
-    return {"implemented": len(rules), "enabled": enabled}
 
 
 def resolve_latest_fast_juliet_run(db: BenchDBLike) -> str | None:
@@ -256,13 +248,38 @@ def _zero_fp_cwe_lists(per_cwe: list[dict]) -> tuple[list[str], list[str]]:
     return with_detections, zero_detection
 
 
-def _cwe_list_str(ids: list[str]) -> str:
-    """'CWE-78, 114, 188, ...' -- prefix once, bare numbers after (matches
-    the existing hand-written style in JULIET_RESULTS.md)."""
-    if not ids:
-        return "none"
-    nums = [i.split("-")[-1] for i in ids]
-    return f"CWE-{nums[0]}" + (", " + ", ".join(nums[1:]) if len(nums) > 1 else "")
+def _basis_cell(overall: dict) -> str:
+    """The basis the real-world figures were computed on, as a table cell.
+
+    dbbd7f84 put this under REALWORLD_RESULTS.md's generated block; e4469380
+    retired that file and the line went with it, on the reasoning that the
+    hazard -- canonical figures landing directly above hand-written prose
+    carrying an older, unrecorded basis -- died with the document. It did not.
+    It moved here, and it had already fired: a7f2771e refreshed this table to
+    24.2% / 93.9% / 89.8% coverage and left the caveat paragraph eight lines
+    below saying 93.7% recall and 11.8% unlabeled -- both exact fossils of the
+    pre-canonical basis (100 - 88.2 = 11.8). README stated two recalls for one
+    run.
+
+    The prose is now written so it restates no generated number, which removes
+    that particular collision. This cell is the general guard: any figure not
+    on the named basis is not comparable to these, and a reader can see which
+    basis they are holding instead of inferring it from the commit that last
+    touched the file.
+
+    Absent basis -- the normal case for this repo's local SQLite scorer, since
+    `published_basis` comes from benchmarking_db's metrics layer -- prints
+    "not recorded" rather than nothing. Printing nothing is the defect this
+    exists to prevent, and stating it makes a locally-rendered table visibly
+    distinct from a canonical one, which is the first actual enforcement of
+    CLAUDE.md's rule against committing local figures as project numbers.
+    """
+    basis = overall.get("published_basis")
+    version = overall.get("definition_version")
+    if not basis:
+        return ("**not recorded** — local scorer; describes one checkout's "
+                "runs, not a project measurement")
+    return f"`{basis}`" + (f" (definitions `{version}`)" if version else "")
 
 
 def render_readme_highlights(db: BenchDBLike, juliet_run_id: str,
@@ -295,184 +312,7 @@ def render_readme_highlights(db: BenchDBLike, juliet_run_id: str,
         f"{overall['recall_pct']}% (v{rw_run['sqc_version']}, run #{realworld_run_id}, "
         f"{coverage_pct}% label coverage) |",
         f"| **Real-World Projects** | {', '.join(projects)} |",
-    ]
-    return "\n".join(lines)
-
-
-def render_juliet_current_state(db: BenchDBLike, juliet_run_id: str) -> str:
-    juliet = db.get_run_summary(juliet_run_id)
-    s, ca = juliet["summary"], juliet["cwe_aware"]
-    run = db.get_run(juliet_run_id)
-    rule_c = rule_counts()
-    with_detections, zero_detection = _zero_fp_cwe_lists(juliet["per_cwe"])
-    is_fast = run["mode"] == "fast"
-    mode_word = "fast" if is_fast else "full"
-    mode_label = "Fast (per-CWE manifests" if is_fast else "Full (all rules"
-
-    wall_min = round(s["wall_s"] / 60) if s.get("wall_s") else None
-    wall_str = f", ~{wall_min} min wall time" if wall_min else ""
-
-    lines = [
-        f"## Current State (v{run['sqc_version']})",
-        "",
-        f"Run `{juliet_run_id}`, completed "
-        f"{s.get('finished_at', '')[:10]} ({mode_word} mode{wall_str}).",
-        "",
-        "| Metric | Value |",
-        "|--------|-------|",
-        f"| **Rules Implemented** | {rule_c['implemented']} CERT C rules "
-        f"({rule_c['enabled']} enabled by default) |",
-        f"| **Juliet CWEs Scanned** | {s['cwes_analyzed']} ({mode_word} mode, CWE-matched rules) |",
-        f"| **True Positives** | {ca['cwe_matched_tp']:,} |",
-        f"| **False Positives** | {ca['cwe_matched_fp']:,} |",
-        f"| **TP Rate** | **{ca['cwe_matched_tp_rate_pct']}%** |",
-        f"| **Per-file Detection Rate** | {ca['per_file_rate_pct']}% "
-        f"({ca['per_file_detected']:,} / {ca['per_file_total']:,} files) |",
-        f"| **Zero-FP CWEs** | {len(with_detections)} of {s['cwes_analyzed']} "
-        f"(with real detections; {len(zero_detection)} more scanned CWEs "
-        "have zero detections) |",
-        f"| **Benchmark Mode** | {mode_label}, "
-        f"{ca['noise_ratio_pct']}% noise) |",
-        "",
-        f"**100% precision, with detections ({len(with_detections)})**: "
-        f"{_cwe_list_str(with_detections)}.",
-        "",
-        f"**Zero-detection CWEs** (rules mapped but 0 violations, "
-        f"{len(zero_detection)}): {_cwe_list_str(zero_detection)}.",
-    ]
-    return "\n".join(lines)
-
-
-def _backfill_from_history(db: BenchDBLike, by_project: dict,
-                           max_scan_runs: int = 60) -> None:
-    """Fill in missing C-files/LOC and cppcheck/clang-tidy counts from recent
-    run history.
-
-    Competitor tools and per-project file/LOC counts are deliberately not
-    re-scanned on every routine (sqc-only) run -- see CLAUDE.md ("only
-    re-run [cppcheck/clang-tidy] when adding a new codebase to the suite")
-    -- so a single run's own rows are usually incomplete by design, not by
-    error. This mirrors the existing hand-maintained doc's practice of
-    quietly carrying those numbers forward.
-    """
-    def missing(project):
-        row = by_project.get(project, {})
-        return (not row.get("c_files") or not row.get("loc")
-                or any(row.get(t) is None for t in ("cppcheck", "clang-tidy")))
-
-    needed = {p for p in by_project if missing(p)}
-    for run in db.list_realworld_runs()[:max_scan_runs]:
-        if not needed:
-            break
-        for r in db.get_realworld_results(run["id"]):
-            project = r["project"]
-            if project not in needed:
-                continue
-            row = by_project[project]
-            if not row.get("c_files") and r["c_files"]:
-                row["c_files"] = r["c_files"]
-            if not row.get("loc") and r["loc"]:
-                row["loc"] = r["loc"]
-            if r["tool"] in ("cppcheck", "clang-tidy") and row.get(r["tool"]) is None \
-                    and r["violation_count"] is not None:
-                row[r["tool"]] = r["violation_count"]
-        needed = {p for p in needed if missing(p)}
-
-
-def _basis_line(overall: dict) -> str:
-    """One line naming the basis the figures above were computed on.
-
-    A single-basis dict is not a single-basis DOCUMENT. Only this block is
-    generated; the "Previous" sections in REALWORLD_RESULTS.md are
-    hand-written prose carrying whatever basis was published at the time, and
-    nothing recorded what that was. So the first canonical refresh puts run
-    226 at 24.2% directly above run 217 at 24.1% and it reads as a 0.1-point
-    improvement that is entirely the denominator moving -- 11 figures shift
-    together (recall 93.8 -> 93.9 goes UP because the denominator loses 95
-    out-of-scope real-bug labels while the numerator loses 82).
-
-    No assertion can catch that from either repo: those lines are not
-    generated and carry no basis to compare against. What the generated block
-    CAN do is state its own, so the comparison becomes checkable instead of
-    merely wrong. That is the whole job of this line.
-
-    When the basis is absent -- which is the normal case for this repo's local
-    SQLite scorer, since `published_basis` comes from benchmarking_db's
-    metrics layer -- it says so explicitly rather than printing nothing.
-    Omitting the line on absence would reproduce the exact defect it exists to
-    fix, and it usefully makes a locally-rendered block visibly different from
-    a canonical one: CLAUDE.md forbids committing local figures as project
-    numbers, and until now nothing made such a paste identifiable on sight.
-    """
-    basis = overall.get("published_basis")
-    version = overall.get("definition_version")
-    if not basis:
-        return ("_Basis: **not recorded** — rendered from a scorer that does "
-                "not declare one (this repo's local SQLite path). These "
-                "figures describe one checkout's runs, not the project's "
-                "measurements; do not cite them as project results._")
-    suffix = f", definitions `{version}`" if version else ""
-    return (f"_Basis: `{basis}`{suffix}. Figures on a different basis are not "
-            "comparable to these — a precision or recall delta against a "
-            "previously-published run is only meaningful if that run's basis "
-            "matches, and the hand-written sections below predate basis "
-            "labelling._")
-
-
-def render_realworld_latest(db: BenchDBLike, realworld_run_id: int,
-                            rw_score: dict) -> str:
-    results = db.get_realworld_results(realworld_run_id)
-    by_project: dict[str, dict] = {}
-    for r in results:
-        row = by_project.setdefault(
-            r["project"], {"c_files": r["c_files"], "loc": r["loc"]})
-        row[r["tool"]] = r["violation_count"]
-    _backfill_from_history(db, by_project)
-
-    lines = [
-        "### Violation Counts — All Three Tools",
-        "",
-        "| Project | C Files | LOC | sqc | cppcheck | clang-tidy |",
-        "|---------|--------:|----:|----:|--------:|-----------:|",
-    ]
-    tot_files = tot_loc = 0
-    tot = {t: 0 for t in TOOL_ORDER}
-    tot_present = {t: False for t in TOOL_ORDER}
-    for project in sorted(by_project, key=lambda p: display_project(p).lower()):
-        row = by_project[project]
-        tot_files += row["c_files"]
-        tot_loc += row["loc"]
-        cells = []
-        for tool in TOOL_ORDER:
-            v = row.get(tool)
-            cells.append(f"{v:,}" if v is not None else "—")
-            if v is not None:
-                tot[tool] += v
-                tot_present[tool] = True
-        lines.append(
-            f"| **{display_project(project)}** | {row['c_files']} | "
-            f"{row['loc']:,} | {cells[0]} | {cells[1]} | {cells[2]} |")
-    tot_cells = [f"**{tot[t]:,}**" if tot_present[t] else "—" for t in TOOL_ORDER]
-    lines.append(
-        f"| **Total** | **{tot_files:,}** | **{tot_loc:,}** | "
-        f"{tot_cells[0]} | {tot_cells[1]} | {tot_cells[2]} |")
-
-    overall = rw_score["overall"]
-    coverage_pct = overall.get("label_coverage_pct") or 0.0
-    lines += [
-        "",
-        f"Aggregate measured precision (adjudicated oracle, "
-        f"`bench realworld-score {realworld_run_id}`): "
-        f"**{overall['precision_pct']}%** (TP {overall['labeled_tp']:,} / "
-        f"{overall['labeled_total']:,} labeled of {overall['run_findings']:,} "
-        f"findings), **recall {overall['recall_pct']}%** "
-        f"({overall['tp_detected']:,} / {overall['tp_labels']:,} known TPs "
-        f"flagged); label coverage {overall['labeled_total']:,} / "
-        f"{overall['run_findings']:,} findings ({coverage_pct}%; "
-        f"{overall['labeled_uncertain']:,} matched labels are \"uncertain\" "
-        "and excluded from precision).",
-        "",
-        _basis_line(overall),
+        f"| **Basis** | {_basis_cell(overall)} |",
     ]
     return "\n".join(lines)
 
@@ -489,11 +329,6 @@ def render_all(db: BenchDBLike, juliet_run_id: str, realworld_run_id: int,
         README: [("BENCH:HIGHLIGHTS",
                   render_readme_highlights(db, juliet_run_id,
                                            realworld_run_id, rw_score))],
-        JULIET_RESULTS: [("BENCH:JULIET_CURRENT",
-                          render_juliet_current_state(db, juliet_run_id))],
-        REALWORLD_RESULTS: [("BENCH:REALWORLD_LATEST",
-                             render_realworld_latest(db, realworld_run_id,
-                                                     rw_score))],
     }
     out = {}
     for path, regions in blocks.items():

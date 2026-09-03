@@ -4,13 +4,13 @@ Juliet Benchmark History
 This page is the detailed, round-by-round engineering history behind SqC's
 Juliet Test Suite results: every FP-reduction round, per-CWE tier breakdowns,
 the Round 1 baseline table, competitor comparisons, and the full version
-history. It exists so the granular "why did this number change" narrative has
-a home without bloating the top-level ``JULIET_RESULTS.md``, which tracks only
-current state.
+history.
 
-See ``JULIET_RESULTS.md`` (repo root) for the current run's numbers, and
-:doc:`testing-methodology` for how the benchmark itself works (ground truth
-classification, manifests, metrics).
+``JULIET_RESULTS.md`` (repo root) tracked current state until it was retired
+2026-09-03, once every figure it generated had become redundant with
+README.md's Benchmark Highlights table -- see that table for the latest
+run's numbers, and :doc:`testing-methodology` for how the benchmark itself
+works (ground truth classification, manifests, metrics).
 
 Benchmark Environment
 ----------------------
@@ -1114,9 +1114,9 @@ Performance by CWE Category (Historical Snapshot)
 ----------------------------------------------------
 
 .. note::
-   These tiers reflect an older full-suite run (pre-fast-mode). See
-   ``JULIET_RESULTS.md`` for current per-CWE precision via
-   ``python -m bench get-cwe-detail`` / the MCP ``get_cwe_detail`` tool.
+   These tiers reflect an older full-suite run (pre-fast-mode). Get current
+   per-CWE precision via ``python -m bench get-cwe-detail`` / the MCP
+   ``get_cwe_detail`` tool.
 
 Tier 1: Strong Detection (TP > 50%) — 18 categories
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1317,9 +1317,11 @@ Competitor Comparison
      - --
      - Commercial
 
-The SqC row above is from the 44.6% full-suite era (v0.2.23); current fast-mode
-TP rate is 83.8% (v0.4.116, see ``JULIET_RESULTS.md``) but is not directly
-comparable since the competitor figures below were not re-measured
+The SqC row above is from the 44.6% full-suite era (v0.2.23); fast-mode TP
+rate was 83.8% as of v0.4.116 (see the fast-mode version table above; it has
+since moved further, see README.md's Benchmark Highlights for the current
+figure) but is not directly comparable since the competitor figures below
+were not re-measured
 fast-mode/CWE-matched.
 
 "Commercial Tool C" is anonymized from `Goseva-Popstojanova & Perhinschi 2015
@@ -1344,9 +1346,9 @@ Sources: `ISSTA 2022 <https://dl.acm.org/doi/10.1145/3533767.3534380>`_ |
 Version History (v0.2.1 – v0.3.17)
 --------------------------------------
 
-Full-suite runs only (pre-fast-mode). See ``JULIET_RESULTS.md`` for
-fast-mode versions from v0.3.20 onward, or query ``data/benchmarks.db``
-directly for every run.
+Full-suite runs only (pre-fast-mode). See "Version History (v0.3.20 –
+present, fast mode)" below for fast-mode versions from v0.3.20 onward, or
+query ``data/benchmarks.db``/``sqc_bench`` Postgres directly for every run.
 
 .. list-table::
    :header-rows: 1
@@ -1499,6 +1501,76 @@ directly for every run.
      - 1h 47m
      - 24-core workstation
      - CWE-78 macro alias + CWE-253 incorrect return check
+
+Version History (v0.3.20 – present, fast mode)
+-------------------------------------------------
+
+Fast mode (per-CWE manifests) begins at v0.3.20. Migrated here 2026-09-03
+from ``JULIET_RESULTS.md``'s "Recent Progress" table when that file was
+retired (it duplicated ``README.md``'s Benchmark Highlights and
+``data/benchmarks.db``/``sqc_bench`` Postgres, same reason
+``REALWORLD_RESULTS.md`` went first) -- this table was the one thing in it
+this file didn't already have a place for; the pre-fast-mode table above
+had pointed here for it since before this file existed.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 16 10 10 12
+
+   * - Version
+     - CWEs Scanned
+     - TP
+     - FP
+     - TP Rate
+   * - v0.3.20
+     - 68
+     - 7,918
+     - 9,371
+     - 45.8%
+   * - v0.3.37
+     - 68
+     - 8,508
+     - 9,067
+     - 48.4%
+   * - v0.4.84
+     - 74
+     - 21,759
+     - 4,250
+     - 83.7%
+   * - v0.4.116
+     - 74
+     - 21,770
+     - 4,220
+     - 83.8%
+   * - v0.4.249
+     - 79
+     - 22,261
+     - 3,121
+     - 87.7%
+   * - v0.4.301
+     - 79
+     - 22,239
+     - 3,117
+     - 87.7%
+   * - v0.4.321
+     - 79
+     - 22,210
+     - 3,288
+     - 87.1%
+
+The rise from ~48% (v0.3.37) to 87.7% (v0.4.249) spans dozens of releases of
+targeted rule and false-positive work (const-eval value-range analysis,
+cross-file prescan, macro-expansion, taint tracking, and per-rule tuning)
+plus 11 additional CWEs added to the fast-mode manifest set since v0.4.116.
+TP rate has been flat-to-slightly-down from v0.4.249 through v0.4.321 (~70
+further releases, 87.7% -> 87.1%) -- work in that window targeted
+real-world precision, not Juliet, and the 0.6-point dip is the cost of that
+trade rather than a Juliet regression to chase.
+
+Current state (whichever version is latest) is README.md's Benchmark
+Highlights table; ``python -m bench compare BASE TARGET`` inspects any
+specific pair of versions, and ``data/benchmarks.db``/``sqc_bench`` Postgres
+is canonical for every run in between.
 
 Scripts and Data Locations
 ------------------------------
