@@ -33,6 +33,23 @@ of its own runs. A figure computed from it describes those runs, not the
 project's measurements, so it must never be transcribed into a published
 document or cited as a project result.
 
+**Why it moved (the part that keeps this from looking arbitrary).** Local
+SQLite was a sound paradigm when this was mostly a single worker node — the
+data sat where the work happened. The infrastructure is now multiple nodes
+doing parallel work, and that broke the model: worker nodes need access to
+benchmark data, that data keeps growing, and workers are cheap and expendable.
+A node cannot afford to carry a duplicate of the entire benchmark corpus just
+to do its job. Centralizing in Postgres and reaching it over MCP is what makes
+a worker disposable. For scale, this checkout's own local DB is **6.5 GB** —
+26M violation rows — and it is a strict subset of the shared instance. That is
+the per-node cost the split removes.
+
+The corollary matters when proposing changes: do not "helpfully" reintroduce a
+local mirror, cache, or sync of benchmark data to make something faster or
+work offline. That is the exact paradigm that was deliberately abandoned, and
+it reintroduces the duplication cost along with a second thing that can be
+stale or disagree.
+
 **This repo stays Postgres-blind**: no DSN, no connection code, no awareness of
 the shared instance in anything you add here. Postgres being the source of
 truth and this repo not knowing how to reach it are both true at once, and the
