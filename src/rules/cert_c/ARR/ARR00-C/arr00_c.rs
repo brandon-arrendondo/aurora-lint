@@ -2261,21 +2261,26 @@ fn find_pointer_source_array_recursive(
     // 2. int *p = arr + ...;
     // 3. int *p = arr;
 
-    // Look for the pointer declaration/assignment
+    // Look for the pointer declaration/assignment. The second element of each
+    // pair is where the identifier begins inside the pattern, which is what
+    // `rfind_identifier_anchored` anchors on.
     let patterns = [
-        format!("{} = &", ptr_name),  // p = &arr[...]
-        format!("{} = ", ptr_name),   // p = arr or p = arr + ...
-        format!("*{} = &", ptr_name), // int *p = &arr[...]
-        format!("*{} = ", ptr_name),  // int *p = arr
+        (format!("{} = &", ptr_name), 0),  // p = &arr[...]
+        (format!("{} = ", ptr_name), 0),   // p = arr or p = arr + ...
+        (format!("*{} = &", ptr_name), 1), // int *p = &arr[...]
+        (format!("*{} = ", ptr_name), 1),  // int *p = arr
     ];
 
-    for pattern in &patterns {
-        if let Some(pos) = preceding_text.rfind(pattern) {
+    for (pattern, ident_offset) in &patterns {
+        if let Some(pos) = rfind_identifier_anchored(preceding_text, pattern, *ident_offset) {
             // Get text after the = sign
             let after_eq = &preceding_text[pos + pattern.len()..];
 
             // Skip whitespace
             let after_eq = after_eq.trim_start();
+
+            // Collapse a chained assignment so the ultimate base is used.
+            let after_eq = collapse_chained_assignment(after_eq);
 
             // If it starts with &, skip it
             let after_eq = if let Some(stripped) = after_eq.strip_prefix('&') {
@@ -2316,6 +2321,78 @@ fn find_pointer_source_array_recursive(
     }
 
     None
+}
+
+/// Byte offset of the last occurrence of `pattern` in `text` whose embedded
+/// identifier starts on an identifier boundary, or `None` if every occurrence
+/// is really the tail of a longer name.
+///
+/// `ident_offset` is where the identifier begins inside `pattern`: 1 for the
+/// `*`-prefixed spellings, 0 otherwise. Only the left edge needs checking --
+/// every pattern already puts `" = "` immediately after the identifier, which
+/// is a boundary on the right by construction.
+///
+/// A plain `rfind` matches `"pos = "` inside `hpos = hash;`, and every `pos` in
+/// the function is then attributed to the array `hash` (task 752). Same defect
+/// class as tasks 678/679/681 fixed in `ARR30-C`.
+fn rfind_identifier_anchored(text: &str, pattern: &str, ident_offset: usize) -> Option<usize> {
+    let mut end = text.len();
+    loop {
+        let pos = text[..end].rfind(pattern)?;
+        let ident_start = pos + ident_offset;
+        let boundary_ok = match ident_start.checked_sub(1) {
+            None => true,
+            Some(i) => {
+                let b = text.as_bytes()[i];
+                // A UTF-8 continuation byte is >= 0x80, so it fails both tests
+                // and correctly reads as a boundary.
+                !(b.is_ascii_alphanumeric() || b == b'_')
+            }
+        };
+        if boundary_ok {
+            return Some(pos);
+        }
+        if pos == 0 {
+            return None;
+        }
+        end = pos;
+    }
+}
+
+/// Reduce an already-matched right-hand side to the last link in an
+/// assignment chain, so `pos = hs_start = verify_data;` resolves `pos` to
+/// `verify_data` rather than stopping at the intermediate `hs_start`
+/// (task 752). The recursive resolve cannot recover this itself: it only ever
+/// searches text to the LEFT of its own match, where the chain's real base
+/// never appears.
+///
+/// Peels only the exact shape `<identifier> =`, one link at a time, so a comma
+/// expression -- `for (p = buf, q = other; ...)` -- is left alone rather than
+/// having `q`'s base handed to `p`. `==` and the compound assignment operators
+/// end the peel for the same reason: only a plain `=` continues a chain.
+fn collapse_chained_assignment(rhs: &str) -> &str {
+    let mut rest = rhs;
+
+    // Bounded so a pathological run of `=` can't spin.
+    for _ in 0..8 {
+        let trimmed = rest.trim_start();
+        let ident_len = trimmed
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            .count();
+        if ident_len == 0 {
+            break;
+        }
+
+        let after_ident = trimmed[ident_len..].trim_start();
+        if !after_ident.starts_with('=') || after_ident.starts_with("==") {
+            break;
+        }
+
+        rest = after_ident[1..].trim_start();
+    }
+
+    rest
 }
 
 fn find_array_size(array_name: &str, preceding_text: &str) -> Option<usize> {
