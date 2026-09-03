@@ -407,11 +407,25 @@ def _get_git_sha() -> str:
 
 
 def _get_codebase_sha(path: Path) -> str | None:
-    """Short HEAD SHA of a target codebase checkout (the thing being scanned).
-    Distinct from _get_git_sha(), which is the sqc repo."""
+    """Full 40-char HEAD SHA of a target codebase checkout (the thing being
+    scanned). Distinct from _get_git_sha(), which is the sqc repo.
+
+    Full, not abbreviated: sqc_bench enforces
+    `CHECK (codebase_commit ~ '^[0-9a-f]{40}$')` on realworld_results, and an
+    abbreviated SHA fails the whole ingest after the scan has already run --
+    run 227 lost 18 minutes that way on 2026-09-02. Both sqc_bench tables are
+    fully migrated to 40-char (3,287 realworld_results and 89,412 ground_truth
+    rows, no short ones left), so this is the only remaining producer of the
+    old format.
+
+    Local data/benchmarks.db is gitignored, so a fresh clone starts empty and
+    is consistent from its first run; this checkout's own SQLite scratch still
+    holds mixed-length SHAs and is deliberately not migrated -- Postgres is the
+    source of truth, and local SQLite exists only for one-off clone-and-run
+    nodes."""
     try:
         result = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=5,
         )
         return result.stdout.strip() if result.returncode == 0 else None
