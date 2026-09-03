@@ -14,9 +14,9 @@ categories = ["development-tools", "command-line-utilities"]
 rust-version = "1.95"
 
 # Allowlist what actually ships in the crate tarball. Everything else in the
-# repo (data/, bench/, conf/, .claude/, paper/, tasks.py, the
-# todo DB, etc.) is internal dev/research tooling, not part of the published
-# tool.
+# repo (data/, bench/, conf/, .claude/, tasks.py, the todo DB, etc.) is
+# internal dev/research tooling, not part of the published tool. The paper
+# moved to the sibling sqc_paper repo on 2026-09-03.
 include = [
     "src/**",
     "build.rs",
