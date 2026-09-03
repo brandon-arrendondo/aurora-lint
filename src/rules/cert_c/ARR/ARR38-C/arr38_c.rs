@@ -1612,7 +1612,7 @@ impl Arr38C {
 
                     // Check for type mismatch in element size
                     // e.g., using sizeof(long) for an int array
-                    if self.is_type_size_mismatch(base_arg, size_arg, source) {
+                    if self.is_type_size_mismatch(base_arg, size_arg, node, source) {
                         let start_point = node.start_position();
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
@@ -2576,12 +2576,35 @@ impl Arr38C {
         None
     }
 
-    /// Check for type size mismatch (e.g., sizeof(long) for int array)
-    fn is_type_size_mismatch(&self, array_arg: &str, size_arg: &str, source: &str) -> bool {
+    /// Check for type size mismatch (e.g., sizeof(long) for int array).
+    ///
+    /// The declaration lookup is scoped to the function containing `node`: it
+    /// is a substring search for a hardcoded declaration shape, so on
+    /// whole-file input a same-named array declared with a different type in
+    /// an unrelated function could trigger or suppress the verdict for this
+    /// one (task 683).
+    ///
+    /// The pattern set itself remains narrow -- eight `type name[` / `type*name`
+    /// spacing variants, so typedef'd element types, multi-declarator lines and
+    /// pointer-to-array declarations are all missed. That is pre-existing
+    /// brittleness recorded in section 7.1 #2, not addressed here.
+    fn is_type_size_mismatch(
+        &self,
+        array_arg: &str,
+        size_arg: &str,
+        node: &Node,
+        source: &str,
+    ) -> bool {
         // Extract the type from sizeof(type)
         if let Some(sizeof_type) = self.extract_sizeof_type(size_arg) {
             // Check if the array was declared with a different type
             let array_name = array_arg.trim();
+
+            // Scope to the enclosing function so an unrelated function's
+            // same-named array can't decide this call site's verdict.
+            let scoped_source = find_containing_function(node)
+                .map(|f| &source[f.start_byte()..f.end_byte()])
+                .unwrap_or(source);
 
             // Look for array declaration in source
             // Pattern: type array_name[
@@ -2597,7 +2620,7 @@ impl Arr38C {
             ];
 
             for pattern in &patterns {
-                if source.contains(pattern) {
+                if scoped_source.contains(pattern) {
                     // Extract the declared type
                     if let Some(decl_type) = pattern.split_whitespace().next() {
                         // Check if sizeof type differs from declared type
