@@ -39,9 +39,10 @@ Independently of status, three contamination flags are reported:
               ~250k lines to every sqlite scan.
 """
 
-import fnmatch
 import json
+import re
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 from bench.config import BENCH_ROOT, PROJECT_DIR
@@ -76,15 +77,86 @@ def in_scope(project, relpath):
     The machine-readable mirror of precision_audit/<project>/README.md's
     '## Scope' section -- see data/benchmark_repos.json's own comment.
     A project with no scope_include declared is unrestricted.
+
+    Path-aware globbing: `*`, `?` and `[...]` stop at `/`, and `**` is the only
+    way to cross one. Plain `fnmatch` was used here originally and has no
+    concept of a path, so `*.c` also matched `testes/libs/lib1.c` -- harmless
+    for precision/recall (scope filters findings, and an unscanned file
+    produces none) but wrong for any file-count denominator derived from these
+    globs. `_translate` below is lifted verbatim from `bench_db/corpus.py`,
+    which owns the shared oracle's copy of this predicate: the two MUST agree,
+    or a local clone and the shared instance disagree about what is in scope.
     """
     include, exclude = project_scope(project)
     if not include:
         return True
-    if not any(fnmatch.fnmatch(relpath, pat) for pat in include):
+    if not any(_match(relpath, pat) for pat in include):
         return False
-    if exclude and any(fnmatch.fnmatch(relpath, pat) for pat in exclude):
+    if exclude and any(_match(relpath, pat) for pat in exclude):
         return False
     return True
+
+
+def _translate(pat: str) -> "re.Pattern":
+    """Compile one glob to a full-match regex under the semantics above.
+
+    Hand-written rather than delegating to fnmatch.translate, whose output
+    bakes in the `*`-crosses-`/` behaviour this module exists to avoid. The
+    `**` cases follow the usual shell/gitignore reading:
+
+      `a/**`     everything beneath a/          -> `a/` + anything
+      `a/**/b`   b at any depth beneath a/, b included at depth 1
+      `**/b`     b anywhere, including at the root
+    """
+    i, n, out = 0, len(pat), []
+    while i < n:
+        ch = pat[i]
+        i += 1
+        if ch == "*":
+            if i < n and pat[i] == "*":          # '**' -- crosses separators
+                i += 1
+                if i < n and pat[i] == "/":
+                    i += 1
+                    out.append("(?:.*/)?")       # '**/' may match nothing
+                else:
+                    out.append(".*")
+            else:
+                out.append("[^/]*")
+        elif ch == "?":
+            out.append("[^/]")
+        elif ch == "[":
+            j = i
+            if j < n and pat[j] in "!^":
+                j += 1
+            if j < n and pat[j] == "]":
+                j += 1
+            while j < n and pat[j] != "]":
+                j += 1
+            if j >= n:                            # unterminated: a literal '['
+                out.append(r"\[")
+            else:
+                inner = pat[i:j].replace("\\", r"\\")
+                i = j + 1
+                if inner[:1] in ("!", "^"):
+                    inner = "^" + inner[1:]
+                out.append("[" + inner + "]")
+        else:
+            out.append(re.escape(ch))
+    return re.compile("(?s:" + "".join(out) + r")\Z")
+
+
+@lru_cache(maxsize=512)
+
+
+@lru_cache(maxsize=512)
+def _matcher(pat: str) -> "re.Pattern":
+    """_translate, memoised. count_inscope_files runs every glob against every
+    file in a checkout -- sqlite is ~5k paths against 14 patterns."""
+    return _translate(pat)
+
+
+def _match(relpath: str, pat: str) -> bool:
+    return _matcher(pat).match(relpath) is not None
 
 
 def _git(path, *args):
