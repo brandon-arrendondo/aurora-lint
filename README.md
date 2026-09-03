@@ -22,6 +22,7 @@ A static analysis tool for C code compliance with [SEI CERT C Coding Standards](
 | **Per-File Detection** | 38.0% (19,073 / 50,256 files) |
 | **Real-World Precision / Recall** | 24.2% / 93.9% (v0.4.325, run #226, 89.8% label coverage) |
 | **Real-World Projects** | curl, hostap, libcrc, lua, mosquitto, pure-ftpd, raylib, seL4, sqlite |
+| **Basis** | `distinct/scored-projects/in_scope` (definitions `1`) |
 <!-- BENCH:HIGHLIGHTS:END -->
 
 Regenerate this table with `python -m bench render-docs --realworld-run RUN`

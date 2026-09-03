@@ -33,6 +33,11 @@ bearing rather than cosmetic:
 
 `rw_score` fields this module reads:
 
+  - `overall.published_basis` / `overall.definition_version` -- the basis the
+    figures were computed on, printed as a table row by `_basis_cell`.
+    Supplied by benchmarking_db's metrics layer (task 701); ABSENT from this
+    repo's local scorer, which is a supported case and prints "not recorded"
+    rather than nothing. Read with `.get`.
   - `overall.unlabeled_fraction`, `per_rule`, `per_project`
   - `unscoreable` -- list[dict], each `{project, reason, excluded_findings}`:
     projects dropped from every figure because no codebase_commit was
