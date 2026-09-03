@@ -99,6 +99,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#per-rule-data-accuracy-note-2026-03-03">Per-Rule Data Accuracy Note (2026-03-03)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#competitor-comparison">Competitor Comparison</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#version-history-v0-2-1-v0-3-17">Version History (v0.2.1 – v0.3.17)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#version-history-v0-3-20-present-fast-mode">Version History (v0.3.20 – present, fast mode)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#scripts-and-data-locations">Scripts and Data Locations</a></li>
 </ul>
 </li>
@@ -140,12 +141,12 @@
 <p>This page is the detailed, round-by-round engineering history behind SqC’s
 Juliet Test Suite results: every FP-reduction round, per-CWE tier breakdowns,
 the Round 1 baseline table, competitor comparisons, and the full version
-history. It exists so the granular “why did this number change” narrative has
-a home without bloating the top-level <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code>, which tracks only
-current state.</p>
-<p>See <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> (repo root) for the current run’s numbers, and
-<a class="reference internal" href="testing-methodology.html"><span class="doc">Testing Methodology</span></a> for how the benchmark itself works (ground truth
-classification, manifests, metrics).</p>
+history.</p>
+<p><code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> (repo root) tracked current state until it was retired
+2026-09-03, once every figure it generated had become redundant with
+README.md’s Benchmark Highlights table – see that table for the latest
+run’s numbers, and <a class="reference internal" href="testing-methodology.html"><span class="doc">Testing Methodology</span></a> for how the benchmark itself
+works (ground truth classification, manifests, metrics).</p>
 <section id="benchmark-environment">
 <h2>Benchmark Environment<a class="headerlink" href="#benchmark-environment" title="Link to this heading"></a></h2>
 <p>Runtime varies significantly by machine and parallelism. Historical runs below
@@ -1431,9 +1432,9 @@ invisible). DCL02-C similar-identifier check. -15,859 FP; CWE-457 TP rate
 <h2>Performance by CWE Category (Historical Snapshot)<a class="headerlink" href="#performance-by-cwe-category-historical-snapshot" title="Link to this heading"></a></h2>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>These tiers reflect an older full-suite run (pre-fast-mode). See
-<code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> for current per-CWE precision via
-<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">get-cwe-detail</span></code> / the MCP <code class="docutils literal notranslate"><span class="pre">get_cwe_detail</span></code> tool.</p>
+<p>These tiers reflect an older full-suite run (pre-fast-mode). Get current
+per-CWE precision via <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">get-cwe-detail</span></code> / the MCP
+<code class="docutils literal notranslate"><span class="pre">get_cwe_detail</span></code> tool.</p>
 </div>
 <section id="tier-1-strong-detection-tp-50-18-categories">
 <h3>Tier 1: Strong Detection (TP &gt; 50%) — 18 categories<a class="headerlink" href="#tier-1-strong-detection-tp-50-18-categories" title="Link to this heading"></a></h3>
@@ -1932,9 +1933,11 @@ accuracy. The overall direction of changes was generally correct.</p>
 </tr>
 </tbody>
 </table>
-<p>The SqC row above is from the 44.6% full-suite era (v0.2.23); current fast-mode
-TP rate is 83.8% (v0.4.116, see <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code>) but is not directly
-comparable since the competitor figures below were not re-measured
+<p>The SqC row above is from the 44.6% full-suite era (v0.2.23); fast-mode TP
+rate was 83.8% as of v0.4.116 (see the fast-mode version table above; it has
+since moved further, see README.md’s Benchmark Highlights for the current
+figure) but is not directly comparable since the competitor figures below
+were not re-measured
 fast-mode/CWE-matched.</p>
 <p>“Commercial Tool C” is anonymized from <a class="reference external" href="https://community.wvu.edu/~kagoseva/Papers/IST-2015.pdf">Goseva-Popstojanova &amp; Perhinschi 2015</a>, tested on 22
 CWEs only.</p>
@@ -1955,9 +1958,9 @@ combination.</p></li>
 </section>
 <section id="version-history-v0-2-1-v0-3-17">
 <h2>Version History (v0.2.1 – v0.3.17)<a class="headerlink" href="#version-history-v0-2-1-v0-3-17" title="Link to this heading"></a></h2>
-<p>Full-suite runs only (pre-fast-mode). See <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> for
-fast-mode versions from v0.3.20 onward, or query <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code>
-directly for every run.</p>
+<p>Full-suite runs only (pre-fast-mode). See “Version History (v0.3.20 –
+present, fast mode)” below for fast-mode versions from v0.3.20 onward, or
+query <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code>/<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres directly for every run.</p>
 <table class="docutils align-default">
 <colgroup>
 <col style="width: 14.0%" />
@@ -2141,6 +2144,89 @@ directly for every run.</p>
 </tr>
 </tbody>
 </table>
+</section>
+<section id="version-history-v0-3-20-present-fast-mode">
+<h2>Version History (v0.3.20 – present, fast mode)<a class="headerlink" href="#version-history-v0-3-20-present-fast-mode" title="Link to this heading"></a></h2>
+<p>Fast mode (per-CWE manifests) begins at v0.3.20. Migrated here 2026-09-03
+from <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code>’s “Recent Progress” table when that file was
+retired (it duplicated <code class="docutils literal notranslate"><span class="pre">README.md</span></code>’s Benchmark Highlights and
+<code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code>/<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres, same reason
+<code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code> went first) – this table was the one thing in it
+this file didn’t already have a place for; the pre-fast-mode table above
+had pointed here for it since before this file existed.</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 22.6%" />
+<col style="width: 25.8%" />
+<col style="width: 16.1%" />
+<col style="width: 16.1%" />
+<col style="width: 19.4%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Version</p></th>
+<th class="head"><p>CWEs Scanned</p></th>
+<th class="head"><p>TP</p></th>
+<th class="head"><p>FP</p></th>
+<th class="head"><p>TP Rate</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>v0.3.20</p></td>
+<td><p>68</p></td>
+<td><p>7,918</p></td>
+<td><p>9,371</p></td>
+<td><p>45.8%</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.3.37</p></td>
+<td><p>68</p></td>
+<td><p>8,508</p></td>
+<td><p>9,067</p></td>
+<td><p>48.4%</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.4.84</p></td>
+<td><p>74</p></td>
+<td><p>21,759</p></td>
+<td><p>4,250</p></td>
+<td><p>83.7%</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.4.116</p></td>
+<td><p>74</p></td>
+<td><p>21,770</p></td>
+<td><p>4,220</p></td>
+<td><p>83.8%</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.4.249</p></td>
+<td><p>79</p></td>
+<td><p>22,261</p></td>
+<td><p>3,121</p></td>
+<td><p>87.7%</p></td>
+</tr>
+<tr class="row-odd"><td><p>v0.4.301</p></td>
+<td><p>79</p></td>
+<td><p>22,239</p></td>
+<td><p>3,117</p></td>
+<td><p>87.7%</p></td>
+</tr>
+<tr class="row-even"><td><p>v0.4.321</p></td>
+<td><p>79</p></td>
+<td><p>22,210</p></td>
+<td><p>3,288</p></td>
+<td><p>87.1%</p></td>
+</tr>
+</tbody>
+</table>
+<p>The rise from ~48% (v0.3.37) to 87.7% (v0.4.249) spans dozens of releases of
+targeted rule and false-positive work (const-eval value-range analysis,
+cross-file prescan, macro-expansion, taint tracking, and per-rule tuning)
+plus 11 additional CWEs added to the fast-mode manifest set since v0.4.116.
+TP rate has been flat-to-slightly-down from v0.4.249 through v0.4.321 (~70
+further releases, 87.7% -&gt; 87.1%) – work in that window targeted
+real-world precision, not Juliet, and the 0.6-point dip is the cost of that
+trade rather than a Juliet regression to chase.</p>
+<p>Current state (whichever version is latest) is README.md’s Benchmark
+Highlights table; <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">compare</span> <span class="pre">BASE</span> <span class="pre">TARGET</span></code> inspects any
+specific pair of versions, and <code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code>/<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres
+is canonical for every run in between.</p>
 </section>
 <section id="scripts-and-data-locations">
 <h2>Scripts and Data Locations<a class="headerlink" href="#scripts-and-data-locations" title="Link to this heading"></a></h2>

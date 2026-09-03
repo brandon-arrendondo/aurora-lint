@@ -270,7 +270,9 @@ per-CWE metrics, per-rule breakdowns, and cross-version comparison support.</p><
 </ul>
 <p>High-precision (&gt;80% TP rate) on several additional CWEs including CWE-191
 (98.5%), CWE-127 (81.5%), and CWE-675 (93.0%).</p>
-<p>See <code class="docutils literal notranslate"><span class="pre">JULIET_RESULTS.md</span></code> for full per-CWE breakdowns.</p>
+<p>See <a class="reference internal" href="juliet-history.html"><span class="doc">Juliet Benchmark History</span></a> for per-CWE tier breakdowns, or query
+<code class="docutils literal notranslate"><span class="pre">data/benchmarks.db</span></code>/<code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres (<code class="docutils literal notranslate"><span class="pre">get_cwe_detail</span></code>) for the
+full current per-CWE data.</p>
 </section>
 <section id="fp-reduction-history">
 <h3>FP Reduction History<a class="headerlink" href="#fp-reduction-history" title="Link to this heading"></a></h3>
@@ -433,8 +435,15 @@ The difference reflects rule coverage breadth, not false positive rate.</p>
 <p><strong>Measured precision/recall</strong>: 6.2% precision / 91.7% recall against the
 adjudicated ground-truth oracle (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-score</span> <span class="pre">118</span></code>) —
 the empirical floor across all 7 projects, not a raw violation-count
-comparison. See <code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code> for the full version history,
-per-rule breakdowns, and oracle methodology.</p>
+comparison, from a run superseded many times since. Current figures are in
+README.md’s Benchmark Highlights table; the full version history and
+per-rule breakdowns live in <code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres, queryable via
+<code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code>’s MCP servers or, on the benchmark host, its CLI (see
+that repo’s README) – not in a hand-maintained file here
+(<code class="docutils literal notranslate"><span class="pre">REALWORLD_RESULTS.md</span></code>, which carried this role until it was retired
+2026-09-03). Oracle methodology, including the DCL31-C worked example of
+why a per-rule 0.0% can be a corpus artifact rather than a rule defect, is
+in README.md’s “Rule-suite coverage” section.</p>
 </section>
 <section id="cross-tool-comparison-methodology">
 <h2>Cross-Tool Comparison Methodology<a class="headerlink" href="#cross-tool-comparison-methodology" title="Link to this heading"></a></h2>
