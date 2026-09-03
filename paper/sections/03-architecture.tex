@@ -6,26 +6,62 @@ SqC is implemented in Rust (2021 edition) and uses tree-sitter for
 parsing.  The analysis pipeline proceeds in four stages, illustrated
 in \cref{fig:pipeline}.
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
+\resizebox{\textwidth}{!}{%
 \begin{tikzpicture}[
-    node distance=0.6cm,
-    box/.style={rectangle, draw, fill=blue!8, text width=5.8cm,
-                minimum height=0.7cm, align=center, font=\footnotesize},
-    arrow/.style={->, thick}
+    stage/.style={rectangle, draw, fill=blue!8, text width=2.9cm,
+                  minimum height=2.2cm, align=center, font=\scriptsize,
+                  inner sep=3pt},
+    fork/.style={rectangle, draw, fill=blue!8, text width=2.9cm,
+                 minimum height=1.0cm, align=center, font=\scriptsize,
+                 inner sep=3pt},
+    absent/.style={rectangle, draw=red!55, dashed, thick, fill=red!3,
+                   text width=5.6cm, align=center, font=\scriptsize,
+                   inner sep=4pt},
+    arrow/.style={->, thick},
 ]
-\node[box] (parse) {1. Tree-sitter Parse $\rightarrow$ Concrete Syntax Tree};
-\node[box, below=of parse] (prescan) {2. Cross-file Prescan $\rightarrow$ Function Summaries};
-\node[box, below=of prescan] (cfg) {3. Per-function CFG + Dataflow Analysis};
-\node[box, below=of cfg] (rules) {4. Rule Evaluation (311 CERT C checkers)};
-\draw[arrow] (parse) -- (prescan);
-\draw[arrow] (prescan) -- (cfg);
-\draw[arrow] (cfg) -- (rules);
-\end{tikzpicture}
-\caption{SqC analysis pipeline.  Each stage enriches the context
-available to subsequent stages.}
+%% ---- spine (left to right), placed by coordinate for predictability
+\node[stage] (src)   at (0,0)    {\textbf{C source tree}\\[2pt]
+                                  \texttt{.c}/\texttt{.h} as found\\on disk};
+\node[stage] (parse) at (3.6,0)  {\textbf{tree-sitter}\\\textbf{parse}\\[2pt]
+                                  concrete syntax\\tree, per file};
+%% ---- the fork: file-local facts vs. whole-project facts
+\node[fork]  (local) at (7.2,0.68)  {\textbf{local AST facts}\\declarators, lvalues};
+\node[fork]  (pre)   at (7.2,-0.68) {\textbf{cross-file prescan}\\summaries, macro\\registry (\texttt{-d})};
+\node[stage] (cfg)   at (10.8,0) {\textbf{per-function CFG}\\[2pt]
+                                  null-state dataflow\\value-range analysis\\
+                                  dead-branch pruning\\init-state tracking};
+\node[stage] (rules) at (14.4,0) {\textbf{rule evaluation}\\[2pt]
+                                  311 CERT C rules\\provenance gates\\
+                                  taint summaries};
+\node[stage] (out)   at (18.0,0) {\textbf{diagnostics}\\[2pt]
+                                  SARIF 2.1.0, JSON,\\CSV, XLSX\\
+                                  CLI, TUI, diff mode};
+\draw[arrow] (src)   -- (parse);
+\draw[arrow] (parse.east) -- (local.west);
+\draw[arrow] (parse.east) -- (pre.west);
+\draw[arrow] (local.east) -- (cfg.west);
+\draw[arrow] (pre.east)   -- (cfg.west);
+\draw[arrow] (cfg)   -- (rules);
+\draw[arrow] (rules) -- (out);
+%% ---- what the pipeline deliberately does not contain
+\node[absent] (na) at (5.4,-2.35)
+  {\textbf{No stage here requires:}\\
+   a compiler, a build system, a\\
+   \texttt{compile\_commands.json}, or a preprocessing pass.\\
+   Source that does not compile is still analyzed.};
+\draw[->, dashed, red!55, thick] (na.north) -- (parse.south);
+\end{tikzpicture}}
+\caption{SqC analysis pipeline.  Stage~2 forks: file-local AST facts
+are collected alongside a whole-project prescan, and both feed CFG
+construction, so cross-translation-unit facts reach a rule without a
+linker or a compilation database.  The dashed annotation is the
+architectural claim of this paper---no stage consumes build
+system output, which is what allows SqC to run on incomplete or
+non-compiling source (\cref{sec:corpus-maturity}).}
 \label{fig:pipeline}
-\end{figure}
+\end{figure*}
 
 \subsection{Stage 1: Parsing with Tree-sitter}
 
@@ -72,8 +108,10 @@ On the CFG, SqC performs forward dataflow analysis for null pointer
 state tracking.  The null state lattice is:
 
 \begin{equation}
-\text{NullState} \in \{\text{Unknown}, \text{DefinitelyNull},
-    \text{PossiblyNull}, \text{NotNull}\}
+\begin{split}
+\text{NullState} \in \{\,& \text{Unknown}, \text{DefinitelyNull}, \\
+                          & \text{PossiblyNull}, \text{NotNull}\,\}
+\end{split}
 \end{equation}
 
 Edge refinement propagates null information through branch conditions:
