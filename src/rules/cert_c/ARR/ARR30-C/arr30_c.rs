@@ -4038,50 +4038,14 @@ impl Arr30C {
     /// is a cast-alias of such a parameter (`const unsigned char *aIn =
     /// (const unsigned char*)a;`).
     fn collect_param_decode_buffers(&self, func_node: &Node, source: &str) -> HashSet<String> {
-        let mut bufs = HashSet::new();
-        let declarator = match func_node.child_by_field_name("declarator") {
-            Some(d) => d,
-            None => return bufs,
-        };
-        let param_list = match find_param_list_node(&declarator) {
-            Some(p) => p,
-            None => return bufs,
-        };
-
-        // Ordered (name, is_const_char_ptr, is_int_scalar) for each parameter.
-        let mut params: Vec<(Option<String>, bool, bool)> = Vec::new();
-        for i in 0..param_list.child_count() {
-            let param = match param_list.child(i) {
-                Some(p) if p.kind() == "parameter_declaration" => p,
-                _ => continue,
-            };
-            let text = &source[param.start_byte()..param.end_byte()];
-            let is_ptr = text.contains('*');
-            let is_ccp = is_ptr && text.contains("char") && text.contains("const");
-            let is_int = !is_ptr && Self::type_text_is_int_scalar(text);
-            let name = param
-                .child_by_field_name("declarator")
-                .and_then(|d| find_identifier_in_declarator(&d, source));
-            params.push((name, is_ccp, is_int));
-        }
-
-        for idx in 0..params.len() {
-            let (name, is_ccp, _) = &params[idx];
-            if !*is_ccp {
-                continue;
-            }
-            let name = match name {
-                Some(n) => n,
-                None => continue,
-            };
-            // Paired-length convention: a (buf, len) pair places the integer
-            // length immediately after the pointer. Without that, treat the
-            // buffer as length-unbounded.
-            let next_is_len = params.get(idx + 1).map(|p| p.2).unwrap_or(false);
-            if !next_is_len {
-                bufs.insert(name.clone());
-            }
-        }
+        // Same length-unpaired `const char *` parameter scan the
+        // interprocedural helper-overread summary needs; this call site wants
+        // the names as a set and does not care about their positions.
+        let mut bufs: HashSet<String> =
+            Self::const_char_ptr_params_without_length(func_node, source)
+                .into_iter()
+                .map(|(name, _position)| name)
+                .collect();
 
         if !bufs.is_empty() {
             // A couple of passes resolve `aIn = (cast)a; q = aIn;` chains.
@@ -4301,6 +4265,13 @@ impl Arr30C {
     /// that has no paired length parameter (the next parameter is not an integer
     /// scalar). Position counts only `parameter_declaration` children, matching the
     /// positional index of named call-site arguments.
+    ///
+    /// The paired-length convention this encodes: a `(buf, len)` pair places
+    /// the integer length immediately after the pointer, so a `const char *`
+    /// not followed by an integer scalar is treated as length-unbounded.
+    ///
+    /// Single implementation of that scan for the file (task 680) --
+    /// `collect_param_decode_buffers` reuses it and discards the positions.
     fn const_char_ptr_params_without_length(
         func_node: &Node,
         source: &str,
