@@ -1739,11 +1739,32 @@ class BenchDB:
         realworld_violations store machine-specific absolute paths like
         ``/home/brandon/toolchain/curl/lib/doh.c``; ground-truth labels are
         keyed on the portable ``lib/doh.c`` form so they survive a move of
-        the checkout root. Strips everything up to and including the first
+        the checkout root. Strips everything up to and including the FIRST
         ``/<project>/`` segment; returns the input unchanged if absent.
+
+        The first, not the last (task 762). This used ``rfind`` while
+        documenting ``first``, and the two differ exactly when a checkout
+        holds a subdirectory named after the project -- which four of the
+        nine corpora in ``data/benchmark_repos.json`` do: mosquitto's
+        ``include/mosquitto/``, curl's ``include/curl/``, sqlite's
+        ``ext/jni/src/org/sqlite/``, and 57 ``sel4/`` directories under
+        sel4's ``libsel4/``. Beneath one of those, a path lost its whole
+        prefix and ``.../mosquitto/include/mosquitto/libmosquitto.h``
+        normalized to the bare basename ``libmosquitto.h``.
+
+        It is invisible to precision and recall -- findings and labels both
+        come through here, so the two sides agree and every key matches.
+        What it breaks is anything that resolves a label to a real file:
+        ``corpus.in_scope`` is handed this path and no glob matches a bare
+        basename, so such a finding reads as out of scope and
+        ``realworld-unlabeled`` never offers it. It is a collision hazard
+        too -- two files sharing a basename, one under the project-named
+        directory, collapse to ONE key and merge two different files' labels
+        with no error. sel4 is the loaded gun: 155 headers under a ``sel4/``
+        directory, 53 of them named ``constants.h``.
         """
         marker = f"/{project}/"
-        idx = file_path.rfind(marker)
+        idx = file_path.find(marker)
         if idx != -1:
             return file_path[idx + len(marker):]
         return file_path
