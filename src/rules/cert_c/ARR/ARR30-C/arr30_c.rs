@@ -3495,7 +3495,11 @@ impl Arr30C {
     }
 
     /// Find the `parameter_declaration` inside `func_declarator`'s
-    /// `parameter_list` whose text mentions `offset` by name.
+    /// `parameter_list` that declares `offset`, matched on identifier token
+    /// boundaries rather than as a raw substring -- a short offset name
+    /// (`i`, `n`, `sz`) would otherwise match inside an unrelated longer
+    /// parameter's name or type and return the wrong declaration. Same token
+    /// split `is_function_parameter_any_return` already uses.
     fn find_matching_param_declaration<'a>(
         func_declarator: &Node<'a>,
         offset: &str,
@@ -3514,7 +3518,10 @@ impl Arr30C {
                     continue;
                 }
                 let param_text = &source[param_decl.start_byte()..param_decl.end_byte()];
-                if param_text.contains(offset) {
+                if param_text
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|w| w == offset)
+                {
                     return Some(param_decl);
                 }
             }
