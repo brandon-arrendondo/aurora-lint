@@ -360,7 +360,12 @@ on first use if it doesn't exist yet -- so a freshly-provisioned node with no
 `~/.local/state/clew` is expected, not broken, until an agent there actually calls
 `dossier`/`search`/`index` for the first time. To build it eagerly instead of
 waiting for that first call (e.g. to warm it before a benchmark run), run
-`python -m clew --output clew.db --repo-root .` from the venv clew is installed in.
+`clew --repo-root .` from the venv clew is installed in. **Omit `--output`**:
+with it omitted clew writes to the same path the MCP server derives for
+`--repo-root`, so a CLI build is what `dossier`/`search` then read. Passing
+`--output clew.db` instead writes into the *current directory*, which the
+server never looks at -- you get a stray `clew.db` in the repo root and a
+first `dossier` call that still pays for a cold build.
 
 **Prefer `dossier`/`search` over `grep`/`Read` for "what calls X", "where is Y
 defined", "what locks does this function hold" style questions** — one call
@@ -368,7 +373,8 @@ instead of several, and it already has the call graph resolved. Fall back to
 reading source directly for anything the index can only point at (exact comment
 text, line-by-line logic).
 
-Rebuild after non-trivial changes: `clew --output <db path from index(action='status')> --repo-root . --rebuild`.
+Rebuild after non-trivial changes: `clew --repo-root . --rebuild` (again, no
+`--output` -- same reason).
 The MCP tools also offer to build/refresh on first use if no index exists yet.
 
 **Before implementing any new AST/text heuristic, check
