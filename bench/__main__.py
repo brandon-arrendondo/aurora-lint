@@ -373,6 +373,77 @@ def cmd_realworld_score(args):
             print(f"  ! {w}")
 
 
+def _validate_label_rows(rows, args):
+    """Reject a label batch that names a rule sqc cannot emit, or a verdict
+    outside the vocabulary. Fails the whole import; never a partial one.
+
+    Task 700/721: 25 ground_truth rows named FIO04-C, STR07-C or MSC02-C --
+    real CERT ids that sqc has never implemented in any commit. Thirteen of
+    them were adjudicated TRUE POSITIVES, which cannot happen: a TP asserts sqc
+    emitted the finding and was right. This function is the missing write-time
+    check; it went undetected for ~2.5 months because nothing on the way in
+    compared the CSV's rule column against the rules that exist.
+
+    Hard-fail rather than warn-and-skip. A partial import is worse than none:
+    the good rows land, the bad ones scroll past, and the batch now looks
+    imported. Listing the offenders is what makes the CSV fixable.
+    """
+    from bench.config import load_rule_ids
+    known = load_rule_ids()
+    bad_rule, bad_verdict = [], []
+    for n, row in enumerate(rows, start=2):   # +1 header line, +1 for 1-based
+        rule = (row.get("rule") or "").strip()
+        verdict = (row.get("verdict") or "").strip()
+        where = f"{row.get('project')}:{row.get('file')}:{row.get('line')}"
+        if rule not in known and not args.allow_unknown_rule:
+            bad_rule.append((n, rule, verdict, where))
+        if verdict not in VALID_VERDICTS:
+            bad_verdict.append((n, verdict, rule, where))
+    if not bad_rule and not bad_verdict:
+        return
+
+    print(f"Refusing to import {args.csv}: the batch does not validate.\n")
+    if bad_rule:
+        print(f"  {len(bad_rule)} row(s) name a rule sqc does not implement "
+              f"({len(known)} rules in rules_templates/rules-all.toml):")
+        for n, rule, verdict, where in bad_rule[:20]:
+            print(f"    line {n}: rule={rule or '<empty>'} "
+                  f"verdict={verdict or '<empty>'}  {where}")
+        if len(bad_rule) > 20:
+            print(f"    ... and {len(bad_rule) - 20} more")
+        # The one legitimate case, and why it still has to be stated: an FN
+        # names a defect class sqc MISSED, which can be a rule it does not
+        # implement at all (a capability gap -- see task 727). That is real
+        # evidence, but it also lands in the recall denominator, penalizing
+        # the unimplemented rules that happened to get adjudicated and no
+        # others. A TP or FP on an unimplemented rule has no such reading:
+        # sqc cannot have emitted it.
+        print("\n  A TP/FP here is always wrong -- sqc cannot emit a rule it\n"
+              "  does not implement, so the adjudicator saw something else.\n"
+              "  An FN on an unimplemented rule is a real capability gap; if\n"
+              "  that is what this is, pass --allow-unknown-rule and say so in\n"
+              "  --source, because those labels skew recall per-rule.")
+    if bad_verdict:
+        if bad_rule:
+            print()
+        print(f"  {len(bad_verdict)} row(s) have a verdict outside "
+              f"{'/'.join(VALID_VERDICTS)}:")
+        for n, verdict, rule, where in bad_verdict[:20]:
+            print(f"    line {n}: verdict={verdict or '<empty>'} "
+                  f"rule={rule}  {where}")
+        if len(bad_verdict) > 20:
+            print(f"    ... and {len(bad_verdict) - 20} more")
+    print("\nNothing was written.")
+    sys.exit(1)
+
+
+# ground_truth.verdict's full vocabulary. 'FN' is a real bug sqc MISSED (no
+# matching finding, so it scores against recall, not precision); 'uncertain' is
+# an adjudicator declining to call it. Anything else is a typo or, as in task
+# 700, a verdict string that leaked into the wrong column.
+VALID_VERDICTS = ("TP", "FP", "FN", "uncertain")
+
+
 def cmd_realworld_import_labels(args):
     import csv
     from datetime import datetime, timezone
@@ -405,7 +476,12 @@ def cmd_realworld_import_labels(args):
               "--local-oracle.\n"
               "  - Feeding a shared oracle? Import through that system "
               "instead; this command cannot.")
-        return
+        sys.exit(1)
+
+    # Validate the batch before touching the DB: a malformed CSV fails on its
+    # own terms, not as a side effect of an unresolvable --run.
+    rows = list(csv.DictReader(open(args.csv)))
+    _validate_label_rows(rows, args)
 
     db = BenchDB()
 
@@ -414,12 +490,11 @@ def cmd_realworld_import_labels(args):
     if not src_run_id:
         print(f"Cannot resolve --run '{args.run}' (need the run the audit "
               "was sampled from, to pin labels to its codebase commits).")
-        return
+        sys.exit(1)
     commits = {r["project"]: r.get("codebase_commit")
                for r in db.get_realworld_results(src_run_id)
                if r["tool"] == "sqc"}
 
-    rows = list(csv.DictReader(open(args.csv)))
     labels, skipped_no_commit = [], 0
     adjudicated_at = args.date or datetime.now(timezone.utc).isoformat()
     for row in rows:
@@ -1050,9 +1125,14 @@ def main():
                             "instead of skipping them")
     p_imp.add_argument("--local-oracle", action="store_true",
                        help="Required. Confirms you mean this checkout's "
-                            "local SQLite oracle, which is a scratch store "
-                            "private to this machine -- labels written here "
-                            "do NOT reach any shared/aggregated oracle")
+                            "local SQLite oracle, which is private to this "
+                            "machine -- labels written here do NOT reach any "
+                            "shared/aggregated oracle")
+    p_imp.add_argument("--allow-unknown-rule", action="store_true",
+                       help="Permit rows naming a rule sqc does not "
+                            "implement. Only defensible for FN labels "
+                            "recording a capability gap; a TP/FP on an "
+                            "unimplemented rule is always wrong")
     p_imp.set_defaults(func=cmd_realworld_import_labels)
 
     # realworld-unlabeled

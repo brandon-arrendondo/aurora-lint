@@ -7,6 +7,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SQC_BIN = PROJECT_DIR / "target" / "release" / "sqc"
 MANIFEST_ALL = PROJECT_DIR / "rules_templates" / "rules-benchmark.toml"
+RULES_ALL_TOML = PROJECT_DIR / "rules_templates" / "rules-all.toml"
 MANIFEST_CWE_DIR = PROJECT_DIR / "rules_templates" / "cwe"
 RULE_CWE_MAP = PROJECT_DIR / "data" / "rule_cwe_map.json"
 GENERATE_MAP_SCRIPT = PROJECT_DIR / "scripts" / "generate_rule_cwe_map.py"
@@ -65,6 +66,19 @@ JULIET_COMPILE_DB = JULIET_BASE.parent / COMPILE_DB_NAME
 # status is already "completed", and the real-world runner reuses the id for
 # its results directory.
 COMPILE_DB_RUN_SUFFIX = "cdb"
+
+
+def load_rule_ids() -> set[str]:
+    """Every CERT-C rule id sqc can emit, from rules-all.toml's section keys.
+
+    This is the full IMPLEMENTED set, not the currently-enabled subset: a rule
+    disabled in the default manifest is still one a run can be configured to
+    emit, so a label naming it is legitimate. An id absent from here is not --
+    sqc cannot produce that finding, so no adjudicator can have seen it.
+    """
+    import tomllib
+    with RULES_ALL_TOML.open("rb") as f:
+        return set(tomllib.load(f)["rules"]["cert_c"])
 
 
 def compile_db_for(path) -> Path | None:
