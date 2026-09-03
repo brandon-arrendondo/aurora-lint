@@ -772,7 +772,7 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
 
     duration = round(time.time() - start, 1)
 
-    # Task 699: persist the per-project scan facts into the sidecar. These are
+    # Task 715: persist the per-project scan facts into the sidecar. These are
     # only true at scan time, and the queue worker cannot recover them -- it
     # shells out to `python -m bench realworld-run` once for every project, so
     # it sees one wall time and no per-project split. The sidecar is the only
