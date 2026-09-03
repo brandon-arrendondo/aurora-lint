@@ -503,8 +503,25 @@ fn get_type_width(type_str: &str) -> Option<u32> {
         return Some(32);
     }
 
+    // Floating types: not an integer bit-width at all, but any conversion to
+    // an integer type risks losing the fractional part (and, unlike a
+    // same-or-wider integer-to-integer move, that loss happens regardless of
+    // the target's width — a `long` is exactly as unable to hold a fraction
+    // as a `char` is). FLOAT_AS_INTEGER_WIDTH is deliberately wider than every
+    // recognized integer width above so the caller's plain numeric comparison
+    // (`rhs_width > lhs_width` ⇒ narrowing) treats float/double/long double as
+    // narrowing into ANY integer LHS, while still comparing equal against each
+    // other so a float<->double<->long double move is left to FLP34-C, which
+    // owns floating-to-floating precision loss.
+    if t == "float" || t == "double" || t == "long double" {
+        return Some(FLOAT_AS_INTEGER_WIDTH);
+    }
+
     None
 }
+
+/// See [`get_type_width`]'s floating-type branch.
+const FLOAT_AS_INTEGER_WIDTH: u32 = 65;
 
 // Signed integer types
 const SIGNED_TYPES: &[&str] = &[
@@ -583,6 +600,14 @@ const WIDE_TYPES: &[&str] = &[
     // sqlite3_uint64 and the older sqlite_int64 alias (task 174).
     "int64",
     "uint64",
+    // Floating types (task 665): not narrower/wider than the integer types
+    // above in any bit-width sense, but a float/double/long double cast down
+    // to a NARROW_TYPES (char-width) target is exactly as lossy as an
+    // integer-to-char narrowing, e.g. `(char)some_double_var`. NARROW_TYPES
+    // has no floating entries, so this can never fire float-to-float.
+    "float",
+    "double",
+    "long double",
 ];
 
 impl CertRule for Int31C {
