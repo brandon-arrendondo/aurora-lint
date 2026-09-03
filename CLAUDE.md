@@ -44,11 +44,41 @@ a worker disposable. For scale, this checkout's own local DB is **6.5 GB** —
 26M violation rows — and it is a strict subset of the shared instance. That is
 the per-node cost the split removes.
 
-The corollary matters when proposing changes: do not "helpfully" reintroduce a
-local mirror, cache, or sync of benchmark data to make something faster or
-work offline. That is the exact paradigm that was deliberately abandoned, and
-it reintroduces the duplication cost along with a second thing that can be
-stale or disagree.
+**The second reason is the clone experience, and it is the one to apply when
+judging a proposal.** Someone who clones sqc should not have to wade through
+scaffolding that exists to make *this* maintainer's parallel-node setup
+efficient. They will not have that machinery — or, just as likely, they are
+more capable than it and would be slowed down by its assumptions. Either way it
+is a barrier to them improving sqc, which is the point of the repo.
+
+Benchmarking is primarily a **maintainer artifact**: it tells the story of the
+tool's capability and how it progressed over time. Most users care about the
+current state, and mostly about the codebase they are actually pointing sqc at
+— not about its score on an arbitrary corpus. So `bench/` exists here so a user
+*can* benchmark their own code; it does not exist to hand them the maintainer's
+measurement pipeline.
+
+The practical test for any new benchmarking/measurement code: **would a
+stranger cloning this repo need it to evaluate sqc on their own codebase?** If
+no, it belongs in `benchmarking_db`. Two corollaries follow:
+
+- Do not "helpfully" reintroduce a local mirror, cache, or sync of benchmark
+  data for speed or offline use. That is the paradigm deliberately abandoned,
+  and it brings back the per-node duplication cost plus a second thing that can
+  go stale or disagree.
+- Do not add maintainer-workflow machinery here to save a hop. Multi-node
+  coordination, shared-instance credentials, queue plumbing and cross-machine
+  reconciliation are `benchmarking_db`'s, however convenient it would be to
+  reach for them from this side.
+
+**On the adjudication dataset specifically:** the TP/FP/FN labels are genuinely
+valuable beyond sqc — other tools and research could use them. That is an
+argument for *sharing* them, not for keeping them in git. Large datasets are
+distributed the way ML/research datasets already are (object storage, a hosted
+dataset, a distributed DB), and exporting from Postgres to such a target should
+stay trivial. Keep it that way; do not let the dataset's future portability
+become a reason to hold it in-repo now, where it would be a barrier to the
+2-10 node parallel system needed to work the backlog down to maintenance mode.
 
 **This repo stays Postgres-blind**: no DSN, no connection code, no awareness of
 the shared instance in anything you add here. Postgres being the source of
