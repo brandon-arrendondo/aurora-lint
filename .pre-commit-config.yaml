@@ -24,6 +24,23 @@ repos:
         files: \.toml$
         verbose: true
 
+      - id: check-rule-counts
+        name: rule counts match the manifest
+        description: >-
+          Assert every rule count claimed in README.md, the docs and the
+          generated docs/test-summary.md agrees with
+          rules_templates/rules-all.toml. Eight files once claimed a count
+          and gave three different answers (305, 306, 307), because the
+          enabled count moves whenever a rule is toggled in the default
+          manifest and nothing regenerates prose. The manifest is the source
+          of truth, so enabling a rule needs no edit to this check -- only to
+          whatever doc now disagrees.
+        entry: python3 scripts/check_rule_counts.py
+        language: system
+        pass_filenames: false
+        files: '(rules_templates/rules-all\.toml|README\.md|docs/.*\.(rst|md)|src/rules/cert_c/integration\.rs)$'
+        verbose: true
+
       - id: cargo-fmt
         name: cargo fmt (auto-fix)
         description: Format Rust code with rustfmt

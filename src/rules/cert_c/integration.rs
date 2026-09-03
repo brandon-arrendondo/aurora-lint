@@ -64,12 +64,12 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(parent)?;
     }
 
-    let (categories, total_rules, implemented_rules, total_tests) = collect_rule_data()?;
+    let (categories, total_rules, enabled_rules, total_tests) = collect_rule_data()?;
 
     // Generate markdown report
     let mut report = String::new();
     report.push_str("# CERT C Rules Test Summary\n\n");
-    render_overview(&mut report, total_rules, implemented_rules, total_tests);
+    render_overview(&mut report, total_rules, enabled_rules, total_tests);
     render_toc(&mut report, &categories);
     render_detail_sections(&mut report, &categories);
     render_summary_table(&mut report, &categories);
@@ -81,7 +81,7 @@ fn create_test_summary_report() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Walk `src/rules/cert_c/CATEGORY/RULE-ID`, parse each rule's TOML and test files,
 /// and return the per-category rule data plus aggregate counts
-/// (total_rules, implemented_rules, total_tests).
+/// (total_rules, enabled_rules, total_tests).
 #[allow(clippy::type_complexity)]
 fn collect_rule_data(
 ) -> Result<(BTreeMap<String, Vec<RuleInfo>>, usize, usize, usize), Box<dyn std::error::Error>> {
@@ -89,7 +89,7 @@ fn collect_rule_data(
 
     let mut categories: BTreeMap<String, Vec<RuleInfo>> = BTreeMap::new();
     let mut total_rules = 0;
-    let mut implemented_rules = 0;
+    let mut enabled_rules = 0;
     let mut total_tests = 0;
 
     for category_entry in fs::read_dir(&cert_c_dir)? {
@@ -140,7 +140,7 @@ fn collect_rule_data(
             total_tests += fail_tests.len() + pass_tests.len();
             total_rules += 1;
             if is_enabled {
-                implemented_rules += 1;
+                enabled_rules += 1;
             }
 
             let rule_info = RuleInfo {
@@ -160,7 +160,7 @@ fn collect_rule_data(
         }
     }
 
-    Ok((categories, total_rules, implemented_rules, total_tests))
+    Ok((categories, total_rules, enabled_rules, total_tests))
 }
 
 /// Parse a rule's TOML for its title, multi-line description, and enabled flag.
@@ -236,13 +236,22 @@ fn test_func_name(rule_id: &str, test_type: &str, file_name: &str) -> String {
 }
 
 /// Status icon and label for a rule given its computed test total.
+///
+/// This reports whether the default manifest ENABLES the rule, which is not
+/// the same question as whether it is implemented. Every rule with a
+/// directory under `src/rules/cert_c/` is implemented; the default manifest
+/// disables four of them (`ENV04-C`, `MSC18-C`, `MSC19-C`, `MSC25-C`), and
+/// they have implementations too. Labelling `is_enabled` as "Implemented"
+/// is what produced a docs-wide disagreement over the rule count: this file
+/// emitted "Implemented Rules: 307" while README.md said 311 implemented and
+/// 307 enabled, and both were describing the same manifest.
 fn rule_status(rule: &RuleInfo, total: usize) -> (&'static str, &'static str) {
     if rule.is_enabled {
-        ("✅", "Implemented")
+        ("✅", "Enabled")
     } else if total > 0 {
-        ("🔶", "Not Implemented (has tests)")
+        ("🔶", "Disabled by default (has tests)")
     } else {
-        ("⚫", "Not Implemented (no tests)")
+        ("⚫", "Disabled by default (no tests)")
     }
 }
 
@@ -250,15 +259,15 @@ fn rule_status(rule: &RuleInfo, total: usize) -> (&'static str, &'static str) {
 fn render_overview(
     report: &mut String,
     total_rules: usize,
-    implemented_rules: usize,
+    enabled_rules: usize,
     total_tests: usize,
 ) {
     report.push_str("## Overview\n\n");
-    report.push_str(&format!("- **Total Rules:** {}\n", total_rules));
+    report.push_str(&format!("- **Implemented Rules:** {}\n", total_rules));
     report.push_str(&format!(
-        "- **Implemented Rules:** {} ({:.1}%)\n",
-        implemented_rules,
-        (implemented_rules as f64 / total_rules as f64) * 100.0
+        "- **Enabled By Default:** {} ({:.1}%)\n",
+        enabled_rules,
+        (enabled_rules as f64 / total_rules as f64) * 100.0
     ));
     report.push_str(&format!("- **Total Test Cases:** {}\n", total_tests));
     report.push_str(&format!(
@@ -271,12 +280,12 @@ fn render_overview(
 fn render_toc(report: &mut String, categories: &BTreeMap<String, Vec<RuleInfo>>) {
     report.push_str("## Table of Contents\n\n");
     for (category, rules) in categories {
-        let implemented_count = rules.iter().filter(|r| r.is_enabled).count();
+        let enabled_count = rules.iter().filter(|r| r.is_enabled).count();
         report.push_str(&format!(
-            "- [{}](#category-{}) ({} implemented / {} total)\n",
+            "- [{}](#category-{}) ({} enabled / {} implemented)\n",
             category,
             category.to_lowercase(),
-            implemented_count,
+            enabled_count,
             rules.len()
         ));
         for rule in rules {
@@ -321,12 +330,12 @@ fn render_detail_sections(report: &mut String, categories: &BTreeMap<String, Vec
             category.to_lowercase()
         ));
 
-        let implemented_count = rules.iter().filter(|r| r.is_enabled).count();
+        let enabled_count = rules.iter().filter(|r| r.is_enabled).count();
         report.push_str(&format!(
-            "**Implementation Status:** {} / {} rules ({:.1}%)\n\n",
-            implemented_count,
+            "**Enabled By Default:** {} / {} implemented rules ({:.1}%)\n\n",
+            enabled_count,
             rules.len(),
-            (implemented_count as f64 / rules.len() as f64) * 100.0
+            (enabled_count as f64 / rules.len() as f64) * 100.0
         ));
 
         for rule in rules {
@@ -415,11 +424,13 @@ fn render_test_list(
 /// Render the closing per-category summary table.
 fn render_summary_table(report: &mut String, categories: &BTreeMap<String, Vec<RuleInfo>>) {
     report.push_str("## Summary by Category\n\n");
-    report.push_str("| Category | Rules | Implemented | Tests | Avg Tests/Rule |\n");
-    report.push_str("|----------|-------|-------------|-------|----------------|\n");
+    report.push_str("| Category | Rules | Enabled | Tests | Avg Tests/Rule |\n");
+    report.push_str("|----------|-------|---------|-------|----------------|\n");
 
     for (category, rules) in categories {
-        let implemented = rules.iter().filter(|r| r.is_enabled).count();
+        // is_enabled, so this column is "enabled by default" and not
+        // "implemented" -- every rule counted in `Rules` is implemented.
+        let enabled = rules.iter().filter(|r| r.is_enabled).count();
         let tests: usize = rules
             .iter()
             .map(|r| r.fail_tests.len() + r.pass_tests.len())
@@ -429,7 +440,7 @@ fn render_summary_table(report: &mut String, categories: &BTreeMap<String, Vec<R
             "| {} | {} | {} | {} | {:.1} |\n",
             category,
             rules.len(),
-            implemented,
+            enabled,
             tests,
             avg
         ));

@@ -1,6 +1,6 @@
 # SqC - Software Code Quality
 
-A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC checks 307 rules across 17 categories, with a CI/CD-ready command-line interface and an optional interactive terminal UI.
+A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC checks 311 CERT C rules across 17 categories (307 enabled by default), with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
 ## Why CERT C
 

@@ -211,7 +211,7 @@ hostap       430        589,724        37,432        1,761         1,710
 
 *Data from sqc v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).*
 
-**Why sqc reports more violations**: SqC implements 311 CERT C rules, 305 enabled by default (both
+**Why sqc reports more violations**: SqC implements 311 CERT C rules, 307 enabled by default (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.
 
@@ -235,7 +235,7 @@ Apples-to-Apples Concerns
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 1. **Rule coverage**: cppcheck/clang-tidy implement ~20 checks each vs. sqc's
-   305 enabled rules. Raw violation counts are not directly comparable.
+   307 enabled rules. Raw violation counts are not directly comparable.
 
 2. **Translation unit scope**: Use consistent scope (cross-file ``-d`` flag or
    single-file) when comparing.
@@ -501,9 +501,9 @@ pointer is truncated on LP64; C99 removed implicit declarations and C23
 makes them an error — on code this corpus does not contain. Quoting that
 number as a rule-quality measure is a category error.
 
-The material to close this gap already exists in the repo: **1,959
+The material to close this gap already exists in the repo: **1,968
 must-detect** fixtures (``src/rules/cert_c/*/*/tests/fail/*.c``, across 306
-rules) and **1,568 must-not-detect** fixtures
+rules) and **1,576 must-not-detect** fixtures
 (``src/rules/cert_c/*/*/tests/pass/*.c``, across 308 rules), labeled by
 construction — 309 distinct rules carry at least one. 121 of the 125
 unvalidated rules already have a must-detect fixture — only ``ENV04-C``,

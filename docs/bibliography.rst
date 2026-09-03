@@ -180,7 +180,7 @@ Standards & Specifications
 
 | https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard
 
-305 rules across 17 categories. The rule set implemented by SqC.
+311 rules across 17 categories. The rule set implemented by SqC.
 
 ----
 
