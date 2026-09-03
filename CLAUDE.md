@@ -575,7 +575,21 @@ either direction is measurably wrong on real-world data).
 
 **EXPLICITLY DENIED:**
 - `git commit --no-verify` - NEVER use this flag. Pre-commit hooks MUST pass. Only humans can skip hooks.
-- `Co-Authored-By: Claude` - NEVER add Claude as co-author. This is a corporate repository.
+- `Co-Authored-By: Claude` - NEVER add Claude as co-author.
+
+  **The reason is placement, not prohibition.** Claude's contribution to this
+  repo IS acknowledged, deliberately and in the right place: README.md's
+  "AI Assistance" section names it for code generation, rule implementation,
+  analysis and documentation. What the trailer would add is that same fact
+  repeated in every one of ~3,500 commits, where it crowds out the message
+  and tells a reader nothing the README has not already said once, clearly.
+
+  So do not read this as "attribution is a compliance problem here" and do
+  not remove the README section to be consistent with it. Acknowledge once,
+  visibly; do not restate it per commit. (The sibling `sqc_paper` repo
+  deliberately differs and leaves the default trailer on — the PDF is its
+  deliverable and nobody else works in its history. A convention that
+  belongs to one repo is stated in that repo.)
 - Any hook-skipping flags (`--no-gpg-sign`, etc.)
 
 **REQUIRED:**
