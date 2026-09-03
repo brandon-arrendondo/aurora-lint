@@ -287,9 +287,15 @@ FP/FN work, docs and packaging here. Same clone-experience test as
 everywhere else in this file — would a stranger cloning this repo need it to
 evaluate sqc on their own codebase? A dependency edge that would have crossed
 a split is recorded in the task's own details as prose, since separate DBs
-cannot enforce one. Three such edges exist: `sqc_paper`'s 9 and 723 both
-reach into this repo (723 edits this README as well as the paper), and
-`benchmarking_db`'s 700 waits on this repo's 675.
+cannot enforce one. Only ONE such edge is currently live: `benchmarking_db`'s
+700 waits on this repo's 675, which is pending at P5. The others are
+satisfied or are not really dependencies — `sqc_paper`'s 9 names this repo's
+7, 147 and 152, all of them done, so those read as history rather than a
+block; and its 723 edits this repo's README alongside the paper, which is
+work spanning two repos rather than one task gating another. Worth keeping
+the distinction when adding the next one: a prose edge to a completed task
+tells a reader where to look, while a prose edge to open work is a blocker
+that no `next` in either repo will enforce for you.
 
 **Display ids collide across all three repos.** Each DB allocates from its
 own sequence, so a bare "task 731" is three-ways ambiguous: 731 is the
