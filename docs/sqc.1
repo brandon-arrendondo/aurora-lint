@@ -14,6 +14,25 @@ control-flow, dataflow, and inter-procedural analysis to detect defects
 including null pointer dereferences, integer overflows, buffer overflows,
 use-after-free, and resource leaks.
 .PP
+.B sqc
+requires no build system, no compilation and no
+.IR compile_commands.json .
+It parses C with tree-sitter rather than driving a compiler, so it needs
+neither a toolchain, system headers, nor a working build, and will analyze
+source that cannot currently be built. A
+.IR compile_commands.json
+and
+.BR \-I / \-D
+flags are used when supplied \(em they improve cross-file context and reduce
+false positives \(em but are never required.
+.PP
+.B sqc
+analyzes C
+.RI ( .c
+and
+.IR .h )
+against the CERT C standard. It is not a C++ checker.
+.PP
 If \fIPATH\fR is omitted, the current directory is analyzed.
 \fIPATH\fR may be a single C source file, a directory (analyzed recursively),
 or a git repository (with \fB\-\-diff\fR to analyze only changed files).
@@ -317,6 +336,10 @@ SEI CERT C Coding Standard:
 Eric Buehler <eric.buehler@bissell.com>
 .br
 Brandon Arrendondo <brandon.arrendondo@bissell.com>
+.PP
+See
+.I CONTRIBUTORS.md
+in the source distribution for the full list of contributors.
 .SH COPYRIGHT
 Copyright \(co 2024 BISSELL Homecare, Inc.
 .br

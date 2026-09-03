@@ -74,7 +74,9 @@ nonsense on a C++ header it encounters.
 - **Cross-file analysis**: pre-scans directories for function definitions to reduce false positives
 - **Fast**: tree-sitter based parsing with control-flow graphs and inter-procedural reasoning
 
-## Benchmark Highlights
+## How Well Does It Work?
+
+Measured, not asserted. Two benchmarks, both with published methodology.
 
 <!-- BENCH:HIGHLIGHTS:START -->
 | Metric | Value |
@@ -89,138 +91,28 @@ nonsense on a C++ header it encounters.
 <!-- BENCH:HIGHLIGHTS:END -->
 
 Regenerate this table with `python -m bench render-docs --realworld-run RUN`
-(see `bench/render_docs.py`) after a version bump or a fresh delta-adjudication.
+after a version bump or a fresh delta-adjudication.
 
-Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases — see the Benchmark Highlights table above and [`docs/juliet-history.rst`](docs/juliet-history.rst) for the full round-by-round Juliet history; the complete record for both is `sqc_bench` Postgres (see `benchmarking_db`).
+**[NIST Juliet](https://samate.nist.gov/SARD/test-suites/112) is the headline
+number**, because its defects are planted and labelled by the suite itself —
+so a true/false positive is a fact, not a judgement. 79 CWEs, 87.1% of SqC's
+findings are true positives, and 43 CWEs come back with zero false positives
+and real detections.
 
-> **Note**: the real-world precision/recall figure is pinned to the last
-> validly-adjudicated run, and its unlabeled remainder is mostly
-> `pure-ftpd`/`seL4`'s deliberately-unsampled 90%. Rule-logic commits landed
-> since that run aren't reflected; a current figure requires
-> delta-adjudicating the newer unlabeled findings first (see CLAUDE.md's
-> delta-adjudication protocol) before it can be safely republished.
->
+**The 9 real-world codebases are a reference point**, and a harder one: curl,
+hostap, libcrc, lua, mosquitto, pure-ftpd, raylib, seL4 and sqlite, scanned at
+pinned commits with findings hand-adjudicated into a ground-truth oracle. Real
+code is messier than a test suite and the precision figure reflects that.
+
 > **Recall is measured against *known* true positives**, not against all
-> defects present. There is no exhaustive false-negative hunt behind the
-> recall figure — past audits scoped their FN searches to specific bug
-> categories. True recall is unknown and lower.
->
-> This note deliberately restates no number from the table above. It used to
-> carry the run's version, its unlabeled percentage and the recall figure, and
-> when the table was refreshed onto the canonical basis those three did not
-> move with it: the table said 93.9% recall and 89.8% coverage while this
-> paragraph still said 93.7% and 11.8% unlabeled, eight lines apart, for the
-> same run. A caveat's job is to say what the number does not cover, which it
-> can do without repeating the number.
+> defects present. No exhaustive false-negative hunt sits behind it — past
+> audits scoped their searches to specific bug categories — so true recall is
+> unknown and lower than the figure above.
 
-### Juliet TP rate is not the ceiling signal — the flaw-hit rate is
-
-**Juliet TP Rate** above is the share of sqc's Juliet findings that are true
-positives. It says how clean the output is, not how much of the suite's
-planted defect set sqc actually locates. That second question is the
-**flaw-hit rate** — the fraction of Juliet's known flaw lines sqc lands a
-finding on — and it moves independently: as of v0.4.321 it was 12.9%
-(17,100 of 132,406 flaw lines), essentially flat for weeks while the TP
-rate above was moving. Quoting only the TP rate overstates the tool; this
-paragraph is not auto-refreshed with the table above (deliberately, per the
-lesson in the note above this section — see `python -m bench compare` or
-`sqc_bench` Postgres for the current figure), so treat the number here as
-illustrative of the *gap*, not as a current measurement.
-
-Per-file detection rate (in the table above) sits between the two: sqc
-flags something in over a third of flawed files, but lands on the specific
-planted flaw line in roughly an eighth of cases. When judging headroom, the
-flaw-hit rate is the honest signal to watch for movement, not the TP rate.
-
-Juliet also exercises only part of the rule suite — 127 rules have any
-Juliet true positive, out of 311 implemented. See "Rule-suite coverage"
-below for what that leaves unmeasured, and
-[`docs/juliet-history.rst`](docs/juliet-history.rst) for the full
-round-by-round version history behind the table above.
-
-### Rule-suite coverage
-
-Precision and recall above are aggregates over the rules that actually fire
-on the benchmark corpora. They say nothing about the rest of the suite, and
-the rest of the suite is substantial (measured 2026-09-02, run #226):
-
-| | Rules |
-|---|---:|
-| Implemented | **311** (307 enabled by default) |
-| Have true-positive evidence somewhere | **186** — 127 from Juliet, 144 from real-world TP/FN labels |
-| **No true-positive evidence anywhere** | **125 (40%)** |
-| &nbsp;&nbsp;· fire on the corpus, but have only ever produced FPs | 65 |
-| &nbsp;&nbsp;· never fire on the nine projects at all | 60 |
-
-A rule in that last group has never been shown to detect anything real —
-but that is usually a statement about the corpora, not about the rule. The
-nine real-world projects are mature, warning-clean C, which is the opposite
-population from sqc's nominal use case (newer, in-progress, possibly
-non-compiling code wired into CI/CD early — sqc needs no build system, which
-is the whole point). A rule whose defect cannot survive review in released
-software is structurally incapable of scoring a true positive there. The 60
-never-firing rules include `WIN02-C` and `WIN30-C` — Windows rules against
-Linux-only corpora, categorically inapplicable rather than broken (rule
-applicability is the user's lever, by design: manifest scoping and
-suppression exist so the user decides which rules apply to their code,
-rather than detection logic silently deciding for them).
-
-**Worked example of why a per-rule 0.0% is sometimes a corpus artifact, not
-a rule defect** (task 692): `DCL31-C` shows 364 findings, 324 labeled, 0
-TP — 0.0% precision. That figure measures sqc's header reachability, not
-the rule's quality. `mosquitto` alone goes from 1,365 `DCL31-C` findings
-with no `-I` to 0 with `-I /usr/include`. The rule guards a genuine defect —
-under C89 an implicit declaration makes the compiler assume `int f()`, so
-the return type is misread, no argument checking happens, and a returned
-pointer is truncated on LP64; C99 removed implicit declarations and C23
-makes them an error — on code this corpus does not contain. Quoting that
-number as a rule-quality measure is a category error.
-
-The material to close this gap already exists in the repo: **1,959
-must-detect** fixtures (`src/rules/cert_c/*/*/tests/fail/*.c`, across 306
-rules) and **1,568 must-not-detect** fixtures
-(`src/rules/cert_c/*/*/tests/pass/*.c`, across 308 rules), labeled by
-construction — 309 distinct rules carry at least one. 121 of the 125
-unvalidated rules already have a must-detect fixture — only `ENV04-C`,
-`FLP01-C`, `MSC18-C` and `MSC25-C` have none.
-Today those fixtures run only as pass/fail unit tests and feed no measured
-metric, so a rule can be fully exercised by tests and still read as having
-no detection evidence. Scoring them as a third benchmark tier is tracked as
-tasks 693–696.
-
-### Cross-tool comparison
-
-sqc implements 311 CERT C rules against cppcheck's and clang-tidy's ~20
-checks each; the comparison below is about coverage shape, not a
-precision/recall claim (see Benchmark Highlights above for that). Counts
-are illustrative, from before the Postgres migration — not an official,
-currently-cited figure; query `sqc_bench` for current numbers.
-
-| Bug Class | sqc Rule | clang-tidy Check | cppcheck Check | Notes |
-|-----------|----------|------------------|----------------|-------|
-| Unchecked return value | ERR33-C | `cert-err33-c` | — | sqc 5x count (broader function list) |
-| Unsafe numeric conversion | ERR34-C | `cert-err34-c` | — | sqc finds MORE (126 vs 33 on mosquitto) |
-| Null pointer dereference | EXP34-C | `NullDereference` | `nullPointer` | sqc 4,300:1 ratio (see below) |
-| Uninitialized variable | EXP33-C | — | `uninitvar` | Different sub-patterns of CWE-457 |
-| String/buffer safety | STR rules | `DeprecatedOrUnsafe...` | — | Different scope |
-
-**EXP34-C, a known high-FP-rate case on real code:**
-
-| Project | sqc EXP34-C | cppcheck nullPointer (error) | cppcheck nullPointerRedundantCheck |
-|---------|------------:|-----------------------------:|-----------------------------------:|
-| mosquitto | 8,657 | 2 | 0 |
-| curl | 22,350 | 0 | 177 |
-
-sqc uses CFG-based null state dataflow with inter-procedural call-site
-propagation; cppcheck uses data-flow analysis and only fires when it can
-prove a null-dereference path. The gap is narrowing but sqc still flags
-more conservatively.
-
-**What sqc uniquely covers**, with no cppcheck/clang-tidy equivalent:
-`POS49-C` (POSIX misuse), `INT32-C`/`INT30-C` (signed/unsigned overflow,
-which competitors skip), `MEM30-C`/`MEM31-C` (use-after-free, memory
-management), `API00-C`/`API02-C`, and 270+ additional rules across integer,
-floating-point, environment, concurrency and POSIX categories.
+How both numbers are produced, what they exclude, and why the Juliet
+true-positive rate is not the whole story:
+[`docs/testing-methodology.rst`](docs/testing-methodology.rst) and
+[`docs/juliet-history.rst`](docs/juliet-history.rst).
 
 ## Installation
 
@@ -306,6 +198,30 @@ Exit codes: `0` = success, `1` = violations found (with `--fail-on-*`), `2` = er
 
 Ready-to-use workflow examples for [GitHub Actions and Azure DevOps](docs/cicd-integration.rst) are in the Developer Guide.
 
+## Alternatives
+
+Honest version: on the narrow set of defect classes clang-tidy checks, **clang-tidy
+is more precise than SqC** — 99.2% to 81.7% on the 16 Juliet CWEs it covers, and it
+finds more true positives there too. It gets that by compiling your code.
+
+SqC's case is breadth and reach, not beating clang-tidy at its sixteen:
+
+| | CERT C coverage | Juliet CWEs | Needs a build? | Real-world suite time |
+|---|---|---:|---|---:|
+| **SqC** | **311 rules**, 17 categories | **79** | **No** | ~1,190 s |
+| clang-tidy | ~20 `cert-*` checks | 16 | Yes | 501 s |
+| cppcheck | ~20 (addon) | 16 | No | 11,452 s |
+| [Infer](https://fbinfer.com/) | bug-type indexed | 11 | Yes | not run |
+| [Frama-C](https://frama-c.com/) | not rule-indexed | 6 | Yes | not run |
+
+cppcheck is the useful control, since it also runs without a build: on the same
+16 CWEs it scores 36.4% against SqC's 81.7%, and takes roughly ten times as long
+on real code.
+
+Per-CWE precision for all five tools, the speed measurements, and what the
+build-vs-no-build trade actually costs:
+**[`docs/tool-comparison.rst`](docs/tool-comparison.rst)**.
+
 ## Documentation
 
 For advanced usage, CI/CD integration details, interactive UI reference, testing methodology, and contributing:
@@ -317,6 +233,8 @@ For advanced usage, CI/CD integration details, interactive UI reference, testing
 | [Developer Guide](docs/index.rst) | Advanced usage, CI/CD, UI reference, testing, architecture, contributing |
 | [`docs/juliet-history.rst`](docs/juliet-history.rst) | Juliet benchmark data: TP/FP history, per-CWE results |
 | [`docs/future-rulesets.rst`](docs/future-rulesets.rst) | Why CERT C is the base standard, and which open standards could be added |
+| [`docs/tool-comparison.rst`](docs/tool-comparison.rst) | SqC vs cppcheck, clang-tidy, Frama-C, Infer — per-CWE precision, speed, build requirements |
+| [`docs/testing-methodology.rst`](docs/testing-methodology.rst) | How the benchmark numbers are produced, and what they exclude |
 | [CONTRIBUTORS.md](CONTRIBUTORS.md) | Who built this |
 
 ## AI Assistance

@@ -401,3 +401,114 @@ implementation cannot detect them correctly.
 
 - **STR03-C**: ``strncpy()`` and ``snprintf()`` always trigger violations
   regardless of whether null-termination is manually added afterward.
+
+
+Benchmark Caveats And Rule-Suite Coverage
+-----------------------------------------
+
+Moved out of ``README.md`` (2026-09-03), which should say how well SqC works
+rather than how the measurement is constructed. These are the caveats a
+maintainer or a reviewer needs; see :doc:`tool-comparison` for how SqC scores
+against other analysers.
+
+Numbers below are **not** auto-refreshed with README's highlights table, and
+that is deliberate: a caveat whose job is to say what a figure does not cover
+can do that without restating the figure. An earlier version of these notes
+carried the run's version, its unlabeled percentage and the recall figure, and
+when the table was refreshed onto the canonical basis those three did not move
+with it — the table said 93.9% recall and 89.8% coverage while the prose eight
+lines below still said 93.7% and 11.8%. Treat any number here as illustrative
+of a *gap*, and ``python -m bench compare`` or ``sqc_bench`` Postgres as the
+current measurement.
+
+Published figures are pinned to the last validly-adjudicated run. Rule-logic
+commits landed since that run are not reflected, and a current figure requires
+delta-adjudicating the newer unlabeled findings first — the protocol for that
+lives in the repository's agent instructions, not here, because it is a
+maintainer workflow rather than a user-facing one.
+
+Juliet TP rate is not the ceiling signal — the flaw-hit rate is
+---------------------------------------------------------------
+
+**Juliet TP Rate** above is the share of sqc's Juliet findings that are true
+positives. It says how clean the output is, not how much of the suite's
+planted defect set sqc actually locates. That second question is the
+**flaw-hit rate** — the fraction of Juliet's known flaw lines sqc lands a
+finding on — and it moves independently: as of v0.4.321 it was 12.9%
+(17,100 of 132,406 flaw lines), essentially flat for weeks while the TP
+rate above was moving. Quoting only the TP rate overstates the tool; this
+paragraph is not auto-refreshed with the table above (deliberately, per the
+lesson in the note above this section — see ``python -m bench compare`` or
+``sqc_bench`` Postgres for the current figure), so treat the number here as
+illustrative of the *gap*, not as a current measurement.
+
+Per-file detection rate (in the table above) sits between the two: sqc
+flags something in over a third of flawed files, but lands on the specific
+planted flaw line in roughly an eighth of cases. When judging headroom, the
+flaw-hit rate is the honest signal to watch for movement, not the TP rate.
+
+Juliet also exercises only part of the rule suite — 127 rules have any
+Juliet true positive, out of 311 implemented. See "Rule-suite coverage"
+below for what that leaves unmeasured, and
+[``docs/juliet-history.rst``](docs/juliet-history.rst) for the full
+round-by-round version history behind the table above.
+
+Rule-suite coverage
+-------------------
+
+Precision and recall above are aggregates over the rules that actually fire
+on the benchmark corpora. They say nothing about the rest of the suite, and
+the rest of the suite is substantial (measured 2026-09-02, run #226):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 62 38
+
+   * -
+     - Rules
+   * - Implemented
+     - **311** (307 enabled by default)
+   * - Have true-positive evidence somewhere
+     - **186** — 127 from Juliet, 144 from real-world TP/FN labels
+   * - **No true-positive evidence anywhere**
+     - **125 (40%)**
+   * - · fire on the corpus, but have only ever produced FPs
+     - 65
+   * - · never fire on the nine projects at all
+     - 60
+
+A rule in that last group has never been shown to detect anything real —
+but that is usually a statement about the corpora, not about the rule. The
+nine real-world projects are mature, warning-clean C, which is the opposite
+population from sqc's nominal use case (newer, in-progress, possibly
+non-compiling code wired into CI/CD early — sqc needs no build system, which
+is the whole point). A rule whose defect cannot survive review in released
+software is structurally incapable of scoring a true positive there. The 60
+never-firing rules include ``WIN02-C`` and ``WIN30-C`` — Windows rules against
+Linux-only corpora, categorically inapplicable rather than broken (rule
+applicability is the user's lever, by design: manifest scoping and
+suppression exist so the user decides which rules apply to their code,
+rather than detection logic silently deciding for them).
+
+**Worked example of why a per-rule 0.0% is sometimes a corpus artifact, not
+a rule defect** (task 692): ``DCL31-C`` shows 364 findings, 324 labeled, 0
+TP — 0.0% precision. That figure measures sqc's header reachability, not
+the rule's quality. ``mosquitto`` alone goes from 1,365 ``DCL31-C`` findings
+with no ``-I`` to 0 with ``-I /usr/include``. The rule guards a genuine defect —
+under C89 an implicit declaration makes the compiler assume ``int f()``, so
+the return type is misread, no argument checking happens, and a returned
+pointer is truncated on LP64; C99 removed implicit declarations and C23
+makes them an error — on code this corpus does not contain. Quoting that
+number as a rule-quality measure is a category error.
+
+The material to close this gap already exists in the repo: **1,959
+must-detect** fixtures (``src/rules/cert_c/*/*/tests/fail/*.c``, across 306
+rules) and **1,568 must-not-detect** fixtures
+(``src/rules/cert_c/*/*/tests/pass/*.c``, across 308 rules), labeled by
+construction — 309 distinct rules carry at least one. 121 of the 125
+unvalidated rules already have a must-detect fixture — only ``ENV04-C``,
+``FLP01-C``, ``MSC18-C`` and ``MSC25-C`` have none.
+Today those fixtures run only as pass/fail unit tests and feed no measured
+metric, so a rule can be fully exercised by tests and still read as having
+no detection evidence. Scoring them as a third benchmark tier is tracked as
+tasks 693–696.
