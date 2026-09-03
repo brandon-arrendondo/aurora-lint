@@ -378,6 +378,10 @@ git pull                                     # DB auto-merges by task UUID
 todo-sqlite-cli doctor                       # REQUIRED after every merge/pull
 ```
 
+`playbooks/setup-dev-environment.yml` now registers this driver (and the
+pack settings below) on any node it provisions, so the one-time step above is
+only needed on a clone that predates it or was set up by hand.
+
 `install-merge-driver` appends the `.gitattributes` line unconditionally — if
 that line is already there (it is, in this repo), register the driver by hand
 instead so the file doesn't gain a duplicate:
@@ -394,3 +398,22 @@ id. `doctor` exits 1 on that (and on unresolved `merge-conflict` tags, orphaned
 tag/dep rows, self-deps, cycles); fix a duplicate id with
 `todo-sqlite-cli renumber <uuid> <new-id>`. Never resolve a DB conflict with
 `git checkout --ours/--theirs` — that discards the other side's tasks entirely.
+
+**PACK SIZE (`todo-sqlite-cli.db`):** the DB is ~2.3 MiB and is committed on
+nearly every task change (692 of 3,571 commits as of 2026-09-03). Git's default
+`pack.window` of 10 cannot find a good delta base among ~680 versions of it, so
+recent versions get stored close to whole — 664 KiB of pack per DB commit
+against a 39 KiB historical average. `setup-dev-environment.yml` sets
+`pack.window 250` / `pack.depth 100` (repo-local, so uncommitted and per-clone),
+which brings that to 38 KiB.
+
+Those settings only affect *future* repacks. A clone provisioned before they
+existed keeps its bloated pack until repacked once by hand:
+
+```bash
+git repack -a -d --window=250 --depth=100   # 58 MB -> 41 MB on this checkout
+```
+
+That is a pure storage-layout rewrite — it never changes commit SHAs or
+history — so it is safe on any clone at any time. Committing the DB is fine;
+the cost was a config default, not the practice.

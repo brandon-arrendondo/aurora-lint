@@ -19,6 +19,13 @@
 #   - pre-commit + the git hook it installs -- CLAUDE.md requires every
 #     pre-commit hook to pass before a commit; nothing previously installed
 #     the tool or ran `pre-commit install` in the repo.
+#   - Repo-local git config -- .git/config is not tracked, so a fresh clone
+#     gets none of it. Two settings matter here: the todo-sqlite-cli merge
+#     driver that .gitattributes already names (without it every pull that
+#     touched the DB lands in conflict), and pack.window/pack.depth, which
+#     git's defaults set far too low for the ~2.3 MiB SQLite file committed
+#     on nearly every task change -- 664 KiB of pack per DB commit at the
+#     default window=10 against 38 KiB at 250. See the tasks for the numbers.
 #   - clew-trace -- .mcp.json (gitignored, written by `clew init` -- see
 #     CLAUDE.md's Code Navigation section) points at the `clew-mcp` command;
 #     without the package installed that command doesn't resolve and the
@@ -163,6 +170,54 @@
         chdir: "{{ project_dir }}"
       register: precommit_install
       changed_when: "'installing' in precommit_install.stdout | lower"
+
+    # ── Repo-local git config (uncommitted, so every clone needs it) ─────
+    #
+    # Both settings below live in .git/config, which is NOT tracked. A fresh
+    # clone gets neither, and nothing in the repo makes their absence visible
+    # until it bites.
+
+    - name: Tune pack settings for the tracked todo-sqlite-cli.db
+      community.general.git_config:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        scope: local
+        repo: "{{ project_dir }}"
+      loop:
+        - { name: pack.window, value: "250" }
+        - { name: pack.depth, value: "100" }
+      # todo-sqlite-cli.db is a ~2.3 MiB SQLite file committed on nearly every
+      # task change -- 692 of 3,571 commits as of 2026-09-03. Git's default
+      # pack.window of 10 is far too small to find a good delta base among
+      # ~680 versions of it, so recent versions were being stored close to
+      # whole: 664 KiB of pack per DB commit against a 39 KiB historical
+      # average. At window=250 that drops to 38 KiB, and the file's total
+      # on-disk history goes 25.7 MiB -> 9.1 MiB (.git overall 58 MB -> 41 MB).
+      #
+      # Setting this only affects FUTURE repacks. A node provisioned before
+      # this task existed keeps its bloated pack until repacked once by hand:
+      #   git repack -a -d --window=250 --depth=100
+      # That is a pure storage-layout rewrite -- it never changes commit SHAs
+      # or history -- so it is safe to run on any clone at any time.
+
+    - name: Register the todo-sqlite-cli merge driver
+      community.general.git_config:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        scope: local
+        repo: "{{ project_dir }}"
+      loop:
+        - { name: merge.todo-sqlite-cli.name, value: "todo-sqlite-cli 3-way merge driver" }
+        - { name: merge.todo-sqlite-cli.driver, value: "todo-sqlite-cli git-merge-driver %O %A %B" }
+      # .gitattributes maps `todo-sqlite-cli.db merge=todo-sqlite-cli` and IS
+      # committed, but the driver it names is repo-local config that is not.
+      # Without this, git falls back to the binary default and leaves the DB
+      # in conflict on every pull that touched it -- see CLAUDE.md's "PULLING
+      # FROM UPSTREAM" section.
+      #
+      # Registered by hand rather than via `todo-sqlite-cli install-merge-driver`
+      # because that command also appends the .gitattributes line
+      # unconditionally, which would duplicate the one already committed here.
 
     - name: Verify clew-mcp resolves (the command .mcp.json points at)
       command: "{{ dev_venv }}/bin/clew-mcp --help"
