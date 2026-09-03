@@ -4,26 +4,48 @@
 
 See `docs/index.rst` (Benchmark Setup / Running Benchmarks sections) for the full CLI reference and troubleshooting.
 
-Benchmarks run via the `bench` CLI against a local SQLite DB (`data/benchmarks.db`)
-— no server process, no shared infrastructure. Anyone cloning this repo gets a
-working benchmark setup with nothing beyond `cargo build --release` and the
-codebase checkouts in `docs/benchmark-setup.rst`. (The maintainer's own
-shared/multi-node Postgres instance, used to aggregate results across several
-machines, lives entirely in a separate `benchmarking_db` repo — this repo has
-no knowledge of it and never will; keep it that way in anything you add here.)
+### Where benchmark data actually lives (READ THIS FIRST)
 
-### Data Storage
+**The only source of truth for (a) historical benchmark data and (b)
+adjudication data is the `sqc_bench` Postgres instance.** Full stop. The
+gateway to it is the separate **`benchmarking_db`** repo: all benchmarking
+capability was deliberately pulled out of this repo into that one to make the
+distinction unambiguous. Worker nodes reach the historical record through
+`benchmarking_db`'s MCP servers; Claude instances running on the benchmark host
+itself have broader access because they operate on that data directly.
 
-All benchmark results are stored in **`data/benchmarks.db`** (SQLite, WAL mode).
-This is the single source of truth for Juliet and real-world benchmark data.
-Historical results from `JULIET_RESULTS.md` and `REALWORLD_RESULTS.md` have been
-backfilled. New runs write directly to this database.
+**`data/benchmarks.db` (local SQLite) is NOT a tier of truth.** It is one
+output format among several — no different in standing from a CSV or a JSON
+dump — and it exists for exactly two cases: a one-off local run, and a
+collaborator who clones this repo and wants to produce benchmark data of their
+own. A number computed from it is not comparable to a published number and must
+never be cited as one. If a run is meant to count, it is queued through
+`benchmarking_db` and lands in Postgres.
+
+Anyone cloning this repo still gets a working local benchmark setup with
+nothing beyond `cargo build --release` and the codebase checkouts in
+`docs/benchmark-setup.rst`. That is the point of the SQLite path — it makes the
+tool self-contained for a stranger, not authoritative for us.
+
+**This repo stays Postgres-blind**: no DSN, no connection code, no awareness of
+the shared instance in anything you add here. Postgres being the source of
+truth and this repo not knowing how to reach it are both true at once, and the
+seam is what keeps `bench/` usable by a fresh clone. See
+`benchmarking_db/docs/ownership.md` for what that repo owns (historical runs,
+every metric about them, and the whole adjudication oracle including the corpus
+scope predicate).
+
+### Local SQLite storage (the one-off / clone-and-run path)
+
+A local run writes to **`data/benchmarks.db`** (SQLite, WAL mode) — gitignored,
+so it is per-checkout scratch and no clone inherits one.
 
 **Key tables**: `runs` (one row per benchmark), `cwe_scans` (one per CWE per run),
 `violations` (every individual finding), `cwe_metrics` (pre-computed TP/FP/rates),
 `rule_cwe_breakdown` (per-rule per-CWE counts), `realworld_runs` + `realworld_results`,
-`ground_truth` (adjudicated real-world TP/FP oracle keyed on project+commit+file+line+rule;
-`python -m bench realworld-score RUN` for measured precision/recall).
+`ground_truth` (local adjudication store — **not** the oracle; the oracle is
+`benchmarking_db`'s. `realworld-import-labels` requires `--local-oracle` so that
+writing here is a thing you state rather than a default you fall into).
 
 ### Running Benchmarks
 
@@ -133,33 +155,39 @@ scan while staying invisible to `git status`.
 ### Querying Results
 
 The `bench` CLI (`status`, `compare`, `runs`, `realworld`, `realworld-score`)
-queries SQLite first, falling back to legacy text files for old runs. 46
-Juliet runs (v0.2.1 through current) and 21 real-world runs are in the
-database.
+reads **local SQLite only**, falling back to legacy text files for old runs. It
+cannot see the historical record and never will — so its output describes this
+checkout's own scratch, not the project's benchmark history.
+
+To query the actual history, use `benchmarking_db`'s MCP servers
+(`sqc-benchmark-query`: `list_runs`, `get_run_status`, `compare_runs`,
+`get_realworld_results`, `get_cwe_detail`) or, on the benchmark host, that
+repo's own CLI. Deliberately no run counts quoted here: a number in this file
+goes stale silently, which is the failure mode task 701 exists to kill. Ask the
+source.
 
 ### Refreshing Published Doc Numbers
 
 If asked to "refresh the benchmark numbers" (README.md's Benchmark
 Highlights table, JULIET_RESULTS.md's Current State, REALWORLD_RESULTS.md's
 Latest Adjudicated Results): `python -m bench render-docs --realworld-run
-RUN [--juliet-run RUN] [--check]` regenerates those tables from local
-`data/benchmarks.db`, bounded by `<!-- BENCH:*:START/END -->` markers —
+RUN [--juliet-run RUN] [--check]` regenerates those tables from whichever
+`db` it is handed, bounded by `<!-- BENCH:*:START/END -->` markers —
 everything outside a marker (narrative, task citations, history) is
 hand-written and untouched. `--realworld-run` has no default on purpose:
 pass a run you know is validly adjudicated (see the delta-adjudication
-protocol above), not just whatever's newest. This is what any clone can
-run, with no dependency beyond this repo.
+protocol above), not just whatever's newest.
 
-**On the benchmark node specifically**, local `data/benchmarks.db` is only
-this checkout's own scratch history and reliably falls behind the shared
-`sqc_bench` Postgres instance every machine's runs feed into (see this
-file's opening note). Before citing local numbers as "current" on this
-node, check whether `benchmarking_db`'s `bin/refresh_tools_sqc_docs.py` (in
-that sibling repo — see its README) is the better source instead: it calls
-this repo's own `bench/render_docs.py` rendering functions, just pointed at
-Postgres rather than local SQLite, so the output is identical in shape —
-only the data backing it is more current. Nothing in this repo's own code
-gains Postgres awareness either way.
+**Published numbers come from Postgres, via `benchmarking_db`'s
+`bin/refresh_tools_sqc_docs.py`** (that sibling repo — see its README). Not
+"the better source" — the only correct one. It calls this repo's own
+`bench/render_docs.py` rendering functions pointed at Postgres, so the output
+is identical in shape and nothing here gains Postgres awareness.
+
+Running `render-docs` against local `data/benchmarks.db` and committing the
+result publishes this checkout's scratch as though it were the project's
+record. It will look plausible and be wrong. The local path is for a clone
+that has no access to the shared instance and is documenting its *own* runs.
 
 Either path: review the diff before committing. The tool only ever
 rewrites marker-bounded blocks; a real refresh usually also means updating
