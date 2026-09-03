@@ -24,6 +24,20 @@ prefix). A gate task is not "work" — nobody `start`s it. It sits open
 until the world satisfies the condition in its `details`, then gets
 closed with `todo-sqlite-cli done`.
 
+## Repos this SOP spans (as of 2026-09-03)
+
+The three checks below no longer live in one tree:
+
+| What | Where |
+|------|-------|
+| tool version, rule counts, this SOP, tasks #9/#463 | `tools_sqc` (run the SOP here) |
+| paper source, its pinned version claims | `../sqc_paper` |
+| every benchmark/oracle number, and the tasks behind them | `../benchmarking_db` (its own task DB since 2026-09-03) |
+
+So a `todo-sqlite-cli` query in this file answers about the TOOL's backlog
+only. Benchmark and adjudication tasks moved to `benchmarking_db`'s DB, and
+display ids now collide between the two -- say which repo when citing one.
+
 ## Reliability note: query the DB directly, don't rely on `todo-sqlite-cli`'s CLI version
 
 The CLI binary version and the `todo-sqlite-cli.db` schema version can be
@@ -68,7 +82,7 @@ Read the `running_backlog` column, most recent rows first.
 ```bash
 sqlite3 -header -column todo-sqlite-cli.db "
 SELECT t.id, t.priority, t.title
-FROM tasks t JOIN tags g ON t.id = g.task_id
+FROM tasks t JOIN tags g ON t.uuid = g.task_uuid
 WHERE t.status IN ('pending','partial','in-progress')
   AND t.priority <= 2
   AND g.tag IN ('fp-reduction','rule-bug','coverage-gap')
@@ -122,7 +136,7 @@ number that would need to flip).
    ```bash
    sqlite3 -header -column todo-sqlite-cli.db "
    SELECT t.id, t.title, t.status, t.priority
-   FROM tasks t JOIN tags g ON t.id = g.task_id
+   FROM tasks t JOIN tags g ON t.uuid = g.task_uuid
    WHERE g.tag = 'paper' AND t.status NOT IN ('done','rejected')
    ORDER BY t.priority;"
    ```
@@ -132,14 +146,14 @@ number that would need to flip).
 3. **Version/number drift check** — the paper's tables are frozen to the
    `run_id` that produced them; catch drift before submission rather than
    at review time:
-   - Cited Juliet/real-world version(s) in `paper/sqc.tex`
-     (`grep -n 'v0\.4\.[0-9]*' paper/sqc.tex`) vs. current `Cargo.toml`
+   - Cited Juliet/real-world version(s) in the paper repo's `sqc.tex`
+     (`grep -n 'v0\.4\.[0-9]*' ../sqc_paper/sqc.tex`) vs. current `Cargo.toml`
      version. Baseline 2026-08-26: paper cites v0.4.249 (Juliet) /
      v0.4.258 (real-world); repo is at v0.4.267. A version gap isn't
      automatically disqualifying — confirm no rule/detection-logic change
      landed in that gap that would move the cited numbers, don't just
      leave the gap unexamined.
-   - Cited rule count vs. `grep -c "enabled = true" src/rules/cert_c/rules-all.toml`
+   - Cited rule count vs. `grep -c "enabled = true" rules_templates/rules-all.toml`
      (305 as of 2026-08-26).
 4. **Spot-check a couple of paper citations against a live run_id**
    (`python -m bench runs`, `get_cwe_detail()`) rather than trusting prose
@@ -186,7 +200,7 @@ still climbing, not flat.
 No `benchmarks.db` dependency — works from any machine via git history:
 
 ```bash
-grep -c "enabled = true" src/rules/cert_c/rules-all.toml   # current enabled count
+grep -c "enabled = true" rules_templates/rules-all.toml   # current enabled count
 git log --format="%ad %h" --date=short -- src/rules/cert_c/rules-all.toml | head -1  # last time it changed at all
 ```
 
@@ -214,7 +228,7 @@ The 5-tool comparison table (cppcheck, clang-tidy, Infer, Frama-C) is
 pinned to whatever `sqc_version` its narrative cites — check:
 
 ```bash
-grep -n "SqC v0\.4\.[0-9]*" paper/sqc.tex   # find the pinned comparison-table version
+grep -n "SqC v0\.4\.[0-9]*" ../sqc_paper/sqc.tex   # pinned comparison-table version
 grep -m1 "^version" Cargo.toml             # current version
 ```
 
