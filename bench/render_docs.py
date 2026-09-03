@@ -38,7 +38,7 @@ import re
 import tomllib
 from typing import Protocol
 
-from bench.config import PROJECT_DIR
+from bench.config import PROJECT_DIR, RULES_ALL_TOML
 
 
 class BenchDBLike(Protocol):
@@ -57,8 +57,6 @@ class BenchDBLike(Protocol):
     def get_realworld_results(self, run_id: int) -> list[dict]: ...
     def list_realworld_runs(self) -> list[dict]: ...
 
-
-RULES_ALL_TOML = PROJECT_DIR / "rules_templates" / "rules-all.toml"
 
 README = PROJECT_DIR / "README.md"
 JULIET_RESULTS = PROJECT_DIR / "JULIET_RESULTS.md"
