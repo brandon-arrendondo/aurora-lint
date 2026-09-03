@@ -28,7 +28,7 @@ A static analysis tool for C code compliance with [SEI CERT C Coding Standards](
 Regenerate this table with `python -m bench render-docs --realworld-run RUN`
 (see `bench/render_docs.py`) after a version bump or a fresh delta-adjudication.
 
-Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases — see the Benchmark Highlights table below and [`docs/juliet-history.rst`](docs/juliet-history.rst) for the full round-by-round Juliet history; the complete record for both is `sqc_bench` Postgres (see `benchmarking_db`).
+Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases — see the Benchmark Highlights table above and [`docs/juliet-history.rst`](docs/juliet-history.rst) for the full round-by-round Juliet history; the complete record for both is `sqc_bench` Postgres (see `benchmarking_db`).
 
 > **Note**: the real-world precision/recall figure is pinned to the last
 > validly-adjudicated run, and its unlabeled remainder is mostly
