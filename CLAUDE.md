@@ -335,6 +335,35 @@ together", which is most cross-references. Neither works across the two
 repos — an id must exist in the same DB — so a cross-repo edge is still
 recorded as prose, and that is now the ONLY case where prose is correct.
 
+**CREATE THE FOLLOW-UP TASK FIRST, THEN LINK IT. Never write an
+id you have not allocated yet into a task body, a commit message or a code
+comment.** This is the one failure `--related` cannot repair, and with two
+nodes working the backlog concurrently it is not hypothetical — it happened
+TWICE on 2026-09-03 within a few hours:
+
+- Task 665 says "Filed as its own follow-up, task 736" twice. The follow-up
+  actually landed as **750**; 736 had been allocated in the interim by a
+  session on the other node, so 665's prose now points at an unrelated
+  EXP36-C task.
+- Task 742 says "Filed as task 751". The follow-up is **759**; 751 had
+  likewise been taken, by an MSC13-C task.
+
+Both were written before the referenced task existed, so the number was a
+guess about the future — and each node allocates from its own sequence with
+no reservation, so the guess is simply wrong whenever the other node adds a
+task first. `doctor` stays clean through all of this: nothing is duplicated
+or corrupt, the prose just points somewhere else, which makes it invisible
+until someone follows the link and lands on an unrelated task.
+
+The working habit, in order: `add` the follow-up, take the id `add` prints,
+then `edit <parent> --add-related <newid>`. Say "the follow-up task" in the
+prose and let the `Related:` line carry the identity. If you genuinely must
+name a number in text, allocate it first and paste the real one.
+
+Note this is a DIFFERENT failure from the stale-id-after-renumber case
+`--related` does fix. Renumber-staleness is a link that was once right;
+this is a link that was never right. Only sequencing prevents it.
+
 **`--location <text>` flags work that can only be done on a specific node**,
 shown as an `@location` suffix in `list`. The established value is
 `benchmark-node` (role, deliberately not the hostname `dev-41`/`r720`, so it
