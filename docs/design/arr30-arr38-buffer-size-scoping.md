@@ -487,3 +487,36 @@ Filed via `todo-sqlite-cli add ... --depends-on 512`:
 
 See each task's own details for exact acceptance bar and CLAUDE.md
 delta-adjudication requirements where detection behavior changes.
+
+### Status as of 2026-09-03
+
+All nine are closed except 7.1 #5. Behavior-affecting items are marked; the
+rest are refactors that left every verdict unchanged.
+
+| Section | Task | Outcome |
+|---|---|---|
+| 6.1 | 678 | Closed. Word-boundary anchors + comment/string sanitization. **Changes detections.** |
+| 6.2 | 679 | Closed. Both copies now call `subtree_has_bound_named_identifier`. Dedup only. |
+| 6.2 | 680 | Closed. `const_char_ptr_params_without_length` is the single implementation. Dedup only. |
+| 6.2 | 681 | Closed. Token-boundary match. Behavior-preserving except where it was misfiring. |
+| 7.1 #1 | 682 | Closed. Scoped via `find_containing_function`. **Changes detections** (fixes a demonstrated FN). |
+| 7.1 #2 | 683 | Closed. Scoped via `find_containing_function`. **Changes detections** (fixes a demonstrated FP). |
+| 7.1 #3 | 684 | Closed. Dead code deleted. No behavior change. |
+| 7.1 #4 | 685 | Closed by generalizing, not removing: `buffer_is_struct_typed` resolves the buffer's declared type instead of matching on its name or on a whole-file `"struct obj"` literal. **Changes detections** (fixes a demonstrated FP *and* FN). |
+| 7.1 #5 | 686 | Still open. |
+
+Two weaknesses noted while fixing the above are recorded but deliberately
+NOT bundled, each being a behavior change wanting its own measurement:
+
+- The substring-not-token match in `BOUND_NAME_SUBSTRINGS` (6.2) — a
+  variable named `silence` or `discount` still reads as a bounds check.
+  Documented at the constant.
+- `is_type_size_mismatch`'s eight hardcoded declaration-shape patterns
+  (7.1 #2) — typedef'd element types, multi-declarator lines and
+  pointer-to-array declarations are all still missed. Documented on the
+  function.
+
+Items 7.1 #6 (no pointer-offset checking for `memcmp`/`memchr`), #7
+(`is_dangerous_size_calculation`'s generic FP-proneness) and #8 (text-based
+declaration collection) were never filed as tasks and remain open
+observations.
