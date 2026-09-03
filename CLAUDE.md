@@ -8,9 +8,9 @@ See `docs/index.rst` (Benchmark Setup / Running Benchmarks sections) for the ful
 
 **Every OFFICIAL number comes from the `sqc_bench` Postgres instance.** Full
 stop. "Official" means anything published as this project's own measurement —
-`README.md`, `JULIET_RESULTS.md`, `REALWORLD_RESULTS.md`, the paper, a release
-note, a claim made to anyone outside. It is the only source of truth for both
-(a) historical benchmark data and (b) adjudication data.
+`README.md`, `JULIET_RESULTS.md`, the paper, a release note, a claim made to
+anyone outside. It is the only source of truth for both (a) historical
+benchmark data and (b) adjudication data.
 
 The gateway to it is the separate **`benchmarking_db`** repo: all benchmarking
 capability was deliberately pulled out of this repo into that one to make the
@@ -223,14 +223,18 @@ source.
 ### Refreshing Published Doc Numbers
 
 If asked to "refresh the benchmark numbers" (README.md's Benchmark
-Highlights table, JULIET_RESULTS.md's Current State, REALWORLD_RESULTS.md's
-Latest Adjudicated Results): `python -m bench render-docs --realworld-run
-RUN [--juliet-run RUN] [--check]` regenerates those tables from whichever
-`db` it is handed, bounded by `<!-- BENCH:*:START/END -->` markers —
-everything outside a marker (narrative, task citations, history) is
-hand-written and untouched. `--realworld-run` has no default on purpose:
-pass a run you know is validly adjudicated (see the delta-adjudication
-protocol above), not just whatever's newest.
+Highlights table, JULIET_RESULTS.md's Current State): `python -m bench
+render-docs --realworld-run RUN [--juliet-run RUN] [--check]` regenerates
+those tables from whichever `db` it is handed, bounded by `<!--
+BENCH:*:START/END -->` markers — everything outside a marker (narrative,
+task citations, history) is hand-written and untouched. `--realworld-run`
+has no default on purpose: pass a run you know is validly adjudicated (see
+the delta-adjudication protocol above), not just whatever's newest.
+
+(`REALWORLD_RESULTS.md` was retired 2026-09-03: it duplicated Postgres as a
+hand-maintained snapshot, which is what this repo's README/docs and the
+paper now query directly instead. `--realworld-run` stays required because
+`render-docs` still cites that run in README's one-line highlight.)
 
 **Published numbers come from Postgres, via `benchmarking_db`'s
 `bin/refresh_tools_sqc_docs.py`** (that sibling repo — see its README). Not
@@ -246,10 +250,9 @@ as the project's measurements. It will look plausible and be wrong.
 
 Either path: review the diff before committing. The tool only ever
 rewrites marker-bounded blocks; a real refresh usually also means updating
-the hand-written run/task citation just above each block (e.g. promoting a
-new "Latest Adjudicated Results" section and demoting the old one to
-"Previous", as REALWORLD_RESULTS.md already does for prior versions) —
-that's a judgment call the tool deliberately leaves alone.
+the hand-written run/task citation just above each block (e.g.
+JULIET_RESULTS.md's "Current State" header naming the run it now reflects)
+— that's a judgment call the tool deliberately leaves alone.
 
 ---
 
@@ -349,7 +352,6 @@ Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
 |------|----------|
 | `README.md` | Tool overview, installation, usage, CLI reference |
 | `JULIET_RESULTS.md` | Juliet benchmark data by sqc version |
-| `REALWORLD_RESULTS.md` | Real-world codebase results (7 projects × 3 tools) |
 | `docs/index.rst` | Developer guide: advanced usage, CI/CD, benchmarks, testing, contributing |
 | `docs/design/*.md` | Scoping docs for in-progress/completed capabilities (e.g. macro-expansion, project-relevance-gating). Not in the Sphinx toctree — read directly. **Their "Status" header goes stale once the work ships**; check `todo-sqlite-cli show <task>` for the real status before trusting the header, and check whether the feature needs a mention in `docs/cli-usage.rst`/`docs/architecture.rst` once it ships. |
 | `../sqc_paper/` | **The paper, in its own repo since 2026-09-03** (moved with `git subtree split`, so its 40 commits came along). Same reason benchmarking moved out: a stranger cloning sqc to evaluate it on their own code does not need a paper draft. Numbers in it must trace to Postgres via `benchmarking_db` — see that repo's README. Its figure generator moved to `benchmarking_db/bin/` and is broken pending a port (their task 732). The paper's own tasks (#9, #378, #463, #723) stayed in this repo's DB. |

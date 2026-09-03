@@ -27,12 +27,12 @@ A static analysis tool for C code compliance with [SEI CERT C Coding Standards](
 Regenerate this table with `python -m bench render-docs --realworld-run RUN`
 (see `bench/render_docs.py`) after a version bump or a fresh delta-adjudication.
 
-Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) and [REALWORLD_RESULTS.md](REALWORLD_RESULTS.md) for details.
+Benchmarked against the [NIST Juliet Test Suite v1.3](https://samate.nist.gov/SARD/test-suites/112) and 9 open-source C codebases. See [JULIET_RESULTS.md](JULIET_RESULTS.md) for Juliet details; real-world figures are in the Benchmark Highlights table below, and the full history is in `sqc_bench` Postgres (see `benchmarking_db`).
 
 > **Note**: the real-world precision/recall figure is pinned to the last
 > validly-adjudicated run (v0.4.325, run #226 — 11.8% of its findings are
-> still unlabeled, mostly `pure-ftpd`/`seL4`'s deliberately-unsampled 90%;
-> see REALWORLD_RESULTS.md). Rule-logic commits landed since v0.4.325 aren't
+> still unlabeled, mostly `pure-ftpd`/`seL4`'s deliberately-unsampled 90%).
+> Rule-logic commits landed since v0.4.325 aren't
 > reflected here; a current figure requires delta-adjudicating the newer
 > unlabeled findings first (see CLAUDE.md's delta-adjudication protocol)
 > before it can be safely republished.
@@ -64,10 +64,21 @@ non-compiling code wired into CI/CD early — sqc needs no build system, which
 is the whole point). A rule whose defect cannot survive review in released
 software is structurally incapable of scoring a true positive there. The 60
 never-firing rules include `WIN02-C` and `WIN30-C` — Windows rules against
-Linux-only corpora, categorically inapplicable rather than broken. See
-[REALWORLD_RESULTS.md](REALWORLD_RESULTS.md#what-this-corpus-can-and-cannot-measure)
-for the `DCL31-C` worked example of why a per-rule 0.0% here is a category
-error.
+Linux-only corpora, categorically inapplicable rather than broken (rule
+applicability is the user's lever, by design: manifest scoping and
+suppression exist so the user decides which rules apply to their code,
+rather than detection logic silently deciding for them).
+
+**Worked example of why a per-rule 0.0% is sometimes a corpus artifact, not
+a rule defect** (task 692): `DCL31-C` shows 364 findings, 324 labeled, 0
+TP — 0.0% precision. That figure measures sqc's header reachability, not
+the rule's quality. `mosquitto` alone goes from 1,365 `DCL31-C` findings
+with no `-I` to 0 with `-I /usr/include`. The rule guards a genuine defect —
+under C89 an implicit declaration makes the compiler assume `int f()`, so
+the return type is misread, no argument checking happens, and a returned
+pointer is truncated on LP64; C99 removed implicit declarations and C23
+makes them an error — on code this corpus does not contain. Quoting that
+number as a rule-quality measure is a category error.
 
 The material to close this gap already exists in the repo: **1,959
 must-detect** fixtures (`src/rules/cert_c/*/*/tests/fail/*.c`, across 306
@@ -80,6 +91,40 @@ Today those fixtures run only as pass/fail unit tests and feed no measured
 metric, so a rule can be fully exercised by tests and still read as having
 no detection evidence. Scoring them as a third benchmark tier is tracked as
 tasks 693–696.
+
+### Cross-tool comparison
+
+sqc implements 311 CERT C rules against cppcheck's and clang-tidy's ~20
+checks each; the comparison below is about coverage shape, not a
+precision/recall claim (see Benchmark Highlights above for that). Counts
+are illustrative, from before the Postgres migration — not an official,
+currently-cited figure; query `sqc_bench` for current numbers.
+
+| Bug Class | sqc Rule | clang-tidy Check | cppcheck Check | Notes |
+|-----------|----------|------------------|----------------|-------|
+| Unchecked return value | ERR33-C | `cert-err33-c` | — | sqc 5x count (broader function list) |
+| Unsafe numeric conversion | ERR34-C | `cert-err34-c` | — | sqc finds MORE (126 vs 33 on mosquitto) |
+| Null pointer dereference | EXP34-C | `NullDereference` | `nullPointer` | sqc 4,300:1 ratio (see below) |
+| Uninitialized variable | EXP33-C | — | `uninitvar` | Different sub-patterns of CWE-457 |
+| String/buffer safety | STR rules | `DeprecatedOrUnsafe...` | — | Different scope |
+
+**EXP34-C, a known high-FP-rate case on real code:**
+
+| Project | sqc EXP34-C | cppcheck nullPointer (error) | cppcheck nullPointerRedundantCheck |
+|---------|------------:|-----------------------------:|-----------------------------------:|
+| mosquitto | 8,657 | 2 | 0 |
+| curl | 22,350 | 0 | 177 |
+
+sqc uses CFG-based null state dataflow with inter-procedural call-site
+propagation; cppcheck uses data-flow analysis and only fires when it can
+prove a null-dereference path. The gap is narrowing but sqc still flags
+more conservatively.
+
+**What sqc uniquely covers**, with no cppcheck/clang-tidy equivalent:
+`POS49-C` (POSIX misuse), `INT32-C`/`INT30-C` (signed/unsigned overflow,
+which competitors skip), `MEM30-C`/`MEM31-C` (use-after-free, memory
+management), `API00-C`/`API02-C`, and 270+ additional rules across integer,
+floating-point, environment, concurrency and POSIX categories.
 
 ## Installation
 
@@ -175,7 +220,6 @@ For advanced usage, CI/CD integration details, interactive UI reference, testing
 |------|----------|
 | [Developer Guide](docs/index.rst) | Advanced usage, CI/CD, UI reference, testing, architecture, contributing |
 | [JULIET_RESULTS.md](JULIET_RESULTS.md) | Juliet benchmark data: TP/FP history, per-CWE results |
-| [REALWORLD_RESULTS.md](REALWORLD_RESULTS.md) | Real-world results: sqc vs cppcheck vs clang-tidy |
 
 ## AI Assistance
 

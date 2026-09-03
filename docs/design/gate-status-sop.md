@@ -214,8 +214,10 @@ paused in favor of precision/recall work (as it has this cycle).
 
 Track two things, both git/doc-derivable without `benchmarks.db`:
 
-- Real-world project-set size: `grep -c '^\| [a-z]' REALWORLD_RESULTS.md`
-  or just read the project list. Baseline 2026-08-26: **9 projects**
+- Real-world project-set size: read the `**Real-World Projects**` row in
+  README.md's Benchmark Highlights table (REALWORLD_RESULTS.md, which used
+  to carry the full per-project table, was retired 2026-09-03 -- Postgres is
+  the source for that detail now). Baseline 2026-08-26: **9 projects**
   (pure-ftpd, seL4 added this cycle, up from 7).
 - Days since the cited Juliet/real-world run's actual execution date vs.
   today — a run can be *cited* in the paper well after it was *executed*
