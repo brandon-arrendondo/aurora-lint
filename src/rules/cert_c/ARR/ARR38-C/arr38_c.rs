@@ -3,6 +3,7 @@ use crate::analyze::buffer_size;
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, find_containing_function, get_node_text};
+use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -1844,6 +1845,7 @@ impl Arr38C {
         }
 
         self.check_generic_size_heuristics(
+            dest_arg,
             size_arg,
             resolved_size,
             node,
@@ -2076,8 +2078,10 @@ impl Arr38C {
     /// function once buffer-specific checks have been exhausted: hardcoded
     /// large sizes, user-controlled sizes (Heartbleed-like), and dangerous
     /// type-size-mismatch calculations.
+    #[allow(clippy::too_many_arguments)]
     fn check_generic_size_heuristics(
         &self,
+        dest_arg: &str,
         size_arg: &str,
         resolved_size: &str,
         node: &Node,
@@ -2105,7 +2109,7 @@ impl Arr38C {
         }
 
         // Check for user-controlled sizes (Heartbleed-like vulnerability)
-        if self.is_potentially_user_controlled_in_source(size_arg, node, source) {
+        if self.is_potentially_user_controlled_in_source(size_arg, node, source, dest_arg) {
             let start_point = node.start_position();
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
@@ -2357,8 +2361,20 @@ impl Arr38C {
         size_arg: &str,
         node: &Node,
         source: &str,
+        dest_arg: &str,
     ) -> bool {
         let size_arg = size_arg.trim();
+
+        // Task 746: this check never looked at the destination buffer, so it
+        // fired on the entire population of (buffer, length) parameter pairs
+        // regardless of whether the destination actually has room. When
+        // `dest_arg` resolves — through `X->field...` / `&X[...]` — to a
+        // variable that is itself allocated or grown, in the SAME function,
+        // by a call whose own size expression mentions `size_arg`, the copy
+        // provably fits and this is not a Heartbleed-style unvalidated size.
+        if self.dest_sized_by_allocation_mentioning(dest_arg, size_arg, node, source) {
+            return false;
+        }
 
         // Scope every text search below to the enclosing function. `source` is
         // the whole file, and both helpers this feeds were reading it as though
@@ -2408,6 +2424,104 @@ impl Arr38C {
             }
         }
 
+        false
+    }
+
+    /// Task 746: does `dest_arg` resolve — through a member-access or
+    /// array-index shape like `X->field`, `X.field` or `&X[0]` — to a base
+    /// variable `X` that is allocated or grown, in the same function, by a
+    /// call whose own argument text mentions `size_arg`?
+    ///
+    /// Worked example (curl `lib/altsvc.c`):
+    /// ```c
+    /// as = curlx_calloc(1, sizeof(struct altsvc) + (hlen + 1) + (dlen + 1));
+    /// as->src.host = (char *)as + sizeof(struct altsvc);
+    /// memcpy(as->src.host, srchost, hlen);
+    /// ```
+    /// `dest_arg` is `as->src.host`, `size_arg` is `hlen`. The base `as` is
+    /// sized by a call whose argument text contains `hlen`, so the `hlen`-byte
+    /// copy into `as->src.host` provably fits — `hlen` is not "unvalidated"
+    /// here, it IS the validation.
+    ///
+    /// Deliberately name-shape permissive on the callee (not just
+    /// `malloc`/`calloc`/`realloc`): real code routes allocation through
+    /// project wrappers (`curlx_calloc` above) and through explicit
+    /// capacity-growing calls (`realloc`-shaped or `*grow*`/`*resize*`/
+    /// `*expand*`-named). A false match here still requires `size_arg` to
+    /// appear, as a whole word, in that specific call's own argument text —
+    /// an unrelated call assigning to the same base name would not.
+    fn dest_sized_by_allocation_mentioning(
+        &self,
+        dest_arg: &str,
+        size_arg: &str,
+        node: &Node,
+        source: &str,
+    ) -> bool {
+        let dest = dest_arg
+            .trim()
+            .trim_start_matches('&')
+            .trim_start_matches('*')
+            .trim();
+
+        // This class is specifically about a destination reached through a
+        // struct field or array index — a bare destination variable is
+        // already resolved (or not) via `buffer_info`/`size_vars` upstream.
+        if !dest.contains("->") && !dest.contains('.') && !dest.contains('[') {
+            return false;
+        }
+
+        let base = dest
+            .split(['.', '['])
+            .next()
+            .unwrap_or(dest)
+            .split("->")
+            .next()
+            .unwrap_or(dest)
+            .trim();
+        if !base
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
+        {
+            return false;
+        }
+
+        let Some((fn_start, fn_end)) = buffer_size::enclosing_function_lines(node) else {
+            return false;
+        };
+        let lines: Vec<&str> = source.lines().collect();
+        if lines.is_empty() {
+            return false;
+        }
+        let end = fn_end.min(lines.len() - 1);
+        if fn_start > end {
+            return false;
+        }
+
+        let Ok(assign_re) = regex::Regex::new(&format!(
+            r"\b{}\s*=\s*(?:\([^)]*\)\s*)?(\w+)\s*\(([^;]*)\)",
+            regex::escape(base)
+        )) else {
+            return false;
+        };
+        let Ok(id_re) = regex::Regex::new(&format!(r"\b{}\b", regex::escape(size_arg))) else {
+            return false;
+        };
+
+        for line in &lines[fn_start..=end] {
+            let Some(caps) = assign_re.captures(line) else {
+                continue;
+            };
+            let callee = caps[1].to_lowercase();
+            let looks_like_alloc_or_grow = call_roles::is_allocator_call(&caps[1])
+                || callee.contains("alloc")
+                || callee.contains("grow")
+                || callee.contains("resize")
+                || callee.contains("expand");
+            if looks_like_alloc_or_grow && id_re.is_match(&caps[2]) {
+                return true;
+            }
+        }
         false
     }
 
