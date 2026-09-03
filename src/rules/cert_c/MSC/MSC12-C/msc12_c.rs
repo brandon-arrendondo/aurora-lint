@@ -8,11 +8,15 @@
 //! 5. Empty control flow bodies (if/else/for/while with empty `{}`)
 //! 6. Stray semicolons (`;` as a statement)
 //! 7. Empty function bodies
+//! 8. A guard already excluded by the preceding early-return guard
+//!    (`if(a||b||c) return; if(c) ...`) -- task 612
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{get_node_text, is_defined_macro_name};
+use crate::utility::cert_c::ast_utils::{
+    find_containing_function, get_node_text, is_defined_macro_name,
+};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -63,6 +67,7 @@ impl Msc12C {
                 }
                 "compound_statement" => {
                     self.check_empty_standalone_block(&n, source, violations);
+                    self.check_subsumed_guard(&n, source, violations);
                 }
                 "switch_statement" => {
                     self.check_empty_switch_case(&n, source, violations);
@@ -489,6 +494,257 @@ impl Msc12C {
                 ..Default::default()
             });
         }
+    }
+
+    /// Check for a guard whose condition is already excluded by the
+    /// immediately preceding guard, making its body unreachable.
+    ///
+    ///     if( a || b || c ) return 1;
+    ///     if( c ) return 1;        /* dead: reaching here means !c */
+    ///
+    /// This is the sequential-sibling analogue of `check_duplicate_conditions`,
+    /// which only walks an if/else-if chain via `alternative` and therefore
+    /// cannot see two `if`s that are plain statement siblings. It is also
+    /// distinct from `check_redundant_logical`, which compares the two operands
+    /// of a single `&&`/`||` node; here the repeated test appears once as a
+    /// disjunct of the first condition and once as the whole second condition,
+    /// so it is never the left/right pair of one binary_expression.
+    ///
+    /// Filed from a real instance found by hand in sqlite's
+    /// `fts5TestUtf8()` (task 612), where the duplicated subcondition sits
+    /// next to an off-by-one advance -- the copy-paste shape this looks for.
+    ///
+    /// Deliberately narrow, because "provably dead" has to actually hold:
+    /// the two `if`s must be *immediately* consecutive (nothing in between
+    /// can mutate the operands), the first must have no `else` and a body
+    /// that unconditionally leaves the block, neither condition may contain a
+    /// call, assignment or increment (a re-evaluation could differ), and no
+    /// operand may be `volatile` (polling a hardware register re-reads by
+    /// design).
+    fn check_subsumed_guard(
+        &self,
+        compound: &Node,
+        source: &str,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        let stmts: Vec<Node> = (0..compound.named_child_count())
+            .filter_map(|i| compound.named_child(i))
+            .filter(|c| c.kind() != "comment")
+            .collect();
+
+        for pair in stmts.windows(2) {
+            let (first, second) = (pair[0], pair[1]);
+            if first.kind() != "if_statement" || second.kind() != "if_statement" {
+                continue;
+            }
+            // The first guard must be a bare `if (...) <jump>;` -- an else
+            // branch means falling through does not imply the condition failed.
+            if first.child_by_field_name("alternative").is_some() {
+                continue;
+            }
+            if !Self::body_unconditionally_leaves(&first) {
+                continue;
+            }
+            let (Some(c1), Some(c2)) = (
+                first.child_by_field_name("condition"),
+                second.child_by_field_name("condition"),
+            ) else {
+                continue;
+            };
+            if !Self::condition_is_reevaluation_safe(&c1)
+                || !Self::condition_is_reevaluation_safe(&c2)
+            {
+                continue;
+            }
+            let c2_text = Self::normalize_condition(get_node_text(&c2, source));
+            let disjuncts = Self::flatten_disjuncts(c1);
+            // A single-disjunct first condition is the plain duplicate case;
+            // require the repeated test to be one of several so this stays
+            // the subsumption check and not a second reporter for it.
+            if disjuncts.len() < 2 {
+                continue;
+            }
+            if !disjuncts
+                .iter()
+                .any(|d| Self::normalize_condition(get_node_text(d, source)) == c2_text)
+            {
+                continue;
+            }
+            if Self::mentions_volatile_operand(&c2, source) {
+                continue;
+            }
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                severity: self.severity(),
+                message: format!(
+                    "Condition '{}' was already excluded by the preceding guard \
+                     on line {}, which returns when it holds. This branch is \
+                     dead code.",
+                    c2_text,
+                    c1.start_position().row + 1
+                ),
+                file_path: String::new(),
+                line: c2.start_position().row + 1,
+                column: c2.start_position().column + 1,
+                suggestion: Some(
+                    "Remove the dead guard, or correct it if a different \
+                     subscript or operand was intended"
+                        .to_string(),
+                ),
+                ..Default::default()
+            });
+        }
+    }
+
+    /// True if `if_node`'s consequence always leaves the enclosing block, so
+    /// execution continuing past it implies the condition was false.
+    fn body_unconditionally_leaves(if_node: &Node) -> bool {
+        let Some(body) = if_node.child_by_field_name("consequence") else {
+            return false;
+        };
+        let terminal = |k: &str| {
+            matches!(
+                k,
+                "return_statement" | "break_statement" | "continue_statement" | "goto_statement"
+            )
+        };
+        if terminal(body.kind()) {
+            return true;
+        }
+        if body.kind() != "compound_statement" {
+            return false;
+        }
+        // A block leaves unconditionally only if its last statement does and
+        // nothing before it can branch away from that conclusion; keep it to
+        // the single-statement block, which is the shape that actually occurs.
+        let inner: Vec<Node> = (0..body.named_child_count())
+            .filter_map(|i| body.named_child(i))
+            .filter(|c| c.kind() != "comment")
+            .collect();
+        inner.len() == 1 && terminal(inner[0].kind())
+    }
+
+    /// Flatten a `||` tree into its disjuncts, leaving any other expression
+    /// as a single element.
+    fn flatten_disjuncts<'a>(cond: Node<'a>) -> Vec<Node<'a>> {
+        let inner = Self::strip_parens(cond);
+        if inner.kind() == "binary_expression" {
+            if let Some(op) = inner.child_by_field_name("operator") {
+                if op.kind() == "||" {
+                    if let (Some(l), Some(r)) = (
+                        inner.child_by_field_name("left"),
+                        inner.child_by_field_name("right"),
+                    ) {
+                        let mut out = Self::flatten_disjuncts(l);
+                        out.extend(Self::flatten_disjuncts(r));
+                        return out;
+                    }
+                }
+            }
+        }
+        vec![inner]
+    }
+
+    fn strip_parens<'a>(node: Node<'a>) -> Node<'a> {
+        let mut n = node;
+        while n.kind() == "parenthesized_expression" {
+            match (0..n.named_child_count())
+                .filter_map(|i| n.named_child(i))
+                .next()
+            {
+                Some(inner) => n = inner,
+                None => break,
+            }
+        }
+        n
+    }
+
+    /// Collapse whitespace and drop enclosing parentheses so the two spellings
+    /// of one test compare equal.
+    fn normalize_condition(text: &str) -> String {
+        let mut t: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        loop {
+            let trimmed = t.trim();
+            if trimmed.len() < 2 || !trimmed.starts_with('(') || !trimmed.ends_with(')') {
+                break;
+            }
+            // Only strip when the leading '(' is the one the trailing ')' closes.
+            let mut depth = 0i32;
+            let mut matches_outer = true;
+            for (i, ch) in trimmed.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 && i + 1 != trimmed.len() {
+                            matches_outer = false;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !matches_outer {
+                break;
+            }
+            t = trimmed[1..trimmed.len() - 1].to_string();
+        }
+        t.trim().to_string()
+    }
+
+    /// True if evaluating this condition twice is guaranteed to give the same
+    /// answer: no calls, no assignments, no increments/decrements.
+    fn condition_is_reevaluation_safe(cond: &Node) -> bool {
+        let impure = query::find_descendants(*cond, |n| {
+            matches!(
+                n.kind(),
+                "call_expression" | "assignment_expression" | "update_expression"
+            )
+        });
+        impure.is_empty()
+    }
+
+    /// True if any identifier in `cond` appears in a `volatile` declaration in
+    /// the enclosing function -- a re-read of such an object may legitimately
+    /// differ, so the second guard is not dead.
+    ///
+    /// Deliberately does not use `overflow_helpers::collect_variable_types`:
+    /// that helper records only the type specifier (`primitive_type`,
+    /// `sized_type_specifier`, `type_identifier`, `struct_specifier`) and drops
+    /// the `type_qualifier` node, so `volatile int *reg` comes back as plain
+    /// `int` and every volatile operand would slip through. Widening the shared
+    /// helper to carry qualifiers would change what its other callers see, so
+    /// the qualifier scan lives here.
+    ///
+    /// Any `volatile` anywhere in the declaration disqualifies the identifier;
+    /// it does not try to tell `volatile int *p` (volatile pointee) from
+    /// `int *volatile p` (volatile pointer), which errs toward not reporting.
+    fn mentions_volatile_operand(cond: &Node, source: &str) -> bool {
+        let Some(func) = find_containing_function(cond) else {
+            return false;
+        };
+        let mut volatile_names: HashSet<&str> = HashSet::new();
+        for decl in query::find_descendants(func, |n| {
+            matches!(n.kind(), "declaration" | "parameter_declaration")
+        }) {
+            let qualified = (0..decl.child_count()).any(|i| {
+                decl.child(i).is_some_and(|c| {
+                    c.kind() == "type_qualifier" && get_node_text(&c, source).trim() == "volatile"
+                })
+            });
+            if !qualified {
+                continue;
+            }
+            for id in query::find_descendants_of_kind(decl, "identifier") {
+                volatile_names.insert(&source[id.start_byte()..id.end_byte()]);
+            }
+        }
+        if volatile_names.is_empty() {
+            return false;
+        }
+        query::find_descendants_of_kind(*cond, "identifier")
+            .iter()
+            .any(|id| volatile_names.contains(&source[id.start_byte()..id.end_byte()]))
     }
 
     /// Check for meaningless `continue` at the end of a loop body.
