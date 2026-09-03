@@ -499,8 +499,10 @@ impl Msc12C {
     /// Check for a guard whose condition is already excluded by the
     /// immediately preceding guard, making its body unreachable.
     ///
-    ///     if( a || b || c ) return 1;
-    ///     if( c ) return 1;        /* dead: reaching here means !c */
+    /// ```c
+    /// if( a || b || c ) return 1;
+    /// if( c ) return 1;        /* dead: reaching here means !c */
+    /// ```
     ///
     /// This is the sequential-sibling analogue of `check_duplicate_conditions`,
     /// which only walks an if/else-if chain via `alternative` and therefore
