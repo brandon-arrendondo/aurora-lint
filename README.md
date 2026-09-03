@@ -20,20 +20,50 @@ defect classes for the most part; CERT C reaches further into security
 (untrusted input, integer conversion, resource lifetime) while MISRA reaches
 further into language-subsetting discipline.
 
-**The remaining difference is aimed somewhere else.** MISRA's extra rigour —
-the mandatory/required/advisory apparatus, the subsetting rules, the
-certification-oriented deviation process — is built for automotive, medical
-and aerospace software, where a certification body has to be satisfied. SqC
-was built for consumer home devices, where the goal is finding real defects in
-production-intent C, and CERT C covers that need without the certification
-overhead.
+**The remaining difference is process, not coverage.** MISRA's extra apparatus
+— mandatory/required/advisory categories, language subsetting, a
+certification-oriented deviation process — exists to satisfy a certification
+body. SqC does not implement that apparatus, which is a statement about what
+SqC is, not about who should use it: **nothing here is domain-restricted.**
+If you write C for automotive, medical or aerospace, these rules apply to your
+code exactly as they do to anyone else's, and SqC is usable alongside whatever
+MISRA tooling your certification process requires.
 
-Two rules from NASA JPL's [Power of
-Ten](docs/future-rulesets.rst) are also implemented alongside CERT C
+Two rules from NASA JPL's Power of Ten are also implemented alongside CERT C
 (`BRULE-060` no dynamic allocation after initialisation, `BRULE-065` no
 excessive pointer indirection). See
 [`docs/future-rulesets.rst`](docs/future-rulesets.rst) for other open
 standards that could be added and why they were not needed first.
+
+## What Makes It Different
+
+**No build system. No compilation. No `compile_commands.json` required.** Point
+SqC at a directory of C source and it analyses it. It parses with tree-sitter
+rather than driving a compiler, so it needs neither your toolchain, your
+headers, your defines, nor a working build — which means it runs on code you
+*cannot* build: a partial checkout, a vendored tree, a CI job with no
+cross-compiler installed, or a file an AI just generated. It will happily use
+`compile_commands.json` and `-I`/`-D` flags when given them, for better
+cross-file context; it just does not depend on them.
+
+That is the trade it makes. Without a preprocessor, SqC reasons about source
+as written, which is why it has its own macro-expansion engine and why the
+false-positive work in this repo is as substantial as the rule work.
+
+**Imperfect on purpose, and measured about it.** SqC reports every rule
+violation as written rather than guessing which ones you meant, so it produces
+false positives — the precision and recall above are measured against a
+hand-adjudicated oracle, not asserted. What makes that workable is that the
+noise judgement is yours: per-project rule manifests
+([configuration](docs/configuration.rst)), inline and file-scoped
+[suppression](docs/suppression.rst), and severity thresholds, so you tune it
+to your codebase instead of accepting one global verdict. That same property
+is what makes it cheap to drop into a CI gate or an AI-assisted development
+loop as a repeated check.
+
+**Scope: C.** SqC analyses `.c` and `.h` against CERT C. It is not a C++
+checker — it recognises C++ constructs only well enough to avoid reporting
+nonsense on a C++ header it encounters.
 
 ## Key Features
 
