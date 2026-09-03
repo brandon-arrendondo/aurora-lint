@@ -433,7 +433,7 @@ cppcheck and clang-tidy:</p>
 </tbody>
 </table>
 <p><em>Data from sqc v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).</em></p>
-<p><strong>Why sqc reports more violations</strong>: SqC implements 311 CERT C rules, 305 enabled by default (both
+<p><strong>Why sqc reports more violations</strong>: SqC implements 311 CERT C rules, 307 enabled by default (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.</p>
 <p><strong>Measured precision/recall</strong>: 6.2% precision / 91.7% recall against the
@@ -455,7 +455,7 @@ in README.md’s “Rule-suite coverage” section.</p>
 <h3>Apples-to-Apples Concerns<a class="headerlink" href="#apples-to-apples-concerns" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
 <li><p><strong>Rule coverage</strong>: cppcheck/clang-tidy implement ~20 checks each vs. sqc’s
-305 enabled rules. Raw violation counts are not directly comparable.</p></li>
+307 enabled rules. Raw violation counts are not directly comparable.</p></li>
 <li><p><strong>Translation unit scope</strong>: Use consistent scope (cross-file <code class="docutils literal notranslate"><span class="pre">-d</span></code> flag or
 single-file) when comparing.</p></li>
 <li><p><strong>Preprocessor handling</strong>: cppcheck evaluates all <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> configs;
@@ -793,9 +793,9 @@ the return type is misread, no argument checking happens, and a returned
 pointer is truncated on LP64; C99 removed implicit declarations and C23
 makes them an error — on code this corpus does not contain. Quoting that
 number as a rule-quality measure is a category error.</p>
-<p>The material to close this gap already exists in the repo: <strong>1,959
+<p>The material to close this gap already exists in the repo: <strong>1,968
 must-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/fail/*.c</span></code>, across 306
-rules) and <strong>1,568 must-not-detect</strong> fixtures
+rules) and <strong>1,576 must-not-detect</strong> fixtures
 (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/pass/*.c</span></code>, across 308 rules), labeled by
 construction — 309 distinct rules carry at least one. 121 of the 125
 unvalidated rules already have a must-detect fixture — only <code class="docutils literal notranslate"><span class="pre">ENV04-C</span></code>,

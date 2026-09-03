@@ -105,7 +105,7 @@ Run identifiers accepted by ``status``/``compare``:
   yourself (``nohup ... &``, a second terminal, ``tmux``) to keep working
   while it runs
 - **Fast mode** (default): per-CWE manifests, CWE-matched rules only. ~10x faster
-- **Full mode**: all 305 enabled rules against every CWE. Higher noise ratio
+- **Full mode**: all 307 enabled rules against every CWE. Higher noise ratio
 - Resume: interrupted runs skip already-completed CWEs on re-run
 - Per-CWE/per-rule detail beyond what ``status``/``compare`` print is a direct
   ``sqlite3 data/benchmarks.db`` query away (``cwe_scans``, ``violations``,

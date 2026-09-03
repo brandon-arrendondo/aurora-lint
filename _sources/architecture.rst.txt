@@ -20,7 +20,7 @@ SqC uses a multi-pass analysis architecture:
     [Dataflow Analysis] --> Null state, value range, reaching defs, init state
         |
         v
-    [Rule Evaluation] --> 305 CERT C rules applied to AST + CFG + context
+    [Rule Evaluation] --> 307 CERT C rules applied to AST + CFG + context
         |
         v
     [Suppression Filter] --> Hash-based + wildcard (glob/prefix) suppression
