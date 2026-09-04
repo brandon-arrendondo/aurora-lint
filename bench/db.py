@@ -864,7 +864,12 @@ class BenchDB:
             """, (run_id,))
             per_cwe = [dict(r) for r in cur.fetchall()]
 
-            # Top rules by FP across all CWEs (exclude aggregate)
+            # Top rules by FP across all CWEs (exclude aggregate).
+            # DISPLAY ONLY -- this list is truncated at 20 and ordered by FP,
+            # so it silently omits any rule with high TP and low FP. Never
+            # diff two of these lists against each other: a rule missing from
+            # one side reads as tp 0/fp 0 and its whole TP count surfaces as a
+            # brand-new gain. Rule-level comparison uses get_rule_totals().
             cur.execute("""
                 SELECT
                     rb.rule_id,
@@ -957,6 +962,29 @@ class BenchDB:
             result["cwe_aware"] = cwe_aware
 
         return result
+
+    def get_rule_totals(self, run_id: str) -> dict[str, dict]:
+        """Complete per-rule TP/FP totals for a run, keyed on rule_id.
+
+        Untruncated and unordered, unlike get_run_summary()'s `top_rules`:
+        every rule that produced a row in `rule_cwe_breakdown` is present, so
+        a caller can tell "this rule recorded nothing in this run" (key
+        absent) from "this rule recorded zero" (key present, counts 0).
+        Synthetic aggregate CWE rows are excluded, as everywhere else.
+        """
+        with self._cursor() as cur:
+            cur.execute("""
+                SELECT
+                    rb.rule_id,
+                    SUM(rb.tp_count) as tp,
+                    SUM(rb.fp_count) as fp,
+                    SUM(rb.tp_count) + SUM(rb.fp_count) as total
+                FROM rule_cwe_breakdown rb
+                JOIN cwe_scans s ON s.id = rb.cwe_scan_id
+                WHERE s.run_id = ? AND s.cwe_id != 'ALL'
+                GROUP BY rb.rule_id
+            """, (run_id,))
+            return {r["rule_id"]: dict(r) for r in cur.fetchall()}
 
     def get_cwe_detail(self, run_id: str, cwe_id: str) -> dict | None:
         """Detailed breakdown for one CWE in a run."""
@@ -1135,21 +1163,31 @@ class BenchDB:
             key=lambda x: -abs(x["delta_duration_s"]),
         )[:10]
 
-        # Per-rule deltas
-        base_rules = {r["rule_id"]: r for r in base["top_rules"]}
-        target_rules = {r["rule_id"]: r for r in target["top_rules"]}
+        # Per-rule deltas. Sourced from the FULL per-rule totals of both runs,
+        # never from `top_rules` -- that list is the top 20 BY FP, so a clean
+        # high-TP/zero-FP rule is absent from it, and diffing the two lists
+        # reported such a rule's entire TP count as newly gained the moment it
+        # picked up a single FP ("newly firing rule" instead of "previously
+        # clean rule started producing FP"). `base_present`/`target_present`
+        # keep "recorded nothing in that run" distinguishable from "recorded
+        # zero"; the counts are 0 either way so the deltas stay arithmetic.
+        base_rules = self.get_rule_totals(base_id)
+        target_rules = self.get_rule_totals(target_id)
         all_rule_ids = sorted(set(base_rules) | set(target_rules))
 
+        _absent = {"tp": 0, "fp": 0}
         rule_deltas = []
         for rid in all_rule_ids:
-            b = base_rules.get(rid, {"tp": 0, "fp": 0})
-            t = target_rules.get(rid, {"tp": 0, "fp": 0})
+            b = base_rules.get(rid, _absent)
+            t = target_rules.get(rid, _absent)
             rule_deltas.append({
                 "rule": rid,
                 "base_tp": b["tp"], "base_fp": b["fp"],
                 "target_tp": t["tp"], "target_fp": t["fp"],
                 "delta_tp": t["tp"] - b["tp"],
                 "delta_fp": t["fp"] - b["fp"],
+                "base_present": rid in base_rules,
+                "target_present": rid in target_rules,
             })
         rule_deltas.sort(key=lambda x: x["delta_fp"])
 
