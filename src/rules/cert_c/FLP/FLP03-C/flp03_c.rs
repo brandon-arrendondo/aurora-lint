@@ -46,16 +46,25 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::const_eval;
+use crate::analyze::const_eval::{self, MacroConstantMap};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Flp03C;
+#[derive(Default)]
+pub struct Flp03C {
+    /// Project-wide macro constants from prescan (e.g. a divisor-guard
+    /// constant defined in a header), merged with per-file constants in
+    /// the divisor-provably-{non}zero checks so a guard defined outside the
+    /// file under scan is still resolved (task 617).
+    project_macros: RefCell<MacroConstantMap>,
+}
 
 /// Analyzer that tracks floating-point variables.
 ///
@@ -147,7 +156,7 @@ impl FpAnalyzer {
 impl Flp03C {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
     /// List of floating-point error checking functions from fenv.h
@@ -356,10 +365,20 @@ impl Flp03C {
                 if let Some(right) = &divisor {
                     if right.kind() == "identifier" {
                         let var_name = get_node_text(right, source);
-                        if Self::divisor_provably_nonzero_fp(node, var_name, source) {
+                        if Self::divisor_provably_nonzero_fp(
+                            node,
+                            var_name,
+                            source,
+                            &self.project_macros.borrow(),
+                        ) {
                             return;
                         }
-                        if Self::divisor_provably_zero_fp(node, var_name, source) {
+                        if Self::divisor_provably_zero_fp(
+                            node,
+                            var_name,
+                            source,
+                            &self.project_macros.borrow(),
+                        ) {
                             provably_zero = true;
                         }
                     }
@@ -494,7 +513,12 @@ impl Flp03C {
     /// 2. Constant-aware walk: track last assignment through feasible branches,
     ///    using file-scope constants to prune dead code (catches branched patterns
     ///    like `data=0.0F; if(STATIC_CONST_TRUE) { data=2.0F; } use(data);`)
-    fn divisor_provably_nonzero_fp(div_node: &Node, var_name: &str, source: &str) -> bool {
+    fn divisor_provably_nonzero_fp(
+        div_node: &Node,
+        var_name: &str,
+        source: &str,
+        project_macros: &MacroConstantMap,
+    ) -> bool {
         // Find containing function and translation unit root
         let mut current = Some(*div_node);
         let func = loop {
@@ -526,7 +550,7 @@ impl Flp03C {
             }
             n
         };
-        let constants = const_eval::collect_macro_constants(&root, source);
+        let constants = const_eval::merged_macro_constants(project_macros, &root, source);
         let div_line = div_node.start_position().row;
         let last_val =
             Self::walk_scope_for_last_assignment(&body, var_name, source, div_line, &constants);
@@ -543,7 +567,12 @@ impl Flp03C {
     /// through dead-branch obfuscation the constant-aware walk resolves).
     /// Force-flags regardless of operand provenance, since a provably-zero
     /// divisor is a real violation independent of where the value came from.
-    fn divisor_provably_zero_fp(div_node: &Node, var_name: &str, source: &str) -> bool {
+    fn divisor_provably_zero_fp(
+        div_node: &Node,
+        var_name: &str,
+        source: &str,
+        project_macros: &MacroConstantMap,
+    ) -> bool {
         let mut current = Some(*div_node);
         let func = loop {
             match current {
@@ -563,7 +592,7 @@ impl Flp03C {
             }
             n
         };
-        let constants = const_eval::collect_macro_constants(&root, source);
+        let constants = const_eval::merged_macro_constants(project_macros, &root, source);
         let div_line = div_node.start_position().row;
         let last_val = Self::walk_scope_for_last_zero_assignment(
             &body, var_name, source, div_line, &constants,
@@ -1078,6 +1107,10 @@ impl CertRule for Flp03C {
 
     fn cert_id(&self) -> &'static str {
         "FLP03-C"
+    }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_macros.borrow_mut() = context.macro_constants.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {

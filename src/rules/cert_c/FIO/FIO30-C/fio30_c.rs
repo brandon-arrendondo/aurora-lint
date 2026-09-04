@@ -43,6 +43,11 @@ pub struct Fio30C {
     /// different file than its single caller, so this is the only way to
     /// know whether that caller passed tainted or literal data (task 201).
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    /// Project-wide macro aliases from prescan (e.g. `#define LOG_FMT printf`
+    /// defined in a header), merged with per-file aliases in `check` so a
+    /// format-string wrapper alias defined outside the file under scan is
+    /// still resolved (task 617).
+    project_macro_aliases: RefCell<HashMap<String, String>>,
 }
 
 impl Fio30C {
@@ -54,6 +59,7 @@ impl Fio30C {
 impl CertRule for Fio30C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.project_macro_aliases.borrow_mut() = context.macro_aliases.clone();
     }
 
     fn rule_id(&self) -> &'static str {
@@ -84,8 +90,13 @@ impl CertRule for Fio30C {
             let mut analyzer = FormatStringAnalyzer::new();
             analyzer.function_summaries = self.function_summaries.borrow().clone();
 
-            // Collect macro aliases (e.g., #define GETENV getenv)
-            analyzer.macro_aliases = const_eval::collect_macro_aliases(node, source);
+            // Collect macro aliases (e.g., #define GETENV getenv), merged with
+            // project-wide aliases from prescan (per-file wins on collision).
+            analyzer.macro_aliases = const_eval::merged_macro_aliases(
+                &self.project_macro_aliases.borrow(),
+                node,
+                source,
+            );
 
             // Collect file-scope constants for dead-branch elimination (staticTrue/staticFalse)
             analyzer.file_scope_constants = init_state::collect_file_scope_constants(node, source);
