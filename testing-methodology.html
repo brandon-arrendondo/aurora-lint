@@ -677,8 +677,11 @@ implementation cannot detect them correctly.</p>
 <code class="docutils literal notranslate"><span class="pre">TYPE</span> <span class="pre">VAR,</span></code>, not <code class="docutils literal notranslate"><span class="pre">TYPE</span> <span class="pre">VAR</span> <span class="pre">=</span> <span class="pre">expr;</span></code>. Variables with initializers get type
 “unknown”, so format specifier checks cannot validate <code class="docutils literal notranslate"><span class="pre">%ld</span></code> with
 <code class="docutils literal notranslate"><span class="pre">long</span> <span class="pre">x</span> <span class="pre">=</span> <span class="pre">42;</span></code>.</p></li>
-<li><p><strong>INT08-C</strong>: Rule does not recognize <code class="docutils literal notranslate"><span class="pre">SHRT_MAX</span></code> / <code class="docutils literal notranslate"><span class="pre">CHAR_MAX</span></code> guard checks
-before narrow-type arithmetic.</p></li>
+<li><p><strong>INT08-C</strong>: Positive-only. A violation is reported only where <code class="docutils literal notranslate"><span class="pre">const_eval</span></code>
+can bound every operand and prove the promoted result leaves <code class="docutils literal notranslate"><span class="pre">int</span></code>; an
+operand it cannot resolve (a struct field, a subscript, a call result) yields
+no finding rather than an unproven one. Genuine narrow-type overflow behind
+an unresolvable operand is therefore missed.</p></li>
 <li><p><strong>INT34-C</strong>: <code class="docutils literal notranslate"><span class="pre">is_likely_unsigned()</span></code> parameter declaration check doesn’t
 traverse tree-sitter’s function parameter hierarchy. Also,
 <code class="docutils literal notranslate"><span class="pre">checks_shift_bounds()</span></code> doesn’t handle reversed comparison form
