@@ -1,6 +1,6 @@
 # SqC - Software Code Quality
 
-A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC checks 311 CERT C rules across 17 categories (307 enabled by default), with a CI/CD-ready command-line interface and an optional interactive terminal UI.
+A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC tracks 311 CERT C rules across 17 categories (307 implemented and enabled by default), with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
 ## Why CERT C
 
@@ -67,7 +67,7 @@ nonsense on a C++ header it encounters.
 
 ## Key Features
 
-- **307 CERT C rules** enabled by default (311 implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
+- **307 CERT C rules** implemented and enabled by default (311 tracked; see [Configuration](docs/configuration.rst) for the 4 tracked but not yet implemented) across 17 categories (API, ARR, CON, DCL, ENV, ERR, EXP, FIO, FLP, INT, MEM, MSC, POS, PRE, SIG, STR, WIN)
 - **Optional interactive terminal UI** for browsing and managing violations (build with `--features tui`)
 - **Multiple export formats**: CSV, XLSX, JSON, SARIF 2.1.0
 - **CI/CD ready**: exit codes, severity thresholds, diff-only mode, SARIF output
@@ -185,7 +185,7 @@ directories for cross-file context and never restricts what gets analyzed.
 sqc /path/to/project --manifest my-rules.toml
 ```
 
-The default manifest (`rules_templates/rules-all.toml`) enables 307 of the 311 implemented rules. See the [Developer Guide](docs/index.rst) for the manifest format.
+The default manifest (`rules_templates/rules-all.toml`) enables 307 of the 311 tracked rules; the other 4 are tracked but not yet implemented (2 parked on incomplete upstream CERT content) — see [Configuration](docs/configuration.rst). See the [Developer Guide](docs/index.rst) for the manifest format.
 
 ## Quick CI Example
 
@@ -201,18 +201,18 @@ Ready-to-use workflow examples for [GitHub Actions and Azure DevOps](docs/cicd-i
 ## Alternatives
 
 Honest version: on the narrow set of defect classes clang-tidy checks, **clang-tidy
-is more precise than SqC** — 99.2% to 81.7% on the 16 Juliet CWEs it covers, and it
+is more precise than SqC** — 99.2% to 81.7% on the 15 Juliet CWEs it covers, and it
 finds more true positives there too. It gets that by compiling your code.
 
-SqC's case is breadth and reach, not beating clang-tidy at its sixteen:
+SqC's case is breadth and reach, not beating clang-tidy at its fifteen:
 
-| | CERT C coverage | Juliet CWEs | Needs a build? | Real-world suite time |
-|---|---|---:|---|---:|
-| **SqC** | **311 rules**, 17 categories | **75** | **No** | ~1,190 s |
-| clang-tidy | ~20 `cert-*` checks | 15 | Yes | 501 s |
-| cppcheck | ~20 (addon) | 15 | No | 11,452 s |
-| [Infer](https://fbinfer.com/) | bug-type indexed | 10 | Yes | not run |
-| [Frama-C](https://frama-c.com/) | not rule-indexed | 6 | Yes | not run |
+| | CERT C coverage | Juliet CWEs | Needs a build? |
+|---|---|---:|---|
+| **SqC** | **311 rules implemented**, 17 categories | **75** | **No** |
+| clang-tidy | ~20 `cert-*` checks | 15 | Yes |
+| cppcheck | ~20 (addon) | 15 | No |
+| [Infer](https://fbinfer.com/) | bug-type indexed | 10 | Yes |
+| [Frama-C](https://frama-c.com/) | not rule-indexed | 6 | Yes |
 
 cppcheck is the useful control, since it also runs without a build: on the same
 15 CWEs it scores 36.7% against SqC's 81.7%, and takes roughly ten times as long
