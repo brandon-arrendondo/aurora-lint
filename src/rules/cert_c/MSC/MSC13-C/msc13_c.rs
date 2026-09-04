@@ -27,7 +27,8 @@ use crate::analyze::dataflow::{
     DefinitionKind,
 };
 use crate::analyze::macro_expand::{
-    collect_function_macro_alternatives, macro_references_free_identifier, FunctionMacro,
+    collect_function_macro_alternatives, macro_free_identifiers, macro_references_free_identifier,
+    FunctionMacro,
 };
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
@@ -575,7 +576,7 @@ impl Msc13C {
         // Dead store detection: an assignment whose value never reaches a
         // read on any executable path before being overwritten or the
         // function exiting.
-        self.check_dead_stores(func_node, &decl_groups, body, source, violations);
+        self.check_dead_stores(func_node, &decl_groups, body, source, macros, violations);
     }
 
     /// Detect dead stores using the real CFG + reaching-definitions
@@ -608,12 +609,19 @@ impl Msc13C {
         decl_groups: &HashMap<usize, Vec<usize>>,
         body: &Node,
         source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
         violations: &mut Vec<RuleViolation>,
     ) {
         match cfg_mod::build_function_cfg(func_node, source) {
-            Some(cfg) => {
-                self.check_dead_stores_cfg(func_node, &cfg, decl_groups, body, source, violations)
-            }
+            Some(cfg) => self.check_dead_stores_cfg(
+                func_node,
+                &cfg,
+                decl_groups,
+                body,
+                source,
+                macros,
+                violations,
+            ),
             None => self.check_dead_stores_in_blocks(body, source, violations),
         }
     }
@@ -636,6 +644,7 @@ impl Msc13C {
         decl_groups: &HashMap<usize, Vec<usize>>,
         body: &Node,
         source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
         violations: &mut Vec<RuleViolation>,
     ) {
         let definitions = extract_definitions(cfg, func_node, source);
@@ -661,7 +670,7 @@ impl Msc13C {
                 };
 
                 let mut reads = HashSet::new();
-                self.collect_reads_in_node(&stmt_node, source, &mut reads);
+                self.collect_reads_in_node(&stmt_node, source, macros, &mut reads);
                 for var in &reads {
                     if let Some(&def_idx) = active.get(var) {
                         live.insert(def_idx);
@@ -785,14 +794,38 @@ impl Msc13C {
     /// Collect the set of variable names read anywhere in `node`'s
     /// subtree, reusing `is_read_context` to exclude pure write targets
     /// (declaration names, simple-assignment LHS, etc.).
-    fn collect_reads_in_node(&self, node: &Node, source: &str, out: &mut HashSet<String>) {
+    fn collect_reads_in_node(
+        &self,
+        node: &Node,
+        source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
+        out: &mut HashSet<String>,
+    ) {
         if node.kind() == "identifier" && self.is_read_context(node, source) {
             out.insert(get_node_text(node, source).to_string());
+        }
+        // A call to a function-like macro also reads every free identifier
+        // in its replacement list — same reason as `macro_hides_use`, but
+        // this pass needs it per statement rather than per function: a
+        // variable can have plenty of ordinary reads elsewhere and still
+        // have THIS store's only read hidden inside a macro, which reads as
+        // a dead store. Every preprocessor alternative contributes, and
+        // names that match no definition are simply never looked up.
+        if node.kind() == "call_expression" {
+            if let Some(f) = node.child_by_field_name("function") {
+                if f.kind() == "identifier" {
+                    if let Some(alts) = macros.get(get_node_text(&f, source)) {
+                        for m in alts {
+                            out.extend(macro_free_identifiers(m));
+                        }
+                    }
+                }
+            }
         }
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 if child.kind() != "function_definition" {
-                    self.collect_reads_in_node(&child, source, out);
+                    self.collect_reads_in_node(&child, source, macros, out);
                 }
             }
         }

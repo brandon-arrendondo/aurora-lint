@@ -152,6 +152,31 @@ pub fn macro_references_free_identifier(m: &FunctionMacro, var: &str) -> bool {
     false
 }
 
+/// Every identifier in `m`'s replacement list that is *free* — not one of
+/// the macro's own parameters — and so binds to whatever that name means at
+/// the call site. The set form of [`macro_references_free_identifier`], for
+/// callers collecting names rather than testing one.
+pub fn macro_free_identifiers(m: &FunctionMacro) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let chars: Vec<char> = m.body.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if is_ident_start(chars[i]) {
+            let start = i;
+            while i < chars.len() && is_ident_char(chars[i]) {
+                i += 1;
+            }
+            let tok: String = chars[start..i].iter().collect();
+            if !m.params.contains(&tok) {
+                out.insert(tok);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Join a backslash-continued logical line starting at `start`. Returns the
 /// spliced text (continuation backslashes removed, joined with a space) and the
 /// index of the next unconsumed physical line.
