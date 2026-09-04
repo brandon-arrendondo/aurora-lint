@@ -66,7 +66,11 @@ def cmd_realworld_run(args):
 
     print(f"Running {'+'.join(tools)} against {len(codebases)} codebase(s): "
           f"{', '.join(codebases)}\n")
-    run_and_ingest(tools, codebases, compile_commands=args.compile_commands)
+    summary = run_and_ingest(tools, codebases, compile_commands=args.compile_commands)
+    # The scans can all succeed and the ingest still fail; exit nonzero so a
+    # `tee`d or scripted run does not read as clean.
+    if summary.get("ingest_error"):
+        raise SystemExit(1)
 
 
 def cmd_competitor_export(args):

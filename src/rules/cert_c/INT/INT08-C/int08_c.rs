@@ -2,6 +2,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
@@ -46,15 +47,25 @@ impl CertRule for Int08C {
         if functions.is_empty() {
             let mut variables: HashMap<String, (String, usize)> = HashMap::new();
             self.collect_declarations(node, source, &mut variables);
-            self.check_arithmetic_expressions(node, source, &variables, &macros, &mut violations);
+            let types = float_typing::collect_variable_types(node, source);
+            self.check_arithmetic_expressions(
+                node,
+                source,
+                &variables,
+                &types,
+                &macros,
+                &mut violations,
+            );
         } else {
             for func in functions {
                 let mut variables: HashMap<String, (String, usize)> = HashMap::new();
                 self.collect_declarations(&func, source, &mut variables);
+                let types = float_typing::collect_variable_types(&func, source);
                 self.check_arithmetic_expressions(
                     &func,
                     source,
                     &variables,
+                    &types,
                     &macros,
                     &mut violations,
                 );
@@ -123,6 +134,7 @@ impl Int08C {
         node: &Node,
         source: &str,
         variables: &HashMap<String, (String, usize)>,
+        types: &HashMap<String, String>,
         macros: &MacroConstantMap,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -151,7 +163,7 @@ impl Int08C {
                         all_vars.extend(left_vars);
                         all_vars.extend(right_vars);
 
-                        let narrow_vars: Vec<(&String, &String)> = all_vars
+                        let mut narrow_vars: Vec<(&String, &String)> = all_vars
                             .iter()
                             .filter_map(|var| {
                                 variables.get(var).and_then(|(var_type, _)| {
@@ -160,6 +172,15 @@ impl Int08C {
                                 })
                             })
                             .collect();
+                        // `all_vars` is a HashSet, so its iteration order is
+                        // reseeded per process. The message names
+                        // `narrow_vars[0]`, which made two runs of the same
+                        // binary on the same tree report a different variable
+                        // for one expression (`min_c` vs `max_c` at
+                        // curl/src/tool_urlglob.c:265). Sort so the pick is
+                        // stable -- see the MSC04-C determinism task, whose
+                        // SCC-path half is the same defect.
+                        narrow_vars.sort_unstable_by(|a, b| a.0.cmp(b.0));
 
                         if narrow_vars.is_empty() {
                             // No narrow-typed operand at all -- not this
@@ -173,28 +194,30 @@ impl Int08C {
                             // narrow value tops out in the low hundred
                             // thousands, nowhere near INT_MAX. Provably safe
                             // by construction -- nothing to flag.
-                        } else if self.promoted_arithmetic_fits_int(node, source, macros, variables)
-                        {
+                        } else if self.promoted_arithmetic_overflows_int(
+                            node, source, types, macros, variables,
+                        ) {
                             // `*`/`<<` CAN overflow a narrow-typed operand's
                             // promoted range (e.g. `unsigned short * unsigned
-                            // short` can exceed INT_MAX), so these need an
-                            // actual bound check rather than a blanket
-                            // exemption. Provably fits `int` -- safe.
-                        } else {
+                            // short` can exceed INT_MAX), so these are the
+                            // only operators left that need an actual bound
+                            // check -- and only a *proven* one fires.
                             let (var, var_type) = narrow_vars[0];
                             if !self.has_overflow_protection(node, var, var_type, source) {
                                 violations.push(RuleViolation {
                                     rule_id: self.rule_id().to_string(),
                                     message: format!(
-                                        "Arithmetic expression involving '{}' (narrow type '{}') without proper overflow protection",
-                                        var, var_type
+                                        "Arithmetic '{}' can leave the range of the 'int' its operands promote to (operand '{}' is '{}')",
+                                        get_node_text(node, source).split_whitespace().collect::<Vec<_>>().join(" "),
+                                        var,
+                                        var_type
                                     ),
                                     severity: self.severity(),
                                     line: node.start_position().row + 1,
                                     column: node.start_position().column + 1,
                                     file_path: String::new(),
                                     suggestion: Some(format!(
-                                        "Use a wider type (e.g., 'long' instead of '{}') or add overflow checks before the operation",
+                                        "Compute in a wider type (e.g., 'long' instead of '{}') or bound the operands before the operation",
                                         var_type
                                     )),
                                     requires_manual_review: None,
@@ -211,26 +234,42 @@ impl Int08C {
         // Recursively check children
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            self.check_arithmetic_expressions(&child, source, variables, macros, violations);
+            self.check_arithmetic_expressions(&child, source, variables, types, macros, violations);
         }
     }
 
-    /// True if `expr` (a `*`/`<<` binary expression already known to involve
-    /// at least one narrow-typed operand) can be proven, via interval
-    /// arithmetic over the operands' promoted ranges, to never exceed a
-    /// 32-bit `int`'s range. Seeds every narrow-typed variable in scope with
-    /// its promoted-type range so `const_eval::try_evaluate_range` can walk
-    /// the whole expression tree (handling nested parens, literals, and
-    /// `#define` constants along the way); an operand outside that -- an
-    /// unrelated variable of unknown range -- makes the range unresolvable,
-    /// and this conservatively returns `false` (unproven, not disproven).
-    fn promoted_arithmetic_fits_int(
+    /// True only when interval arithmetic over the operands' promoted
+    /// ranges *proves* that `expr` (a `*`/`<<` already known to involve a
+    /// narrow-typed operand) can leave a 32-bit `int`. Seeds every
+    /// narrow-typed variable in scope with its promoted-type range so
+    /// `const_eval::try_evaluate_range` can walk the whole expression tree,
+    /// handling nested parens, literals and `#define` constants along the
+    /// way.
+    ///
+    /// Positive-only, deliberately. An operand whose range cannot be resolved
+    /// -- a struct field, a subscript, a call result, an unrelated wide
+    /// variable -- yields `false` rather than falling back to a guard-text
+    /// heuristic. Whatever overflow risk such an expression carries is the
+    /// *wide* operand's, and `int` overflow is INT32-C's concern, not this
+    /// rule's (see `is_narrow_integer_type`'s doc). Falling back re-emitted
+    /// the very inverted premise task 755 fixed, on every expression the
+    /// range engine could not resolve -- in real code, most of them.
+    fn promoted_arithmetic_overflows_int(
         &self,
         expr: &Node,
         source: &str,
+        types: &HashMap<String, String>,
         macros: &MacroConstantMap,
         variables: &HashMap<String, (String, usize)>,
     ) -> bool {
+        // Floating-point arithmetic is not integer overflow. `(float)x *
+        // (1.0f/31)` reaches this check only because a narrow variable
+        // appears somewhere in it; without the guard its fate would rest on
+        // however `try_evaluate_range` happens to treat a float literal.
+        if float_typing::expr_is_float(expr, source, types, &StructFieldTypes::new()) {
+            return false;
+        }
+
         let mut var_ranges: VarRangeMap = HashMap::new();
         for (name, (var_type, _)) in variables {
             if let Some(range) = self.promoted_range_for_type(var_type) {
@@ -239,7 +278,7 @@ impl Int08C {
         }
 
         const_eval::try_evaluate_range(expr, source, macros, &var_ranges)
-            .is_some_and(|range| range.fits_in_signed(32))
+            .is_some_and(|range| !range.fits_in_signed(32))
     }
 
     /// The value range a narrow integer type takes on after C's usual

@@ -382,8 +382,11 @@ implementation cannot detect them correctly.
   "unknown", so format specifier checks cannot validate ``%ld`` with
   ``long x = 42;``.
 
-- **INT08-C**: Rule does not recognize ``SHRT_MAX`` / ``CHAR_MAX`` guard checks
-  before narrow-type arithmetic.
+- **INT08-C**: Positive-only. A violation is reported only where ``const_eval``
+  can bound every operand and prove the promoted result leaves ``int``; an
+  operand it cannot resolve (a struct field, a subscript, a call result) yields
+  no finding rather than an unproven one. Genuine narrow-type overflow behind
+  an unresolvable operand is therefore missed.
 
 - **INT34-C**: ``is_likely_unsigned()`` parameter declaration check doesn't
   traverse tree-sitter's function parameter hierarchy. Also,
