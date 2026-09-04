@@ -1,0 +1,54 @@
+run_key,tool,tool_version,cwe_id,cwe_dir,tp,fp,unknown,files,finding_count,duration_s,error_count
+clangtidy_20260404_101202,clangtidy,clang-tidy LLVM version 21.1.6,CWE476,CWE476_NULL_Pointer_Dereference,198,0,12,372,210,73.2,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE121,CWE121_Stack_Based_Buffer_Overflow,1916,0,296,5906,2212,1178.9,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE122,CWE122_Heap_Based_Buffer_Overflow,1903,23,200,3656,2126,738.1,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE124,CWE124_Buffer_Underwrite,956,30,72,1896,1058,391.2,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE127,CWE127_Buffer_Underread,986,0,72,1896,1058,391.3,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE190,CWE190_Integer_Overflow,3005,0,180,5040,3185,1102.1,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE191,CWE191_Integer_Underflow,2306,0,138,3864,2444,774.8,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE197,CWE197_Numeric_Truncation_Error,621,0,36,1008,657,212.4,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE369,CWE369_Divide_by_Zero,647,0,36,1008,683,260.9,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE401,CWE401_Memory_Leak,208,0,40,1228,248,240.4,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE415,CWE415_Double_Free,192,36,12,336,240,69.4,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE416,CWE416_Use_After_Free,41,27,0,150,68,32.7,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE476,CWE476_NULL_Pointer_Dereference,198,0,12,372,210,73.6,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE680,CWE680_Integer_Overflow_to_Buffer_Overflow,280,0,12,336,292,73.8,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE690,CWE690_NULL_Deref_From_Return,293,0,40,1120,333,224.2,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE761,CWE761_Free_Pointer_Not_at_Start_of_Buffer,400,0,24,672,424,179.8,0
+clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE762,,0,0,0,0,0,0,0
+cppcheck_20260404_101044,cppcheck,Cppcheck 2.10,CWE476,CWE476_NULL_Pointer_Dereference,483,735,0,372,1218,9.8,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE121,CWE121_Stack_Based_Buffer_Overflow,10436,15279,72,5906,25787,176.1,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE122,CWE122_Heap_Based_Buffer_Overflow,3285,4012,0,3656,7297,115.5,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE124,CWE124_Buffer_Underwrite,2689,3957,0,1896,6646,63.7,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE127,CWE127_Buffer_Underread,2435,3261,0,1896,5696,61.9,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE190,CWE190_Integer_Overflow,3375,8882,0,5040,12257,156.7,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE191,CWE191_Integer_Underflow,2593,6927,0,3864,9520,121.4,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE197,CWE197_Numeric_Truncation_Error,612,918,0,1008,1530,28.9,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE369,CWE369_Divide_by_Zero,739,1957,0,1008,2696,35.9,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE401,CWE401_Memory_Leak,1023,2956,0,1228,3979,36.4,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE415,CWE415_Double_Free,294,576,0,336,870,9.1,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE416,CWE416_Use_After_Free,134,315,3,150,452,5.9,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE476,CWE476_NULL_Pointer_Dereference,483,735,0,372,1218,9.5,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE680,CWE680_Integer_Overflow_to_Buffer_Overflow,261,378,0,336,639,11.1,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE690,CWE690_NULL_Deref_From_Return,534,634,0,1120,1168,28.3,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE761,CWE761_Free_Pointer_Not_at_Start_of_Buffer,484,574,0,672,1058,33.4,0
+cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE762,,0,0,0,0,0,0,0
+framac_20260403_145326,framac,Frama-C 32.0 (Germanium),CWE476,CWE476_NULL_Pointer_Dereference,373,208,0,204,581,467.5,0
+framac_20260403_222053,framac,Frama-C 32.0 (Germanium),CWE190,CWE190_Integer_Overflow,3573,2577,0,2340,6150,4306.6,0
+framac_20260403_222053,framac,Frama-C 32.0 (Germanium),CWE191,CWE191_Integer_Underflow,2406,1407,0,1794,3813,3190.4,0
+framac_20260403_222053,framac,Frama-C 32.0 (Germanium),CWE197,CWE197_Numeric_Truncation_Error,912,0,0,468,912,831.4,0
+framac_20260403_222053,framac,Frama-C 32.0 (Germanium),CWE369,CWE369_Divide_by_Zero,947,1234,0,468,2181,862.7,0
+framac_20260403_222053,framac,Frama-C 32.0 (Germanium),CWE476,CWE476_NULL_Pointer_Dereference,373,208,0,204,581,435.9,0
+framac_20260403_222053,framac,Frama-C 32.0 (Germanium),CWE680,CWE680_Integer_Overflow_to_Buffer_Overflow,398,84,0,156,482,286.4,0
+infer_20260403_144450,infer,Infer version v1.2.0,CWE476,CWE476_NULL_Pointer_Dereference,242,124,0,372,366,105.7,0
+infer_20260403_164943,infer,Infer version v1.2.0,CWE121,CWE121_Stack_Based_Buffer_Overflow,1976,3121,0,5906,5097,1767.2,0
+infer_20260403_164943,infer,Infer version v1.2.0,CWE122,CWE122_Heap_Based_Buffer_Overflow,346,569,0,3656,915,1063.5,0
+infer_20260403_164943,infer,Infer version v1.2.0,CWE124,CWE124_Buffer_Underwrite,338,660,0,1896,998,542.1,0
+infer_20260403_164943,infer,Infer version v1.2.0,CWE127,CWE127_Buffer_Underread,332,648,0,1896,980,541.8,0
+infer_20260403_164943,infer,Infer version v1.2.0,CWE401,CWE401_Memory_Leak,548,454,0,1228,1002,347.7,0
+infer_20260403_164943,infer,Infer version v1.2.0,CWE415,CWE415_Double_Free,204,120,0,336,324,94.9,0
+infer_20260403_164943,infer,Infer version v1.2.0,CWE416,CWE416_Use_After_Free,1,48,0,150,49,43.2,0
+infer_20260403_164943,infer,Infer version v1.2.0,CWE476,CWE476_NULL_Pointer_Dereference,242,124,0,372,366,104.6,0
+infer_20260403_164943,infer,Infer version v1.2.0,CWE690,CWE690_NULL_Deref_From_Return,456,304,0,1120,760,311.9,0
+infer_20260403_164943,infer,Infer version v1.2.0,CWE761,CWE761_Free_Pointer_Not_at_Start_of_Buffer,528,380,0,672,908,200.4,0
+infer_20260403_164943,infer,Infer version v1.2.0,CWE762,,0,0,0,0,0,0,0
