@@ -64,7 +64,7 @@ Coverage Is The Difference
      - Real-world
      - 
    * - SqC
-     - **79**
+     - **75**
      - 9 projects
      - 311 CERT C rules across 17 categories
    * - clang-tidy
@@ -83,6 +83,16 @@ Coverage Is The Difference
      - 6
      - supported, not yet swept
      - Value analysis; not organised as rules
+
+.. note::
+
+   SqC's 75 is CWEs **measured**, on the same rule as every other count here.
+   The runner enumerates all 118 Juliet CWE directories and SqC's list covers
+   79 of them, but four — CWE-23, CWE-672, CWE-676 and CWE-762 — hold no
+   ``.c`` files at all, so SqC correctly scans none of them. Counting a
+   directory it declined would credit it with coverage it does not have.
+   Verified across 52 completed runs, which agree on exactly those four; it
+   is a property of the Juliet corpus rather than of any run.
 
 .. note::
 
@@ -276,7 +286,7 @@ gets there by compiling the code, which is the trade described below.
 SqC leads on CWE-416 (use-after-free, 91.1% vs 60.3%) and matches at 100% on
 six CWEs. Everywhere else on the overlap it is behind, and that is the honest
 read: **SqC's case is not that it is more precise than clang-tidy on the
-fifteen CWEs clang-tidy checks. It is the other 63 CWEs, the other 290 rules,
+fifteen CWEs clang-tidy checks. It is the other 60 CWEs, the other 290 rules,
 and not needing your build.**
 
 Speed
