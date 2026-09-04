@@ -77,6 +77,7 @@ impl CertRule for Exp34C {
         let mut violations = Vec::new();
         let summaries = self.function_summaries.borrow();
         let cfgs = self.function_cfgs.borrow();
+        let all_macros = self.function_macros.borrow();
 
         for n in
             query::find_descendants_of_kinds(*node, &["translation_unit", "function_definition"])
@@ -99,13 +100,12 @@ impl CertRule for Exp34C {
 
                 // Precompute write-through-param indices for the function-like
                 // macros actually invoked in this file (task 195 Part A).
-                let macros = self.function_macros.borrow();
-                if !macros.is_empty() {
+                if !all_macros.is_empty() {
                     let mut invoked = HashSet::new();
-                    collect_invoked_macro_names(node, source, &macros, &mut invoked);
+                    collect_invoked_macro_names(node, source, &all_macros, &mut invoked);
                     let mut write_params = HashMap::new();
                     for name in invoked {
-                        let idx = macro_expand::macro_writes_param_indices(&macros, &name);
+                        let idx = macro_expand::macro_writes_param_indices(&all_macros, &name);
                         if !idx.is_empty() {
                             write_params.insert(name, idx);
                         }
@@ -177,6 +177,7 @@ impl CertRule for Exp34C {
                         cfg,
                         &body,
                         &effective_summaries,
+                        &all_macros,
                         &mut violations,
                         &mut reported_vars,
                     );
@@ -199,6 +200,7 @@ fn check_dereferences_cfg(
     cfg: &FunctionCfg,
     body: &Node,
     summaries: &HashMap<String, FunctionSummary>,
+    macros: &HashMap<String, FunctionMacro>,
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut HashSet<String>,
 ) {
@@ -250,6 +252,7 @@ fn check_dereferences_cfg(
                 cfg,
                 body,
                 summaries,
+                macros,
                 violations,
                 reported_vars,
             ),
@@ -414,6 +417,7 @@ fn check_call_expression_cfg(
     cfg: &FunctionCfg,
     body: &Node,
     summaries: &HashMap<String, FunctionSummary>,
+    macros: &HashMap<String, FunctionMacro>,
     violations: &mut Vec<RuleViolation>,
     reported_vars: &mut HashSet<String>,
 ) {
@@ -450,7 +454,7 @@ fn check_call_expression_cfg(
 
     // Check deref-function arguments. Skip when the callee is known to
     // accept NULL (free/fclose no-op on NULL per C standard).
-    if is_deref_function(&func_name) && !is_null_safe_function(&func_name) {
+    if is_deref_function(&func_name) && !is_null_safe_callee(&func_name, macros) {
         if let Some(args) = node.child_by_field_name("arguments") {
             check_function_arguments_cfg(
                 &args,
@@ -469,7 +473,7 @@ fn check_call_expression_cfg(
     // don't null-check them. Only when callee has a summary (guards against
     // flagging unknown library functions).
     if !is_deref_function(&func_name)
-        && !is_null_safe_function(&func_name)
+        && !is_null_safe_callee(&func_name, macros)
         && summaries.contains_key(&func_name)
     {
         if let Some(args_node) = node.child_by_field_name("arguments") {
@@ -598,6 +602,26 @@ fn check_callsite_null_args(
             param_idx += 1;
         }
     }
+}
+
+/// True when calling `name` with a possibly-null argument is safe -- either
+/// because `name` is itself [`is_null_safe_function`], or because `name` is a
+/// function-like macro whose entire body forwards to one (task 757).
+///
+/// hostap's `#define os_free(p) free((p))` is the motivating case: the macro
+/// is a transparent `free()` wrapper, so it is exactly as null-tolerant as
+/// `free()` itself. Rather than adding `os_free` to the name table by hand,
+/// this reuses [`macro_expand::macro_forwarding_target`] (task 589) to derive
+/// it: any macro whose body is nothing but a single call to a real function,
+/// passing its own parameters through, inherits that function's null-safety
+/// automatically -- covering every macro shaped this way, not just this one
+/// name. Per-name entries in `is_null_safe_function` stay for callees that
+/// are genuinely not in-tree (no macro or function body to expand) or don't
+/// have this pure-forwarding shape.
+fn is_null_safe_callee(name: &str, macros: &HashMap<String, FunctionMacro>) -> bool {
+    is_null_safe_function(name)
+        || macro_expand::macro_forwarding_target(macros, name)
+            .is_some_and(|(target, _)| is_null_safe_function(&target))
 }
 
 /// Functions that safely handle NULL arguments (no dereference concern).

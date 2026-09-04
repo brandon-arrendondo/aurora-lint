@@ -21,6 +21,13 @@ archival form and the CSV can be regenerated at any time.
 THREE FILES, because one flat table cannot hold all three grains without
 either nulls or repetition:
 
+TWO RATE COLUMNS, deliberately. `precision_pct` is TP/(TP+FP), which is what
+docs/tool-comparison.rst publishes; `tp_rate_pct` is TP/(TP+FP+unknown), which
+is what the run JSON carries. They diverge only where `unknown` is material,
+which in practice means clang-tidy alone -- 99.2% against 91.6%. Emitting one
+of them would guarantee that whoever compares this CSV to the paper finds a
+mismatch and corrects the wrong side.
+
   competitor_runs.csv        one row per run       (tool, version, totals)
   competitor_cwe_results.csv one row per run x CWE (the actual measurements)
   competitor_cwe_errors.csv  one row per error     (usually empty)
@@ -39,39 +46,80 @@ from pathlib import Path
 from bench.config import PROJECT_DIR
 
 RESULTS_DIR = PROJECT_DIR / "data" / "competitor_results"
+HOSTS_JSON = RESULTS_DIR / "run_hosts.json"
 
 RUNS_CSV = RESULTS_DIR / "competitor_runs.csv"
 CWE_CSV = RESULTS_DIR / "competitor_cwe_results.csv"
 ERRORS_CSV = RESULTS_DIR / "competitor_cwe_errors.csv"
 
 RUN_FIELDS = [
-    "run_key", "tool", "tool_version", "hostname",
+    "run_key", "tool", "tool_version", "hostname", "hostname_source",
     "started_at", "finished_at", "duration_s",
-    "cwe_count", "tp", "fp", "unknown", "files", "finding_count",
-    "tp_rate_pct", "source_file",
+    "cwe_count", "cwes_measured", "tp", "fp", "unknown", "files", "finding_count",
+    "precision_pct", "tp_rate_pct", "source_file",
 ]
 
 CWE_FIELDS = [
     "run_key", "tool", "tool_version", "cwe_id", "cwe_dir",
     "tp", "fp", "unknown", "files", "finding_count", "duration_s",
-    "error_count",
+    "precision_pct", "tp_rate_pct", "error_count",
 ]
 
 ERROR_FIELDS = ["run_key", "tool", "cwe_id", "error"]
 
 
-def _tp_rate(tp: int, fp: int, unknown: int) -> float | None:
-    """Share of findings that hit a planted flaw.
+def _host_map() -> dict:
+    """Host attribution kept beside the runs rather than inside them.
 
-    Recomputed rather than read from the JSON's `totals.tp_rate_pct`: the
-    one-CWE smoke runs predate that field, and a value derived here is
-    guaranteed to agree with the tp/fp/unknown columns beside it."""
+    competitors.py has never recorded a hostname, so a run blob cannot say
+    where it executed. The blobs are the archival record of what the tool
+    captured and are not retro-edited; run_hosts.json carries what was
+    established afterwards, and `hostname_source` says which is which.
+
+    This matters because wall clock is the only hardware-dependent figure in
+    a run, and the two sets did not run on comparable machines: April on an
+    r720 (~2012 Xeon), September on dev-921 (i5-12400). Durations do not
+    cross that boundary."""
+    if not HOSTS_JSON.is_file():
+        return {}
+    try:
+        return json.loads(HOSTS_JSON.read_text()).get("runs", {})
+    except Exception:
+        return {}
+
+
+def _precision(tp: int, fp: int) -> float | None:
+    """TP / (TP + FP) -- **the number docs/tool-comparison.rst publishes.**
+
+    `unknown` is excluded: a finding neither matched to a planted flaw nor
+    confidently outside one is not evidence either way, so counting it as a
+    miss understates the tool. Only clang-tidy has a material `unknown` count
+    (1,170 of its findings, 8%), which is exactly why the two rates diverge
+    most there -- 99.2% precision against 91.6% tp_rate."""
+    denom = tp + fp
+    return round(tp / denom * 100, 1) if denom else None
+
+
+def _tp_rate(tp: int, fp: int, unknown: int) -> float | None:
+    """TP / (TP + FP + unknown) -- what `competitors.py` calls tp_rate_pct.
+
+    Kept alongside `precision_pct` rather than in place of it because BOTH
+    are in circulation: this is the field the run JSON carries, and precision
+    is the field the published table shows. Emitting only one guarantees that
+    whoever compares the CSV against the docs finds a discrepancy and
+    "corrects" the wrong side. Named so the difference is legible in the
+    column header instead of a footnote.
+
+    Recomputed rather than copied from the JSON: the one-CWE smoke runs
+    predate that field, and a value derived here cannot disagree with the
+    tp/fp/unknown columns beside it."""
     total = tp + fp + unknown
     return round(tp / total * 100, 1) if total else None
 
 
 def collect(results_dir: Path = RESULTS_DIR) -> tuple[list, list, list]:
     """Read every run JSON and flatten it into the three row sets."""
+    hosts = _host_map()
     runs, cwes, errors = [], [], []
     for path in sorted(results_dir.glob("*.json")):
         try:
@@ -90,10 +138,18 @@ def collect(results_dir: Path = RESULTS_DIR) -> tuple[list, list, list]:
         totals = data.get("totals", {})
 
         run_findings = 0
+        # A CWE row with no files was requested but not measurable -- Juliet
+        # has nine C++-only directories and this benchmark is C-only, so one
+        # of them (CWE762) sat in the tool lists scoring 0/0 until task 909.
+        # `cwe_count` is rows present, `cwes_measured` is rows that measured
+        # something; they differ only for runs taken before that fix.
+        measured = 0
         for cwe_id in sorted(per_cwe):
             c = per_cwe[cwe_id]
             errs = c.get("errors") or []
             run_findings += int(c.get("finding_count") or 0)
+            if int(c.get("files") or 0) > 0:
+                measured += 1
             cwes.append({
                 "run_key": run_key, "tool": tool, "tool_version": version,
                 "cwe_id": cwe_id, "cwe_dir": c.get("cwe_dir", ""),
@@ -101,6 +157,11 @@ def collect(results_dir: Path = RESULTS_DIR) -> tuple[list, list, list]:
                 "unknown": c.get("unknown", 0), "files": c.get("files", 0),
                 "finding_count": c.get("finding_count", 0),
                 "duration_s": c.get("duration_s"),
+                "precision_pct": _precision(int(c.get("tp") or 0),
+                                            int(c.get("fp") or 0)),
+                "tp_rate_pct": _tp_rate(int(c.get("tp") or 0),
+                                        int(c.get("fp") or 0),
+                                        int(c.get("unknown") or 0)),
                 "error_count": len(errs),
             })
             for e in errs:
@@ -112,17 +173,22 @@ def collect(results_dir: Path = RESULTS_DIR) -> tuple[list, list, list]:
         unknown = int(totals.get("unknown", 0))
         runs.append({
             "run_key": run_key, "tool": tool, "tool_version": version,
-            # Absent from every run recorded before 2026-09-04. Wall clock is
-            # hardware-dependent, so a blank here means "do not compare this
-            # run's duration against another host's", not "same host".
-            "hostname": data.get("hostname", ""),
+            # Never captured by the runner; filled from run_hosts.json, with
+            # hostname_source recording that it was attributed rather than
+            # measured. A blank still means "unknown host", so a duration
+            # from it cannot be compared against anything.
+            "hostname": data.get("hostname") or hosts.get(run_key, {}).get("hostname", ""),
+            "hostname_source": ("runner" if data.get("hostname")
+                                else hosts.get(run_key, {}).get("hostname_source", "")),
             "started_at": data.get("started_at", ""),
             "finished_at": data.get("finished_at", ""),
             "duration_s": data.get("duration_s"),
             "cwe_count": len(per_cwe),
+            "cwes_measured": measured,
             "tp": tp, "fp": fp, "unknown": unknown,
             "files": totals.get("files", 0),
             "finding_count": run_findings,
+            "precision_pct": _precision(tp, fp),
             "tp_rate_pct": _tp_rate(tp, fp, unknown),
             "source_file": path.name,
         })

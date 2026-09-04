@@ -1,0 +1,176 @@
+{
+  "tool": "clangtidy",
+  "tool_version": "clang-tidy Ubuntu LLVM version 21.1.8",
+  "started_at": "2026-09-04T15:38:42.669699+00:00",
+  "cwes": {
+    "CWE121": {
+      "cwe_dir": "CWE121_Stack_Based_Buffer_Overflow",
+      "tp": 1916,
+      "fp": 0,
+      "unknown": 296,
+      "files": 5906,
+      "duration_s": 270.9,
+      "errors": [],
+      "finding_count": 2212
+    },
+    "CWE122": {
+      "cwe_dir": "CWE122_Heap_Based_Buffer_Overflow",
+      "tp": 1903,
+      "fp": 23,
+      "unknown": 200,
+      "files": 3656,
+      "duration_s": 173.9,
+      "errors": [],
+      "finding_count": 2126
+    },
+    "CWE124": {
+      "cwe_dir": "CWE124_Buffer_Underwrite",
+      "tp": 956,
+      "fp": 30,
+      "unknown": 72,
+      "files": 1896,
+      "duration_s": 92.5,
+      "errors": [],
+      "finding_count": 1058
+    },
+    "CWE127": {
+      "cwe_dir": "CWE127_Buffer_Underread",
+      "tp": 986,
+      "fp": 0,
+      "unknown": 72,
+      "files": 1896,
+      "duration_s": 91.9,
+      "errors": [],
+      "finding_count": 1058
+    },
+    "CWE190": {
+      "cwe_dir": "CWE190_Integer_Overflow",
+      "tp": 3005,
+      "fp": 0,
+      "unknown": 180,
+      "files": 5040,
+      "duration_s": 262.2,
+      "errors": [],
+      "finding_count": 3185
+    },
+    "CWE191": {
+      "cwe_dir": "CWE191_Integer_Underflow",
+      "tp": 2306,
+      "fp": 0,
+      "unknown": 138,
+      "files": 3864,
+      "duration_s": 180.3,
+      "errors": [],
+      "finding_count": 2444
+    },
+    "CWE197": {
+      "cwe_dir": "CWE197_Numeric_Truncation_Error",
+      "tp": 621,
+      "fp": 0,
+      "unknown": 36,
+      "files": 1008,
+      "duration_s": 50.1,
+      "errors": [],
+      "finding_count": 657
+    },
+    "CWE369": {
+      "cwe_dir": "CWE369_Divide_by_Zero",
+      "tp": 647,
+      "fp": 0,
+      "unknown": 36,
+      "files": 1008,
+      "duration_s": 62.3,
+      "errors": [],
+      "finding_count": 683
+    },
+    "CWE401": {
+      "cwe_dir": "CWE401_Memory_Leak",
+      "tp": 208,
+      "fp": 0,
+      "unknown": 40,
+      "files": 1228,
+      "duration_s": 55.8,
+      "errors": [],
+      "finding_count": 248
+    },
+    "CWE415": {
+      "cwe_dir": "CWE415_Double_Free",
+      "tp": 192,
+      "fp": 36,
+      "unknown": 12,
+      "files": 336,
+      "duration_s": 16.0,
+      "errors": [],
+      "finding_count": 240
+    },
+    "CWE416": {
+      "cwe_dir": "CWE416_Use_After_Free",
+      "tp": 41,
+      "fp": 27,
+      "unknown": 0,
+      "files": 150,
+      "duration_s": 7.4,
+      "errors": [],
+      "finding_count": 68
+    },
+    "CWE476": {
+      "cwe_dir": "CWE476_NULL_Pointer_Dereference",
+      "tp": 198,
+      "fp": 0,
+      "unknown": 12,
+      "files": 372,
+      "duration_s": 17.2,
+      "errors": [],
+      "finding_count": 210
+    },
+    "CWE680": {
+      "cwe_dir": "CWE680_Integer_Overflow_to_Buffer_Overflow",
+      "tp": 280,
+      "fp": 0,
+      "unknown": 12,
+      "files": 336,
+      "duration_s": 17.5,
+      "errors": [],
+      "finding_count": 292
+    },
+    "CWE690": {
+      "cwe_dir": "CWE690_NULL_Deref_From_Return",
+      "tp": 293,
+      "fp": 0,
+      "unknown": 40,
+      "files": 1120,
+      "duration_s": 52.0,
+      "errors": [],
+      "finding_count": 333
+    },
+    "CWE761": {
+      "cwe_dir": "CWE761_Free_Pointer_Not_at_Start_of_Buffer",
+      "tp": 400,
+      "fp": 0,
+      "unknown": 24,
+      "files": 672,
+      "duration_s": 42.6,
+      "errors": [],
+      "finding_count": 424
+    },
+    "CWE762": {
+      "cwe_dir": "",
+      "tp": 0,
+      "fp": 0,
+      "unknown": 0,
+      "files": 0,
+      "duration_s": 0,
+      "errors": [],
+      "finding_count": 0
+    }
+  },
+  "totals": {
+    "tp": 13952,
+    "fp": 116,
+    "unknown": 1170,
+    "files": 28488,
+    "tp_rate_pct": 91.6
+  },
+  "duration_s": 1392.9,
+  "finished_at": "2026-09-04T16:01:55.551954+00:00"
+}
