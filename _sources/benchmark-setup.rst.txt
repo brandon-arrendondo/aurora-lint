@@ -60,22 +60,36 @@ For the latest release, build from source:
 clang-tidy
 ~~~~~~~~~~
 
+**Pin LLVM 21 — do not take the distro default.**  Ubuntu 24.04 ships
+clang-tidy 18.1.3 and tops out at 20, while the published comparison in
+``docs/tool-comparison.rst`` is LLVM 21.1.  Taking the distro package makes a
+freshly-provisioned node measure an *older* competitor than the table it will
+be compared against, and clang-tidy is the tool currently beating SqC on the
+Juliet overlap (99.2% vs 81.7%) — so that regression would flatter SqC by
+understating a rival.  ``playbooks/install-static-analyzers.yml`` does this
+automatically; by hand:
+
 .. code-block:: bash
 
-    sudo apt update
-    sudo apt install -y clang clang-tidy
+    sudo install -d -m 0755 /etc/apt/keyrings
+    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+      | sudo tee /etc/apt/keyrings/apt.llvm.org.asc > /dev/null
+    echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] \
+      http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+      | sudo tee /etc/apt/sources.list.d/llvm-21.list
+    sudo apt update && sudo apt install -y clang-tidy-21
+    sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy \
+      /usr/bin/clang-tidy-21 100
 
     # Verify
-    clang --version
     clang-tidy --version
+    # Expected: Ubuntu LLVM version 21.1.x
 
-To pin a specific LLVM version (e.g., 18):
+The distro package is fine for anything that is not a published comparison:
 
 .. code-block:: bash
 
-    sudo apt install -y clang-18 clang-tidy-18
-    sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
-    sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
+    sudo apt install -y clang clang-tidy
 
 bear (for compile_commands.json)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
