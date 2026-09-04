@@ -506,8 +506,13 @@ must-detect** fixtures (``src/rules/cert_c/*/*/tests/fail/*.c``, across 306
 rules) and **1,576 must-not-detect** fixtures
 (``src/rules/cert_c/*/*/tests/pass/*.c``, across 308 rules), labeled by
 construction — 309 distinct rules carry at least one. 121 of the 125
-unvalidated rules already have a must-detect fixture — only ``ENV04-C``,
-``FLP01-C``, ``MSC18-C`` and ``MSC25-C`` have none.
+unvalidated rules already have a must-detect fixture — only ``FLP01-C``,
+``MSC18-C``, ``MSC25-C`` and ``ENV04-C`` have none. Of those, only
+``FLP01-C`` is implemented (``flp01_c.rs`` exists) and simply lacks a fail
+fixture. ``MSC18-C``, ``MSC25-C`` and ``ENV04-C`` have no detection logic at
+all — a must-detect fixture for them cannot pass, so a fixture is not the
+missing piece; see the "Tracked but not implemented" section of
+:doc:`configuration` for why they are unimplemented.
 Today those fixtures run only as pass/fail unit tests and feed no measured
 metric, so a rule can be fully exercised by tests and still read as having
 no detection evidence. Scoring them as a third benchmark tier is tracked as

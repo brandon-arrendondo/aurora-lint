@@ -5,7 +5,8 @@ Manifest File
 -------------
 
 The rules manifest TOML file controls which rules are active and their severity.
-The default manifest (``rules_templates/rules-all.toml``) enables 307 of the 311 implemented rules.
+The default manifest (``rules_templates/rules-all.toml``) enables 307 of the 311 tracked rules.
+The other 4 are tracked but not implemented — see `Tracked but not implemented`_ below.
 
 ::
 
@@ -43,7 +44,9 @@ Custom Manifest Format
 Supported CERT C Rules
 ----------------------
 
-311 rules are implemented across 17 categories (307 enabled by default):
+311 rules are tracked across 17 categories; 307 are implemented and enabled by
+default (the remaining 4 are tracked but not implemented — see
+`Tracked but not implemented`_ below):
 
 ==========  ======  ===========================================================
 Category    Count   Rules
@@ -69,3 +72,38 @@ Category    Count   Rules
 
 For the full list, see ``rules_templates/rules-all.toml`` or the rule source files
 in ``src/rules/cert_c/``.
+
+Tracked but not implemented
+----------------------------
+
+4 of the 311 tracked rules have a rule directory and a manifest entry but no
+detection logic (no ``.rs`` file). This is a deliberate policy, not a gap:
+sqc does not implement against incomplete CERT-C rule content, since there is
+ample well-established work to do and a stub implementation would mean
+inventing a rule CERT itself has not written.
+
+Two are parked on upstream CERT publishing real content for the rule:
+
+- **ENV04-C** — *Protect programs whose behavior can be controlled by
+  environment variables*. CERT's page carries only OpenMP environment-variable
+  framing; severity, likelihood, priority and level are all unscored, and
+  there is no formal description, no compliant/noncompliant examples, and no
+  CWE mapping. `CERT wiki page
+  <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/environment-env/env04-c>`_.
+  Will be implemented once CERT ships real content; tracked as a gate task
+  until then.
+- **MSC25-C** — *Do not use insecure or weak cryptographic algorithms*.
+  CERT's scraped description is the single sentence "This rule is a stub,"
+  with zero CWE references. `CERT wiki page
+  <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/recommendations/miscellaneous-msc/msc25-c>`_.
+  Will be implemented once CERT ships real content; tracked as a gate task
+  until then.
+
+The other two are ordinary backlog — CERT's content for them is complete, they
+are simply not yet written:
+
+- **MSC18-C** — CERT's description and risk assessment are complete (severity
+  Medium, 7 CWE references), and one ``pass`` fixture is already staged.
+- **MSC19-C** — CERT's description and risk assessment are complete
+  (severity Low), and 2 ``fail`` + 2 ``pass`` fixtures are already staged —
+  the closest of the 4 to being implementable.
