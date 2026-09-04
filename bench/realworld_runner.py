@@ -34,6 +34,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from bench.config import BENCH_ROOT, PROJECT_DIR
+from bench.config import opam_wrap as _opam_wrap
 from bench.db import BenchDB
 
 RESULTS_BASE = PROJECT_DIR / "results" / "realworld"
@@ -854,18 +855,6 @@ def _filtered_compile_db(cfg: dict, dest: Path) -> tuple[Path | None, int, int]:
         kept.append(e)
     dest.write_text(json.dumps(kept, indent=1))
     return dest, len(kept), len(entries)
-
-
-def _opam_wrap(argv: list[str]) -> list[str]:
-    """Run `argv` with the user's opam switch on PATH.
-
-    Frama-C is installed by playbooks/install-static-analyzers.yml into
-    ~/.opam, which only lands on PATH via `eval $(opam env)` in a login shell
-    -- and the benchmark runner is not one. `opam env` failing is not fatal:
-    a Frama-C installed some other way is already on PATH, so the eval is
-    tolerated rather than required."""
-    return ["bash", "-c", 'eval "$(opam env 2>/dev/null)" 2>/dev/null; exec "$@"',
-            "_", *argv]
 
 
 # ── Infer ─────────────────────────────────────────────────────────────────────
