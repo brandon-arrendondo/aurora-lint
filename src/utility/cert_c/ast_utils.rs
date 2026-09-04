@@ -145,7 +145,19 @@ pub fn find_enclosing_declaration_for_identifier<'a>(
 
 /// Collect every `declaration` directly inside `scope`, transparently
 /// descending into any nested `#if`/`#ifdef`/`#elif`/`#else` branch (any
-/// depth) — see [`find_enclosing_declaration_for_identifier`] for why.
+/// depth) — see [`find_enclosing_declaration_for_identifier`] for why —
+/// and into `case`/`default` labels, which are not scopes either.
+///
+/// A `case` label with no braces around its body does not open a block:
+/// `switch (x) { case 1: int y = f(); g(y); }` declares `y` in the
+/// switch's own compound_statement, exactly as if the label were not
+/// there. tree-sitter-c nests those statements under a `case_statement`
+/// node all the same, so scanning only the compound_statement's literal
+/// children finds no declaration and every read of `y` fails to resolve
+/// back to it. A `case` whose body IS braced is a different matter: the
+/// `compound_statement` under the label is a real scope and is left to
+/// the caller's outward walk, which is why the recursion below descends
+/// through `case_statement` but never through a block.
 fn collect_declarations_transparent_to_preproc<'a>(scope: &Node<'a>, out: &mut Vec<Node<'a>>) {
     let condition_id = scope.child_by_field_name("condition").map(|n| n.id());
     let name_id = scope.child_by_field_name("name").map(|n| n.id());
@@ -158,7 +170,7 @@ fn collect_declarations_transparent_to_preproc<'a>(scope: &Node<'a>, out: &mut V
         }
         match child.kind() {
             "declaration" => out.push(child),
-            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" => {
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" | "case_statement" => {
                 collect_declarations_transparent_to_preproc(&child, out);
             }
             _ => {}
