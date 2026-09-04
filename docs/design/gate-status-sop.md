@@ -145,19 +145,44 @@ number that would need to flip).
    those rules actually being implemented (tasks 329–349).
 3. **Version/number drift check** — the paper's tables are frozen to the
    `run_id` that produced them; catch drift before submission rather than
-   at review time:
-   - Cited Juliet/real-world version(s) in the paper repo's `sqc.tex`
-     (`grep -n 'v0\.4\.[0-9]*' ../sqc_paper/sqc.tex`) vs. current `Cargo.toml`
-     version. Baseline 2026-08-26: paper cites v0.4.249 (Juliet) /
-     v0.4.258 (real-world); repo is at v0.4.267. A version gap isn't
-     automatically disqualifying — confirm no rule/detection-logic change
-     landed in that gap that would move the cited numbers, don't just
-     leave the gap unexamined.
+   at review time. As of 2026-09-04 (benchmarking_db task 701 item 3) the
+   Juliet and real-world figures the paper cites are no longer hand-typed
+   prose to grep and eyeball — they're generated from `sqc_bench` into
+   `sqc_paper/figures.json`/`figures.tex`, which a command can verify
+   directly instead of a human comparing two greps:
+   ```bash
+   cd ../benchmarking_db && python3 bin/emit_paper_figures.py --check
+   ```
+   Exits nonzero and names exactly which figure(s) moved if the figures
+   currently committed in `sqc_paper` no longer match what recomputing
+   their own cited run from `sqc_bench` gives right now — this is what
+   caught the 2026-09-03 corpus-scope re-pin silently moving run #226's
+   published precision/recall (task 701's own item-3 note has the
+   before/after). It re-verifies whatever run `figures.json` already
+   cites; it does not decide whether the paper *should* move to a newer
+   run -- that stays this SOP's #1 above (an editorial call, made with
+   `--realworld-run`/`--juliet-run` passed explicitly). If it fails on a
+   check that's a known, already-filed data gap (e.g. task 715's missing
+   `duration_s`), re-run with the `--waive CHECK=REASON` the failure
+   output names rather than treating the whole check as blocked.
+
+   This does NOT run in CI (neither repo's GitHub Actions can reach
+   `sqc_bench` by design -- see the script's own docstring) — running it
+   here, from this SOP, on this benchmark node, IS the check for now.
+
+   Two figures the generator deliberately does not cover yet, so still
+   need the manual form:
    - Cited rule count vs. `grep -c "enabled = true" rules_templates/rules-all.toml`
-     (305 as of 2026-08-26).
+     (305 as of 2026-08-26) — blocked on `benchmarking_db` task 742
+     (rules-all.toml has no per-run pin in Postgres yet).
+   - Table 8's competitor-tool comparison (cppcheck/clang-tidy/Infer/
+     Frama-C rule and CWE counts) — not `sqc_bench` data at all; verify
+     by hand against each tool's own docs/changelog.
 4. **Spot-check a couple of paper citations against a live run_id**
-   (`python -m bench runs`, `get_cwe_detail()`) rather than trusting prose
-   — cheap insurance against a stale number surviving into submission.
+   (`python -m bench runs`, `get_cwe_detail()`) rather than trusting prose.
+   Largely superseded by step 3's `--check` for the figures it covers;
+   keep doing this for the two callouts above plus anything in
+   `sections/*.tex` that isn't `\Fig`-prefixed yet.
 
 ### Gate 2 verdict
 
