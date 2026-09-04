@@ -29,6 +29,7 @@ import re
 import shutil
 import subprocess
 import time
+import traceback
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
@@ -1425,9 +1426,31 @@ def run_and_ingest(tools: list[str], codebases: list[str],
                 results.append({"tool": tool, "codebase": codebase, "ok": False,
                                  "error": str(e), "duration_s": None, "total": 0})
 
+    summary = {"results": results, "run_id": None, "score": None,
+               "ingest_error": None}
+    try:
+        _ingest(results, summary)
+    except Exception as e:
+        # Every scan is already on disk under results/realworld/<version-sha>/,
+        # so an ingest failure loses no measurement -- but it is the last thing
+        # printed after a screenful of per-project "ok" lines, and a traceback
+        # alone reads like the run itself failed. Say what survived.
+        traceback.print_exc()
+        summary["ingest_error"] = str(e)
+        print(f"\nINGEST FAILED ({type(e).__name__}: {e}) -- the scans "
+              "themselves completed and their JSON exports are intact under "
+              f"{RESULTS_BASE}. The database holds nothing, or only part, of "
+              "this run -- `bench realworld` and `bench realworld-score` "
+              "cannot be trusted for it until the ingest is repeated.")
+    return summary
+
+
+def _ingest(results: list[dict], summary: dict) -> None:
+    """Write the completed scans into SQLite and score them. Split out of
+    `run_and_ingest` so a failure here is reported as its own outcome rather
+    than as the failure of the whole run."""
     db = BenchDB()
     machine = {"hostname": os.uname().nodename}
-    summary = {"results": results, "run_id": None, "score": None}
 
     sqc_results = [r for r in results if r["tool"] == "sqc" and r.get("ok")]
     if sqc_results:
@@ -1463,5 +1486,3 @@ def run_and_ingest(tools: list[str], codebases: list[str],
             else:
                 print("\nNo oracle labels cover this run's commit(s) yet -- nothing scored.")
         summary["score"] = score
-
-    return summary
