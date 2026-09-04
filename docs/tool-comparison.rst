@@ -68,15 +68,15 @@ Coverage Is The Difference
      - 9 projects
      - 311 CERT C rules across 17 categories
    * - clang-tidy
-     - 16
+     - 15
      - 8 projects
      - ~20 ``cert-*`` checks
    * - cppcheck
-     - 16
+     - 15
      - 8 projects
      - ~20 CERT mappings via an addon we do not enable
    * - Infer
-     - 11
+     - 10
      - supported, not yet swept
      - Memory-safety and concurrency bug types
    * - Frama-C
@@ -263,7 +263,7 @@ CWEs that competitor covers — precision, so higher is better.
      - –
      - 58.1%
 
-**clang-tidy wins the overlap, and it is not close.** On the 16 CWEs it
+**clang-tidy wins the overlap, and it is not close.** On the 15 CWEs it
 covers: clang-tidy 13,952 TP / 116 FP (99.2%), SqC 12,276 TP / 2,757 FP
 (81.7%). It is at 100% on eleven of them, and it finds *more* true positives
 than SqC does on the same CWEs.
@@ -276,7 +276,7 @@ gets there by compiling the code, which is the trade described below.
 SqC leads on CWE-416 (use-after-free, 91.1% vs 60.3%) and matches at 100% on
 six CWEs. Everywhere else on the overlap it is behind, and that is the honest
 read: **SqC's case is not that it is more precise than clang-tidy on the
-sixteen CWEs clang-tidy checks. It is the other 63 CWEs, the other 290 rules,
+fifteen CWEs clang-tidy checks. It is the other 63 CWEs, the other 290 rules,
 and not needing your build.**
 
 Speed
@@ -327,24 +327,24 @@ Juliet, all four on one host (2026-09-04), CWE list sizes differing:
 
    * - Tool
      - Wall clock
-     - CWE list
+     - CWEs measured
      - 
    * - cppcheck
      - 350 s
-     - 16
+     - 15
      - 
    * - clang-tidy
      - 1,393 s
-     - 16
+     - 15
      - 
    * - Infer
      - 1,707 s
-     - 11
+     - 10
      - 
    * - Frama-C
      - 3,443 s
      - 6
-     - Slowest by 2×, on the smallest list.
+     - Slowest by 2×, on the smallest set.
 
 .. warning::
 
@@ -369,12 +369,22 @@ Juliet, all four on one host (2026-09-04), CWE list sizes differing:
 
 .. note::
 
-   The "CWE list" column is the size of the list each tool was *given*, not
-   the number measured. One entry in each list (CWE-762, mismatched memory
-   management) is C++-only in Juliet — 6,092 ``.cpp`` files and no ``.c`` —
-   so it contributes nothing to a C-only benchmark and every run scores it
-   0/0. Measured counts are therefore 15, 15 and 10. Tracked as tools_sqc
-   task 909; the same defect on SqC's own count is task 910.
+   Every count on this page is **CWEs measured**, not CWEs requested.
+
+   SqC implements CERT **C**, so this benchmark is C-only and the runner
+   globs ``*.c`` deliberately. Nine Juliet directories hold no C at all, and
+   one of them — CWE-762, mismatched memory management, 6,092 ``.cpp`` files
+   and no ``.c`` — sat in the cppcheck, clang-tidy and Infer lists scoring
+   0/0 in every run while counting toward their coverage. New/delete versus
+   malloc/free is a C++ defect by construction, so it was never a valid entry
+   here rather than a gap to close.
+
+   It is removed from the lists, and ``run_tool`` now refuses any CWE that
+   resolves to zero ``.c`` files instead of recording a 0/0 row that reads
+   the same as "the tool found nothing". The runs above predate that fix and
+   still carry the row; the exported CSV distinguishes them as ``cwe_count``
+   (rows present) and ``cwes_measured``. Tracked as tools_sqc task 909; the
+   same defect on SqC's own count is task 910.
 
 Real-World Precision, Per Rule
 ==============================
@@ -462,7 +472,7 @@ SqC parses source as written. That is why it runs on a partial checkout, a
 tree you cannot build, or a file that was generated a moment ago — and it is
 also why it has a macro-expansion engine, a suppression system, and a
 false-positive backlog as substantial as its rule backlog. The precision gap
-on those sixteen CWEs is the price of the property that makes it useful
+on those fifteen CWEs is the price of the property that makes it useful
 elsewhere.
 
 cppcheck is the honest control here: it also runs unbuilt, and on the same

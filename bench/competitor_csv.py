@@ -55,7 +55,7 @@ ERRORS_CSV = RESULTS_DIR / "competitor_cwe_errors.csv"
 RUN_FIELDS = [
     "run_key", "tool", "tool_version", "hostname", "hostname_source",
     "started_at", "finished_at", "duration_s",
-    "cwe_count", "tp", "fp", "unknown", "files", "finding_count",
+    "cwe_count", "cwes_measured", "tp", "fp", "unknown", "files", "finding_count",
     "precision_pct", "tp_rate_pct", "source_file",
 ]
 
@@ -138,10 +138,18 @@ def collect(results_dir: Path = RESULTS_DIR) -> tuple[list, list, list]:
         totals = data.get("totals", {})
 
         run_findings = 0
+        # A CWE row with no files was requested but not measurable -- Juliet
+        # has nine C++-only directories and this benchmark is C-only, so one
+        # of them (CWE762) sat in the tool lists scoring 0/0 until task 909.
+        # `cwe_count` is rows present, `cwes_measured` is rows that measured
+        # something; they differ only for runs taken before that fix.
+        measured = 0
         for cwe_id in sorted(per_cwe):
             c = per_cwe[cwe_id]
             errs = c.get("errors") or []
             run_findings += int(c.get("finding_count") or 0)
+            if int(c.get("files") or 0) > 0:
+                measured += 1
             cwes.append({
                 "run_key": run_key, "tool": tool, "tool_version": version,
                 "cwe_id": cwe_id, "cwe_dir": c.get("cwe_dir", ""),
@@ -176,6 +184,7 @@ def collect(results_dir: Path = RESULTS_DIR) -> tuple[list, list, list]:
             "finished_at": data.get("finished_at", ""),
             "duration_s": data.get("duration_s"),
             "cwe_count": len(per_cwe),
+            "cwes_measured": measured,
             "tp": tp, "fp": fp, "unknown": unknown,
             "files": totals.get("files", 0),
             "finding_count": run_findings,

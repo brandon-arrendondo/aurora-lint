@@ -209,13 +209,13 @@ SqC's case is breadth and reach, not beating clang-tidy at its sixteen:
 | | CERT C coverage | Juliet CWEs | Needs a build? | Real-world suite time |
 |---|---|---:|---|---:|
 | **SqC** | **311 rules**, 17 categories | **79** | **No** | ~1,190 s |
-| clang-tidy | ~20 `cert-*` checks | 16 | Yes | 501 s |
-| cppcheck | ~20 (addon) | 16 | No | 11,452 s |
-| [Infer](https://fbinfer.com/) | bug-type indexed | 11 | Yes | not run |
+| clang-tidy | ~20 `cert-*` checks | 15 | Yes | 501 s |
+| cppcheck | ~20 (addon) | 15 | No | 11,452 s |
+| [Infer](https://fbinfer.com/) | bug-type indexed | 10 | Yes | not run |
 | [Frama-C](https://frama-c.com/) | not rule-indexed | 6 | Yes | not run |
 
 cppcheck is the useful control, since it also runs without a build: on the same
-16 CWEs it scores 36.7% against SqC's 81.7%, and takes roughly ten times as long
+15 CWEs it scores 36.7% against SqC's 81.7%, and takes roughly ten times as long
 on real code.
 
 Per-CWE precision for all five tools, the speed measurements, and what the
