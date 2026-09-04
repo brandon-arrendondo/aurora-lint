@@ -780,3 +780,45 @@ Fast re-benchmark workflow:
     parallel --sshloginfile $NODES_FILE -a /tmp/cwe_dirs.txt \
       "$SQC_BIN {} -d $JULIET_DIR -d $JULIET_SUPPORT \
         --export $RESULTS_DIR/sqc/juliet/{/.}.csv"
+
+Exporting competitor results for ingest
+---------------------------------------
+
+``bench/competitors.py`` writes one JSON blob per run into
+``data/competitor_results/``, and those blobs are committed — they are the
+archival form and should not be edited or deleted.  They are not, however,
+ingestible: the shape is nested and the per-CWE map is keyed by CWE id, so a
+loader would have to know that module's internal layout to read it.
+
+``python -m bench competitor-export`` flattens every run JSON in that
+directory into three CSVs beside them:
+
+.. code-block:: text
+
+    competitor_runs.csv         one row per run       (tool, version, totals)
+    competitor_cwe_results.csv  one row per run × CWE (the measurements)
+    competitor_cwe_errors.csv   one row per error     (usually empty)
+
+``run_key`` joins them and is the JSON's own basename (e.g.
+``framac_20260403_222053``), so it is unique, stable across re-exports, and
+traceable back to the file it came from.
+
+**Run the export after every competitor benchmark and commit the result.**
+The benchmark host ingests these CSVs into ``sqc_bench``; a table missing its
+newest run looks exactly like a run that never happened.
+``python -m bench competitor-export --check`` exits nonzero if the CSVs are
+stale, and writes nothing.
+
+This repo stays Postgres-blind — no DSN, no connection code (see
+``CLAUDE.md``).  It *emits* a flat, diffable table; ``benchmarking_db`` owns
+the ingest, so nothing here changes when the target schema does.  The CSVs
+are a transport, not a source of truth: Postgres remains the only place an
+official number comes from, and re-exporting is idempotent and lossless with
+respect to the JSON.
+
+.. note::
+
+    The ``hostname`` column is blank for every run recorded before
+    2026-09-04, which is all four April runs.  Wall clock is
+    hardware-dependent, so a blank means "do not compare this run's duration
+    against another host's", not "same host".

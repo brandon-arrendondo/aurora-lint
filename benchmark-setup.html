@@ -95,6 +95,7 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#output-format-reference">Output Format Reference</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#distributed-benchmarking-with-gnu-parallel">Distributed Benchmarking with GNU Parallel</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#exporting-competitor-results-for-ingest">Exporting competitor results for ingest</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
@@ -918,6 +919,42 @@ parallel<span class="w"> </span>--sshloginfile<span class="w"> </span><span clas
 <span class="w">  </span><span class="s2">&quot;</span><span class="nv">$SQC_BIN</span><span class="s2"> {} -d </span><span class="nv">$JULIET_DIR</span><span class="s2"> -d </span><span class="nv">$JULIET_SUPPORT</span><span class="s2"> \</span>
 <span class="s2">    --export </span><span class="nv">$RESULTS_DIR</span><span class="s2">/sqc/juliet/{/.}.csv&quot;</span>
 </pre></div>
+</div>
+</section>
+<section id="exporting-competitor-results-for-ingest">
+<h2>Exporting competitor results for ingest<a class="headerlink" href="#exporting-competitor-results-for-ingest" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">bench/competitors.py</span></code> writes one JSON blob per run into
+<code class="docutils literal notranslate"><span class="pre">data/competitor_results/</span></code>, and those blobs are committed — they are the
+archival form and should not be edited or deleted.  They are not, however,
+ingestible: the shape is nested and the per-CWE map is keyed by CWE id, so a
+loader would have to know that module’s internal layout to read it.</p>
+<p><code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">competitor-export</span></code> flattens every run JSON in that
+directory into three CSVs beside them:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>competitor_runs.csv         one row per run       (tool, version, totals)
+competitor_cwe_results.csv  one row per run × CWE (the measurements)
+competitor_cwe_errors.csv   one row per error     (usually empty)
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">run_key</span></code> joins them and is the JSON’s own basename (e.g.
+<code class="docutils literal notranslate"><span class="pre">framac_20260403_222053</span></code>), so it is unique, stable across re-exports, and
+traceable back to the file it came from.</p>
+<p><strong>Run the export after every competitor benchmark and commit the result.</strong>
+The benchmark host ingests these CSVs into <code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code>; a table missing its
+newest run looks exactly like a run that never happened.
+<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">competitor-export</span> <span class="pre">--check</span></code> exits nonzero if the CSVs are
+stale, and writes nothing.</p>
+<p>This repo stays Postgres-blind — no DSN, no connection code (see
+<code class="docutils literal notranslate"><span class="pre">CLAUDE.md</span></code>).  It <em>emits</em> a flat, diffable table; <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code> owns
+the ingest, so nothing here changes when the target schema does.  The CSVs
+are a transport, not a source of truth: Postgres remains the only place an
+official number comes from, and re-exporting is idempotent and lossless with
+respect to the JSON.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">hostname</span></code> column is blank for every run recorded before
+2026-09-04, which is all four April runs.  Wall clock is
+hardware-dependent, so a blank means “do not compare this run’s duration
+against another host’s”, not “same host”.</p>
 </div>
 </section>
 </section>
