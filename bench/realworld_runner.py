@@ -1389,7 +1389,20 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
     if coverage and coverage.get("partial"):
         meta["coverage"] = coverage
         (version_dir / f"{run_id}.meta.json").write_text(json.dumps(meta))
-    ok = proc.returncode == 0 and "error" not in parsed
+    if tool == "clang-tidy":
+        # `find | xargs clang-tidy` exits 1 (xargs turns that into 123) the
+        # instant ONE file in the corpus fails to preprocess -- e.g. a
+        # build-generated header setup-compile-commands.yml restores away
+        # (task 767's libcrc case: crc32.c/crc64.c lose their .inc tables).
+        # That is normal partial coverage on real-world code, not a tool
+        # failure, and xargs keeps invoking clang-tidy on every other file
+        # regardless -- the result file already holds every finding the run
+        # could produce. Judge success on that (a parsable result file), the
+        # same signal Infer's capture phase judges on (task 767), not on the
+        # aggregate exit code of a pipeline that overloads it.
+        ok = "error" not in parsed
+    else:
+        ok = proc.returncode == 0 and "error" not in parsed
     note = ""
     if coverage and coverage.get("partial"):
         # Printed on the run line, not buried in the log: a partial scan's
