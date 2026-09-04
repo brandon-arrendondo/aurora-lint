@@ -301,7 +301,7 @@ def render_readme_highlights(db: BenchDBLike, juliet_run_id: str,
     lines = [
         "| Metric | Value |",
         "|--------|-------|",
-        f"| **Juliet TP Rate** | {ca['cwe_matched_tp_rate_pct']}% (v{juliet_version}) |",
+        f"| **Juliet Precision** | {ca['cwe_matched_tp_rate_pct']}% (v{juliet_version}) |",
         f"| **Juliet CWEs Scanned** | {juliet['summary']['cwes_analyzed']} "
         f"({mode_word} mode, CWE-matched rules) |",
         f"| **100% Precision CWEs** | {len(with_detections)} "
