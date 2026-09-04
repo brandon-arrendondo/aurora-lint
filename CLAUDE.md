@@ -406,6 +406,20 @@ hard precedence in either direction is measurably wrong.
   (`sqc_paper` deliberately differs and keeps the trailer — the PDF is its
   deliverable and nobody else works in its history.)
 
+  **Enforced by a `commit-msg` hook** (`scripts/check_commit_message.py`), because
+  prose alone did not hold: the trailer reached 172 commits before anyone
+  noticed. A human co-author named normally still passes. `commit-msg` is a
+  *second* hook type, so a clone that ran `pre-commit install` before the hook
+  existed has the config and no hook, silently — same shape as the merge-driver
+  trap below. One manual pass fixes it:
+
+  ```bash
+  pre-commit install --hook-type commit-msg
+  ```
+
+  `default_install_hook_types` in `.pre-commit-config.yaml` covers every fresh
+  install, so this is only for older clones.
+
 **REQUIRED:** hooks pass before a commit succeeds; if they fail, fix the cause;
 standard commit message format without AI attribution.
 
