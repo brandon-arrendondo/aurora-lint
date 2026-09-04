@@ -1333,12 +1333,28 @@ impl Int32C {
         function_name: &str,
         violations: &mut Vec<RuleViolation>,
     ) {
+        // Which argument positions actually carry a size computation.
+        // `realloc`'s first argument is the pointer being resized, never a
+        // size, but the loop below used to check every argument and would
+        // report "realloc() argument 1 contains arithmetic that may
+        // overflow: 'pglob->gl_pathv'" (task 915). `calloc` has two --
+        // nmemb and size -- and either can overflow the product.
+        let is_size_arg = |idx: usize| match function_name {
+            "realloc" => idx == 1,
+            "calloc" => idx <= 1,
+            _ => idx == 0,
+        };
+
         if let Some(arguments) = node.child_by_field_name("arguments") {
             let mut arg_idx = 0;
             for i in 0..arguments.child_count() {
                 if let Some(arg_node) = arguments.child(i) {
                     let kind = arg_node.kind();
                     if kind == "(" || kind == ")" || kind == "," {
+                        continue;
+                    }
+                    if !is_size_arg(arg_idx) {
+                        arg_idx += 1;
                         continue;
                     }
 
@@ -1363,7 +1379,7 @@ impl Int32C {
                     let check_node = resolved_rhs.as_ref().unwrap_or(&arg_node);
 
                     let arg_text = get_node_text(check_node, source);
-                    if self.contains_arithmetic(arg_text) {
+                    if self.node_contains_arithmetic(check_node, source) {
                         // Use const_eval to check if the arithmetic provably fits
                         let macros = self.current_macros.borrow();
                         let vra_ranges = self.vra_var_ranges_at(check_node, source);
@@ -2447,6 +2463,50 @@ impl Int32C {
 
     fn contains_arithmetic(&self, expr: &str) -> bool {
         expr.contains('+') || expr.contains('-') || expr.contains('*') || expr.contains('/')
+    }
+
+    /// AST dual of [`Self::contains_arithmetic`], used for allocation-size
+    /// arguments (task 915). A raw text scan cannot tell an arithmetic
+    /// operator from a punctuation coincidence: the `->` of a member access
+    /// reads as `-`, and the deref in `sizeof *p` reads as `*`. Both spell
+    /// a size argument with zero arithmetic in it, and both were flagged as
+    /// "contains arithmetic that may overflow".
+    ///
+    /// Walks the subtree instead and reports only a real operator: a
+    /// `binary_expression`, a `unary_expression` negation (`-x` overflows on
+    /// `INT_MIN`), or an `update_expression`. A `pointer_expression`'s `*`
+    /// is a deref, and a `sizeof` is a compile-time constant whose operand
+    /// is unevaluated -- neither can overflow, so `sizeof` is not descended
+    /// into at all. Operator set matches `contains_arithmetic`'s
+    /// deliberately (`%` excluded) so this stays an FP fix and does not
+    /// widen what the check fires on.
+    fn node_contains_arithmetic(&self, node: &Node, source: &str) -> bool {
+        if node.kind() == "sizeof_expression" {
+            return false;
+        }
+        if matches!(
+            node.kind(),
+            "binary_expression" | "unary_expression" | "update_expression"
+        ) {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if matches!(
+                        get_node_text(&child, source),
+                        "+" | "-" | "*" | "/" | "++" | "--"
+                    ) {
+                        return true;
+                    }
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if self.node_contains_arithmetic(&child, source) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn is_constant_expression(&self, expr: &str) -> bool {
