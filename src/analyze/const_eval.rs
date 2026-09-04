@@ -134,6 +134,33 @@ impl ValueRange {
     }
 }
 
+/// The value range a narrow integer type takes on after C's usual arithmetic
+/// conversions promote it to `int` — i.e. its own full representable range,
+/// since integer promotion is value-preserving. `None` for anything already
+/// `int`-wide or wider, which promotion leaves alone.
+///
+/// Plain `char`'s signedness is implementation-defined, so it is given the
+/// union of both interpretations (still tiny next to `int`'s range).
+///
+/// Seeding a [`VarRangeMap`] with these before calling
+/// [`try_evaluate_range`] is what lets a rule prove the thing promotion
+/// guarantees: no `+`, `-` or `*` over two promoted narrow operands can leave
+/// `int` (the widest such product, `-32768 * -32768`, is under `INT_MAX`).
+/// Shared by `INT08-C` and `INT32-C`, which each reached the same inverted
+/// premise — treating `char + char` as 8-bit arithmetic — independently.
+pub fn promoted_range_for_type(type_name: &str) -> Option<ValueRange> {
+    match type_name.trim() {
+        "char" => Some(ValueRange::new(-128, 255)),
+        "signed char" | "int8_t" => Some(ValueRange::new(-128, 127)),
+        "unsigned char" | "uint8_t" => Some(ValueRange::new(0, 255)),
+        "short" | "signed short" | "short int" | "signed short int" | "int16_t" => {
+            Some(ValueRange::new(-32768, 32767))
+        }
+        "unsigned short" | "unsigned short int" | "uint16_t" => Some(ValueRange::new(0, 65535)),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Built-in C standard limit macros (<limits.h>, <stdint.h>)
 // ---------------------------------------------------------------------------
