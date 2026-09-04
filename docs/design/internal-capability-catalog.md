@@ -429,7 +429,10 @@ Two deliberate exclusions, both load-bearing:
   task 644's API00-C re-audit found crediting assert-only guards was that
   rule's largest source of missed true positives. A rule for which an assert
   *is* the right answer should collect those conditions itself and hand them to
-  `condition_compares_var`, so the choice stays visible at the call site.
+  `condition_compares_var`, so the choice stays visible at the call site --
+  ARR38-C's `asserted_size_bound` is the worked example, and opts back in
+  because an `assert(len <= sizeof(buf))` before a copy states exactly the
+  capacity contract that rule asks about.
 - **A `do`-`while` condition does not count**, since it runs after the body and
   establishes nothing on the first iteration.
 

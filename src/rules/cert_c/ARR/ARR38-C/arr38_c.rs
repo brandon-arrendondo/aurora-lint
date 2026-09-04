@@ -4,6 +4,7 @@ use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, find_containing_function, get_node_text};
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -2376,16 +2377,15 @@ impl Arr38C {
             return false;
         }
 
-        // Scope every text search below to the enclosing function. `source` is
-        // the whole file, and both helpers this feeds were reading it as though
-        // it were the containing function: is_unvalidated_function_parameter
-        // takes `source.find('{')` as "the end of the function signature",
-        // which on whole-file input is the FIRST function's opening brace in
-        // the file regardless of which function the call site is in; and
-        // has_size_validation's substring search let an `if (n > ...)` in any
-        // function suppress the warning for a same-named parameter in every
-        // function. Same scoping is_short_string_source already applies a few
-        // dozen lines below, for the same reason.
+        // Scope the signature text search below to the enclosing function.
+        // `source` is the whole file, and is_unvalidated_function_parameter was
+        // reading it as though it were the containing function: it takes
+        // `source.find('{')` as "the end of the function signature", which on
+        // whole-file input is the FIRST function's opening brace in the file
+        // regardless of which function the call site is in. Same scoping
+        // is_short_string_source already applies a few dozen lines below, for
+        // the same reason. The guard test does NOT want this slice -- see
+        // has_size_validation.
         let scoped_source = find_containing_function(node)
             .map(|f| &source[f.start_byte()..f.end_byte()])
             .unwrap_or(source);
@@ -2410,7 +2410,7 @@ impl Arr38C {
             for name in &suspicious_names {
                 if size_arg == *name {
                     // Check if there's validation in the source
-                    if self.has_size_validation(size_arg, scoped_source) {
+                    if self.has_size_validation(size_arg, node, source) {
                         return false;
                     }
                     return true;
@@ -2419,7 +2419,7 @@ impl Arr38C {
 
             // Check if size_arg is a function parameter that's used directly
             // Pattern: void func(..., type size_arg) { ... memcpy(..., size_arg); }
-            if self.is_unvalidated_function_parameter(size_arg, scoped_source) {
+            if self.is_unvalidated_function_parameter(size_arg, node, scoped_source, source) {
                 return true;
             }
         }
@@ -2565,37 +2565,137 @@ impl Arr38C {
 
     /// Check if there's validation for a size parameter.
     ///
-    /// `source` must already be scoped to the containing function -- this is a
-    /// plain substring search, so whole-file input lets a validation in one
-    /// function suppress the warning for a same-named parameter in every
-    /// other function (task 682). Callers scope via `find_containing_function`.
-    fn has_size_validation(&self, size_arg: &str, source: &str) -> bool {
-        // Look for validation in if-statement conditions only
-        let validation_patterns = [
-            format!("if ({} >", size_arg),
-            format!("if ({} <", size_arg),
-            format!("if ({} >=", size_arg),
-            format!("if ({} <=", size_arg),
-            format!("if (1 + 2 + {}", size_arg), // Heartbleed specific validation pattern
-            format!("{} > sizeof", size_arg),
-            format!("{} >= sizeof", size_arg),
+    /// Structural, not textual (task 747): does a comparison on `size_arg`
+    /// dominate the copy site? The seven `format!("if ({} <", ...)` substrings
+    /// this replaced mistook one canonical spelling for the concept, so they
+    /// missed every guard written even slightly differently. The purest case
+    /// is sqlite `sessionVarintGetSafe`'s `if( nBuf<5 ){ memcpy(aCopy, aBuf,
+    /// nBuf); ... }` -- literally the `if (N <` the pattern set searched for,
+    /// missed on the absent spaces alone.
+    ///
+    /// `source` is the WHOLE file here, and deliberately not the
+    /// function-scoped slice the substring search needed: `node`'s byte
+    /// offsets index into the whole file, and dominance walks up from the site
+    /// and stops at the enclosing `function_definition`, so the scoping task
+    /// 682 had to bolt on is now inherent rather than a caller's obligation.
+    ///
+    /// `ComparisonKind::Any` because this is a SIZE question, where
+    /// `nBuf == 5` pins `nBuf` as well as `nBuf < 6` does. (API00-C passes the
+    /// narrow kind for its overflow question -- see `ComparisonKind`'s doc
+    /// comment for why the two differ.)
+    fn has_size_validation(&self, size_arg: &str, node: &Node, source: &str) -> bool {
+        guard_dominance::has_dominating_comparison(
+            size_arg,
+            node,
+            source,
+            guard_dominance::ComparisonKind::Any,
+        ) || Self::asserted_size_bound(size_arg, node, source)
+    }
+
+    /// True when an `assert`-shaped call preceding `site` in one of its
+    /// ancestor blocks tests `size_arg`.
+    ///
+    /// `guard_dominance` excludes asserts deliberately, and ARR38-C opts back
+    /// in here so the choice stays visible at the call site. The question
+    /// differs: for API00-C's *overflow* question, task 644 found crediting an
+    /// assert hid real defects that ship the moment `NDEBUG` is set, whereas
+    /// an `assert(len <= sizeof(buf))` before a copy is the author writing
+    /// down the capacity contract this rule is asking about -- task 731's
+    /// adjudication found six such rows, every one a false positive.
+    ///
+    /// Only preceding statements are scanned: an assert is a statement, so it
+    /// never encloses the copy site the way an `if` does. Preprocessor
+    /// wrappers count as blocks for the same reason `guard_dominance` treats
+    /// them so -- sqc does not preprocess, and `assert()` under an explicit
+    /// `#ifndef NDEBUG` is a common enough spelling that ignoring it would
+    /// leave the gap this task is about.
+    fn asserted_size_bound(size_arg: &str, site: &Node, source: &str) -> bool {
+        const BLOCK_LIKE_KINDS: &[&str] = &[
+            "compound_statement",
+            "preproc_if",
+            "preproc_ifdef",
+            "preproc_else",
+            "preproc_elif",
         ];
-        for pattern in &validation_patterns {
-            if source.contains(pattern.as_str()) {
-                return true;
+
+        let mut current = *site;
+        while let Some(parent) = current.parent() {
+            if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
+                let mut cursor = parent.walk();
+                let preceding = parent
+                    .named_children(&mut cursor)
+                    .take_while(|stmt| stmt.start_byte() < current.start_byte());
+                for stmt in preceding {
+                    if Self::asserts_bound_on(&stmt, size_arg, source) {
+                        return true;
+                    }
+                }
             }
+            if parent.kind() == "function_definition" {
+                break;
+            }
+            current = parent;
         }
         false
     }
 
+    /// Whether `stmt` -- or, when it is a preprocessor wrapper, any statement
+    /// inside it -- is an assert testing `size_arg`.
+    fn asserts_bound_on(stmt: &Node, size_arg: &str, source: &str) -> bool {
+        if stmt.kind().starts_with("preproc_") {
+            let mut cursor = stmt.walk();
+            let mut inner = stmt.named_children(&mut cursor);
+            return inner.any(|s| Self::asserts_bound_on(&s, size_arg, source));
+        }
+        Self::assert_condition(stmt, source).is_some_and(|cond| {
+            guard_dominance::condition_compares_var(
+                &cond,
+                size_arg,
+                source,
+                guard_dominance::ComparisonKind::Any,
+            )
+        })
+    }
+
+    /// The asserted condition of `stmt`, when `stmt` is an `assert`-shaped
+    /// call statement.
+    ///
+    /// Name-shape matched rather than a fixed list, because every project
+    /// spells it its own way (`assert`, curl's `DEBUGASSERT`, hostap's
+    /// `WPA_ASSERT`). A call that merely contains "assert" and compares the
+    /// size variable is still an author asserting something about that size,
+    /// so the generous match errs in the FP-reducing direction on purpose.
+    fn assert_condition<'a>(stmt: &Node<'a>, source: &str) -> Option<Node<'a>> {
+        let call = if stmt.kind() == "expression_statement" {
+            stmt.named_child(0)?
+        } else {
+            *stmt
+        };
+        if call.kind() != "call_expression" {
+            return None;
+        }
+        let name = get_node_text(&call.child_by_field_name("function")?, source);
+        if !name.to_ascii_lowercase().contains("assert") {
+            return None;
+        }
+        call.child_by_field_name("arguments")?.named_child(0)
+    }
+
     /// Check if a variable is a function parameter used without validation.
     ///
-    /// `source` must already be scoped to the containing function: the
-    /// signature lookup below takes the first `{` in `source` as the end of
-    /// the parameter list, which is only that function's opening brace when
-    /// `source` is that one function (task 682). Callers scope via
-    /// `find_containing_function`.
-    fn is_unvalidated_function_parameter(&self, size_arg: &str, source: &str) -> bool {
+    /// `scoped_source` must already be scoped to the containing function: the
+    /// signature lookup below takes the first `{` in it as the end of the
+    /// parameter list, which is only that function's opening brace when the
+    /// slice is that one function (task 682). Callers scope via
+    /// `find_containing_function`. `source` is the whole file, for the AST
+    /// guard test -- see `has_size_validation`.
+    fn is_unvalidated_function_parameter(
+        &self,
+        size_arg: &str,
+        node: &Node,
+        scoped_source: &str,
+        source: &str,
+    ) -> bool {
         // Look for function parameter patterns
         // Pattern: type func(..., unsigned int user_size) or similar
         // Use word boundaries to avoid partial matches (e.g., "n" matching "nchars")
@@ -2618,8 +2718,8 @@ impl Arr38C {
         let mut is_direct_param = false;
         for pattern in &param_patterns {
             // Check if it appears in a function signature (before first {)
-            if let Some(brace_pos) = source.find('{') {
-                let header = &source[..brace_pos];
+            if let Some(brace_pos) = scoped_source.find('{') {
+                let header = &scoped_source[..brace_pos];
                 if header.contains(pattern.as_str()) && header.contains('(') {
                     is_direct_param = true;
                     break;
@@ -2638,7 +2738,7 @@ impl Arr38C {
         }
 
         // Check if there's validation before use
-        if !self.has_size_validation(size_arg, source) {
+        if !self.has_size_validation(size_arg, node, source) {
             return true;
         }
 
