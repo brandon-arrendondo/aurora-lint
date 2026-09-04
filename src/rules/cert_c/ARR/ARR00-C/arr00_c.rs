@@ -18,8 +18,10 @@ use crate::analyze::const_eval::{collect_macro_constants, MacroConstantMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     find_containing_function, get_function_parameters, get_sanitized_node_text,
-    is_array_parameter_type, is_function_parameter, is_inside_loop, is_write_context,
+    is_array_parameter_type, is_function_parameter, is_inside_loop, is_pointer_type,
+    is_write_context,
 };
+use crate::utility::cert_c::overflow_helpers::collect_variable_types;
 use crate::utility::cert_c::size_analysis::{
     find_allocation_size, find_element_size, find_string_literal_length,
 };
@@ -2204,6 +2206,33 @@ fn check_pointer_subtraction(node: &Node, source: &str) -> Option<RuleViolation>
 
     // Find the containing function to look up pointer origins
     let function_node = find_containing_function(node)?;
+
+    // Both operands must actually BE pointers. `find_pointer_source_array`
+    // below is a backwards TEXT scan for `<name> = ` with no notion of type,
+    // so an ordinary scalar swap -- `tmp = startAngle; startAngle = endAngle;
+    // endAngle = tmp;` over three floats -- resolves each operand to the
+    // other's name and the subtraction reads as spanning two arrays. Gate
+    // before resolving provenance rather than trying to sanity-check the
+    // resolved base afterwards.
+    //
+    // A name the type map doesn't cover is NOT treated as a pointer: an
+    // unknown operand is exactly the case that produced the false positives.
+    // The recall this costs, stated rather than discovered later: a pointer
+    // behind a typedef (`MyPtr p;`) and a file-scope global are both invisible
+    // to `collect_variable_types`, so a subtraction between two of those is
+    // no longer reported. A name declared as an ARRAY is also recorded without
+    // pointer-ness, but loses nothing -- the text scan never resolves a base
+    // for `int arr[10];`, since the declaration contains no `arr = `.
+    let var_types = collect_variable_types(&function_node, source);
+    let is_pointer_operand = |name: &str| {
+        var_types
+            .get(name)
+            .is_some_and(|type_str| is_pointer_type(type_str))
+    };
+    if !is_pointer_operand(left_name) || !is_pointer_operand(right_name) {
+        return None;
+    }
+
     let function_start = function_node.start_byte();
     let subtraction_position = node.start_byte();
     let preceding_text = &source[function_start..subtraction_position];
