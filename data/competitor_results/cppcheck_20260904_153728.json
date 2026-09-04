@@ -1,0 +1,176 @@
+{
+  "tool": "cppcheck",
+  "tool_version": "Cppcheck 2.13.0",
+  "started_at": "2026-09-04T15:31:39.074581+00:00",
+  "cwes": {
+    "CWE121": {
+      "cwe_dir": "CWE121_Stack_Based_Buffer_Overflow",
+      "tp": 12765,
+      "fp": 18450,
+      "unknown": 72,
+      "files": 5906,
+      "duration_s": 66.7,
+      "errors": [],
+      "finding_count": 31287
+    },
+    "CWE122": {
+      "cwe_dir": "CWE122_Heap_Based_Buffer_Overflow",
+      "tp": 3786,
+      "fp": 4784,
+      "unknown": 0,
+      "files": 3656,
+      "duration_s": 42.9,
+      "errors": [],
+      "finding_count": 8570
+    },
+    "CWE124": {
+      "cwe_dir": "CWE124_Buffer_Underwrite",
+      "tp": 2684,
+      "fp": 3991,
+      "unknown": 0,
+      "files": 1896,
+      "duration_s": 23.4,
+      "errors": [],
+      "finding_count": 6675
+    },
+    "CWE127": {
+      "cwe_dir": "CWE127_Buffer_Underread",
+      "tp": 3464,
+      "fp": 5035,
+      "unknown": 0,
+      "files": 1896,
+      "duration_s": 22.1,
+      "errors": [],
+      "finding_count": 8499
+    },
+    "CWE190": {
+      "cwe_dir": "CWE190_Integer_Overflow",
+      "tp": 3626,
+      "fp": 9531,
+      "unknown": 0,
+      "files": 5040,
+      "duration_s": 62.1,
+      "errors": [],
+      "finding_count": 13157
+    },
+    "CWE191": {
+      "cwe_dir": "CWE191_Integer_Underflow",
+      "tp": 2787,
+      "fp": 7195,
+      "unknown": 0,
+      "files": 3864,
+      "duration_s": 47.2,
+      "errors": [],
+      "finding_count": 9982
+    },
+    "CWE197": {
+      "cwe_dir": "CWE197_Numeric_Truncation_Error",
+      "tp": 654,
+      "fp": 954,
+      "unknown": 0,
+      "files": 1008,
+      "duration_s": 11.5,
+      "errors": [],
+      "finding_count": 1608
+    },
+    "CWE369": {
+      "cwe_dir": "CWE369_Divide_by_Zero",
+      "tp": 765,
+      "fp": 2007,
+      "unknown": 0,
+      "files": 1008,
+      "duration_s": 15.6,
+      "errors": [],
+      "finding_count": 2772
+    },
+    "CWE401": {
+      "cwe_dir": "CWE401_Memory_Leak",
+      "tp": 1334,
+      "fp": 3244,
+      "unknown": 0,
+      "files": 1228,
+      "duration_s": 13.6,
+      "errors": [],
+      "finding_count": 4578
+    },
+    "CWE415": {
+      "cwe_dir": "CWE415_Double_Free",
+      "tp": 294,
+      "fp": 630,
+      "unknown": 0,
+      "files": 336,
+      "duration_s": 3.5,
+      "errors": [],
+      "finding_count": 924
+    },
+    "CWE416": {
+      "cwe_dir": "CWE416_Use_After_Free",
+      "tp": 183,
+      "fp": 388,
+      "unknown": 4,
+      "files": 150,
+      "duration_s": 2.1,
+      "errors": [],
+      "finding_count": 575
+    },
+    "CWE476": {
+      "cwe_dir": "CWE476_NULL_Pointer_Dereference",
+      "tp": 752,
+      "fp": 1426,
+      "unknown": 0,
+      "files": 372,
+      "duration_s": 3.7,
+      "errors": [],
+      "finding_count": 2178
+    },
+    "CWE680": {
+      "cwe_dir": "CWE680_Integer_Overflow_to_Buffer_Overflow",
+      "tp": 270,
+      "fp": 390,
+      "unknown": 0,
+      "files": 336,
+      "duration_s": 4.7,
+      "errors": [],
+      "finding_count": 660
+    },
+    "CWE690": {
+      "cwe_dir": "CWE690_NULL_Deref_From_Return",
+      "tp": 534,
+      "fp": 718,
+      "unknown": 0,
+      "files": 1120,
+      "duration_s": 10.4,
+      "errors": [],
+      "finding_count": 1252
+    },
+    "CWE761": {
+      "cwe_dir": "CWE761_Free_Pointer_Not_at_Start_of_Buffer",
+      "tp": 388,
+      "fp": 478,
+      "unknown": 0,
+      "files": 672,
+      "duration_s": 20.1,
+      "errors": [],
+      "finding_count": 866
+    },
+    "CWE762": {
+      "cwe_dir": "",
+      "tp": 0,
+      "fp": 0,
+      "unknown": 0,
+      "files": 0,
+      "duration_s": 0,
+      "errors": [],
+      "finding_count": 0
+    }
+  },
+  "totals": {
+    "tp": 34286,
+    "fp": 59221,
+    "unknown": 76,
+    "files": 28488,
+    "tp_rate_pct": 36.6
+  },
+  "duration_s": 349.7,
+  "finished_at": "2026-09-04T15:37:28.750057+00:00"
+}
