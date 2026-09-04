@@ -7,7 +7,31 @@
 # instrumented build + full test run dominated commit wall-clock time.
 # Run it manually before any tag push: scripts/coverage-gate.sh 75
 
+# `pre-commit install` sets up BOTH hook types because of this line. Without
+# it, the commit-msg hook below is silently inert in any clone that installed
+# hooks before it existed -- the same trap the merge driver has. An older
+# clone needs one manual pass: `pre-commit install --hook-type commit-msg`.
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
+  - repo: local
+    hooks:
+      - id: no-claude-coauthor
+        name: no Co-Authored-By Claude
+        description: >-
+          Reject commit messages carrying a `Co-Authored-By: Claude` trailer.
+          CLAUDE.md forbids it: the contribution is acknowledged once,
+          deliberately, in README.md's "AI Assistance" section, and repeating
+          it per commit crowds out the message. Nothing enforced this, so it
+          reached 172 commits before anyone noticed. A human co-author named
+          normally still passes -- the pattern requires the name Claude.
+          sqc_paper deliberately keeps the trailer; do not copy this hook
+          there.
+        entry: python3 scripts/check_commit_message.py
+        language: system
+        stages: [commit-msg]
+        verbose: true
+
   # Local hooks for Rust
 
   - repo: local
