@@ -48,10 +48,31 @@ impl Arr36C {
         file_scope.collect_file_scope(node, source);
 
         // Second pass: per-function analysis with file-scope as base
-        for func in query::find_descendants_of_kind(*node, "function_definition") {
-            let mut analyzer = PointerAnalyzer::from(&file_scope);
-            analyzer.collect_declarations(&func, source);
-            self.check_node(&func, source, &analyzer, violations);
+        let funcs = query::find_descendants_of_kind(*node, "function_definition");
+        let analyzers: Vec<PointerAnalyzer> = funcs
+            .iter()
+            .map(|func| {
+                let mut analyzer = PointerAnalyzer::from(&file_scope);
+                analyzer.collect_declarations(func, source);
+                analyzer
+            })
+            .collect();
+
+        // Callers before callees: two pointer PARAMETERS are reported as
+        // different arrays only when a call site in this file proves they are,
+        // so every call site has to be read first (see `CallSiteBases`).
+        let mut call_sites = CallSiteBases::default();
+        for (func, analyzer) in funcs.iter().zip(&analyzers) {
+            call_sites.collect_from(func, source, analyzer);
+        }
+
+        for (func, analyzer) in funcs.iter().zip(&analyzers) {
+            let frame = FrameContext {
+                function_name: function_name_of(func, source),
+                param_indices: parameter_indices(func, source),
+                call_sites: &call_sites,
+            };
+            self.check_node(func, source, analyzer, &frame, violations);
         }
     }
 
@@ -60,10 +81,11 @@ impl Arr36C {
         node: &Node,
         source: &str,
         analyzer: &PointerAnalyzer,
+        frame: &FrameContext,
         violations: &mut Vec<RuleViolation>,
     ) {
         for binary_expr in query::find_descendants_of_kind(*node, "binary_expression") {
-            self.check_binary_expression(&binary_expr, source, analyzer, violations);
+            self.check_binary_expression(&binary_expr, source, analyzer, frame, violations);
         }
     }
 
@@ -72,15 +94,16 @@ impl Arr36C {
         node: &Node,
         source: &str,
         analyzer: &PointerAnalyzer,
+        frame: &FrameContext,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(operator) = get_operator(node, source) {
             match operator.as_str() {
                 "-" => {
-                    self.check_pointer_subtraction(node, source, analyzer, violations);
+                    self.check_pointer_subtraction(node, source, analyzer, frame, violations);
                 }
                 "<" | "<=" | ">" | ">=" => {
-                    self.check_pointer_comparison(node, source, analyzer, violations);
+                    self.check_pointer_comparison(node, source, analyzer, frame, violations);
                 }
                 _ => {}
             }
@@ -92,6 +115,7 @@ impl Arr36C {
         node: &Node,
         source: &str,
         analyzer: &PointerAnalyzer,
+        frame: &FrameContext,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let (Some(left), Some(right)) = (
@@ -102,7 +126,7 @@ impl Arr36C {
             let right_info = analyzer.get_pointer_info(&right, source);
 
             if let (Some(left_array), Some(right_array)) = (left_info, right_info) {
-                if left_array != right_array {
+                if left_array != right_array && frame.reportable(&left_array, &right_array) {
                     let start_point = node.start_position();
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
@@ -127,6 +151,7 @@ impl Arr36C {
         node: &Node,
         source: &str,
         analyzer: &PointerAnalyzer,
+        frame: &FrameContext,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let (Some(left), Some(right)) = (
@@ -137,7 +162,7 @@ impl Arr36C {
             let right_info = analyzer.get_pointer_info(&right, source);
 
             if let (Some(left_array), Some(right_array)) = (left_info, right_info) {
-                if left_array != right_array {
+                if left_array != right_array && frame.reportable(&left_array, &right_array) {
                     let start_point = node.start_position();
                     let op = get_operator(node, source).unwrap_or("?".to_string());
                     violations.push(RuleViolation {
@@ -159,6 +184,158 @@ impl Arr36C {
     }
 }
 
+/// What one function's frame knows about its own parameters, used to decide
+/// whether a parameter-vs-parameter report is warranted at all.
+struct FrameContext<'a> {
+    /// This function's name, when its declarator gives one. Call sites are
+    /// matched to it by name, which is exact within one translation unit.
+    function_name: Option<String>,
+    /// Parameter name -> position in the parameter list, for every parameter
+    /// of THIS function, pointer or not: an argument's position has to line
+    /// up with the whole list.
+    param_indices: HashMap<String, usize>,
+    call_sites: &'a CallSiteBases,
+}
+
+impl FrameContext<'_> {
+    /// Whether a mismatched base pair is a violation this frame can claim.
+    ///
+    /// A pointer parameter's base is synthetic (`param:name`), so two
+    /// distinct parameters ALWAYS compare unequal -- which made every
+    /// `(u8 **pos, u8 *end)` bounds check a violation even though the caller
+    /// derives both from one buffer. Nothing inside the function settles it;
+    /// the fact lives in the caller. So the default is inverted here: two
+    /// parameters are taken to share an object unless a call site in this
+    /// file passes two provably distinct objects (task 753). Every other base
+    /// pair is unaffected -- a local array against a parameter is still
+    /// decided inside the frame that declares it.
+    fn reportable(&self, left: &str, right: &str) -> bool {
+        let (Some(left), Some(right)) = (self.own_param_index(left), self.own_param_index(right))
+        else {
+            return true;
+        };
+        match &self.function_name {
+            Some(name) => self.call_sites.proves_distinct(name, left, right),
+            None => false,
+        }
+    }
+
+    /// Position of the parameter a `param:` base names, when it is a
+    /// parameter of this function. `collect_declarations` also records
+    /// parameters of nested declarators (a function-pointer parameter's own
+    /// parameters), which are not in this list and yield `None`.
+    fn own_param_index(&self, base: &str) -> Option<usize> {
+        self.param_indices
+            .get(base.strip_prefix("param:")?)
+            .copied()
+    }
+}
+
+/// Every direct call in this file, by callee name, recording which storage
+/// OBJECT each argument denotes.
+///
+/// This is the caller-side fact the parameter model needs, gathered in the
+/// only frame `check()` actually has. It is deliberately file-local: a callee
+/// whose callers all live in other translation units has no proof here, and
+/// its parameters stay assumed to share an object. Closing that gap needs the
+/// same predicate computed during prescan.
+#[derive(Default)]
+struct CallSiteBases {
+    per_callee: HashMap<String, Vec<Vec<Option<String>>>>,
+}
+
+impl CallSiteBases {
+    /// Record every direct call in `func`, resolving each argument in the
+    /// CALLER's own frame (`analyzer`).
+    fn collect_from(&mut self, func: &Node, source: &str, analyzer: &PointerAnalyzer) {
+        for call in query::find_descendants_of_kind(*func, "call_expression") {
+            let (Some(callee), Some(args)) = (
+                call.child_by_field_name("function"),
+                call.child_by_field_name("arguments"),
+            ) else {
+                continue;
+            };
+            // Only a name resolves to a definition in this file; `obj->cb(...)`
+            // is opaque.
+            if callee.kind() != "identifier" {
+                continue;
+            }
+            let bases = argument_nodes(&args)
+                .iter()
+                .map(|arg| analyzer.argument_object_base(arg, source))
+                .collect();
+            self.per_callee
+                .entry(ast_utils::get_node_text(&callee, source).to_string())
+                .or_default()
+                .push(bases);
+        }
+    }
+
+    /// True if some call site passes two named, DIFFERENT storage objects at
+    /// positions `left` and `right`. One such call site is enough: if any
+    /// caller passes two distinct arrays, the comparison inside the callee is
+    /// undefined whenever that caller's path runs.
+    fn proves_distinct(&self, callee: &str, left: usize, right: usize) -> bool {
+        let Some(sites) = self.per_callee.get(callee) else {
+            return false;
+        };
+        sites
+            .iter()
+            .any(|args| match (args.get(left), args.get(right)) {
+                (Some(Some(left)), Some(Some(right))) => left != right,
+                _ => false,
+            })
+    }
+}
+
+/// The argument expressions of a call, in order. `argument_list` also holds
+/// the parentheses and commas, which are unnamed, and any comment between
+/// arguments.
+fn argument_nodes<'tree>(args: &Node<'tree>) -> Vec<Node<'tree>> {
+    (0..args.child_count())
+        .filter_map(|i| args.child(i))
+        .filter(|child| child.is_named() && child.kind() != "comment")
+        .collect()
+}
+
+/// Name of a function definition, from its (possibly pointer-wrapped)
+/// declarator.
+fn function_name_of(func: &Node, source: &str) -> Option<String> {
+    let declarator = func.child_by_field_name("declarator")?;
+    let name = ast_utils::get_identifier_from_declarator(&declarator, source);
+    (!name.is_empty()).then_some(name)
+}
+
+/// This function's parameter names, mapped to their position in the parameter
+/// list. Unnamed parameters (`void`, an abstract declarator) still consume a
+/// position, so the count has to include them.
+fn parameter_indices(func: &Node, source: &str) -> HashMap<String, usize> {
+    let mut indices = HashMap::new();
+    let Some(declarator) = func.child_by_field_name("declarator") else {
+        return indices;
+    };
+    // Pre-order, so the function's own list comes before any list belonging to
+    // a function-pointer parameter.
+    let Some(list) = query::find_descendants_of_kind(declarator, "parameter_list")
+        .first()
+        .copied()
+    else {
+        return indices;
+    };
+    let params = (0..list.child_count())
+        .filter_map(|i| list.child(i))
+        .filter(|child| child.kind() == "parameter_declaration");
+    for (position, param) in params.enumerate() {
+        if let Some(param_declarator) = param.child_by_field_name("declarator") {
+            let name = ast_utils::get_identifier_from_declarator(&param_declarator, source);
+            if !name.is_empty() {
+                indices.insert(name, position);
+            }
+        }
+    }
+    indices
+}
+
 struct PointerAnalyzer {
     // Maps variable names to their array base (for tracking which array they belong to)
     variable_arrays: HashMap<String, String>,
@@ -166,6 +343,12 @@ struct PointerAnalyzer {
     // known. `variable_arrays` answers "which array is this in"; this answers
     // the prior question of whether the name can be in an array at all.
     pointer_vars: HashSet<String>,
+    // Names declared with an array declarator -- `char buf[N]` -- and so
+    // naming storage of their own. A pointer variable is NOT in here however
+    // well its base is known, because only a declaration of storage settles
+    // which object an argument hands to a callee (see
+    // `argument_object_base`).
+    array_objects: HashSet<String>,
 }
 
 impl PointerAnalyzer {
@@ -173,6 +356,7 @@ impl PointerAnalyzer {
         Self {
             variable_arrays: HashMap::new(),
             pointer_vars: HashSet::new(),
+            array_objects: HashSet::new(),
         }
     }
 
@@ -180,6 +364,7 @@ impl PointerAnalyzer {
         Self {
             variable_arrays: base.variable_arrays.clone(),
             pointer_vars: base.pointer_vars.clone(),
+            array_objects: base.array_objects.clone(),
         }
     }
 
@@ -257,6 +442,7 @@ impl PointerAnalyzer {
                     self.pointer_vars.insert(var_name.clone());
                     // Array declarations create their own storage — the variable IS its own base.
                     if declarator.kind() == "array_declarator" {
+                        self.array_objects.insert(var_name.clone());
                         self.variable_arrays.insert(var_name.clone(), var_name);
                         continue;
                     }
@@ -567,6 +753,85 @@ impl PointerAnalyzer {
             Some(base) => base.clone(),
             None => name,
         }
+    }
+
+    /// The storage OBJECT an argument expression hands to a callee, when this
+    /// frame can name one: a declared array, the address of a non-pointer
+    /// variable or struct member, a string or compound literal, or a fresh
+    /// allocation.
+    ///
+    /// `None` for anything whose object this frame cannot name -- above all a
+    /// bare pointer variable and `&ptr`. That is the point rather than a
+    /// limitation: `f(&pos, end)` passes a cursor and its bound, and which
+    /// buffer they walk is no more knowable in the caller than in the callee,
+    /// so counting two pointer variables as two objects would restate one
+    /// frame up exactly the assumption this is here to remove (task 753).
+    fn argument_object_base(&self, node: &Node, source: &str) -> Option<String> {
+        let text = |n: &Node| source[n.start_byte()..n.end_byte()].to_string();
+        match node.kind() {
+            "identifier" => {
+                let name = text(node);
+                self.array_objects.contains(&name).then_some(name)
+            }
+            // Each literal is its own object, as `extract_array_base` has it.
+            "string_literal" | "compound_literal_expression" => {
+                Some(format!("{}@{}", text(node), node.start_byte()))
+            }
+            "cast_expression" => {
+                self.argument_object_base(&node.child_by_field_name("value")?, source)
+            }
+            // `arr + n` is still in `arr`.
+            "binary_expression" => {
+                self.argument_object_base(&node.child_by_field_name("left")?, source)
+            }
+            "call_expression" => self.allocation_object(node, source),
+            "pointer_expression" | "unary_expression" => {
+                let operator = node.child(0)?;
+                if ast_utils::get_node_text(&operator, source) != "&" {
+                    // `*p` names whatever p points to, which is the unknown.
+                    return None;
+                }
+                self.object_of_lvalue(&node.child_by_field_name("argument")?, source)
+            }
+            _ => None,
+        }
+    }
+
+    /// The object an lvalue names, for the `&lvalue` case.
+    ///
+    /// A pointer variable is excluded even though `&ptr` does name storage:
+    /// what the callee then compares is `*param`, whose object is the
+    /// pointer's target, not the pointer.
+    fn object_of_lvalue(&self, node: &Node, source: &str) -> Option<String> {
+        let text = |n: &Node| source[n.start_byte()..n.end_byte()].to_string();
+        match node.kind() {
+            "identifier" => {
+                let name = text(node);
+                let names_storage =
+                    self.array_objects.contains(&name) || !self.pointer_vars.contains(&name);
+                names_storage.then_some(name)
+            }
+            // Two members of one struct are two objects.
+            "field_expression" => Some(text(node)),
+            // `&matrix[i]` is in `matrix`.
+            "subscript_expression" => {
+                self.object_of_lvalue(&node.child_by_field_name("argument")?, source)
+            }
+            _ => None,
+        }
+    }
+
+    /// A fresh allocation is its own object, so two allocation calls are two
+    /// objects. Mirrors the allocation arm of `extract_array_base`.
+    fn allocation_object(&self, node: &Node, source: &str) -> Option<String> {
+        let func_node = node.child_by_field_name("function")?;
+        let func_name = ast_utils::get_node_text(&func_node, source);
+        let canonical = func_name.strip_prefix("os_").unwrap_or(func_name);
+        matches!(
+            canonical,
+            "malloc" | "calloc" | "realloc" | "aligned_alloc" | "alloca"
+        )
+        .then(|| format!("alloc@{}", node.start_byte()))
     }
 
     fn get_pointer_info(&self, node: &Node, source: &str) -> Option<String> {
