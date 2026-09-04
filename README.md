@@ -81,7 +81,7 @@ Measured, not asserted. Two benchmarks, both with published methodology.
 <!-- BENCH:HIGHLIGHTS:START -->
 | Metric | Value |
 |--------|-------|
-| **Juliet TP Rate** | 87.1% (v0.4.321) |
+| **Juliet Precision** | 87.1% (v0.4.321) |
 | **Juliet CWEs Scanned** | 79 (fast mode, CWE-matched rules) |
 | **100% Precision CWEs** | 43 (zero false positives, with real detections) |
 | **Per-File Detection** | 38.0% (19,073 / 50,256 files) |
