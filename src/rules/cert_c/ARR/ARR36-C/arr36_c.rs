@@ -2,7 +2,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Arr36C;
@@ -162,18 +162,24 @@ impl Arr36C {
 struct PointerAnalyzer {
     // Maps variable names to their array base (for tracking which array they belong to)
     variable_arrays: HashMap<String, String>,
+    // Every name DECLARED as a pointer or array, whether or not its base is
+    // known. `variable_arrays` answers "which array is this in"; this answers
+    // the prior question of whether the name can be in an array at all.
+    pointer_vars: HashSet<String>,
 }
 
 impl PointerAnalyzer {
     fn new() -> Self {
         Self {
             variable_arrays: HashMap::new(),
+            pointer_vars: HashSet::new(),
         }
     }
 
     fn from(base: &PointerAnalyzer) -> Self {
         Self {
             variable_arrays: base.variable_arrays.clone(),
+            pointer_vars: base.pointer_vars.clone(),
         }
     }
 
@@ -245,6 +251,10 @@ impl PointerAnalyzer {
                     if var_name.is_empty() {
                         continue;
                     }
+                    // Declared pointer or array. Recorded even when the base is
+                    // unknown (a bare `int *p;`), because a later `p = buf;` is
+                    // only trackable if we know p can hold a pointer at all.
+                    self.pointer_vars.insert(var_name.clone());
                     // Array declarations create their own storage — the variable IS its own base.
                     if declarator.kind() == "array_declarator" {
                         self.variable_arrays.insert(var_name.clone(), var_name);
@@ -281,6 +291,7 @@ impl PointerAnalyzer {
         if let Some(declarator) = node.child_by_field_name("declarator") {
             let param_name = ast_utils::get_identifier_from_declarator(&declarator, source);
             if !param_name.is_empty() {
+                self.pointer_vars.insert(param_name.clone());
                 // Use the parameter name itself as the "array base" to make it unique
                 // This ensures parameters are only equal to themselves
                 self.variable_arrays
@@ -322,6 +333,15 @@ impl PointerAnalyzer {
                         if var_name.is_empty()
                             || !var_name.chars().all(|c| c.is_alphanumeric() || c == '_')
                         {
+                            continue;
+                        }
+                        // Only a declared pointer or array can be IN an array.
+                        // Without this gate an ordinary scalar swap --
+                        // `startAngle = endAngle; endAngle = tmp;` over three
+                        // floats -- puts both names in `variable_arrays`, and the
+                        // subtraction below them is then reported as pointer
+                        // subtraction between different arrays (task 769).
+                        if !self.pointer_vars.contains(&var_name) {
                             continue;
                         }
                         let array_base = self.extract_array_base(&right, source);
