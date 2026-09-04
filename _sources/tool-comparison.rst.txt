@@ -346,15 +346,28 @@ Juliet, all four on one host (2026-09-04), CWE list sizes differing:
      - 6
      - Slowest by 2×, on the smallest list.
 
-.. note::
+.. warning::
 
-   These four are directly comparable to each other — same host, same day —
-   which the April figures (895 s / 5,944 s / 5,019 s / 9,914 s) were not
-   guaranteed to be, and are roughly 2.6–2.9× slower across all four. That
-   ratio being uniform across unrelated tools is what identifies it as the
-   host rather than the versions; three of the four produced identical
-   findings either way. The runs record no hostname to confirm it, which is
-   tracked separately.
+   **These durations are comparable to each other and to nothing else.** All
+   four ran on one host (dev-921, i5-12400) on one day. The April figures —
+   895 s / 5,944 s / 5,019 s / 9,914 s — were taken on an r720, roughly ten
+   years older and materially slower per core, so the two sets are separated
+   by a hardware generation and no ratio between them means anything. They
+   are not quoted side by side here for that reason.
+
+   That the *findings* are unaffected is what makes the two sets usable at
+   all: three of the four tools produced byte-identical results on both
+   machines, so precision and coverage cross the boundary freely. Only wall
+   clock does not.
+
+   Speed is a real metric for SqC, but evaluating it means running the
+   comparison on like hardware — which is a separate exercise from this one.
+   The runs still record no hostname of their own; attribution lives in
+   ``data/competitor_results/run_hosts.json`` with its source stated per
+   entry, and is surfaced in the exported CSV as ``hostname`` +
+   ``hostname_source``.
+
+.. note::
 
    The "CWE list" column is the size of the list each tool was *given*, not
    the number measured. One entry in each list (CWE-762, mismatched memory
@@ -388,8 +401,10 @@ Real-World Precision, Per Rule
 .. note::
 
    **All four competitor columns were re-measured on 2026-09-04**, on one
-   host, at the versions in the table above.  Three of the four reproduced
-   their April figures *exactly*:
+   host (dev-921), at the versions in the table above.  The April runs were
+   on a different and much older machine (r720), which affects wall clock
+   only — see the warning under Speed.  Three of the four reproduced their
+   April figures *exactly*:
 
    .. list-table::
       :header-rows: 1
