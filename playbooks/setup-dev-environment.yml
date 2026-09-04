@@ -169,7 +169,12 @@
       register: invoke_check
       changed_when: false
 
-    - name: Install the pre-commit git hook into this checkout
+    # Installs BOTH the pre-commit and commit-msg hooks: the config sets
+    # default_install_hook_types, so a plain `install` covers the commit-msg
+    # hook that rejects the Co-Authored-By: Claude trailer. Older clones that
+    # installed before that hook existed need one manual pass --
+    # `pre-commit install --hook-type commit-msg`. See CLAUDE.md.
+    - name: Install the pre-commit and commit-msg git hooks into this checkout
       command: "{{ dev_venv }}/bin/pre-commit install"
       args:
         chdir: "{{ project_dir }}"
