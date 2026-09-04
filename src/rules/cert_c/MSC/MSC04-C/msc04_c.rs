@@ -14,7 +14,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use tree_sitter::Node;
 
 #[derive(Debug)]
@@ -97,47 +97,86 @@ impl Msc04C {
         }
     }
 
-    /// Detect if `start` participates in a recursion cycle via DFS on the call graph.
-    /// Returns the cycle path if found (e.g., ["a", "b", "a"] for mutual recursion).
-    fn find_cycle(
+    /// Detect if `start` participates in a recursion cycle, returning the
+    /// cycle path if one exists (e.g., ["a", "b", "a"] for mutual recursion).
+    ///
+    /// Breadth-first, not depth-first, and the choice is load-bearing twice
+    /// over:
+    ///
+    /// * **The path has to be the same on every run.** Callee sets are
+    ///   `HashSet`s, and Rust's default hasher is reseeded per process, so
+    ///   any "report whichever cycle the traversal reached first" answer
+    ///   varies between two runs of the same binary over the same tree.
+    ///   That makes an unchanged finding look changed in a run-to-run diff.
+    ///   Expanding each node's callees in sorted order and returning the
+    ///   *shortest* cycle picks one path independently of hash order.
+    ///
+    /// * **A DFS here dropped real cycles.** The previous implementation
+    ///   marked a node visited and never unmarked it on backtrack, so a node
+    ///   first explored down one branch was closed to every later branch and
+    ///   cycles routed through it were never found at all. A global visited
+    ///   set is a reachability memo, not a cycle-search one. Under BFS that
+    ///   is exactly what it means: the first time the search reaches a node
+    ///   it has already reached it by a shortest path, so skipping it later
+    ///   discards only longer paths, never the existence of a cycle.
+    ///
+    /// A self-loop on `start` alone is not reported here; direct recursion
+    /// is detected and worded separately by the caller.
+    fn find_cycle<'g>(
         &self,
-        start: &str,
-        graph: &HashMap<String, HashSet<String>>,
+        start: &'g str,
+        graph: &'g HashMap<String, HashSet<String>>,
     ) -> Option<Vec<String>> {
-        let mut visited = HashSet::new();
-        let mut path = Vec::new();
-        self.dfs_cycle(start, start, graph, &mut visited, &mut path)
-    }
+        // `parent[n]` is the node BFS first reached `n` from, so the chain
+        // back from any node spells a shortest path from `start`.
+        let mut parent: HashMap<&'g str, &'g str> = HashMap::new();
+        let mut visited: HashSet<&'g str> = HashSet::new();
+        let mut queue: VecDeque<&'g str> = VecDeque::new();
 
-    fn dfs_cycle(
-        &self,
-        current: &str,
-        target: &str,
-        graph: &HashMap<String, HashSet<String>>,
-        visited: &mut HashSet<String>,
-        path: &mut Vec<String>,
-    ) -> Option<Vec<String>> {
-        visited.insert(current.to_string());
-        path.push(current.to_string());
+        visited.insert(start);
+        queue.push_back(start);
 
-        if let Some(callees) = graph.get(current) {
+        while let Some(current) = queue.pop_front() {
+            let Some(callees) = graph.get(current) else {
+                continue;
+            };
+            let mut callees: Vec<&'g str> = callees.iter().map(String::as_str).collect();
+            callees.sort_unstable();
+
             for callee in callees {
-                if callee == target && path.len() > 1 {
-                    // Found cycle back to start
-                    let mut cycle = path.clone();
-                    cycle.push(target.to_string());
-                    return Some(cycle);
+                if callee == start && current != start {
+                    return Some(Self::reconstruct_cycle(start, current, &parent));
                 }
-                if !visited.contains(callee.as_str()) {
-                    if let Some(cycle) = self.dfs_cycle(callee, target, graph, visited, path) {
-                        return Some(cycle);
-                    }
+                if visited.insert(callee) {
+                    parent.insert(callee, current);
+                    queue.push_back(callee);
                 }
             }
         }
 
-        path.pop();
-        None // no cycle through this path
+        None
+    }
+
+    /// Spell out `start -> .. -> tail -> start` by walking the BFS parent
+    /// chain back from `tail`, where `tail` is the node found to call
+    /// `start`.
+    fn reconstruct_cycle(start: &str, tail: &str, parent: &HashMap<&str, &str>) -> Vec<String> {
+        let mut reversed = vec![tail];
+        let mut node = tail;
+        while node != start {
+            match parent.get(node) {
+                Some(prev) => {
+                    node = prev;
+                    reversed.push(node);
+                }
+                None => break,
+            }
+        }
+        reversed.reverse();
+
+        let mut cycle: Vec<String> = reversed.into_iter().map(str::to_string).collect();
+        cycle.push(start.to_string());
+        cycle
     }
 
     /// Check if a recursive function has a bounded base case: at least one
