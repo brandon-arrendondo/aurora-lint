@@ -16,6 +16,22 @@ clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE680,CWE680
 clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE690,CWE690_NULL_Deref_From_Return,293,0,40,1120,333,224.2,100.0,88.0,0
 clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE761,CWE761_Free_Pointer_Not_at_Start_of_Buffer,400,0,24,672,424,179.8,100.0,94.3,0
 clangtidy_20260404_115112,clangtidy,clang-tidy LLVM version 21.1.6,CWE762,,0,0,0,0,0,0,,,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE121,CWE121_Stack_Based_Buffer_Overflow,1916,0,296,5906,2212,270.9,100.0,86.6,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE122,CWE122_Heap_Based_Buffer_Overflow,1903,23,200,3656,2126,173.9,98.8,89.5,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE124,CWE124_Buffer_Underwrite,956,30,72,1896,1058,92.5,97.0,90.4,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE127,CWE127_Buffer_Underread,986,0,72,1896,1058,91.9,100.0,93.2,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE190,CWE190_Integer_Overflow,3005,0,180,5040,3185,262.2,100.0,94.3,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE191,CWE191_Integer_Underflow,2306,0,138,3864,2444,180.3,100.0,94.4,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE197,CWE197_Numeric_Truncation_Error,621,0,36,1008,657,50.1,100.0,94.5,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE369,CWE369_Divide_by_Zero,647,0,36,1008,683,62.3,100.0,94.7,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE401,CWE401_Memory_Leak,208,0,40,1228,248,55.8,100.0,83.9,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE415,CWE415_Double_Free,192,36,12,336,240,16.0,84.2,80.0,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE416,CWE416_Use_After_Free,41,27,0,150,68,7.4,60.3,60.3,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE476,CWE476_NULL_Pointer_Dereference,198,0,12,372,210,17.2,100.0,94.3,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE680,CWE680_Integer_Overflow_to_Buffer_Overflow,280,0,12,336,292,17.5,100.0,95.9,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE690,CWE690_NULL_Deref_From_Return,293,0,40,1120,333,52.0,100.0,88.0,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE761,CWE761_Free_Pointer_Not_at_Start_of_Buffer,400,0,24,672,424,42.6,100.0,94.3,0
+clangtidy_20260904_160155,clangtidy,clang-tidy Ubuntu LLVM version 21.1.8,CWE762,,0,0,0,0,0,0,,,0
 cppcheck_20260404_101044,cppcheck,Cppcheck 2.10,CWE476,CWE476_NULL_Pointer_Dereference,483,735,0,372,1218,9.8,39.7,39.7,0
 cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE121,CWE121_Stack_Based_Buffer_Overflow,10436,15279,72,5906,25787,176.1,40.6,40.5,0
 cppcheck_20260404_102702,cppcheck,Cppcheck 2.10,CWE122,CWE122_Heap_Based_Buffer_Overflow,3285,4012,0,3656,7297,115.5,45.0,45.0,0

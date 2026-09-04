@@ -82,7 +82,7 @@ Measured, not asserted. Two benchmarks, both with published methodology.
 | Metric | Value |
 |--------|-------|
 | **Juliet Precision** | 87.1% (v0.4.321) |
-| **Juliet CWEs Scanned** | 79 (fast mode, CWE-matched rules) |
+| **Juliet CWEs Scanned** | 75 (fast mode, CWE-matched rules) |
 | **100% Precision CWEs** | 43 (zero false positives, with real detections) |
 | **Per-File Detection** | 38.0% (19,073 / 50,256 files) |
 | **Real-World Precision / Recall** | 24.2% / 93.9% (v0.4.325, run #226, 89.8% label coverage) |
@@ -95,7 +95,7 @@ after a version bump or a fresh delta-adjudication.
 
 **[NIST Juliet](https://samate.nist.gov/SARD/test-suites/112) is the headline
 number**, because its defects are planted and labelled by the suite itself —
-so a true/false positive is a fact, not a judgement. 79 CWEs, 87.1% of SqC's
+so a true/false positive is a fact, not a judgement. 75 CWEs, 87.1% of SqC's
 findings are true positives, and 43 CWEs come back with zero false positives
 and real detections.
 
@@ -208,14 +208,14 @@ SqC's case is breadth and reach, not beating clang-tidy at its sixteen:
 
 | | CERT C coverage | Juliet CWEs | Needs a build? | Real-world suite time |
 |---|---|---:|---|---:|
-| **SqC** | **311 rules**, 17 categories | **79** | **No** | ~1,190 s |
-| clang-tidy | ~20 `cert-*` checks | 16 | Yes | 501 s |
-| cppcheck | ~20 (addon) | 16 | No | 11,452 s |
-| [Infer](https://fbinfer.com/) | bug-type indexed | 11 | Yes | not run |
+| **SqC** | **311 rules**, 17 categories | **75** | **No** | ~1,190 s |
+| clang-tidy | ~20 `cert-*` checks | 15 | Yes | 501 s |
+| cppcheck | ~20 (addon) | 15 | No | 11,452 s |
+| [Infer](https://fbinfer.com/) | bug-type indexed | 10 | Yes | not run |
 | [Frama-C](https://frama-c.com/) | not rule-indexed | 6 | Yes | not run |
 
 cppcheck is the useful control, since it also runs without a build: on the same
-16 CWEs it scores 36.4% against SqC's 81.7%, and takes roughly ten times as long
+15 CWEs it scores 36.7% against SqC's 81.7%, and takes roughly ten times as long
 on real code.
 
 Per-CWE precision for all five tools, the speed measurements, and what the
