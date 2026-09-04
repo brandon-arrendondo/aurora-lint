@@ -42,6 +42,7 @@ __pycache__/
 # Coverage and test output
 lcov.info
 test-results.xml
+test-output.xml
 
 # Temporary files
 *.tmp
