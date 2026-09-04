@@ -363,6 +363,7 @@ preprocessor.
 | `expression_fits_in_signed_vra` / `expression_fits_in_unsigned_vra` | `(...) -> bool` | CFG-based value-range-analysis version of the above, falling back to the syntactic version. |
 | `expression_overflows_signed_vra` / `expression_overflows_unsigned_vra` | `(...) -> bool` | True only when the *entire* computed range lies outside the representable band (a **definite** overflow, e.g. `INT_MAX + 1`) — deliberately stronger than `!fits_*`, since a range merely straddling the bound is only a *possible* overflow. |
 | `resolve_identifiers_in_expr` | — | Resolves identifiers in an expression by scanning local assignments. |
+| `promoted_range_for_type` | `(type_name: &str) -> Option<ValueRange>` | The range a narrow (`char`/`short` family) type takes after integer promotion to `int` — i.e. its own full representable range. `None` for anything already `int`-wide. Seed a `VarRangeMap` with these before `try_evaluate_range` to prove what promotion guarantees: no `+`/`-`/`*` over two promoted narrow operands can leave `int`. `INT08-C` and `INT32-C` each independently reached the opposite premise (treating `char + char` as 8-bit arithmetic) before sharing this. |
 
 ### `src/analyze/value_range.rs`
 **Problem solved:** CFG-based value-range analysis (VRA) — computes

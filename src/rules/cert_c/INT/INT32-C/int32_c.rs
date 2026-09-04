@@ -17,6 +17,12 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
+/// Width, in bits, at which C actually performs integer arithmetic on
+/// anything `int`-wide or narrower. The usual arithmetic conversions promote
+/// every narrower type to `int` first, so there is no such thing as 8- or
+/// 16-bit arithmetic to check against.
+const PROMOTED_ARITH_BITS: u32 = 32;
+
 pub struct Int32C {
     project_macros: RefCell<MacroConstantMap>,
     current_macros: RefCell<MacroConstantMap>,
@@ -82,6 +88,43 @@ impl Int32C {
             source,
             &self.current_macros.borrow(),
         )
+    }
+
+    /// Variable ranges to evaluate an expression at `node` with: VRA's
+    /// replayed ranges, backed by each narrow-typed variable's promoted-type
+    /// range wherever VRA has nothing more precise.
+    ///
+    /// The backing is what lets the range engine reach a verdict on `char c,
+    /// char d` parameters at all. Without it `c + d` is simply unresolvable,
+    /// so [`const_eval::expression_fits_in_signed_vra`] cannot prove the
+    /// thing promotion guarantees, and the expression falls through to the
+    /// provenance gate -- which fires on an unresolved operand by design
+    /// (task 926).
+    ///
+    /// `type_map` is already function-scoped by `check_node`, so a name that
+    /// is `char` in one function and `int` in another does not leak a bogus
+    /// range across the boundary. VRA wins wherever it has an entry: its
+    /// range is flow-sensitive and never wider than the declared type's.
+    fn value_ranges_at(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> Option<VarRangeMap> {
+        let vra = self.vra_var_ranges_at(node, source);
+        let mut ranges: VarRangeMap = type_map
+            .iter()
+            .filter_map(|(name, declared)| {
+                const_eval::promoted_range_for_type(declared).map(|r| (name.clone(), r))
+            })
+            .collect();
+        if ranges.is_empty() {
+            return vra;
+        }
+        if let Some(vra) = vra {
+            ranges.extend(vra);
+        }
+        Some(ranges)
     }
 }
 
@@ -428,15 +471,10 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in the operand type's range
-                let vra_bits = Self::signed_type_bits(&left_type, &right_type);
-                if const_eval::expression_fits_in_signed_vra(
-                    node,
-                    source,
-                    &self.current_macros.borrow(),
-                    vra_bits,
-                    self.vra_var_ranges_at(node, source).as_ref(),
-                ) {
+                // Skip if constant evaluation proves the result fits where it
+                // lands. An unresolved destination proves nothing, so it does
+                // not skip.
+                if self.result_fits_destination(node, source, type_map) {
                     return;
                 }
 
@@ -526,15 +564,10 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in the operand type's range
-                let vra_bits = Self::signed_type_bits(&left_type, &right_type);
-                if const_eval::expression_fits_in_signed_vra(
-                    node,
-                    source,
-                    &self.current_macros.borrow(),
-                    vra_bits,
-                    self.vra_var_ranges_at(node, source).as_ref(),
-                ) {
+                // Skip if constant evaluation proves the result fits where it
+                // lands. An unresolved destination proves nothing, so it does
+                // not skip.
+                if self.result_fits_destination(node, source, type_map) {
                     return;
                 }
 
@@ -613,15 +646,10 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in the operand type's range
-                let vra_bits = Self::signed_type_bits(&left_type, &right_type);
-                if const_eval::expression_fits_in_signed_vra(
-                    node,
-                    source,
-                    &self.current_macros.borrow(),
-                    vra_bits,
-                    self.vra_var_ranges_at(node, source).as_ref(),
-                ) {
+                // Skip if constant evaluation proves the result fits where it
+                // lands. An unresolved destination proves nothing, so it does
+                // not skip.
+                if self.result_fits_destination(node, source, type_map) {
                     return;
                 }
 
@@ -858,15 +886,10 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in the operand type's range
-                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
-                if const_eval::expression_fits_in_signed_vra(
-                    node,
-                    source,
-                    &self.current_macros.borrow(),
-                    vra_bits,
-                    self.vra_var_ranges_at(node, source).as_ref(),
-                ) {
+                // Skip if constant evaluation proves the result fits where it
+                // lands. An unresolved destination proves nothing, so it does
+                // not skip.
+                if self.result_fits_destination(node, source, type_map) {
                     return;
                 }
 
@@ -919,8 +942,9 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in the operand type's range
-                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                // Skip if constant evaluation proves the result fits back in the
+                // assignment target, which is where the promoted result lands
+                let vra_bits = Self::stored_type_bits(&left_type);
                 if self.compound_expr_fits_signed(node, source, "+", vra_bits) {
                     return;
                 }
@@ -976,8 +1000,9 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in the operand type's range
-                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                // Skip if constant evaluation proves the result fits back in the
+                // assignment target, which is where the promoted result lands
+                let vra_bits = Self::stored_type_bits(&left_type);
                 if self.compound_expr_fits_signed(node, source, "-", vra_bits) {
                     return;
                 }
@@ -1031,8 +1056,9 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if constant evaluation proves the result fits in the operand type's range
-                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                // Skip if constant evaluation proves the result fits back in the
+                // assignment target, which is where the promoted result lands
+                let vra_bits = Self::stored_type_bits(&left_type);
                 if self.compound_expr_fits_signed(node, source, "*", vra_bits) {
                     return;
                 }
@@ -1154,8 +1180,9 @@ impl Int32C {
             }
 
             if self.is_signed_type(&left_type) {
-                // Skip if constant evaluation proves the result fits in the operand type's range
-                let vra_bits = Self::signed_type_bits(&left_type, &left_type);
+                // Skip if constant evaluation proves the result fits back in the
+                // assignment target, which is where the promoted result lands
+                let vra_bits = Self::stored_type_bits(&left_type);
                 if self.compound_expr_fits_signed(node, source, "<<", vra_bits) {
                     return;
                 }
@@ -1220,14 +1247,13 @@ impl Int32C {
                     return;
                 }
 
-                // Skip if VRA proves the result fits in the operand type's range
-                let vra_bits = Self::signed_type_bits(&arg_type, &arg_type);
-                if const_eval::expression_fits_in_signed_vra(
+                // Skip if VRA proves the result fits back in the variable being
+                // updated, which is where the promoted result lands
+                if self.expression_fits_in(
                     node,
                     source,
-                    &self.current_macros.borrow(),
-                    vra_bits,
-                    self.vra_var_ranges_at(node, source).as_ref(),
+                    type_map,
+                    Self::stored_type_bits(&arg_type),
                 ) {
                     return;
                 }
@@ -1825,8 +1851,10 @@ impl Int32C {
         {
             return "signed".to_string();
         }
-        // char is a signed integer type (on most platforms); track it distinctly
-        // so we can apply 8-bit VRA checking rather than 32-bit
+        // char is a signed integer type (on most platforms); tracked
+        // distinctly so `stored_type_bits` can tell how wide a *destination*
+        // it makes -- never how wide the arithmetic is (that is always
+        // `PROMOTED_ARITH_BITS`; see `result_width_bits`).
         if declared_type == "char" || declared_type == "signed char" {
             return "char".to_string();
         }
@@ -1894,8 +1922,9 @@ impl Int32C {
         if lt == "signed" || rt == "signed" {
             return Some("signed".to_string());
         }
-        // Narrow operands promote to int, but we keep the narrow-type
-        // annotation so callers can use 16-bit/8-bit VRA checking
+        // Narrow operands promote to int, but the narrow-type annotation is
+        // kept so a caller can tell how wide a destination this expression
+        // makes when it is itself assigned somewhere.
         if lt == "short" || rt == "short" {
             return Some("short".to_string());
         }
@@ -2016,13 +2045,161 @@ impl Int32C {
         ast_utils::is_signed_type(type_str)
     }
 
-    fn signed_type_bits(left_type: &str, right_type: &str) -> u32 {
-        let bits_for = |t: &str| match t {
-            "char" => 8u32,
-            "short" => 16u32,
-            _ => 32u32,
+    /// Storage width of a type as `classify_declared_type` spells it.
+    ///
+    /// This is the width a *value* is kept at, never the width arithmetic is
+    /// performed at -- see [`Self::result_width_bits`].
+    fn stored_type_bits(classified_type: &str) -> u32 {
+        match classified_type {
+            "char" => 8,
+            "short" => 16,
+            _ => PROMOTED_ARITH_BITS,
+        }
+    }
+
+    /// True when interval arithmetic proves the result of `node` fits its
+    /// destination.
+    fn result_fits_destination(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> bool {
+        let bits = self.result_width_bits(node, source, type_map);
+        self.expression_fits_in(node, source, type_map, bits)
+    }
+
+    /// [`const_eval::expression_fits_in_signed_vra`] over this rule's macro
+    /// set and [`Self::value_ranges_at`]'s promoted-range-backed variable
+    /// ranges.
+    fn expression_fits_in(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+        bits: u32,
+    ) -> bool {
+        const_eval::expression_fits_in_signed_vra(
+            node,
+            source,
+            &self.current_macros.borrow(),
+            bits,
+            self.value_ranges_at(node, source, type_map).as_ref(),
+        )
+    }
+
+    /// The width the result of `node` must be representable in.
+    ///
+    /// **Not the operands' width.** C's usual arithmetic conversions promote
+    /// everything narrower than `int` before the arithmetic runs, so `char +
+    /// char` and `short * short` are 32-bit operations, and no `+`, `-` or
+    /// `*` over two promoted narrow operands can leave `int` (the widest such
+    /// product, `-32768 * -32768`, is under `INT_MAX`). Taking the operands'
+    /// declared 8 or 16 bits inverted the premise in both directions at once:
+    /// the fits-check refused to skip provably-safe promoted arithmetic, and
+    /// the definite-overflow channel of the provenance gate called `short a =
+    /// 32000, b = 1000; a + b` a *certain* overflow (task 926).
+    ///
+    /// What can still lose data is storing that promoted result back into
+    /// something narrow -- `short result = data * data`, which is Juliet's
+    /// entire CWE-190 `short`/`char` cohort and a real defect. On the letter
+    /// of the standard that is a conversion, so INT31-C's; nothing owns it
+    /// yet (see the narrow-truncating-store task, which decides the home).
+    /// Until something does, INT32-C keeps reporting it, checked against the
+    /// destination's width.
+    ///
+    /// A destination that does not resolve to a narrow integer -- a pointer,
+    /// a float, an `int`-or-wider, a name absent from the type map -- gets
+    /// [`PROMOTED_ARITH_BITS`], as does every consumer that stores nowhere at
+    /// all: a call argument, a comparison, an enclosing expression. Widening
+    /// the narrow-destination cases past simple variables and struct fields
+    /// (to `buf[i] = a + b`, `*p = a + b`) is deliberately left alone: those
+    /// are pervasive in string code, and whether they should fire is the
+    /// narrow-truncating-store task's call, not a side effect of this one.
+    fn result_width_bits(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> u32 {
+        let mut child = *node;
+        while let Some(parent) = child.parent() {
+            match parent.kind() {
+                // Transparent: the value flows straight through.
+                "parenthesized_expression" | "comma_expression" => {}
+                "cast_expression" => {
+                    return match parent.child_by_field_name("type") {
+                        Some(t) => self.declared_destination_bits(get_node_text(&t, source)),
+                        None => PROMOTED_ARITH_BITS,
+                    };
+                }
+                "init_declarator" => {
+                    if parent.child_by_field_name("value").map(|v| v.id()) != Some(child.id()) {
+                        return PROMOTED_ARITH_BITS;
+                    }
+                    return self.declarator_destination_bits(&parent, source);
+                }
+                "assignment_expression" => {
+                    if parent.child_by_field_name("right").map(|v| v.id()) != Some(child.id()) {
+                        return PROMOTED_ARITH_BITS;
+                    }
+                    return match parent.child_by_field_name("left") {
+                        Some(lhs) => {
+                            Self::stored_type_bits(&self.infer_type(&lhs, source, type_map))
+                        }
+                        None => PROMOTED_ARITH_BITS,
+                    };
+                }
+                // `return a + b` from a narrow-returning function truncates
+                // exactly like a narrow assignment does.
+                "return_statement" => {
+                    return match ast_utils::find_containing_function(&parent) {
+                        Some(func) => self.declarator_destination_bits(&func, source),
+                        None => PROMOTED_ARITH_BITS,
+                    };
+                }
+                _ => return PROMOTED_ARITH_BITS,
+            }
+            child = parent;
+        }
+        PROMOTED_ARITH_BITS
+    }
+
+    /// Destination width for a node carrying a `type` field alongside a
+    /// `declarator` -- a `declaration`'s `init_declarator` (via its parent) or
+    /// a `function_definition`. A pointer or array declarator makes the
+    /// destination a pointer regardless of the base type, so `char *p = q - 8`
+    /// stores into a pointer, not into a `char`.
+    fn declarator_destination_bits(&self, node: &Node, source: &str) -> u32 {
+        let declarator_kind = node
+            .child_by_field_name("declarator")
+            .map(|d| d.kind().to_string())
+            .unwrap_or_default();
+        if declarator_kind == "pointer_declarator" || declarator_kind == "array_declarator" {
+            return PROMOTED_ARITH_BITS;
+        }
+        let owner = if node.kind() == "init_declarator" {
+            match node.parent() {
+                Some(decl) => decl,
+                None => return PROMOTED_ARITH_BITS,
+            }
+        } else {
+            *node
         };
-        bits_for(left_type).min(bits_for(right_type))
+        match owner.child_by_field_name("type") {
+            Some(t) => self.declared_destination_bits(get_node_text(&t, source)),
+            None => PROMOTED_ARITH_BITS,
+        }
+    }
+
+    /// Storage width of a destination spelled as declared type text. A `*`
+    /// anywhere in it makes it a pointer, whose width is not the base type's.
+    fn declared_destination_bits(&self, declared_type: &str) -> u32 {
+        let declared_type = declared_type.trim();
+        if declared_type.contains('*') {
+            return PROMOTED_ARITH_BITS;
+        }
+        Self::stored_type_bits(&self.classify_declared_type(declared_type))
     }
 
     fn is_unsigned_type(&self, type_str: &str) -> bool {
@@ -2088,11 +2265,18 @@ impl Int32C {
             node.child_by_field_name(field)
                 .map(|n| self.infer_type(&n, source, type_map))
         };
-        match (ty("left"), ty("right"), ty("argument")) {
-            (Some(l), Some(r), _) => Self::signed_type_bits(&l, &r),
-            (Some(l), None, _) => Self::signed_type_bits(&l, &l),
-            (_, _, Some(a)) => Self::signed_type_bits(&a, &a),
-            _ => 32,
+        match node.kind() {
+            // A plain binary operation produces a value; what bounds it is
+            // where that value is stored, not how wide its operands were
+            // declared.
+            "binary_expression" => self.result_width_bits(node, source, type_map),
+            // A compound assignment or an update/unary operation writes back
+            // into its own target, so the target *is* the destination.
+            _ => match (ty("left"), ty("argument")) {
+                (Some(l), _) => Self::stored_type_bits(&l),
+                (None, Some(a)) => Self::stored_type_bits(&a),
+                (None, None) => PROMOTED_ARITH_BITS,
+            },
         }
     }
 
@@ -2117,7 +2301,7 @@ impl Int32C {
             source,
             &self.current_macros.borrow(),
             vra_bits,
-            self.vra_var_ranges_at(node, source).as_ref(),
+            self.value_ranges_at(node, source, type_map).as_ref(),
         ) {
             return true;
         }
