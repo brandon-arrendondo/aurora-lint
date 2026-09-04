@@ -175,22 +175,22 @@ produce identical Juliet numbers — see the re-measurement note below.</p></td>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>SqC</p></td>
-<td><p><strong>79</strong></p></td>
+<td><p><strong>75</strong></p></td>
 <td><p>9 projects</p></td>
 <td><p>311 CERT C rules across 17 categories</p></td>
 </tr>
 <tr class="row-odd"><td><p>clang-tidy</p></td>
-<td><p>16</p></td>
+<td><p>15</p></td>
 <td><p>8 projects</p></td>
 <td><p>~20 <code class="docutils literal notranslate"><span class="pre">cert-*</span></code> checks</p></td>
 </tr>
 <tr class="row-even"><td><p>cppcheck</p></td>
-<td><p>16</p></td>
+<td><p>15</p></td>
 <td><p>8 projects</p></td>
 <td><p>~20 CERT mappings via an addon we do not enable</p></td>
 </tr>
 <tr class="row-odd"><td><p>Infer</p></td>
-<td><p>11</p></td>
+<td><p>10</p></td>
 <td><p>supported, not yet swept</p></td>
 <td><p>Memory-safety and concurrency bug types</p></td>
 </tr>
@@ -201,6 +201,16 @@ produce identical Juliet numbers — see the re-measurement note below.</p></td>
 </tr>
 </tbody>
 </table>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>SqC’s 75 is CWEs <strong>measured</strong>, on the same rule as every other count here.
+The runner enumerates all 118 Juliet CWE directories and SqC’s list covers
+79 of them, but four — CWE-23, CWE-672, CWE-676 and CWE-762 — hold no
+<code class="docutils literal notranslate"><span class="pre">.c</span></code> files at all, so SqC correctly scans none of them. Counting a
+directory it declined would credit it with coverage it does not have.
+Verified across 52 completed runs, which agree on exactly those four; it
+is a property of the Juliet corpus rather than of any run.</p>
+</div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p><strong>PARTLY RESOLVED</strong> — <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-run</span> <span class="pre">--tool</span> <span class="pre">infer</span></code> and
@@ -402,7 +412,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 </tr>
 </tbody>
 </table>
-<p><strong>clang-tidy wins the overlap, and it is not close.</strong> On the 16 CWEs it
+<p><strong>clang-tidy wins the overlap, and it is not close.</strong> On the 15 CWEs it
 covers: clang-tidy 13,952 TP / 116 FP (99.2%), SqC 12,276 TP / 2,757 FP
 (81.7%). It is at 100% on eleven of them, and it finds <em>more</em> true positives
 than SqC does on the same CWEs.</p>
@@ -413,7 +423,7 @@ gets there by compiling the code, which is the trade described below.</p>
 <p>SqC leads on CWE-416 (use-after-free, 91.1% vs 60.3%) and matches at 100% on
 six CWEs. Everywhere else on the overlap it is behind, and that is the honest
 read: <strong>SqC’s case is not that it is more precise than clang-tidy on the
-sixteen CWEs clang-tidy checks. It is the other 63 CWEs, the other 290 rules,
+fifteen CWEs clang-tidy checks. It is the other 60 CWEs, the other 290 rules,
 and not needing your build.</strong></p>
 </section>
 <section id="speed">
@@ -475,30 +485,30 @@ which is why its real-world mode is budget-bounded rather than exhaustive.</p>
 <thead>
 <tr class="row-odd"><th class="head"><p>Tool</p></th>
 <th class="head"><p>Wall clock</p></th>
-<th class="head"><p>CWE list</p></th>
+<th class="head"><p>CWEs measured</p></th>
 <th class="head"></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>cppcheck</p></td>
 <td><p>350 s</p></td>
-<td><p>16</p></td>
+<td><p>15</p></td>
 <td></td>
 </tr>
 <tr class="row-odd"><td><p>clang-tidy</p></td>
 <td><p>1,393 s</p></td>
-<td><p>16</p></td>
+<td><p>15</p></td>
 <td></td>
 </tr>
 <tr class="row-even"><td><p>Infer</p></td>
 <td><p>1,707 s</p></td>
-<td><p>11</p></td>
+<td><p>10</p></td>
 <td></td>
 </tr>
 <tr class="row-odd"><td><p>Frama-C</p></td>
 <td><p>3,443 s</p></td>
 <td><p>6</p></td>
-<td><p>Slowest by 2×, on the smallest list.</p></td>
+<td><p>Slowest by 2×, on the smallest set.</p></td>
 </tr>
 </tbody>
 </table>
@@ -523,12 +533,20 @@ entry, and is surfaced in the exported CSV as <code class="docutils literal notr
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>The “CWE list” column is the size of the list each tool was <em>given</em>, not
-the number measured. One entry in each list (CWE-762, mismatched memory
-management) is C++-only in Juliet — 6,092 <code class="docutils literal notranslate"><span class="pre">.cpp</span></code> files and no <code class="docutils literal notranslate"><span class="pre">.c</span></code> —
-so it contributes nothing to a C-only benchmark and every run scores it
-0/0. Measured counts are therefore 15, 15 and 10. Tracked as tools_sqc
-task 909; the same defect on SqC’s own count is task 910.</p>
+<p>Every count on this page is <strong>CWEs measured</strong>, not CWEs requested.</p>
+<p>SqC implements CERT <strong>C</strong>, so this benchmark is C-only and the runner
+globs <code class="docutils literal notranslate"><span class="pre">*.c</span></code> deliberately. Nine Juliet directories hold no C at all, and
+one of them — CWE-762, mismatched memory management, 6,092 <code class="docutils literal notranslate"><span class="pre">.cpp</span></code> files
+and no <code class="docutils literal notranslate"><span class="pre">.c</span></code> — sat in the cppcheck, clang-tidy and Infer lists scoring
+0/0 in every run while counting toward their coverage. New/delete versus
+malloc/free is a C++ defect by construction, so it was never a valid entry
+here rather than a gap to close.</p>
+<p>It is removed from the lists, and <code class="docutils literal notranslate"><span class="pre">run_tool</span></code> now refuses any CWE that
+resolves to zero <code class="docutils literal notranslate"><span class="pre">.c</span></code> files instead of recording a 0/0 row that reads
+the same as “the tool found nothing”. The runs above predate that fix and
+still carry the row; the exported CSV distinguishes them as <code class="docutils literal notranslate"><span class="pre">cwe_count</span></code>
+(rows present) and <code class="docutils literal notranslate"><span class="pre">cwes_measured</span></code>. Tracked as tools_sqc task 909; the
+same defect on SqC’s own count is task 910.</p>
 </div>
 </section>
 <section id="real-world-precision-per-rule">
@@ -622,7 +640,7 @@ expands to, and what a type is, and they are right more often as a result.</p>
 tree you cannot build, or a file that was generated a moment ago — and it is
 also why it has a macro-expansion engine, a suppression system, and a
 false-positive backlog as substantial as its rule backlog. The precision gap
-on those sixteen CWEs is the price of the property that makes it useful
+on those fifteen CWEs is the price of the property that makes it useful
 elsewhere.</p>
 <p>cppcheck is the honest control here: it also runs unbuilt, and on the same
 overlap it scores 36.7% to SqC’s 81.7%.</p>
