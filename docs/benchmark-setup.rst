@@ -135,12 +135,48 @@ Manual install:
 
     # Verify (requires eval $(opam env) in each shell session)
     frama-c -version
-    # Expected: 32.0 (Germanium)
+    # Expected: 33.0 (Arsenic) as of 2026-09-04; 32.0 (Germanium) is what the
+    # competitor Juliet runs in data/competitor_results/ were taken with
 
 .. note::
 
     Add ``eval $(opam env)`` to your shell profile (``~/.bashrc``) to make
-    ``frama-c`` available without manual activation.
+    ``frama-c`` available without manual activation.  The benchmark runner
+    does not need it: ``bench/realworld_runner.py`` wraps every Frama-C
+    invocation in ``eval $(opam env)`` itself, because it is not a login
+    shell.
+
+.. warning::
+
+    Frama-C renamed the compile-database option between the two versions
+    above — ``-json-compilation-database`` through 32.0, ``-compilation-db``
+    from 33.0.  The runner probes ``frama-c -kernel-h`` and picks whichever
+    the installed binary accepts, so both work; a hand-written command line
+    copied from an older doc will abort with "option is unknown".
+
+Build-based tools need a compile database
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Infer and Frama-C cannot be pointed at a source tree the way sqc and cppcheck
+can — both need a real preprocess.  On the real-world suite they are driven
+from each checkout's ``compile_commands.json``, so
+``playbooks/setup-compile-commands.yml`` must have run for a codebase before
+either tool can scan it.  ``python -m bench realworld-run --tool infer`` fails
+fast with the exact command to fix it if the database is missing.
+
+Expect a *partial* result from both, and check the ``coverage`` block each run
+writes:
+
+- **Infer** captures whatever preprocesses.  ``setup-compile-commands.yml``
+  restores each checkout to pristine after building it, which deletes the
+  build's generated headers while leaving the compile database that still
+  references them — libcrc's ``tab/gentab32.inc`` is the worked example, and
+  2 of its 9 in-scope translation units cannot be captured as a result.
+- **Frama-C** is partial by construction, because EVA analyses one entry
+  point at a time and a real codebase has no single one.  Read
+  ``docs/design/framac-realworld.md`` before quoting any Frama-C real-world
+  number: a finding count from it is a floor, and recall is not expressible
+  from it at all.
 
 Juliet Test Suite Setup
 -----------------------

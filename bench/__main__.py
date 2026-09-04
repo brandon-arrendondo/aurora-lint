@@ -8,9 +8,10 @@ Commands:
   runs                                     List all runs
   realworld [RUN] [--compare BASE]         Real-world FP dashboard
   realworld-run [--tool T,T] [--codebase C,C] [--compile-commands]
-                                            Run sqc/cppcheck/clang-tidy against
-                                            real codebases (local, sequential),
-                                            ingest + score against the oracle
+                                            Run sqc/cppcheck/clang-tidy/infer/
+                                            frama-c against real codebases
+                                            (local, sequential), ingest + score
+                                            against the oracle
   realworld-runs                           List real-world benchmark runs
   realworld-score [RUN]                    Measured precision/recall vs oracle
   realworld-import-labels CSV --run R      Append TP/FP labels to the oracle
@@ -1116,14 +1117,19 @@ def main():
     # realworld-run
     p_rw_run = sub.add_parser(
         "realworld-run",
-        help="Run sqc/cppcheck/clang-tidy against real codebases, ingest + score")
+        help="Run sqc/cppcheck/clang-tidy/infer/frama-c against real codebases, "
+             "ingest + score")
     p_rw_run.add_argument("--tool", default=None,
-                          help="Comma-separated: sqc,cppcheck,clang-tidy (default: sqc)")
+                          help="Comma-separated: sqc,cppcheck,clang-tidy,infer,frama-c "
+                               "(default: sqc). infer and frama-c need the codebase's "
+                               "compile_commands.json; frama-c is bounded and PARTIAL "
+                               "-- see docs/design/framac-realworld.md")
     p_rw_run.add_argument("--codebase", default=None,
                           help="Comma-separated codebase key(s) (default: all)")
     p_rw_run.add_argument("--compile-commands", action="store_true",
                           help="sqc only: pass --compile-commands using the codebase's "
-                               "compile_commands.json")
+                               "compile_commands.json. infer/frama-c always use it and "
+                               "do not take this flag.")
     p_rw_run.set_defaults(func=cmd_realworld_run)
 
     # realworld-runs
