@@ -434,14 +434,28 @@ pub fn prescan_directories(
     // call edges that don't exist -- e.g. curl's docs/examples/ each define
     // their own `static void timer_cb(...)` (task 299, surfaced by task
     // 297's call-graph migration finding more of these collisions than the
-    // old hand-rolled walk did). Drop the merged entry for any name defined
-    // `static` in more than one file and mark it ambiguous, so existing
-    // consumers (MSC04-C's cycle DFS, concurrency reachability) stop
-    // trusting edges into it -- the same treatment task 562 already gives
-    // callback/field-dispatch ambiguity.
+    // old hand-rolled walk did). Mark any name defined `static` in more
+    // than one file ambiguous, so consumers (MSC04-C's cycle DFS,
+    // concurrency reachability) stop trusting edges *into* it -- the same
+    // treatment task 562 already gives callback/field-dispatch ambiguity.
+    //
+    // Marking is the whole fix; the merged entry itself stays. Deleting it
+    // (`call_graph.remove(name)`) also erased the colliding name's outgoing
+    // edges, and those are exactly what every reverse-graph consumer reads
+    // to answer "who calls me": ENV33-C, ENV03-C and STR02-C invert
+    // `call_graph` and suppress a system()/popen() call only when they can
+    // prove every transitive caller taint-free, so a callee whose only
+    // caller was a colliding static suddenly had *no* known callers and
+    // went from suppressed to flagged. Absence is not "no callers" to those
+    // rules, it is "unknown callers", which they must treat as unsafe. An
+    // over-approximate caller set is the safe error here (more functions to
+    // prove clean); a missing one is not. The fabricated edges the union
+    // does introduce cannot hurt the DFS consumers, because the ambiguous
+    // marking already stops them reaching the node -- and MSC04-C, which
+    // seeds its DFS at the function under check, overrides the merged entry
+    // with callees collected from that file's own body.
     for (name, files) in &static_defining_files {
         if files.len() > 1 {
-            call_graph.remove(name);
             ambiguous_call_targets.insert(name.clone());
         }
     }
@@ -6123,10 +6137,10 @@ no_mem:
     }
 
     #[test]
-    fn test_prescan_directories_drops_colliding_static_call_graph_node() {
+    fn test_prescan_directories_marks_colliding_static_ambiguous() {
         // Two files each define their own unrelated `static timer_cb` (task
         // 299's curl docs/examples pattern) -- a `static` function has
-        // internal linkage, so these must never be merged into one node.
+        // internal linkage, so these are two functions, not one node.
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("a.c"),
@@ -6140,14 +6154,20 @@ no_mem:
         .unwrap();
         let dirs = vec![dir.path().to_string_lossy().to_string()];
         let ctx = prescan_directories(&dirs, None, false).unwrap();
-        assert!(
-            !ctx.call_graph.contains_key("timer_cb"),
-            "colliding same-named static's call-graph node should be dropped, not unioned"
-        );
         assert!(ctx.ambiguous_call_targets.contains("timer_cb"));
         // The edge recording that run_a calls (some) timer_cb is untouched --
-        // only the merged callee-set node for the colliding name is dropped.
+        // consumers that must not chase it filter on ambiguous_call_targets.
         assert!(ctx.call_graph.get("run_a").unwrap().contains("timer_cb"));
+        // The colliding name keeps its merged callee set (task 776): the
+        // reverse graph ENV33-C/ENV03-C/STR02-C build reads exactly these
+        // outgoing edges to answer "who calls helper_a", and deleting the
+        // entry made those callees look uncalled rather than ambiguous.
+        let timer_callees = ctx
+            .call_graph
+            .get("timer_cb")
+            .expect("colliding static keeps its merged call-graph entry");
+        assert!(timer_callees.contains("helper_a"));
+        assert!(timer_callees.contains("helper_b"));
     }
 
     #[test]
