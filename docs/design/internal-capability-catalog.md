@@ -447,6 +447,38 @@ dominance (it returns true if the text contains `"if"` anywhere and one of
 eight spacing-sensitive comparison substrings). It is still ARR00-C's, in three
 places. Anything new should use this module.
 
+### `src/analyze/null_state.rs` (condition predicate)
+**Problem solved:** "does this condition test this pointer for NULL?" — the
+null-flavoured sibling of `guard_dominance`'s comparison question, and the same
+defect one layer down. Added by task 745 after API00-C's guard classifier, which
+decided polarity by matching the condition's TEXT, both missed real guards and
+credited accidental ones.
+
+| Function | Signature | Description |
+|---|---|---|
+| `condition_tests_null` | `(condition: &Node, var: &str, source: &str) -> bool` | `var` is tested for NULL-ness somewhere in `condition`: bare truthiness (`p`, `!p`) or a comparison against NULL/0, at any depth through `&&`, `\|\|` and parens. |
+
+Two properties are the whole point of it:
+
+- **Operands, not text.** A guard on a *neighbouring* pointer is never credited
+  to this one — `!h->driver || !h->drv_priv` tests neither `h` nor a parameter
+  named `addr`. Text matching failed in both directions here: `"(p &&"` never
+  fires on sqlite's `if( p && ... )` brace style, while `"(sc)"` matches inside
+  the call `sc_sporadic(sc)` and `"base != 0"` inside `*base != 0`, crediting a
+  predicate's result or a pointee as a guard on the pointer.
+- **Polarity-agnostic, deliberately.** It answers "did the code check this
+  pointer?", not "is it non-null here?". So `if (p == NULL) { p = &fallback; }`
+  counts. Those are different questions owned by different rules: API00-C asks
+  whether a function validates its parameters, whether a given dereference is
+  guarded is EXP34-C's. When the per-branch state is what matters, the module's
+  `parse_all_null_conditions` (private, driven by `apply_edge_refinement`) is
+  the flow-sensitive answer, and it treats `||` differently for that reason.
+
+It does not expand macros, so a truthiness test wrapped in one
+(sqlite's `ALWAYS(pVal)`) reads as a call and is not a null test — a known gap
+with a follow-up task, and one the replaced text matcher happened to get right
+by the same accident that made it wrong elsewhere.
+
 ## Flow-sensitive function summaries (frees, nulls, taint, output params)
 
 ### `src/analyze/function_summary.rs`

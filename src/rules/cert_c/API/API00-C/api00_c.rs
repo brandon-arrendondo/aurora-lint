@@ -45,7 +45,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
-use crate::analyze::null_state::NullState;
+use crate::analyze::null_state::{condition_tests_null, NullState};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     get_function_parameters, get_node_text, get_sanitized_node_text, is_pointer_type,
@@ -584,6 +584,15 @@ impl Api00C {
                     | "preproc_function_def" => {
                         stack.push(child);
                     }
+                    // A label is transparent: `failed: if (x) ...` occupies the
+                    // same position in the statement list as `if (x) ...`, so
+                    // descend and classify the statement it carries. Without
+                    // this, the guard in a `goto failed;` cleanup epilogue is
+                    // invisible — the whole idiom puts its checks behind a
+                    // label (task 745, sqlite3_set_auxdata).
+                    "labeled_statement" => {
+                        stack.push(child);
+                    }
                     _ => {}
                 }
             }
@@ -637,15 +646,20 @@ impl Api00C {
             return;
         }
 
-        // Case 2: positive guard pattern
-        //   if (ptr != NULL) { /* all usage inside */ }
-        // The parameter is only accessed inside the guarded block,
-        // so it is safely validated even without an early return.
-        let validated_in_condition =
-            self.extract_validated_params_from_condition(&condition, pointer_params, source);
-        for param in validated_in_condition {
-            if self.is_positive_null_guard(&condition_text, &param) {
-                validated.insert(param);
+        // Case 2: the condition itself tests the parameter for NULL, with no
+        // early exit and no else branch.
+        //   if (ptr != NULL)      { /* usage inside */ }
+        //   if (ptr && ptr->n)    { ... }
+        //   if (ptr == NULL)      { ptr = &fallback; }   /* check-and-substitute */
+        // Polarity does not matter here: API00-C asks whether the function
+        // validates the parameter, and all three spellings show that it did.
+        // Whether one particular dereference is guarded is EXP34-C's question.
+        //
+        // Asked of the condition's AST, so neither brace style nor an
+        // incidental substring decides it -- see condition_tests_null.
+        for param in pointer_params {
+            if condition_tests_null(&condition, param, source) {
+                validated.insert(param.clone());
             }
         }
     }
@@ -834,15 +848,22 @@ impl Api00C {
         false
     }
 
-    /// Check if a node contains a return statement or error handling
+    /// Check if a node contains a return statement or error handling.
+    ///
+    /// `goto` counts: in C error-handling style the dominant early-exit form
+    /// is `if (!p) goto failed;`, not a bare `return`, and control leaves the
+    /// straight-line path either way. `src/analyze/prescan.rs`'s
+    /// `node_contains_return` has always accepted it; this copy had not, which
+    /// left API00-C reporting parameters whose guard exits by `goto`
+    /// (task 745).
     fn contains_return_or_error(&self, node: &Node, source: &str) -> bool {
         match node.kind() {
-            "return_statement" => true,
+            "return_statement" | "goto_statement" => true,
             "compound_statement" => {
                 // Check ALL statements for return or noreturn function calls
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
-                        if child.kind() == "return_statement" {
+                        if matches!(child.kind(), "return_statement" | "goto_statement") {
                             return true;
                         }
                         // Check for noreturn functions (longjmp, exit, abort)
@@ -1443,43 +1464,6 @@ impl Api00C {
             }
         }
         None
-    }
-
-    /// Returns true if the condition text is a positive NULL guard for `param`,
-    /// i.e. the if-block is only entered when the pointer is non-NULL.
-    /// Examples: `ptr != NULL`, `NULL != ptr`, `ptr != 0`, `ptr` (bare truthiness)
-    fn is_positive_null_guard(&self, condition_text: &str, param: &str) -> bool {
-        let patterns: &[&str] = &["!= NULL", "!=NULL", "!= 0", "!=0"];
-        for suffix in patterns {
-            if condition_text.contains(&format!("{} {}", param, suffix))
-                || condition_text.contains(&format!("{}{}", param, suffix))
-            {
-                return true;
-            }
-        }
-        // NULL/0 on the left: NULL != ptr, 0 != ptr
-        let prefixes: &[&str] = &["NULL !=", "NULL!=", "0 !=", "0!="];
-        for prefix in prefixes {
-            if condition_text.contains(&format!("{} {}", prefix, param))
-                || condition_text.contains(&format!("{}{}", prefix, param))
-            {
-                return true;
-            }
-        }
-        // Bare truthiness check: if (ptr) or if (ptr && ...)
-        // but NOT if (!ptr) which is the early-return form already handled above
-        let bare_patterns: &[&str] = &[
-            &format!("({})", param),
-            &format!("({} ", param),
-            &format!("({} &&", param),
-            &format!("({}&& ", param),
-        ];
-        for p in bare_patterns {
-            if condition_text.contains(*p) {
-                return true;
-            }
-        }
-        false
     }
 
     /// Check if a parameter is a debug/logging parameter (e.g., __FILE__, __func__)
