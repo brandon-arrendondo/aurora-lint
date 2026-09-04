@@ -10,6 +10,7 @@ separate benchmarking_db repo -- this module has no knowledge of it.
 
 import json
 import sqlite3
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -368,9 +369,10 @@ class BenchDB:
 
         Migration is a no-op once `run_id` exists, so this is safe to call on
         every connect. Existing rows are backfilled from what they already
-        carry: `run_id` out of the "ingested from <id>" notes (NULL for the six
-        historical rows predating that convention), `variant` and a cleaned
-        `commit_sha` out of the polluted SHA.
+        carry: `run_id` out of the "ingested from <id>" notes (NULL for the
+        historical rows predating that convention, and for any group of rows
+        that derives the same id -- see `_clear_unrecoverable_run_ids`),
+        `variant` and a cleaned `commit_sha` out of the polluted SHA.
         """
         conn = self._connect()
         try:
@@ -430,6 +432,45 @@ class BenchDB:
             conn.execute("PRAGMA foreign_keys=ON")
             conn.close()
 
+    _IDENTITY_INDEX_SQL = (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_rw_runs_identity "
+        "ON realworld_runs(sqc_version, commit_sha, COALESCE(variant, '')) "
+        "WHERE run_id IS NOT NULL")
+
+    @staticmethod
+    def _clear_unrecoverable_run_ids(conn):
+        """Blank the back-filled `run_id` of legacy rows that share one.
+
+        The migration derives `run_id` from the ``ingested from <id>`` note,
+        and a database that ingested the same results directory twice has two
+        rows deriving the same string -- so the unique index below cannot be
+        built and, because that happens inside the migration's transaction,
+        the rebuild rolls back and every later ``BenchDB()`` fails the same
+        way. A row in a colliding group is exactly a row whose identity is
+        *not* recoverable: nothing in it says which of the two ingests it was.
+        Clear the derived id (the note itself is left verbatim) and let the
+        NULLs sit distinct in the index, which is already how the historical
+        rows predating the note convention are handled.
+        """
+        dupes = conn.execute("""
+            SELECT run_id, count(*) AS n, group_concat(id) AS ids
+            FROM realworld_runs
+            WHERE run_id IS NOT NULL
+            GROUP BY run_id HAVING n > 1
+        """).fetchall()
+        if not dupes:
+            return
+        conn.execute("""
+            UPDATE realworld_runs SET run_id = NULL WHERE run_id IN (
+                SELECT run_id FROM realworld_runs
+                WHERE run_id IS NOT NULL
+                GROUP BY run_id HAVING count(*) > 1)
+        """)
+        for row in dupes:
+            print(f"bench: realworld_runs rows {row['ids']} all derive run_id "
+                  f"'{row['run_id']}'; clearing it as unrecoverable "
+                  f"(notes preserved)", file=sys.stderr)
+
     @staticmethod
     def _create_realworld_identity_indexes(conn):
         """One row per run identifier, and one per (version, commit, variant).
@@ -440,12 +481,41 @@ class BenchDB:
         a variant run sit alongside its sibling. SQLite treats NULLs in a
         unique index as distinct, which is what the historical rows with no
         `run_id` need.
+
+        It is restricted to rows that *have* a `run_id` because the rows that
+        do not are the ones `_clear_unrecoverable_run_ids` just disowned (or
+        that predate the note convention), and two of those legitimately
+        describe the same version+commit. Every row the current code can
+        create carries a run_id -- `ingest_realworld_run` is the only caller
+        of `create_realworld_run` and always passes one -- so nothing
+        reachable today loses the protection.
         """
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_rw_runs_run_id "
-                     "ON realworld_runs(run_id)")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_rw_runs_identity "
-                     "ON realworld_runs(sqc_version, commit_sha, "
-                     "COALESCE(variant, ''))")
+        BenchDB._clear_unrecoverable_run_ids(conn)
+        # A database migrated before the WHERE clause existed carries the
+        # stricter index; IF NOT EXISTS would keep it, so replace it.
+        existing = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'idx_rw_runs_identity'").fetchone()
+        if existing and "run_id IS NOT NULL" not in (existing[0] or ""):
+            conn.execute("DROP INDEX idx_rw_runs_identity")
+        try:
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_rw_runs_run_id "
+                         "ON realworld_runs(run_id)")
+            conn.execute(BenchDB._IDENTITY_INDEX_SQL)
+        except sqlite3.IntegrityError as e:
+            raise RuntimeError(
+                "realworld_runs still holds rows that are not uniquely "
+                f"identifiable ({e}). This aborts BenchDB() itself, so every "
+                "bench command against this database fails until it is "
+                "resolved. List the offenders with:\n"
+                "  SELECT sqc_version, commit_sha, variant, "
+                "group_concat(id), group_concat(run_id)\n"
+                "    FROM realworld_runs WHERE run_id IS NOT NULL\n"
+                "   GROUP BY sqc_version, commit_sha, COALESCE(variant, '')\n"
+                "  HAVING count(*) > 1;\n"
+                "then set run_id = NULL on the rows whose identity cannot be "
+                "recovered -- the notes column keeps what they were ingested "
+                "from.") from e
 
     # ── Run CRUD ──────────────────────────────────────────────────────────
 

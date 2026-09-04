@@ -286,6 +286,15 @@ prints a one-line measured precision/recall. Scoring only joins findings to
 *existing* labels — it never adjudicates new findings. Re-run any time with
 ``python -m bench realworld-score <RUN>``.
 
+The scans and the ingest fail independently. Every tool writes its JSON export
+as it goes, so a scan that printed ``ok`` is on disk under
+``results/realworld/<version-sha>/`` whatever happens next; if the ingest then
+fails, ``realworld-run`` says so on an ``INGEST FAILED`` line and exits
+nonzero, and the run is simply absent (or partial) in ``bench realworld`` and
+``bench realworld-score`` until the ingest is repeated. Two runs can still be
+compared straight from their JSON exports, finding for finding, without the
+database.
+
 Typical real-world workflow:
 
 .. code-block:: bash

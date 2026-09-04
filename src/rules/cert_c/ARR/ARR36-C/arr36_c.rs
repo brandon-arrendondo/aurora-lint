@@ -483,54 +483,7 @@ impl PointerAnalyzer {
                 }
             }
             "pointer_expression" | "unary_expression" => {
-                // Handle &array[0], &array, *ptr (pointer_expression is used by tree-sitter for & and *)
-                // Determine if this is address-of (&) or dereference (*)
-                let is_address_of = node
-                    .child(0)
-                    .is_some_and(|op| ast_utils::get_node_text(&op, source) == "&");
-                if let Some(argument) = node.child_by_field_name("argument") {
-                    match argument.kind() {
-                        "identifier" => {
-                            let name =
-                                source[argument.start_byte()..argument.end_byte()].to_string();
-                            if is_address_of {
-                                // &var: the variable itself IS the array (single-element)
-                                // Use its tracked base if available, otherwise use its name
-                                if let Some(base) = self.variable_arrays.get(&name) {
-                                    base.clone()
-                                } else {
-                                    name
-                                }
-                            } else {
-                                // *ptr: follow alias chain — the result points into
-                                // whatever the pointer points to
-                                if let Some(base) = self.variable_arrays.get(&name) {
-                                    base.clone()
-                                } else {
-                                    String::new()
-                                }
-                            }
-                        }
-                        "field_expression" => {
-                            // Handle &struct.member
-                            // Extract just the struct instance part to allow comparisons between
-                            // different members of the same struct (ARR36-C-EX1)
-                            if let Some(base) = argument.child_by_field_name("argument") {
-                                source[base.start_byte()..base.end_byte()].to_string()
-                            } else {
-                                source[argument.start_byte()..argument.end_byte()].to_string()
-                            }
-                        }
-                        "subscript_expression" => {
-                            // For subscript expressions, we need to find the deepest base array
-                            // This handles &matrix[i][j] by extracting "matrix" rather than "matrix[i]"
-                            self.extract_deepest_base(&argument, source)
-                        }
-                        _ => String::new(),
-                    }
-                } else {
-                    String::new()
-                }
+                self.extract_base_from_address_or_deref(node, source)
             }
             "subscript_expression" => {
                 // Handle array subscripts like arrays[0], arrays[1]
@@ -542,6 +495,42 @@ impl PointerAnalyzer {
             _ => String::new(),
         };
         result
+    }
+
+    /// Base of `&x`, `&x.y`, `&x[i]` or `*p`. tree-sitter spells both `&` and
+    /// `*` as a `pointer_expression`, so the operator is read off child 0.
+    ///
+    /// Address-of yields the object itself, so an untracked name IS its own
+    /// base; dereference follows the alias chain and yields nothing when that
+    /// chain is unknown.
+    fn extract_base_from_address_or_deref(&self, node: &Node, source: &str) -> String {
+        let is_address_of = node
+            .child(0)
+            .is_some_and(|op| ast_utils::get_node_text(&op, source) == "&");
+        let Some(argument) = node.child_by_field_name("argument") else {
+            return String::new();
+        };
+        let text = |n: &Node| source[n.start_byte()..n.end_byte()].to_string();
+
+        match argument.kind() {
+            // &var: the variable itself IS the array (single-element).
+            "identifier" if is_address_of => self.resolve_base(text(&argument)),
+            // *ptr: the result points into whatever the pointer points to.
+            "identifier" => self
+                .variable_arrays
+                .get(&text(&argument))
+                .cloned()
+                .unwrap_or_default(),
+            // &struct.member: keep just the struct instance, so two members of
+            // one struct compare equal (ARR36-C-EX1).
+            "field_expression" => match argument.child_by_field_name("argument") {
+                Some(base) => self.resolve_base(text(&base)),
+                None => text(&argument),
+            },
+            // &matrix[i][j] is based on "matrix", not "matrix[i]".
+            "subscript_expression" => self.extract_deepest_base(&argument, source),
+            _ => String::new(),
+        }
     }
 
     fn extract_deepest_base(&self, node: &Node, source: &str) -> String {
@@ -556,8 +545,27 @@ impl PointerAnalyzer {
                     String::new()
                 }
             }
-            "identifier" => source[node.start_byte()..node.end_byte()].to_string(),
+            "identifier" => {
+                self.resolve_base(source[node.start_byte()..node.end_byte()].to_string())
+            }
             _ => String::new(),
+        }
+    }
+
+    /// Canonicalize a base spelled as a bare name.
+    ///
+    /// `variable_arrays` holds a base under whatever spelling first recorded
+    /// it -- `param:work` for a parameter, `pPg->aData` for a local aliasing a
+    /// member -- so every path that produces a base from an identifier has to
+    /// resolve it the same way. When one does not, the rule compares a base
+    /// against ITSELF under two spellings and reports a violation: `workend =
+    /// &work[N]` recorded `work` where the parameter had recorded
+    /// `param:work`, and `pEnd = &aData[n]` recorded `aData` where the
+    /// declaration had recorded `pPg->aData` (task 770).
+    fn resolve_base(&self, name: String) -> String {
+        match self.variable_arrays.get(&name) {
+            Some(base) => base.clone(),
+            None => name,
         }
     }
 
