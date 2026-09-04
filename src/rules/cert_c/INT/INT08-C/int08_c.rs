@@ -1,4 +1,5 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
@@ -30,6 +31,7 @@ impl CertRule for Int08C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        let macros = const_eval::collect_macro_constants(node, source);
 
         // Each function gets its own `variables` scope: a same-named
         // variable in a different function is a different object, and
@@ -44,12 +46,18 @@ impl CertRule for Int08C {
         if functions.is_empty() {
             let mut variables: HashMap<String, (String, usize)> = HashMap::new();
             self.collect_declarations(node, source, &mut variables);
-            self.check_arithmetic_expressions(node, source, &variables, &mut violations);
+            self.check_arithmetic_expressions(node, source, &variables, &macros, &mut violations);
         } else {
             for func in functions {
                 let mut variables: HashMap<String, (String, usize)> = HashMap::new();
                 self.collect_declarations(&func, source, &mut variables);
-                self.check_arithmetic_expressions(&func, source, &variables, &mut violations);
+                self.check_arithmetic_expressions(
+                    &func,
+                    source,
+                    &variables,
+                    &macros,
+                    &mut violations,
+                );
             }
         }
 
@@ -115,6 +123,7 @@ impl Int08C {
         node: &Node,
         source: &str,
         variables: &HashMap<String, (String, usize)>,
+        macros: &MacroConstantMap,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Check if this is a binary expression (arithmetic)
@@ -122,8 +131,13 @@ impl Int08C {
             if let Some(op) = node.child_by_field_name("operator") {
                 let op_text = get_node_text(&op, source);
 
-                // Check for arithmetic operators
-                if matches!(op_text.trim(), "+" | "-" | "*" | "/" | "%" | "<<" | ">>") {
+                // `/`, `%` and `>>` are excluded entirely: none of them can
+                // grow a value's magnitude past whatever the dividend/shiftee
+                // already was, so a narrow-typed operand promoted to `int`
+                // can never make one of these exceed `int`'s range (task
+                // 755) -- unlike `+`/`-`/`*`/`<<`, which can grow magnitude
+                // and so are still worth checking below.
+                if matches!(op_text.trim(), "+" | "-" | "*" | "<<") {
                     // Get the operands
                     if let (Some(left), Some(right)) = (
                         node.child_by_field_name("left"),
@@ -137,32 +151,56 @@ impl Int08C {
                         all_vars.extend(left_vars);
                         all_vars.extend(right_vars);
 
-                        for var in all_vars {
-                            if let Some((var_type, _decl_line)) = variables.get(&var) {
-                                // Check if this is a narrow integer type
-                                if self.is_narrow_integer_type(var_type) {
-                                    // Check if there's appropriate overflow protection
-                                    if !self.has_overflow_protection(node, &var, var_type, source) {
-                                        violations.push(RuleViolation {
-                                            rule_id: self.rule_id().to_string(),
-                                            message: format!(
-                                                "Arithmetic expression involving '{}' (narrow type '{}') without proper overflow protection",
-                                                var, var_type
-                                            ),
-                                            severity: self.severity(),
-                                            line: node.start_position().row + 1,
-                                            column: node.start_position().column + 1,
-                                            file_path: String::new(),
-                                            suggestion: Some(format!(
-                                                "Use a wider type (e.g., 'long' instead of '{}') or add overflow checks before the operation",
-                                                var_type
-                                            )),
-                                            requires_manual_review: None,
-                                        });
-                                        // Only report once per expression
-                                        return;
-                                    }
-                                }
+                        let narrow_vars: Vec<(&String, &String)> = all_vars
+                            .iter()
+                            .filter_map(|var| {
+                                variables.get(var).and_then(|(var_type, _)| {
+                                    self.is_narrow_integer_type(var_type)
+                                        .then_some((var, var_type))
+                                })
+                            })
+                            .collect();
+
+                        if narrow_vars.is_empty() {
+                            // No narrow-typed operand at all -- not this
+                            // rule's concern (plain `int`/`long` overflow is
+                            // INT32-C's, see is_narrow_integer_type's doc).
+                        } else if op_text.trim() == "+" || op_text.trim() == "-" {
+                            // `+`/`-` of narrow (char/short) operands can
+                            // never overflow a >=32-bit promoted `int`: even
+                            // the widest narrow magnitude (unsigned short's
+                            // 65535) summed or differenced with another
+                            // narrow value tops out in the low hundred
+                            // thousands, nowhere near INT_MAX. Provably safe
+                            // by construction -- nothing to flag.
+                        } else if self.promoted_arithmetic_fits_int(node, source, macros, variables)
+                        {
+                            // `*`/`<<` CAN overflow a narrow-typed operand's
+                            // promoted range (e.g. `unsigned short * unsigned
+                            // short` can exceed INT_MAX), so these need an
+                            // actual bound check rather than a blanket
+                            // exemption. Provably fits `int` -- safe.
+                        } else {
+                            let (var, var_type) = narrow_vars[0];
+                            if !self.has_overflow_protection(node, var, var_type, source) {
+                                violations.push(RuleViolation {
+                                    rule_id: self.rule_id().to_string(),
+                                    message: format!(
+                                        "Arithmetic expression involving '{}' (narrow type '{}') without proper overflow protection",
+                                        var, var_type
+                                    ),
+                                    severity: self.severity(),
+                                    line: node.start_position().row + 1,
+                                    column: node.start_position().column + 1,
+                                    file_path: String::new(),
+                                    suggestion: Some(format!(
+                                        "Use a wider type (e.g., 'long' instead of '{}') or add overflow checks before the operation",
+                                        var_type
+                                    )),
+                                    requires_manual_review: None,
+                                });
+                                // Only report once per expression
+                                return;
                             }
                         }
                     }
@@ -173,7 +211,50 @@ impl Int08C {
         // Recursively check children
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            self.check_arithmetic_expressions(&child, source, variables, violations);
+            self.check_arithmetic_expressions(&child, source, variables, macros, violations);
+        }
+    }
+
+    /// True if `expr` (a `*`/`<<` binary expression already known to involve
+    /// at least one narrow-typed operand) can be proven, via interval
+    /// arithmetic over the operands' promoted ranges, to never exceed a
+    /// 32-bit `int`'s range. Seeds every narrow-typed variable in scope with
+    /// its promoted-type range so `const_eval::try_evaluate_range` can walk
+    /// the whole expression tree (handling nested parens, literals, and
+    /// `#define` constants along the way); an operand outside that -- an
+    /// unrelated variable of unknown range -- makes the range unresolvable,
+    /// and this conservatively returns `false` (unproven, not disproven).
+    fn promoted_arithmetic_fits_int(
+        &self,
+        expr: &Node,
+        source: &str,
+        macros: &MacroConstantMap,
+        variables: &HashMap<String, (String, usize)>,
+    ) -> bool {
+        let mut var_ranges: VarRangeMap = HashMap::new();
+        for (name, (var_type, _)) in variables {
+            if let Some(range) = self.promoted_range_for_type(var_type) {
+                var_ranges.insert(name.clone(), range);
+            }
+        }
+
+        const_eval::try_evaluate_range(expr, source, macros, &var_ranges)
+            .is_some_and(|range| range.fits_in_signed(32))
+    }
+
+    /// The value range a narrow integer type takes on after C's usual
+    /// arithmetic conversions promote it to `int` -- i.e. its own full
+    /// representable range, since promotion is value-preserving. Plain
+    /// `char`'s signedness is implementation-defined, so it's given the
+    /// union of both interpretations (still tiny next to `int`'s range).
+    fn promoted_range_for_type(&self, type_name: &str) -> Option<ValueRange> {
+        match type_name {
+            "char" => Some(ValueRange::new(-128, 255)),
+            "signed char" => Some(ValueRange::new(-128, 127)),
+            "unsigned char" => Some(ValueRange::new(0, 255)),
+            "short" | "signed short" => Some(ValueRange::new(-32768, 32767)),
+            "unsigned short" => Some(ValueRange::new(0, 65535)),
+            _ => None,
         }
     }
 
