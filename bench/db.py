@@ -154,6 +154,13 @@ CREATE TABLE IF NOT EXISTS realworld_results (
     violation_count INTEGER DEFAULT 0,
     duration_s      REAL,
     codebase_commit TEXT,
+    -- JSON, and NULL for a tool that always scans everything it was pointed
+    -- at. Infer and Frama-C do not: Infer captures only what preprocesses,
+    -- and Frama-C's per-entry-point mode is bounded by wall clock. Without
+    -- this column a partial scan's violation_count is indistinguishable from
+    -- a complete one's, which is the whole hazard (task 767) -- so it is
+    -- recorded next to the count rather than left in the results directory.
+    coverage        TEXT,
     UNIQUE(run_id, project, tool)
 );
 
@@ -314,6 +321,10 @@ class BenchDB:
             if "codebase_commit" not in cols:
                 conn.execute(
                     "ALTER TABLE realworld_results ADD COLUMN codebase_commit TEXT")
+            # Partial-scan provenance for the build-based tools (task 767).
+            if "coverage" not in cols:
+                conn.execute(
+                    "ALTER TABLE realworld_results ADD COLUMN coverage TEXT")
             # ground_truth gained provenance/confidence for FN corroboration.
             gt_cols = self._table_columns(conn, "ground_truth")
             if "provenance" not in gt_cols:
@@ -1118,21 +1129,26 @@ class BenchDB:
                                 c_files: int = 0, loc: int = 0,
                                 violation_count: int = 0,
                                 duration_s: float = None,
-                                codebase_commit: str = None) -> None:
+                                codebase_commit: str = None,
+                                coverage: dict | None = None) -> None:
+        """`coverage` is the build-based tools' partial-scan record (task 767);
+        pass None for a tool that scanned everything it was given."""
         with self._cursor() as cur:
             cur.execute("""
                 INSERT INTO realworld_results
                     (run_id, project, tool, c_files, loc, violation_count,
-                     duration_s, codebase_commit)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     duration_s, codebase_commit, coverage)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (run_id, project, tool) DO UPDATE SET
                     c_files = excluded.c_files,
                     loc = excluded.loc,
                     violation_count = excluded.violation_count,
                     duration_s = excluded.duration_s,
-                    codebase_commit = excluded.codebase_commit
+                    codebase_commit = excluded.codebase_commit,
+                    coverage = excluded.coverage
             """, (run_id, project, tool, c_files, loc, violation_count,
-                  duration_s, codebase_commit))
+                  duration_s, codebase_commit,
+                  json.dumps(coverage) if coverage else None))
 
     def insert_realworld_violations(self, result_id: int,
                                       violations: list[dict]) -> None:

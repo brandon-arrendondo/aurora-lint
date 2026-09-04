@@ -8,6 +8,9 @@ pub mod call_roles;
 /// Reusable functions for analyzing C declarators (arrays, pointers, function pointers).
 pub mod declarator_utils;
 pub mod float_typing;
+/// Structural "is this variable guarded here?" queries -- the AST relation
+/// that per-rule text searches for a canonical guard spelling stand in for.
+pub mod guard_dominance;
 /// Shared helpers for arithmetic-overflow-detection rules (INT30-C, INT32-C).
 pub mod overflow_helpers;
 pub mod size_analysis;

@@ -1,19 +1,38 @@
 ---
-# Ansible playbook: Install Infer and Frama-C on Debian 12 (bookworm) or
-# Ubuntu 24.04 (noble)
+# Ansible playbook: install every tool sqc is compared against, on Debian 12
+# (bookworm) or Ubuntu 24.04 (noble)
 #
 # Usage:
-#   ansible-playbook playbooks/install-static-analyzers.yml --ask-become-pass
+#   ansible-playbook playbooks/install-static-analyzers.yml -i "localhost," -c local \
+#     --ask-become-pass
 #
 # What it installs:
+#   - cppcheck             (apt)  -> /usr/bin/cppcheck
+#   - clang-tidy           (apt)  -> /usr/bin/clang-tidy
 #   - Facebook Infer v1.2.0 (prebuilt binary) -> /opt/infer-linux-x86_64-v1.2.0/
 #   - Frama-C latest (via opam) -> ~/.opam/
 #
+# cppcheck and clang-tidy were previously missing here even though
+# setup-dev-environment.yml names this playbook as where they come from, so a
+# freshly-provisioned node could run neither -- and `python -m bench
+# realworld-run --tool cppcheck` failed with a bare "not found on PATH".
+# They are taken from apt at whatever version the distro ships rather than
+# pinned: the benchmark runner records the actual version it saw in the
+# run_id, so a version difference is visible in the data instead of being an
+# assumption made here. If a specific version matters for a published
+# comparison, install it by hand and re-run -- see docs/benchmark-setup.rst.
+#
+# Infer and Frama-C are the BUILD-BASED pair: neither can be pointed at a
+# source tree the way cppcheck and sqc can, so a real-world run of either
+# also needs playbooks/setup-compile-commands.yml to have generated that
+# checkout's compile_commands.json (task 767).
+#
 # After running:
+#   cppcheck --version && clang-tidy --version
 #   infer --version
-#   frama-c -eva file.c
+#   eval $(opam env) && frama-c -version
 
-- name: Install Infer and Frama-C on Debian 12 / Ubuntu 24.04
+- name: Install cppcheck, clang-tidy, Infer and Frama-C on Debian 12 / Ubuntu 24.04
   hosts: all
   vars:
     infer_version: "1.2.0"
@@ -22,6 +41,26 @@
     opam_root: "{{ ansible_env.HOME }}/.opam"
 
   tasks:
+    # ── cppcheck + clang-tidy (apt) ──────────────────────────────────────
+
+    - name: Install cppcheck and clang-tidy
+      become: true
+      apt:
+        name:
+          - cppcheck
+          - clang-tidy
+        state: present
+        update_cache: true
+
+    - name: Verify cppcheck and clang-tidy
+      shell: cppcheck --version && clang-tidy --version | head -1
+      register: source_tools_out
+      changed_when: false
+
+    - name: Show cppcheck and clang-tidy versions
+      debug:
+        var: source_tools_out.stdout_lines
+
     # ── Infer (prebuilt binary) ──────────────────────────────────────────
 
     - name: Check if Infer is already installed
@@ -176,6 +215,7 @@
     - name: Installation summary
       debug:
         msg:
+          - "{{ source_tools_out.stdout_lines | join(' / ') }}"
           - "Infer:   {{ infer_version_out.stdout_lines[0] | default('installed') }}"
           - "Frama-C: {{ framac_version_out.stdout_lines[0] | default('installed') }}"
           - ""
