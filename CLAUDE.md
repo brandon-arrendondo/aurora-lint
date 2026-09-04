@@ -141,9 +141,34 @@ scan while staying invisible to `git status`.
 
 ### Protocol
 
-1. **Version bump + commit BEFORE benchmark**: Always bump the version in `Cargo.toml`,
-   rebuild (`cargo build --release`), and commit before starting a benchmark run.
-   The run_id is derived from version + commit SHA (e.g., `sqc-0.3.20-abc1234`).
+1. **Commit BEFORE benchmark. Do NOT bump the version** unless Brandon asks
+   for one. Rebuild (`cargo build --release`) and commit — and push, if the
+   run is going through `benchmarking_db`'s queue, which fetches from origin
+   and never from your working tree.
+
+   The version bump used to be step one here, and dropping it is deliberate.
+   `run_id` is `sqc-{version}-{sha}`, so the **SHA** is what actually
+   discriminates one run from another; two runs at the same version but
+   different commits already get distinct run_ids, and Juliet's resume keys
+   on the whole run_id. The version contributed readability and nothing else.
+   Against that, with ~5 nodes committing in parallel, a per-task bump
+   collides constantly and does so **silently** — both sides write the same
+   string, so git reports no conflict, and `doctor` only looks at display
+   ids. v0.4.316, v0.4.318 and v0.4.336 are all commits whose entire purpose
+   was cleaning one up. A number that two different trees can both claim was
+   not identifying a code state anyway, so the bump was buying a collision
+   surface in exchange for nothing.
+
+   **Consequence to accept:** resolving a run by a bare version string gets
+   ambiguous much more often. `resolve_realworld_run`'s version fallback
+   already handles that by preferring the default run (it had to, for variant
+   siblings), but stop reaching for it — address a real-world run by its
+   integer id and a Juliet run by its full run_id or SHA. Quoting a version
+   without a SHA alongside it is now meaningless; say `0.4.336-27785c4a`, or
+   just the SHA.
+
+   Version numbers are a **release** artifact, not a per-task one. Bump when
+   Brandon says to cut one.
 
 2. **NEVER modify code while a benchmark is running**: The benchmark uses
    `target/release/sqc`. If you rebuild while it's running, you corrupt results
@@ -161,7 +186,7 @@ scan while staying invisible to `git status`.
 
 5. **Workflow sequence**:
    ```
-   implement changes → bump version → commit → build release → run benchmark → wait → analyze
+   implement changes → commit (+ push, if queueing) → build release → run benchmark → wait → analyze
    ```
 
 6. **Delta-adjudicate before citing precision/recall for a changed rule (CRITICAL)**:
