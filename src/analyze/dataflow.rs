@@ -176,14 +176,40 @@ pub fn compute_reaching_definitions(
         reaching_out.insert(block.id, gen.get(&block.id).cloned().unwrap_or_default());
     }
 
-    // Worklist algorithm
+    // Worklist algorithm.
+    //
+    // The safety bound is derived, not tuned. This is a monotone framework:
+    // a block's out-set only ever grows, so it can change at most
+    // `definitions.len()` times, and a block is only re-enqueued when a
+    // predecessor's out-set changed — making `blocks * (defs + 1)` a true
+    // termination bound. Reaching it means a bug in the transfer function,
+    // never an ordinary large function.
+    //
+    // It used to be a flat 1000, which ordinary code reaches and which then
+    // broke the analysis SILENTLY and in the false-positive direction: the
+    // worklist is seeded with every block, so in a function with more than
+    // 1000 blocks every later block was left at its initial `reaching_in =
+    // {}`. MSC13-C reads that as "no definition reaches this read" and
+    // reports live stores as dead — 283 such false positives in sqlite's
+    // `src/vdbe.c` alone, whose `sqlite3VdbeExec` has 2401 blocks and 784
+    // definitions and needs ~43k iterations to converge.
+    let max_iterations = cfg
+        .blocks
+        .len()
+        .saturating_mul(definitions.len().saturating_add(1))
+        .saturating_add(cfg.blocks.len());
+
     let mut worklist: VecDeque<BlockId> = cfg.blocks.iter().map(|b| b.id).collect();
+    // Mirrors `worklist`'s membership. A linear `worklist.contains()` per
+    // successor push is quadratic in block count, which the old cap hid by
+    // never letting the loop run long enough to notice.
+    let mut queued: HashSet<BlockId> = worklist.iter().copied().collect();
     let mut iterations = 0;
-    const MAX_ITERATIONS: usize = 1000;
 
     while let Some(block_id) = worklist.pop_front() {
+        queued.remove(&block_id);
         iterations += 1;
-        if iterations > MAX_ITERATIONS {
+        if iterations > max_iterations {
             break; // Safety limit
         }
 
@@ -210,7 +236,7 @@ pub fn compute_reaching_definitions(
 
             // Add successors to worklist
             for (succ_id, _) in cfg.successors(block_id) {
-                if !worklist.contains(&succ_id) {
+                if queued.insert(succ_id) {
                     worklist.push_back(succ_id);
                 }
             }
@@ -988,5 +1014,43 @@ mod tests {
         // are in the gen set with only the last surviving
         // Verify definitions exist
         assert!(!reaching.definitions.is_empty(), "Should have definitions");
+    }
+
+    /// The worklist is seeded with every block, so a flat iteration cap
+    /// below the block count meant every block past the cap kept its
+    /// initial empty `reaching_in` — silently, and in the false-positive
+    /// direction for every consumer that reads "nothing reaches here" as
+    /// "the earlier store was dead". The cap must scale with the CFG.
+    ///
+    /// 1500 `if` statements is comfortably past the old flat 1000 and is
+    /// well inside the shape of the real function that exposed this
+    /// (sqlite's `sqlite3VdbeExec`: 2401 blocks, 784 definitions).
+    #[test]
+    fn reaching_defs_converge_past_the_old_flat_iteration_cap() {
+        let mut code = String::from("void foo(int n) {\n    int x = 1;\n");
+        for i in 0..1500 {
+            code.push_str(&format!("    if (n == {}) {{ n++; }}\n", i));
+        }
+        code.push_str("    int y = x;\n}\n");
+
+        let (tree, source) = parse_function(&code);
+        let func_node = get_func_node(&tree).unwrap();
+        let cfg = build_function_cfg(&func_node, &source).unwrap();
+        assert!(
+            cfg.blocks.len() > 1000,
+            "test needs a CFG larger than the old flat cap, got {}",
+            cfg.blocks.len()
+        );
+
+        let defs = extract_definitions(&cfg, &func_node, &source);
+        let reaching = compute_reaching_definitions(&cfg, defs);
+
+        // `x` is written once at the top and read in the very last block.
+        // That definition must still reach it.
+        let last = cfg.blocks.last().unwrap();
+        assert!(
+            !reaching.defs_reaching_block(last.id, "x").is_empty(),
+            "the initial definition of `x` must reach the final block"
+        );
     }
 }

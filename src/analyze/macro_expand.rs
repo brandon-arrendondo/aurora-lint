@@ -87,6 +87,96 @@ pub fn collect_function_macros_textual(source: &str) -> HashMap<String, Function
     out
 }
 
+/// Every function-like definition found in `source`, keyed by macro name and
+/// keeping **all** definitions of a name rather than only the first.
+///
+/// [`collect_function_macros`] deliberately keeps one body per name: an
+/// expander has to pick a branch, and picking the first is as defensible as
+/// any. A caller asking the different question "could a call to this macro
+/// touch a variable named `x` in my scope?" cannot pick — the alternatives
+/// live in mutually exclusive `#ifdef` branches, and the one that matters is
+/// not usually the first. sqlite's `complete.c` is the shape: `IdChar(C)` is
+/// defined twice, `#ifdef SQLITE_ASCII` as a pure table lookup and `#ifdef
+/// SQLITE_EBCDIC` as `(((c=C)>=0x42 && …))`, which assigns and reads a
+/// caller-scope `c`. Only the second definition explains the `unsigned char
+/// c;` sitting under the matching `#ifdef` in the caller.
+///
+/// Textual scan only (no AST pass): the point here is coverage of every
+/// preprocessor branch, and the line-oriented scanner already sees all of
+/// them.
+pub fn collect_function_macro_alternatives(source: &str) -> HashMap<String, Vec<FunctionMacro>> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out: HashMap<String, Vec<FunctionMacro>> = HashMap::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let (logical, next) = join_continuation(&lines, i);
+        i = next;
+        if let Some((name, m)) = parse_define_line(&logical) {
+            let alts = out.entry(name).or_default();
+            if !alts.contains(&m) {
+                alts.push(m);
+            }
+        }
+    }
+    out
+}
+
+/// True if `m`'s replacement list mentions `var` as a *free* identifier —
+/// one that is not one of the macro's own parameters, and so binds to
+/// whatever `var` names at the call site.
+///
+/// This is C semantics, not a heuristic: a macro is textual substitution, so
+/// a free `c` in the replacement list really does read (or write) the `c` in
+/// scope where the macro is invoked. Identifiers are matched whole-token, so
+/// `c` does not match `cnt` or `pc`.
+pub fn macro_references_free_identifier(m: &FunctionMacro, var: &str) -> bool {
+    if var.is_empty() || m.params.iter().any(|p| p == var) {
+        return false;
+    }
+    let chars: Vec<char> = m.body.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if is_ident_start(chars[i]) {
+            let start = i;
+            while i < chars.len() && is_ident_char(chars[i]) {
+                i += 1;
+            }
+            let tok: String = chars[start..i].iter().collect();
+            if tok == var {
+                return true;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// Every identifier in `m`'s replacement list that is *free* — not one of
+/// the macro's own parameters — and so binds to whatever that name means at
+/// the call site. The set form of [`macro_references_free_identifier`], for
+/// callers collecting names rather than testing one.
+pub fn macro_free_identifiers(m: &FunctionMacro) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let chars: Vec<char> = m.body.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if is_ident_start(chars[i]) {
+            let start = i;
+            while i < chars.len() && is_ident_char(chars[i]) {
+                i += 1;
+            }
+            let tok: String = chars[start..i].iter().collect();
+            if !m.params.contains(&tok) {
+                out.insert(tok);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Join a backslash-continued logical line starting at `start`. Returns the
 /// spliced text (continuation backslashes removed, joined with a space) and the
 /// index of the next unconsumed physical line.
@@ -1484,5 +1574,42 @@ mod tests {
             ast_only.keys().collect::<Vec<_>>()
         );
         assert_eq!(merged["recovered_free"].body, "free(ptr)");
+    }
+
+    #[test]
+    fn alternatives_keep_every_preprocessor_branch_of_one_name() {
+        // sqlite complete.c's shape, reduced: two mutually exclusive
+        // definitions of one name, only the second of which touches a
+        // caller-scope `c`.
+        let src = "#ifdef SQLITE_ASCII\n                   #define IdChar(C)  ((sqlite3CtypeMap[(unsigned char)C]&0x46)!=0)\n                   #endif\n                   #ifdef SQLITE_EBCDIC\n                   #define IdChar(C)  (((c=C)>=0x42 && sqlite3IsEbcdicIdChar[c-0x40]))\n                   #endif\n";
+        let alts = collect_function_macro_alternatives(src);
+        let idchar = alts.get("IdChar").expect("IdChar collected");
+        assert_eq!(idchar.len(), 2, "both branches kept: {:?}", idchar);
+
+        // collect_function_macros keeps only the first, which is exactly why
+        // the alternatives collector exists.
+        assert!(!idchar
+            .iter()
+            .all(|m| macro_references_free_identifier(m, "c")));
+        assert!(idchar
+            .iter()
+            .any(|m| macro_references_free_identifier(m, "c")));
+    }
+
+    #[test]
+    fn free_identifier_check_ignores_parameters_and_substrings() {
+        let alts = collect_function_macro_alternatives(
+            "#define SQUARE(x) ((x) * (x))\n#define BUMP(n) (cnt += (n))\n",
+        );
+        let square = &alts["SQUARE"][0];
+        let bump = &alts["BUMP"][0];
+
+        // A macro's own parameter is bound by the macro, not by the caller.
+        assert!(!macro_references_free_identifier(square, "x"));
+        // Whole-token matching: `cnt` is free, but `c` and `nt` are not in it.
+        assert!(macro_references_free_identifier(bump, "cnt"));
+        assert!(!macro_references_free_identifier(bump, "c"));
+        assert!(!macro_references_free_identifier(bump, "nt"));
+        assert!(!macro_references_free_identifier(bump, ""));
     }
 }

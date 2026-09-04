@@ -1,31 +1,27 @@
 /* Rule: INT08-C
  * Source: testcases
- * Status: FAIL - Arithmetic on narrow integer types without overflow protection
+ * Status: FAIL - narrow-typed multiplication/shift whose promoted-int
+ * result can genuinely exceed INT_MAX (task 755).
+ *
+ * `+`/`-` on narrow (char/short) operands can never overflow a >=32-bit
+ * promoted `int` -- the widest narrow magnitude (unsigned short's 65535)
+ * combined with another narrow value tops out in the low hundred
+ * thousands. `*` and `<<` don't have that guarantee: two operands near
+ * their type's max can still exceed INT_MAX once promoted, which is what
+ * these cases exercise.
  */
 
-/* Case 1: short addition without overflow check */
-void test_short_add(void) {
-    short a = 32000;
-    short b = 1000;
-    short result = a + b;
+/* Case 1: unsigned short multiplication whose promoted-int product can
+ * exceed INT_MAX (65535 * 65535 = 4294836225, > 2^31-1). */
+void test_ushort_multiply_overflow(void) {
+    unsigned short x = 60000;
+    unsigned short y = 60000;
+    unsigned short result = x * y;
 }
 
-/* Case 2: unsigned char multiplication without check */
-void test_uchar_multiply(void) {
-    unsigned char x = 200;
-    unsigned char y = 2;
-    unsigned char result = x * y;
-}
-
-/* Case 3: signed char subtraction */
-void test_schar_subtract(void) {
-    char c = -100;
-    char d = 50;
-    char result = c - d;
-}
-
-/* Case 4: short shift operation without protection */
-void test_short_shift(void) {
-    short val = 16000;
-    short shifted = val << 2;
+/* Case 2: unsigned short left-shifted far enough that the promoted-int
+ * result can exceed INT_MAX (65535 << 20 far exceeds 2^31-1). */
+void test_ushort_shift_overflow(void) {
+    unsigned short val = 60000;
+    int shifted = val << 20;
 }

@@ -383,12 +383,22 @@ shared infra, legitimately definition-side, or incidental AST traversal.
 
 | Category | Rules | Disposition | Why |
 |---|---|---|---|
-| **Already on the engine** (`macro_expand` / `macro_semantics`) | EXP33, EXP34, MEM30, DCL31, MEM31 | done | Migrated in Phase 1 / 2c. MEM31-C added 2026-07-22 (task 2, v0.4.120): `frees_param_fields` in `function_summary.rs` now checks `macro_nulls_param_indices` before falling back to the `is_deallocation_call_name` name heuristic, so a macro-wrapped free (e.g. `mosquitto_FREE`, `Curl_safefree`) is credited by its actual free+null body shape, not by name pattern-matching. |
+| **Already on the engine** (`macro_expand` / `macro_semantics`) | EXP33, EXP34, MEM30, DCL31, MEM31, MSC13 | done | Migrated in Phase 1 / 2c. MEM31-C added 2026-07-22 (task 2, v0.4.120): `frees_param_fields` in `function_summary.rs` now checks `macro_nulls_param_indices` before falling back to the `is_deallocation_call_name` name heuristic, so a macro-wrapped free (e.g. `mosquitto_FREE`, `Curl_safefree`) is credited by its actual free+null body shape, not by name pattern-matching. |
 | **Engine duplicate — MIGRATE** | **ARR30** | **migrate** | Local `extract_function_macros` + dead-code `FunctionMacro` struct = a single-file reimplementation of `context.function_macros` (`macro_expand::FunctionMacro`). Its `check_macro_invocation` is *live* (~60 manual-review flags across the curl audit), so this is also a precision lever — cross-file context exposes header macros → must gate the flag count. |
 | **`const_eval` consumers — DRY candidate** | INT30, INT32, INT33, INT34, FIO30, FLP03, STR02, ERR33, ENV03, ENV33, DCL07 | optional DRY | Already consume the shared `const_eval::collect_macro_constants` / `collect_macro_aliases` + `context.macro_constants` / `macro_aliases`. *Not opaque-macro debt.* They repeat a "collect-per-file + merge cross-file context, per-file wins" idiom (~10×) that could fold into one `const_eval` helper for consistency — mechanical, low-risk, modest payoff. |
 | **Definition-side hygiene / naming / declaration rules — KEEP** | PRE00–13, PRE30–32, MSC38, MSC41, API10, API03, DCL37, EXP44, DCL19, DCL15 | keep | Audit macro *definitions* as written (reserved-name `#undef`/`#define`, `_Generic`, `static`-in-macro-prefix, multiple-eval hygiene). Per §3.8 these need the raw view; expansion would defeat their purpose. |
-| **Incidental `preproc_` AST traversal — KEEP** | MSC13, MSC37, MSC07, DCL40, DCL30, SIG31, ARR01, ARR36, API00 | keep | Only skip/recurse `preproc_*` nodes during a normal AST walk (e.g. `kind().starts_with("preproc_")`). No macro semantics. |
+| **Incidental `preproc_` AST traversal — KEEP** | MSC37, MSC07, DCL40, DCL30, SIG31, ARR01, ARR36, API00 | keep | Only skip/recurse `preproc_*` nodes during a normal AST walk (e.g. `kind().starts_with("preproc_")`). No macro semantics. |
 | **Shared `is_likely_macro_constant` name heuristic — KEEP** | MEM05, ARR32, MEM33, DCL03 | keep | Uppercase-name guess ("is this an ALL_CAPS macro constant?"), not value extraction; does not duplicate `const_eval` (which resolves values). Text-heuristic family — see task 197, not the expansion engine. **Deduped in task 603** (v0.4.288): all four now call `ast_utils::is_likely_macro_constant`, previously reimplemented per-rule with divergent edge cases. EXP08-C's copy was unreachable dead code and was deleted (see task 618 for whether it should be made live). |
+
+MSC13-C moved from "incidental traversal" to "on the engine" in task 756. A
+liveness rule is a consumer nobody anticipated here: it does not need to
+*expand* an invocation, only to ask whether some definition of the invoked
+macro names a free identifier, because a free identifier in a replacement
+list is a use of the caller's variable of that name. That question needed
+`collect_function_macro_alternatives`, which keeps every `#ifdef` branch's
+definition rather than the first — `collect_function_macros` collapses them
+because an expander has to pick one, and the branch that explains a
+declaration is usually not the first (sqlite `complete.c`'s `IdChar`).
 
 ### Phase 3 execution plan (revised)
 

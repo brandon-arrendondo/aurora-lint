@@ -715,10 +715,23 @@ class BenchDB:
             """, (run_id,))
             agg_row = cur.fetchone()
 
-            # Check count of per-CWE rows (excluding aggregate)
+            # CWEs MEASURED, not CWEs attempted (task 910).
+            #
+            # `file_count > 0` is load-bearing. The runner enumerates every
+            # CWE directory under testcases/ and nine of them are C++-only in
+            # Juliet -- sqc implements CERT **C** and correctly scans none of
+            # them, but four (CWE-23, CWE-672, CWE-676, CWE-762) are in its
+            # list and were landing in cwe_scans as completed rows with zero
+            # files. Counting those made "79 Juliet CWEs Scanned" out of 75
+            # actually measured: the number said sqc had scanned four
+            # directories it had correctly declined.
+            #
+            # Precision is unaffected and always was -- every other metric
+            # here is computed over findings, and a directory with no files
+            # produces none -- so this moves the coverage count alone.
             cur.execute("""
                 SELECT COUNT(*) as cnt FROM cwe_scans
-                WHERE run_id = ? AND cwe_id != 'ALL'
+                WHERE run_id = ? AND cwe_id != 'ALL' AND file_count > 0
             """, (run_id,))
             per_cwe_count = cur.fetchone()["cnt"]
 
@@ -753,11 +766,16 @@ class BenchDB:
                         SUM(m.per_file_total) as total_per_file_total,
                         SUM(m.flaw_hit_detected) as total_flaw_hit_detected,
                         SUM(m.flaw_hit_total) as total_flaw_hit_total,
-                        COUNT(*) as cwes_analyzed
+                        SUM(CASE WHEN s.file_count > 0 THEN 1 ELSE 0 END)
+                            as cwes_analyzed
                     FROM cwe_metrics m
                     JOIN cwe_scans s ON s.id = m.cwe_scan_id
                     WHERE s.run_id = ?
                 """, (run_id,))
+                # Same predicate as the aggregate branch above, expressed as a
+                # conditional SUM rather than a WHERE so the sibling SUMs keep
+                # their existing semantics untouched. A zero-file CWE
+                # contributes 0 to each of them anyway.
                 totals = dict(cur.fetchone())
 
             # Per-CWE breakdown (exclude synthetic aggregate from display)

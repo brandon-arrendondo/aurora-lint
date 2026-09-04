@@ -26,6 +26,10 @@ use crate::analyze::dataflow::{
     compute_reaching_definitions, extract_definitions, find_node_at_range, Definition,
     DefinitionKind,
 };
+use crate::analyze::macro_expand::{
+    collect_function_macro_alternatives, macro_free_identifiers, macro_references_free_identifier,
+    FunctionMacro,
+};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     find_enclosing_declaration_for_identifier, get_identifier_from_declarator, get_node_text,
@@ -326,6 +330,67 @@ impl Msc13C {
         }
     }
 
+    /// True if some function-like macro invoked inside `body` has a
+    /// replacement list that names `var_name` as a free identifier — in
+    /// which case the variable IS used, in text sqc's identifier walk never
+    /// sees, because the name does not appear at the call site at all.
+    ///
+    /// sqlite's `src/complete.c` is the worked example. `unsigned char c;`
+    /// is declared under `#ifdef SQLITE_EBCDIC` and looks plainly unused
+    /// until you find the `IdChar` definition under the same guard —
+    /// `#define IdChar(C)  (((c=C)>=0x42 && sqlite3IsEbcdicIdChar[c-0x40]))`
+    /// — whose body both writes and reads `c`, and which is called twice in
+    /// the declaring block.
+    ///
+    /// Every preprocessor alternative of a macro name is consulted, not just
+    /// the first (see `collect_function_macro_alternatives`): the definition
+    /// that explains the declaration is normally the one under the same
+    /// `#ifdef`, and which of the two the expander would have picked is
+    /// irrelevant to whether a use exists.
+    ///
+    /// Scoped to macros defined in this file. A macro defined in a header
+    /// is not visible here, so the same shape across a `#include` still
+    /// reports — under-suppression, which is the safe direction.
+    fn macro_hides_use(
+        &self,
+        body: &Node,
+        source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
+        var_name: &str,
+    ) -> bool {
+        if macros.is_empty() {
+            return false;
+        }
+        let mut invoked = HashSet::new();
+        self.collect_invoked_names(body, source, &mut invoked);
+        invoked.iter().any(|name| {
+            macros.get(name.as_str()).is_some_and(|alts| {
+                alts.iter()
+                    .any(|m| macro_references_free_identifier(m, var_name))
+            })
+        })
+    }
+
+    /// Names of every callee invoked in `node`'s subtree, whether it is a
+    /// real function or a function-like macro — syntactically identical, and
+    /// the caller resolves which by lookup.
+    fn collect_invoked_names(&self, node: &Node, source: &str, out: &mut HashSet<String>) {
+        if node.kind() == "call_expression" {
+            if let Some(f) = node.child_by_field_name("function") {
+                if f.kind() == "identifier" {
+                    out.insert(get_node_text(&f, source).to_string());
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() != "function_definition" {
+                    self.collect_invoked_names(&child, source, out);
+                }
+            }
+        }
+    }
+
     /// Determines if an identifier is in a "read" context (its value is consumed).
     fn is_read_context(&self, node: &Node, source: &str) -> bool {
         let parent = match node.parent() {
@@ -427,18 +492,29 @@ impl CertRule for Msc13C {
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
+        // Every preprocessor branch's definition of every function-like
+        // macro in this file, for the macro-hidden-use check below. Built
+        // once per file, not per function.
+        let macros = collect_function_macro_alternatives(source);
+
         // Walk all function definitions
-        self.check_functions(node, source, &mut violations);
+        self.check_functions(node, source, &macros, &mut violations);
 
         violations
     }
 }
 
 impl Msc13C {
-    fn check_functions(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_functions(
+        &self,
+        node: &Node,
+        source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         if node.kind() == "function_definition" {
             if let Some(body) = node.child_by_field_name("body") {
-                self.check_function_body(node, &body, source, violations);
+                self.check_function_body(node, &body, source, macros, violations);
             }
         }
 
@@ -449,7 +525,7 @@ impl Msc13C {
                     || node.kind() == "translation_unit"
                     || node.kind().starts_with("preproc_")
                 {
-                    self.check_functions(&child, source, violations);
+                    self.check_functions(&child, source, macros, violations);
                 }
             }
         }
@@ -460,6 +536,7 @@ impl Msc13C {
         func_node: &Node,
         body: &Node,
         source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Collect all local variable declarations
@@ -477,7 +554,7 @@ impl Msc13C {
                 .cloned()
                 .unwrap_or_else(|| vec![*decl_start]);
             let reads = self.count_reads(body, source, name, Some(&targets));
-            if reads == 0 {
+            if reads == 0 && !self.macro_hides_use(body, source, macros, name) {
                 let msg = if *has_init {
                     format!("Variable '{}' is initialized but never read.", name)
                 } else {
@@ -499,7 +576,7 @@ impl Msc13C {
         // Dead store detection: an assignment whose value never reaches a
         // read on any executable path before being overwritten or the
         // function exiting.
-        self.check_dead_stores(func_node, &decl_groups, body, source, violations);
+        self.check_dead_stores(func_node, &decl_groups, body, source, macros, violations);
     }
 
     /// Detect dead stores using the real CFG + reaching-definitions
@@ -532,12 +609,19 @@ impl Msc13C {
         decl_groups: &HashMap<usize, Vec<usize>>,
         body: &Node,
         source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
         violations: &mut Vec<RuleViolation>,
     ) {
         match cfg_mod::build_function_cfg(func_node, source) {
-            Some(cfg) => {
-                self.check_dead_stores_cfg(func_node, &cfg, decl_groups, body, source, violations)
-            }
+            Some(cfg) => self.check_dead_stores_cfg(
+                func_node,
+                &cfg,
+                decl_groups,
+                body,
+                source,
+                macros,
+                violations,
+            ),
             None => self.check_dead_stores_in_blocks(body, source, violations),
         }
     }
@@ -560,6 +644,7 @@ impl Msc13C {
         decl_groups: &HashMap<usize, Vec<usize>>,
         body: &Node,
         source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
         violations: &mut Vec<RuleViolation>,
     ) {
         let definitions = extract_definitions(cfg, func_node, source);
@@ -585,7 +670,7 @@ impl Msc13C {
                 };
 
                 let mut reads = HashSet::new();
-                self.collect_reads_in_node(&stmt_node, source, &mut reads);
+                self.collect_reads_in_node(&stmt_node, source, macros, &mut reads);
                 for var in &reads {
                     if let Some(&def_idx) = active.get(var) {
                         live.insert(def_idx);
@@ -709,14 +794,38 @@ impl Msc13C {
     /// Collect the set of variable names read anywhere in `node`'s
     /// subtree, reusing `is_read_context` to exclude pure write targets
     /// (declaration names, simple-assignment LHS, etc.).
-    fn collect_reads_in_node(&self, node: &Node, source: &str, out: &mut HashSet<String>) {
+    fn collect_reads_in_node(
+        &self,
+        node: &Node,
+        source: &str,
+        macros: &HashMap<String, Vec<FunctionMacro>>,
+        out: &mut HashSet<String>,
+    ) {
         if node.kind() == "identifier" && self.is_read_context(node, source) {
             out.insert(get_node_text(node, source).to_string());
+        }
+        // A call to a function-like macro also reads every free identifier
+        // in its replacement list — same reason as `macro_hides_use`, but
+        // this pass needs it per statement rather than per function: a
+        // variable can have plenty of ordinary reads elsewhere and still
+        // have THIS store's only read hidden inside a macro, which reads as
+        // a dead store. Every preprocessor alternative contributes, and
+        // names that match no definition are simply never looked up.
+        if node.kind() == "call_expression" {
+            if let Some(f) = node.child_by_field_name("function") {
+                if f.kind() == "identifier" {
+                    if let Some(alts) = macros.get(get_node_text(&f, source)) {
+                        for m in alts {
+                            out.extend(macro_free_identifiers(m));
+                        }
+                    }
+                }
+            }
         }
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 if child.kind() != "function_definition" {
-                    self.collect_reads_in_node(&child, source, out);
+                    self.collect_reads_in_node(&child, source, macros, out);
                 }
             }
         }

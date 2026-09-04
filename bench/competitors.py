@@ -33,9 +33,24 @@ from bench.config import JULIET_BASE, opam_wrap
 
 # ── CWE sets per tool ───────────────────────────────────────────────────────
 
+# This benchmark is C-only, because sqc is: it implements CERT **C**, and
+# _collect_c_files globs '*.c' deliberately. A CWE whose Juliet directory
+# holds no C is therefore not a coverage gap to close -- it is an entry that
+# was never valid here, and run_tool refuses one rather than recording the
+# 0-file/0-TP/0-FP row that used to pass silently.
+#
+# CWE762 (Mismatched Memory Management Routines) was such an entry: 6,092
+# .cpp files and no .c, since new/delete-vs-malloc/free is a C++ defect by
+# construction. It scored 0/0 in every run from April 2026 onward while
+# counting toward the "11 CWEs" this tool was credited with (task 909).
+#
+# Eight further Juliet directories are C++-only and are correctly absent:
+# CWE23, CWE36, CWE396, CWE397, CWE440, CWE500, CWE672, CWE676. CWE676 is the
+# surprising one -- use of a dangerous function is a classic C defect -- but
+# Juliet ships only 18 .cpp files for it.
 INFER_CWES = [
     "CWE476", "CWE690", "CWE416", "CWE401", "CWE415",
-    "CWE761", "CWE762", "CWE121", "CWE122", "CWE124", "CWE127",
+    "CWE761", "CWE121", "CWE122", "CWE124", "CWE127",
 ]
 
 FRAMAC_CWES = [
@@ -618,11 +633,24 @@ def run_tool(tool: str, cwe_list: list[str] | None = None,
     }
 
     overall_start = time.monotonic()
+    skipped: list[tuple[str, str]] = []
 
     for cwe_id in cwe_list:
         cwe_dir = _find_cwe_dir(cwe_id)
         if cwe_dir is None:
             print(f"SKIP: {cwe_id} — directory not found")
+            skipped.append((cwe_id, "directory not found"))
+            continue
+
+        # C-only benchmark (see the note above INFER_CWES). Recording a
+        # C++-only CWE as a 0/0 row made it indistinguishable from a CWE the
+        # tool genuinely found nothing in, and it counted toward the coverage
+        # figures either way. Refuse it, loudly, and leave it out of `cwes`.
+        n_c = len(_collect_c_files(cwe_dir))
+        if n_c == 0:
+            print(f"SKIP: {cwe_id} ({cwe_dir.name}) — no .c files; "
+                  "this suite is C-only")
+            skipped.append((cwe_id, "no .c files (C++-only in Juliet)"))
             continue
 
         print(f"\nRunning {tool} on {cwe_id} ({cwe_dir.name})...")
@@ -670,6 +698,11 @@ def run_tool(tool: str, cwe_list: list[str] | None = None,
 
     total_duration = round(time.monotonic() - overall_start, 1)
     results["duration_s"] = total_duration
+    # Recorded so a coverage count derived from this run can be honest about
+    # what was asked for versus what was measurable.
+    results["cwes_requested"] = len(cwe_list)
+    results["cwes_measured"] = len(results["cwes"])
+    results["cwes_skipped"] = [{"cwe_id": c, "reason": r} for c, r in skipped]
     results["finished_at"] = datetime.now(timezone.utc).isoformat()
 
     t = results["totals"]
@@ -684,6 +717,9 @@ def run_tool(tool: str, cwe_list: list[str] | None = None,
     out_path.write_text(json.dumps(results, indent=2))
 
     print(f"\n{'='*70}")
+    if skipped:
+        print(f"SKIPPED {len(skipped)} CWE(s): "
+              + ", ".join(f"{c} ({r})" for c, r in skipped))
     print(f"COMPLETE: {tool} | {total_duration}s total")
     print(f"  {t['tp']} TP / {t['fp']} FP / {t['unknown']} unknown "
           f"({tp_rate:.1f}% TP rate)")
