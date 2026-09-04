@@ -1,113 +1,70 @@
 # Claude Code Project Instructions
 
+Full CLI reference and troubleshooting live in `docs/index.rst` (Benchmark
+Setup / Running Benchmarks). This file holds only what changes what you *do*.
+
+---
+
 ## Benchmark Workflow (CRITICAL)
 
-See `docs/index.rst` (Benchmark Setup / Running Benchmarks sections) for the full CLI reference and troubleshooting.
+### Where benchmark data lives
 
-### Where benchmark data actually lives (READ THIS FIRST)
+**Every OFFICIAL number comes from the `sqc_bench` Postgres instance**, reached
+through the separate **`benchmarking_db`** repo. "Official" means anything
+published as this project's measurement — README, the paper, a release note,
+any claim made outside. It is the sole source of truth for both historical
+benchmark data and adjudication data. If a run is meant to count as ours, it is
+queued through `benchmarking_db` and lands in Postgres.
 
-**Every OFFICIAL number comes from the `sqc_bench` Postgres instance.** Full
-stop. "Official" means anything published as this project's own measurement —
-`README.md`, the paper, a release note, a claim made to anyone outside. It
-is the only source of truth for both (a) historical benchmark data and (b)
-adjudication data.
-
-The gateway to it is the separate **`benchmarking_db`** repo: all benchmarking
-capability was deliberately pulled out of this repo into that one to make the
-distinction unambiguous. Worker nodes reach the historical record through
-`benchmarking_db`'s MCP servers; Claude instances running on the benchmark host
-itself have broader access because they operate on that data directly. If a run
-is meant to count as ours, it is queued through `benchmarking_db` and lands in
-Postgres.
-
-**Running your own benchmarks locally is fully supported and nothing here
-discourages it.** Anyone cloning this repo gets a working benchmark setup with
-nothing beyond `cargo build --release` and the codebase checkouts in
-`docs/benchmark-setup.rst`, and is free to run whatever they like and capture
-it however they like — `data/benchmarks.db`, a CSV, a JSON dump, all equally
-fine. That path is first-class for its purpose.
-
-What it is not is a source of *official* numbers. `data/benchmarks.db` has no
-special standing over any other local format: it is this checkout's own record
-of its own runs. A figure computed from it describes those runs, not the
-project's measurements, so it must never be transcribed into a published
+**Running benchmarks locally is fully supported.** A fresh clone gets a working
+setup from `cargo build --release` plus the checkouts in
+`docs/benchmark-setup.rst`, and may capture results however it likes.
+`data/benchmarks.db` has no special standing over a CSV — it is this checkout's
+record of its own runs. So a figure computed from it describes *those runs*,
+not the project's measurements, and must never be transcribed into a published
 document or cited as a project result.
 
-**Why it moved (the part that keeps this from looking arbitrary).** Local
-SQLite was a sound paradigm when this was mostly a single worker node — the
-data sat where the work happened. The infrastructure is now multiple nodes
-doing parallel work, and that broke the model: worker nodes need access to
-benchmark data, that data keeps growing, and workers are cheap and expendable.
-A node cannot afford to carry a duplicate of the entire benchmark corpus just
-to do its job. Centralizing in Postgres and reaching it over MCP is what makes
-a worker disposable. For scale, this checkout's own local DB is **6.5 GB** —
-26M violation rows — and it is a strict subset of the shared instance. That is
-the per-node cost the split removes.
+**The test for any new benchmarking/measurement code: would a stranger cloning
+this repo need it to evaluate sqc on their own codebase?** If no, it belongs in
+`benchmarking_db`. Two corollaries:
 
-**The second reason is the clone experience, and it is the one to apply when
-judging a proposal.** Someone who clones sqc should not have to wade through
-scaffolding that exists to make *this* maintainer's parallel-node setup
-efficient. They will not have that machinery — or, just as likely, they are
-more capable than it and would be slowed down by its assumptions. Either way it
-is a barrier to them improving sqc, which is the point of the repo.
-
-Benchmarking is primarily a **maintainer artifact**: it tells the story of the
-tool's capability and how it progressed over time. Most users care about the
-current state, and mostly about the codebase they are actually pointing sqc at
-— not about its score on an arbitrary corpus. So `bench/` exists here so a user
-*can* benchmark their own code; it does not exist to hand them the maintainer's
-measurement pipeline.
-
-The practical test for any new benchmarking/measurement code: **would a
-stranger cloning this repo need it to evaluate sqc on their own codebase?** If
-no, it belongs in `benchmarking_db`. Two corollaries follow:
-
-- Do not "helpfully" reintroduce a local mirror, cache, or sync of benchmark
-  data for speed or offline use. That is the paradigm deliberately abandoned,
-  and it brings back the per-node duplication cost plus a second thing that can
-  go stale or disagree.
+- Do not reintroduce a local mirror, cache, or sync of benchmark data for speed
+  or offline use. That paradigm was deliberately abandoned: it restores a
+  per-node copy of a corpus this checkout alone already fills 6.5 GB with, and
+  adds a second thing that can go stale or disagree. Centralizing in Postgres
+  is what makes a worker node disposable.
 - Do not add maintainer-workflow machinery here to save a hop. Multi-node
   coordination, shared-instance credentials, queue plumbing and cross-machine
-  reconciliation are `benchmarking_db`'s, however convenient it would be to
-  reach for them from this side.
-
-**On the adjudication dataset specifically:** the TP/FP/FN labels are genuinely
-valuable beyond sqc — other tools and research could use them. That is an
-argument for *sharing* them, not for keeping them in git. Large datasets are
-distributed the way ML/research datasets already are (object storage, a hosted
-dataset, a distributed DB), and exporting from Postgres to such a target should
-stay trivial. Keep it that way; do not let the dataset's future portability
-become a reason to hold it in-repo now, where it would be a barrier to the
-2-10 node parallel system needed to work the backlog down to maintenance mode.
+  reconciliation are `benchmarking_db`'s.
 
 **This repo stays Postgres-blind**: no DSN, no connection code, no awareness of
-the shared instance in anything you add here. Postgres being the source of
-truth and this repo not knowing how to reach it are both true at once, and the
-seam is what keeps `bench/` usable by a fresh clone. See
-`benchmarking_db/docs/ownership.md` for what that repo owns (historical runs,
-every metric about them, and the whole adjudication oracle including the corpus
-scope predicate).
+the shared instance in anything you add. That seam is what keeps `bench/`
+usable by a fresh clone. See `benchmarking_db/docs/ownership.md` for what that
+repo owns.
+
+**The adjudication dataset** (TP/FP/FN labels) is valuable beyond sqc, which is
+an argument for *sharing* it the way research datasets are shared — object
+storage, a hosted dataset — not for holding it in git. Keep export from
+Postgres trivial; do not let its portability become a reason to put it in-repo.
 
 ### Local SQLite storage (the local-run path)
 
-A local run writes to **`data/benchmarks.db`** (SQLite, WAL mode) — gitignored,
-so it is per-checkout and no clone inherits anyone else's.
+A local run writes to **`data/benchmarks.db`** (SQLite, WAL) — gitignored, so
+no clone inherits anyone else's.
 
-**Key tables**: `runs` (one row per benchmark), `cwe_scans` (one per CWE per run),
-`violations` (every individual finding), `cwe_metrics` (pre-computed TP/FP/rates),
-`rule_cwe_breakdown` (per-rule per-CWE counts), `realworld_runs` + `realworld_results`,
-`ground_truth` (local adjudication store — **not** the oracle; the oracle is
-`benchmarking_db`'s. `realworld-import-labels` requires `--local-oracle` so that
-writing here is a thing you state rather than a default you fall into).
+**Tables**: `runs` (one per benchmark), `cwe_scans` (one per CWE per run),
+`violations` (every finding), `cwe_metrics` (precomputed TP/FP/rates),
+`rule_cwe_breakdown`, `realworld_runs` + `realworld_results`, `ground_truth`
+(local adjudication store — **not** the oracle; the oracle is
+`benchmarking_db`'s, which is why `realworld-import-labels` requires
+`--local-oracle`: writing here is something you state, not fall into).
 
-### Running Benchmarks
+### Running benchmarks
 
-Everything runs synchronously in your own terminal — no server process, no
-async polling. `python -m bench juliet`:
-- Uses **fast mode by default** (per-CWE manifests, CWE-matched rules only)
-- Runs CWEs in parallel via `ProcessPoolExecutor`
-- Writes results directly to SQLite (no intermediate text files)
-- Supports resume: re-running skips already-completed CWEs
+Everything runs synchronously in your terminal — no server, no polling.
+`python -m bench juliet` uses fast mode by default (per-CWE manifests,
+CWE-matched rules), runs CWEs in parallel, writes straight to SQLite, and
+resumes by skipping completed CWEs.
 
 ```bash
 python -m bench juliet [--full] [--jobs N]
@@ -116,360 +73,228 @@ python -m bench compare BASE TARGET
 python -m bench runs
 python -m bench corpus-check   # are the real-world checkouts still pinned?
 
-# Real-world (sqc + cppcheck + clang-tidy against real C codebases; local,
-# sequential — see bench/realworld_runner.py). Defaults to sqc against every
+# Real-world: sqc + cppcheck + clang-tidy against real C codebases, local and
+# sequential (bench/realworld_runner.py). Defaults to sqc against every
 # codebase; narrow with --tool/--codebase.
 python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C]
 python -m bench realworld [RUN]        # FP dashboard
 python -m bench realworld-score [RUN]  # measured precision/recall vs oracle
 ```
 
-**Run `python -m bench corpus-check` before any real-world run or precision
-claim** (task 619). The pins live in `data/benchmark_repos.json` (single
-source of truth, shared with `playbooks/setup-benchmark-repos.yml`), but
-provisioning pins a checkout *once* and nothing keeps it there — a `git pull`
-on a tracking-branch checkout drifts it silently, and the real-world runner
-records whatever SHA it finds rather than asserting the expected one. Since
-`ground_truth` is keyed on `(project, commit, file, line, rule)`, findings
-from a drifted tree fall outside the precision/recall denominator in either
-direction with no error. The check exits nonzero and prints the
-`git checkout --detach` fix per row. It also flags untracked *and gitignored*
-`*.c`/`*.h` files, which sqc *will* scan and attribute to the pinned commit —
-sqc dispatches on file extension and never consults git, so a build run inside
-a checkout (e.g. sqlite's generated `sqlite3.c` amalgamation) contaminates a
-scan while staying invisible to `git status`.
+**Run `corpus-check` before any real-world run or precision claim.** Pins live
+in `data/benchmark_repos.json` (shared with
+`playbooks/setup-benchmark-repos.yml`), but provisioning pins a checkout once
+and nothing holds it there — a `git pull` on a tracking branch drifts it
+silently, and the runner records whatever SHA it finds rather than asserting
+the expected one. Since `ground_truth` is keyed on
+`(project, commit, file, line, rule)`, findings from a drifted tree fall out of
+the precision/recall denominator with no error. The check exits nonzero and
+prints the `git checkout --detach` fix per row. It also flags untracked **and
+gitignored** `*.c`/`*.h` files: sqc dispatches on file extension and never
+consults git, so a build run inside a checkout (e.g. sqlite's generated
+`sqlite3.c` amalgamation) contaminates a scan while staying invisible to
+`git status`.
 
 ### Protocol
 
-1. **Commit BEFORE benchmark. Do NOT bump the version** unless Brandon asks
-   for one. Rebuild (`cargo build --release`) and commit — and push, if the
-   run is going through `benchmarking_db`'s queue, which fetches from origin
-   and never from your working tree.
+1. **Commit BEFORE benchmarking. Do NOT bump the version** unless Brandon asks.
+   Rebuild (`cargo build --release`) and commit — and push, if the run goes
+   through `benchmarking_db`'s queue, which fetches from origin and never from
+   your working tree.
 
-   The version bump used to be step one here, and dropping it is deliberate.
-   `run_id` is `sqc-{version}-{sha}`, so the **SHA** is what actually
-   discriminates one run from another; two runs at the same version but
-   different commits already get distinct run_ids, and Juliet's resume keys
-   on the whole run_id. The version contributed readability and nothing else.
-   Against that, with ~5 nodes committing in parallel, a per-task bump
-   collides constantly and does so **silently** — both sides write the same
-   string, so git reports no conflict, and `doctor` only looks at display
-   ids. v0.4.316, v0.4.318 and v0.4.336 are all commits whose entire purpose
-   was cleaning one up. A number that two different trees can both claim was
-   not identifying a code state anyway, so the bump was buying a collision
-   surface in exchange for nothing.
+   Why no bump: `run_id` is `sqc-{version}-{sha}`, so the **SHA** is what
+   discriminates runs; the version added readability only. With ~5 nodes
+   committing in parallel a per-task bump collides constantly and **silently** —
+   both sides write the same string, so git reports no conflict and `doctor`
+   only checks display ids. Version numbers are a **release** artifact.
 
-   **Consequence to accept:** resolving a run by a bare version string gets
-   ambiguous much more often. `resolve_realworld_run`'s version fallback
-   already handles that by preferring the default run (it had to, for variant
-   siblings), but stop reaching for it — address a real-world run by its
-   integer id and a Juliet run by its full run_id or SHA. Quoting a version
-   without a SHA alongside it is now meaningless; say `0.4.336-27785c4a`, or
-   just the SHA.
+   **Consequence to accept:** address a real-world run by its integer id and a
+   Juliet run by its full run_id or SHA. A bare version string is now
+   ambiguous and quoting one without a SHA is meaningless — say
+   `0.4.336-27785c4a`, or just the SHA.
 
-   Version numbers are a **release** artifact, not a per-task one. Bump when
-   Brandon says to cut one.
+2. **NEVER modify code while a benchmark is running.** It uses
+   `target/release/sqc`; rebuilding mid-run corrupts results. Make all changes
+   and commits first.
 
-2. **NEVER modify code while a benchmark is running**: The benchmark uses
-   `target/release/sqc`. If you rebuild while it's running, you corrupt results
-   mid-run. Make ALL code changes and commits BEFORE starting the benchmark.
+3. **Wait for completion.** Fast-mode Juliet ~32-40 min, full Juliet ~40-50 min,
+   real-world sqc-only ~10-15 min. Check `python -m bench status` at most every
+   5 minutes, or just watch it.
 
-3. **Wait for completion**: Fast-mode Juliet benchmarks take ~32-40 minutes.
-   Real-world sqc-only takes ~10-15 minutes. Full Juliet suite
-   takes ~40-50 minutes. Check status with `python -m bench status` no more
-   than once every 5 minutes (or just watch it -- it runs in your terminal).
+4. **Compare runs** with `python -m bench compare`; `status RUN_ID` for a
+   per-run summary. Historical runs carry a `-historical` suffix.
 
-4. **Compare runs**: After a benchmark completes, use `python -m bench compare`
-   to compare against previous runs. `python -m bench status RUN_ID` for a
-   per-run summary.
-   Historical runs are available with suffix `-historical` (e.g., `sqc-0.3.17-historical`).
+5. **Sequence**: implement → commit (+ push, if queueing) → build release →
+   run benchmark → wait → analyze.
 
-5. **Workflow sequence**:
-   ```
-   implement changes → commit (+ push, if queueing) → build release → run benchmark → wait → analyze
-   ```
+6. **Delta-adjudicate before citing precision/recall for a changed rule
+   (CRITICAL).** `ground_truth` is keyed on exact
+   `(project, commit, file, line, rule)` tuples adjudicated at a past
+   snapshot. When a rule's detection logic changes (any commit under
+   `src/rules/cert_c/**/*.rs` that alters what it flags — not a pure
+   refactor), its new findings land at `(file, line)` pairs that were **never
+   adjudicated**, so they fall outside the denominator in either direction. A
+   raw-count jump and a flat "precision held" over the labeled sample can both
+   look clean while the real picture is unmeasured. Before writing "precision
+   improved/held" or "FP reduced" into a commit message, task note, or the
+   paper:
 
-6. **Delta-adjudicate before citing precision/recall for a changed rule (CRITICAL)**:
-   `ground_truth` is keyed on exact `(project, commit, file, line, rule)` tuples,
-   adjudicated at a specific past audit's snapshot. When a rule's detection logic
-   changes (any commit touching `src/rules/cert_c/**/*.rs` that alters what it
-   flags — not a pure refactor), its new findings land at `(file, line)` pairs
-   that were **never adjudicated**, so they're silently excluded from the
-   precision/recall denominator in either direction. A raw-count jump or a
-   flat "precision held" number computed only over the labeled sample can
-   both look clean while the real picture is unmeasured underneath. Before
-   writing "precision improved/held" or "FP reduced" into a commit message,
-   task note, or the paper for a changed rule:
    - **Gate the delta-adjudication task on any known-but-unfixed FP driver for
-     that rule before filing/starting it.** Adjudicating a raw dump when a
-     cheap follow-up fix would still eliminate a large slice of it wastes
-     investigatory effort re-reading findings that are about to disappear —
-     task 553/582 saw MSC17-C real-world findings drop 2,024 → 376 (−81%)
-     from one structural fix; adjudicating the 2,024 first would have thrown
-     most of that work away. Before filing a delta-adjudication task,
-     `todo-sqlite-cli list` (or search) for open FP-reduction tasks against
-     the same rule; if any exist, add them via `--depends-on` so `next`
-     skips the adjudication until the cheaper fixes land, then re-measure
-     before adjudicating what's left.
-   - Pull the new unlabeled findings for that rule only:
-     `bench realworld-unlabeled RUN --rule RULE_ID --project P --json`
-     (repeat per affected project, or omit `--project` and split after).
+     that rule.** Adjudicating a dump that a cheap follow-up fix is about to
+     shrink wastes the work — one MSC17-C structural fix took real-world
+     findings 2,024 → 376 (−81%). Search the backlog for open FP-reduction
+     tasks against the same rule and add them with `--depends-on` so `next`
+     skips the adjudication until they land; then re-measure.
+   - Pull only that rule's new unlabeled findings:
+     `bench realworld-unlabeled RUN --rule RULE_ID --project P --json`.
    - **Derive each project's in-scope file predicate from its own
-     `data/precision_audit/<project>/README.md` BEFORE batching** — not
-     after. Task 420's delta-adjudication found 2,548 of 4,026 (63%) raw
-     unlabeled findings were out-of-scope noise (test harnesses, vendored
-     deps, language bindings) that should never have been batched; mosquitto
-     alone was 73% contamination. Scoping after the fact means redoing
-     already-completed adjudication batches.
-   - Batch (~110-150 findings/batch), adjudicate, and import via
-     `bench realworld-import-labels` — same workflow as a fresh oracle build.
-     See `data/precision_audit/DELTA_MEM31_TASK420.md` for a fully worked
-     example (6 projects, 14 batches, 1,478 findings, 0.7% delta precision —
-     a very different number than the aggregate raw-count comparison
-     suggested).
-   - Only after that pass is ground_truth updated for the new lines should a
-     precision/recall claim about the changed rule be published.
+     `data/precision_audit/<project>/README.md` BEFORE batching.** One delta
+     pass found 63% of raw unlabeled findings were out-of-scope noise (test
+     harnesses, vendored deps, bindings); mosquitto alone was 73%. Scoping
+     afterwards means redoing completed batches.
+   - Batch ~110-150 findings, adjudicate, import with
+     `bench realworld-import-labels`. Worked example:
+     `data/precision_audit/DELTA_MEM31_TASK420.md`.
+   - Only once `ground_truth` covers the new lines may a precision/recall
+     claim about that rule be published.
 
-### Querying Results
+### Querying results
 
 The `bench` CLI (`status`, `compare`, `runs`, `realworld`, `realworld-score`)
-reads **local SQLite only**, falling back to legacy text files for old runs. It
-cannot see the shared record and never will — so its output describes the runs
-this checkout has done, which is exactly what you want when working locally and
-never what you want when citing a project figure.
+reads **local SQLite only**. It cannot see the shared record and never will —
+right for local work, never right for citing a project figure.
 
-To query the actual history, use `benchmarking_db`'s MCP servers
-(`sqc-benchmark-query`: `list_runs`, `get_run_status`, `compare_runs`,
-`get_realworld_results`, `get_cwe_detail`) or, on the benchmark host, that
-repo's own CLI. Deliberately no run counts quoted here: a number in this file
-goes stale silently, which is the failure mode task 701 exists to kill. Ask the
-source.
+For real history use `benchmarking_db`'s MCP servers (`sqc-benchmark-query`:
+`list_runs`, `get_run_status`, `compare_runs`, `get_realworld_results`,
+`get_cwe_detail`), or that repo's CLI on the benchmark host. **No run counts or
+metrics are quoted in this file on purpose** — a number here goes stale
+silently. Ask the source.
 
-### Refreshing Published Doc Numbers
+### Refreshing published doc numbers
 
-If asked to "refresh the benchmark numbers" (README.md's Benchmark
-Highlights table): `python -m bench render-docs --realworld-run RUN
-[--juliet-run RUN] [--check]` regenerates that table from whichever `db` it
-is handed, bounded by the `<!-- BENCH:HIGHLIGHTS:START/END -->` marker pair
-— everything outside it (narrative, task citations, history) is
-hand-written and untouched. `--realworld-run` has no default on purpose:
-pass a run you know is validly adjudicated (see the delta-adjudication
-protocol above), not just whatever's newest.
+`python -m bench render-docs --realworld-run RUN [--juliet-run RUN] [--check]`
+regenerates README's Benchmark Highlights table from whichever db it is handed,
+bounded by the `<!-- BENCH:HIGHLIGHTS:START/END -->` markers; everything
+outside them is hand-written and untouched. `--realworld-run` has no default on
+purpose — pass a run you know is validly adjudicated, not the newest.
 
-(`REALWORLD_RESULTS.md` and `JULIET_RESULTS.md` were both retired
-2026-09-03: each duplicated Postgres as a hand-maintained snapshot, which is
-what this repo's README/docs and the paper now query directly instead.
-`--realworld-run` stays required because `render-docs` still cites that run
-in README's one-line highlight, alongside the Juliet run.)
+**Published numbers come from Postgres via `benchmarking_db`'s
+`bin/refresh_tools_sqc_docs.py`** — not the better source, the only correct
+one. It calls this repo's own `bench/render_docs.py` functions pointed at
+Postgres, so output shape is identical and nothing here gains Postgres
+awareness.
 
-**Published numbers come from Postgres, via `benchmarking_db`'s
-`bin/refresh_tools_sqc_docs.py`** (that sibling repo — see its README). Not
-"the better source" — the only correct one. It calls this repo's own
-`bench/render_docs.py` rendering functions pointed at Postgres, so the output
-is identical in shape and nothing here gains Postgres awareness.
+Pointing `render-docs` at local `data/benchmarks.db` is fine for writing up
+your *own* runs. It must never produce a table committed to this project's
+README or the paper: those numbers would describe one checkout while presenting
+as the project's measurements. Plausible and wrong.
 
-Pointing `render-docs` at local `data/benchmarks.db` is a perfectly good way
-for a collaborator to write up their *own* runs. What it must not do is
-produce a table that gets committed to this project's README/RESULTS files or
-the paper: those numbers would describe one checkout's runs while presenting
-as the project's measurements. It will look plausible and be wrong.
-
-Either path: review the diff before committing. The tool only ever
-rewrites the marker-bounded block; a real refresh can still mean updating
-hand-written prose near it that references the old figures (see the note
-above the Benchmark Highlights table for why that prose is now written to
-name no specific number, precisely so a refresh can't leave it stale) —
-that's a judgment call the tool deliberately leaves alone.
+Either path, review the diff. The tool rewrites only the marker-bounded block;
+prose near it is a judgment call it deliberately leaves alone.
 
 ---
 
 ## Task tracking
 
-This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
-`.todo-sqlite-cli` marker at the repo root.
+`todo-sqlite-cli`, with the DB resolved via the `.todo-sqlite-cli` marker at the
+repo root.
 
-**This DB holds the TOOL's backlog only.** Until 2026-09-03 every repo's
-marker pointed at this one file, so `benchmarking_db`'s oracle, metrics and
-benchmark-host work sat in here — which meant `next` handed you a P1 whose
-actionable half lived in another repo, and a stranger cloning sqc inherited
-the whole maintainer backlog along with it (the DB is committed). 22 active
-tasks moved to `benchmarking_db/todo-sqlite-cli.db`; display ids and UUIDs
-were preserved, because ids like 701 are cited in commit messages, code
-comments and this file. Completed history was not duplicated — it stays here.
+**There are three task DBs, and this one holds the TOOL's backlog only.**
 
-**The paper's backlog left the same way, later the same day.** Its four
-active tasks (#9, #378, #463, #723) moved to
-`sqc_paper/todo-sqlite-cli.db`, again with ids and UUIDs preserved, and
-again leaving completed history here unduplicated (the 13 done
-`paper`-tagged tasks — 7, 8, 141, 147, 148, 152, 202, 205, 225, 422, 533,
-581, 697 — are still in this DB). Paper-finalization work is tracked
-**there** now: do not `add` or reopen it here. There are three task DBs.
+| Repo | Owns |
+|---|---|
+| here | rule behaviour, FP/FN work, docs, packaging |
+| `benchmarking_db` | adjudication, ground_truth quality, corpus scope, derived metrics, Postgres/backup infra |
+| `sqc_paper` | paper drafting, figures, wording, submission |
 
-So: adjudication, ground_truth quality, corpus acquisition/scope, derived
-metrics and Postgres/backup infra are asked in `benchmarking_db`; paper
-drafting, figures, wording and submission in `sqc_paper`; rule behaviour,
-FP/FN work, docs and packaging here. Same clone-experience test as
-everywhere else in this file — would a stranger cloning this repo need it to
-evaluate sqc on their own codebase? A dependency edge that would have crossed
-a split is recorded in the task's own details as prose, since separate DBs
-cannot enforce one. Only ONE such edge is currently live: `benchmarking_db`'s
-700 waits on this repo's 675, which is pending at P5. The others are
-satisfied or are not really dependencies — `sqc_paper`'s 9 names this repo's
-7, 147 and 152, all of them done, so those read as history rather than a
-block; and its 723 edits this repo's README alongside the paper, which is
-work spanning two repos rather than one task gating another. Worth keeping
-the distinction when adding the next one: a prose edge to a completed task
-tells a reader where to look, while a prose edge to open work is a blocker
-that no `next` in either repo will enforce for you.
+Do not `add` or reopen another repo's work here. Completed history was not
+duplicated when the backlogs split, so old done tasks of every kind remain in
+this DB. Same clone-experience test as everywhere else: would a stranger
+cloning this repo need it to evaluate sqc on their own codebase?
 
-**Display ids collide across all three repos.** Each DB allocates from its
-own sequence, so a bare "task 731" is three-ways ambiguous: 731 is the
-ARR38-C delta-adjudication in `benchmarking_db`, and the next task added
-here will also be 731. Demonstrated immediately — a stray `add` in this repo
-took 731 within minutes of the first split. When citing a task in a commit
-message, code comment or cross-repo message, **say which repo**, always;
-"obviously local" stopped being a safe judgement once there were three
-sequences. Task UUIDs remain globally unique and are still the real
-identity; ids 1-730 predate the splits and are unambiguous, which is why
-`sqc_paper`'s 9/378/463/723 are safe to cite bare.
+**Cross-repo dependency edges cannot be enforced.** Separate DBs mean no `next`
+in either repo will honour one, so record it as prose in the task's details —
+the only case where prose is correct — and **carry the urgency in the priority
+number**, which is the only signal the other node actually sees. A blocker
+parked at P5 reads as the least urgent thing in the backlog.
 
-**Two nodes working concurrently collide on new ids routinely, not rarely.**
-Four collisions happened on 2026-09-03 within about an hour, and the fix is
-always `renumber` plus repairing whatever prose named the number:
+**Display ids collide across repos and across nodes.** Each DB allocates from
+its own sequence with no reservation, so a bare "task 731" is three-ways
+ambiguous, and two nodes adding tasks the same hour routinely claim the same
+id. Consequences:
 
-- 760 was allocated here for a `bench/db.py` fix and by the other node for
-  an MSC13-C delta-adjudication; mine renumbered to 762.
-- 761 was allocated here for a test-suite gap and by the other node for an
-  ARR38-C delta-adjudication; mine renumbered to 763.
-- 762 was then allocated by the other node for an INT13-C
-  delta-adjudication; theirs renumbered to 765.
-
-Each time, a commit message or code comment already named the old number. So
-the rule is not just "allocate before you cite" — it is **prefer not to cite
-a number at all**: write "the follow-up task" and let the UUID-backed
-`Related:` line carry the identity, which survives every renumber. The one
-place a number is unavoidable is a code comment, and that is exactly where a
-renumber leaves it stale.
+- **Say which repo** whenever you cite a task in a commit message, code comment
+  or cross-repo message. "Obviously local" stopped being safe at three DBs.
+  (Ids 1-730 predate the splits and are unambiguous.)
+- **Prefer not to cite a number at all.** Write "the follow-up task" and let the
+  UUID-backed `Related:` line carry identity — it survives every `renumber`.
+- **Create the follow-up task FIRST, then link it.** Never write an id you have
+  not allocated into a task body, commit message or code comment: the number is
+  a guess about the future and is simply wrong whenever another node adds a task
+  first. `doctor` stays clean through this — the prose just quietly points at
+  something unrelated. Order: `add`, take the id it prints, then
+  `edit <parent> --add-related <newid>`.
+- Fix a duplicate id with `todo-sqlite-cli renumber <uuid> <new-id>`, then
+  repair whatever prose named the old number.
 
 **Before planning or coding, ask the DB:**
 
-- `todo-sqlite-cli next` — the single task to work on right now.
-- `todo-sqlite-cli list` — all active (in-progress + partial + pending),
-  in-progress first, then partial, then pending; within each, by priority.
-- `todo-sqlite-cli show <id>` — full task detail (`--verbose` for humans).
+- `todo-sqlite-cli next` — the one task to work on now.
+- `todo-sqlite-cli list` — all active, in-progress then partial then pending.
+- `todo-sqlite-cli show <id>` — full detail (`--verbose` for humans).
 - Every command supports `--json`.
 
-**When picking up work:** `todo-sqlite-cli start <id>` before coding,
-`todo-sqlite-cli done <id>` when committed. `start` auto-pauses any prior
-in-progress task to `partial`, preserving its `started_at`, so a task left
-`partial` was interrupted rather than abandoned — resume it with `start`.
-`stop <id>` pauses deliberately; `revert <id>` undoes a start that turned out
-to be wrong (back to pending, clears `started_at`).
+**Working a task:** `start <id>` before coding, `done <id>` when committed.
+`start` auto-pauses any prior in-progress task to `partial` and preserves its
+`started_at`, so `partial` means interrupted, not abandoned — resume with
+`start`. `stop <id>` pauses deliberately; `revert <id>` undoes a wrong start.
 
-**Adding a progress note to an existing task:**
-`todo-sqlite-cli edit <id> --append-details "note"` — appends with a newline,
-preserving prior context. `edit <id> --details "..."` REPLACES the entire
-details body instead (discards what was there) — only use it when you mean
-to overwrite, not to log progress. `--add-tag`/`--rm-tag`,
-`--add-dep`/`--rm-dep`, `--add-related`/`--rm-related`,
-`--location`/`--clear-location`, `--gate`/`--no-gate`, `--title`,
-`--priority` are also available on `edit`.
+**Logging progress:** `edit <id> --append-details "note"` appends.
+`edit <id> --details "..."` **REPLACES** the whole body — only when you mean to
+overwrite. Also on `edit`: `--add-tag`/`--rm-tag`, `--add-dep`/`--rm-dep`,
+`--add-related`/`--rm-related`, `--location`/`--clear-location`,
+`--gate`/`--no-gate`, `--title`, `--priority`.
 
-**When a new task surfaces:**
-`todo-sqlite-cli add "title" --details "..." --tag <area> --priority <1-5>`
-(1 = highest). `--depends-on <id>` links prerequisites; tasks with unmet
-deps are skipped by `next` and shown `[blocked]` in `list`.
+**New task:**
+`add "title" --details "..." --tag <area> --priority <1-5>` (1 = highest).
 
-**Use `--related` instead of naming a task id in prose (v3.2.0).** A
-`--related <id>` link is mutual, appears on both tasks' `show` as
-`Related: ...`, and is stored by UUID — so it FOLLOWS a `renumber` (verified:
-a link displayed as `Related: 2` re-displayed as `Related: 99` after the
-target was renumbered). That is the fix for the failure this file used to
-document by hand: task 731's details still say "read every '728' above as
-730" because a hand-written id went stale when two nodes collided on a
-display id. Prose ids do not survive renumbering; `--related` does. An
-unknown id is REJECTED (`error: related task N: task N not found`), so a link
-is never left dangling.
+**`--depends-on` vs `--related`:** use `--depends-on` when the other task must
+land FIRST (it gates `next` and shows `[blocked]` in `list`); use `--related`
+for "same defect / same cohort / read these together", which is most
+cross-references. Both are stored by UUID, so they follow a `renumber`; an
+unknown id is rejected rather than left dangling. Neither works across repos.
 
-Use `--depends-on` when the other task must land FIRST (it gates `next`);
-use `--related` for "these are the same defect / same cohort / read these
-together", which is most cross-references. Neither works across the two
-repos — an id must exist in the same DB — so a cross-repo edge is still
-recorded as prose, and that is now the ONLY case where prose is correct.
+**`--location <text>`** flags work that can only be done on a specific node,
+shown as `@location` in `list`. The established value is `benchmark-node` — a
+role, deliberately not a hostname, so it survives the hardware being replaced —
+meaning the task needs a Postgres write against `sqc_bench` or a corpus
+checkout. It is **display-only**: `list` has no filter and `next` does not skip
+on it, so keep it high-signal.
 
-**CREATE THE FOLLOW-UP TASK FIRST, THEN LINK IT. Never write an
-id you have not allocated yet into a task body, a commit message or a code
-comment.** This is the one failure `--related` cannot repair, and with two
-nodes working the backlog concurrently it is not hypothetical — it happened
-TWICE on 2026-09-03 within a few hours:
+**`--gate`** marks a checkpoint on an external condition rather than work to be
+done. Gates are skipped by `next`, never flagged by `aging`, and
+`list --kind gate` is a readiness dashboard.
 
-- Task 665 says "Filed as its own follow-up, task 736" twice. The follow-up
-  actually landed as **750**; 736 had been allocated in the interim by a
-  session on the other node, so 665's prose now points at an unrelated
-  EXP36-C task.
-- Task 742 says "Filed as task 751". The follow-up is **759**; 751 had
-  likewise been taken, by an MSC13-C task.
+**Identity is a UUID; the integer id is a display alias.**
 
-Both were written before the referenced task existed, so the number was a
-guess about the future — and each node allocates from its own sequence with
-no reservation, so the guess is simply wrong whenever the other node adds a
-task first. `doctor` stays clean through all of this: nothing is duplicated
-or corrupt, the prose just points somewhere else, which makes it invisible
-until someone follows the link and lands on an unrelated task.
+- **Run `todo-sqlite-cli doctor` after every merge/pull that touches
+  `todo-sqlite-cli.db`.** It catches duplicate display ids, unresolved
+  `merge-conflict` tags, orphaned tag/dep rows, self-deps and cycles, and exits
+  1 so it can gate a script. The merge itself is sound (tags and deps key on
+  `task_uuid`), but two nodes that independently allocated the same display id
+  still merge to two rows sharing it — data intact, display ambiguous. The
+  driver's "0 conflicts" line does not imply otherwise.
+- `rm` does not reserve the id; a later `add` may reuse it.
+- If `show <id>` prints two tasks, pass the full UUID.
+- Because identity is a UUID, deleting a local task before merging to dodge a
+  collision is obsolete. Merge, then run `doctor`.
 
-The working habit, in order: `add` the follow-up, take the id `add` prints,
-then `edit <parent> --add-related <newid>`. Say "the follow-up task" in the
-prose and let the `Related:` line carry the identity. If you genuinely must
-name a number in text, allocate it first and paste the real one.
+**Release history** lives in the DB: each CHANGELOG entry is a `release`-tagged
+done task with `completed_at` set to the release date. Rebuild with
+`export-completed` (`--since`/`--until`), or slice with
+`list --status done --tag changed` (also `benchmark`, `added`, `fixed`, `task`).
 
-Note this is a DIFFERENT failure from the stale-id-after-renumber case
-`--related` does fix. Renumber-staleness is a link that was once right;
-this is a link that was never right. Only sequencing prevents it.
-
-**`--location <text>` flags work that can only be done on a specific node**,
-shown as an `@location` suffix in `list`. The established value is
-`benchmark-node` (role, deliberately not the hostname `dev-41`/`r720`, so it
-survives the hardware being replaced), meaning the task needs a Postgres
-write against `sqc_bench` or a corpus checkout. It replaces the
-"Benchmark node only" line that tasks 733/735 carried in their details.
-Note it is DISPLAY-ONLY today — `list` has no `--location` filter and `next`
-does not skip on it — so keep it high-signal: in `benchmarking_db`
-benchmark-node is close to the default, and the useful information is which
-tasks there are portable (they stay unmarked).
-
-`--gate` marks a checkpoint on an external condition rather than work to be
-done; gates are skipped by `next` and never flagged stale by `aging`, and
-`list --kind gate` gives a readiness dashboard of open ones.
-
-Original task IDs (prior to the 2026-04-20 import) are preserved
-as `plan-id:NN` tags.
-
-**Task identity is a UUID; the integer `<id>` is only a display alias**
-(todo-sqlite-cli v3.0.0). Consequences worth knowing:
-
-- **Run `todo-sqlite-cli doctor` after every `git merge`/`pull` that touches
-  `todo-sqlite-cli.db`.** It checks for duplicate display ids, unresolved
-  `merge-conflict` tags, orphaned tag/dep rows, self-deps and dependency
-  cycles, and exits 1 so it can gate a script. Verified 2026-08-27 against a
-  reconstruction of the v2.1.0 corruption: the merge itself is now sound
-  (tags and deps are keyed on `task_uuid`, so details can't concatenate and
-  tags can't union, and a dep keeps pointing at the task it meant), but two
-  nodes that independently allocated the same display id still merge to **two
-  rows sharing that id** — data intact, display ambiguous. `doctor` is what
-  surfaces that; the driver's "0 conflicts" line no longer implies it.
-- `rm` does not reserve the display id — a later `add` may reuse it.
-- If `show <id>` prints two tasks, pass the full UUID to disambiguate.
-
-Because identity is a UUID, the old defensive dance of deleting a
-locally-created task before merging to dodge an id collision is obsolete.
-Just merge, then run `doctor`.
-
-**Release history** also lives in the DB — each CHANGELOG entry is a
-`release`-tagged done task with `completed_at` set to the release date.
-Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
-`--since`/`--until`), or slice by section with
-`todo-sqlite-cli list --status done --tag changed`
-(also: `benchmark`, `added`, `fixed`, `task`).
+Pre-2026-04-20 task IDs survive as `plan-id:NN` tags.
 
 ---
 
@@ -479,74 +304,53 @@ Rebuild a changelog with `todo-sqlite-cli export-completed` (bound by
 |------|----------|
 | `README.md` | Tool overview, installation, usage, CLI reference |
 | `docs/index.rst` | Developer guide: advanced usage, CI/CD, benchmarks, testing, contributing |
-| `docs/design/*.md` | Scoping docs for in-progress/completed capabilities (e.g. macro-expansion, project-relevance-gating). Not in the Sphinx toctree — read directly. **Their "Status" header goes stale once the work ships**; check `todo-sqlite-cli show <task>` for the real status before trusting the header, and check whether the feature needs a mention in `docs/cli-usage.rst`/`docs/architecture.rst` once it ships. |
-| `../sqc_paper/` | **The paper, in its own repo since 2026-09-03** (moved with `git subtree split`, so its 40 commits came along). Same reason benchmarking moved out: a stranger cloning sqc to evaluate it on their own code does not need a paper draft. Numbers in it must trace to Postgres via `benchmarking_db` — see that repo's README. Its figure generator moved to `benchmarking_db/bin/` and is broken pending a port (their task 732). Its own backlog moved with it on 2026-09-03 (see Task tracking): tasks #9, #378, #463 and #723 live in `sqc_paper/todo-sqlite-cli.db` now, not here. |
-| `docs/design/gate-status-sop.md` | Weekly read on how close sqc is to the maintenance-mode gate (#463) and a publishable paper (#9). Run it *here* — it spans all three repos and its "Repos this SOP spans" table says which check lives where. |
-| `docs/design/internal-capability-catalog.md` | Browsable-by-concept catalog of every reusable primitive in `src/utility/cert_c/*.rs`/`src/analyze/*.rs` (macro detection, declarator resolution, lvalue/aliasing, VRA, CFG, function summaries, suppression, cross-file `ProjectContext`). Read this before writing any new AST/text heuristic — see Code Navigation below. |
-
----
+| `docs/design/*.md` | Scoping docs, not in the Sphinx toctree — read directly. **Their "Status" headers go stale once work ships**; trust `todo-sqlite-cli show <task>` instead, and check whether the feature needs a mention in `docs/cli-usage.rst`/`docs/architecture.rst`. |
+| `docs/design/internal-capability-catalog.md` | Catalog of every reusable primitive in `src/utility/cert_c/*.rs` and `src/analyze/*.rs`. **Read before writing any new AST/text heuristic.** |
+| `docs/design/gate-status-sop.md` | Weekly read on distance to the maintenance-mode gate and a publishable paper. Run it *here* — its table says which check lives in which repo. |
+| `../sqc_paper/` | The paper, in its own repo. Numbers in it must trace to Postgres via `benchmarking_db`. Its backlog and figure generator went with it. |
 
 ## Project Structure
 
-- `src/rules/cert_c/` - CERT C rule implementations
-- `src/analyze/` - Analysis infrastructure (CFG, null state, VRA, prescan)
-- `bench/` - Benchmark infrastructure (runner, analyzer, SQLite DB, CLI)
-- `data/` - Benchmark database (benchmarks.db), prescan caches
-- `scripts/` - Workflow helpers, coverage gate
-- `docs/` - Developer guide (index.rst), bibliography
+- `src/rules/cert_c/` — CERT C rule implementations
+- `src/analyze/` — analysis infrastructure (CFG, null state, VRA, prescan)
+- `bench/` — benchmark infrastructure (runner, analyzer, SQLite DB, CLI)
+- `data/` — benchmark database, prescan caches
+- `scripts/` — workflow helpers, coverage gate
+- `docs/` — developer guide, bibliography
 
 ## Code Navigation (clew)
 
-This repo is indexed by [`clew`](https://github.com/tvanfossen/clew), registered as
-the `clew` MCP server in `.mcp.json` (gitignored -- each machine runs `clew init`
-once to write it; see the clew repo's README). `clew init` only registers the MCP
-server -- it does not itself install anything, so each machine also needs the
-`clew-trace` package installed (e.g. into the shared dev venv from
-`playbooks/setup-dev-environment.yml`) for the `clew-mcp` command the config
-points at to actually resolve.
-It builds a queryable symbol database (call graph, threads, locks, requirements,
-file docs) from rustdoc + tree-sitter, served over four tools: `dossier` (everything
-about one named symbol — signature, body, callers/callees, locks held, in one call),
-`search` (find a name, or a whole layer like `corpus='locks'`/`corpus='threads'`),
-`index` (admin: `status`/`refresh`), `propose_declaration`.
+Indexed by [`clew`](https://github.com/tvanfossen/clew), registered as the
+`clew` MCP server in `.mcp.json` (gitignored — each machine runs `clew init`
+once; it registers the server but installs nothing, so the machine also needs
+the `clew-trace` package for `clew-mcp` to resolve). It serves a symbol
+database — call graph, threads, locks, file docs — over `dossier` (everything
+about one symbol in one call), `search` (a name, or a layer like
+`corpus='locks'`), `index`, and `propose_declaration`.
 
-**No manual indexing step is required.** The database lives outside the repo, under
-`~/.local/state/clew/targets/<name>-<hash>/`, and the MCP tools build it themselves
-on first use if it doesn't exist yet -- so a freshly-provisioned node with no
-`~/.local/state/clew` is expected, not broken, until an agent there actually calls
-`dossier`/`search`/`index` for the first time. To build it eagerly instead of
-waiting for that first call (e.g. to warm it before a benchmark run), run
-`clew --repo-root .` from the venv clew is installed in. **Omit `--output`**:
-with it omitted clew writes to the same path the MCP server derives for
-`--repo-root`, so a CLI build is what `dossier`/`search` then read. Passing
-`--output clew.db` instead writes into the *current directory*, which the
-server never looks at -- you get a stray `clew.db` in the repo root and a
-first `dossier` call that still pays for a cold build.
+**Prefer `dossier`/`search` over `grep`/`Read`** for "what calls X", "where is Y
+defined", "what locks does this hold" — one call, call graph already resolved.
+Read source directly only for what the index can point at but not contain
+(exact comment text, line-by-line logic).
 
-**Prefer `dossier`/`search` over `grep`/`Read` for "what calls X", "where is Y
-defined", "what locks does this function hold" style questions** — one call
-instead of several, and it already has the call graph resolved. Fall back to
-reading source directly for anything the index can only point at (exact comment
-text, line-by-line logic).
-
-Rebuild after non-trivial changes: `clew --repo-root . --rebuild` (again, no
-`--output` -- same reason).
-The MCP tools also offer to build/refresh on first use if no index exists yet.
+No manual indexing step is required: the DB lives outside the repo under
+`~/.local/state/clew/targets/`, and the MCP tools build it on first use — a
+fresh node with no `~/.local/state/clew` is expected, not broken. To build
+eagerly (e.g. warming before a benchmark), run `clew --repo-root .`, and
+`clew --repo-root . --rebuild` after non-trivial changes. **Omit `--output`
+both times**: with it omitted clew writes where the MCP server reads; passing
+`--output clew.db` writes into the current directory, which the server never
+looks at, leaving a stray file and still paying for a cold build.
 
 **Before implementing any new AST/text heuristic, check
-`docs/design/internal-capability-catalog.md` first** (task 479, filed after
-task 475 nearly re-implemented DCL40-C's `is_defined_macro_name`/
-`ProjectContext::defined_macro_names` cross-file macro-detection as a fresh
-ALL_CAPS-name heuristic — a plain keyword grep for "macro detection" missed
-it on the first pass). That catalog exists precisely because `search` does
-literal token-conjunction matching: it finds `is_defined_macro_name`
-instantly when queried with words close to its own doc comment, but returns
-nothing useful for a vague concept phrase that doesn't appear verbatim
-anywhere. If the catalog doesn't cover it, try `dossier`/`search` with
-vocabulary close to an actual function/doc-comment wording, then grep
-`src/utility/cert_c/` and `src/analyze/` directly by what the primitive
-*does* — this has caught real scoping bugs before (ARR39-C task 146,
-CON34-C task 385).
+`docs/design/internal-capability-catalog.md` first.** That catalog exists
+because `search` matches literal token conjunctions: it finds a function
+instantly when queried in words close to its own doc comment, and returns
+nothing for a vague concept phrase. A rule once nearly re-implemented existing
+cross-file macro detection from scratch because a keyword grep for "macro
+detection" missed it. If the catalog does not cover it, try `dossier`/`search`
+with vocabulary close to an actual doc comment, then grep
+`src/utility/cert_c/` and `src/analyze/` by what the primitive *does*.
 
 ## Build & Test
 
@@ -560,75 +364,55 @@ cargo fmt
 ## Rule Implementation
 
 **NEVER add embedded unit tests in rule implementation files:**
-- ❌ NO `#[cfg(test)]` modules in `src/rules/cert_c/*/*/*.rs` files
-- ❌ NO inline test functions with hardcoded C code snippets
-- ✅ Test cases come from `.c` files in `tests/` directory (auto-generated into Rust tests)
-- ✅ If no test cases exist for a rule, implement WITHOUT tests (this is acceptable)
+- ❌ NO `#[cfg(test)]` modules in `src/rules/cert_c/*/*/*.rs`
+- ❌ NO inline test functions with hardcoded C snippets
+- ✅ Test cases come from `.c` files in `tests/` (auto-generated into Rust tests)
+- ✅ If a rule has no test cases, implement it WITHOUT tests — that is fine
 
-For each new rule:
-1. Create `src/rules/cert_c/CATEGORY/RULE_ID/rule_id_c.rs`
-2. Register in `mod.rs` and enable in the TOML
-3. Build and test
+For each new rule: create `src/rules/cert_c/CATEGORY/RULE_ID/rule_id_c.rs`,
+register in `mod.rs`, enable in the TOML, then build and test.
 
-**Before writing a fix for a macro-related false positive/negative**, check
-whether `src/analyze/macro_expand.rs` already solves it — do NOT reach for a
-name-heuristic workaround first. sqc has a real, name-independent
-macro-expansion engine (`collect_function_macros`, `macro_nulls_param_indices`
-for "safe free" macros that free+null their arg, `macro_output_param_indices`
-for output-param macros), already wired into MEM30-C, MEM31-C, EXP33-C, and
-DCL31-C. See `docs/design/macro-expansion.md` for the full design rationale
-and a per-rule disposition table (which rules are already on the engine,
-which are legitimately definition-side and should stay off it). Its
-"Status" line at the top is stale (says "no implementation yet" from the
-original scoping date) — trust the phase stock-takes further down the file,
-not that header.
+**Before fixing a macro-related FP/FN**, check whether
+`src/analyze/macro_expand.rs` already solves it — do **not** reach for a
+name-heuristic workaround. sqc has a real, name-independent macro-expansion
+engine (`collect_function_macros`, `macro_nulls_param_indices` for free+null
+"safe free" macros, `macro_output_param_indices` for output-param macros),
+already wired into MEM30-C, MEM31-C, EXP33-C and DCL31-C.
+`docs/design/macro-expansion.md` has the rationale and a per-rule disposition
+table; its "Status" header is stale, so trust the phase stock-takes below it.
 
-**Before writing a new rule, check whether its defect concept already
-overlaps an enabled rule** (search `rules_templates/rules-all.toml`
-descriptions and `docs/design/internal-capability-catalog.md`). Overlap is
-expected, not a bug — CERT-C's own two-layer structure (rules vs. broader
-recommendations) means the same defect is frequently covered from two
-angles. **Default to letting both rules fire.** Only suppress one in favor
-of the other if you can show *total* subsumption across every
-ground-truth-labeled instance, not just frequent co-location — see
-`docs/design/cross-rule-overlap.md` for the full policy and a concrete
-counterexample (`MSC24-C` categorically bans `strcpy`/`sprintf` regardless
-of provable safety; `STR31-C` proves specific calls safe; a hard precedence
-either direction is measurably wrong on real-world data).
+**Before writing a new rule, check whether its defect concept already overlaps
+an enabled rule** (search `rules_templates/rules-all.toml` descriptions and the
+capability catalog). Overlap is expected — CERT-C's own rules/recommendations
+split covers the same defect from two angles. **Default to letting both rules
+fire.** Suppress one only on demonstrated *total* subsumption across every
+ground-truth-labeled instance, not frequent co-location. See
+`docs/design/cross-rule-overlap.md` for the policy and a counterexample where
+hard precedence in either direction is measurably wrong.
 
 ## Git Commit Rules (CRITICAL)
 
 **EXPLICITLY DENIED:**
-- `git commit --no-verify` - NEVER use this flag. Pre-commit hooks MUST pass. Only humans can skip hooks.
-- `Co-Authored-By: Claude` - NEVER add Claude as co-author.
+- `git commit --no-verify` — never. Pre-commit hooks MUST pass; only humans skip
+  hooks. Same for any other hook-skipping flag (`--no-gpg-sign`, etc.).
+- `Co-Authored-By: Claude` — never add Claude as co-author.
 
-  **The reason is placement, not prohibition.** Claude's contribution to this
-  repo IS acknowledged, deliberately and in the right place: README.md's
-  "AI Assistance" section names it for code generation, rule implementation,
-  analysis and documentation. What the trailer would add is that same fact
-  repeated in every one of ~3,500 commits, where it crowds out the message
-  and tells a reader nothing the README has not already said once, clearly.
+  **The reason is placement, not prohibition.** Claude's contribution is
+  acknowledged deliberately, in README.md's "AI Assistance" section. The trailer
+  would repeat that fact in every one of thousands of commits, crowding out the
+  message and telling a reader nothing the README has not already said clearly
+  once. So do not read this as attribution being a compliance problem, and do
+  not remove the README section for consistency. Acknowledge once, visibly.
+  (`sqc_paper` deliberately differs and keeps the trailer — the PDF is its
+  deliverable and nobody else works in its history.)
 
-  So do not read this as "attribution is a compliance problem here" and do
-  not remove the README section to be consistent with it. Acknowledge once,
-  visibly; do not restate it per commit. (The sibling `sqc_paper` repo
-  deliberately differs and leaves the default trailer on — the PDF is its
-  deliverable and nobody else works in its history. A convention that
-  belongs to one repo is stated in that repo.)
-- Any hook-skipping flags (`--no-gpg-sign`, etc.)
+**REQUIRED:** hooks pass before a commit succeeds; if they fail, fix the cause;
+standard commit message format without AI attribution.
 
-**REQUIRED:**
-- All pre-commit hooks must pass before commit succeeds
-- If hooks fail, FIX the underlying issue (don't bypass)
-- Standard commit message format without AI attribution
-
-**PULLING FROM UPSTREAM (`todo-sqlite-cli.db`):**
-
-`.gitattributes` maps `todo-sqlite-cli.db merge=todo-sqlite-cli`, but the
-driver itself lives in **repo-local git config**, which is not committed — a
-fresh clone (or a new machine) has the attribute and no driver, and git then
-falls back to the binary default and leaves the DB in conflict on every
-`pull`/`merge`/`rebase` that touched it. Before pulling upstream:
+**Pulling upstream (`todo-sqlite-cli.db`):** `.gitattributes` maps the DB to a
+merge driver, but the driver lives in **repo-local git config**, which is not
+committed — so a fresh clone has the attribute, no driver, and lands in
+conflict on every pull that touched the DB.
 
 ```bash
 git config --get merge.todo-sqlite-cli.driver \
@@ -637,42 +421,60 @@ git pull                                     # DB auto-merges by task UUID
 todo-sqlite-cli doctor                       # REQUIRED after every merge/pull
 ```
 
-`playbooks/setup-dev-environment.yml` now registers this driver (and the
-pack settings below) on any node it provisions, so the one-time step above is
-only needed on a clone that predates it or was set up by hand.
-
-`install-merge-driver` appends the `.gitattributes` line unconditionally — if
-that line is already there (it is, in this repo), register the driver by hand
-instead so the file doesn't gain a duplicate:
+`setup-dev-environment.yml` registers the driver (and the pack settings below)
+on any node it provisions, so the one-time step is only for older or hand-built
+clones. Note `install-merge-driver` appends the `.gitattributes` line
+unconditionally, and this repo already has it — so register by hand instead to
+avoid a duplicate:
 
 ```bash
 git config merge.todo-sqlite-cli.name "todo-sqlite-cli 3-way merge driver"
 git config merge.todo-sqlite-cli.driver "todo-sqlite-cli git-merge-driver %O %A %B"
 ```
 
-The merge is a real 3-way union keyed on task UUID (`%O %A %B`), so nothing is
-lost and dependency edges keep resolving. What it *cannot* fix is two sides
-independently allocating the same display id: both rows survive, sharing that
-id. `doctor` exits 1 on that (and on unresolved `merge-conflict` tags, orphaned
-tag/dep rows, self-deps, cycles); fix a duplicate id with
-`todo-sqlite-cli renumber <uuid> <new-id>`. Never resolve a DB conflict with
-`git checkout --ours/--theirs` — that discards the other side's tasks entirely.
+The merge is a real 3-way union keyed on task UUID, so nothing is lost and
+dependency edges keep resolving. **Never resolve a DB conflict with
+`git checkout --ours/--theirs`** — that discards the other side's tasks
+entirely.
 
-**PACK SIZE (`todo-sqlite-cli.db`):** the DB is ~2.3 MiB and is committed on
-nearly every task change (692 of 3,571 commits as of 2026-09-03). Git's default
-`pack.window` of 10 cannot find a good delta base among ~680 versions of it, so
-recent versions get stored close to whole — 664 KiB of pack per DB commit
-against a 39 KiB historical average. `setup-dev-environment.yml` sets
-`pack.window 250` / `pack.depth 100` (repo-local, so uncommitted and per-clone),
-which brings that to 38 KiB.
-
-Those settings only affect *future* repacks. A clone provisioned before they
-existed keeps its bloated pack until repacked once by hand:
+**Pack size:** the DB is committed on nearly every task change, and git's
+default `pack.window` of 10 cannot find a good delta base among hundreds of
+versions of it, storing each close to whole. `setup-dev-environment.yml` sets
+`pack.window 250` / `pack.depth 100` (repo-local, per-clone), which cuts a DB
+commit from ~664 KiB of pack to ~38 KiB. Those affect only *future* repacks, so
+a clone provisioned earlier needs one manual pass:
 
 ```bash
-git repack -a -d --window=250 --depth=100   # 58 MB -> 41 MB on this checkout
+git repack -a -d --window=250 --depth=100
 ```
 
-That is a pure storage-layout rewrite — it never changes commit SHAs or
-history — so it is safe on any clone at any time. Committing the DB is fine;
-the cost was a config default, not the practice.
+That is a pure storage-layout rewrite — it never changes SHAs or history — and
+is safe on any clone at any time. Committing the DB is fine; the cost was a
+config default, not the practice.
+
+---
+
+## Maintaining this file
+
+This file is prepended to **every** session's context, on every node. A line
+earns its place only by changing what an agent does. Before adding anything,
+apply these:
+
+- **Rules and rationale, not history.** Keep the decision rule and enough *why*
+  that an agent will not "helpfully" undo it or misjudge a novel case. Cut the
+  incident narrative that produced it — dated postmortems, which task collided
+  with which, what a specific run measured. If an example is what makes a rule
+  persuasive, compress it to one clause.
+- **No live numbers, ids, or statuses.** Anything that changes on its own —
+  run counts, metrics, "task N is pending at P5", active-task lists — goes
+  stale silently and is worse than absent, because it reads as current. Name
+  the source to ask instead.
+- **State a thing once.** If it is already in `README.md`, `docs/index.rst` or
+  a design doc, link it rather than restating it.
+- **Prefer the imperative.** "Run X before Y" beats a paragraph explaining that
+  running X before Y is generally advisable.
+- **Put durable per-session facts in memory, not here.** Fleet topology, node
+  capabilities and personal working preferences belong in the memory directory;
+  this file is for the repo's own rules.
+- When a section stops being true, delete it in the same commit that makes it
+  untrue.
