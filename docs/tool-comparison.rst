@@ -43,7 +43,10 @@ The Tools
      - 32.0 (Germanium)
      - **Yes**
      - n/a (abstract interpretation, not rule-indexed)
-     - Requires preprocessed input. Sound-by-design, so it reports more.
+     - Requires preprocessed input *and* an entry point per analysis. Sound-by
+       -design, so it reports more. 33.0 (Arsenic) is what
+       ``install-static-analyzers.yml`` now provisions; the Juliet numbers
+       here are 32.0's.
    * - `Infer <https://fbinfer.com/>`_
      - v1.2.0
      - **Yes**
@@ -75,18 +78,50 @@ Coverage Is The Difference
      - ~20 CERT mappings via an addon we do not enable
    * - Infer
      - 11
-     - **none**
+     - supported, not yet swept
      - Memory-safety and concurrency bug types
    * - Frama-C
      - 6
-     - **none**
+     - supported, not yet swept
      - Value analysis; not organised as rules
 
 .. note::
 
-   **TODO** — Frama-C and Infer have never been run against the real-world
-   suite; both are build-based, and three of the nine corpora are not
-   trivially buildable on the benchmark host. Tracked as tools_sqc task 767.
+   **PARTLY RESOLVED** — ``python -m bench realworld-run --tool infer`` and
+   ``--tool frama-c`` now work against all nine corpora (tools_sqc task 767).
+   Both are driven from each checkout's ``compile_commands.json``, which
+   ``playbooks/setup-compile-commands.yml`` generates for all nine —
+   including seL4, hostap and pure-ftpd, whose supposed unbuildability was
+   the original blocker and is no longer true.
+
+   What remains is the **sweep itself**, which is a multi-hour job and wants
+   scheduling through ``benchmarking_db``'s queue rather than a local
+   invocation. Until it runs, this table has no Frama-C or Infer real-world
+   column, and neither does the Speed table below.
+
+.. warning::
+
+   When those columns do land, **both are partial scans and must be labelled
+   as such.**
+
+   *Infer* captures only what preprocesses.
+   ``setup-compile-commands.yml`` restores each checkout to pristine after
+   building it, which deletes generated headers the compile database still
+   references — 2 of libcrc's 9 in-scope translation units cannot be
+   captured for that reason.
+
+   *Frama-C* is partial by construction: EVA analyses one entry point at a
+   time and a real codebase has no single one, so the runner walks entry
+   points round-robin across translation units under a wall-clock budget. A
+   Frama-C finding count is a **floor**, precision is the only defensible
+   cross-tool statistic to draw from it, and **recall is not expressible from
+   it at all**. See ``docs/design/framac-realworld.md``.
+
+   Every run records a ``coverage`` block — entry points reached, capture
+   failures, whether the budget ran out — in its result file, its
+   ``.meta.json``, and the ``realworld_results.coverage`` column. Any table
+   carrying one of these columns should carry the coverage percentage beside
+   it.
 
 Juliet, On The Overlap
 ======================
@@ -279,6 +314,11 @@ Real-world suite, 8 projects, run 215:
    253.1 s), which mixes runs and is therefore not a citable number. Quoting
    the 490.9 s would be wrong in SqC's favour, which is worse. Tracked as
    benchmarking_db task 740.
+
+Frama-C and Infer have no row here yet — see the note above. For an order of
+magnitude on what the Frama-C row will cost: its 6-CWE Juliet run took
+9,914 s over files averaging under 200 lines, which is why its real-world
+mode is budget-bounded rather than exhaustive.
 
 On Juliet, where CWE subsets differ: cppcheck 895 s over 16 CWEs, clang-tidy
 5,944 s over 16, Infer 5,019 s over 11, Frama-C 9,914 s over 6.
