@@ -61,6 +61,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#bear-for-compile-commands-json">bear (for compile_commands.json)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#facebook-infer">Facebook Infer</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#frama-c">Frama-C</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#build-based-tools-need-a-compile-database">Build-based tools need a compile database</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#juliet-test-suite-setup">Juliet Test Suite Setup</a></li>
@@ -240,14 +241,49 @@ opam<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </
 
 <span class="c1"># Verify (requires eval $(opam env) in each shell session)</span>
 frama-c<span class="w"> </span>-version
-<span class="c1"># Expected: 32.0 (Germanium)</span>
+<span class="c1"># Expected: 33.0 (Arsenic) as of 2026-09-04; 32.0 (Germanium) is what the</span>
+<span class="c1"># competitor Juliet runs in data/competitor_results/ were taken with</span>
 </pre></div>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Add <code class="docutils literal notranslate"><span class="pre">eval</span> <span class="pre">$(opam</span> <span class="pre">env)</span></code> to your shell profile (<code class="docutils literal notranslate"><span class="pre">~/.bashrc</span></code>) to make
-<code class="docutils literal notranslate"><span class="pre">frama-c</span></code> available without manual activation.</p>
+<code class="docutils literal notranslate"><span class="pre">frama-c</span></code> available without manual activation.  The benchmark runner
+does not need it: <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> wraps every Frama-C
+invocation in <code class="docutils literal notranslate"><span class="pre">eval</span> <span class="pre">$(opam</span> <span class="pre">env)</span></code> itself, because it is not a login
+shell.</p>
 </div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Frama-C renamed the compile-database option between the two versions
+above — <code class="docutils literal notranslate"><span class="pre">-json-compilation-database</span></code> through 32.0, <code class="docutils literal notranslate"><span class="pre">-compilation-db</span></code>
+from 33.0.  The runner probes <code class="docutils literal notranslate"><span class="pre">frama-c</span> <span class="pre">-kernel-h</span></code> and picks whichever
+the installed binary accepts, so both work; a hand-written command line
+copied from an older doc will abort with “option is unknown”.</p>
+</div>
+</section>
+<section id="build-based-tools-need-a-compile-database">
+<h3>Build-based tools need a compile database<a class="headerlink" href="#build-based-tools-need-a-compile-database" title="Link to this heading"></a></h3>
+<p>Infer and Frama-C cannot be pointed at a source tree the way sqc and cppcheck
+can — both need a real preprocess.  On the real-world suite they are driven
+from each checkout’s <code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code>, so
+<code class="docutils literal notranslate"><span class="pre">playbooks/setup-compile-commands.yml</span></code> must have run for a codebase before
+either tool can scan it.  <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-run</span> <span class="pre">--tool</span> <span class="pre">infer</span></code> fails
+fast with the exact command to fix it if the database is missing.</p>
+<p>Expect a <em>partial</em> result from both, and check the <code class="docutils literal notranslate"><span class="pre">coverage</span></code> block each run
+writes:</p>
+<ul class="simple">
+<li><p><strong>Infer</strong> captures whatever preprocesses.  <code class="docutils literal notranslate"><span class="pre">setup-compile-commands.yml</span></code>
+restores each checkout to pristine after building it, which deletes the
+build’s generated headers while leaving the compile database that still
+references them — libcrc’s <code class="docutils literal notranslate"><span class="pre">tab/gentab32.inc</span></code> is the worked example, and
+2 of its 9 in-scope translation units cannot be captured as a result.</p></li>
+<li><p><strong>Frama-C</strong> is partial by construction, because EVA analyses one entry
+point at a time and a real codebase has no single one.  Read
+<code class="docutils literal notranslate"><span class="pre">docs/design/framac-realworld.md</span></code> before quoting any Frama-C real-world
+number: a finding count from it is a floor, and recall is not expressible
+from it at all.</p></li>
+</ul>
 </section>
 </section>
 <section id="juliet-test-suite-setup">

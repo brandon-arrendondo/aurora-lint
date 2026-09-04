@@ -144,7 +144,10 @@ silently under-reports.</p></td>
 <td><p>32.0 (Germanium)</p></td>
 <td><p><strong>Yes</strong></p></td>
 <td><p>n/a (abstract interpretation, not rule-indexed)</p></td>
-<td><p>Requires preprocessed input. Sound-by-design, so it reports more.</p></td>
+<td><p>Requires preprocessed input <em>and</em> an entry point per analysis. Sound-by
+-design, so it reports more. 33.0 (Arsenic) is what
+<code class="docutils literal notranslate"><span class="pre">install-static-analyzers.yml</span></code> now provisions; the Juliet numbers
+here are 32.0’s.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference external" href="https://fbinfer.com/">Infer</a></p></td>
 <td><p>v1.2.0</p></td>
@@ -189,21 +192,49 @@ silently under-reports.</p></td>
 </tr>
 <tr class="row-odd"><td><p>Infer</p></td>
 <td><p>11</p></td>
-<td><p><strong>none</strong></p></td>
+<td><p>supported, not yet swept</p></td>
 <td><p>Memory-safety and concurrency bug types</p></td>
 </tr>
 <tr class="row-even"><td><p>Frama-C</p></td>
 <td><p>6</p></td>
-<td><p><strong>none</strong></p></td>
+<td><p>supported, not yet swept</p></td>
 <td><p>Value analysis; not organised as rules</p></td>
 </tr>
 </tbody>
 </table>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>TODO</strong> — Frama-C and Infer have never been run against the real-world
-suite; both are build-based, and three of the nine corpora are not
-trivially buildable on the benchmark host. Tracked as tools_sqc task 767.</p>
+<p><strong>PARTLY RESOLVED</strong> — <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-run</span> <span class="pre">--tool</span> <span class="pre">infer</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--tool</span> <span class="pre">frama-c</span></code> now work against all nine corpora (tools_sqc task 767).
+Both are driven from each checkout’s <code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code>, which
+<code class="docutils literal notranslate"><span class="pre">playbooks/setup-compile-commands.yml</span></code> generates for all nine —
+including seL4, hostap and pure-ftpd, whose supposed unbuildability was
+the original blocker and is no longer true.</p>
+<p>What remains is the <strong>sweep itself</strong>, which is a multi-hour job and wants
+scheduling through <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code>’s queue rather than a local
+invocation. Until it runs, this table has no Frama-C or Infer real-world
+column, and neither does the Speed table below.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>When those columns do land, <strong>both are partial scans and must be labelled
+as such.</strong></p>
+<p><em>Infer</em> captures only what preprocesses.
+<code class="docutils literal notranslate"><span class="pre">setup-compile-commands.yml</span></code> restores each checkout to pristine after
+building it, which deletes generated headers the compile database still
+references — 2 of libcrc’s 9 in-scope translation units cannot be
+captured for that reason.</p>
+<p><em>Frama-C</em> is partial by construction: EVA analyses one entry point at a
+time and a real codebase has no single one, so the runner walks entry
+points round-robin across translation units under a wall-clock budget. A
+Frama-C finding count is a <strong>floor</strong>, precision is the only defensible
+cross-tool statistic to draw from it, and <strong>recall is not expressible from
+it at all</strong>. See <code class="docutils literal notranslate"><span class="pre">docs/design/framac-realworld.md</span></code>.</p>
+<p>Every run records a <code class="docutils literal notranslate"><span class="pre">coverage</span></code> block — entry points reached, capture
+failures, whether the budget ran out — in its result file, its
+<code class="docutils literal notranslate"><span class="pre">.meta.json</span></code>, and the <code class="docutils literal notranslate"><span class="pre">realworld_results.coverage</span></code> column. Any table
+carrying one of these columns should carry the coverage percentage beside
+it.</p>
 </div>
 </section>
 <section id="juliet-on-the-overlap">
@@ -430,6 +461,10 @@ above substitutes those two projects’ run-229 figures (450.4 s and
 the 490.9 s would be wrong in SqC’s favour, which is worse. Tracked as
 benchmarking_db task 740.</p>
 </div>
+<p>Frama-C and Infer have no row here yet — see the note above. For an order of
+magnitude on what the Frama-C row will cost: its 6-CWE Juliet run took
+9,914 s over files averaging under 200 lines, which is why its real-world
+mode is budget-bounded rather than exhaustive.</p>
 <p>On Juliet, where CWE subsets differ: cppcheck 895 s over 16 CWEs, clang-tidy
 5,944 s over 16, Infer 5,019 s over 11, Frama-C 9,914 s over 6.</p>
 </section>
