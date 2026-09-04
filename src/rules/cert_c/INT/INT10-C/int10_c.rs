@@ -234,7 +234,7 @@ impl Int10C {
             return false;
         }
 
-        // An operand identifier whose *value* resolves to a compile-time
+        // A *dividend* identifier whose value resolves to a compile-time
         // constant (an enum constant, `#define`, or file-scope `static
         // const`) that's non-negative can't produce a negative remainder,
         // regardless of its declared type's signedness -- e.g. an
@@ -242,9 +242,14 @@ impl Int10C {
         // (0x20) is provably non-negative even though the enum itself has
         // an unrelated negative member (`int_invalid = -1`) and is
         // therefore a signed type overall (task 673).
-        if self.operand_is_nonnegative_constant(&left_node, source, macros)
-            || self.operand_is_nonnegative_constant(&right_node, source, macros)
-        {
+        //
+        // DIVIDEND ONLY, for the same reason the VRA check below is: C99
+        // 6.5.5p6 truncates toward zero, so `a % b` carries the sign of `a`
+        // and a non-negative `b` proves nothing. This used to accept either
+        // operand, which silently swallowed the whole `signed % NAMED_CONST`
+        // class -- `a % GRANULE` with `a == -5` yields -5, exactly what this
+        // rule exists to flag (task 777).
+        if self.operand_is_nonnegative_constant(&left_node, source, macros) {
             return false;
         }
 
