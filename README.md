@@ -215,7 +215,7 @@ SqC's case is breadth and reach, not beating clang-tidy at its sixteen:
 | [Frama-C](https://frama-c.com/) | not rule-indexed | 6 | Yes | not run |
 
 cppcheck is the useful control, since it also runs without a build: on the same
-16 CWEs it scores 36.4% against SqC's 81.7%, and takes roughly ten times as long
+16 CWEs it scores 36.7% against SqC's 81.7%, and takes roughly ten times as long
 on real code.
 
 Per-CWE precision for all five tools, the speed measurements, and what the
