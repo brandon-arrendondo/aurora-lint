@@ -185,6 +185,85 @@ fn parse_all_null_conditions(node: &Node, source: &str) -> Vec<ConditionInfo> {
     }
 }
 
+/// True when `condition` explicitly tests `var` for NULL-ness, in either
+/// polarity: bare truthiness (`p`, `!p`) or a comparison against NULL/0
+/// (`p == NULL`, `NULL != p`, `p != 0`, ...), anywhere in the operand tree.
+///
+/// This answers "did the code check this pointer?", NOT "is it non-null
+/// here?" — deliberately, because those are different questions owned by
+/// different rules. API00-C asks whether a function validates its parameters;
+/// whether a particular dereference is guarded is EXP34-C's job. So the
+/// check-and-substitute idiom counts:
+///
+/// ```c
+/// if (overflow == NULL) { overflow = &dummy; }   /* validated */
+/// ```
+///
+/// even though `overflow` is null on the branch the condition selects.
+/// [`parse_all_null_conditions`] is what to reach for when the per-branch
+/// state is what matters.
+///
+/// Structural, so it is insensitive to how the source is spaced: `if(p && x)`,
+/// `if( p && x )` and `if (p&&x)` all answer the same. That is the point of it
+/// existing — task 745 traced two sqlite API00-C false positives to a text
+/// matcher looking for `"(p &&"`, which requires the variable to sit
+/// immediately after the opening paren and so never fires on sqlite's
+/// `if( p && ... )` brace style. Text matching also produced the mirror-image
+/// error: `"(sc)"` matched inside the call `sc_sporadic(sc)` and `"base != 0"`
+/// inside `*base != 0`, crediting guards that tested a predicate's result or a
+/// pointee rather than the pointer.
+///
+/// Matching is on operands, not on text, so a guard on a *neighbouring*
+/// pointer is never credited to this one: `!hapd->driver || !hapd->drv_priv`
+/// tests neither `hapd` nor a parameter named `addr`, and both correctly stay
+/// unvalidated.
+pub fn condition_tests_null(condition: &Node, var: &str, source: &str) -> bool {
+    match condition.kind() {
+        // child(0)='(', child(1)=expr, child(2)=')'
+        "parenthesized_expression" => condition
+            .child(1)
+            .is_some_and(|inner| condition_tests_null(&inner, var, source)),
+        // if (p)
+        "identifier" => get_text(condition, source) == var,
+        // if (!p) — but not if (!f(p)), whose argument is a call
+        "unary_expression" => {
+            condition
+                .child(0)
+                .is_some_and(|op| get_text(&op, source) == "!")
+                && condition
+                    .child_by_field_name("argument")
+                    .is_some_and(|arg| condition_tests_null(&arg, var, source))
+        }
+        "binary_expression" => {
+            let Some(left) = condition.child_by_field_name("left") else {
+                return false;
+            };
+            let Some(operator) = condition.child_by_field_name("operator") else {
+                return false;
+            };
+            let Some(right) = condition.child_by_field_name("right") else {
+                return false;
+            };
+            match get_text(&operator, source).as_str() {
+                // A test buried in a conjunction or disjunction is still a
+                // test: `if (p && p->n > 0)`, `if (!a || !b)`.
+                "&&" | "||" => {
+                    condition_tests_null(&left, var, source)
+                        || condition_tests_null(&right, var, source)
+                }
+                // extract_null_check_var requires one side to be literally
+                // NULL/0 and the other a bare identifier, so `p != q` and
+                // `p->k != VUPVAL` are correctly not null tests.
+                "==" | "!=" => {
+                    extract_null_check_var(&left, &right, source).is_some_and(|v| v == var)
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Given left and right operands of == or !=, extract the variable name
 /// if one side is NULL and the other is an identifier.
 fn extract_null_check_var(left: &Node, right: &Node, source: &str) -> Option<String> {
