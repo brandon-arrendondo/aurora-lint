@@ -403,6 +403,14 @@ them against the oracle: it writes a <code class="docutils literal notranslate">
 prints a one-line measured precision/recall. Scoring only joins findings to
 <em>existing</em> labels — it never adjudicates new findings. Re-run any time with
 <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">realworld-score</span> <span class="pre">&lt;RUN&gt;</span></code>.</p>
+<p>The scans and the ingest fail independently. Every tool writes its JSON export
+as it goes, so a scan that printed <code class="docutils literal notranslate"><span class="pre">ok</span></code> is on disk under
+<code class="docutils literal notranslate"><span class="pre">results/realworld/&lt;version-sha&gt;/</span></code> whatever happens next; if the ingest then
+fails, <code class="docutils literal notranslate"><span class="pre">realworld-run</span></code> says so on an <code class="docutils literal notranslate"><span class="pre">INGEST</span> <span class="pre">FAILED</span></code> line and exits
+nonzero, and the run is simply absent (or partial) in <code class="docutils literal notranslate"><span class="pre">bench</span> <span class="pre">realworld</span></code> and
+<code class="docutils literal notranslate"><span class="pre">bench</span> <span class="pre">realworld-score</span></code> until the ingest is repeated. Two runs can still be
+compared straight from their JSON exports, finding for finding, without the
+database.</p>
 <p>Typical real-world workflow:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld-run<span class="w"> </span>--tool<span class="w"> </span>sqc<span class="w">          </span><span class="c1"># blocks until every codebase is done</span>
 python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </span>realworld<span class="w"> </span>latest<span class="w">                   </span><span class="c1"># view results</span>
