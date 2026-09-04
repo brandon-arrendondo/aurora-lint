@@ -163,7 +163,7 @@ impl Int08C {
                         all_vars.extend(left_vars);
                         all_vars.extend(right_vars);
 
-                        let narrow_vars: Vec<(&String, &String)> = all_vars
+                        let mut narrow_vars: Vec<(&String, &String)> = all_vars
                             .iter()
                             .filter_map(|var| {
                                 variables.get(var).and_then(|(var_type, _)| {
@@ -172,6 +172,15 @@ impl Int08C {
                                 })
                             })
                             .collect();
+                        // `all_vars` is a HashSet, so its iteration order is
+                        // reseeded per process. The message names
+                        // `narrow_vars[0]`, which made two runs of the same
+                        // binary on the same tree report a different variable
+                        // for one expression (`min_c` vs `max_c` at
+                        // curl/src/tool_urlglob.c:265). Sort so the pick is
+                        // stable -- see the MSC04-C determinism task, whose
+                        // SCC-path half is the same defect.
+                        narrow_vars.sort_unstable_by(|a, b| a.0.cmp(b.0));
 
                         if narrow_vars.is_empty() {
                             // No narrow-typed operand at all -- not this
