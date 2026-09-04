@@ -723,6 +723,65 @@ pub fn is_write_context(node: &Node) -> bool {
     }
 }
 
+/// The identifier sitting in the "type" position of a cast that
+/// `tree-sitter-c` mis-parsed as something else, or `None` when `node` is not
+/// one of those shapes.
+///
+/// Whether `(N)&x` is a cast or a bitwise AND depends on whether `N` names a
+/// type -- the C grammar cannot decide it without a typedef table, and
+/// `tree-sitter-c` does not consult one here. Measured, for
+/// `typedef word_t seL4_Word;` declared in the same file:
+///
+/// ```text
+///   (seL4_Word)x     cast_expression                      <- the only one that works
+///   (seL4_Word)&x    binary_expression   left: (T)  op &
+///   (seL4_Word)*p    binary_expression   left: (T)  op *
+///   (seL4_Word)-y    binary_expression   left: (T)  op -
+///   (seL4_Word)+y    binary_expression   left: (T)  op +
+///   (seL4_Word)(x)   call_expression     function: (T)
+/// ```
+///
+/// The parse is IDENTICAL with the typedef absent, so this is not a matter of
+/// the typedef being out of scope in a per-file parse -- there is no scanner
+/// state to pre-seed, and no amount of cross-file typedef knowledge reaches
+/// it. Recognising the shape after the fact is the only available fix
+/// (task 675).
+///
+/// Deliberately PURELY STRUCTURAL: it returns the name whatever it is, and the
+/// caller must confirm the name is a typedef before treating the node as a
+/// cast. `(mask) & flags` has exactly this shape and is a real bitwise AND
+/// when `mask` is a variable, so the type knowledge -- which is per-rule and
+/// sometimes cross-file -- has to stay with the caller.
+pub fn misparsed_cast_type_name<'a>(node: &Node, source: &'a str) -> Option<&'a str> {
+    let candidate = match node.kind() {
+        // `(T)&x` and friends: the "type" lands in the left operand.
+        "binary_expression" => {
+            let op = node.child_by_field_name("operator")?;
+            if !matches!(get_node_text(&op, source), "&" | "*" | "-" | "+") {
+                return None;
+            }
+            node.child_by_field_name("left")?
+        }
+        // `(T)(x)`: the "type" lands in the callee position.
+        "call_expression" => node.child_by_field_name("function")?,
+        _ => return None,
+    };
+
+    if candidate.kind() != "parenthesized_expression" {
+        return None;
+    }
+    // Exactly one named child, and it is a bare identifier -- `(a + b) & c`
+    // and `(s->mask) & c` are ordinary expressions, not mis-parsed casts.
+    if candidate.named_child_count() != 1 {
+        return None;
+    }
+    let inner = candidate.named_child(0)?;
+    if inner.kind() != "identifier" {
+        return None;
+    }
+    Some(get_node_text(&inner, source))
+}
+
 /// Check if a node is part of a sizeof expression
 #[allow(dead_code)]
 pub fn is_in_sizeof(node: &Node) -> bool {
