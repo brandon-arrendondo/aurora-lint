@@ -127,27 +127,26 @@ CWEs a given tool actually covers, and those sets differ by a factor of five.</p
 <code class="docutils literal notranslate"><span class="pre">-I</span></code>/<code class="docutils literal notranslate"><span class="pre">-D</span></code> when given; never requires them.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference external" href="https://cppcheck.sourceforge.io/">cppcheck</a></p></td>
-<td><p>2.10</p></td>
+<td><p>2.13.0</p></td>
 <td><p>No</p></td>
 <td><p>~20 via <code class="docutils literal notranslate"><span class="pre">--addon=cert</span></code></p></td>
 <td><p>Runs unbuilt like SqC. The cert addon is <strong>not</strong> enabled in our runs,
 so its ids are native (<code class="docutils literal notranslate"><span class="pre">nullPointer</span></code>, <code class="docutils literal notranslate"><span class="pre">uninitvar</span></code>).</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference external" href="https://clang.llvm.org/extra/clang-tidy/">clang-tidy</a></p></td>
-<td><p>LLVM 21.1</p></td>
+<td><p>LLVM 21.1.8</p></td>
 <td><p><strong>Yes</strong></p></td>
 <td><p>~20 native <code class="docutils literal notranslate"><span class="pre">cert-*</span></code> checks</p></td>
 <td><p>Wants a compilation database; without correct flags it fails or
 silently under-reports.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference external" href="https://frama-c.com/">Frama-C</a></p></td>
-<td><p>32.0 (Germanium)</p></td>
+<td><p>33.0 (Arsenic)</p></td>
 <td><p><strong>Yes</strong></p></td>
 <td><p>n/a (abstract interpretation, not rule-indexed)</p></td>
 <td><p>Requires preprocessed input <em>and</em> an entry point per analysis. Sound-by
--design, so it reports more. 33.0 (Arsenic) is what
-<code class="docutils literal notranslate"><span class="pre">install-static-analyzers.yml</span></code> now provisions; the Juliet numbers
-here are 32.0’s.</p></td>
+-design, so it reports more. 32.0 (Germanium) and 33.0 (Arsenic)
+produce identical Juliet numbers — see the re-measurement note below.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference external" href="https://fbinfer.com/">Infer</a></p></td>
 <td><p>v1.2.0</p></td>
@@ -271,7 +270,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>848</p></td>
 <td><p>74.8%</p></td>
 <td><p><strong>100.0%</strong></p></td>
-<td><p>40.6%</p></td>
+<td><p>40.9%</p></td>
 <td><p>–</p></td>
 <td><p>38.8%</p></td>
 </tr>
@@ -280,7 +279,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>291</p></td>
 <td><p>83.7%</p></td>
 <td><p><strong>98.8%</strong></p></td>
-<td><p>45.0%</p></td>
+<td><p>44.2%</p></td>
 <td><p>–</p></td>
 <td><p>37.8%</p></td>
 </tr>
@@ -289,7 +288,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>268</p></td>
 <td><p>70.9%</p></td>
 <td><p><strong>97.0%</strong></p></td>
-<td><p>40.5%</p></td>
+<td><p>40.2%</p></td>
 <td><p>–</p></td>
 <td><p>33.9%</p></td>
 </tr>
@@ -298,7 +297,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>100</p></td>
 <td><p>87.8%</p></td>
 <td><p><strong>100.0%</strong></p></td>
-<td><p>42.7%</p></td>
+<td><p>40.8%</p></td>
 <td><p>–</p></td>
 <td><p>33.9%</p></td>
 </tr>
@@ -307,7 +306,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>0</p></td>
 <td><p><strong>100.0%</strong></p></td>
 <td><p><strong>100.0%</strong></p></td>
-<td><p>27.5%</p></td>
+<td><p>27.6%</p></td>
 <td><p>58.1%</p></td>
 <td><p>–</p></td>
 </tr>
@@ -316,7 +315,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>18</p></td>
 <td><p>98.5%</p></td>
 <td><p><strong>100.0%</strong></p></td>
-<td><p>27.2%</p></td>
+<td><p>27.9%</p></td>
 <td><p>63.1%</p></td>
 <td><p>–</p></td>
 </tr>
@@ -325,7 +324,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>0</p></td>
 <td><p><strong>100.0%</strong></p></td>
 <td><p><strong>100.0%</strong></p></td>
-<td><p>40.0%</p></td>
+<td><p>40.7%</p></td>
 <td><p><strong>100.0%</strong></p></td>
 <td><p>–</p></td>
 </tr>
@@ -334,7 +333,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>342</p></td>
 <td><p>61.4%</p></td>
 <td><p><strong>100.0%</strong></p></td>
-<td><p>27.4%</p></td>
+<td><p>27.6%</p></td>
 <td><p>43.4%</p></td>
 <td><p>–</p></td>
 </tr>
@@ -343,7 +342,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>391</p></td>
 <td><p>66.6%</p></td>
 <td><p><strong>100.0%</strong></p></td>
-<td><p>25.7%</p></td>
+<td><p>29.1%</p></td>
 <td><p>–</p></td>
 <td><p>54.7%</p></td>
 </tr>
@@ -352,7 +351,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>288</p></td>
 <td><p>61.9%</p></td>
 <td><p><strong>84.2%</strong></p></td>
-<td><p>33.8%</p></td>
+<td><p>31.8%</p></td>
 <td><p>–</p></td>
 <td><p>63.0%</p></td>
 </tr>
@@ -361,7 +360,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>36</p></td>
 <td><p><strong>91.1%</strong></p></td>
 <td><p>60.3%</p></td>
-<td><p>29.8%</p></td>
+<td><p>32.0%</p></td>
 <td><p>–</p></td>
 <td><p>2.0%</p></td>
 </tr>
@@ -370,7 +369,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>175</p></td>
 <td><p>67.9%</p></td>
 <td><p><strong>100.0%</strong></p></td>
-<td><p>39.7%</p></td>
+<td><p>34.5%</p></td>
 <td><p>64.2%</p></td>
 <td><p>66.1%</p></td>
 </tr>
@@ -379,7 +378,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>0</p></td>
 <td><p><strong>100.0%</strong></p></td>
 <td><p><strong>100.0%</strong></p></td>
-<td><p>40.8%</p></td>
+<td><p>40.9%</p></td>
 <td><p>82.6%</p></td>
 <td><p>–</p></td>
 </tr>
@@ -388,7 +387,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>0</p></td>
 <td><p><strong>100.0%</strong></p></td>
 <td><p><strong>100.0%</strong></p></td>
-<td><p>45.7%</p></td>
+<td><p>42.7%</p></td>
 <td><p>–</p></td>
 <td><p>60.0%</p></td>
 </tr>
@@ -397,7 +396,7 @@ CWEs that competitor covers — precision, so higher is better.</p>
 <td><p>0</p></td>
 <td><p><strong>100.0%</strong></p></td>
 <td><p><strong>100.0%</strong></p></td>
-<td><p>45.7%</p></td>
+<td><p>44.8%</p></td>
 <td><p>–</p></td>
 <td><p>58.1%</p></td>
 </tr>
@@ -462,11 +461,63 @@ the 490.9 s would be wrong in SqC’s favour, which is worse. Tracked as
 benchmarking_db task 740.</p>
 </div>
 <p>Frama-C and Infer have no row here yet — see the note above. For an order of
-magnitude on what the Frama-C row will cost: its 6-CWE Juliet run took
-9,914 s over files averaging under 200 lines, which is why its real-world
-mode is budget-bounded rather than exhaustive.</p>
-<p>On Juliet, where CWE subsets differ: cppcheck 895 s over 16 CWEs, clang-tidy
-5,944 s over 16, Infer 5,019 s over 11, Frama-C 9,914 s over 6.</p>
+magnitude on what the Frama-C row will cost: its 6-CWE Juliet run is the
+slowest of the four by a factor of two, over files averaging under 200 lines,
+which is why its real-world mode is budget-bounded rather than exhaustive.</p>
+<p>Juliet, all four on one host (2026-09-04), CWE list sizes differing:</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 16.0%" />
+<col style="width: 16.0%" />
+<col style="width: 48.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>Wall clock</p></th>
+<th class="head"><p>CWE list</p></th>
+<th class="head"></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>cppcheck</p></td>
+<td><p>350 s</p></td>
+<td><p>16</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>clang-tidy</p></td>
+<td><p>1,393 s</p></td>
+<td><p>16</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>Infer</p></td>
+<td><p>1,707 s</p></td>
+<td><p>11</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>Frama-C</p></td>
+<td><p>3,443 s</p></td>
+<td><p>6</p></td>
+<td><p>Slowest by 2×, on the smallest list.</p></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>These four are directly comparable to each other — same host, same day —
+which the April figures (895 s / 5,944 s / 5,019 s / 9,914 s) were not
+guaranteed to be, and are roughly 2.6–2.9× slower across all four. That
+ratio being uniform across unrelated tools is what identifies it as the
+host rather than the versions; three of the four produced identical
+findings either way. The runs record no hostname to confirm it, which is
+tracked separately.</p>
+<p>The “CWE list” column is the size of the list each tool was <em>given</em>, not
+the number measured. One entry in each list (CWE-762, mismatched memory
+management) is C++-only in Juliet — 6,092 <code class="docutils literal notranslate"><span class="pre">.cpp</span></code> files and no <code class="docutils literal notranslate"><span class="pre">.c</span></code> —
+so it contributes nothing to a C-only benchmark and every run scores it
+0/0. Measured counts are therefore 15, 15 and 10. Tracked as tools_sqc
+task 909; the same defect on SqC’s own count is task 910.</p>
+</div>
 </section>
 <section id="real-world-precision-per-rule">
 <h2>Real-World Precision, Per Rule<a class="headerlink" href="#real-world-precision-per-rule" title="Link to this heading"></a></h2>
@@ -488,11 +539,63 @@ second tool at the same coordinate would create).</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>TODO</strong> — the competitor Juliet runs are from 2026-04-03/04 and the SqC
-run is from 2026-09-02. Competitor versions move slowly and five months of
-SqC improvement makes the comparison generous to SqC rather than to a
-rival, so the direction is safe — but a single-date table is what a
-reader deserves. Tracked as tools_sqc task 768.</p>
+<p><strong>All four competitor columns were re-measured on 2026-09-04</strong>, on one
+host, at the versions in the table above.  Three of the four reproduced
+their April figures <em>exactly</em>:</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 16.0%" />
+<col style="width: 30.0%" />
+<col style="width: 22.0%" />
+<col style="width: 32.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>Version, April → September</p></th>
+<th class="head"><p>Result</p></th>
+<th class="head"></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Frama-C</p></td>
+<td><p>32.0 Germanium → 33.0 Arsenic</p></td>
+<td><p><strong>identical</strong></p></td>
+<td><p>A major EVA release moved no cell.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Infer</p></td>
+<td><p>v1.2.0 → v1.2.0</p></td>
+<td><p><strong>identical</strong></p></td>
+<td><p>Same version, different host, five months apart.</p></td>
+</tr>
+<tr class="row-even"><td><p>clang-tidy</p></td>
+<td><p>LLVM 21.1.6 → 21.1.8</p></td>
+<td><p><strong>identical</strong></p></td>
+<td><p>13,952 TP / 116 FP / 1,170 unknown both times.</p></td>
+</tr>
+<tr class="row-odd"><td><p>cppcheck</p></td>
+<td><p>2.10 → 2.13.0</p></td>
+<td><p>moved on all 15</p></td>
+<td><p>Total barely shifts; individual CWEs move both ways.</p></td>
+</tr>
+</tbody>
+</table>
+<p>The cppcheck column above is the September measurement.  Its total is
+almost unchanged (36.4% → 36.7% precision) but individual CWEs move
+materially in both directions — CWE-401 25.7% → 29.1%, CWE-476
+39.7% → 34.5% — so it was refreshed rather than re-dated.</p>
+<p>The SqC column is still from 2026-09-02, so the table is now within days
+of single-date rather than five months from it.  Tracked as tools_sqc
+task 768.</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>clang-tidy is pinned to LLVM 21, deliberately.</strong>  Ubuntu 24.04 ships
+18.1.3 and tops out at 20, so a freshly-provisioned node would measure an
+<em>older</em> clang-tidy than this table — and since clang-tidy is the tool that
+beats SqC on the overlap, that would flatter SqC by understating a rival.
+<code class="docutils literal notranslate"><span class="pre">playbooks/install-static-analyzers.yml</span></code> adds <code class="docutils literal notranslate"><span class="pre">apt.llvm.org</span></code> for this
+reason.  cppcheck is deliberately <em>not</em> pinned: it drifted forward, and
+the runner records whichever version it saw.</p>
 </div>
 </section>
 <section id="what-the-trade-actually-is">
@@ -508,8 +611,13 @@ false-positive backlog as substantial as its rule backlog. The precision gap
 on those sixteen CWEs is the price of the property that makes it useful
 elsewhere.</p>
 <p>cppcheck is the honest control here: it also runs unbuilt, and on the same
-sixteen CWEs it scores 36.4% to SqC’s 81.7%, at roughly ten times the wall
-clock.</p>
+overlap it scores 36.7% to SqC’s 81.7%.</p>
+<p>The wall-clock gap is on the <em>real-world</em> suite, not this one: cppcheck’s
+run-215 sweep of 8 projects took 11,452 s against SqC’s ~1,190 s, roughly ten
+times. On Juliet the ordering reverses — cppcheck is the fastest of the four
+competitors at 350 s. Both facts are about the same tool and neither is the
+other’s counterexample: cppcheck is quick on 5,900 small generated files and
+slow on a real codebase.</p>
 </section>
 </section>
 
