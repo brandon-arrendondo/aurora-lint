@@ -1,0 +1,126 @@
+{
+  "tool": "infer",
+  "tool_version": "Infer version v1.2.0",
+  "started_at": "2026-09-04T15:03:12.506605+00:00",
+  "cwes": {
+    "CWE476": {
+      "cwe_dir": "CWE476_NULL_Pointer_Dereference",
+      "tp": 242,
+      "fp": 124,
+      "unknown": 0,
+      "files": 372,
+      "duration_s": 35.7,
+      "errors": [],
+      "finding_count": 366
+    },
+    "CWE690": {
+      "cwe_dir": "CWE690_NULL_Deref_From_Return",
+      "tp": 456,
+      "fp": 304,
+      "unknown": 0,
+      "files": 1120,
+      "duration_s": 107.5,
+      "errors": [],
+      "finding_count": 760
+    },
+    "CWE416": {
+      "cwe_dir": "CWE416_Use_After_Free",
+      "tp": 1,
+      "fp": 48,
+      "unknown": 0,
+      "files": 150,
+      "duration_s": 15.0,
+      "errors": [],
+      "finding_count": 49
+    },
+    "CWE401": {
+      "cwe_dir": "CWE401_Memory_Leak",
+      "tp": 548,
+      "fp": 454,
+      "unknown": 0,
+      "files": 1228,
+      "duration_s": 119.9,
+      "errors": [],
+      "finding_count": 1002
+    },
+    "CWE415": {
+      "cwe_dir": "CWE415_Double_Free",
+      "tp": 204,
+      "fp": 120,
+      "unknown": 0,
+      "files": 336,
+      "duration_s": 32.6,
+      "errors": [],
+      "finding_count": 324
+    },
+    "CWE761": {
+      "cwe_dir": "CWE761_Free_Pointer_Not_at_Start_of_Buffer",
+      "tp": 528,
+      "fp": 380,
+      "unknown": 0,
+      "files": 672,
+      "duration_s": 69.8,
+      "errors": [],
+      "finding_count": 908
+    },
+    "CWE762": {
+      "cwe_dir": "",
+      "tp": 0,
+      "fp": 0,
+      "unknown": 0,
+      "files": 0,
+      "duration_s": 0,
+      "errors": [],
+      "finding_count": 0
+    },
+    "CWE121": {
+      "cwe_dir": "CWE121_Stack_Based_Buffer_Overflow",
+      "tp": 1976,
+      "fp": 3121,
+      "unknown": 0,
+      "files": 5906,
+      "duration_s": 593.4,
+      "errors": [],
+      "finding_count": 5097
+    },
+    "CWE122": {
+      "cwe_dir": "CWE122_Heap_Based_Buffer_Overflow",
+      "tp": 346,
+      "fp": 569,
+      "unknown": 0,
+      "files": 3656,
+      "duration_s": 362.4,
+      "errors": [],
+      "finding_count": 915
+    },
+    "CWE124": {
+      "cwe_dir": "CWE124_Buffer_Underwrite",
+      "tp": 338,
+      "fp": 660,
+      "unknown": 0,
+      "files": 1896,
+      "duration_s": 185.4,
+      "errors": [],
+      "finding_count": 998
+    },
+    "CWE127": {
+      "cwe_dir": "CWE127_Buffer_Underread",
+      "tp": 332,
+      "fp": 648,
+      "unknown": 0,
+      "files": 1896,
+      "duration_s": 184.4,
+      "errors": [],
+      "finding_count": 980
+    }
+  },
+  "totals": {
+    "tp": 4971,
+    "fp": 6428,
+    "unknown": 0,
+    "files": 17232,
+    "tp_rate_pct": 43.6
+  },
+  "duration_s": 1706.5,
+  "finished_at": "2026-09-04T15:31:39.026134+00:00"
+}

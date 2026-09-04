@@ -21,6 +21,13 @@ archival form and the CSV can be regenerated at any time.
 THREE FILES, because one flat table cannot hold all three grains without
 either nulls or repetition:
 
+TWO RATE COLUMNS, deliberately. `precision_pct` is TP/(TP+FP), which is what
+docs/tool-comparison.rst publishes; `tp_rate_pct` is TP/(TP+FP+unknown), which
+is what the run JSON carries. They diverge only where `unknown` is material,
+which in practice means clang-tidy alone -- 99.2% against 91.6%. Emitting one
+of them would guarantee that whoever compares this CSV to the paper finds a
+mismatch and corrects the wrong side.
+
   competitor_runs.csv        one row per run       (tool, version, totals)
   competitor_cwe_results.csv one row per run x CWE (the actual measurements)
   competitor_cwe_errors.csv  one row per error     (usually empty)
@@ -48,24 +55,43 @@ RUN_FIELDS = [
     "run_key", "tool", "tool_version", "hostname",
     "started_at", "finished_at", "duration_s",
     "cwe_count", "tp", "fp", "unknown", "files", "finding_count",
-    "tp_rate_pct", "source_file",
+    "precision_pct", "tp_rate_pct", "source_file",
 ]
 
 CWE_FIELDS = [
     "run_key", "tool", "tool_version", "cwe_id", "cwe_dir",
     "tp", "fp", "unknown", "files", "finding_count", "duration_s",
-    "error_count",
+    "precision_pct", "tp_rate_pct", "error_count",
 ]
 
 ERROR_FIELDS = ["run_key", "tool", "cwe_id", "error"]
 
 
-def _tp_rate(tp: int, fp: int, unknown: int) -> float | None:
-    """Share of findings that hit a planted flaw.
+def _precision(tp: int, fp: int) -> float | None:
+    """TP / (TP + FP) -- **the number docs/tool-comparison.rst publishes.**
 
-    Recomputed rather than read from the JSON's `totals.tp_rate_pct`: the
-    one-CWE smoke runs predate that field, and a value derived here is
-    guaranteed to agree with the tp/fp/unknown columns beside it."""
+    `unknown` is excluded: a finding neither matched to a planted flaw nor
+    confidently outside one is not evidence either way, so counting it as a
+    miss understates the tool. Only clang-tidy has a material `unknown` count
+    (1,170 of its findings, 8%), which is exactly why the two rates diverge
+    most there -- 99.2% precision against 91.6% tp_rate."""
+    denom = tp + fp
+    return round(tp / denom * 100, 1) if denom else None
+
+
+def _tp_rate(tp: int, fp: int, unknown: int) -> float | None:
+    """TP / (TP + FP + unknown) -- what `competitors.py` calls tp_rate_pct.
+
+    Kept alongside `precision_pct` rather than in place of it because BOTH
+    are in circulation: this is the field the run JSON carries, and precision
+    is the field the published table shows. Emitting only one guarantees that
+    whoever compares the CSV against the docs finds a discrepancy and
+    "corrects" the wrong side. Named so the difference is legible in the
+    column header instead of a footnote.
+
+    Recomputed rather than copied from the JSON: the one-CWE smoke runs
+    predate that field, and a value derived here cannot disagree with the
+    tp/fp/unknown columns beside it."""
     total = tp + fp + unknown
     return round(tp / total * 100, 1) if total else None
 
@@ -101,6 +127,11 @@ def collect(results_dir: Path = RESULTS_DIR) -> tuple[list, list, list]:
                 "unknown": c.get("unknown", 0), "files": c.get("files", 0),
                 "finding_count": c.get("finding_count", 0),
                 "duration_s": c.get("duration_s"),
+                "precision_pct": _precision(int(c.get("tp") or 0),
+                                            int(c.get("fp") or 0)),
+                "tp_rate_pct": _tp_rate(int(c.get("tp") or 0),
+                                        int(c.get("fp") or 0),
+                                        int(c.get("unknown") or 0)),
                 "error_count": len(errs),
             })
             for e in errs:
@@ -123,6 +154,7 @@ def collect(results_dir: Path = RESULTS_DIR) -> tuple[list, list, list]:
             "tp": tp, "fp": fp, "unknown": unknown,
             "files": totals.get("files", 0),
             "finding_count": run_findings,
+            "precision_pct": _precision(tp, fp),
             "tp_rate_pct": _tp_rate(tp, fp, unknown),
             "source_file": path.name,
         })
