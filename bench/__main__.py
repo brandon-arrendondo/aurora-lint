@@ -8,9 +8,12 @@ Commands:
   runs                                     List all runs
   realworld [RUN] [--compare BASE]         Real-world FP dashboard
   realworld-run [--tool T,T] [--codebase C,C] [--compile-commands]
-                                            Run sqc/cppcheck/clang-tidy against
-                                            real codebases (local, sequential),
-                                            ingest + score against the oracle
+                                            Run sqc/cppcheck/clang-tidy/infer/
+                                            frama-c against real codebases
+                                            (local, sequential), ingest + score
+                                            against the oracle
+  competitor-export [--check]              Flatten data/competitor_results/*.json
+                                            to CSV for sqc_bench ingest
   realworld-runs                           List real-world benchmark runs
   realworld-score [RUN]                    Measured precision/recall vs oracle
   realworld-import-labels CSV --run R      Append TP/FP labels to the oracle
@@ -64,6 +67,24 @@ def cmd_realworld_run(args):
     print(f"Running {'+'.join(tools)} against {len(codebases)} codebase(s): "
           f"{', '.join(codebases)}\n")
     run_and_ingest(tools, codebases, compile_commands=args.compile_commands)
+
+
+def cmd_competitor_export(args):
+    from bench.competitor_csv import export
+    r = export(check=args.check)
+    if args.check:
+        if r["stale"]:
+            for p in r["stale"]:
+                print(f"STALE: {p}")
+            print("Run: python -m bench competitor-export")
+            raise SystemExit(1)
+        print("competitor CSVs are current "
+              f"({r['runs']} runs, {r['cwe_rows']} CWE rows)")
+        return
+    print(f"Wrote {r['runs']} run(s), {r['cwe_rows']} CWE row(s), "
+          f"{r['errors']} error row(s):")
+    for p in r["files"]:
+        print(f"  {p}")
 
 
 def cmd_status(args):
@@ -1116,15 +1137,28 @@ def main():
     # realworld-run
     p_rw_run = sub.add_parser(
         "realworld-run",
-        help="Run sqc/cppcheck/clang-tidy against real codebases, ingest + score")
+        help="Run sqc/cppcheck/clang-tidy/infer/frama-c against real codebases, "
+             "ingest + score")
     p_rw_run.add_argument("--tool", default=None,
-                          help="Comma-separated: sqc,cppcheck,clang-tidy (default: sqc)")
+                          help="Comma-separated: sqc,cppcheck,clang-tidy,infer,frama-c "
+                               "(default: sqc). infer and frama-c need the codebase's "
+                               "compile_commands.json; frama-c is bounded and PARTIAL "
+                               "-- see docs/design/framac-realworld.md")
     p_rw_run.add_argument("--codebase", default=None,
                           help="Comma-separated codebase key(s) (default: all)")
     p_rw_run.add_argument("--compile-commands", action="store_true",
                           help="sqc only: pass --compile-commands using the codebase's "
-                               "compile_commands.json")
+                               "compile_commands.json. infer/frama-c always use it and "
+                               "do not take this flag.")
     p_rw_run.set_defaults(func=cmd_realworld_run)
+
+    # competitor-export
+    p_ce = sub.add_parser(
+        "competitor-export",
+        help="Flatten data/competitor_results/*.json to CSV for sqc_bench ingest")
+    p_ce.add_argument("--check", action="store_true",
+                      help="Exit nonzero if the CSVs are stale; write nothing")
+    p_ce.set_defaults(func=cmd_competitor_export)
 
     # realworld-runs
     p_rw_runs = sub.add_parser("realworld-runs", help="List real-world runs")

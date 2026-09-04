@@ -44,7 +44,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, misparsed_cast_type_name};
 use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -303,7 +303,16 @@ impl Int10C {
             if n.kind() == "sizeof_expression" {
                 return true;
             }
-            // An explicit cast to a typedef'd name (e.g. `(seL4_Word)&x`) --
+            // A cast that tree-sitter-c mis-parsed -- `(seL4_Word)&x` comes
+            // back as a bitwise AND, `(seL4_Word)(x)` as a call. The name is
+            // only a type if the typedef chain resolves it, which is what
+            // separates this from a genuine `(mask) & flags` (task 675).
+            if let Some(name) = misparsed_cast_type_name(&n, source) {
+                if overflow_helpers::typedef_chain_is_unsigned(name, &typedef_types) {
+                    return true;
+                }
+            }
+            // An explicit cast to a typedef'd name (e.g. `(seL4_Word)x`) --
             // resolve the cast's target type through the same typedef chain.
             if n.kind() == "cast_expression" {
                 if let Some(type_node) = n.child_by_field_name("type") {

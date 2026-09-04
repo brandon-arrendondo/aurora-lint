@@ -60,22 +60,36 @@ For the latest release, build from source:
 clang-tidy
 ~~~~~~~~~~
 
+**Pin LLVM 21 — do not take the distro default.**  Ubuntu 24.04 ships
+clang-tidy 18.1.3 and tops out at 20, while the published comparison in
+``docs/tool-comparison.rst`` is LLVM 21.1.  Taking the distro package makes a
+freshly-provisioned node measure an *older* competitor than the table it will
+be compared against, and clang-tidy is the tool currently beating SqC on the
+Juliet overlap (99.2% vs 81.7%) — so that regression would flatter SqC by
+understating a rival.  ``playbooks/install-static-analyzers.yml`` does this
+automatically; by hand:
+
 .. code-block:: bash
 
-    sudo apt update
-    sudo apt install -y clang clang-tidy
+    sudo install -d -m 0755 /etc/apt/keyrings
+    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+      | sudo tee /etc/apt/keyrings/apt.llvm.org.asc > /dev/null
+    echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] \
+      http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+      | sudo tee /etc/apt/sources.list.d/llvm-21.list
+    sudo apt update && sudo apt install -y clang-tidy-21
+    sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy \
+      /usr/bin/clang-tidy-21 100
 
     # Verify
-    clang --version
     clang-tidy --version
+    # Expected: Ubuntu LLVM version 21.1.x
 
-To pin a specific LLVM version (e.g., 18):
+The distro package is fine for anything that is not a published comparison:
 
 .. code-block:: bash
 
-    sudo apt install -y clang-18 clang-tidy-18
-    sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
-    sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
+    sudo apt install -y clang clang-tidy
 
 bear (for compile_commands.json)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -135,12 +149,48 @@ Manual install:
 
     # Verify (requires eval $(opam env) in each shell session)
     frama-c -version
-    # Expected: 32.0 (Germanium)
+    # Expected: 33.0 (Arsenic) as of 2026-09-04; 32.0 (Germanium) is what the
+    # competitor Juliet runs in data/competitor_results/ were taken with
 
 .. note::
 
     Add ``eval $(opam env)`` to your shell profile (``~/.bashrc``) to make
-    ``frama-c`` available without manual activation.
+    ``frama-c`` available without manual activation.  The benchmark runner
+    does not need it: ``bench/realworld_runner.py`` wraps every Frama-C
+    invocation in ``eval $(opam env)`` itself, because it is not a login
+    shell.
+
+.. warning::
+
+    Frama-C renamed the compile-database option between the two versions
+    above — ``-json-compilation-database`` through 32.0, ``-compilation-db``
+    from 33.0.  The runner probes ``frama-c -kernel-h`` and picks whichever
+    the installed binary accepts, so both work; a hand-written command line
+    copied from an older doc will abort with "option is unknown".
+
+Build-based tools need a compile database
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Infer and Frama-C cannot be pointed at a source tree the way sqc and cppcheck
+can — both need a real preprocess.  On the real-world suite they are driven
+from each checkout's ``compile_commands.json``, so
+``playbooks/setup-compile-commands.yml`` must have run for a codebase before
+either tool can scan it.  ``python -m bench realworld-run --tool infer`` fails
+fast with the exact command to fix it if the database is missing.
+
+Expect a *partial* result from both, and check the ``coverage`` block each run
+writes:
+
+- **Infer** captures whatever preprocesses.  ``setup-compile-commands.yml``
+  restores each checkout to pristine after building it, which deletes the
+  build's generated headers while leaving the compile database that still
+  references them — libcrc's ``tab/gentab32.inc`` is the worked example, and
+  2 of its 9 in-scope translation units cannot be captured as a result.
+- **Frama-C** is partial by construction, because EVA analyses one entry
+  point at a time and a real codebase has no single one.  Read
+  ``docs/design/framac-realworld.md`` before quoting any Frama-C real-world
+  number: a finding count from it is a floor, and recall is not expressible
+  from it at all.
 
 Juliet Test Suite Setup
 -----------------------
@@ -730,3 +780,45 @@ Fast re-benchmark workflow:
     parallel --sshloginfile $NODES_FILE -a /tmp/cwe_dirs.txt \
       "$SQC_BIN {} -d $JULIET_DIR -d $JULIET_SUPPORT \
         --export $RESULTS_DIR/sqc/juliet/{/.}.csv"
+
+Exporting competitor results for ingest
+---------------------------------------
+
+``bench/competitors.py`` writes one JSON blob per run into
+``data/competitor_results/``, and those blobs are committed — they are the
+archival form and should not be edited or deleted.  They are not, however,
+ingestible: the shape is nested and the per-CWE map is keyed by CWE id, so a
+loader would have to know that module's internal layout to read it.
+
+``python -m bench competitor-export`` flattens every run JSON in that
+directory into three CSVs beside them:
+
+.. code-block:: text
+
+    competitor_runs.csv         one row per run       (tool, version, totals)
+    competitor_cwe_results.csv  one row per run × CWE (the measurements)
+    competitor_cwe_errors.csv   one row per error     (usually empty)
+
+``run_key`` joins them and is the JSON's own basename (e.g.
+``framac_20260403_222053``), so it is unique, stable across re-exports, and
+traceable back to the file it came from.
+
+**Run the export after every competitor benchmark and commit the result.**
+The benchmark host ingests these CSVs into ``sqc_bench``; a table missing its
+newest run looks exactly like a run that never happened.
+``python -m bench competitor-export --check`` exits nonzero if the CSVs are
+stale, and writes nothing.
+
+This repo stays Postgres-blind — no DSN, no connection code (see
+``CLAUDE.md``).  It *emits* a flat, diffable table; ``benchmarking_db`` owns
+the ingest, so nothing here changes when the target schema does.  The CSVs
+are a transport, not a source of truth: Postgres remains the only place an
+official number comes from, and re-exporting is idempotent and lossless with
+respect to the JSON.
+
+.. note::
+
+    The ``hostname`` column is blank for every run recorded before
+    2026-09-04, which is all four April runs.  Wall clock is
+    hardware-dependent, so a blank means "do not compare this run's duration
+    against another host's", not "same host".

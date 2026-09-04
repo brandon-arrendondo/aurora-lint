@@ -81,6 +81,23 @@ def load_rule_ids() -> set[str]:
         return set(tomllib.load(f)["rules"]["cert_c"])
 
 
+def opam_wrap(argv: list[str]) -> list[str]:
+    """Wrap a command so the user's opam switch is on PATH.
+
+    Frama-C is installed by playbooks/install-static-analyzers.yml into
+    ~/.opam, which only reaches PATH via `eval $(opam env)` in a login shell --
+    and no benchmark runner is one. Calling `frama-c` directly from
+    subprocess.run raises FileNotFoundError, and both runners used to catch
+    that alongside real analysis errors and return "no alarms", so a Frama-C
+    benchmark scored a clean zero on every file instead of failing (task 775).
+
+    `opam env` failing is tolerated rather than required: a Frama-C installed
+    some other way is already on PATH.
+    """
+    return ["bash", "-c", 'eval "$(opam env 2>/dev/null)" 2>/dev/null; exec "$@"',
+            "_", *argv]
+
+
 def compile_db_for(path) -> Path | None:
     """Return `<path>/compile_commands.json` if it exists, else None.
 

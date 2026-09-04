@@ -1,7 +1,14 @@
-"""Real-world benchmark runner: sqc, cppcheck, and clang-tidy against real
-open-source C codebases (libcrc, sqlite, mosquitto, curl, hostap, lua,
-raylib, pureftpd, sel4), scored against the ground-truth oracle in
+"""Real-world benchmark runner: sqc, cppcheck, clang-tidy, Infer and Frama-C
+against real open-source C codebases (libcrc, sqlite, mosquitto, curl, hostap,
+lua, raylib, pureftpd, sel4), scored against the ground-truth oracle in
 data/benchmarks.db.
+
+The five tools split into two groups. sqc, cppcheck and clang-tidy read source
+as written and are pointed at a curated -I list. Infer and Frama-C need a real
+build, so they are driven from each checkout's compile_commands.json (task
+767); Frama-C additionally needs an entry point per analysis and so runs
+bounded and PARTIAL -- see the Frama-C section below and
+docs/design/framac-realworld.md before quoting one of its numbers.
 
 Synchronous and local-only, by design: this is the manual-execution path for
 an individual running a benchmark against their own SQLite DB, invoked via
@@ -19,19 +26,45 @@ separately in the benchmarking_db repo, not here.
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 
 from bench.config import BENCH_ROOT, PROJECT_DIR
+from bench.config import opam_wrap as _opam_wrap
 from bench.db import BenchDB
 
 RESULTS_BASE = PROJECT_DIR / "results" / "realworld"
 MANIFEST = PROJECT_DIR / "rules_templates" / "rules-benchmark.toml"
 SQC_BIN = PROJECT_DIR / "target" / "release" / "sqc"
 
-VALID_TOOLS = ("sqc", "cppcheck", "clang-tidy")
+VALID_TOOLS = ("sqc", "cppcheck", "clang-tidy", "infer", "frama-c")
+
+# Tools that cannot run without a build: they consume the checkout's own
+# compile_commands.json (playbooks/setup-compile-commands.yml) instead of the
+# hand-curated per-codebase -I list the source-reading tools use.
+COMPILE_DB_TOOLS = ("infer", "frama-c")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
+# Infer captures and analyses a whole compile database in one go; the ceiling
+# is a guard against a pathological project, not a coverage knob.
+INFER_BUDGET_S = _env_int("SQC_BENCH_INFER_BUDGET_S", 4 * 3600)
+
+# Frama-C bounds. These ARE coverage knobs -- see the Frama-C section below.
+FRAMAC_ENTRY_TIMEOUT_S = _env_int("SQC_BENCH_FRAMAC_ENTRY_TIMEOUT_S", 60)
+FRAMAC_MAX_ENTRIES_PER_TU = _env_int("SQC_BENCH_FRAMAC_MAX_ENTRIES_PER_TU", 8)
+FRAMAC_BUDGET_S = _env_int("SQC_BENCH_FRAMAC_BUDGET_S", 4 * 3600)
+FRAMAC_PRECISION = _env_int("SQC_BENCH_FRAMAC_PRECISION", 1)
 
 # ── Codebase registry ─────────────────────────────────────────────────────────
 CODEBASES = {
@@ -451,6 +484,23 @@ def _get_tool_version(tool: str) -> str:
             return m.group(1) if m else "unknown"
         except Exception:
             return "unknown"
+    elif tool == "infer":
+        try:
+            result = subprocess.run(["infer", "--version"],
+                                     capture_output=True, text=True, timeout=15)
+            m = re.search(r"v?(\d+\.\d+(?:\.\d+)?)", result.stdout)
+            return m.group(1) if m else "unknown"
+        except Exception:
+            return "unknown"
+    elif tool == "frama-c":
+        try:
+            result = subprocess.run(_opam_wrap(["frama-c", "-version"]),
+                                     capture_output=True, text=True, timeout=30)
+            # e.g. "32.0 (Germanium)" -- keep the codename out of a run_id.
+            m = re.search(r"(\d+\.\d+(?:\.\d+)?)", result.stdout)
+            return m.group(1) if m else "unknown"
+        except Exception:
+            return "unknown"
     return "unknown"
 
 
@@ -537,8 +587,19 @@ def _build_clang_tidy_cmd(cfg: dict) -> list[str]:
 def _check_tool_available(tool: str) -> bool:
     if tool == "sqc":
         return SQC_BIN.exists()
+    if tool == "frama-c":
+        # Single-dash -version, and only on PATH once the opam switch is in
+        # the environment -- `frama-c --version` exits nonzero on a perfectly
+        # good install, so the generic probe below would report it missing.
+        try:
+            proc = subprocess.run(_opam_wrap(["frama-c", "-version"]),
+                                  capture_output=True, timeout=30)
+            return proc.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
     try:
-        subprocess.run([tool, "--version"], capture_output=True, timeout=5)
+        subprocess.run([tool, "--version"], capture_output=True,
+                       timeout=30 if tool == "infer" else 5)
         return True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
@@ -594,14 +655,20 @@ def _parse_clang_tidy_txt(filepath: Path) -> dict:
             "per_rule": dict(sorted(per_rule.items(), key=lambda x: -x[1]))}
 
 
-def _parse_result_file(filepath: Path) -> dict:
-    if filepath.suffix == ".json":
+def _parse_result_file(filepath: Path, tool: str, cfg: dict | None = None) -> dict:
+    """Dispatch on the TOOL, not the file extension: sqc and Infer both emit
+    JSON, in unrelated shapes."""
+    if tool == "sqc":
         return _parse_sqc_json(filepath)
-    elif filepath.suffix == ".xml":
+    elif tool == "cppcheck":
         return _parse_cppcheck_xml(filepath)
-    elif filepath.suffix == ".txt":
+    elif tool == "clang-tidy":
         return _parse_clang_tidy_txt(filepath)
-    return {"error": f"Unknown file type: {filepath.suffix}", "total": 0, "per_rule": {}}
+    elif tool == "infer":
+        return _parse_infer_json(filepath, cfg)
+    elif tool == "frama-c":
+        return _parse_framac_json(filepath, cfg)
+    return {"error": f"Unknown tool: {tool}", "total": 0, "per_rule": {}}
 
 
 # ── LOC/file counting (shared denominator across tools) ──────────────────────
@@ -713,6 +780,492 @@ def _count_sqc_scanned(cfg: dict) -> tuple[int, int]:
     return c_files, loc
 
 
+# ── Build-based tools: Infer and Frama-C ─────────────────────────────────────
+#
+# Both consume a compile_commands.json rather than a curated -I list, because
+# both need a real preprocess: that is the axis sqc deliberately does not
+# require, and pretending otherwise would compare them at a handicap. The
+# compile databases are provisioned for all nine checkouts by
+# playbooks/setup-compile-commands.yml (task 767 -- sel4, hostap and pureftpd
+# included; the belief that three corpora were unbuildable predates that
+# playbook's sel4 Ninja fix).
+#
+# Scope. The compile DB lists every translation unit the project's own build
+# compiles, which is wider than the curated cross-tool comparison scope
+# (vendored deps, test harnesses, tooling). We filter it down to exactly the
+# fileset `_count_c_source` counts -- cppcheck's source_dirs minus sqc's
+# --exclude globs -- so all five tools are measured over one denominator. The
+# filtered database is written next to the run's other artifacts, so what was
+# analysed is recoverable from the results directory alone.
+
+
+def _load_compile_db(cfg: dict) -> list[dict]:
+    """Raw compile_commands.json entries for a codebase, or []."""
+    from bench.config import compile_db_for
+    found = compile_db_for(cfg["path"])
+    if found is None:
+        return []
+    try:
+        return json.loads(found.read_text())
+    except Exception:
+        return []
+
+
+def _in_comparison_scope(cfg: dict):
+    """Predicate over absolute source paths matching `_count_c_source`'s
+    fileset: under a curated cppcheck source_dir, and not hit by one of sqc's
+    --exclude globs."""
+    path = str(cfg["path"])
+    dirs = [os.path.realpath(d)
+            for d in (_expand(cfg.get("cppcheck", {}).get("source_dirs", []), path) or [path])]
+    excludes = _sqc_exclude_patterns(cfg)
+
+    def ok(src: str) -> bool:
+        real = os.path.realpath(src)
+        if not any(real == d or real.startswith(d.rstrip("/") + "/") for d in dirs):
+            return False
+        return not any(p.search(real.replace("\\", "/")) for p in excludes)
+
+    return ok
+
+
+def _filtered_compile_db(cfg: dict, dest: Path) -> tuple[Path | None, int, int]:
+    """Write the in-scope subset of a codebase's compile DB to `dest`.
+
+    Returns (path or None, kept, total). One entry per source file: a build
+    that compiles the same TU twice (curl builds lib/ for both the shared and
+    static library) would otherwise make Infer capture it twice and Frama-C
+    analyse it twice, inflating both the clock and the finding count."""
+    entries = _load_compile_db(cfg)
+    if not entries:
+        return None, 0, 0
+    in_scope = _in_comparison_scope(cfg)
+    kept: list[dict] = []
+    seen: set[str] = set()
+    for e in entries:
+        src = e.get("file", "")
+        if not src.endswith(".c"):
+            continue
+        if not os.path.isabs(src):
+            src = os.path.join(e.get("directory", ""), src)
+        real = os.path.realpath(src)
+        if real in seen or not in_scope(real):
+            continue
+        seen.add(real)
+        kept.append(e)
+    dest.write_text(json.dumps(kept, indent=1))
+    return dest, len(kept), len(entries)
+
+
+# ── Infer ─────────────────────────────────────────────────────────────────────
+
+_INFER_TRANSLATING_RE = re.compile(r"Starting translating (\d+) files")
+_INFER_ANALYZING_RE = re.compile(r"Found (\d+) source files? to analyze")
+# Infer's own "Found N source files to analyze" counts every TU it was HANDED,
+# including ones whose capture died -- libcrc reports 9/9 while 2 of the 9
+# never preprocessed. The clang diagnostic is the only honest signal of which
+# translation units actually made it into the AST database.
+_INFER_CAPTURE_FAIL_RE = re.compile(r"^(\S+):\d+:\d+: fatal error:", re.MULTILINE)
+
+
+def _run_infer(cfg: dict, version_dir: Path, run_id: str,
+               log_fh) -> tuple[Path, int]:
+    """Capture the in-scope compile DB, then analyse it in one pass.
+
+    Two phases rather than `infer run` so a capture failure is distinguishable
+    from an analysis failure in the log -- Infer exits 0 from `run` even when
+    capture silently produced nothing.
+
+    Capture runs with --keep-going because a partial capture is the NORMAL
+    outcome on this corpus, not an error. `setup-compile-commands.yml` restores
+    each checkout to pristine after building it, which deletes the build's
+    generated headers while leaving the compile database that references them
+    -- libcrc's `tab/gentab32.inc` is the worked example, and 2 of its 9
+    in-scope TUs cannot be preprocessed as a result. Without --keep-going Infer
+    aborts the whole capture on the first such file and the run reports zero
+    findings for a codebase it could have analysed 78% of. What matters is that
+    the shortfall is RECORDED rather than silently absorbed, so `coverage`
+    below carries captured-vs-in-scope and any Infer row derived from a partial
+    capture is a floor, exactly as a Frama-C row is."""
+    db_path = version_dir / f"{run_id}.compile_commands.json"
+    filtered, kept, total = _filtered_compile_db(cfg, db_path)
+    result_file = version_dir / f"{run_id}.infer.json"
+    if filtered is None or kept == 0:
+        result_file.write_text(json.dumps(
+            {"tool": "infer", "findings": [],
+             "coverage": {"tus_in_scope": 0, "tus_captured": 0, "partial": True}}))
+        log_fh.write(f"no in-scope compile_commands.json entries "
+                     f"({kept} kept of {total}); nothing to capture\n")
+        return result_file, 1
+
+    out_dir = version_dir / f"{run_id}.infer-out"
+    jobs = str(min(os.cpu_count() or 4, 16))
+    log_fh.write(f"infer: {kept} of {total} compile DB entries in scope\n")
+    log_fh.flush()
+
+    rc = 0
+    start = time.monotonic()
+    output = {}
+    for name, phase in (
+        ("capture", ["infer", "capture", "--results-dir", str(out_dir),
+                     "--keep-going", "--compilation-database", str(filtered)]),
+        ("analyze", ["infer", "analyze", "--results-dir", str(out_dir),
+                     "--no-progress-bar", "--jobs", jobs]),
+    ):
+        log_fh.write(f"$ {' '.join(phase)}\n")
+        log_fh.flush()
+        try:
+            proc = subprocess.run(phase, capture_output=True, text=True,
+                                  timeout=INFER_BUDGET_S)
+        except subprocess.TimeoutExpired:
+            log_fh.write(f"TIMEOUT after {INFER_BUDGET_S}s\n")
+            rc = rc or 124
+            break
+        output[name] = (proc.stdout or "") + (proc.stderr or "")
+        log_fh.write(output[name])
+        log_fh.flush()
+        if proc.returncode != 0:
+            log_fh.write(f"[{name}] exited {proc.returncode}\n")
+            # A nonzero capture is survivable (see docstring); a nonzero
+            # analyze is not, since it means no report was produced.
+            if name != "capture":
+                rc = rc or proc.returncode
+
+    def _first_int(pattern, text, default=0):
+        m = pattern.search(text or "")
+        return int(m.group(1)) if m else default
+
+    attempted = _first_int(_INFER_TRANSLATING_RE, output.get("capture", ""), kept)
+    failed = sorted(set(_INFER_CAPTURE_FAIL_RE.findall(output.get("capture", ""))))
+    captured = max(attempted - len(failed), 0)
+    coverage = {
+        "tus_in_scope": kept,
+        "tus_attempted": attempted,
+        "tus_captured": captured,
+        "tus_pct": round(100.0 * captured / kept, 1) if kept else 0.0,
+        "capture_failures": failed,
+        "analyzed_reported": _first_int(_INFER_ANALYZING_RE, output.get("analyze", "")),
+        "duration_s": round(time.monotonic() - start, 1),
+        "partial": captured < kept,
+    }
+    if failed:
+        log_fh.write("capture failed for: " + ", ".join(failed) + "\n")
+
+    report = out_dir / "report.json"
+    if report.exists():
+        payload = {"tool": "infer", "coverage": coverage,
+                   "findings": json.loads(report.read_text())}
+    else:
+        log_fh.write("infer produced no report.json\n")
+        payload = {"tool": "infer", "coverage": coverage, "findings": []}
+        rc = rc or 1
+    result_file.write_text(json.dumps(payload, indent=1))
+    log_fh.write(f"infer: captured {captured}/{kept} in-scope TUs "
+                 f"({coverage['tus_pct']}%)\n")
+    return result_file, rc
+
+
+def _parse_infer_json(filepath: Path, cfg: dict | None = None) -> dict:
+    """Infer's report.json: a flat list of bugs keyed on `bug_type`.
+
+    Findings outside the checkout are dropped -- a captured TU pulls in system
+    headers, and a bug attributed to /usr/include is not a finding about this
+    codebase. cppcheck and clang-tidy need no equivalent filter because they
+    are pointed at source_dirs directly."""
+    try:
+        payload = json.loads(filepath.read_text())
+    except Exception as e:
+        return {"error": str(e), "total": 0, "per_rule": {}}
+    root = os.path.realpath(str(cfg["path"])) + "/" if cfg else None
+    per_rule: dict[str, int] = {}
+    total = 0
+    for bug in payload.get("findings", []):
+        f = bug.get("file", "")
+        if root:
+            if not os.path.isabs(f):
+                f = os.path.join(str(cfg["path"]), f)
+            if not os.path.realpath(f).startswith(root):
+                continue
+        bug_type = bug.get("bug_type", "unknown")
+        per_rule[bug_type] = per_rule.get(bug_type, 0) + 1
+        total += 1
+    return {"total": total,
+            "per_rule": dict(sorted(per_rule.items(), key=lambda x: -x[1])),
+            "coverage": payload.get("coverage", {})}
+
+
+# ── Frama-C ───────────────────────────────────────────────────────────────────
+#
+# EVA analyses ONE entry point at a time, and a real codebase has no single
+# one: curl's library has no main, and starting from the curl binary's main
+# does not terminate. So the real-world mode is per-translation-unit --
+# `-lib-entry -main=<f>` over the functions each TU defines, with unknown
+# globals -- under three explicit bounds, because the unbounded version is
+# not a job that finishes:
+#
+#   FRAMAC_ENTRY_TIMEOUT_S   per EVA invocation
+#   FRAMAC_MAX_ENTRIES_PER_TU  how deep into one file to go
+#   FRAMAC_BUDGET_S          total wall clock for the project
+#
+# Entry points are visited ROUND-ROBIN across translation units, not file by
+# file: a budget spent depth-first would cover the alphabetically-first
+# handful of files completely and never open the rest, which is a biased
+# sample of the codebase rather than a shallow one. One pass gives every TU
+# its first entry point before any TU gets a second.
+#
+# The consequence, stated rather than discovered later: a Frama-C real-world
+# row is a PARTIAL scan, and `coverage` in the result file records how partial
+# (entries reached, timeouts, whether the budget ran out). Any precision or
+# finding-count comparison drawn against it must carry that caveat -- see
+# docs/design/framac-realworld.md.
+
+_C_KEYWORD_CALLS = frozenset((
+    "if", "while", "for", "switch", "return", "sizeof", "do", "else",
+    "case", "goto", "typedef", "defined", "_Static_assert", "static_assert",
+))
+
+_C_FUNC_CANDIDATE_RE = re.compile(
+    r"^(?P<static>static\s+)?"
+    r"(?:(?:inline|__inline|__inline__|extern|const|volatile|unsigned|signed|"
+    r"struct|union|enum|register|_Noreturn|__attribute__\s*\(\([^)]*\)\))\s+)*"
+    r"[A-Za-z_][A-Za-z0-9_]*\s*"
+    r"(?:\*\s*)*"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    re.MULTILINE,
+)
+
+
+def _c_function_definitions(filepath: Path) -> list[str]:
+    """Names of functions DEFINED at top level in a .c file, non-static first.
+
+    A deliberately cheap textual pass rather than a parse: it only has to
+    propose entry points, and Frama-C rejects a name it does not know (logged
+    and skipped), so a false positive here costs one fast invocation. Ordering
+    puts externally-linked functions first because those are the library's own
+    API -- the code a caller can actually reach, and so the code worth
+    spending a bounded budget on."""
+    try:
+        text = filepath.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return []
+    external: list[str] = []
+    internal: list[str] = []
+    for m in _C_FUNC_CANDIDATE_RE.finditer(text):
+        name = m.group("name")
+        if name in _C_KEYWORD_CALLS:
+            continue
+        # Confirm it is a definition, not a declaration or a call: balance the
+        # parameter list, then require '{' as the next non-space character.
+        i = m.end() - 1
+        depth = 0
+        while i < len(text):
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        else:
+            continue
+        j = i + 1
+        while j < len(text) and text[j].isspace():
+            j += 1
+        if j >= len(text) or text[j] != "{":
+            continue
+        (internal if m.group("static") else external).append(name)
+    seen: set[str] = set()
+    ordered = []
+    for name in external + internal:
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return ordered
+
+
+# `[eva:alarm] file:line: Warning: <kind>. assert <predicate>;` -- and EVA
+# wraps, so <kind> lands on the following line whenever the header is long.
+# The kind is what makes a per-"rule" breakdown expressible at all (EVA has no
+# rule ids), so it is captured rather than bucketing everything as one alarm.
+_FRAMAC_ALARM_RE = re.compile(
+    r"\[eva:alarm\]\s+(?P<file>[^\s:]+):(?P<line>\d+):\s*Warning:\s*\n?\s*"
+    r"(?P<kind>[^.\n]*)")
+_FRAMAC_UNKNOWN_MAIN_RE = re.compile(r"cannot find entry point|Unable to find function")
+
+_FRAMAC_PRECOND_RE = re.compile(r"function ([A-Za-z_]\w*): precondition")
+
+
+def _framac_alarm_kind(raw: str) -> str:
+    """Normalise EVA's alarm text into something usable as a rule id.
+
+    Most alarms are already a short noun phrase ("out of bounds read", "signed
+    overflow"). Precondition alarms instead carry the whole ACSL predicate
+    (`function snprintf_va_1: precondition \\valid(s + (0 .. 255))`), which
+    would make every call site its own "rule" and shred the breakdown -- those
+    collapse to the callee."""
+    kind = " ".join(raw.split())
+    m = _FRAMAC_PRECOND_RE.search(kind)
+    if m:
+        return f"precondition of {m.group(1)}"
+    return kind[:80] or "eva_alarm"
+
+
+_framac_cdb_flag: str | None = None
+
+
+def _framac_compile_db_flag() -> str:
+    """The option name for "read cpp flags from compile_commands.json", which
+    Frama-C renamed: `-json-compilation-database` through 32.0 (the version the
+    published competitor Juliet runs used), `-compilation-db` from 33.0. Asking
+    the binary is the only way to be right on both, and getting it wrong is
+    silent-ish -- every EVA invocation aborts with "option is unknown", which
+    the runner would otherwise tally as 22 analysis failures rather than one
+    configuration error."""
+    global _framac_cdb_flag
+    if _framac_cdb_flag is None:
+        try:
+            out = subprocess.run(_opam_wrap(["frama-c", "-kernel-h"]),
+                                 capture_output=True, text=True, timeout=60).stdout
+        except Exception:
+            out = ""
+        _framac_cdb_flag = ("-compilation-db" if "-compilation-db" in out
+                            else "-json-compilation-database")
+    return _framac_cdb_flag
+
+
+def _run_framac(cfg: dict, version_dir: Path, run_id: str,
+                log_fh) -> tuple[Path, int]:
+    db_path = version_dir / f"{run_id}.compile_commands.json"
+    filtered, kept, total = _filtered_compile_db(cfg, db_path)
+    result_file = version_dir / f"{run_id}.framac.json"
+
+    tus: list[Path] = []
+    if filtered is not None:
+        for e in json.loads(filtered.read_text()):
+            src = e.get("file", "")
+            if not os.path.isabs(src):
+                src = os.path.join(e.get("directory", ""), src)
+            tus.append(Path(src))
+    tus.sort()
+
+    entries = {tu: _c_function_definitions(tu)[:FRAMAC_MAX_ENTRIES_PER_TU]
+               for tu in tus}
+    entries_total = sum(len(v) for v in entries.values())
+    log_fh.write(f"frama-c: {kept} of {total} compile DB entries in scope; "
+                 f"{entries_total} candidate entry points across {len(tus)} TUs; "
+                 f"budget {FRAMAC_BUDGET_S}s\n")
+    log_fh.flush()
+
+    findings: list[dict] = []
+    analysed = timeouts = failures = 0
+    budget_exhausted = False
+    start = time.monotonic()
+
+    # Round-robin: pass 0 gives every TU its first entry point, pass 1 its
+    # second, and so on -- so exhausting the budget yields a shallow scan of
+    # the whole corpus rather than a deep scan of its first few files.
+    for depth in range(FRAMAC_MAX_ENTRIES_PER_TU):
+        if budget_exhausted:
+            break
+        for tu in tus:
+            if depth >= len(entries[tu]):
+                continue
+            if time.monotonic() - start >= FRAMAC_BUDGET_S:
+                budget_exhausted = True
+                break
+            entry = entries[tu][depth]
+            cmd = _opam_wrap([
+                "frama-c", "-eva",
+                "-eva-precision", str(FRAMAC_PRECISION),
+                "-machdep", "gcc_x86_64",
+                "-lib-entry", f"-main={entry}",
+                _framac_compile_db_flag(), str(filtered),
+                str(tu),
+            ])
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True,
+                                      timeout=FRAMAC_ENTRY_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                timeouts += 1
+                log_fh.write(f"TIMEOUT {FRAMAC_ENTRY_TIMEOUT_S}s {tu.name}:{entry}\n")
+                continue
+            except Exception as e:
+                failures += 1
+                log_fh.write(f"ERROR {tu.name}:{entry}: {e}\n")
+                continue
+            output = (proc.stdout or "") + (proc.stderr or "")
+            if _FRAMAC_UNKNOWN_MAIN_RE.search(output):
+                # The textual entry-point scan proposed a name EVA does not
+                # know. Expected, cheap, and neither coverage nor a failure.
+                continue
+            if proc.returncode != 0:
+                # Usually an unpreprocessable TU (a generated header the
+                # playbook's restore-to-pristine step removed). Not coverage.
+                failures += 1
+                log_fh.write(f"FAILED rc={proc.returncode} {tu.name}:{entry}\n")
+                continue
+            analysed += 1
+            for m in _FRAMAC_ALARM_RE.finditer(output):
+                kind = _framac_alarm_kind(m.group("kind"))
+                findings.append({"file": m.group("file"), "line": int(m.group("line")),
+                                 "alarm_type": kind,
+                                 "entry": entry, "tu": str(tu)})
+
+    duration = round(time.monotonic() - start, 1)
+    result_file.write_text(json.dumps({
+        "tool": "frama-c",
+        "findings": findings,
+        "coverage": {
+            "tus_total": len(tus),
+            "entries_total": entries_total,
+            "entries_analyzed": analysed,
+            "entries_pct": round(100.0 * analysed / entries_total, 1) if entries_total else 0.0,
+            "timeouts": timeouts,
+            "failures": failures,
+            "budget_s": FRAMAC_BUDGET_S,
+            "budget_exhausted": budget_exhausted,
+            "duration_s": duration,
+            "partial": budget_exhausted or analysed < entries_total,
+        },
+    }, indent=1))
+    log_fh.write(f"frama-c: analysed {analysed}/{entries_total} entry points "
+                 f"({timeouts} timeouts, {failures} failures) in {duration}s"
+                 f"{'; BUDGET EXHAUSTED' if budget_exhausted else ''}\n")
+    return result_file, (0 if analysed else 1)
+
+
+def _parse_framac_json(filepath: Path, cfg: dict | None = None) -> dict:
+    """Count DISTINCT (file, line, alarm_type) alarms.
+
+    EVA re-reports the same alarm from every entry point that reaches it, so a
+    raw count would scale with FRAMAC_MAX_ENTRIES_PER_TU rather than with the
+    codebase -- two runs at different caps would not be comparable, nor would
+    a Frama-C row be comparable to another tool's."""
+    try:
+        payload = json.loads(filepath.read_text())
+    except Exception as e:
+        return {"error": str(e), "total": 0, "per_rule": {}}
+    root = os.path.realpath(str(cfg["path"])) + "/" if cfg else None
+    per_rule: dict[str, int] = {}
+    seen: set[tuple] = set()
+    for a in payload.get("findings", []):
+        f = a.get("file", "")
+        if root:
+            if not os.path.isabs(f):
+                f = os.path.join(str(cfg["path"]), f)
+            if not os.path.realpath(f).startswith(root):
+                continue
+        key = (os.path.realpath(f), a.get("line"), a.get("alarm_type"))
+        if key in seen:
+            continue
+        seen.add(key)
+        kind = a.get("alarm_type", "unknown")
+        per_rule[kind] = per_rule.get(kind, 0) + 1
+    return {"total": len(seen),
+            "per_rule": dict(sorted(per_rule.items(), key=lambda x: -x[1])),
+            "coverage": payload.get("coverage", {})}
+
+
 # ── Running one combo ─────────────────────────────────────────────────────────
 
 def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
@@ -731,13 +1284,28 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
             f"Codebase path does not exist: {cfg['path']}\n"
             "Clone it first -- see docs/benchmark-setup.rst.")
     if not _check_tool_available(tool):
-        raise FileNotFoundError(f"Tool '{tool}' not found on PATH.")
+        raise FileNotFoundError(
+            f"Tool '{tool}' not found on PATH."
+            + ("\nInstall it with: ansible-playbook playbooks/install-static-analyzers.yml"
+               " -i 'localhost,' -c local --ask-become-pass"
+               if tool in COMPILE_DB_TOOLS else ""))
+    if tool in COMPILE_DB_TOOLS:
+        # Not a fallback situation: without the build's own flags these tools
+        # produce a parse-error log, not a weaker scan.
+        from bench.config import compile_db_for
+        if compile_db_for(cfg["path"]) is None:
+            raise FileNotFoundError(
+                f"'{tool}' needs {cfg['path']}/compile_commands.json and there is none.\n"
+                "Generate it with: ansible-playbook playbooks/setup-compile-commands.yml "
+                "-i 'localhost,' -c local --ask-become-pass")
 
     compile_db = None
     variant = None
     if compile_commands:
         if tool != "sqc":
-            raise ValueError(f"--compile-commands applies to sqc only, not '{tool}'.")
+            raise ValueError(
+                f"--compile-commands is an sqc OPT-IN, not a global flag; '{tool}' "
+                "always uses the compile database and cannot be run without one.")
         from bench.config import compile_db_for
         variant = "cdb"
         found = compile_db_for(cfg["path"])
@@ -755,8 +1323,10 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
     version_dir.mkdir(parents=True, exist_ok=True)
     run_id = _make_run_id(tool, codebase, version, sha, variant)
 
-    for ext in (".json", ".xml", ".txt", ".log", ".meta.json"):
+    for ext in (".json", ".xml", ".txt", ".log", ".meta.json",
+                ".infer.json", ".framac.json", ".compile_commands.json"):
         (version_dir / f"{run_id}{ext}").unlink(missing_ok=True)
+    shutil.rmtree(version_dir / f"{run_id}.infer-out", ignore_errors=True)
 
     codebase_sha = _get_codebase_sha(cfg["path"])
     if codebase_sha:
@@ -777,11 +1347,15 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
             result_file = version_dir / f"{run_id}.xml"
             with result_file.open("w") as result_fh:
                 proc = subprocess.run(cmd, stdout=log_fh, stderr=result_fh)
-        else:  # clang-tidy
+        elif tool == "clang-tidy":
             cmd = _build_clang_tidy_cmd(cfg)
             result_file = version_dir / f"{run_id}.txt"
             with result_file.open("w") as result_fh:
                 proc = subprocess.run(cmd, stdout=result_fh, stderr=log_fh)
+        else:  # infer, frama-c -- both drive themselves off the compile DB
+            runner = _run_infer if tool == "infer" else _run_framac
+            result_file, rc = runner(cfg, version_dir, run_id, log_fh)
+            proc = SimpleNamespace(returncode=rc)
 
     duration = round(time.time() - start, 1)
 
@@ -809,9 +1383,20 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
     }
     (version_dir / f"{run_id}.meta.json").write_text(json.dumps(meta))
 
-    parsed = _parse_result_file(result_file) if result_file.exists() else {"total": 0, "error": "no output file"}
+    parsed = _parse_result_file(result_file, tool, cfg) if result_file.exists() \
+        else {"total": 0, "error": "no output file"}
+    coverage = parsed.get("coverage") or None
+    if coverage and coverage.get("partial"):
+        meta["coverage"] = coverage
+        (version_dir / f"{run_id}.meta.json").write_text(json.dumps(meta))
     ok = proc.returncode == 0 and "error" not in parsed
-    print(f"{'ok' if ok else 'FAILED'} ({duration}s, {parsed.get('total', 0)} findings)"
+    note = ""
+    if coverage and coverage.get("partial"):
+        # Printed on the run line, not buried in the log: a partial scan's
+        # finding count is a floor, and the number is about to be quoted.
+        pct = coverage.get("entries_pct", coverage.get("tus_pct"))
+        note = f", PARTIAL {pct}%" if pct is not None else ", PARTIAL"
+    print(f"{'ok' if ok else 'FAILED'} ({duration}s, {parsed.get('total', 0)} findings{note})"
           + (f" -- {parsed['error']}" if parsed.get("error") else ""))
 
     return {
@@ -819,7 +1404,7 @@ def run_one(tool: str, codebase: str, compile_commands: bool = False) -> dict:
         "version_dir": version_dir, "version": version, "sha": sha,
         "codebase_commit": codebase_sha, "duration_s": duration,
         "returncode": proc.returncode, "total": parsed.get("total", 0),
-        "result_file": result_file, "ok": ok,
+        "result_file": result_file, "ok": ok, "coverage": coverage,
     }
 
 
@@ -861,7 +1446,8 @@ def run_and_ingest(tools: list[str], codebases: list[str],
             c_files, loc = _count_c_source(cfg)
             commit = r.get("codebase_commit")
             db.insert_realworld_result(run_id, r["codebase"], r["tool"],
-                                       c_files, loc, r["total"], r["duration_s"], commit)
+                                       c_files, loc, r["total"], r["duration_s"], commit,
+                                       coverage=r.get("coverage"))
 
         score = db.score_realworld_run(run_id)
         if not score.get("error"):

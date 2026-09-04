@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from bench.analyzer import parse_c_file_sections
-from bench.config import JULIET_BASE
+from bench.config import JULIET_BASE, opam_wrap
 
 
 # ── CWE sets per tool ───────────────────────────────────────────────────────
@@ -278,7 +278,13 @@ def _run_framac_file(filepath: Path, entry_func: str,
 
     Returns list of alarm dicts.
     """
-    cmd = [
+    # opam_wrap, not a bare "frama-c": the binary lives in the user's opam
+    # switch and is absent from a non-login PATH, so subprocess.run raised
+    # FileNotFoundError -- which the bare `except Exception` below swallowed
+    # into "no alarms". A whole Frama-C benchmark then scored zero on every
+    # file and looked like a tool that found nothing rather than one that
+    # never ran (task 775).
+    cmd = opam_wrap([
         "frama-c", "-eva",
         "-eva-precision", "1",
         "-machdep", "gcc_x86_64",
@@ -288,7 +294,7 @@ def _run_framac_file(filepath: Path, entry_func: str,
         "-warn-signed-downcast",
         f"-cpp-extra-args=-I {JULIET_SUPPORT}",
         str(filepath),
-    ]
+    ])
 
     try:
         proc = subprocess.run(
@@ -696,8 +702,8 @@ def _get_tool_version(tool: str) -> str:
             return r.stdout.strip().split('\n')[0]
         elif tool == "framac":
             r = subprocess.run(
-                ["bash", "-c", "eval $(opam env) && frama-c -version"],
-                capture_output=True, text=True, timeout=10)
+                opam_wrap(["frama-c", "-version"]),
+                capture_output=True, text=True, timeout=30)
             return f"Frama-C {r.stdout.strip()}"
         elif tool == "cppcheck":
             r = subprocess.run(["cppcheck", "--version"], capture_output=True,

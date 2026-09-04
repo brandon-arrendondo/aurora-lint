@@ -406,6 +406,79 @@ fallthrough/branch-true/branch-false/loop-back).
 (`build_function_cfg[_with_constants]`), then walk `FunctionCfg`'s
 blocks/edges directly, or hand it to `value_range.rs`'s VRA machinery.
 
+### `src/utility/cert_c/guard_dominance.rs`
+**Problem solved:** "has a comparison on this variable already been evaluated
+by the time control reaches this expression?" — the AST relation that a
+per-rule text search for one canonical guard spelling stands in for. Added by
+task 739 after API00-C's `if ({} < ` / INT_MAX-comparison pattern set turned
+out to miss the same guard written without a space (`if( c<128 )`), with
+reversed operands (`5 > nBuf`), against a non-literal bound
+(`idx >= wa->num`), as an `&&` conjunct, or as an enclosing branch or loop
+condition rather than a preceding statement.
+
+| Function | Signature | Description |
+|---|---|---|
+| `has_dominating_comparison` | `(var: &str, site: &Node, source: &str, kind: ComparisonKind) -> bool` | The composed question, and what most callers want. |
+| `dominating_conditions` | `(site: &Node) -> Vec<Node>` | Every condition already evaluated at `site`: those *enclosing* it (`if`/`while`/`for`/`switch` body, `?:` branch, left operand of an `&&`/`||` whose right operand holds the site) then conditions of `if` statements *preceding* it in an ancestor block. Returned as nodes so a caller can apply its own predicate (a null test, a status code) instead of the comparison one. |
+| `condition_compares_var` | `(condition: &Node, var: &str, source: &str, kind: ComparisonKind) -> bool` | Whether a condition tests `var`: either operand order, the variable nested at any depth in an operand (`x > SIZE_MAX - n`, `p->len < n`), `!var` read as `var == 0`. |
+| `mentions_var` | `(node: &Node, var: &str, source: &str) -> bool` | `var` appears as an `identifier` under `node`. Matched on the AST node, so `c` is not found in `abc` and a `p->n` field access is not a use of `n`. |
+| `ComparisonKind` | `Any` \| `OrderingOrExtremeEquality` | Which comparisons count. Ordering operators always do; the split is about equality, which is not one thing. For a **bounds** question `len == 5` pins `len` as well as `len < 6` does (`Any`). For an **overflow** question it usually does not — `idx == BTREE_DATA_VERSION` leaves `36 + idx*4` exactly as unbounded as before, while `n == INT_MIN` before `-n` excludes precisely the value that overflows (`OrderingOrExtremeEquality`). |
+
+Two deliberate exclusions, both load-bearing:
+- **`assert(...)` is not a guard here.** It compiles out under `NDEBUG`, and
+  task 644's API00-C re-audit found crediting assert-only guards was that
+  rule's largest source of missed true positives. A rule for which an assert
+  *is* the right answer should collect those conditions itself and hand them to
+  `condition_compares_var`, so the choice stays visible at the call site.
+- **A `do`-`while` condition does not count**, since it runs after the body and
+  establishes nothing on the first iteration.
+
+Preprocessor wrappers (`preproc_if`/`ifdef`/`else`/`elif`) are treated as
+block-like when scanning preceding statements: sqc does not preprocess, so a
+guard and the arithmetic it protects can both sit inside one `#if` and would
+otherwise not look like siblings. Dominance is the AST approximation, not a CFG
+dominator computation — `goto` into a guarded region is not modelled — which is
+why this needs no CFG build per query.
+
+**Related but weaker, and NOT the same primitive:**
+`variable_analysis.rs`'s `has_bounds_validation(var_name, preceding_text)`
+answers a similar-sounding question over a *text* snippet with no AST and no
+dominance (it returns true if the text contains `"if"` anywhere and one of
+eight spacing-sensitive comparison substrings). It is still ARR00-C's, in three
+places. Anything new should use this module.
+
+### `src/analyze/null_state.rs` (condition predicate)
+**Problem solved:** "does this condition test this pointer for NULL?" — the
+null-flavoured sibling of `guard_dominance`'s comparison question, and the same
+defect one layer down. Added by task 745 after API00-C's guard classifier, which
+decided polarity by matching the condition's TEXT, both missed real guards and
+credited accidental ones.
+
+| Function | Signature | Description |
+|---|---|---|
+| `condition_tests_null` | `(condition: &Node, var: &str, source: &str) -> bool` | `var` is tested for NULL-ness somewhere in `condition`: bare truthiness (`p`, `!p`) or a comparison against NULL/0, at any depth through `&&`, `\|\|` and parens. |
+
+Two properties are the whole point of it:
+
+- **Operands, not text.** A guard on a *neighbouring* pointer is never credited
+  to this one — `!h->driver || !h->drv_priv` tests neither `h` nor a parameter
+  named `addr`. Text matching failed in both directions here: `"(p &&"` never
+  fires on sqlite's `if( p && ... )` brace style, while `"(sc)"` matches inside
+  the call `sc_sporadic(sc)` and `"base != 0"` inside `*base != 0`, crediting a
+  predicate's result or a pointee as a guard on the pointer.
+- **Polarity-agnostic, deliberately.** It answers "did the code check this
+  pointer?", not "is it non-null here?". So `if (p == NULL) { p = &fallback; }`
+  counts. Those are different questions owned by different rules: API00-C asks
+  whether a function validates its parameters, whether a given dereference is
+  guarded is EXP34-C's. When the per-branch state is what matters, the module's
+  `parse_all_null_conditions` (private, driven by `apply_edge_refinement`) is
+  the flow-sensitive answer, and it treats `||` differently for that reason.
+
+It does not expand macros, so a truthiness test wrapped in one
+(sqlite's `ALWAYS(pVal)`) reads as a call and is not a null test — a known gap
+with a follow-up task, and one the replaced text matcher happened to get right
+by the same accident that made it wrong elsewhere.
+
 ## Flow-sensitive function summaries (frees, nulls, taint, output params)
 
 ### `src/analyze/function_summary.rs`

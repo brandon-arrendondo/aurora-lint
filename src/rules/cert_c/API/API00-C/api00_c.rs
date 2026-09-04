@@ -45,11 +45,12 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
-use crate::analyze::null_state::NullState;
+use crate::analyze::null_state::{condition_tests_null, NullState};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     get_function_parameters, get_node_text, get_sanitized_node_text, is_pointer_type,
 };
+use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -286,62 +287,60 @@ impl Api00C {
     }
 
     /// Check if an integer parameter is used in arithmetic without overflow validation
+    ///
+    /// Both halves of that question are answered structurally (task 739). The
+    /// prior version searched the body *text* for arithmetic patterns and for a
+    /// canonical validation spelling, and got both wrong in the same way:
+    ///
+    /// * `format!("{} +", param)` is a substring match, so a parameter named
+    ///   `n` "did arithmetic" in `len + 1` and one named `c` in almost
+    ///   anything.
+    /// * validation had to be spelled `if (N < ` — with that exact spacing and
+    ///   against a type maximum — so sqlite's `if( zFilename==0 || N<0 )
+    ///   return 0;`, hostap's `idx >= wa->num`, sqlite's
+    ///   `if(c<128) … else if(c<65536)` range chain and curl's
+    ///   `for(i = 1; i < argc; i++)` loop bound all read as *unvalidated*.
+    ///   Six of the 40 rows in task 664's integer-overflow adjudication
+    ///   sample were false positives for that reason alone — the largest
+    ///   single class in it.
+    ///
+    /// So: find the arithmetic *sites* on the AST, then ask whether a
+    /// comparison on the parameter dominates each one
+    /// (`guard_dominance::has_dominating_comparison`, which accepts any
+    /// operator, either operand order, a non-literal bound, an `&&` conjunct,
+    /// and an enclosing branch or loop condition as well as a preceding
+    /// guard). A violation needs one site with no such comparison.
     fn has_unchecked_arithmetic(&self, body: &Node, param_name: &str, source: &str) -> bool {
-        // Raw text is kept only for the two "will overflow"/"overflow check"
-        // patterns below, which are intentionally designed to match a
-        // developer's acknowledging comment. Every other substring check
-        // uses the sanitized (comments/string/char literals blanked) text,
-        // so a comment or string literal can't spoof a *code* pattern
-        // (an INT_MAX comparison, an `if` guard, etc.) and silently
-        // suppress a genuine violation.
-        let raw_body_text = get_node_text(body, source);
-        let body_no_comments = get_sanitized_node_text(body, source);
-        let body_text = &body_no_comments;
-
-        // Look for arithmetic operators with the parameter
-        let arithmetic_patterns = [
-            format!("{} +", param_name),
-            format!("{} -", param_name),
-            format!("{} *", param_name),
-            format!("{}+", param_name),
-            format!("{}-", param_name),
-            format!("{}*", param_name),
-            format!("+ {}", param_name),
-            format!("- {}", param_name),
-            format!("* {}", param_name),
-            format!("+{}", param_name),
-            format!("-{}", param_name),
-            format!("*{}", param_name),
-            format!("{} <<", param_name),
-            format!("{}<<", param_name),
-            format!("<< {}", param_name),
-            format!("<<{}", param_name),
-        ];
-
-        let has_arithmetic = arithmetic_patterns
-            .iter()
-            .any(|p| body_no_comments.contains(p));
-
-        if !has_arithmetic {
+        let sites = Self::collect_arithmetic_sites(body, param_name, source);
+        if sites.is_empty() {
             return false;
         }
 
-        // Check for overflow validation patterns
+        // Raw text is kept only for the two "will overflow"/"overflow check"
+        // patterns below, which are intentionally designed to match a
+        // developer's acknowledging comment. The type-maximum patterns use the
+        // sanitized (comments/string/char literals blanked) text, so a comment
+        // or string literal can't spoof a *code* pattern and silently suppress
+        // a genuine violation.
+        let raw_body_text = get_node_text(body, source);
+        let body_text = get_sanitized_node_text(body, source);
+
+        // Whole-body escape hatches: an explicit overflow-checking idiom
+        // anywhere in the function exempts every site in it, since these are
+        // written once and cover the whole computation. They stay textual
+        // because each is a single canonical spelling with no whitespace
+        // ambiguity, unlike the ordinary guards above.
         let overflow_check_patterns = [
-            // Check for INT_MAX/INT_MIN comparisons
             format!("{} > INT_MAX", param_name),
             format!("{} < INT_MIN", param_name),
             format!("{} >= INT_MAX", param_name),
             format!("{} <= INT_MIN", param_name),
-            // Check for SIZE_MAX comparisons
             format!("{} > SIZE_MAX", param_name),
             format!("{} >= SIZE_MAX", param_name),
             format!("SIZE_MAX - {}", param_name),
             format!("SIZE_MAX -{}", param_name),
-            // Check for UINT_MAX comparisons
             format!("{} > UINT_MAX", param_name),
             format!("{} >= UINT_MAX", param_name),
-            // Wrapped arithmetic check
             "__builtin_add_overflow".to_string(),
             "__builtin_sub_overflow".to_string(),
             "__builtin_mul_overflow".to_string(),
@@ -350,37 +349,14 @@ impl Api00C {
         // "will overflow"/"overflow check" are meant to match a developer's
         // acknowledging comment, so these two look at the raw (unsanitized)
         // text on purpose.
-        let has_overflow_check = overflow_check_patterns
+        if overflow_check_patterns
             .iter()
             .any(|p| body_text.contains(p))
             || raw_body_text.contains("will overflow")
-            || raw_body_text.contains("overflow check");
-
-        // Also check for basic parameter validation (if param == 0, if param < X, etc.)
-        let basic_validation_patterns = [
-            format!("if ({} == 0)", param_name),
-            format!("if ({}==0)", param_name),
-            format!("if ({} == 0", param_name),
-            format!("if (0 == {})", param_name),
-            format!("if (!{})", param_name),
-            format!("if ({} < ", param_name),
-            format!("if ({} > ", param_name),
-            format!("if ({} <= ", param_name),
-            format!("if ({} >= ", param_name),
-            // Handle || patterns
-            format!("|| {} == 0", param_name),
-            format!("||{} == 0", param_name),
-            format!("{} == 0 ||", param_name),
-            format!("{} == 0||", param_name),
-            format!("|| {} > ", param_name),
-            format!("|| {} < ", param_name),
-            format!("{} > ", param_name),
-            format!("{} < ", param_name),
-        ];
-
-        let has_basic_validation = basic_validation_patterns
-            .iter()
-            .any(|p| body_text.contains(p));
+            || raw_body_text.contains("overflow check")
+        {
+            return false;
+        }
 
         // Detect the elapsed-time tick counter idiom: `current_tick() - param` where
         // unsigned wrap is intentional (C99 guarantees modular arithmetic for unsigned).
@@ -409,8 +385,107 @@ impl Api00C {
             return false;
         }
 
-        // Return true if there's arithmetic but no overflow check AND no basic validation
-        !has_overflow_check && !has_basic_validation
+        // Overflow semantics for equality: `n == INT_MIN` before negating `n`
+        // is the guard, `idx == BTREE_DATA_VERSION` before `36 + idx*4` is not.
+        sites.iter().any(|site| {
+            !guard_dominance::has_dominating_comparison(
+                param_name,
+                site,
+                source,
+                guard_dominance::ComparisonKind::OrderingOrExtremeEquality,
+            )
+        })
+    }
+
+    /// Every expression under `body` that does arithmetic on `param_name`.
+    ///
+    /// The operator set (`+`, `-`, `*`, `<<` and their compound-assignment and
+    /// increment forms) is the one the rule has always used; what changed is
+    /// that the parameter must be an actual *operand* of the expression, not a
+    /// substring of the body text near an operator.
+    fn collect_arithmetic_sites<'a>(
+        body: &Node<'a>,
+        param_name: &str,
+        source: &str,
+    ) -> Vec<Node<'a>> {
+        let mut sites = Vec::new();
+        Self::walk_arithmetic_sites(body, param_name, source, &mut sites);
+        sites
+    }
+
+    fn walk_arithmetic_sites<'a>(
+        node: &Node<'a>,
+        param_name: &str,
+        source: &str,
+        sites: &mut Vec<Node<'a>>,
+    ) {
+        let operator = node.child_by_field_name("operator").map(|op| op.kind());
+        let is_site = match node.kind() {
+            "binary_expression" => {
+                matches!(operator, Some("+") | Some("-") | Some("*") | Some("<<"))
+                    && ["left", "right"].iter().any(|field| {
+                        node.child_by_field_name(field).is_some_and(|operand| {
+                            Self::is_param_operand(&operand, param_name, source)
+                        })
+                    })
+            }
+            // `-param` can overflow on INT_MIN, which is what the rule's
+            // negation case is about.
+            "unary_expression" => {
+                operator == Some("-")
+                    && node
+                        .child_by_field_name("argument")
+                        .is_some_and(|arg| Self::is_param_operand(&arg, param_name, source))
+            }
+            // `param += x` / `param <<= x`: the parameter itself accumulates.
+            "assignment_expression" => {
+                matches!(operator, Some("+=") | Some("-=") | Some("*=") | Some("<<="))
+                    && node
+                        .child_by_field_name("left")
+                        .is_some_and(|lhs| Self::is_param_operand(&lhs, param_name, source))
+            }
+            "update_expression" => node
+                .child_by_field_name("argument")
+                .is_some_and(|arg| Self::is_param_operand(&arg, param_name, source)),
+            _ => false,
+        };
+
+        if is_site {
+            sites.push(*node);
+        }
+
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            Self::walk_arithmetic_sites(&child, param_name, source, sites);
+        }
+    }
+
+    /// True when `operand` is the parameter itself, looking through redundant
+    /// parentheses (`(len) + 1`).
+    ///
+    /// A **cast** is deliberately not looked through. An explicit cast at an
+    /// arithmetic site is the developer choosing the type the arithmetic
+    /// happens in, which is the standard way of preventing the overflow this
+    /// rule is about: sqlite's `p->nChar + (i64)N` and
+    /// `(((i64)iCol)<<32) + iOff` compute in `i64`, so an `int` parameter
+    /// cannot overflow them. Treating `(i64)N` as a bare use of `N` reports
+    /// the fix as the defect.
+    fn is_param_operand(operand: &Node, param_name: &str, source: &str) -> bool {
+        let mut current = *operand;
+        loop {
+            match current.kind() {
+                "identifier" => return get_node_text(&current, source) == param_name,
+                "parenthesized_expression" => {
+                    let mut cursor = current.walk();
+                    let inner = current.named_children(&mut cursor).next();
+                    match inner {
+                        Some(inner) => current = inner,
+                        None => return false,
+                    }
+                }
+                _ => return false,
+            }
+        }
     }
 
     /// Check if a type is an integer type (not floating point)
@@ -509,6 +584,15 @@ impl Api00C {
                     | "preproc_function_def" => {
                         stack.push(child);
                     }
+                    // A label is transparent: `failed: if (x) ...` occupies the
+                    // same position in the statement list as `if (x) ...`, so
+                    // descend and classify the statement it carries. Without
+                    // this, the guard in a `goto failed;` cleanup epilogue is
+                    // invisible — the whole idiom puts its checks behind a
+                    // label (task 745, sqlite3_set_auxdata).
+                    "labeled_statement" => {
+                        stack.push(child);
+                    }
                     _ => {}
                 }
             }
@@ -562,15 +646,20 @@ impl Api00C {
             return;
         }
 
-        // Case 2: positive guard pattern
-        //   if (ptr != NULL) { /* all usage inside */ }
-        // The parameter is only accessed inside the guarded block,
-        // so it is safely validated even without an early return.
-        let validated_in_condition =
-            self.extract_validated_params_from_condition(&condition, pointer_params, source);
-        for param in validated_in_condition {
-            if self.is_positive_null_guard(&condition_text, &param) {
-                validated.insert(param);
+        // Case 2: the condition itself tests the parameter for NULL, with no
+        // early exit and no else branch.
+        //   if (ptr != NULL)      { /* usage inside */ }
+        //   if (ptr && ptr->n)    { ... }
+        //   if (ptr == NULL)      { ptr = &fallback; }   /* check-and-substitute */
+        // Polarity does not matter here: API00-C asks whether the function
+        // validates the parameter, and all three spellings show that it did.
+        // Whether one particular dereference is guarded is EXP34-C's question.
+        //
+        // Asked of the condition's AST, so neither brace style nor an
+        // incidental substring decides it -- see condition_tests_null.
+        for param in pointer_params {
+            if condition_tests_null(&condition, param, source) {
+                validated.insert(param.clone());
             }
         }
     }
@@ -759,15 +848,22 @@ impl Api00C {
         false
     }
 
-    /// Check if a node contains a return statement or error handling
+    /// Check if a node contains a return statement or error handling.
+    ///
+    /// `goto` counts: in C error-handling style the dominant early-exit form
+    /// is `if (!p) goto failed;`, not a bare `return`, and control leaves the
+    /// straight-line path either way. `src/analyze/prescan.rs`'s
+    /// `node_contains_return` has always accepted it; this copy had not, which
+    /// left API00-C reporting parameters whose guard exits by `goto`
+    /// (task 745).
     fn contains_return_or_error(&self, node: &Node, source: &str) -> bool {
         match node.kind() {
-            "return_statement" => true,
+            "return_statement" | "goto_statement" => true,
             "compound_statement" => {
                 // Check ALL statements for return or noreturn function calls
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
-                        if child.kind() == "return_statement" {
+                        if matches!(child.kind(), "return_statement" | "goto_statement") {
                             return true;
                         }
                         // Check for noreturn functions (longjmp, exit, abort)
@@ -1368,43 +1464,6 @@ impl Api00C {
             }
         }
         None
-    }
-
-    /// Returns true if the condition text is a positive NULL guard for `param`,
-    /// i.e. the if-block is only entered when the pointer is non-NULL.
-    /// Examples: `ptr != NULL`, `NULL != ptr`, `ptr != 0`, `ptr` (bare truthiness)
-    fn is_positive_null_guard(&self, condition_text: &str, param: &str) -> bool {
-        let patterns: &[&str] = &["!= NULL", "!=NULL", "!= 0", "!=0"];
-        for suffix in patterns {
-            if condition_text.contains(&format!("{} {}", param, suffix))
-                || condition_text.contains(&format!("{}{}", param, suffix))
-            {
-                return true;
-            }
-        }
-        // NULL/0 on the left: NULL != ptr, 0 != ptr
-        let prefixes: &[&str] = &["NULL !=", "NULL!=", "0 !=", "0!="];
-        for prefix in prefixes {
-            if condition_text.contains(&format!("{} {}", prefix, param))
-                || condition_text.contains(&format!("{}{}", prefix, param))
-            {
-                return true;
-            }
-        }
-        // Bare truthiness check: if (ptr) or if (ptr && ...)
-        // but NOT if (!ptr) which is the early-return form already handled above
-        let bare_patterns: &[&str] = &[
-            &format!("({})", param),
-            &format!("({} ", param),
-            &format!("({} &&", param),
-            &format!("({}&& ", param),
-        ];
-        for p in bare_patterns {
-            if condition_text.contains(*p) {
-                return true;
-            }
-        }
-        false
     }
 
     /// Check if a parameter is a debug/logging parameter (e.g., __FILE__, __func__)
