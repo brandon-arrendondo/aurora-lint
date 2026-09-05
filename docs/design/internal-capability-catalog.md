@@ -630,6 +630,7 @@ recall.
 | `macro_constants` | `HashMap<String, i64>` | `#define` constants collected across all scanned files. |
 | `macro_aliases` | `HashMap<String, String>` | `#define ALIAS identifier` function-name aliases (e.g. `SYSTEM` → `system`). |
 | `struct_field_types` | `HashMap<String, HashMap<String, String>>` | `struct_name -> field_name -> type_text`, for resolving `field_expression` types cross-file. |
+| `struct_typedef_aliases` | `HashMap<String, String>` | `Alias -> Tag` for every `typedef struct Tag Alias;`. `struct_field_types` files a struct's fields under the TAG, and a bodyless typedef in a different file (sqlite's `typedef struct sqlite3_value Mem;`) leaves the alias unresolvable — a member reached as `pOut->z` on a `Mem *` then has no type. Deliberately NOT folded into `struct_field_types`: four rules read that map, so filing the alias there would move their finding sets; a consumer opts in by resolving through this one, which so far only ARR36-C does (task 963). |
 | `packed_structs` | `HashSet<String>` | Struct/typedef names declared `__attribute__((packed))`, directly or via a macro. |
 | `global_constants` | `HashMap<String, i64>` | File-scope `[const] TYPE NAME = VALUE;` across all scanned files. |
 | `global_var_null_states` | `HashMap<String, NullState>` | Global pointer variables' joined null state across all assignment sites (resolves `extern` pointer globals declared elsewhere). |
