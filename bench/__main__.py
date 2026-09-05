@@ -195,6 +195,24 @@ def cmd_compare(args):
         for c in result["cwe_regressions"][:5]:
             print(f"  {c['cwe_id']}: FP {c['delta_fp']:+d}  TP {c['delta_tp']:+d}")
 
+    # Rule rows carry base_present/target_present so "the rule recorded
+    # nothing in that run" is not read as "it recorded zero" -- the two look
+    # identical in the counts alone.
+    for key, heading in (("rule_improvements", "Top Rule Improvements (FP reduced)"),
+                         ("rule_regressions", "Top Rule Regressions (FP increased)")):
+        if not result.get(key):
+            continue
+        print(f"\n{heading}:")
+        for r in result[key][:5]:
+            note = ""
+            if not r["base_present"]:
+                note = "  (absent from base run)"
+            elif not r["target_present"]:
+                note = "  (absent from target run)"
+            print(f"  {r['rule']}: FP {r['delta_fp']:+d}  TP {r['delta_tp']:+d}"
+                  f"  ({r['base_tp']}/{r['base_fp']} → {r['target_tp']}/{r['target_fp']} TP/FP)"
+                  f"{note}")
+
 
 def cmd_runs(args):
     db = BenchDB()

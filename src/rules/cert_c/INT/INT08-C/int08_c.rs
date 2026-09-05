@@ -281,20 +281,11 @@ impl Int08C {
             .is_some_and(|range| !range.fits_in_signed(32))
     }
 
-    /// The value range a narrow integer type takes on after C's usual
-    /// arithmetic conversions promote it to `int` -- i.e. its own full
-    /// representable range, since promotion is value-preserving. Plain
-    /// `char`'s signedness is implementation-defined, so it's given the
-    /// union of both interpretations (still tiny next to `int`'s range).
+    /// The value range a narrow integer type takes on after promotion to
+    /// `int`. Delegates to [`const_eval::promoted_range_for_type`], shared
+    /// with `INT32-C` since task 926 found the same inverted premise there.
     fn promoted_range_for_type(&self, type_name: &str) -> Option<ValueRange> {
-        match type_name {
-            "char" => Some(ValueRange::new(-128, 255)),
-            "signed char" => Some(ValueRange::new(-128, 127)),
-            "unsigned char" => Some(ValueRange::new(0, 255)),
-            "short" | "signed short" => Some(ValueRange::new(-32768, 32767)),
-            "unsigned short" => Some(ValueRange::new(0, 65535)),
-            _ => None,
-        }
+        const_eval::promoted_range_for_type(type_name)
     }
 
     /// Extract variable names from an expression
