@@ -51,7 +51,11 @@
 <li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Testing Methodology</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#benchmark-strategy">Benchmark Strategy</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#unit-tests">Unit Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#unit-tests">Unit Tests</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#fixture-provenance">Fixture Provenance</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#what-the-fixture-corpus-does-and-does-not-measure">What the Fixture Corpus Does and Does Not Measure</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#nist-juliet-test-suite-benchmarking">NIST Juliet Test Suite Benchmarking</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#how-juliet-benchmarking-works">How Juliet Benchmarking Works</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#current-results-v0-4-116">Current Results (v0.4.116)</a></li>
@@ -163,8 +167,12 @@ under <code class="docutils literal notranslate"><span class="pre">src/rules/cer
     <span class="o">...</span>
 </pre></div>
 </div>
-<p><strong>Current coverage</strong>: 3,322 tests across 290 rules (~3,070 C test files,
-~1,820 fail + ~1,250 pass). All tests pass; zero duplicates.</p>
+<p><strong>Current coverage</strong>: 3,574 C fixtures across 309 rules — 1,975 <code class="docutils literal notranslate"><span class="pre">fail/</span></code>
+(must-detect), 1,594 <code class="docutils literal notranslate"><span class="pre">pass/</span></code> (must-not-detect) and 5 <code class="docutils literal notranslate"><span class="pre">expected_fail/</span></code>
+(known limitations). These generate 4,032 Rust tests; all pass, 10 are
+<code class="docutils literal notranslate"><span class="pre">#[ignore]</span></code>d (the <code class="docutils literal notranslate"><span class="pre">expected_fail</span></code> tier plus fixtures for rules that
+are tracked but not implemented). Regenerate these counts with
+<code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">scripts/fixture_provenance.py</span></code>.</p>
 <p>Tests are auto-generated into Rust test functions from <code class="docutils literal notranslate"><span class="pre">.c</span></code> files — no embedded
 <code class="docutils literal notranslate"><span class="pre">#[cfg(test)]</span></code> modules in rule implementation files. Run tests with:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># All tests</span>
@@ -193,6 +201,124 @@ Each rule’s page provides:</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">fail/</span></code> cases encode non-compliant patterns (expected violations)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">pass/</span></code> cases encode compliant solutions (expected clean)</p></li>
 </ul>
+<section id="fixture-provenance">
+<h3>Fixture Provenance<a class="headerlink" href="#fixture-provenance" title="Link to this heading"></a></h3>
+<p>Not every fixture carries the same evidentiary weight, and a raw pass/fail
+count hides the difference. Each fixture declares its origin on a <code class="docutils literal notranslate"><span class="pre">Source:</span></code>
+line in its header comment:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tier</p></th>
+<th class="head"><p>Wiki-derived</p></th>
+<th class="head"><p>Locally authored</p></th>
+<th class="head"><p>Undeclared</p></th>
+<th class="head"><p>Total</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fail/</span></code> (must-detect)</p></td>
+<td><p>603</p></td>
+<td><p>1,293</p></td>
+<td><p>79</p></td>
+<td><p>1,975</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pass/</span></code> (must-not-detect)</p></td>
+<td><p>730</p></td>
+<td><p>776</p></td>
+<td><p>88</p></td>
+<td><p>1,594</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">expected_fail/</span></code></p></td>
+<td><p>4</p></td>
+<td><p>0</p></td>
+<td><p>1</p></td>
+<td><p>5</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>All</strong></p></td>
+<td><p><strong>1,337</strong></p></td>
+<td><p><strong>2,069</strong></p></td>
+<td><p><strong>168</strong></p></td>
+<td><p><strong>3,574</strong></p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Wiki-derived</strong> fixtures come from the CERT C standard’s own compliant and
+non-compliant code examples. They are third-party evidence: SEI wrote them
+against the rule text with no knowledge of SqC, so a rule agreeing with them
+is a conformance result rather than a self-consistency check. 300 of the 309
+rules with fixtures have at least one; the 9 without are regression-tested
+only.</p>
+<p><strong>Locally authored</strong> fixtures were written in this repo, almost all of them
+to pin a specific defect found in real code or to lock in a false-positive
+fix. They are regression evidence and nothing more — we chose both the input
+and the expected answer, so they cannot corroborate that SqC reads the
+standard correctly.</p>
+<p><strong>Undeclared</strong> fixtures simply predate the header convention. Every one
+inspected is locally authored (the <code class="docutils literal notranslate"><span class="pre">BRULE-*</span></code> JPL rules, which have no CERT
+wiki page at all, and several <code class="docutils literal notranslate"><span class="pre">WIN*</span></code> rules), but they are counted
+separately rather than assumed.</p>
+<p>Regenerate with <code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">scripts/fixture_provenance.py</span> <span class="pre">--containment</span></code>.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>The split above is what each fixture <em>declares</em>. A wiki example lightly
+edited to compile is still wiki-derived; one rewritten until it matched
+what the checker happens to look for is not, and no header can tell those
+apart. <code class="docutils literal notranslate"><span class="pre">scripts/audit_wiki_fixture_staleness.py</span></code> is the independent
+check: it re-fetches each rule’s current page and measures what fraction
+of a wiki code block’s lines still appear in the fixture claiming to
+derive from it. Of 1,316 wiki fixtures audited across 295 rules, 1,209
+(91.9%) reproduce the current wiki block line-for-line and 21 more are
+above 85% containment — so the tier is overwhelmingly genuine extraction,
+not paraphrase. The remaining 86 (30 substantially edited, 32 mostly
+rewritten, 24 with no overlap against the current page) are the ones
+where only a human can say whether the fixture drifted, the wiki page
+changed under it, or it was never a faithful extraction; 57 are flagged
+stale by that auditor’s own threshold.</p>
+</div>
+</section>
+<section id="what-the-fixture-corpus-does-and-does-not-measure">
+<h3>What the Fixture Corpus Does and Does Not Measure<a class="headerlink" href="#what-the-fixture-corpus-does-and-does-not-measure" title="Link to this heading"></a></h3>
+<p>The corpus is a <strong>conformance and regression gate, not a benchmark.</strong> It is
+never reported alongside Juliet or the real-world oracle: those measure
+precision against labels SqC did not choose, while most of this corpus is
+labeled by the same people who wrote the analyzer.</p>
+<p>Scoring the corpus settles how much drift that gate has actually absorbed.
+<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code> runs on every push (<code class="docutils literal notranslate"><span class="pre">.github/workflows/ci.yml</span></code>), so a rule
+change that breaks any fixture — its own or another rule’s — cannot merge:
+<strong>zero of the 309 rules fail their own fixtures</strong>, and that is a property of
+the gate, not evidence about the rules.</p>
+<p>Two limits of the harness are worth stating, because the green result does
+not cover them.</p>
+<p><strong>The generated tests do not run the analyzer’s real context.</strong> Each test
+calls <code class="docutils literal notranslate"><span class="pre">rule.check()</span></code> directly and builds context itself, via
+<code class="docutils literal notranslate"><span class="pre">prescan_single_tree</span></code> — a helper with no other caller in <code class="docutils literal notranslate"><span class="pre">src/</span></code>, so the
+harness reimplements what <code class="docutils literal notranslate"><span class="pre">src/analyze/mod.rs</span></code> does for a real scan, and
+the two have drifted. Only 39 of the 1,594 <code class="docutils literal notranslate"><span class="pre">pass/</span></code> fixtures opt into
+context at all (a <code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">sqc-test:</span> <span class="pre">prescan</span></code> marker); the rest are checked
+with none. Scanning the corpus with the shipped binary instead finds <strong>17
+violations on 11 must-not-detect fixtures across 9 rules</strong> (ARR38-C,
+DCL31-C, DCL41-C, ENV03-C, EXP33-C, EXP34-C, INT10-C, INT32-C, INT33-C)
+whose unit tests pass. Each reproduces on the single file with only the
+owning rule enabled, so it is neither cross-rule interference nor an
+artifact of scanning a fixture directory. All 11 are among the 39 that ask
+for context — the divergence is in the context, not the rules.</p>
+<p><strong>Cross-rule interference is untested.</strong> A fixture is only ever checked
+against its owning rule, so a <code class="docutils literal notranslate"><span class="pre">pass/</span></code> fixture for one rule is never
+evidence about any other. Running the full rule set over the <code class="docutils literal notranslate"><span class="pre">pass/</span></code> tier
+produces 19,712 findings from other rules on 1,472 of the fixtures,
+concentrated in broad recommendations (EXP12-C, DCL15-C, ERR33-C). <strong>That
+number is not a false-positive count</strong>: a fixture written to be compliant
+with EXP34-C has no obligation to be clean under DCL15-C, and most of these
+are legitimate. It is reported only to show the tier’s blind spot has real
+volume behind it.</p>
+<p>Scoring the <code class="docutils literal notranslate"><span class="pre">pass/</span></code> tier with the full rule set also surfaced a
+performance defect the per-rule harness cannot see: CON40-C, EXP33-C and
+MSC13-C each cost cubic time in block-nesting depth (roughly 8× per
+doubling — 46 ms at depth 100, 12 s at depth 800, independently per rule).
+MEM30-C’s own 2,000-level <code class="docutils literal notranslate"><span class="pre">pass/</span></code> fixture makes a full-rule-set scan of
+that one file effectively hang, while its MEM30-C-only unit test finishes in
+milliseconds.</p>
+</section>
 </section>
 <section id="nist-juliet-test-suite-benchmarking">
 <h2>NIST Juliet Test Suite Benchmarking<a class="headerlink" href="#nist-juliet-test-suite-benchmarking" title="Link to this heading"></a></h2>
@@ -796,11 +922,10 @@ the return type is misread, no argument checking happens, and a returned
 pointer is truncated on LP64; C99 removed implicit declarations and C23
 makes them an error — on code this corpus does not contain. Quoting that
 number as a rule-quality measure is a category error.</p>
-<p>The material to close this gap already exists in the repo: <strong>1,968
-must-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/fail/*.c</span></code>, across 306
-rules) and <strong>1,576 must-not-detect</strong> fixtures
-(<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/pass/*.c</span></code>, across 308 rules), labeled by
-construction — 309 distinct rules carry at least one. 121 of the 125
+<p>The material to close this gap already exists in the repo: <strong>1,975
+must-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/fail/*.c</span></code>) and <strong>1,594
+must-not-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/pass/*.c</span></code>), labeled
+by construction — 309 distinct rules carry at least one. 121 of the 125
 unvalidated rules already have a must-detect fixture — only <code class="docutils literal notranslate"><span class="pre">FLP01-C</span></code>,
 <code class="docutils literal notranslate"><span class="pre">MSC18-C</span></code>, <code class="docutils literal notranslate"><span class="pre">MSC25-C</span></code> and <code class="docutils literal notranslate"><span class="pre">ENV04-C</span></code> have none. Of those, only
 <code class="docutils literal notranslate"><span class="pre">FLP01-C</span></code> is implemented (<code class="docutils literal notranslate"><span class="pre">flp01_c.rs</span></code> exists) and simply lacks a fail
@@ -810,8 +935,14 @@ missing piece; see the “Tracked but not implemented” section of
 <a class="reference internal" href="configuration.html"><span class="doc">Configuration</span></a> for why they are unimplemented.
 Today those fixtures run only as pass/fail unit tests and feed no measured
 metric, so a rule can be fully exercised by tests and still read as having
-no detection evidence. Scoring them as a third benchmark tier is tracked as
-tasks 693–696.</p>
+no detection evidence.</p>
+<p>Note what that does <em>not</em> license. The corpus is a conformance and
+regression gate and is never reported alongside Juliet or the real-world
+oracle — see <a class="reference internal" href="#what-the-fixture-corpus-does-and-does-not-measure">What the Fixture Corpus Does and Does Not Measure</a> for the
+scoring result and for the two blind spots (harness context divergence and
+cross-rule interference) that the green suite does not cover. Only the
+wiki-derived tier is third-party evidence, and <a class="reference internal" href="#fixture-provenance">Fixture Provenance</a> gives
+that split.</p>
 </section>
 </section>
 
