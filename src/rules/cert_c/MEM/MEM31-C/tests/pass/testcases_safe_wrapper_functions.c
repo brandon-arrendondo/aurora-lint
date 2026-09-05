@@ -1,3 +1,4 @@
+// sqc-test: prescan
 /*
  * Rule: MEM31-C
  * Source: testcases

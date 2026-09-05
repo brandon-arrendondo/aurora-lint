@@ -29,6 +29,21 @@ pub struct FunctionSummary {
     /// (task 401).
     #[serde(default)]
     pub unconditional_frees_params: HashSet<usize>,
+    /// Parameter indices whose **pointee** this function frees — `free(*param)`,
+    /// the `void **` "safe free" wrapper idiom:
+    ///
+    /// ```c
+    /// void safe_free(void **ptr) { if (ptr && *ptr) { free(*ptr); *ptr = NULL; } }
+    /// ```
+    ///
+    /// Distinct from `frees_params`, which says the pointer value handed in is
+    /// released. Here it is the caller's own pointer *variable* that is
+    /// released, and the call site names it as `&var`, so a rule matching
+    /// arguments by identifier never sees the connection — which is what made
+    /// every allocation in a `safe_free()`-using function look unmatched.
+    /// A MAY-free fact, like `frees_params`.
+    #[serde(default)]
+    pub frees_param_pointees: HashSet<usize>,
     /// Whether this function can return NULL.
     pub can_return_null: bool,
     /// Whether this function returns dynamically allocated memory.
@@ -1054,6 +1069,45 @@ fn is_unconditionally_reached(node: &Node, body: &Node) -> bool {
     }
 }
 
+/// Reduce a `free()` argument to the identifier it releases, reporting whether
+/// the release goes through the identifier's pointee.
+///
+/// `free(p)` yields `(p, false)`; `free(*p)` and `free((*p))` yield `(p, true)`
+/// — the `void **` "safe free" wrapper shape. Parentheses and casts are
+/// transparent, so `free((char *) *p)` still resolves. Anything else (a field,
+/// a subscript, a call) yields `None`.
+fn strip_free_argument(arg: Node) -> Option<(Node, bool)> {
+    fn peel(mut n: Node) -> Node {
+        loop {
+            let inner = match n.kind() {
+                "parenthesized_expression" => n.named_child(0),
+                "cast_expression" => n.child_by_field_name("value"),
+                _ => None,
+            };
+            match inner {
+                Some(i) => n = i,
+                None => return n,
+            }
+        }
+    }
+
+    let node = peel(arg);
+    if node.kind() == "identifier" {
+        return Some((node, false));
+    }
+    if node.kind() == "pointer_expression" {
+        let op = node.child_by_field_name("operator")?;
+        if op.kind() != "*" {
+            return None;
+        }
+        let inner = peel(node.child_by_field_name("argument")?);
+        if inner.kind() == "identifier" {
+            return Some((inner, true));
+        }
+    }
+    None
+}
+
 /// Credit `summary.frees_params` (MAY-free) and `summary.
 /// unconditional_frees_params` (MUST-free) for every `free(param)` call in
 /// `body` whose sole argument is exactly one of `params` by simple
@@ -1082,13 +1136,17 @@ fn credit_frees_params(
         let [arg] = real.as_slice() else {
             continue;
         };
-        if arg.kind() != "identifier" {
+        let Some((target, through_pointee)) = strip_free_argument(*arg) else {
             continue;
-        }
-        let arg_name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+        };
+        let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
         let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) else {
             continue;
         };
+        if through_pointee {
+            summary.frees_param_pointees.insert(idx);
+            continue;
+        }
         summary.frees_params.insert(idx);
         if is_unconditionally_reached(&call, body) {
             summary.unconditional_frees_params.insert(idx);
@@ -1849,6 +1907,40 @@ pub fn propagate_transitive_closes(summaries: &mut HashMap<String, FunctionSumma
                             summary.closes_params.insert(*caller_idx);
                             changed = true;
                         }
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Propagate transitive pointee-frees through param pass-through chains.
+///
+/// Mirrors `propagate_transitive_frees` but for `frees_param_pointees`: a
+/// wrapper that hands its own `void **` parameter to a `safe_free()`-style
+/// callee frees that parameter's pointee too. Same shape as the field version,
+/// and needed for the same reason — real code layers these helpers.
+pub fn propagate_transitive_frees_param_pointees(summaries: &mut HashMap<String, FunctionSummary>) {
+    for _pass in 0..10 {
+        let mut changed = false;
+        let snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.frees_param_pointees.clone()))
+            .collect();
+
+        for summary in summaries.values_mut() {
+            for (caller_idx, callees) in &summary.param_passthroughs {
+                for (callee_name, callee_idx) in callees {
+                    let frees_pointee = snapshot
+                        .get(callee_name)
+                        .is_some_and(|s| s.contains(callee_idx));
+                    if frees_pointee && !summary.frees_param_pointees.contains(caller_idx) {
+                        summary.frees_param_pointees.insert(*caller_idx);
+                        changed = true;
                     }
                 }
             }

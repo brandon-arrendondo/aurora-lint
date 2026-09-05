@@ -522,6 +522,7 @@ are private implementation detail behind the small public surface below.
 | `propagate_transitive_param_taint` | `(summaries: &mut ...)` | Same transitive propagation for tainted-parameter status. |
 | `propagate_transitive_closes` | `(summaries: &mut ...)` | Same transitive propagation for "closes param N" (fclose/close/CloseHandle). |
 | `propagate_transitive_frees_param_fields` | `(summaries: &mut ...)` | Same transitive propagation, but for field-level frees (`frees_param_fields`, e.g. `free(x->will)`). |
+| `propagate_transitive_frees_param_pointees` | `(summaries: &mut ...)` | Same transitive propagation, but for pointee-level frees (`frees_param_pointees`, e.g. `free(*p)` reached through a forwarding wrapper). |
 | `propagate_return_taint` | `(summaries: &mut ...)` | Propagates "return value is tainted" through call chains. |
 
 `FunctionSummary`'s fields (all `pub`) are the actual payload most rules
@@ -529,7 +530,10 @@ read: `frees_params`/`unconditional_frees_params` (MAY-free vs. MUST-free,
 task 401), `can_return_null`, `returns_allocation`, `checks_null_params`,
 `modifies_params`, `dereferences_params`, `never_returns`,
 `callsite_param_null_states`, `return_range`, `param_passthroughs`,
-`frees_param_fields`, `has_env03_taint_source`, `returns_tainted`,
+`frees_param_fields`, `frees_param_pointees` (the `void **` "safe free"
+wrapper — `free(*param)`, called as `safe_free(&p)`, so the caller's own
+variable dies and an argument match by identifier never sees it),
+`has_env03_taint_source`, `returns_tainted`,
 `closes_params`, `callsite_param_buffer_size`, `produces_param_buffer_size`,
 and several more callsite-specific maps.
 
