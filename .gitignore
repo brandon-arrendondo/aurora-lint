@@ -21,6 +21,9 @@ Thumbs.db
 .todo-sqlite-cli
 .env
 .env.*
+# ...but the benchmark-config template is tracked on purpose (see
+# docs/benchmark-setup.rst); it holds no secrets, only local paths.
+!.env.example
 sqc-results.json
 results/
 *.log
