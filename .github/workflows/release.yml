@@ -44,7 +44,7 @@ jobs:
           mkdir -p dist
           cp target/release/sqc dist/
           cp docs/sqc.1 dist/
-          cp README.md LICENSE THIRD_PARTY_LICENSES.txt dist/
+          cp README.md CHANGELOG.md LICENSE THIRD_PARTY_LICENSES.txt dist/
           cp sqc.cdx.json dist/
           tar -czf sqc-linux-x86_64.tar.gz -C dist .
 
@@ -89,7 +89,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/x86_64-pc-windows-gnu/release/sqc.exe dist/
-          cp README.md LICENSE THIRD_PARTY_LICENSES.txt dist/ 2>/dev/null || true
+          cp README.md CHANGELOG.md LICENSE THIRD_PARTY_LICENSES.txt dist/ 2>/dev/null || true
           cp sqc.cdx.json dist/
           cd dist && zip -r ../sqc-windows-x86_64.zip .
 
@@ -147,6 +147,7 @@ jobs:
           chmod 755 "${PKG_DIR}/usr/bin/sqc"
           gzip -c dist/sqc.1 > "${PKG_DIR}/usr/share/man/man1/sqc.1.gz"
           cp dist/README.md "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
+          cp dist/CHANGELOG.md "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
           cp dist/LICENSE "${PKG_DIR}/usr/share/doc/sqc/copyright" 2>/dev/null || true
           cp dist/THIRD_PARTY_LICENSES.txt "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
           cp dist/sqc.cdx.json "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
@@ -193,6 +194,7 @@ jobs:
           cp dist/sqc "${TARDIR}/bin/"
           cp dist/sqc.1 "${TARDIR}/man/"
           cp dist/README.md "${TARDIR}/doc/" 2>/dev/null || true
+          cp dist/CHANGELOG.md "${TARDIR}/doc/" 2>/dev/null || true
           cp dist/LICENSE "${TARDIR}/doc/" 2>/dev/null || true
           cp dist/THIRD_PARTY_LICENSES.txt "${TARDIR}/doc/" 2>/dev/null || true
           cp dist/sqc.cdx.json "${TARDIR}/doc/" 2>/dev/null || true
@@ -222,6 +224,7 @@ jobs:
           install -m 755 bin/sqc %{buildroot}%{_bindir}/sqc
           install -m 644 man/sqc.1 %{buildroot}%{_mandir}/man1/sqc.1
           install -m 644 doc/README.md %{buildroot}%{_docdir}/%{name}/README.md
+          install -m 644 doc/CHANGELOG.md %{buildroot}%{_docdir}/%{name}/CHANGELOG.md
           install -m 644 doc/LICENSE %{buildroot}%{_docdir}/%{name}/LICENSE
           install -m 644 doc/THIRD_PARTY_LICENSES.txt %{buildroot}%{_docdir}/%{name}/THIRD_PARTY_LICENSES.txt
           install -m 644 doc/sqc.cdx.json %{buildroot}%{_docdir}/%{name}/sqc.cdx.json
@@ -230,6 +233,7 @@ jobs:
           %{_bindir}/sqc
           %{_mandir}/man1/sqc.1*
           %doc %{_docdir}/%{name}/README.md
+          %doc %{_docdir}/%{name}/CHANGELOG.md
           %license %{_docdir}/%{name}/LICENSE
           %doc %{_docdir}/%{name}/THIRD_PARTY_LICENSES.txt
           %doc %{_docdir}/%{name}/sqc.cdx.json
@@ -328,12 +332,31 @@ jobs:
     runs-on: ubuntu-latest
     needs: [linux, windows, deb, rpm, appimage]
     steps:
+      # fetch-depth 0: the notes are cut between this tag and the previous
+      # one, so the generator needs the full tag list, not a shallow clone.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      # Release bodies used to be action-gh-release's compare-link stub, which
+      # reads as automation churn to a distro reviewer. Build them from the
+      # task database instead (scripts/generate_changelog.py, same source as
+      # CHANGELOG.md). Rebuilt here rather than sliced out of the committed
+      # file so the notes cannot lag a CHANGELOG.md regeneration.
+      - name: Build release notes
+        run: |
+          python3 scripts/generate_changelog.py --release "${GITHUB_REF_NAME}" \
+            > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: RELEASE_NOTES.md
+          append_body: true
           generate_release_notes: true
           files: |
             artifacts/sqc-linux-x86_64/*.tar.gz

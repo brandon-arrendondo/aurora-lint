@@ -2,6 +2,36 @@
 
 A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). SqC tracks 311 CERT C rules across 17 categories (307 implemented and enabled by default), with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
+## Does It Find Real Bugs?
+
+Yes, in shipping software. Nine defects found while auditing SQLite were
+reported upstream, and **the SQLite team confirmed and fixed all nine the
+same day they were filed**:
+
+| Site | Defect | Report |
+|------|--------|--------|
+| `src/os_kv.c` — `kvvfsDecode()` | Heap buffer overflow: the hex-pair decode branch writes without the bounds check its sibling branch has (check-in `732c8f81b5`) | [afbc56be7b](https://sqlite.org/bugs/forumpost/afbc56be7b) |
+| `ext/fts5/fts5_index.c` — `fts5SegmentSize()` | Signed integer overflow on page numbers decoded from an on-disk record with no upper bound validated (check-in `c97a940ceb`) | [2026-08-17](https://sqlite.org/bugs/info/2026-08-17T20:07:33Z) |
+| `ext/fts5/fts5_index.c` — `fts5TestUtf8()` | UTF-8 validator advances 3 bytes through a 4-byte sequence, so every valid astral-plane character is rejected (check-in `ac094ec69b`) | [b02657db71](https://sqlite.org/bugs/forumpost/b02657db71) |
+| `ext/session/changeset.c` | `sqlite3_mprintf()` result passed to libc `printf`'s `%s`, bypassing SQLite's own NULL-safe `mprintf` — NULL dereference under allocation failure | [f20ea456ac](https://sqlite.org/bugs/forumpost/f20ea456ac) |
+| `expert.c` | same defect | [c06a3c0d3f](https://sqlite.org/bugs/forumpost/c06a3c0d3f) |
+| `amatch.c` | same defect | [20d89d613b](https://sqlite.org/bugs/forumpost/20d89d613b) |
+| `sqlite3_stdio.c` | same defect | [ba00fdddda](https://sqlite.org/bugs/forumpost/ba00fdddda) |
+| `fts3.c` | same defect | [9b4276628a](https://sqlite.org/bugs/forumpost/9b4276628a) |
+| `qrf.c` | same defect | [18338dc19d](https://sqlite.org/bugs/forumpost/18338dc19d) |
+
+**Eight of the nine started as an SqC finding** — an EXP34-C, INT32-C or
+MSC12-C violation that hand-adjudication then confirmed against the source.
+The `kvvfsDecode()` overflow did not: SqC does not flag that site. It was
+found by the close reading that reviewing SqC's findings prompted, which
+makes it a false negative for the tool. It is listed because it is an honest
+account of what the audit produced, not a detection to claim.
+
+All nine came out of a file-at-a-time audit of SQLite — 220 files at a pinned
+commit, every finding hand-adjudicated — the same audit behind the real-world
+precision figure below. Methodology:
+[`docs/testing-methodology.rst`](docs/testing-methodology.rst).
+
 ## Why CERT C
 
 SqC targets the [SEI CERT C Coding
