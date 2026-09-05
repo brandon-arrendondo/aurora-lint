@@ -109,7 +109,7 @@ impl Arr36C {
             let frame = FrameContext {
                 function_name: function_name_of(func, source),
                 param_indices: parameter_indices(func, source),
-                pointer_members: &analyzer.objects.pointer_members,
+                objects: &analyzer.objects,
                 call_sites: &call_sites,
                 project_call_sites: &project_call_sites,
             };
@@ -234,6 +234,11 @@ enum BaseOrigin {
     OwnParam(usize),
     /// A pointer-typed struct member.
     PointerMember,
+    /// A pointer variable this frame declared but never learned a target for
+    /// -- a bare `const u8 *next;`, or one assigned from a call the frame
+    /// cannot see into. Its NAME is the base only because there was nothing
+    /// better to record, not because it denotes storage.
+    UntrackedPointer,
 }
 
 /// What one function's frame knows about the bases it produced, used to
@@ -246,9 +251,9 @@ struct FrameContext<'a> {
     /// of THIS function, pointer or not: an argument's position has to line
     /// up with the whole list.
     param_indices: HashMap<String, usize>,
-    /// Field paths whose terminal member is a pointer, from this function's
-    /// analyzer.
-    pointer_members: &'a HashSet<String>,
+    /// What this function's frame knows about which names denote storage,
+    /// which merely hold a pointer, and which field paths are pointer-typed.
+    objects: &'a ObjectFrame,
     call_sites: &'a CallSiteBases,
     /// The same predicate over every pre-scanned translation unit, so a
     /// callee whose callers all live elsewhere is still decided (task 936).
@@ -277,6 +282,18 @@ impl FrameContext<'_> {
     /// object, which is what ARR36-C-EX1 turns on -- so the two are told
     /// apart by the member's declared type, not by the shape of the path.
     ///
+    /// An untracked pointer variable is the third instance of the same shape
+    /// (task 962). `extract_array_base` returns the RAW NAME for an
+    /// identifier it has no base for, so `end = next` over a bare
+    /// `const u8 *next;` records `next` as a base and it then compares as
+    /// though it named storage -- the one case the analyzer explicitly knows
+    /// nothing about is the one whose name is taken at face value. A name
+    /// declared a pointer and never declared as an array is exactly "a
+    /// pointer whose target this frame never learned"; a declared array, a
+    /// typedef array, an extern the frame never saw, and the address of a
+    /// non-pointer scalar are all still storage, so ARR36-C-EX1 and every
+    /// fail fixture are untouched.
+    ///
     /// A pair with storage on either side is decided as before: a local array
     /// against a parameter is still settled inside the frame that declares
     /// it.
@@ -294,8 +311,8 @@ impl FrameContext<'_> {
             }
             // Neither side names an object, so nothing here says they are two.
             (
-                BaseOrigin::OwnParam(_) | BaseOrigin::PointerMember,
-                BaseOrigin::OwnParam(_) | BaseOrigin::PointerMember,
+                BaseOrigin::OwnParam(_) | BaseOrigin::PointerMember | BaseOrigin::UntrackedPointer,
+                BaseOrigin::OwnParam(_) | BaseOrigin::PointerMember | BaseOrigin::UntrackedPointer,
             ) => false,
             _ => true,
         }
@@ -305,8 +322,13 @@ impl FrameContext<'_> {
         if let Some(index) = self.own_param_index(base) {
             return BaseOrigin::OwnParam(index);
         }
-        if self.pointer_members.contains(base) {
+        if self.objects.pointer_members.contains(base) {
             return BaseOrigin::PointerMember;
+        }
+        // Declared a pointer and never declared as an array: the frame knows
+        // the name can hold a pointer and knows nothing about its target.
+        if self.objects.pointer_vars.contains(base) && !self.objects.array_objects.contains(base) {
+            return BaseOrigin::UntrackedPointer;
         }
         BaseOrigin::Storage
     }
