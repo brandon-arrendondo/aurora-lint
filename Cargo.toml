@@ -24,6 +24,10 @@ include = [
     "README.md",
     "LICENSE",
     "assets/icon.ico",
+    # Debian/Fedora generate packaging from the crates.io tarball, not from
+    # the GitHub release assets -- so the man page has to ship here or the
+    # resulting .deb/.rpm installs /usr/bin/sqc with no man page.
+    "docs/sqc.1",
     "rules_templates/**",
     "tests/**",
     # Cargo auto-includes README/LICENSE files found anywhere in the tree even
@@ -84,11 +88,18 @@ ctor = "0.2"
 lazy_static = "1.4"
 
 [build-dependencies]
-winres = "0.1"
 walkdir = "2.5"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 anyhow = "1.0"
+
+# build.rs only touches winres under #[cfg(target_os = "windows")], which for a
+# build script means the HOST -- the same thing this target table keys on, so
+# the two stay in step. As a plain build-dependency winres was resolved and
+# compiled on every host regardless, adding a crate Debian does not package to
+# the Linux build for no effect.
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
 
 [profile.dev]
 # Full debug info (the cargo default) embeds symbols for the whole
