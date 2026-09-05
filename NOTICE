@@ -1,0 +1,20 @@
+sqc — Software Code Quality (CERT C compliance checker)
+Copyright 2024 Brandon Arrendondo
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+LICENSE holds the unmodified Apache-2.0 text, exactly as published by the
+Apache Software Foundation. Attribution belongs here, in NOTICE (Apache-2.0
+section 4(d)), and never inside LICENSE: an edited LICENSE stops matching
+the canonical text, which is what makes automated license detection and
+distribution review fail.

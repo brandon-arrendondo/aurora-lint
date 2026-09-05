@@ -247,4 +247,5 @@ messages. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the people involved.
 
 ## License
 
-See [LICENSE](LICENSE).
+Apache-2.0. [LICENSE](LICENSE) is the unmodified Apache-2.0 text; copyright and
+attribution live in [NOTICE](NOTICE), per Apache-2.0 section 4(d).

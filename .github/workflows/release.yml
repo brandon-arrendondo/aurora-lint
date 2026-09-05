@@ -44,7 +44,7 @@ jobs:
           mkdir -p dist
           cp target/release/sqc dist/
           cp docs/sqc.1 dist/
-          cp README.md LICENSE THIRD_PARTY_LICENSES.txt dist/
+          cp README.md LICENSE NOTICE THIRD_PARTY_LICENSES.txt dist/
           cp sqc.cdx.json dist/
           tar -czf sqc-linux-x86_64.tar.gz -C dist .
 
@@ -89,7 +89,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/x86_64-pc-windows-gnu/release/sqc.exe dist/
-          cp README.md LICENSE THIRD_PARTY_LICENSES.txt dist/ 2>/dev/null || true
+          cp README.md LICENSE NOTICE THIRD_PARTY_LICENSES.txt dist/ 2>/dev/null || true
           cp sqc.cdx.json dist/
           cd dist && zip -r ../sqc-windows-x86_64.zip .
 
@@ -148,6 +148,7 @@ jobs:
           gzip -c dist/sqc.1 > "${PKG_DIR}/usr/share/man/man1/sqc.1.gz"
           cp dist/README.md "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
           cp dist/LICENSE "${PKG_DIR}/usr/share/doc/sqc/copyright" 2>/dev/null || true
+          cp dist/NOTICE "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
           cp dist/THIRD_PARTY_LICENSES.txt "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
           cp dist/sqc.cdx.json "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
 
@@ -194,6 +195,7 @@ jobs:
           cp dist/sqc.1 "${TARDIR}/man/"
           cp dist/README.md "${TARDIR}/doc/" 2>/dev/null || true
           cp dist/LICENSE "${TARDIR}/doc/" 2>/dev/null || true
+          cp dist/NOTICE "${TARDIR}/doc/" 2>/dev/null || true
           cp dist/THIRD_PARTY_LICENSES.txt "${TARDIR}/doc/" 2>/dev/null || true
           cp dist/sqc.cdx.json "${TARDIR}/doc/" 2>/dev/null || true
           tar -czf "rpmbuild/SOURCES/sqc-${VERSION}.tar.gz" "${TARDIR}"
@@ -223,6 +225,7 @@ jobs:
           install -m 644 man/sqc.1 %{buildroot}%{_mandir}/man1/sqc.1
           install -m 644 doc/README.md %{buildroot}%{_docdir}/%{name}/README.md
           install -m 644 doc/LICENSE %{buildroot}%{_docdir}/%{name}/LICENSE
+          install -m 644 doc/NOTICE %{buildroot}%{_docdir}/%{name}/NOTICE
           install -m 644 doc/THIRD_PARTY_LICENSES.txt %{buildroot}%{_docdir}/%{name}/THIRD_PARTY_LICENSES.txt
           install -m 644 doc/sqc.cdx.json %{buildroot}%{_docdir}/%{name}/sqc.cdx.json
 
@@ -231,6 +234,7 @@ jobs:
           %{_mandir}/man1/sqc.1*
           %doc %{_docdir}/%{name}/README.md
           %license %{_docdir}/%{name}/LICENSE
+          %license %{_docdir}/%{name}/NOTICE
           %doc %{_docdir}/%{name}/THIRD_PARTY_LICENSES.txt
           %doc %{_docdir}/%{name}/sqc.cdx.json
           SPEC_EOF
@@ -287,6 +291,7 @@ jobs:
           chmod 755 "${APPDIR}/usr/bin/sqc"
           cp dist/sqc.1 "${APPDIR}/usr/share/man/man1/"
           cp dist/LICENSE "${APPDIR}/usr/share/doc/sqc/" 2>/dev/null || true
+          cp dist/NOTICE "${APPDIR}/usr/share/doc/sqc/" 2>/dev/null || true
           cp dist/THIRD_PARTY_LICENSES.txt "${APPDIR}/usr/share/doc/sqc/" 2>/dev/null || true
           cp dist/sqc.cdx.json "${APPDIR}/usr/share/doc/sqc/" 2>/dev/null || true
           cp assets/icon.png "${APPDIR}/sqc.png"

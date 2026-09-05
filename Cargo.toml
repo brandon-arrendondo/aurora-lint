@@ -23,6 +23,7 @@ include = [
     "Cargo.toml",
     "README.md",
     "LICENSE",
+    "NOTICE",
     "assets/icon.ico",
     "rules_templates/**",
     "tests/**",
