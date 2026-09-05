@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024 Ryan Urchick
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 //! POS50-C: Declare objects shared between POSIX threads with appropriate storage durations
 //!

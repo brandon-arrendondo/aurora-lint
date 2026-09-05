@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024 Ryan Urchick
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 //! POS52-C: Do not perform operations that can block while holding a POSIX lock
 //!

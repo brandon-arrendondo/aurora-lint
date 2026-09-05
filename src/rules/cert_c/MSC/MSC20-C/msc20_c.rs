@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024 BISSELL Homecare, Inc.
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 //! MSC20-C: Do not use a switch statement to transfer control into a
 //! complex block

@@ -1,5 +1,5 @@
 sqc — Software Code Quality (CERT C compliance checker)
-Copyright 2024 Brandon Arrendondo
+Copyright 2025-2026 BISSELL Homecare, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -50,9 +50,10 @@ University. sqc is not affiliated with, endorsed by, or certified by
 Carnegie Mellon University or its Software Engineering Institute; the marks
 are used nominatively to name the standard the tool checks against.
 
-The SPDX expression for this work as a whole is:
-
-    Apache-2.0 AND MIT AND CC-BY-4.0
+SqC itself is licensed Apache-2.0; the CERT material above is third-party
+content carried under its own upstream terms. A packager describing the
+contents of a binary package would write the union of the two,
+Apache-2.0 AND MIT AND CC-BY-4.0.
 
 See docs/licensing.rst for the full provenance breakdown and for what a
 distribution packager needs in debian/copyright or an RPM spec.

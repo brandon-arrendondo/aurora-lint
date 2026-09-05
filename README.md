@@ -247,14 +247,15 @@ messages. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the people involved.
 
 ## License
 
-`Apache-2.0 AND MIT AND CC-BY-4.0`.
+Apache-2.0. Copyright 2025-2026 BISSELL Homecare, Inc.
 
-sqc's own code is Apache-2.0 — [LICENSE](LICENSE) is the unmodified Apache-2.0
-text, and copyright and attribution live in [NOTICE](NOTICE), per Apache-2.0
-section 4(d). SqC also carries material from the SEI CERT C Coding Standard:
-rule titles and descriptions under CC BY 4.0, and CERT code examples under MIT.
-CMU's own notice is mirrored verbatim in
-[thirdparty/cert/LICENSE](thirdparty/cert/LICENSE);
+[LICENSE](LICENSE) is the unmodified Apache-2.0 text; copyright and
+attribution live in [NOTICE](NOTICE), per Apache-2.0 section 4(d).
+
+SqC also carries third-party material from the SEI CERT C Coding Standard,
+which keeps its own upstream terms: rule titles and descriptions under
+CC BY 4.0, and CERT code examples under MIT. CMU's own notice is mirrored
+verbatim in [thirdparty/cert/LICENSE](thirdparty/cert/LICENSE), and
 [docs/licensing.rst](docs/licensing.rst) has the full breakdown and what a
 distribution packager needs.
 

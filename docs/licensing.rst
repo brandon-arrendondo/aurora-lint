@@ -15,9 +15,13 @@ Summary
    * - Material
      - License
      - Where it lives
-   * - sqc's own source, docs and packaging
+   * - sqc's own source code and packaging
      - ``Apache-2.0``
      - everything not listed below
+   * - sqc's own documentation
+     - ``CC-BY-4.0``
+     - ``docs/`` and the generated man page, as declared in ``docs/conf.py``
+       and ``docs/sqc.1``
    * - SEI CERT C rule titles and rule prose
      - ``CC-BY-4.0``
      - ``metadata.title`` / ``metadata.description`` in
@@ -28,14 +32,27 @@ Summary
      - the C snippets embedded in those ``description`` fields, and the
        wiki-derived fixtures under ``src/rules/cert_c/*/*/tests/``
 
-The single SPDX expression for the whole work, and for any binary package
-built from it, is::
+Copyright in all of it is held by **BISSELL Homecare, Inc.** SqC is company
+work: it is written by BISSELL employees under BISSELL direction, so the
+holder is the entity, not the individuals. ``Cargo.toml``'s ``authors`` field
+still names individuals, and correctly — authorship is a statement of who
+wrote the code and is not the same as who owns it. ``CONTRIBUTORS.md`` is the
+fuller record.
 
-   Apache-2.0 AND MIT AND CC-BY-4.0
+**SqC is licensed Apache-2.0.** The CERT rows above are third-party material
+carried in the tree, not a change to that: they keep their own upstream terms,
+the way any vendored component does, and those terms are recorded in
+``NOTICE`` and ``thirdparty/cert/LICENSE`` rather than in ``LICENSE``.
 
-The binary is covered too, not just the tarball: each rule compiles its CERT
-title in as a ``&'static str``, so a stripped ``sqc`` executable still carries
-CC BY 4.0 material and still owes attribution.
+The attribution obligation reaches the binary, not only the source tarball:
+each rule compiles its CERT title in as a ``&'static str``, so a stripped
+``sqc`` executable still carries CC BY 4.0 material. ``NOTICE`` ships in every
+release artifact for that reason.
+
+A packager describing the *contents of a binary package* will generally write
+the union rather than the project's own license — ``Apache-2.0 AND MIT AND
+CC-BY-4.0`` — which is why the DEP-5 stanzas below are split by path. That is
+a packaging-metadata convention and is not what SqC is licensed under.
 
 The CERT terms
 --------------
@@ -88,8 +105,12 @@ Debian ``debian/copyright`` (DEP-5) needs three stanzas rather than one:
 .. code-block:: none
 
    Files: *
-   Copyright: <holder>
+   Copyright: 2025-2026 BISSELL Homecare, Inc.
    License: Apache-2.0
+
+   Files: docs/*
+   Copyright: 2025-2026 BISSELL Homecare, Inc.
+   License: CC-BY-4.0
 
    Files: src/rules/cert_c/*/*/tests/*
    Copyright: Carnegie Mellon University
@@ -109,8 +130,12 @@ which it is in a ``Source:`` header comment. Claiming CMU copyright over all
 of them is the conservative direction to be wrong in; splitting the glob
 requires the provenance audit tracked separately in the backlog.
 
-Fedora ``.spec``: ``License: Apache-2.0 AND MIT AND CC-BY-4.0``. This is what
-``.github/workflows/release.yml`` now emits.
+Fedora ``.spec``: ``.github/workflows/release.yml`` emits
+``License: Apache-2.0``, SqC's own license. A Fedora packager who prefers the
+contents-union convention would write ``Apache-2.0 AND MIT AND CC-BY-4.0``
+instead; both describe the same package, and the ``NOTICE`` and
+``thirdparty/cert/LICENSE`` files shipped alongside carry the detail either
+way.
 
 Re-deriving the counts
 ----------------------

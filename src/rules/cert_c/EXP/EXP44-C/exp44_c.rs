@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024 BISSELL Homecare, Inc.
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 //! EXP44-C: Do not rely on side effects in operands to sizeof, _Alignof, or _Generic
 //!

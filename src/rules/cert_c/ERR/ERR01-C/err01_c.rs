@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024 BISSELL Homecare, Inc.
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 //! ERR01-C: Use ferror() rather than errno to check for FILE stream errors
 //!

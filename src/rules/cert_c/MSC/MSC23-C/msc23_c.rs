@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024 BISSELL Homecare, Inc.
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 //! MSC23-C: Beware of vendor-specific library and language differences
 //!

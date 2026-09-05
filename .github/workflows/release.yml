@@ -210,9 +210,7 @@ jobs:
           Version:        VERSION_PLACEHOLDER
           Release:        1%{?dist}
           Summary:        CERT C compliance checker
-          # sqc's own code is Apache-2.0; it also ships SEI CERT C rule prose
-          # (CC BY 4.0) and CERT code examples (MIT). See docs/licensing.rst.
-          License:        Apache-2.0 AND MIT AND CC-BY-4.0
+          License:        Apache-2.0
           URL:            https://github.com/brandon-arrendondo/tools_sqc
           Source0:        %{name}-%{version}.tar.gz
 

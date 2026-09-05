@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2025 Ryan Bissell
+// Copyright (c) 2025-2026 BISSELL Homecare, Inc.
 
 //! CON43-C: Do not allow data races in multithreaded code
 //!

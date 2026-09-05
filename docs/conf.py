@@ -2,7 +2,7 @@
 
 project = 'SqC'
 author = 'BISSELL Homecare, Inc.'
-copyright = '2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0'
+copyright = '2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0'
 
 extensions = []
 

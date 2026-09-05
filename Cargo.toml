@@ -4,10 +4,10 @@ version = "0.4.336"
 edition = "2021"
 description = "Software Code Quality - CERT C compliance checker"
 authors = ["Eric Buehler <eric.buehler@bissell.com>", "Brandon Arrendondo <brandon.arrendondo@bissell.com>"]
-# The crate carries SEI CERT C material as well as its own code: rule prose
-# is CC BY 4.0 and CERT code examples are MIT. See docs/licensing.rst and
-# thirdparty/cert/LICENSE. Apache-2.0 alone understated what ships.
-license = "Apache-2.0 AND MIT AND CC-BY-4.0"
+# SqC is Apache-2.0. Third-party SEI CERT C material carried in the tree
+# keeps its own upstream terms (CC BY 4.0 prose, MIT code examples),
+# recorded in NOTICE, thirdparty/cert/LICENSE and docs/licensing.rst.
+license = "Apache-2.0"
 repository = "https://github.com/brandon-arrendondo/tools_sqc"
 homepage = "https://brandon-arrendondo.github.io/tools_sqc"
 documentation = "https://brandon-arrendondo.github.io/tools_sqc"
