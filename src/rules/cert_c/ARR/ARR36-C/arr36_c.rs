@@ -1,11 +1,29 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::prescan;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::{ast_utils, overflow_helpers};
 use lang_parsing_substrate::query;
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Arr36C;
+pub struct Arr36C {
+    /// `struct_name -> field_name -> type_text` from the prescan, which is
+    /// how a member's type is known when its struct is declared in another
+    /// file. Empty without `-d`, so it is merged with the scanned file's own
+    /// declarations rather than relied on (see `collect_pointer_members`).
+    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
+}
+
+impl Arr36C {
+    pub fn new() -> Self {
+        Self {
+            struct_field_types: RefCell::new(HashMap::new()),
+        }
+    }
+}
 
 impl CertRule for Arr36C {
     fn rule_id(&self) -> &'static str {
@@ -28,6 +46,10 @@ impl CertRule for Arr36C {
         "ARR36-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
@@ -48,12 +70,15 @@ impl Arr36C {
         file_scope.collect_file_scope(node, source);
 
         // Second pass: per-function analysis with file-scope as base
+        let project_fields = self.struct_field_types.borrow();
+        let field_types = merge_file_struct_fields(&project_fields, node, source);
         let funcs = query::find_descendants_of_kind(*node, "function_definition");
         let analyzers: Vec<PointerAnalyzer> = funcs
             .iter()
             .map(|func| {
                 let mut analyzer = PointerAnalyzer::from(&file_scope);
                 analyzer.collect_declarations(func, source);
+                analyzer.collect_pointer_members(func, source, &field_types);
                 analyzer
             })
             .collect();
@@ -70,6 +95,7 @@ impl Arr36C {
             let frame = FrameContext {
                 function_name: function_name_of(func, source),
                 param_indices: parameter_indices(func, source),
+                pointer_members: &analyzer.pointer_members,
                 call_sites: &call_sites,
             };
             self.check_node(func, source, analyzer, &frame, violations);
@@ -184,8 +210,19 @@ impl Arr36C {
     }
 }
 
-/// What one function's frame knows about its own parameters, used to decide
-/// whether a parameter-vs-parameter report is warranted at all.
+/// Where a base came from, as far as the frame that produced it can tell.
+enum BaseOrigin {
+    /// The base names storage: a declared array, an allocation, a literal, or
+    /// an array-typed struct member.
+    Storage,
+    /// A pointer parameter of this function, at this position in its list.
+    OwnParam(usize),
+    /// A pointer-typed struct member.
+    PointerMember,
+}
+
+/// What one function's frame knows about the bases it produced, used to
+/// decide whether a mismatched pair is a report this frame can make at all.
 struct FrameContext<'a> {
     /// This function's name, when its declarator gives one. Call sites are
     /// matched to it by name, which is exact within one translation unit.
@@ -194,11 +231,17 @@ struct FrameContext<'a> {
     /// of THIS function, pointer or not: an argument's position has to line
     /// up with the whole list.
     param_indices: HashMap<String, usize>,
+    /// Field paths whose terminal member is a pointer, from this function's
+    /// analyzer.
+    pointer_members: &'a HashSet<String>,
     call_sites: &'a CallSiteBases,
 }
 
 impl FrameContext<'_> {
     /// Whether a mismatched base pair is a violation this frame can claim.
+    ///
+    /// Two bases differ implies two arrays only when each base NAMES an
+    /// object. Two kinds of base do not:
     ///
     /// A pointer parameter's base is synthetic (`param:name`), so two
     /// distinct parameters ALWAYS compare unequal -- which made every
@@ -206,18 +249,44 @@ impl FrameContext<'_> {
     /// derives both from one buffer. Nothing inside the function settles it;
     /// the fact lives in the caller. So the default is inverted here: two
     /// parameters are taken to share an object unless a call site in this
-    /// file passes two provably distinct objects (task 753). Every other base
-    /// pair is unaffected -- a local array against a parameter is still
-    /// decided inside the frame that declares it.
+    /// file passes two provably distinct objects (task 753).
+    ///
+    /// A pointer-typed struct member is the same thing one level over
+    /// (task 935): `pOut->z` and `pC->aRow` are two different paths, and what
+    /// they point AT is exactly as unknowable here as a parameter's target.
+    /// An ARRAY-typed member is not -- `u.int_array` really is its own
+    /// object, which is what ARR36-C-EX1 turns on -- so the two are told
+    /// apart by the member's declared type, not by the shape of the path.
+    ///
+    /// A pair with storage on either side is decided as before: a local array
+    /// against a parameter is still settled inside the frame that declares
+    /// it.
     fn reportable(&self, left: &str, right: &str) -> bool {
-        let (Some(left), Some(right)) = (self.own_param_index(left), self.own_param_index(right))
-        else {
-            return true;
-        };
-        match &self.function_name {
-            Some(name) => self.call_sites.proves_distinct(name, left, right),
-            None => false,
+        match (self.origin(left), self.origin(right)) {
+            // Two parameters: only a call site in this file settles it.
+            (BaseOrigin::OwnParam(left), BaseOrigin::OwnParam(right)) => {
+                match &self.function_name {
+                    Some(name) => self.call_sites.proves_distinct(name, left, right),
+                    None => false,
+                }
+            }
+            // Neither side names an object, so nothing here says they are two.
+            (
+                BaseOrigin::OwnParam(_) | BaseOrigin::PointerMember,
+                BaseOrigin::OwnParam(_) | BaseOrigin::PointerMember,
+            ) => false,
+            _ => true,
         }
+    }
+
+    fn origin(&self, base: &str) -> BaseOrigin {
+        if let Some(index) = self.own_param_index(base) {
+            return BaseOrigin::OwnParam(index);
+        }
+        if self.pointer_members.contains(base) {
+            return BaseOrigin::PointerMember;
+        }
+        BaseOrigin::Storage
     }
 
     /// Position of the parameter a `param:` base names, when it is a
@@ -349,6 +418,11 @@ struct PointerAnalyzer {
     // which object an argument hands to a callee (see
     // `argument_object_base`).
     array_objects: HashSet<String>,
+    // Field paths appearing in this function whose terminal member is
+    // POINTER-typed, spelled exactly as `extract_array_base` records them
+    // (`pPg->aData`, `cert->tbsCertificate.beg`). Such a path is a base that
+    // does NOT name storage; see `collect_pointer_members`.
+    pointer_members: HashSet<String>,
 }
 
 impl PointerAnalyzer {
@@ -357,6 +431,7 @@ impl PointerAnalyzer {
             variable_arrays: HashMap::new(),
             pointer_vars: HashSet::new(),
             array_objects: HashSet::new(),
+            pointer_members: HashSet::new(),
         }
     }
 
@@ -365,6 +440,7 @@ impl PointerAnalyzer {
             variable_arrays: base.variable_arrays.clone(),
             pointer_vars: base.pointer_vars.clone(),
             array_objects: base.array_objects.clone(),
+            pointer_members: base.pointer_members.clone(),
         }
     }
 
@@ -412,6 +488,48 @@ impl PointerAnalyzer {
                     self.process_assignment(&n, source);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Record every field path in `func` whose terminal member is declared as
+    /// a POINTER.
+    ///
+    /// `extract_array_base` keeps a field path whole -- `u.int_array`,
+    /// `pPg->aData` -- so two different paths read as two different arrays.
+    /// That is right for an ARRAY member, which is storage of its own
+    /// (ARR36-C-EX1), and wrong for a pointer member, whose target this frame
+    /// cannot name any better than it can name a pointer parameter's
+    /// (task 935). The member's declared type is what separates the two, so
+    /// it is read rather than guessed at from the path.
+    ///
+    /// A path whose type does not resolve -- no `-d`, and no declaration in
+    /// the file either -- is deliberately left as storage-naming. Absence of
+    /// type information is not evidence that a member is a pointer, and
+    /// treating it as such would switch off the EX1 detection wholesale on
+    /// every single-file run.
+    fn collect_pointer_members(
+        &mut self,
+        func: &Node,
+        source: &str,
+        struct_field_types: &HashMap<String, HashMap<String, String>>,
+    ) {
+        if struct_field_types.is_empty() {
+            return;
+        }
+        let type_map = overflow_helpers::collect_variable_types(func, source);
+        for field in query::find_descendants_of_kind(*func, "field_expression") {
+            let resolved = ast_utils::resolve_field_expression_type(
+                &field,
+                source,
+                &type_map,
+                struct_field_types,
+            );
+            // `extract_field_decl` spells a pointer member's type with a
+            // trailing `*`; an array member keeps the element type alone.
+            if resolved.is_some_and(|field_type| field_type.trim_end().ends_with('*')) {
+                self.pointer_members
+                    .insert(ast_utils::get_node_text(&field, source).to_string());
             }
         }
     }
@@ -811,8 +929,13 @@ impl PointerAnalyzer {
                     self.array_objects.contains(&name) || !self.pointer_vars.contains(&name);
                 names_storage.then_some(name)
             }
-            // Two members of one struct are two objects.
-            "field_expression" => Some(text(node)),
+            // Two members of one struct are two objects -- unless the member
+            // is a pointer, in which case what the callee compares is its
+            // target, which this frame cannot name (task 935).
+            "field_expression" => {
+                let path = text(node);
+                (!self.pointer_members.contains(&path)).then_some(path)
+            }
             // `&matrix[i]` is in `matrix`.
             "subscript_expression" => {
                 self.object_of_lvalue(&node.child_by_field_name("argument")?, source)
@@ -902,6 +1025,32 @@ impl PointerAnalyzer {
             _ => None,
         }
     }
+}
+
+/// The struct field types in scope for one file: the prescan's project-wide
+/// map, overlaid with the declarations the file makes itself.
+///
+/// The file's own pass is what keeps the member-type test working on a run
+/// with no `-d`, where `project` is empty -- the canonical
+/// cross-file-OR-same-file wiring. The project map is borrowed rather than
+/// copied when the file declares no structs of its own, which is the common
+/// case for a `.c` file that includes its headers.
+fn merge_file_struct_fields<'a>(
+    project: &'a HashMap<String, HashMap<String, String>>,
+    node: &Node,
+    source: &str,
+) -> Cow<'a, HashMap<String, HashMap<String, String>>> {
+    let mut local = HashMap::new();
+    prescan::collect_struct_definitions(node, source, &mut local);
+    if local.is_empty() {
+        return Cow::Borrowed(project);
+    }
+    if project.is_empty() {
+        return Cow::Owned(local);
+    }
+    let mut merged = Cow::Borrowed(project);
+    merged.to_mut().extend(local);
+    merged
 }
 
 fn get_operator(node: &Node, source: &str) -> Option<String> {

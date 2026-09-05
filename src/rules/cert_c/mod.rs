@@ -925,7 +925,7 @@ impl RuleRegistry {
         registry.register(Box::new(arr02_c::Arr02C));
         registry.register(Box::new(arr30_c::Arr30C::new()));
         registry.register(Box::new(arr32_c::Arr32C));
-        registry.register(Box::new(arr36_c::Arr36C));
+        registry.register(Box::new(arr36_c::Arr36C::new()));
         registry.register(Box::new(arr37_c::Arr37C));
         registry.register(Box::new(arr38_c::Arr38C::new()));
         registry.register(Box::new(arr39_c::Arr39C));
