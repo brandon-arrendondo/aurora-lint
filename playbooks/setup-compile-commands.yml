@@ -72,6 +72,11 @@
       apt:
         name:
           - bear                # captures compile_commands.json from `make`
+          - ninja-build         # sel4: the Makefile generator cannot build it (see header)
+          - libxml2-utils       # sel4: tools/xmllint.sh validates syscall.xml against its xsd
+          - python3-ply         # sel4: tools/bitfield_gen.py is a ply/yacc-based generator
+          - python3-lxml        # sel4: libsel4/tools/syscall_stub_gen.py
+          - python3-typing-extensions  # sel4: tools/umm.py, imported by bitfield_gen.py
           - autoconf-archive    # pure-ftpd's configure.ac needs AX_CHECK_COMPILE_FLAG
           - libpsl-dev          # curl: full feature parity instead of -DCURL_USE_LIBPSL=OFF
           - libgl1-mesa-dev     # raylib
@@ -304,6 +309,17 @@
     # the DB's 21 include paths point at, which is what task 580 had to work
     # around the absence of. Without the build, sqc warns that those six
     # paths do not exist.
+    # Both sel4 tasks pin PATH to the system interpreter first, deliberately.
+    # seL4's build shells out to a bare `python3` and its generators need
+    # `ply` (bitfield_gen.py), which is installed above as the apt package
+    # python3-ply -- i.e. into /usr/bin/python3 only. Left to ambient PATH the
+    # build instead picks up whatever venv happened to invoke ansible (this
+    # repo's own dev venv, since that is where ansible is installed), which
+    # has no ply and fails at `[4/49] Generate syscall invocations`. cmake,
+    # ninja and gcc all live in /usr/bin already, so the prefix changes
+    # nothing else. CMake caches the resolved interpreter at configure time,
+    # so a build dir configured against the wrong python must be deleted
+    # rather than re-run.
     - name: sel4 - configure (out-of-tree, Ninja generator)
       command: >-
         cmake -S {{ bench_root }}/sel4 -B {{ cc_build_root }}/sel4 -G Ninja
@@ -312,11 +328,15 @@
         -DCROSS_COMPILER_PREFIX=
       args:
         creates: "{{ cc_build_root }}/sel4/build.ninja"
+      environment:
+        PATH: "/usr/bin:/bin:{{ ansible_env.PATH }}"
 
     - name: sel4 - build (generates the *_gen.h headers the DB references)
       command: cmake --build {{ cc_build_root }}/sel4 -j{{ ansible_processor_vcpus | default(4) }}
       args:
         creates: "{{ bench_root }}/sel4/compile_commands.json"
+      environment:
+        PATH: "/usr/bin:/bin:{{ ansible_env.PATH }}"
 
     - name: sel4 - copy compile_commands.json into the checkout
       copy:
