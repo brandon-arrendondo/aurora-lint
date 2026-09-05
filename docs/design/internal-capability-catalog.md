@@ -356,6 +356,35 @@ are two different dictionary keys.
 any expression node within a single-file analysis. Already adopted by
 MEM30-C, DCL13-C, MEM31-C.
 
+### `src/analyze/argument_objects.rs`
+**Problem solved:** whether a call argument NAMES a storage object, answered
+in the caller's frame. Distinct from `points_to`'s `LValue`, which
+canonicalizes *which* location an expression denotes; this answers the prior
+question of whether the expression pins down an object at all. A declared
+array, `&scalar`, `&s.member`, `&arr[i]`, a literal and a fresh allocation
+do; a bare pointer variable and `&ptr` deliberately do **not**, because
+`f(&pos, end)` passes a cursor and its bound and which buffer they walk is
+no more knowable in the caller than in the callee.
+
+| Item | Signature | Description |
+|---|---|---|
+| `ObjectFrame` (struct) | `pointer_vars` / `array_objects` / `pointer_members` | What one function's frame knows about the names in scope: declared as a pointer, declared as storage, and which field paths are pointer-typed. |
+| `ObjectFrame::collect_file_scope` | `(&mut self, unit: &Node, source: &str)` | Records the translation unit's file-scope declarations (direct children only, descending `preproc_*`). |
+| `ObjectFrame::collect_function` | `(&mut self, func: &Node, source: &str)` | Records one function's declarations and parameters. |
+| `ObjectFrame::record_pointer_members` | `(&mut self, func, source, struct_field_types)` | Records the field paths in `func` whose terminal member is pointer-typed. An unresolved member type is left out, so it keeps naming storage (task 935). |
+| `ObjectFrame::argument_object_base` | `(&self, node: &Node, source: &str) -> Option<String>` | The storage object an argument expression names, or `None` when this frame cannot name one. |
+| `declared_pointers` | `(node: &Node, source: &str) -> Vec<DeclaredPointer>` | Every name a `declaration` node introduces with a pointer or array declarator, with `is_array` and the `init_declarator` carrying any initializer. |
+| `argument_nodes` | `(args: &Node) -> Vec<Node>` | A call's argument expressions in order, punctuation and comments skipped. |
+| `distinct_object_pairs` | `(frame, args: &[Node], source) -> Vec<(usize, usize)>` | The `(lower, higher)` argument positions at which ONE call site passes two named, different objects. Per-call-site by construction: two callers each naming one object prove nothing, because no single path holds both. |
+
+**Wiring pattern:** dual, and both halves are live. ARR36-C builds an
+`ObjectFrame` per function and reads the call sites in the file under check;
+the prescan (`collect_callsite_distinct_objects_from_tree`) runs the same
+predicate over every translation unit and aggregates the result onto
+`FunctionSummary::distinct_object_param_pairs`, which the rule merges in
+through `set_project_context`. The file-local half is what still answers on
+a run with no `-d` (task 936).
+
 ## Constant folding & value-range analysis
 
 ### `src/analyze/const_eval.rs`
@@ -531,7 +560,8 @@ task 401), `can_return_null`, `returns_allocation`, `checks_null_params`,
 `callsite_param_null_states`, `return_range`, `param_passthroughs`,
 `frees_param_fields`, `has_env03_taint_source`, `returns_tainted`,
 `closes_params`, `callsite_param_buffer_size`, `produces_param_buffer_size`,
-and several more callsite-specific maps.
+`distinct_object_param_pairs` (task 936), and several more callsite-specific
+maps.
 
 **Wiring pattern:** `compute_summaries` runs once (typically during
 prescan) over the whole translation unit, then the `propagate_transitive_*`

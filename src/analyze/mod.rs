@@ -1,3 +1,6 @@
+/// Which storage object a call argument names, in the caller's frame
+/// (task 936).
+pub mod argument_objects;
 /// Shared AST-based fixed-array-declaration size resolution (task 504).
 pub mod array_size;
 pub mod buffer_size;

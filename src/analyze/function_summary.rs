@@ -45,6 +45,21 @@ pub struct FunctionSummary {
     /// Aggregated null states of arguments at all call sites (populated by prescan second pass).
     /// Maps parameter index → joined NullState from all callers.
     pub callsite_param_null_states: HashMap<usize, NullState>,
+    /// Argument-position pairs `(lower, higher)` at which SOME call site
+    /// anywhere in the pre-scanned project hands this function two named,
+    /// DIFFERENT storage objects.
+    ///
+    /// The caller-side fact ARR36-C's parameter model needs: two pointer
+    /// parameters are taken to share an object unless a caller proves
+    /// otherwise, and a callee whose callers all live in other translation
+    /// units has no such proof in its own file (task 936). Distinctness is
+    /// per CALL SITE rather than per position -- one caller passing `a` at
+    /// index 0 and a different caller passing `b` at index 1 proves nothing,
+    /// because no single path ever holds both. One proving call site IS
+    /// enough: the comparison inside the callee is undefined whenever that
+    /// caller's path runs.
+    #[serde(default)]
+    pub distinct_object_param_pairs: HashSet<(usize, usize)>,
     /// Aggregated null states of struct fields within arguments at all call sites.
     /// Maps parameter index → field name → joined NullState from all callers.
     /// Used for variant 67 struct field null propagation across functions.

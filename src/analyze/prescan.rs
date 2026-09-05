@@ -1,3 +1,4 @@
+use super::argument_objects::{self, ObjectFrame};
 use super::const_eval;
 use super::context::ProjectContext;
 use super::function_summary::{self, FunctionSummary};
@@ -47,6 +48,10 @@ struct FilePrescanResult {
     callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>>,
     callsite_field_buf_args: HashMap<String, Vec<Vec<HashMap<String, usize>>>>,
     callsite_taint_args: HashMap<String, Vec<Vec<bool>>>,
+    /// Per callee name, the argument-position pairs at which a call site in
+    /// this file hands the callee two DIFFERENT named storage objects
+    /// (task 936).
+    callsite_distinct_objects: HashMap<String, HashSet<(usize, usize)>>,
     source_path: Option<PathBuf>,
     /// File-scope variable names declared here with a plain (non-pointer,
     /// non-array, non-function) declarator -- candidates for
@@ -88,6 +93,7 @@ impl FilePrescanResult {
             callsite_buf_args: HashMap::new(),
             callsite_field_buf_args: HashMap::new(),
             callsite_taint_args: HashMap::new(),
+            callsite_distinct_objects: HashMap::new(),
             source_path: None,
             value_only_global_candidates: HashSet::new(),
             pointer_named_globals: HashSet::new(),
@@ -213,6 +219,12 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
                 &result.macro_aliases,
                 &mut result.callsite_taint_args,
             );
+            collect_callsite_distinct_objects_from_tree(
+                &root,
+                &source,
+                &result.struct_field_types,
+                &mut result.callsite_distinct_objects,
+            );
             result.source_path = Some(file_path.to_path_buf());
         }
     }
@@ -316,6 +328,7 @@ fn prescan_file_list(
     let mut callsite_field_buf_args: HashMap<String, Vec<Vec<HashMap<String, usize>>>> =
         HashMap::new();
     let mut callsite_taint_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
+    let mut callsite_distinct_objects: HashMap<String, HashSet<(usize, usize)>> = HashMap::new();
     let mut source_files: Vec<PathBuf> = Vec::new();
     let mut file_functions: HashMap<PathBuf, Vec<String>> = HashMap::new();
     let mut value_only_global_candidates: HashSet<String> = HashSet::new();
@@ -424,6 +437,12 @@ fn prescan_file_list(
         for (callee, args) in r.callsite_field_args {
             callsite_field_args.entry(callee).or_default().extend(args);
         }
+        for (callee, pairs) in r.callsite_distinct_objects {
+            callsite_distinct_objects
+                .entry(callee)
+                .or_default()
+                .extend(pairs);
+        }
         for (callee, args) in r.callsite_pointee_args {
             callsite_pointee_args
                 .entry(callee)
@@ -505,6 +524,12 @@ fn prescan_file_list(
     );
 
     aggregate_callsite_field_null_states(&callsite_field_args, &mut function_summaries);
+
+    for (callee, pairs) in callsite_distinct_objects {
+        if let Some(summary) = function_summaries.get_mut(&callee) {
+            summary.distinct_object_param_pairs.extend(pairs);
+        }
+    }
 
     aggregate_callsite_pointee_null_states(&callsite_pointee_args, &mut function_summaries);
 
@@ -1349,6 +1374,85 @@ pub(crate) fn aggregate_callsite_int_args(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Record, for every direct call in this translation unit, the argument
+/// positions at which the CALLER hands the callee two named, DIFFERENT
+/// storage objects.
+///
+/// The cross-file half of ARR36-C's parameter model (task 936). The rule
+/// itself reads only the call sites in the file under check, so a function
+/// whose every caller lives in another translation unit has no proof
+/// available and its parameter pair stays assumed to share an object. This
+/// runs the same predicate -- `ObjectFrame::argument_object_base`, the code
+/// the rule uses -- over every file, and the result is aggregated onto
+/// `FunctionSummary::distinct_object_param_pairs`.
+///
+/// Each call site is reduced to its proven pairs on the spot rather than
+/// kept as a vector of bases: distinctness is a per-call-site fact, so
+/// nothing outside one argument list is ever compared, and what survives to
+/// the merge is a handful of index pairs per callee instead of every
+/// argument spelling in the project.
+///
+/// `struct_field_types` is this FILE's own struct declarations -- the merged
+/// project map does not exist yet at this point in the prescan -- so a
+/// member declared in a header this file does not itself declare stays
+/// unresolved and keeps naming storage, exactly as the rule behaves on a run
+/// with no `-d` (task 935).
+pub(crate) fn collect_callsite_distinct_objects_from_tree(
+    node: &Node,
+    source: &str,
+    struct_field_types: &HashMap<String, HashMap<String, String>>,
+    callsite_distinct_objects: &mut HashMap<String, HashSet<(usize, usize)>>,
+) {
+    let mut file_scope = ObjectFrame::new();
+    file_scope.collect_file_scope(node, source);
+
+    for func in query::find_descendants_of_kind(*node, "function_definition") {
+        // Only a name resolves to a definition; `obj->cb(...)` is opaque. A
+        // one-argument call can never carry a pair. Gathered before any frame
+        // is built so a function that makes no such call costs one walk.
+        let calls: Vec<(Node, Vec<Node>)> =
+            query::find_descendants_of_kind(func, "call_expression")
+                .into_iter()
+                .filter_map(|call| {
+                    let callee = call.child_by_field_name("function")?;
+                    let args = call.child_by_field_name("arguments")?;
+                    if callee.kind() != "identifier" {
+                        return None;
+                    }
+                    let args = argument_objects::argument_nodes(&args);
+                    (args.len() >= 2).then_some((callee, args))
+                })
+                .collect();
+        if calls.is_empty() {
+            continue;
+        }
+
+        let mut frame = file_scope.clone();
+        frame.collect_function(&func, source);
+        // `pointer_members` is read only for an `&`-of-field argument, and
+        // resolving every field type in the function is the expensive half of
+        // the frame, so it is skipped when no argument mentions a field at
+        // all.
+        if calls.iter().any(|(_, args)| {
+            args.iter()
+                .any(|arg| !query::find_descendants_of_kind(*arg, "field_expression").is_empty())
+        }) {
+            frame.record_pointer_members(&func, source, struct_field_types);
+        }
+
+        for (callee, args) in calls {
+            let pairs = argument_objects::distinct_object_pairs(&frame, &args, source);
+            if pairs.is_empty() {
+                continue;
+            }
+            callsite_distinct_objects
+                .entry(get_node_text(&callee, source).to_string())
+                .or_default()
+                .extend(pairs);
         }
     }
 }

@@ -1159,3 +1159,70 @@ fn crossfile_sibling_header_suppresses_public_api_without_d_flag() {
         flagged_names
     );
 }
+
+fn manifest_arr36() -> PathBuf {
+    fixtures().join("manifest_arr36.toml")
+}
+
+/// The cross-file half of ARR36-C's parameter model (task 936).
+///
+/// `span(const char *pos, const char *end)` is checked with no caller in its
+/// own file, so the rule's file-local call-site pass has nothing to read and
+/// the two parameters stay assumed to share an object. Only the prescan sees
+/// `caller.c` handing it two different declared arrays.
+#[test]
+fn arr36_cross_file_caller_proves_distinct_arrays() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let project = fixtures().join("crossfile_arr36/distinct");
+
+    let (code, _, _) = run_sqc(&[
+        project.join("callee.c").to_str().unwrap(),
+        "-m",
+        manifest_arr36().to_str().unwrap(),
+        "-d",
+        project.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert_eq!(
+        violations.len(),
+        1,
+        "cross-file caller passes two distinct arrays, so `end - pos` is reportable: {}",
+        content
+    );
+    assert_eq!(violations[0]["rule_id"], "ARR36-C");
+}
+
+/// The control for the test above: the same callee, whose only caller passes a
+/// cursor and its bound derived from ONE buffer. Nothing proves two objects,
+/// so the parameter pair stays assumed to share one.
+#[test]
+fn arr36_cross_file_caller_passing_one_buffer_proves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let project = fixtures().join("crossfile_arr36/shared");
+
+    let (code, _, _) = run_sqc(&[
+        project.join("callee.c").to_str().unwrap(),
+        "-m",
+        manifest_arr36().to_str().unwrap(),
+        "-d",
+        project.to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(
+        violations.is_empty(),
+        "one buffer walked by a cursor and its bound is not two arrays: {}",
+        content
+    );
+}
