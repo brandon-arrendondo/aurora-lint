@@ -52,8 +52,12 @@ under ``src/rules/cert_c/<CATEGORY>/<RULE-ID>/tests/``:
         testcases_proper_signal_handling.c
         ...
 
-**Current coverage**: 3,322 tests across 290 rules (~3,070 C test files,
-~1,820 fail + ~1,250 pass). All tests pass; zero duplicates.
+**Current coverage**: 3,574 C fixtures across 309 rules — 1,975 ``fail/``
+(must-detect), 1,594 ``pass/`` (must-not-detect) and 5 ``expected_fail/``
+(known limitations). These generate 4,032 Rust tests; all pass, 10 are
+``#[ignore]``\ d (the ``expected_fail`` tier plus fixtures for rules that
+are tracked but not implemented). Regenerate these counts with
+``python3 scripts/fixture_provenance.py``.
 
 Tests are auto-generated into Rust test functions from ``.c`` files — no embedded
 ``#[cfg(test)]`` modules in rule implementation files. Run tests with:
@@ -84,6 +88,128 @@ Test cases map these directly:
 
 - ``fail/`` cases encode non-compliant patterns (expected violations)
 - ``pass/`` cases encode compliant solutions (expected clean)
+
+Fixture Provenance
+~~~~~~~~~~~~~~~~~~
+
+Not every fixture carries the same evidentiary weight, and a raw pass/fail
+count hides the difference. Each fixture declares its origin on a ``Source:``
+line in its header comment:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Tier
+     - Wiki-derived
+     - Locally authored
+     - Undeclared
+     - Total
+   * - ``fail/`` (must-detect)
+     - 603
+     - 1,293
+     - 79
+     - 1,975
+   * - ``pass/`` (must-not-detect)
+     - 730
+     - 776
+     - 88
+     - 1,594
+   * - ``expected_fail/``
+     - 4
+     - 0
+     - 1
+     - 5
+   * - **All**
+     - **1,337**
+     - **2,069**
+     - **168**
+     - **3,574**
+
+**Wiki-derived** fixtures come from the CERT C standard's own compliant and
+non-compliant code examples. They are third-party evidence: SEI wrote them
+against the rule text with no knowledge of SqC, so a rule agreeing with them
+is a conformance result rather than a self-consistency check. 300 of the 309
+rules with fixtures have at least one; the 9 without are regression-tested
+only.
+
+**Locally authored** fixtures were written in this repo, almost all of them
+to pin a specific defect found in real code or to lock in a false-positive
+fix. They are regression evidence and nothing more — we chose both the input
+and the expected answer, so they cannot corroborate that SqC reads the
+standard correctly.
+
+**Undeclared** fixtures simply predate the header convention. Every one
+inspected is locally authored (the ``BRULE-*`` JPL rules, which have no CERT
+wiki page at all, and several ``WIN*`` rules), but they are counted
+separately rather than assumed.
+
+Regenerate with ``python3 scripts/fixture_provenance.py --containment``.
+
+.. warning::
+
+   The split above is what each fixture *declares*. A wiki example lightly
+   edited to compile is still wiki-derived; one rewritten until it matched
+   what the checker happens to look for is not, and no header can tell those
+   apart. ``scripts/audit_wiki_fixture_staleness.py`` is the independent
+   check: it re-fetches each rule's current page and measures what fraction
+   of a wiki code block's lines still appear in the fixture claiming to
+   derive from it. Of 1,316 wiki fixtures audited across 295 rules, 1,209
+   (91.9%) reproduce the current wiki block line-for-line and 21 more are
+   above 85% containment — so the tier is overwhelmingly genuine extraction,
+   not paraphrase. The remaining 86 (30 substantially edited, 32 mostly
+   rewritten, 24 with no overlap against the current page) are the ones
+   where only a human can say whether the fixture drifted, the wiki page
+   changed under it, or it was never a faithful extraction; 57 are flagged
+   stale by that auditor's own threshold.
+
+What the Fixture Corpus Does and Does Not Measure
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The corpus is a **conformance and regression gate, not a benchmark.** It is
+never reported alongside Juliet or the real-world oracle: those measure
+precision against labels SqC did not choose, while most of this corpus is
+labeled by the same people who wrote the analyzer.
+
+Scoring the corpus settles how much drift that gate has actually absorbed.
+``cargo test`` runs on every push (``.github/workflows/ci.yml``), so a rule
+change that breaks any fixture — its own or another rule's — cannot merge:
+**zero of the 309 rules fail their own fixtures**, and that is a property of
+the gate, not evidence about the rules.
+
+Two limits of the harness are worth stating, because the green result does
+not cover them.
+
+**The generated tests do not run the analyzer's real context.** Each test
+calls ``rule.check()`` directly and builds context itself, via
+``prescan_single_tree`` — a helper with no other caller in ``src/``, so the
+harness reimplements what ``src/analyze/mod.rs`` does for a real scan, and
+the two have drifted. Only 39 of the 1,594 ``pass/`` fixtures opt into
+context at all (a ``// sqc-test: prescan`` marker); the rest are checked
+with none. Scanning the corpus with the shipped binary instead finds **17
+violations on 11 must-not-detect fixtures across 9 rules** (ARR38-C,
+DCL31-C, DCL41-C, ENV03-C, EXP33-C, EXP34-C, INT10-C, INT32-C, INT33-C)
+whose unit tests pass. Each reproduces on the single file with only the
+owning rule enabled, so it is neither cross-rule interference nor an
+artifact of scanning a fixture directory. All 11 are among the 39 that ask
+for context — the divergence is in the context, not the rules.
+
+**Cross-rule interference is untested.** A fixture is only ever checked
+against its owning rule, so a ``pass/`` fixture for one rule is never
+evidence about any other. Running the full rule set over the ``pass/`` tier
+produces 19,712 findings from other rules on 1,472 of the fixtures,
+concentrated in broad recommendations (EXP12-C, DCL15-C, ERR33-C). **That
+number is not a false-positive count**: a fixture written to be compliant
+with EXP34-C has no obligation to be clean under DCL15-C, and most of these
+are legitimate. It is reported only to show the tier's blind spot has real
+volume behind it.
+
+Scoring the ``pass/`` tier with the full rule set also surfaced a
+performance defect the per-rule harness cannot see: CON40-C, EXP33-C and
+MSC13-C each cost cubic time in block-nesting depth (roughly 8× per
+doubling — 46 ms at depth 100, 12 s at depth 800, independently per rule).
+MEM30-C's own 2,000-level ``pass/`` fixture makes a full-rule-set scan of
+that one file effectively hang, while its MEM30-C-only unit test finishes in
+milliseconds.
 
 NIST Juliet Test Suite Benchmarking
 -----------------------------------
@@ -504,11 +630,10 @@ pointer is truncated on LP64; C99 removed implicit declarations and C23
 makes them an error — on code this corpus does not contain. Quoting that
 number as a rule-quality measure is a category error.
 
-The material to close this gap already exists in the repo: **1,968
-must-detect** fixtures (``src/rules/cert_c/*/*/tests/fail/*.c``, across 306
-rules) and **1,576 must-not-detect** fixtures
-(``src/rules/cert_c/*/*/tests/pass/*.c``, across 308 rules), labeled by
-construction — 309 distinct rules carry at least one. 121 of the 125
+The material to close this gap already exists in the repo: **1,975
+must-detect** fixtures (``src/rules/cert_c/*/*/tests/fail/*.c``) and **1,594
+must-not-detect** fixtures (``src/rules/cert_c/*/*/tests/pass/*.c``), labeled
+by construction — 309 distinct rules carry at least one. 121 of the 125
 unvalidated rules already have a must-detect fixture — only ``FLP01-C``,
 ``MSC18-C``, ``MSC25-C`` and ``ENV04-C`` have none. Of those, only
 ``FLP01-C`` is implemented (``flp01_c.rs`` exists) and simply lacks a fail
@@ -518,5 +643,12 @@ missing piece; see the "Tracked but not implemented" section of
 :doc:`configuration` for why they are unimplemented.
 Today those fixtures run only as pass/fail unit tests and feed no measured
 metric, so a rule can be fully exercised by tests and still read as having
-no detection evidence. Scoring them as a third benchmark tier is tracked as
-tasks 693–696.
+no detection evidence.
+
+Note what that does *not* license. The corpus is a conformance and
+regression gate and is never reported alongside Juliet or the real-world
+oracle — see `What the Fixture Corpus Does and Does Not Measure`_ for the
+scoring result and for the two blind spots (harness context divergence and
+cross-rule interference) that the green suite does not cover. Only the
+wiki-derived tier is third-party evidence, and `Fixture Provenance`_ gives
+that split.
