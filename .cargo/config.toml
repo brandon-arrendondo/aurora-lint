@@ -1,0 +1,8 @@
+# A generated fixture test now builds the same CFGs and value ranges a real scan
+# builds (build.rs). One fixture -- MEM30-C's 2,000-level if-nesting stack-safety
+# case -- recurses deep enough to overflow a default 2 MiB test thread in an
+# unoptimized build, aborting the whole run; the release binary walks the same
+# file without trouble. Raise the stack every thread starts with rather than
+# shrinking the fixture, which is testing exactly that depth.
+[env]
+RUST_MIN_STACK = "33554432"

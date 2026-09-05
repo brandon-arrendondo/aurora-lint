@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: EXP34-C
  * Source: testcases (task 195 Part A -- macro write-through-param)

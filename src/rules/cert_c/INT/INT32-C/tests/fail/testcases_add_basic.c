@@ -1,7 +1,3 @@
-// sqc-test: prescan
-// Needs the project context a real scan builds: the INT3x provenance gate
-// runs in every configuration now, and without context it has no summaries
-// to resolve this file's own callees against.
 /*
  * Rule: INT32-C
  * Source: testcases

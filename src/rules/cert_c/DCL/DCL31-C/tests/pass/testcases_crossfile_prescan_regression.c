@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: DCL31-C
  * Source: testcases

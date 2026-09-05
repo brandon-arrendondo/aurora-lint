@@ -702,9 +702,6 @@ fn generate_test_function(
         None => String::new(),
     };
 
-    // Check whether the test file opts into project context
-    let needs_prescan = check_test_needs_prescan(test_path);
-
     // Check if rule is implemented by reading the TOML file
     let toml_path = format!("{}/{}.toml", rule_base_path, rule_id);
     let is_enabled = check_if_rule_enabled(&toml_path)?;
@@ -752,36 +749,31 @@ fn generate_test_function(
     )?;
     writeln!(f, "    ")?;
 
-    if needs_prescan {
-        // A fixture carrying `// sqc-test: prescan` is analysed with the context
-        // the shipped scan builds for it: a prescan of the file itself (what `-d`
-        // gives a real run -- see `prescan_single_file`), then CFGs and VRA
-        // through the same `build_file_analysis` the scan calls. Both come from
-        // the scan's own code rather than a test-only reimplementation of it
-        // (task 951, this repo).
-        //
-        // A fixture WITHOUT the marker still gets no context, no CFGs and no value
-        // ranges -- an analysis strictly weaker than the one that ships. Removing
-        // that gate is the rest of 951 and is a separate change: see the follow-up
-        // task, which carries the measured fallout.
-        writeln!(
-            f,
-            "    let context = crate::analyze::prescan::prescan_single_file(&test_path, rule.needs_vra())"
-        )?;
-        writeln!(
-            f,
-            "        .unwrap_or_else(|e| panic!(\"Failed to prescan {{:?}}: {{}}\", test_path, e));"
-        )?;
-        writeln!(f, "    rule.set_project_context(&context);")?;
-        writeln!(f, "    let analysis = crate::analyze::build_file_analysis(")?;
-        writeln!(f, "        &tree.root_node(),")?;
-        writeln!(f, "        &source,")?;
-        writeln!(f, "        &context,")?;
-        writeln!(f, "        rule.needs_vra(),")?;
-        writeln!(f, "    );")?;
-        writeln!(f, "    analysis.apply_to(rule);")?;
-        writeln!(f, "    ")?;
-    }
+    // Every fixture is analysed with the context the shipped scan builds for it:
+    // a prescan of the file itself (what `-d` gives a real run -- see
+    // `prescan_single_file`), then CFGs and VRA through the same
+    // `build_file_analysis` the scan calls. Both come from the scan's own code
+    // rather than a test-only reimplementation of it. There is no opt-in: a
+    // fixture checked without context exercises an analysis strictly weaker than
+    // anything the tool ships, and a green result under it says nothing about
+    // what a real scan does.
+    writeln!(
+        f,
+        "    let context = crate::analyze::prescan::prescan_single_file(&test_path, rule.needs_vra())"
+    )?;
+    writeln!(
+        f,
+        "        .unwrap_or_else(|e| panic!(\"Failed to prescan {{:?}}: {{}}\", test_path, e));"
+    )?;
+    writeln!(f, "    rule.set_project_context(&context);")?;
+    writeln!(f, "    let analysis = crate::analyze::build_file_analysis(")?;
+    writeln!(f, "        &tree.root_node(),")?;
+    writeln!(f, "        &source,")?;
+    writeln!(f, "        &context,")?;
+    writeln!(f, "        rule.needs_vra(),")?;
+    writeln!(f, "    );")?;
+    writeln!(f, "    analysis.apply_to(rule);")?;
+    writeln!(f, "    ")?;
 
     writeln!(
         f,
@@ -896,17 +888,6 @@ fn check_if_rule_enabled(toml_path: &str) -> Result<bool> {
 
     // Default to false if format is unclear
     Ok(false)
-}
-
-/// Check if a `.c` test file contains the `// sqc-test: prescan` marker.
-///
-/// When present, the generated test builds the project context, CFGs and value
-/// ranges a real scan builds for that file before calling `rule.check()`, so
-/// inter-procedural patterns can be exercised from a single translation unit.
-fn check_test_needs_prescan(test_path: &std::path::Path) -> bool {
-    fs::read_to_string(test_path)
-        .map(|content| content.contains("// sqc-test: prescan"))
-        .unwrap_or(false)
 }
 
 /// Extract a human-readable description from a test `.c` file's header block.

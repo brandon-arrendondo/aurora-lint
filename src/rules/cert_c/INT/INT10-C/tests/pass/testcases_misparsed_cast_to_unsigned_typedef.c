@@ -23,7 +23,6 @@
  * chain is empty and the fixture would pass for the wrong reason.
  */
 
-// sqc-test: prescan
 
 typedef unsigned long word_t;
 typedef word_t my_word_t;

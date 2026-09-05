@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: EXP34-C
  * Source: testcases (Phase 4 — variant 67 struct field null propagation)

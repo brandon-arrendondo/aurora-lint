@@ -7,7 +7,6 @@
  * the first case label, hidden inside a macro sqc's AST-only parse can't
  * expand. Must not be misread as a plain statement preceding the label.
  */
-// sqc-test: prescan
 
 #include <assert.h>
 

@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: MEM30-C
  * Source: hostap wpa_supplicant/eapol_test.c + src/eapol_supp/eapol_supp_sm.h
