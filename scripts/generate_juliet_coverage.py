@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate JULIET_COVERAGE.md from the latest Juliet benchmark run in SQLite.
+"""Generate docs/juliet-coverage.md from the latest Juliet benchmark run in SQLite.
 
 Usage:
     python scripts/generate_juliet_coverage.py            # latest run
@@ -12,7 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "benchmarks.db"
-OUT_PATH = Path(__file__).resolve().parent.parent / "JULIET_COVERAGE.md"
+OUT_PATH = Path(__file__).resolve().parent.parent / "docs" / "juliet-coverage.md"
 
 
 def _cwe_description(cwe_dir_name: str) -> str:
