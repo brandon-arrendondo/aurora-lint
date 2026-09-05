@@ -3743,6 +3743,12 @@ impl Arr30C {
                         matches!(&source[o.start_byte()..o.end_byte()], "++" | "--")
                     })
                 })
+                // An increment sitting inside a *nested* loop is that loop's
+                // to bound, not this one's: seL4's
+                // `while (1) { for (; is_space(*p) && *p != 0; p++); ... }`
+                // is bounded by the inner header, and blaming the outer
+                // `while (1)` for it reports a walk nothing here controls.
+                .filter(|u| Self::innermost_loop_of(u).is_some_and(|l| l.id() == while_node.id()))
                 .filter_map(|u| u.child_by_field_name("argument"))
                 .map(|arg| source[arg.start_byte()..arg.end_byte()].to_string())
                 .collect();
