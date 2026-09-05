@@ -503,7 +503,7 @@ impl CfgBuilder {
 
         let body = node.child_by_field_name("body");
         // Descend through any `#if`/`#ifdef`/`#elif`/`#else` wrappers around a
-        // case arm (task 445) -- sqc has no preprocessor, so every branch is
+        // case arm (task 445) -- aurora-lint has no preprocessor, so every branch is
         // modeled as reachable, same as process_preproc_conditional.
         let case_statement_nodes: Vec<Node> = body
             .map(|b| Self::collect_case_statements_in_switch_body(&b))
@@ -715,7 +715,7 @@ impl CfgBuilder {
 
     /// Model a `#ifdef`/`#ifndef`/`#if`/`#elif` conditional block.
     ///
-    /// sqc has no preprocessor (task 319 / macro-expansion-strategy): it cannot know
+    /// aurora-lint has no preprocessor (task 319 / macro-expansion-strategy): it cannot know
     /// which branch of a conditional-compilation directive would actually be
     /// compiled, so both the consequence and any `#else`/`#elif` alternative must be
     /// modeled as reachable, forking/joining CFG paths — exactly like an `if` with a

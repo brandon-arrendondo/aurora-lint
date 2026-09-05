@@ -1,13 +1,13 @@
-# SqC Static Analysis - Azure DevOps Example Pipeline
+# aurora-lint Static Analysis - Azure DevOps Example Pipeline
 #
-# This pipeline runs SqC CERT C analysis on your C/C++ codebase.
+# This pipeline runs aurora-lint CERT C analysis on your C/C++ codebase.
 # - On PRs: analyzes only changed files (--diff mode)
 # - On push to main: full repository scan
 # - Publishes SARIF results as a build artifact
 #
 # Prerequisites:
 #   - Rust toolchain installed on the agent (or use a Rust container)
-#   - A sqc-rules.toml manifest (or use built-in defaults)
+#   - A aurora-lint-rules.toml manifest (or use built-in defaults)
 
 trigger:
   branches:
@@ -27,10 +27,10 @@ variables:
 
 stages:
   - stage: Build
-    displayName: Build SqC
+    displayName: Build aurora-lint
     jobs:
       - job: BuildSqC
-        displayName: Build SqC binary
+        displayName: Build aurora-lint binary
         steps:
           - task: Cache@2
             inputs:
@@ -42,13 +42,13 @@ stages:
 
           - script: |
               cargo build --release
-            displayName: Build SqC
+            displayName: Build aurora-lint
 
           - task: PublishPipelineArtifact@1
             inputs:
-              targetPath: target/release/sqc
-              artifactName: sqc-binary
-            displayName: Publish SqC binary
+              targetPath: target/release/aurora-lint
+              artifactName: aurora-lint-binary
+            displayName: Publish aurora-lint binary
 
   - stage: Analyze
     displayName: Run Analysis
@@ -63,17 +63,17 @@ stages:
 
           - task: DownloadPipelineArtifact@2
             inputs:
-              artifactName: sqc-binary
+              artifactName: aurora-lint-binary
               targetPath: $(Build.SourcesDirectory)
-            displayName: Download SqC binary
+            displayName: Download aurora-lint binary
 
           - script: |
-              chmod +x sqc
-              ./sqc . --diff \
+              chmod +x aurora-lint
+              ./aurora-lint . --diff \
                 --min-severity Medium \
                 --fail-on-severity High \
                 --export results.sarif
-            displayName: Run SqC (diff mode)
+            displayName: Run aurora-lint (diff mode)
 
           - task: PublishBuildArtifacts@1
             inputs:
@@ -90,17 +90,17 @@ stages:
 
           - task: DownloadPipelineArtifact@2
             inputs:
-              artifactName: sqc-binary
+              artifactName: aurora-lint-binary
               targetPath: $(Build.SourcesDirectory)
-            displayName: Download SqC binary
+            displayName: Download aurora-lint binary
 
           - script: |
-              chmod +x sqc
-              ./sqc . -d . \
+              chmod +x aurora-lint
+              ./aurora-lint . -d . \
                 --min-severity Medium \
                 --fail-on-severity High \
                 --export results.sarif
-            displayName: Run SqC (full scan)
+            displayName: Run aurora-lint (full scan)
 
           - task: PublishBuildArtifacts@1
             inputs:

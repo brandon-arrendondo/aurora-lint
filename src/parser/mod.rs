@@ -9,7 +9,7 @@ pub fn c_language() -> Language {
     lang_parsing_substrate::tree_sitter_c::LANGUAGE.into()
 }
 
-/// A tree-sitter C parser, with sqc's pre-parse source-repair passes wired
+/// A tree-sitter C parser, with aurora-lint's pre-parse source-repair passes wired
 /// into `parse_file`/`parse_source`.
 pub struct CParser {
     parser: Parser,

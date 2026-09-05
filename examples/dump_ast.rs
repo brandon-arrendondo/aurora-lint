@@ -1,5 +1,5 @@
 //! Dev tool: dump the tree-sitter-c parse tree (S-expression) for a snippet,
-//! using the EXACT grammar version sqc depends on. Used by the macro-expansion
+//! using the EXACT grammar version aurora-lint depends on. Used by the macro-expansion
 //! Phase 0 spike (task 184) to confirm how function-like macro invocations
 //! parse. Reads C source from stdin; prints the S-expression and error flag.
 //!
@@ -13,7 +13,9 @@ fn main() {
     std::io::stdin().read_to_string(&mut source).unwrap();
 
     let mut parser = Parser::new();
-    parser.set_language(&sqc::parser::c_language()).unwrap();
+    parser
+        .set_language(&aurora_lint::parser::c_language())
+        .unwrap();
     let tree = parser.parse(&source, None).unwrap();
     let root = tree.root_node();
 

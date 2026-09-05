@@ -7,7 +7,7 @@ of evidence that otherwise look identical in a pass/fail count:
 
   wiki  -- derived from the CERT C wiki's own compliant / non-compliant code
            examples. Third-party: SEI wrote them against the rule text, with
-           no knowledge of sqc, so agreement is external conformance evidence.
+           no knowledge of aurora-lint, so agreement is external conformance evidence.
   local -- written in this repo, nearly always to pin a specific bug found in
            real code or a regression. Regression evidence only: we chose both
            the input and the expected answer.

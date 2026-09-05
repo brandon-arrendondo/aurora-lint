@@ -150,7 +150,7 @@ fn enclosing_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
 
 /// Node kinds whose children are statements at the enclosing block's level.
 ///
-/// The preprocessor wrappers are here because sqc does not preprocess: a
+/// The preprocessor wrappers are here because aurora-lint does not preprocess: a
 /// `#ifdef`-guarded region keeps its own AST node, so the statements inside it
 /// are one level deeper than they will be after preprocessing. Treating them
 /// as block-level is what lets a guard and the arithmetic it protects be seen
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn guard_and_arithmetic_inside_one_preproc_block_are_siblings() {
-        // sqc does not preprocess, so the `#if` keeps its own AST node and the
+        // aurora-lint does not preprocess, so the `#if` keeps its own AST node and the
         // guard would otherwise be invisible to a block-level scan.
         assert!(guarded(
             "int f(int sock){\n#ifdef USE_SELECT\n if(sock<0) return 0;\n return sock+1;\n#endif\n}",

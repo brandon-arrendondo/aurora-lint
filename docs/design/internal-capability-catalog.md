@@ -36,7 +36,7 @@ current source, trust the source and fix this doc in the same commit.
 ## Macro detection & expansion
 
 ### `src/analyze/macro_expand.rs`
-**Problem solved:** sqc has no C preprocessor, so function-like macro
+**Problem solved:** aurora-lint has no C preprocessor, so function-like macro
 *invocations* are opaque to dataflow; this module collects function-like
 macro *definitions* from parsed source (crossing headers via the prescan
 pre-pass) and expands an invocation on demand via token-aware parameter
@@ -64,7 +64,7 @@ for `defined_macro_names`.
 ### `src/analyze/macro_semantics.rs`
 **Problem solved:** shared dataflow semantics for known *external*
 function-like macro families (utlist, uthash, BSD `<sys/queue.h>`) and a
-few project iterator macros — sqc sees `MACRO(head, el, tmp)` as an opaque
+few project iterator macros — aurora-lint sees `MACRO(head, el, tmp)` as an opaque
 `call_expression`, but the macro actually initializes its iterator/temp/out
 arguments and (for loop macros) guarantees the iterator is non-null inside
 the body block. This is a *positional* registry (unlike `macro_expand.rs`,
@@ -456,7 +456,7 @@ Two deliberate exclusions, both load-bearing:
   establishes nothing on the first iteration.
 
 Preprocessor wrappers (`preproc_if`/`ifdef`/`else`/`elif`) are treated as
-block-like when scanning preceding statements: sqc does not preprocess, so a
+block-like when scanning preceding statements: aurora-lint does not preprocess, so a
 guard and the arithmetic it protects can both sit inside one `#if` and would
 otherwise not look like siblings. Dominance is the AST approximation, not a CFG
 dominator computation — `goto` into a guarded region is not modelled — which is
@@ -555,15 +555,15 @@ directly, as MSC12-C's `check_no_effect_expression` does for the BOOT_BSS
 
 ### `src/analyze/suppression.rs`
 **Problem solved:** the mechanism for a human to silence a specific
-finding — either an inline `SQC-SUPPRESS` comment near the violating line,
+finding — either an inline `AURORA-SUPPRESS` comment near the violating line,
 or a wildcard/hash-matched entry in a shared `suppress.toml` config.
 
 | Item | Signature | Description |
 |---|---|---|
-| `Suppression::parse` | `(comment: &str, line_number: usize) -> Option<Self>` | Parses one inline `SQC-SUPPRESS` comment. |
+| `Suppression::parse` | `(comment: &str, line_number: usize) -> Option<Self>` | Parses one inline `AURORA-SUPPRESS` comment. |
 | `Suppression::matches` | `(&self, source: &str, violation_line: usize) -> bool` | True if this suppression covers a violation at `violation_line` (within `MAX_PROXIMITY` = 5 lines, and hash-tamper-checked). |
 | `SuppressionManager::load_from_toml` | `(&mut self, toml_path: &str) -> Result<usize, String>` | Loads `[[suppress]]` entries from `suppress.toml` (shared cross-tool format). |
-| `SuppressionManager::extract_from_source` | `(&mut self, file_path: &str, source: &str)` | Extracts inline `SQC-SUPPRESS` comments from a source file. |
+| `SuppressionManager::extract_from_source` | `(&mut self, file_path: &str, source: &str)` | Extracts inline `AURORA-SUPPRESS` comments from a source file. |
 | `SuppressionManager::should_suppress` | `(...) -> bool` (see source for full signature) | The actual per-violation decision: checked before a violation is finalized. |
 | `SuppressionManager::calculate_suppression_hash` | `(rule_id: &str, code: &str) -> String` | Computes the tamper-detection hash a hash-matched suppression entry is checked against. |
 
@@ -580,7 +580,7 @@ heuristic to disambiguate a genuinely ambiguous case, consider whether
 
 ## Cross-file project context (`ProjectContext` fields, `src/analyze/context.rs`)
 
-**Problem solved:** sqc analyzes one file at a time but many real answers
+**Problem solved:** aurora-lint analyzes one file at a time but many real answers
 (is this name a macro? is this function's summary known? is this struct
 packed?) depend on other files, especially headers. The prescan pre-pass
 (triggered by `-d <dir>`) scans a wider directory tree once and populates
@@ -588,7 +588,7 @@ packed?) depend on other files, especially headers. The prescan pre-pass
 `CertRule::set_project_context(&self, context: &ProjectContext)` to clone
 the fields it needs into its own `RefCell` state (see DCL40-C, and MSC12-C
 task 475, for the canonical wiring pattern). **Without `-d`, this context
-is empty** — running sqc by hand on a single file loses all cross-file
+is empty** — running aurora-lint by hand on a single file loses all cross-file
 recall.
 
 | Field | Type | Description |

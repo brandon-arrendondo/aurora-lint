@@ -1,10 +1,10 @@
 [package]
-name = "sqc"
+name = "aurora-lint"
 version = "0.4.336"
 edition = "2021"
-description = "Software Code Quality - CERT C compliance checker"
+description = "aurora-lint - a fast CERT C static analyzer"
 authors = ["Eric Buehler <eric.buehler@bissell.com>", "Brandon Arrendondo <brandon.arrendondo@bissell.com>"]
-# SqC is Apache-2.0. Third-party SEI CERT C material carried in the tree
+# aurora-lint is Apache-2.0. Third-party SEI CERT C material carried in the tree
 # keeps its own upstream terms (CC BY 4.0 prose, MIT code examples),
 # recorded in NOTICE, thirdparty/cert/LICENSE and docs/licensing.rst.
 license = "Apache-2.0"
@@ -31,8 +31,8 @@ include = [
     "assets/icon.ico",
     # Debian/Fedora generate packaging from the crates.io tarball, not from
     # the GitHub release assets -- so the man page has to ship here or the
-    # resulting .deb/.rpm installs /usr/bin/sqc with no man page.
-    "docs/sqc.1",
+    # resulting .deb/.rpm installs /usr/bin/aurora-lint with no man page.
+    "docs/aurora-lint.1",
     "rules_templates/**",
     "tests/**",
     # Cargo auto-includes README/LICENSE files found anywhere in the tree even
@@ -46,17 +46,17 @@ include = [
 ]
 
 [lib]
-name = "sqc"
+name = "aurora_lint"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sqc"
+name = "aurora-lint"
 path = "src/main.rs"
 
 [features]
 default = []
 # Interactive terminal UI (`--interactive`/`-i`). Disabled by default since the
-# primary use of sqc is CLI + CI/CD; build with `--features tui` to enable it.
+# primary use of aurora-lint is CLI + CI/CD; build with `--features tui` to enable it.
 tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
@@ -67,11 +67,11 @@ ratatui = { version = "0.28", optional = true }
 crossterm = { version = "0.28", optional = true }
 git2 = "0.19"
 # Language detection + the C grammar come from the shared substrate (C-only:
-# tools_sqc is a CERT-C checker). default-features = false keeps discovery
+# aurora-lint is a CERT-C checker). default-features = false keeps discovery
 # scoped to C/.h and avoids pulling in the other 15 grammars. lang-cpp is
 # enabled only for cpp_header::looks_like_cpp (a .h file compiled as C++
 # despite the ambiguous extension, task 571) -- no C++ grammar-based
-# analysis is otherwise performed; tools_sqc stays CERT-C only.
+# analysis is otherwise performed; aurora-lint stays CERT-C only.
 lang-parsing-substrate = { version = "0.7.0", default-features = false, features = ["lang-c", "lang-cpp"] }
 tree-sitter = "0.25"
 streaming-iterator = "0.1"

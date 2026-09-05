@@ -2660,7 +2660,7 @@ impl MemoryAnalyzer {
         // It's OK to free a realloc-invalidated pointer (that's expected when realloc fails)
         //
         // Suppress when a preprocessor *conditional* directive separates this free
-        // from the one that marked the object freed: sqc has no preprocessor, so the
+        // from the one that marked the object freed: aurora-lint has no preprocessor, so the
         // two frees may sit in mutually-exclusive build configurations (sibling
         // `#if`-guarded `else if` arms, or a diverging `#else` branch followed by a
         // fall-through free). Their parse order is not a real execution sequence, so
@@ -3603,7 +3603,7 @@ fn is_preproc_if_zero(node: &tree_sitter::Node, source: &str) -> bool {
 /// Returns true if a C preprocessor *conditional* directive (`#if`, `#ifdef`,
 /// `#ifndef`, `#elif`, `#else`, `#endif`) appears textually in `source` between
 /// byte offsets `start` and `end`. Used to suppress a double-free inferred across
-/// such a directive: without a preprocessor sqc cannot know whether the two free
+/// such a directive: without a preprocessor aurora-lint cannot know whether the two free
 /// sites are co-compiled or live in mutually-exclusive configurations, so their
 /// raw parse order is not a sound execution sequence (task 251). `#define` /
 /// `#include` and other non-conditional directives are ignored — they do not

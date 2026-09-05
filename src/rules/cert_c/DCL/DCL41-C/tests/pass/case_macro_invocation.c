@@ -4,7 +4,7 @@
  * Status: PASS - Should NOT trigger DCL41-C violation
  *
  * CASE(i,str) expands to `case i: assert(...);` -- the invocation is itself
- * the first case label, hidden inside a macro sqc's AST-only parse can't
+ * the first case label, hidden inside a macro aurora-lint's AST-only parse can't
  * expand. Must not be misread as a plain statement preceding the label.
  */
 // sqc-test: prescan

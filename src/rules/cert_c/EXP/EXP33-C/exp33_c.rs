@@ -502,7 +502,7 @@ fn blanked_label_guard_key(node: &Node, boundary: &Node, source: &str) -> Option
 /// EVERY such write site sits under the identical `#ifdef`/`#ifndef` guard
 /// as `read_guard_key` (from [`enclosing_ifdef_guard_key`] at the read site).
 ///
-/// Motivation (task 590): sqc has no preprocessor, so
+/// Motivation (task 590): aurora-lint has no preprocessor, so
 /// `cfg::process_preproc_conditional` models each `#ifdef GUARD ... #endif`
 /// occurrence as an independent "maybe compiled, maybe not" branch+join.
 /// When a variable's only writes AND the read in question are all under the
@@ -554,7 +554,7 @@ fn all_write_sites_ifdef_correlated(
 /// almost always the alternative branch of an `#ifdef`/`#ifndef` whose
 /// other branch assigns a same-named real variable, e.g. sqlite's
 /// `#ifndef SQLITE_OMIT_TRIGGER pTrigger = sqlite3TriggersExist(...); #else
-/// # define pTrigger 0 #endif`. sqc has no preprocessor, so a later,
+/// # define pTrigger 0 #endif`. aurora-lint has no preprocessor, so a later,
 /// unconditional read of `var_name` after the `#endif` looks like a join of
 /// "assigned in one branch, untouched in the other" -- MaybeUninitialized.
 /// But that's not a real risk in any actually-compiled configuration:
@@ -860,7 +860,7 @@ fn check_identifier_read(
         }
     }
 
-    // sqc has no preprocessor, so an `#ifdef GUARD ... #endif` block is
+    // aurora-lint has no preprocessor, so an `#ifdef GUARD ... #endif` block is
     // modeled as possibly-compiled-or-possibly-skipped, independently at
     // each occurrence (see `cfg::process_preproc_conditional`). When a
     // variable is written ONLY inside one or more `#ifdef`/`#ifndef` blocks
@@ -1198,7 +1198,7 @@ fn is_read_context(
     // all: `# define pTrigger 0` inside a conditionally-compiled `#else`
     // branch parses to a `preproc_def` whose `name` field is an `identifier`
     // node holding the same text as an unrelated tracked variable declared
-    // in the surrounding function. sqc has no preprocessor, so this
+    // in the surrounding function. aurora-lint has no preprocessor, so this
     // directive's tokens land as ordinary descendants of the function body
     // and fell through to the catch-all `_ => true` below, misflagging the
     // `#define` line itself as a read of that variable (task 461 category

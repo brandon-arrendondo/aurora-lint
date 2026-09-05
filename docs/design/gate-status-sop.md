@@ -3,7 +3,7 @@
 **Cadence:** weekly, end of week (Friday). Ask Claude Code, in this repo,
 to "run the gate status SOP" (`docs/design/gate-status-sop.md`).
 
-**Purpose:** answer, with evidence rather than gut feel, how close sqc is
+**Purpose:** answer, with evidence rather than gut feel, how close aurora-lint is
 to two gates, and whether the tool's underlying capability is actually
 improving week to week:
 
@@ -255,7 +255,7 @@ The 5-tool comparison table (cppcheck, clang-tidy, Infer, Frama-C) is
 pinned to whatever `sqc_version` its narrative cites — check:
 
 ```bash
-grep -n "SqC v0\.4\.[0-9]*" ../sqc_paper/sqc.tex   # pinned comparison-table version
+grep -n "aurora-lint v0\.4\.[0-9]*" ../sqc_paper/aurora-lint.tex   # pinned comparison-table version
 grep -m1 "^version" Cargo.toml             # current version
 ```
 
@@ -269,10 +269,10 @@ before submission.
 
 **Updated 2026-08-26 (same day, commit 98be5e2f):** re-ran Juliet at
 current HEAD (v0.4.271, `sqc-0.4.271-bf75fcaa`, 79/79 CWEs) and refreshed
-SqC's column + overall stats + prose in `tab:competitor`. cppcheck/
+aurora-lint's column + overall stats + prose in `tab:competitor`. cppcheck/
 clang-tidy/Infer/Frama-C columns still held fixed (unchanged from the
 original study, per the table's own footnote — that part of the gap is
-permanent by design, not drift). SqC's overall TP rate on the 15
+permanent by design, not drift). aurora-lint's overall TP rate on the 15
 overlapping CWEs moved 79.5% → 82.6%; no row's winner flipped. Next
 refresh should re-check the version gap again from v0.4.271, not
 v0.4.116.

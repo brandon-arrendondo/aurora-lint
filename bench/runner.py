@@ -215,7 +215,7 @@ def run_benchmark(fast: bool = True, jobs: int = DEFAULT_JOBS,
         The run_id for the completed benchmark.
     """
     if not SQC_BIN.exists():
-        raise FileNotFoundError(f"sqc binary not found at {SQC_BIN}. Run 'cargo build --release' first.")
+        raise FileNotFoundError(f"aurora-lint binary not found at {SQC_BIN}. Run 'cargo build --release' first.")
     if not JULIET_BASE.is_dir():
         raise FileNotFoundError(f"Juliet test suite not found at {JULIET_BASE}.")
 

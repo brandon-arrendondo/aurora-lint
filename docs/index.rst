@@ -1,8 +1,8 @@
 ========================
-SqC Developer Guide
+aurora-lint Developer Guide
 ========================
 
-SqC (Software Code Quality) is a terminal-based static analysis tool that validates
+aurora-lint is a terminal-based static analysis tool that validates
 C code compliance with `SEI CERT C Coding Standards
 <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard>`_.
 It implements 311 rules (307 enabled by default) across 17 CERT C categories, using tree-sitter for fast

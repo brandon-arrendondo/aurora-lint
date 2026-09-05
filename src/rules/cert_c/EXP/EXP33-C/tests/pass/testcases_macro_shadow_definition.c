@@ -3,7 +3,7 @@
  * Source: testcases
  * Status: PASS - Should NOT trigger EXP33-C violation.
  * `pTrigger` is assigned in the `#ifndef GUARD` branch, but `#define`d to a
- * constant in the `#else` branch instead of being assigned -- sqc has no
+ * constant in the `#else` branch instead of being assigned -- aurora-lint has no
  * preprocessor, so a later, unconditional read looked like a join of
  * "assigned in one branch, untouched in the other" (MaybeUninitialized).
  * But in every actually-compiled configuration this is safe: whichever

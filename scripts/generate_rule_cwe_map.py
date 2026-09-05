@@ -78,7 +78,7 @@ def generate_cwe_manifests(project_dir: Path, cwe_to_rules: dict[str, list[str]]
     """Generate per-CWE TOML manifests with only CWE-matched rules enabled.
 
     Each manifest lives at rules_templates/cwe/CWE-NNN.toml and contains only
-    the rules that map to that CWE, so sqc runs faster and produces less noise.
+    the rules that map to that CWE, so aurora-lint runs faster and produces less noise.
     """
     manifest_dir = project_dir / "rules_templates" / "cwe"
     manifest_dir.mkdir(parents=True, exist_ok=True)

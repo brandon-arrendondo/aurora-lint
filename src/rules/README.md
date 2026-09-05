@@ -1,6 +1,6 @@
 # Rules Module
 
-This module contains the implementation of all CERT C security rules that SqC checks for.
+This module contains the implementation of all CERT C security rules that aurora-lint checks for.
 
 ## Architecture
 

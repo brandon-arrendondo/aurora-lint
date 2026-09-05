@@ -19,7 +19,7 @@ use tree_sitter::Node;
 ///
 /// # Examples
 /// ```no_run
-/// use sqc::utility::cert_c::declarator_utils::has_declarator_of_kind;
+/// use aurora_lint::utility::cert_c::declarator_utils::has_declarator_of_kind;
 /// use tree_sitter::Node;
 /// // Check if field has array declarator:
 /// // let declarator: Node = /* get from parsed AST */;
@@ -48,7 +48,7 @@ pub fn has_declarator_of_kind(node: &Node, target_kind: &str) -> bool {
 ///
 /// # Examples
 /// ```no_run
-/// use sqc::utility::cert_c::declarator_utils::is_array_declarator;
+/// use aurora_lint::utility::cert_c::declarator_utils::is_array_declarator;
 /// use tree_sitter::Node;
 /// // int arr[10];      // returns true
 /// // int *ptr;         // returns false
@@ -62,7 +62,7 @@ pub fn is_array_declarator(node: &Node) -> bool {
 ///
 /// # Examples
 /// ```no_run
-/// use sqc::utility::cert_c::declarator_utils::is_pointer_declarator;
+/// use aurora_lint::utility::cert_c::declarator_utils::is_pointer_declarator;
 /// use tree_sitter::Node;
 /// // int *ptr;         // returns true
 /// // int **ptr;        // returns true
@@ -76,7 +76,7 @@ pub fn is_pointer_declarator(node: &Node) -> bool {
 ///
 /// # Examples
 /// ```no_run
-/// use sqc::utility::cert_c::declarator_utils::is_function_declarator;
+/// use aurora_lint::utility::cert_c::declarator_utils::is_function_declarator;
 /// use tree_sitter::Node;
 /// // int (*fn)(int);   // returns true
 /// // int *ptr;         // returns false

@@ -45,7 +45,7 @@
 //! for a label's non-first statements (a label only ever labels the single
 //! statement immediately after it; anything past that already runs
 //! unconditionally once control reaches it, guard or not). The cost is the
-//! same one `preproc_dangling_else` accepts: this narrow shape loses sqc's
+//! same one `preproc_dangling_else` accepts: this narrow shape loses aurora-lint's
 //! usual "maybe compiled" `#ifdef` branch modeling (`process_preproc_conditional`
 //! in `analyze::cfg`) in exchange for the guarded statements being visible
 //! to analysis at all.

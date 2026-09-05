@@ -1,6 +1,6 @@
 # UI Module
 
-This module provides the interactive terminal user interface for SqC using the ratatui framework.
+This module provides the interactive terminal user interface for aurora-lint using the ratatui framework.
 
 ## Overview
 

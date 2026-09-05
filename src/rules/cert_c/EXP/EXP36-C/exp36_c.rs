@@ -76,7 +76,7 @@ impl CertRule for Exp36C {
                 // Pattern 3: Calls to function-like macros that internally cast
                 // one of their parameters to a pointer type, e.g.
                 // #define READ_UINT16(ptr) (*(uint16_t *)(ptr)) -- the cast is
-                // invisible to Pattern 1 because sqc has no preprocessor and
+                // invisible to Pattern 1 because aurora-lint has no preprocessor and
                 // the macro body is opaque replacement-list text, not parsed
                 // expression nodes.
                 "call_expression" => {

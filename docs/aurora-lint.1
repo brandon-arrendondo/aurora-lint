@@ -1,20 +1,20 @@
-.\" sqc - Software Code Quality
-.\" Man page for sqc(1)
-.TH SQC 1 "September 2026" "sqc 0.4.336" "User Commands"
+.\" aurora-lint - CERT C static analyzer
+.\" Man page for aurora-lint(1)
+.TH aurora-lint 1 "September 2026" "aurora-lint 0.4.336" "User Commands"
 .SH NAME
-sqc \- CERT C compliance checker for C source code
+aurora-lint \- CERT C compliance checker for C source code
 .SH SYNOPSIS
-.B sqc
+.B aurora-lint
 [\fIOPTIONS\fR] [\fIPATH\fR]
 .SH DESCRIPTION
-.B sqc
-(Software Code Quality) is a static analysis tool that checks C source code
+.B aurora-lint
+is a static analysis tool that checks C source code
 for violations of the SEI CERT C Coding Standard. It performs AST-based,
 control-flow, dataflow, and inter-procedural analysis to detect defects
 including null pointer dereferences, integer overflows, buffer overflows,
 use-after-free, and resource leaks.
 .PP
-.B sqc
+.B aurora-lint
 requires no build system, no compilation and no
 .IR compile_commands.json .
 It parses C with tree-sitter rather than driving a compiler, so it needs
@@ -26,7 +26,7 @@ and
 flags are used when supplied \(em they improve cross-file context and reduce
 false positives \(em but are never required.
 .PP
-.B sqc
+.B aurora-lint
 analyzes C
 .RI ( .c
 and
@@ -56,10 +56,10 @@ compiler \fB\-I\fR flag. May be specified multiple times.
 \fB\-\-compile\-commands\fR \fIFILE\fR
 Read include search paths (\fB\-I\fR, \fB\-isystem\fR, \fB\-iquote\fR,
 \fB\-idirafter\fR) and command-line macros (\fB\-D\fR, \fB\-U\fR) out of a
-\fIcompile_commands.json\fR and feed them to the pre-scan. Optional: sqc needs
+\fIcompile_commands.json\fR and feed them to the pre-scan. Optional: aurora-lint needs
 no build system, and without this flag behavior is unchanged. No preprocessor is
 run and the parse tree is untouched, so findings keep their source locations.
-Paths in a database are absolute; if it was generated on another host, sqc warns
+Paths in a database are absolute; if it was generated on another host, aurora-lint warns
 rather than silently resolving nothing.
 .TP
 \fB\-\-system\-includes\fR
@@ -72,8 +72,8 @@ compiler. A compiler that cannot be run is reported and skipped, not fatal.
 .TP
 \fB\-\-suppress\-file\fR \fIFILE\fR
 Path to a
-.I .sqc\-suppress.toml
-suppression file. If not specified, sqc auto-detects a suppression file in
+.I .aurora-lint\-suppress.toml
+suppression file. If not specified, aurora-lint auto-detects a suppression file in
 the project root. The file supports \fB[[suppression]]\fR entries (by hash) and
 \fB[[wildcard]]\fR entries (by glob or prefix pattern).
 .SS "Output & Reporting"
@@ -224,7 +224,7 @@ A default manifest enabling all rules is provided at
 .IR rules_templates/rules\-all.toml .
 .SS "Suppression File"
 The suppression file
-.RI ( .sqc\-suppress.toml )
+.RI ( .aurora-lint\-suppress.toml )
 allows silencing specific violations:
 .PP
 .RS
@@ -246,7 +246,7 @@ Analyze a project directory:
 .PP
 .RS
 .nf
-sqc /path/to/project
+aurora-lint /path/to/project
 .fi
 .RE
 .PP
@@ -254,7 +254,7 @@ Analyze with cross-file context and include paths:
 .PP
 .RS
 .nf
-sqc -d src/ -d lib/ -I include/ src/
+aurora-lint -d src/ -d lib/ -I include/ src/
 .fi
 .RE
 .PP
@@ -262,7 +262,7 @@ Export results as SARIF for CI integration:
 .PP
 .RS
 .nf
-sqc --diff --min-severity Medium \\
+aurora-lint --diff --min-severity Medium \\
     --fail-on-severity High \\
     --export results.sarif .
 .fi
@@ -272,7 +272,7 @@ Interactive mode:
 .PP
 .RS
 .nf
-sqc -i /path/to/project
+aurora-lint -i /path/to/project
 .fi
 .RE
 .PP
@@ -280,7 +280,7 @@ Filter to specific rules:
 .PP
 .RS
 .nf
-sqc --rules ARR30-C,MEM31-C,EXP34-C src/
+aurora-lint --rules ARR30-C,MEM31-C,EXP34-C src/
 .fi
 .RE
 .PP
@@ -288,7 +288,7 @@ Generate a suppression for a specific finding:
 .PP
 .RS
 .nf
-sqc --generate-suppression src/main.c:42:ARR30-C .
+aurora-lint --generate-suppression src/main.c:42:ARR30-C .
 .fi
 .RE
 .PP
@@ -296,7 +296,7 @@ Parallel analysis using 8 threads:
 .PP
 .RS
 .nf
-sqc -j 8 -d src/ -d lib/ src/
+aurora-lint -j 8 -d src/ -d lib/ src/
 .fi
 .RE
 .PP
@@ -304,7 +304,7 @@ Exclude vendored code and test harnesses from a scan:
 .PP
 .RS
 .nf
-sqc . --exclude "tests/**" --exclude "vendor/**" --exclude "**/onelua.c"
+aurora-lint . --exclude "tests/**" --exclude "vendor/**" --exclude "**/onelua.c"
 .fi
 .RE
 .PP
@@ -313,8 +313,8 @@ manifest, then use it for the actual scan:
 .PP
 .RS
 .nf
-sqc /path/to/project --detect-relevance --write-manifest gated-rules.toml
-sqc /path/to/project -m gated-rules.toml
+aurora-lint /path/to/project --detect-relevance --write-manifest gated-rules.toml
+aurora-lint /path/to/project -m gated-rules.toml
 .fi
 .RE
 .SH FILES
@@ -322,7 +322,7 @@ sqc /path/to/project -m gated-rules.toml
 .I rules_templates/rules\-all.toml
 Default rules manifest enabling all CERT C rules.
 .TP
-.I .sqc\-suppress.toml
+.I .aurora-lint\-suppress.toml
 Project-level suppression file (auto-detected in project root).
 .SH SEE ALSO
 .BR cppcheck (1),

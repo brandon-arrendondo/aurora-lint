@@ -120,9 +120,11 @@ pub fn export_all_violations_to_sarif(
         "runs": [{
             "tool": {
                 "driver": {
-                    "name": "SqC",
+                    "name": "aurora-lint",
                     "version": env!("CARGO_PKG_VERSION"),
-                    "informationUri": "https://github.com/your-org/sqc",
+                    // From Cargo.toml's `repository`, so a repo rename cannot leave a
+                    // stale URL here (it was a `your-org/sqc` placeholder before).
+                    "informationUri": env!("CARGO_PKG_REPOSITORY"),
                     "rules": rules_array
                 }
             },

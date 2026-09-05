@@ -338,7 +338,7 @@ fn prescan_file_list(
         // Free/close facts are unioned (not "first wins") because a function
         // like hostap's os_free() has multiple platform-variant bodies
         // (os_unix.c / os_internal.c / os_none.c, ifdef-selected at build
-        // time) — sqc has no preprocessor, so it scans ALL of them under -d,
+        // time) — aurora-lint has no preprocessor, so it scans ALL of them under -d,
         // and "first wins" would let an arbitrary parallel-processing-order
         // pick of the WRONG variant (e.g. os_unix.c's debug-tracing body,
         // which frees a locally-derived pointer rather than the parameter
@@ -668,7 +668,7 @@ fn compute_concurrency_reachable(
 /// Scan only the `.h` files directly inside `parent_dir` to collect public API
 /// function declarations.
 ///
-/// This is a lightweight alternative to [`prescan_directories`] used when sqc
+/// This is a lightweight alternative to [`prescan_directories`] used when aurora-lint
 /// is given a single `.c` file with no explicit `-d` directories.  It populates
 /// only `header_declared_functions` — the data needed by DCL15-C and DCL19-C to
 /// distinguish intentionally-public API from internal helpers.  It intentionally

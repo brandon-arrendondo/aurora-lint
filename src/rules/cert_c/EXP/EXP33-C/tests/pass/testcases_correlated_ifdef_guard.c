@@ -6,7 +6,7 @@
  * (passed by value to `use()`) inside a LATER, separate
  * `#ifdef CONFIG_ELOOP_SELECT` block, with an unrelated
  * `#ifdef CONFIG_ELOOP_POLL` block in between that never touches `rfds`
- * (task 590; hostap's eloop_run pattern). sqc has no preprocessor, so each
+ * (task 590; hostap's eloop_run pattern). aurora-lint has no preprocessor, so each
  * `#ifdef` occurrence is independently modeled as "maybe compiled, maybe
  * not" -- but `CONFIG_ELOOP_SELECT`'s defined-ness is one fixed fact for the
  * whole file, so the write and this read either both happen or both don't;

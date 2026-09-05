@@ -42,17 +42,17 @@ jobs:
       - name: Package tarball
         run: |
           mkdir -p dist
-          cp target/release/sqc dist/
-          cp docs/sqc.1 dist/
+          cp target/release/aurora-lint dist/
+          cp docs/aurora-lint.1 dist/
           cp README.md CHANGELOG.md LICENSE NOTICE THIRD_PARTY_LICENSES.txt dist/
           cp thirdparty/cert/LICENSE dist/LICENSE.CERT
-          cp sqc.cdx.json dist/
-          tar -czf sqc-linux-x86_64.tar.gz -C dist .
+          cp aurora-lint.cdx.json dist/
+          tar -czf aurora-lint-linux-x86_64.tar.gz -C dist .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sqc-linux-x86_64
-          path: sqc-linux-x86_64.tar.gz
+          name: aurora-lint-linux-x86_64
+          path: aurora-lint-linux-x86_64.tar.gz
 
   # ── Windows x86_64 binary (cross-compiled from Linux) ──────────────
   # NOTE: src/rules/cert_c/CON/ is a Windows reserved device name — native
@@ -89,16 +89,16 @@ jobs:
       - name: Package zip
         run: |
           mkdir -p dist
-          cp target/x86_64-pc-windows-gnu/release/sqc.exe dist/
+          cp target/x86_64-pc-windows-gnu/release/aurora-lint.exe dist/
           cp README.md CHANGELOG.md LICENSE NOTICE THIRD_PARTY_LICENSES.txt dist/ 2>/dev/null || true
           cp thirdparty/cert/LICENSE dist/LICENSE.CERT 2>/dev/null || true
-          cp sqc.cdx.json dist/
-          cd dist && zip -r ../sqc-windows-x86_64.zip .
+          cp aurora-lint.cdx.json dist/
+          cd dist && zip -r ../aurora-lint-windows-x86_64.zip .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sqc-windows-x86_64
-          path: sqc-windows-x86_64.zip
+          name: aurora-lint-windows-x86_64
+          path: aurora-lint-windows-x86_64.zip
 
   # ── Debian package ──────────────────────────────────────────────────
   deb:
@@ -110,11 +110,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: sqc-linux-x86_64
+          name: aurora-lint-linux-x86_64
           path: .
 
       - name: Extract tarball
-        run: mkdir -p dist && tar -xzf sqc-linux-x86_64.tar.gz -C dist
+        run: mkdir -p dist && tar -xzf aurora-lint-linux-x86_64.tar.gz -C dist
 
       - name: Extract version
         id: version
@@ -125,14 +125,14 @@ jobs:
       - name: Build .deb
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          PKG_DIR="sqc_${VERSION}_amd64"
+          PKG_DIR="aurora-lint_${VERSION}_amd64"
           mkdir -p "${PKG_DIR}/DEBIAN" \
                    "${PKG_DIR}/usr/bin" \
                    "${PKG_DIR}/usr/share/man/man1" \
-                   "${PKG_DIR}/usr/share/doc/sqc"
+                   "${PKG_DIR}/usr/share/doc/aurora-lint"
 
           cat > "${PKG_DIR}/DEBIAN/control" << EOF
-          Package: sqc
+          Package: aurora-lint
           Version: ${VERSION}
           Section: devel
           Priority: optional
@@ -140,28 +140,28 @@ jobs:
           Maintainer: Brandon Arrendondo <brandon.arrendondo@bissell.com>
           Homepage: https://github.com/brandon-arrendondo/tools_sqc
           Description: CERT C compliance checker
-           Software Code Quality (sqc) is a fast CERT C static analyzer
+           aurora-lint is a fast CERT C static analyzer
            built on tree-sitter for accurate C language analysis.
           EOF
           sed -i 's/^          //' "${PKG_DIR}/DEBIAN/control"
 
-          cp dist/sqc "${PKG_DIR}/usr/bin/"
-          chmod 755 "${PKG_DIR}/usr/bin/sqc"
-          gzip -c dist/sqc.1 > "${PKG_DIR}/usr/share/man/man1/sqc.1.gz"
-          cp dist/README.md "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
-          cp dist/CHANGELOG.md "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
-          cp dist/LICENSE "${PKG_DIR}/usr/share/doc/sqc/copyright" 2>/dev/null || true
-          cp dist/NOTICE "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
-          cp dist/LICENSE.CERT "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
-          cp dist/THIRD_PARTY_LICENSES.txt "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
-          cp dist/sqc.cdx.json "${PKG_DIR}/usr/share/doc/sqc/" 2>/dev/null || true
+          cp dist/aurora-lint "${PKG_DIR}/usr/bin/"
+          chmod 755 "${PKG_DIR}/usr/bin/aurora-lint"
+          gzip -c dist/aurora-lint.1 > "${PKG_DIR}/usr/share/man/man1/aurora-lint.1.gz"
+          cp dist/README.md "${PKG_DIR}/usr/share/doc/aurora-lint/" 2>/dev/null || true
+          cp dist/CHANGELOG.md "${PKG_DIR}/usr/share/doc/aurora-lint/" 2>/dev/null || true
+          cp dist/LICENSE "${PKG_DIR}/usr/share/doc/aurora-lint/copyright" 2>/dev/null || true
+          cp dist/NOTICE "${PKG_DIR}/usr/share/doc/aurora-lint/" 2>/dev/null || true
+          cp dist/LICENSE.CERT "${PKG_DIR}/usr/share/doc/aurora-lint/" 2>/dev/null || true
+          cp dist/THIRD_PARTY_LICENSES.txt "${PKG_DIR}/usr/share/doc/aurora-lint/" 2>/dev/null || true
+          cp dist/aurora-lint.cdx.json "${PKG_DIR}/usr/share/doc/aurora-lint/" 2>/dev/null || true
 
           dpkg-deb --build --root-owner-group "${PKG_DIR}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sqc-deb
-          path: sqc_*.deb
+          name: aurora-lint-deb
+          path: aurora-lint_*.deb
 
   # ── RPM package ─────────────────────────────────────────────────────
   rpm:
@@ -176,11 +176,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: sqc-linux-x86_64
+          name: aurora-lint-linux-x86_64
           path: .
 
       - name: Extract tarball
-        run: mkdir -p dist && tar -xzf sqc-linux-x86_64.tar.gz -C dist
+        run: mkdir -p dist && tar -xzf aurora-lint-linux-x86_64.tar.gz -C dist
 
       - name: Extract version
         id: version
@@ -193,22 +193,22 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 
-          TARDIR="sqc-${VERSION}"
+          TARDIR="aurora-lint-${VERSION}"
           mkdir -p "${TARDIR}/bin" "${TARDIR}/man" "${TARDIR}/doc"
-          cp dist/sqc "${TARDIR}/bin/"
-          cp dist/sqc.1 "${TARDIR}/man/"
+          cp dist/aurora-lint "${TARDIR}/bin/"
+          cp dist/aurora-lint.1 "${TARDIR}/man/"
           cp dist/README.md "${TARDIR}/doc/" 2>/dev/null || true
           cp dist/CHANGELOG.md "${TARDIR}/doc/" 2>/dev/null || true
           cp dist/LICENSE "${TARDIR}/doc/" 2>/dev/null || true
           cp dist/NOTICE "${TARDIR}/doc/" 2>/dev/null || true
           cp dist/LICENSE.CERT "${TARDIR}/doc/" 2>/dev/null || true
           cp dist/THIRD_PARTY_LICENSES.txt "${TARDIR}/doc/" 2>/dev/null || true
-          cp dist/sqc.cdx.json "${TARDIR}/doc/" 2>/dev/null || true
-          tar -czf "rpmbuild/SOURCES/sqc-${VERSION}.tar.gz" "${TARDIR}"
+          cp dist/aurora-lint.cdx.json "${TARDIR}/doc/" 2>/dev/null || true
+          tar -czf "rpmbuild/SOURCES/aurora-lint-${VERSION}.tar.gz" "${TARDIR}"
           rm -rf "${TARDIR}"
 
-          cat > rpmbuild/SPECS/sqc.spec << 'SPEC_EOF'
-          Name:           sqc
+          cat > rpmbuild/SPECS/aurora-lint.spec << 'SPEC_EOF'
+          Name:           aurora-lint
           Version:        VERSION_PLACEHOLDER
           Release:        1%{?dist}
           Summary:        CERT C compliance checker
@@ -217,7 +217,7 @@ jobs:
           Source0:        %{name}-%{version}.tar.gz
 
           %description
-          Software Code Quality (sqc) is a fast CERT C static analyzer
+          aurora-lint is a fast CERT C static analyzer
           built on tree-sitter for accurate C language analysis.
 
           %prep
@@ -227,37 +227,37 @@ jobs:
           mkdir -p %{buildroot}%{_bindir}
           mkdir -p %{buildroot}%{_mandir}/man1
           mkdir -p %{buildroot}%{_docdir}/%{name}
-          install -m 755 bin/sqc %{buildroot}%{_bindir}/sqc
-          install -m 644 man/sqc.1 %{buildroot}%{_mandir}/man1/sqc.1
+          install -m 755 bin/aurora-lint %{buildroot}%{_bindir}/aurora-lint
+          install -m 644 man/aurora-lint.1 %{buildroot}%{_mandir}/man1/aurora-lint.1
           install -m 644 doc/README.md %{buildroot}%{_docdir}/%{name}/README.md
           install -m 644 doc/CHANGELOG.md %{buildroot}%{_docdir}/%{name}/CHANGELOG.md
           install -m 644 doc/LICENSE %{buildroot}%{_docdir}/%{name}/LICENSE
           install -m 644 doc/NOTICE %{buildroot}%{_docdir}/%{name}/NOTICE
           install -m 644 doc/LICENSE.CERT %{buildroot}%{_docdir}/%{name}/LICENSE.CERT
           install -m 644 doc/THIRD_PARTY_LICENSES.txt %{buildroot}%{_docdir}/%{name}/THIRD_PARTY_LICENSES.txt
-          install -m 644 doc/sqc.cdx.json %{buildroot}%{_docdir}/%{name}/sqc.cdx.json
+          install -m 644 doc/aurora-lint.cdx.json %{buildroot}%{_docdir}/%{name}/aurora-lint.cdx.json
 
           %files
-          %{_bindir}/sqc
-          %{_mandir}/man1/sqc.1*
+          %{_bindir}/aurora-lint
+          %{_mandir}/man1/aurora-lint.1*
           %doc %{_docdir}/%{name}/README.md
           %doc %{_docdir}/%{name}/CHANGELOG.md
           %license %{_docdir}/%{name}/LICENSE
           %license %{_docdir}/%{name}/NOTICE
           %license %{_docdir}/%{name}/LICENSE.CERT
           %doc %{_docdir}/%{name}/THIRD_PARTY_LICENSES.txt
-          %doc %{_docdir}/%{name}/sqc.cdx.json
+          %doc %{_docdir}/%{name}/aurora-lint.cdx.json
           SPEC_EOF
 
-          sed -i 's/^          //' rpmbuild/SPECS/sqc.spec
-          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/" rpmbuild/SPECS/sqc.spec
-          rpmbuild --define "_topdir $(pwd)/rpmbuild" -bb rpmbuild/SPECS/sqc.spec
-          cp rpmbuild/RPMS/x86_64/sqc-*.rpm .
+          sed -i 's/^          //' rpmbuild/SPECS/aurora-lint.spec
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/" rpmbuild/SPECS/aurora-lint.spec
+          rpmbuild --define "_topdir $(pwd)/rpmbuild" -bb rpmbuild/SPECS/aurora-lint.spec
+          cp rpmbuild/RPMS/x86_64/aurora-lint-*.rpm .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sqc-rpm
-          path: sqc-*.rpm
+          name: aurora-lint-rpm
+          path: aurora-lint-*.rpm
 
   # ── AppImage ────────────────────────────────────────────────────────
   appimage:
@@ -272,11 +272,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: sqc-linux-x86_64
+          name: aurora-lint-linux-x86_64
           path: .
 
       - name: Extract tarball
-        run: mkdir -p dist && tar -xzf sqc-linux-x86_64.tar.gz -C dist
+        run: mkdir -p dist && tar -xzf aurora-lint-linux-x86_64.tar.gz -C dist
 
       - name: Extract version
         id: version
@@ -291,29 +291,29 @@ jobs:
 
       - name: Create AppDir
         run: |
-          APPDIR="sqc.AppDir"
+          APPDIR="aurora-lint.AppDir"
           mkdir -p "${APPDIR}/usr/bin" \
                    "${APPDIR}/usr/share/man/man1" \
-                   "${APPDIR}/usr/share/doc/sqc" \
+                   "${APPDIR}/usr/share/doc/aurora-lint" \
                    "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
 
-          cp dist/sqc "${APPDIR}/usr/bin/"
-          chmod 755 "${APPDIR}/usr/bin/sqc"
-          cp dist/sqc.1 "${APPDIR}/usr/share/man/man1/"
-          cp dist/LICENSE "${APPDIR}/usr/share/doc/sqc/" 2>/dev/null || true
-          cp dist/NOTICE "${APPDIR}/usr/share/doc/sqc/" 2>/dev/null || true
-          cp dist/LICENSE.CERT "${APPDIR}/usr/share/doc/sqc/" 2>/dev/null || true
-          cp dist/THIRD_PARTY_LICENSES.txt "${APPDIR}/usr/share/doc/sqc/" 2>/dev/null || true
-          cp dist/sqc.cdx.json "${APPDIR}/usr/share/doc/sqc/" 2>/dev/null || true
-          cp assets/icon.png "${APPDIR}/sqc.png"
-          cp assets/icon.png "${APPDIR}/usr/share/icons/hicolor/256x256/apps/sqc.png"
+          cp dist/aurora-lint "${APPDIR}/usr/bin/"
+          chmod 755 "${APPDIR}/usr/bin/aurora-lint"
+          cp dist/aurora-lint.1 "${APPDIR}/usr/share/man/man1/"
+          cp dist/LICENSE "${APPDIR}/usr/share/doc/aurora-lint/" 2>/dev/null || true
+          cp dist/NOTICE "${APPDIR}/usr/share/doc/aurora-lint/" 2>/dev/null || true
+          cp dist/LICENSE.CERT "${APPDIR}/usr/share/doc/aurora-lint/" 2>/dev/null || true
+          cp dist/THIRD_PARTY_LICENSES.txt "${APPDIR}/usr/share/doc/aurora-lint/" 2>/dev/null || true
+          cp dist/aurora-lint.cdx.json "${APPDIR}/usr/share/doc/aurora-lint/" 2>/dev/null || true
+          cp assets/icon.png "${APPDIR}/aurora-lint.png"
+          cp assets/icon.png "${APPDIR}/usr/share/icons/hicolor/256x256/apps/aurora-lint.png"
 
-          cat > "${APPDIR}/sqc.desktop" << 'DESKTOP'
+          cat > "${APPDIR}/aurora-lint.desktop" << 'DESKTOP'
           [Desktop Entry]
           Type=Application
-          Name=sqc
-          Exec=sqc
-          Icon=sqc
+          Name=aurora-lint
+          Exec=aurora-lint
+          Icon=aurora-lint
           Comment=CERT C compliance checker
           Categories=Development;
           Terminal=true
@@ -324,19 +324,19 @@ jobs:
           #!/bin/bash
           HERE=$(dirname "$(readlink -f "$0")")
           export PATH="${HERE}/usr/bin:${PATH}"
-          exec "${HERE}/usr/bin/sqc" "$@"
+          exec "${HERE}/usr/bin/aurora-lint" "$@"
           APPRUN
           chmod +x "${APPDIR}/AppRun"
 
       - name: Build AppImage
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          ARCH=x86_64 ./appimagetool sqc.AppDir "sqc-${VERSION}-x86_64.AppImage"
+          ARCH=x86_64 ./appimagetool aurora-lint.AppDir "aurora-lint-${VERSION}-x86_64.AppImage"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sqc-appimage
-          path: sqc-*.AppImage
+          name: aurora-lint-appimage
+          path: aurora-lint-*.AppImage
 
   # ── GitHub Release ──────────────────────────────────────────────────
   release:
@@ -371,8 +371,8 @@ jobs:
           append_body: true
           generate_release_notes: true
           files: |
-            artifacts/sqc-linux-x86_64/*.tar.gz
-            artifacts/sqc-windows-x86_64/*.zip
-            artifacts/sqc-deb/*.deb
-            artifacts/sqc-rpm/*.rpm
-            artifacts/sqc-appimage/*.AppImage
+            artifacts/aurora-lint-linux-x86_64/*.tar.gz
+            artifacts/aurora-lint-windows-x86_64/*.zip
+            artifacts/aurora-lint-deb/*.deb
+            artifacts/aurora-lint-rpm/*.rpm
+            artifacts/aurora-lint-appimage/*.AppImage

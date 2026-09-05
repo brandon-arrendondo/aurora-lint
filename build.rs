@@ -332,7 +332,7 @@ const BENCHMARK_NOISE_DISABLED: &[&str] = &[
     "INT01-C", "INT02-C", "INT16-C", "INT17-C", "PRE31-C",
 ];
 
-/// Regenerate `rules_templates/rules-all.toml` (embedded into the sqc binary
+/// Regenerate `rules_templates/rules-all.toml` (embedded into the aurora-lint binary
 /// via `include_str!` as its built-in default manifest) and
 /// `rules_templates/rules-benchmark.toml` (used by the real-world benchmark)
 /// from the just-generated `src/rules/cert_c/rules-all.toml`, so both stay

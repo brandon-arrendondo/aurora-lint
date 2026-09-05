@@ -33,7 +33,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-/// Embedded at compile time so `sqc` works when installed outside the repo
+/// Embedded at compile time so `aurora-lint` works when installed outside the repo
 /// checkout (e.g. via `cargo install`), where `rules_templates/rules-all.toml`
 /// doesn't exist on disk relative to the binary.
 const DEFAULT_MANIFEST_TOML: &str = include_str!("../rules_templates/rules-all.toml");
@@ -58,8 +58,8 @@ fn main() {
 }
 
 fn run() -> Result<i32> {
-    let matches = Command::new("sqc")
-        .about("Software Code Quality - CERT C compliance checker")
+    let matches = Command::new("aurora-lint")
+        .about("aurora-lint - a fast CERT C static analyzer")
         .version(env!("CARGO_PKG_VERSION"))
         .arg(
             Arg::new("path")
@@ -167,7 +167,7 @@ fn run() -> Result<i32> {
         .arg(
             Arg::new("suppress_file")
                 .long("suppress-file")
-                .help("Path to suppress.toml file (auto-detected as suppress.toml or the legacy .sqc-suppress.toml in project root if not specified)")
+                .help("Path to suppress.toml file (auto-detected in project root as suppress.toml, then the legacy .aurora-lint-suppress.toml / .sqc-suppress.toml, if not specified)")
                 .value_name("FILE"),
         )
         .arg(
@@ -379,7 +379,7 @@ fn run() -> Result<i32> {
         #[cfg(not(feature = "tui"))]
         {
             anyhow::bail!(
-                "sqc was built without the `tui` feature; rebuild with `cargo build --features tui` to use --interactive"
+                "aurora-lint was built without the `tui` feature; rebuild with `cargo build --features tui` to use --interactive"
             );
         }
     }

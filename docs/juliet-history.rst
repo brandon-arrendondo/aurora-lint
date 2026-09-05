@@ -1,7 +1,7 @@
 Juliet Benchmark History
 =========================
 
-This page is the detailed, round-by-round engineering history behind SqC's
+This page is the detailed, round-by-round engineering history behind aurora-lint's
 Juliet Test Suite results: every FP-reduction round, per-CWE tier breakdowns,
 the Round 1 baseline table, competitor comparisons, and the full version
 history.
@@ -514,7 +514,7 @@ Targeted at 5 high-frequency FP patterns from P3214 embedded firmware
 - **EXP33-C**: When a variable is initialized in 2+ distinct conditional
   branches (if/else-if without final else), use ``ConditionallyInitialized``
   instead of ``Uninitialized``. Multi-branch chains indicate the programmer
-  covers all cases (e.g., exhaustive enum dispatch); sqc cannot prove this
+  covers all cases (e.g., exhaustive enum dispatch); aurora-lint cannot prove this
   statically. Single-branch if-without-else still flags. Also fixed position
   deduplication in ``collect_init_func_calls_for_var`` (identifier args were
   pushed twice). Eliminates 31 FPs.
@@ -1253,7 +1253,7 @@ Competitor Comparison
      - Juliet Data
      - CERT C
      - Price
-   * - SqC
+   * - aurora-lint
      - 44.6%
      - 55.4%
      - AST + CFG + inter-procedural + call-site null + local var tracking + const_eval
@@ -1317,7 +1317,7 @@ Competitor Comparison
      - --
      - Commercial
 
-The SqC row above is from the 44.6% full-suite era (v0.2.23); fast-mode TP
+The aurora-lint row above is from the 44.6% full-suite era (v0.2.23); fast-mode TP
 rate was 83.8% as of v0.4.116 (see the fast-mode version table above; it has
 since moved further, see README.md's Benchmark Highlights for the current
 figure) but is not directly comparable since the competitor figures below

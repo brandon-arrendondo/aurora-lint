@@ -8,7 +8,7 @@ two tags become that release's section -- so the changelog is a projection of
 records that already exist rather than a second thing to keep current.
 
 Version numbers here are *published releases*, not every version the crate
-passed through. sqc bumps the patch version on nearly every commit (`run_id`
+passed through. aurora-lint bumps the patch version on nearly every commit (`run_id`
 discriminates benchmark runs by SHA, see CLAUDE.md), so most versions are
 never tagged and never shipped; a release section therefore covers everything
 completed since the previous tag.
@@ -72,11 +72,11 @@ INTERNAL_ONLY = {
 
 HEADER = """# Changelog
 
-All notable changes to sqc are documented here. The format follows
+All notable changes to aurora-lint are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 **Versions here are published releases**, not every version the crate passed
-through. sqc bumps the patch version on nearly every commit, and only tagged
+through. aurora-lint bumps the patch version on nearly every commit, and only tagged
 versions are built, signed and published; a section therefore covers every
 change since the previous release, not since the previous version number.
 

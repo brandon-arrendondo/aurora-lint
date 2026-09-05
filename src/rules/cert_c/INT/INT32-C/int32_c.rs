@@ -1688,7 +1688,7 @@ impl Int32C {
         }
 
         // Call-like operand invoking a function-like macro (e.g. seL4's
-        // `BIT(n)` -> `(UL_CONST(1) << (n))`): sqc has no preprocessor, so
+        // `BIT(n)` -> `(UL_CONST(1) << (n))`): aurora-lint has no preprocessor, so
         // this looked like an ordinary unresolvable call and fell through
         // to "unknown", making a signed-looking operand on the other side
         // of `-`/`+` look risky even though the macro's own definition
@@ -1756,15 +1756,15 @@ impl Int32C {
     /// defining an integer literal with a specific unsigned suffix via
     /// token-pasting (`PASTE(x, ul)` -> `1ul`) so the same header also
     /// parses under a raw assembler (`#define UL_CONST(x) x`, no suffix,
-    /// under `#ifdef __ASSEMBLER__`). sqc has no preprocessor and never
+    /// under `#ifdef __ASSEMBLER__`). aurora-lint has no preprocessor and never
     /// expands `#`/`##` (`macro_expand`'s deliberate scope cut — real cpp
     /// semantics needed), and its "first `#define` wins" tie-break across
     /// `#ifdef` branches happens to pick the assembler branch here (it's
     /// textually first), which would otherwise misclassify the constant as
     /// plain (signed) `int`. Recognized by name instead: whichever branch
-    /// sqc's macro table resolved to, invoking a macro with one of these
+    /// aurora-lint's macro table resolved to, invoking a macro with one of these
     /// names is-by-convention always meant to produce an unsigned value in
-    /// every real (non-assembler) C translation unit -- the only kind sqc
+    /// every real (non-assembler) C translation unit -- the only kind aurora-lint
     /// ever scans.
     fn is_unsigned_constant_helper_name(name: &str) -> bool {
         matches!(

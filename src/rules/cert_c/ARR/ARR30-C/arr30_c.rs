@@ -2705,7 +2705,7 @@ impl Arr30C {
     /// unsigned char *msg = RL_CALLOC(newDataSize + K_OUTER, 1);
     /// msg[dataSize] = 128;
     /// ```
-    /// sqc has no preprocessor and doesn't track `RL_CALLOC`/similar aliases
+    /// aurora-lint has no preprocessor and doesn't track `RL_CALLOC`/similar aliases
     /// as allocation calls at all, so `msg` was never a tracked buffer and
     /// this rule fell through to the generic "unvalidated function parameter
     /// index" check, which knows nothing about the allocation. Rather than
@@ -2916,7 +2916,7 @@ impl Arr30C {
     /// assignment, optionally through a pointer cast). Matches any call
     /// whose function name contains "alloc"/"ALLOC" -- this is intentionally
     /// broad (covers `malloc`/`calloc`/`realloc`/`alloca` and macro aliases
-    /// like `RL_MALLOC`/`RL_CALLOC` that sqc has no preprocessor to resolve)
+    /// like `RL_MALLOC`/`RL_CALLOC` that aurora-lint has no preprocessor to resolve)
     /// since an accidental match on an unrelated function only feeds into
     /// `match_roundup_formula`'s exact algebraic pattern match, which will
     /// simply fail to match and change nothing.
@@ -5137,7 +5137,7 @@ impl Arr30C {
             // size of exactly 1 as the trailing field); or identifier[NAME]
             // where NAME's own spelling names it as a flexible-array-size
             // macro (e.g. sqlite's `FLEXARRAY`, which expands to nothing
-            // under C99 or `1` otherwise -- sqc has no preprocessor, so the
+            // under C99 or `1` otherwise -- aurora-lint has no preprocessor, so the
             // bracket contents are seen as a bare, unresolved identifier
             // either way). All three are the same "real size lives at the
             // allocation site, not the declaration" pattern (task 554).

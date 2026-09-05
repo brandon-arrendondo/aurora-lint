@@ -19,7 +19,7 @@ User-facing docs: `docs/cli-usage.rst` ("Project-Relevance Detection").
 currently curated *by hand* in `conf/realworld/<project>-rules.toml` — each
 file hand-disables categorically-inapplicable rule classes and documents why
 in `[metadata].description` prose. That works for 7 benchmark codebases we
-read closely, but doesn't scale to an arbitrary user codebase running `sqc`
+read closely, but doesn't scale to an arbitrary user codebase running `aurora-lint`
 for the first time with no tailored manifest.
 
 ---
@@ -62,7 +62,7 @@ rule that isn't categorically gated keeps measuring its true precision in the
 
 ## 2. Where this plugs into the existing pipeline
 
-`sqc` already does one pre-pass over the whole tree before rule evaluation
+`aurora-lint` already does one pre-pass over the whole tree before rule evaluation
 starts: `prescan::prescan_directories` (`src/analyze/prescan.rs:141`), which
 walks every `.c`/`.h` file once, populating `ProjectContext`
 (`src/analyze/context.rs`) — function summaries, macro tables, global state,
@@ -95,7 +95,7 @@ recognizes the exact AST shapes this design's C11 dimension needs —
 `_Generic`, `_Atomic`/`_Noreturn` qualifiers, `_Alignas`/`_Alignof`,
 `_Static_assert` — with the false-positive traps (GNU pre-standard spellings,
 macro-guarded-but-still-counted markers) already handled and tested upstream,
-so sqc no longer needs to hand-roll that text/node matching itself. Project-
+so aurora-lint no longer needs to hand-roll that text/node matching itself. Project-
 level aggregation is a straightforward fold: run `detect_min_c_standard` once
 per file during the existing prescan tree-walk (the tree is already parsed
 there for other prescan passes, so this is a marginal per-file call, not a
@@ -143,7 +143,7 @@ Two options were named in the task:
    for byte; a user can inspect exactly what got turned off and why, and hand
    -edit the result afterward.
 2. **In-process relevance mask** applied silently at scan time — zero-config,
-   but findings become harder to reproduce (`sqc . --manifest X` on the same
+   but findings become harder to reproduce (`aurora-lint . --manifest X` on the same
    manifest could report a different effective rule set from one repo to the
    next with no artifact showing why).
 
@@ -157,10 +157,10 @@ the generated manifest sees the *evidence*, not just the verdict. This also
 gives a natural CLI shape:
 
 ```
-sqc --detect-relevance /path/to/project --base-manifest rules_templates/rules-all.toml \
+aurora-lint --detect-relevance /path/to/project --base-manifest rules_templates/rules-all.toml \
     --write-manifest generated-rules.toml
 # then:
-sqc /path/to/project --manifest generated-rules.toml
+aurora-lint /path/to/project --manifest generated-rules.toml
 ```
 
 i.e. a separate, explicit generation step (not an implicit flag on every scan)

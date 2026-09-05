@@ -127,7 +127,7 @@
 
     # ── hostap (wpa_supplicant needs a .config; see docs/benchmark-setup.rst) ─
     # Only wpa_supplicant/ is built (matching the doc's clang-tidy recipe and
-    # the sqc real-world scan's own `-d src -d wpa_supplicant` scope) -- src/
+    # the aurora-lint real-world scan's own `-d src -d wpa_supplicant` scope) -- src/
     # files hostapd-only code pulls in (ap/*.c etc.) won't get an entry.
     - name: hostap - write wpa_supplicant/.config
       copy:
@@ -307,7 +307,7 @@
     # even when the build fails. The build is still worth running here --
     # it produces the generated headers (structures_gen.h et al) that six of
     # the DB's 21 include paths point at, which is what task 580 had to work
-    # around the absence of. Without the build, sqc warns that those six
+    # around the absence of. Without the build, aurora-lint warns that those six
     # paths do not exist.
     # Both sel4 tasks pin PATH to the system interpreter first, deliberately.
     # seL4's build shells out to a bare `python3` and its generators need

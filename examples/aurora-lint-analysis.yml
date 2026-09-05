@@ -1,15 +1,15 @@
-# SqC Static Analysis - GitHub Actions Example Workflow
+# aurora-lint Static Analysis - GitHub Actions Example Workflow
 #
-# This workflow runs SqC CERT C analysis on your C/C++ codebase.
+# This workflow runs aurora-lint CERT C analysis on your C/C++ codebase.
 # - On PRs: analyzes only changed files (--diff mode)
 # - On push to main: full repository scan
 # - Uploads SARIF results to GitHub Code Scanning
 #
 # Prerequisites:
-#   - SqC must be built or available as a binary
-#   - A sqc-rules.toml manifest (or use built-in defaults)
+#   - aurora-lint must be built or available as a binary
+#   - A aurora-lint-rules.toml manifest (or use built-in defaults)
 
-name: SqC CERT C Analysis
+name: aurora-lint CERT C Analysis
 
 on:
   push:
@@ -22,7 +22,7 @@ env:
 
 jobs:
   build:
-    name: Build SqC
+    name: Build aurora-lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,14 +38,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build SqC
+      - name: Build aurora-lint
         run: cargo build --release
 
-      - name: Upload SqC binary
+      - name: Upload aurora-lint binary
         uses: actions/upload-artifact@v4
         with:
-          name: sqc-binary
-          path: target/release/sqc
+          name: aurora-lint-binary
+          path: target/release/aurora-lint
           retention-days: 1
 
   analyze-pr:
@@ -60,17 +60,17 @@ jobs:
         with:
           fetch-depth: 0  # Full history for --diff mode
 
-      - name: Download SqC binary
+      - name: Download aurora-lint binary
         uses: actions/download-artifact@v4
         with:
-          name: sqc-binary
+          name: aurora-lint-binary
 
-      - name: Make SqC executable
-        run: chmod +x sqc
+      - name: Make aurora-lint executable
+        run: chmod +x aurora-lint
 
-      - name: Run SqC (diff mode)
+      - name: Run aurora-lint (diff mode)
         run: |
-          ./sqc . --diff \
+          ./aurora-lint . --diff \
             --min-severity Medium \
             --fail-on-severity High \
             --export results.sarif
@@ -91,17 +91,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download SqC binary
+      - name: Download aurora-lint binary
         uses: actions/download-artifact@v4
         with:
-          name: sqc-binary
+          name: aurora-lint-binary
 
-      - name: Make SqC executable
-        run: chmod +x sqc
+      - name: Make aurora-lint executable
+        run: chmod +x aurora-lint
 
-      - name: Run SqC (full scan)
+      - name: Run aurora-lint (full scan)
         run: |
-          ./sqc . -d . \
+          ./aurora-lint . -d . \
             --min-severity Medium \
             --fail-on-severity High \
             --export results.sarif

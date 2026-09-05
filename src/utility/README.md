@@ -1,6 +1,6 @@
 # Utility Module
 
-This module provides common helper functions and utilities used throughout the SqC codebase.
+This module provides common helper functions and utilities used throughout the aurora-lint codebase.
 
 ## Purpose
 

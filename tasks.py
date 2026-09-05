@@ -1,5 +1,5 @@
 """
-Invoke tasks for sqc development.
+Invoke tasks for aurora-lint development.
 
 Usage:
     invoke check          # Run pre-commit hooks on all files
@@ -49,16 +49,16 @@ def _read_cargo_version():
 VERSION_FILES = [
     # (path, pattern, replacement-template)
     ("Cargo.toml", r'^(version = ")' + SEMVER + r'(")', r"\g<1>{new}\g<2>"),
-    # Man page version field: .TH SQC 1 "<date>" "sqc X.Y.Z" "User Commands"
+    # Man page version field: .TH aurora-lint 1 "<date>" "aurora-lint X.Y.Z" "User Commands"
     (
-        "docs/sqc.1",
-        r'("sqc )' + SEMVER + r'(")',
+        "docs/aurora-lint.1",
+        r'("aurora-lint )' + SEMVER + r'(")',
         r"\g<1>{new}\g<2>",
     ),
     # Refresh the man page date stamp (the .TH date field) on every bump.
     (
-        "docs/sqc.1",
-        r'(\.TH SQC 1 ")[^"]*(")',
+        "docs/aurora-lint.1",
+        r'(\.TH aurora-lint 1 ")[^"]*(")',
         r"\g<1>{date}\g<2>",
     ),
 ]

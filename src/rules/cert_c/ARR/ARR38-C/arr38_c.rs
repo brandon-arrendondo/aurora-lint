@@ -2606,7 +2606,7 @@ impl Arr38C {
     /// Only preceding statements are scanned: an assert is a statement, so it
     /// never encloses the copy site the way an `if` does. Preprocessor
     /// wrappers count as blocks for the same reason `guard_dominance` treats
-    /// them so -- sqc does not preprocess, and `assert()` under an explicit
+    /// them so -- aurora-lint does not preprocess, and `assert()` under an explicit
     /// `#ifndef NDEBUG` is a common enough spelling that ignoring it would
     /// leave the gap this task is about.
     fn asserted_size_bound(size_arg: &str, site: &Node, source: &str) -> bool {

@@ -473,7 +473,7 @@ fn find_nested_function_boundary(node: &Node, source: &str) -> Option<usize> {
 
 /// True if `func_node` (a whole `function_definition`) sits inside a
 /// preprocessor conditional branch (`#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`).
-/// sqc has no preprocessor, so when a function has one definition guarded by
+/// aurora-lint has no preprocessor, so when a function has one definition guarded by
 /// such a branch and another unconditional (or differently-guarded)
 /// definition of the same name, only one is ever really compiled in — but
 /// both get parsed and their facts unioned into one cross-file
@@ -1184,7 +1184,7 @@ fn analyze_param_usage(
 
 /// POSIX fd_set macros (`FD_ZERO`, `FD_SET`, `FD_CLR`) write through their
 /// `fd_set *` argument -- the sole arg for `FD_ZERO`, the last arg for
-/// `FD_SET`/`FD_CLR` -- but they're opaque system macros sqc's
+/// `FD_SET`/`FD_CLR` -- but they're opaque system macros aurora-lint's
 /// macro-expansion engine never sees a definition for, so the arrow/subscript
 /// text scan above can't see the write either (task 456; hostap's
 /// `eloop_sock_table_set_fds(struct eloop_sock_table *table, fd_set *fds)`
@@ -1301,7 +1301,7 @@ fn closes_param_before_reassignment(body: &Node, source: &str, param_name: &str)
 ///     don't null their argument, where the engine has nothing to say.
 ///     Every argument is a candidate, as for literal `free`.
 ///
-/// sqc has no preprocessor, so for (2)/(3) the macro/helper call itself is
+/// aurora-lint has no preprocessor, so for (2)/(3) the macro/helper call itself is
 /// the only AST evidence available that a free happened inside it (task 2:
 /// MEM31-C ownership model).
 fn collect_frees_param_fields(
