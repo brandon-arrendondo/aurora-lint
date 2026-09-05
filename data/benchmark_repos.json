@@ -80,7 +80,10 @@
       "name": "mosquitto",
       "repo": "https://github.com/eclipse-mosquitto/mosquitto.git",
       "version": "d3ee5c5ca62c0fa4983308c6fff558ee978e878c",
-      "scope_include": ["lib/**", "src/**"]
+      "scope_include": ["lib/**", "src/**", "include/**", "config.h"],
+      "scope_exclude": [
+        "include/mosquitto/libmosquittopp.h", "include/mosquittopp.h"
+      ]
     },
     {
       "name": "curl",

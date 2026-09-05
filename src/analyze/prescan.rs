@@ -4232,7 +4232,10 @@ fn extract_declarator_name(decl: &Node, source: &str) -> String {
 /// 1. `struct Name { type field; ... };`
 /// 2. `typedef struct { type field; ... } Name;`
 /// 3. `typedef struct Name { type field; ... } Name;` (or alias)
-fn collect_struct_definitions(
+///
+/// Visible to rules so one can collect the file it is scanning, which is the
+/// half of the answer that survives a run with no `-d` (ARR36-C).
+pub(crate) fn collect_struct_definitions(
     node: &Node,
     source: &str,
     struct_field_types: &mut HashMap<String, HashMap<String, String>>,

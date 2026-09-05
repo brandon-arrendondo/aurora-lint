@@ -107,6 +107,13 @@ pub struct Arr30C {
     /// functions with a same-named local buffer never conflate each
     /// other's size/allocation_line (task 389). Cleared per file.
     global_scope_buffers: RefCell<HashMap<String, BufferInfo>>,
+    /// Names of object-like macros whose replacement text is exactly the null
+    /// terminator (`#define EOS '\0'`, `#define NUL 0`), so that the
+    /// terminator-bound test in `check_while_loop_pointer_increment` reads
+    /// `while (*p != EOS)` as the NUL-terminated walk it is. Kept separate from
+    /// `macro_constants` because `const_eval` evaluates integer literals only,
+    /// so a character-literal `#define` never lands there. Cleared per file.
+    null_sentinel_macros: RefCell<HashSet<String>>,
     /// Typedef-array-size table for the current file (`analyze_typedefs`),
     /// cached alongside `global_scope_buffers` so re-scanning each
     /// function's own locals doesn't re-run the whole-file regex scan once
@@ -232,6 +239,7 @@ impl CertRule for Arr30C {
             self.decode_taint_cache.borrow_mut().clear();
             self.param_decode_buf_cache.borrow_mut().clear();
             self.param_decode_reported.borrow_mut().clear();
+            *self.null_sentinel_macros.borrow_mut() = collect_null_sentinel_macros(node, source);
             // Build the interprocedural over-read helper summary for this file
             // (task 211): function name -> indices of `const char *` params it
             // walks unbounded. Consumed by `check_overread_helper_callsite`.
@@ -312,6 +320,7 @@ impl Arr30C {
             helper_overread_summary: RefCell::new(None),
             caller_validated_params: RefCell::new(None),
             global_scope_buffers: RefCell::new(HashMap::new()),
+            null_sentinel_macros: RefCell::new(HashSet::new()),
             cached_typedefs: RefCell::new(HashMap::new()),
         }
     }
@@ -3734,6 +3743,12 @@ impl Arr30C {
                         matches!(&source[o.start_byte()..o.end_byte()], "++" | "--")
                     })
                 })
+                // An increment sitting inside a *nested* loop is that loop's
+                // to bound, not this one's: seL4's
+                // `while (1) { for (; is_space(*p) && *p != 0; p++); ... }`
+                // is bounded by the inner header, and blaming the outer
+                // `while (1)` for it reports a walk nothing here controls.
+                .filter(|u| Self::innermost_loop_of(u).is_some_and(|l| l.id() == while_node.id()))
                 .filter_map(|u| u.child_by_field_name("argument"))
                 .map(|arg| source[arg.start_byte()..arg.end_byte()].to_string())
                 .collect();
@@ -3760,7 +3775,19 @@ impl Arr30C {
                 });
         let has_bound_named_identifier =
             subtree_has_bound_named_identifier(condition, source, BOUND_NAME_SUBSTRINGS_WITH_LEN);
-        let has_bounds_check = has_relational_comparison || has_bound_named_identifier;
+        // A NUL/NULL sentinel test or an explicit end-pointer comparison bounds
+        // the walk just as a size comparison does -- the terminator IS the
+        // bound. Without this the single most common correct C idiom
+        // (`while (*s) s++;`, `while (*argp != NULL) argp++;`) reads as an
+        // unbounded increment.
+        let has_terminator_bound = condition_has_terminator_bound(
+            condition,
+            source,
+            &incremented_pointers,
+            &self.null_sentinel_macros.borrow(),
+        );
+        let has_bounds_check =
+            has_relational_comparison || has_bound_named_identifier || has_terminator_bound;
 
         if !has_bounds_check {
             // Unbounded pointer increment detected — check if any incremented
@@ -6964,6 +6991,201 @@ fn subtree_has_bound_named_identifier(root: Node, source: &str, bound_substrings
         .any(|id| {
             let text = &source[id.start_byte()..id.end_byte()];
             bound_substrings.iter().any(|s| text.contains(s))
+        })
+}
+
+/// Spellings of the null terminator that ends a C string or a NULL-terminated
+/// pointer array (`argv`/`environ`-style). Listed exactly rather than accepted
+/// as "any integer literal" on purpose: which constant a walk compares against
+/// decides whether the walk is bounded at all -- see
+/// [`condition_has_terminator_bound`].
+const NULL_SENTINEL_LITERALS: &[&str] = &[
+    "0", "0x0", "0L", "0l", "0U", "0u", "0UL", "0ul", "'\\0'", "L'\\0'", "NULL", "nullptr",
+];
+
+/// Names of object-like macros defined in this translation unit whose
+/// replacement text is exactly a null terminator (`#define EOS '\0'`).
+///
+/// `const_eval::collect_macro_constants` cannot supply these: it evaluates
+/// integer constant expressions, and a character literal is not one, so the
+/// pervasive `#define EOS '\0'` spelling resolves to nothing there.
+fn collect_null_sentinel_macros(root: &Node, source: &str) -> HashSet<String> {
+    query::find_descendants_of_kind(*root, "preproc_def")
+        .iter()
+        .filter_map(|def| {
+            let name = def.child_by_field_name("name")?;
+            let value = def.child_by_field_name("value")?;
+            let value_text = source[value.start_byte()..value.end_byte()].trim();
+            NULL_SENTINEL_LITERALS
+                .contains(&value_text)
+                .then(|| source[name.start_byte()..name.end_byte()].to_string())
+        })
+        .collect()
+}
+
+/// `node` with parentheses and casts peeled off, so `((void *)0)` and `0` are
+/// the same expression to the sentinel tests below.
+fn strip_parens_and_casts<'a>(node: Node<'a>) -> Node<'a> {
+    let mut cur = node;
+    loop {
+        let inner = match cur.kind() {
+            "parenthesized_expression" => cur.named_child(0),
+            "cast_expression" => cur.child_by_field_name("value"),
+            _ => None,
+        };
+        match inner {
+            Some(n) => cur = n,
+            None => return cur,
+        }
+    }
+}
+
+/// True when `node` denotes the null terminator: one of
+/// [`NULL_SENTINEL_LITERALS`], or a macro that expands to one.
+fn is_null_sentinel(node: Node, source: &str, sentinel_macros: &HashSet<String>) -> bool {
+    let n = strip_parens_and_casts(node);
+    let text = source[n.start_byte()..n.end_byte()].trim();
+    NULL_SENTINEL_LITERALS.contains(&text) || sentinel_macros.contains(text)
+}
+
+/// True when `node` denotes a constant that is definitely *not* the null
+/// terminator -- a non-`'\0'` character literal, a non-zero integer literal, or
+/// a name that is not a known null-sentinel macro. Used only for the `==`
+/// direction, where a non-NUL comparand is what makes the walk terminate.
+fn is_non_null_constant(node: Node, source: &str, sentinel_macros: &HashSet<String>) -> bool {
+    let n = strip_parens_and_casts(node);
+    if !matches!(n.kind(), "char_literal" | "number_literal" | "identifier") {
+        return false;
+    }
+    !is_null_sentinel(n, source, sentinel_macros)
+}
+
+/// True when `node` reads through the walked pointer -- a dereference (`*p`), a
+/// subscript (`p[0]`), a field access, or an assignment capturing such a read
+/// (`(c = *p++)`). This is the operand a sentinel comparison has to be testing
+/// for the comparison to be a terminator check rather than an unrelated scalar
+/// one.
+fn reads_walked_data(node: Node, source: &str) -> bool {
+    let n = strip_parens_and_casts(node);
+    match n.kind() {
+        "pointer_expression" => n
+            .child_by_field_name("operator")
+            .is_some_and(|o| &source[o.start_byte()..o.end_byte()] == "*"),
+        "subscript_expression" | "field_expression" => true,
+        "assignment_expression" => n.child_by_field_name("right").is_some_and(|r| {
+            let r = strip_parens_and_casts(r);
+            r.kind() == "call_expression" || reads_walked_data(r, source)
+        }),
+        _ => false,
+    }
+}
+
+/// As [`reads_walked_data`], plus a bare producer call -- the
+/// `while (fgets(line, sizeof line, fp) != NULL)` / `while (readdir(d) != NULL)`
+/// shape, where the loop stops on the call's sentinel return. Accepted only
+/// against an explicit sentinel comparison, never as a bare truth value.
+fn is_terminator_read_operand(node: Node, source: &str) -> bool {
+    let n = strip_parens_and_casts(node);
+    n.kind() == "call_expression" || reads_walked_data(n, source)
+}
+
+/// True when `node`, used directly as a truth value, is a read through a
+/// pointer -- the sentinel test with the comparison left implicit
+/// (`while (*s)`, `while (p != NULL && *p)`, `while (!*s)`). Recurses through
+/// `&&`, `||` and `!` so a compound condition counts on either operand.
+fn boolean_operand_reads_walked_data(node: Node, source: &str) -> bool {
+    let n = strip_parens_and_casts(node);
+    if n.kind() == "binary_expression" {
+        let is_logical = n
+            .child_by_field_name("operator")
+            .is_some_and(|o| matches!(&source[o.start_byte()..o.end_byte()], "&&" | "||"));
+        if !is_logical {
+            return false;
+        }
+        return n
+            .child_by_field_name("left")
+            .is_some_and(|l| boolean_operand_reads_walked_data(l, source))
+            || n.child_by_field_name("right")
+                .is_some_and(|r| boolean_operand_reads_walked_data(r, source));
+    }
+    if n.kind() == "unary_expression" {
+        return n
+            .child_by_field_name("argument")
+            .is_some_and(|a| boolean_operand_reads_walked_data(a, source));
+    }
+    reads_walked_data(n, source)
+}
+
+/// True when `condition` bounds the walk through a *terminator* rather than a
+/// size comparison, which is all `check_while_loop_pointer_increment`'s
+/// relational and bound-name tests look for. Without this the most common
+/// correct C idiom there is -- scanning to a NUL/NULL sentinel -- reads as an
+/// unbounded pointer increment.
+///
+/// Which comparand terminates the walk is decided by the operator, because the
+/// question is only ever "does the NUL byte stop this loop?":
+///
+/// - `*p != K` continues while the pointee differs from `K`, so the terminator
+///   stops it exactly when `K` is NUL. `while (*p != 0)`, `while (*p != EOS)`
+///   and `while ((c = *p++) != 0)` are bounded; `while (*p != delim)` and
+///   `while (*p != 0xFE)` are the genuine violations and stay flagged.
+/// - `*p == K` continues while the pointee equals `K`, so the terminator stops
+///   it for every `K` except NUL -- `while (*p == '-') p++;` cannot run off the
+///   end of a terminated string.
+///
+/// Two further shapes count: a bare dereference used as the truth value
+/// (`while (*s) s++;`), and a `==`/`!=` naming one of the loop's own
+/// incremented pointers as a bare identifier, which is either an explicit
+/// end-pointer stop (`while (filepnt != fileend)`) or a pointer-array sentinel
+/// scan (`while (path != NULL && *path != NULL)`).
+///
+/// The comparison's other operand must be a read *through* a pointer (or a
+/// producer call), so testing a neighbouring scalar against zero is never
+/// mistaken for a terminator check.
+fn condition_has_terminator_bound(
+    condition: Node,
+    source: &str,
+    incremented: &[String],
+    sentinel_macros: &HashSet<String>,
+) -> bool {
+    if boolean_operand_reads_walked_data(condition, source) {
+        return true;
+    }
+    query::find_descendants_of_kind(condition, "binary_expression")
+        .iter()
+        .any(|cmp| {
+            let Some(op) = cmp.child_by_field_name("operator") else {
+                return false;
+            };
+            let op = &source[op.start_byte()..op.end_byte()];
+            if !matches!(op, "==" | "!=") {
+                return false;
+            }
+            let (Some(left), Some(right)) = (
+                cmp.child_by_field_name("left"),
+                cmp.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            for (value, other) in [(left, right), (right, left)] {
+                let terminates = if op == "!=" {
+                    is_null_sentinel(other, source, sentinel_macros)
+                } else {
+                    is_non_null_constant(other, source, sentinel_macros)
+                };
+                if terminates && is_terminator_read_operand(value, source) {
+                    return true;
+                }
+                let bare = strip_parens_and_casts(value);
+                if bare.kind() == "identifier"
+                    && incremented
+                        .iter()
+                        .any(|p| p == &source[bare.start_byte()..bare.end_byte()])
+                {
+                    return true;
+                }
+            }
+            false
         })
 }
 
