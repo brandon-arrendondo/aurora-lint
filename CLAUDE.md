@@ -435,16 +435,24 @@ git pull                                     # DB auto-merges by task UUID
 todo-sqlite-cli doctor                       # REQUIRED after every merge/pull
 ```
 
-`setup-dev-environment.yml` registers the driver (and the pack settings below)
-on any node it provisions, so the one-time step is only for older or hand-built
-clones. Note `install-merge-driver` appends the `.gitattributes` line
-unconditionally, and this repo already has it — so register by hand instead to
-avoid a duplicate:
+`setup-dev-environment.yml` registers the driver (and `pull.rebase` and the
+pack settings below) on any node it provisions, so the one-time step is only
+for older or hand-built clones. Note `install-merge-driver` appends the
+`.gitattributes` line unconditionally, and this repo already has it — so
+register by hand instead to avoid a duplicate:
 
 ```bash
 git config merge.todo-sqlite-cli.name "todo-sqlite-cli 3-way merge driver"
 git config merge.todo-sqlite-cli.driver "todo-sqlite-cli git-merge-driver %O %A %B"
+git config pull.rebase false   # merge through the driver; see below
 ```
+
+`pull.rebase false` is what makes the driver do its job when a pull races
+another node. Merging invokes it once on the two DB tips and unions them by
+task UUID; rebasing replays each local DB commit onto the new base instead,
+running the driver once per commit against a moving target for no benefit.
+Without the setting git 2.27+ just stops with *"need to specify how to
+reconcile divergent branches"*.
 
 The merge is a real 3-way union keyed on task UUID, so nothing is lost and
 dependency edges keep resolving. **Never resolve a DB conflict with

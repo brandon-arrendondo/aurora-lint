@@ -20,12 +20,15 @@
 #     pre-commit hook to pass before a commit; nothing previously installed
 #     the tool or ran `pre-commit install` in the repo.
 #   - Repo-local git config -- .git/config is not tracked, so a fresh clone
-#     gets none of it. Two settings matter here: the todo-sqlite-cli merge
+#     gets none of it. Three settings matter here: the todo-sqlite-cli merge
 #     driver that .gitattributes already names (without it every pull that
-#     touched the DB lands in conflict), and pack.window/pack.depth, which
-#     git's defaults set far too low for the ~2.3 MiB SQLite file committed
-#     on nearly every task change -- 664 KiB of pack per DB commit at the
-#     default window=10 against 38 KiB at 250. See the tasks for the numbers.
+#     touched the DB lands in conflict); pull.rebase=false, so a pull that
+#     raced another node merges through that driver instead of halting on
+#     "need to specify how to reconcile divergent branches"; and
+#     pack.window/pack.depth, which git's defaults set far too low for the
+#     ~2.3 MiB SQLite file committed on nearly every task change -- 664 KiB
+#     of pack per DB commit at the default window=10 against 38 KiB at 250.
+#     See the tasks for the numbers.
 #   - clew-trace -- .mcp.json (gitignored, written by `clew init` -- see
 #     CLAUDE.md's Code Navigation section) points at the `clew-mcp` command;
 #     without the package installed that command doesn't resolve and the
@@ -244,6 +247,30 @@
       # Registered by hand rather than via `todo-sqlite-cli install-merge-driver`
       # because that command also appends the .gitattributes line
       # unconditionally, which would duplicate the one already committed here.
+
+    - name: Reconcile pulls by merging, not rebasing
+      community.general.git_config:
+        name: pull.rebase
+        value: "false"
+        scope: local
+        repo: "{{ item.item }}"
+      when: item.stat.exists
+      loop: "{{ todo_repos.results }}"
+      loop_control:
+        label: "{{ item.item | basename }}"
+      # git 2.27+ refuses to pull divergent branches without being told how,
+      # so without this every pull that raced another node stops with
+      # "fatal: Need to specify how to reconcile divergent branches".
+      #
+      # Merge is the right answer *because* of the driver registered above: a
+      # merge invokes it once on the two DB tips and unions them by task UUID.
+      # A rebase replays each local DB commit onto the new base instead,
+      # running the driver once per commit against a moving target -- more
+      # driver invocations, more chances to stop, and no benefit, since the DB
+      # is a binary blob whose history nobody reads commit-by-commit.
+      #
+      # Set per-repo rather than globally: the rationale is this repo's
+      # committed SQLite DB, not a general preference about pull style.
 
     - name: Verify clew-mcp resolves (the command .mcp.json points at)
       command: "{{ dev_venv }}/bin/clew-mcp --help"
