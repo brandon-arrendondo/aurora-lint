@@ -134,8 +134,16 @@ pub fn analyze_project(
 
     if effective_jobs > 1 && total_files > 1 {
         // Parallel analysis with rayon — per-file parser and rule registry
+        // Worker threads get an explicit stack, not the 2 MiB a spawned
+        // thread defaults to on Linux. Several analyses recurse with AST
+        // nesting depth, and real C reaches thousands of levels, so a
+        // parallel scan aborted the whole process on input a `-j 1` run --
+        // which does this work on the 8 MiB main thread -- completed
+        // (task 952, this repo).
+        const WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(effective_jobs)
+            .stack_size(WORKER_STACK_BYTES)
             .build()?;
         let has_cross_file_data = context.has_cross_file_data();
         let file_counter = AtomicUsize::new(0);

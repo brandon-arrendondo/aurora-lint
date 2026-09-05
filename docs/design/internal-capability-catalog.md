@@ -158,6 +158,9 @@ step, not from within a rule.
 | Function | Signature | Description |
 |---|---|---|
 | `find_enclosing_declaration_for_identifier` | `(ident_node: &Node, name: &str, source: &str) -> Option<Node>` | Walks up through enclosing `compound_statement` blocks to find the nearest **scope- and shadowing-aware** declaration binding `name` — correctly disambiguates two different declarations of the same identifier in sibling/nested blocks, unlike a flat whole-file text scan. Stops at the function body (does not resolve to a parameter). **This is the primitive a hand-rolled unscoped declaration scan duplicated in task 146 (ARR39-C) — see the "leverage shared utility layer" lesson.** |
+| `find_declaration_in_scope_chain` | `(scopes: &[Node], ident_start: usize, name: &str, source: &str) -> Option<Node>` | The body of `find_enclosing_declaration_for_identifier`, over a scope chain (innermost first) the caller already holds. **Use this from any pass that is already descending the tree** — keep enclosing `compound_statement`/`for_statement` nodes on a stack (`is_declaration_scope` tests for one) and resolution costs nothing extra. Rediscovering the chain per identifier does not: see the ancestor-walk warning below. |
+| `is_declaration_scope` | `(node: &Node) -> bool` | True for the node kinds that open a scope the two functions above search (`compound_statement`, `for_statement`). |
+| `file_scope_descendants_of_kinds` | `(root: Node, kinds: &[&str]) -> Vec<Node>` | Descendants matching `kinds` that lie outside every function, found by pruning at `function_definition`. Replaces the "collect everything, then reject what `find_containing_function` answers for" shape. |
 | `get_identifier_from_declarator` | `(declarator: &Node, source: &str) -> String` | Extracts the identifier name from a declarator (simple, pointer, array, function-pointer). Returns `""` on failure (not `Option`). |
 | `find_identifier_in_declarator` | `(declarator: &Node, source: &str) -> Option<String>` | Same job as `get_identifier_from_declarator` but returns `Option` instead of an empty-string sentinel. **Note: these two are NOT interchangeable** — pick based on whether the call site can handle an `Option` (task 387 documents a real regression from picking the wrong one). |
 | `get_function_parameters` | `(function_node: &Node, source: &str) -> Option<Vec<(String, String)>>` | Extracts `(name, full_type)` pairs for a function's parameters, correctly finding the `function_declarator` even when nested inside a `pointer_declarator` (pointer-returning functions). |
@@ -165,6 +168,19 @@ step, not from within a rule.
 | `is_array_parameter_type` / `is_pointer_type` / `is_signed_type` / `is_unsigned_type` | `(type_str: &str) -> bool` | Type-string classifiers over a type's textual representation (not the AST node) — array/pointer/signed-integer/unsigned-integer. |
 | `extract_struct_name_from_type` | `(type_str: &str) -> Option<&str>` | Extracts a bare struct name from a type string (`"struct MyStruct *"` → `"MyStruct"`), stripping qualifiers and pointer stars; returns `None` for primitives/stdint types. |
 | `resolve_field_expression_type` | `(node: &Node, source, type_map, struct_field_types) -> Option<String>` | Resolves the type of a `field_expression` (`s->count`) by looking up the base variable's type, then the struct's field type — handles chained access (`a.b.c`) and one level of pointer dereference. |
+
+> **Ancestor walks are not free, and the cost is invisible in the source.**
+> `Node::parent()` is not a pointer hop: tree-sitter recovers a parent by
+> descending from the tree root, so one call costs O(depth). A walk up to the
+> enclosing function therefore costs O(depth²), and doing that once per node in
+> a file whose node count grows with its nesting depth is **cubic** — 2,000
+> levels of `if` nesting cost CON40-C 120 s+, EXP33-C 120 s+ and MSC13-C 93 s
+> before this was found (task 952, this repo), and roughly twenty other rules
+> still sit in the 0.3–3 s band on that input for the same reason. Prefer, in
+> order: prune on the way down (`file_scope_descendants_of_kinds`); carry what
+> you need on a stack as you descend (`find_declaration_in_scope_chain`);
+> precompute the answer once per function as byte ranges and test containment.
+> A bounded walk (a fixed few levels) is fine.
 
 ### `src/utility/cert_c/declarator_utils.rs`
 **Problem solved:** reusable checks for whether a declarator subtree

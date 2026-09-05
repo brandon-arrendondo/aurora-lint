@@ -223,12 +223,19 @@ are legitimate. It is reported only to show the tier's blind spot has real
 volume behind it.
 
 Scoring the ``pass/`` tier with the full rule set also surfaced a
-performance defect the per-rule harness cannot see: CON40-C, EXP33-C and
-MSC13-C each cost cubic time in block-nesting depth (roughly 8× per
-doubling — 46 ms at depth 100, 12 s at depth 800, independently per rule).
-MEM30-C's own 2,000-level ``pass/`` fixture makes a full-rule-set scan of
-that one file effectively hang, while its MEM30-C-only unit test finishes in
-milliseconds.
+performance defect the per-rule harness cannot see, since a fixture is only
+ever run against its owning rule. MEM30-C's own 2,000-level ``pass/``
+fixture finishes its MEM30-C unit test in milliseconds, but CON40-C,
+EXP33-C and MSC13-C each cost cubic time in its block-nesting depth, and a
+parallel full-rule-set scan of the directory holding it aborted outright on
+a worker thread's stack. The cause of the cubic term is that
+``Node::parent()`` recovers a parent by descending from the tree root, so an
+ancestor query per node costs O(depth²); the three rules now prune, carry a
+scope chain, or precompute byte ranges instead, and worker threads get an
+explicit stack. That file went from 120 s+, 120 s+ and 93 s to 40 ms, 1.8 s
+and 1.2 s, and the directory scan completes. Roughly twenty other rules
+still sit in the 0.3–3 s band on it for the same reason, which is tracked
+separately.
 
 NIST Juliet Test Suite Benchmarking
 -----------------------------------

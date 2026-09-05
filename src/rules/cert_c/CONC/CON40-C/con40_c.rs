@@ -19,6 +19,16 @@ use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
+/// Expression kinds an atomic variable can be referenced twice within.
+const EXPR_KINDS: &[&str] = &[
+    "binary_expression",
+    "assignment_expression",
+    "call_expression",
+    "conditional_expression",
+    "unary_expression",
+    "parenthesized_expression",
+];
+
 pub struct Con40C;
 
 impl Con40C {
@@ -45,16 +55,20 @@ impl Con40C {
     ) {
         // File-scope atomic declarations (outside any function).
         let mut global_atomic_vars = HashMap::new();
-        self.collect_atomic_vars_filtered(node, source, &mut global_atomic_vars, &|decl| {
-            ast_utils::find_containing_function(decl).is_none()
-        });
+        self.collect_declared_atomic_vars(
+            &ast_utils::file_scope_descendants_of_kinds(*node, &["declaration"]),
+            source,
+            &mut global_atomic_vars,
+        );
 
-        // Check file-scope expressions (rare) using only the global set,
-        // restricted to expressions with no enclosing function -- ones
-        // inside functions are handled in the per-function pass below.
-        self.check_expressions_filtered(node, source, &global_atomic_vars, violations, &|expr| {
-            ast_utils::find_containing_function(expr).is_none()
-        });
+        // Check file-scope expressions (rare) using only the global set --
+        // ones inside functions are handled in the per-function pass below.
+        self.check_expression_nodes(
+            &ast_utils::file_scope_descendants_of_kinds(*node, EXPR_KINDS),
+            source,
+            &global_atomic_vars,
+            violations,
+        );
 
         for func in query::find_descendants_of_kind(*node, "function_definition") {
             let mut atomic_vars = global_atomic_vars.clone();
@@ -76,23 +90,21 @@ impl Con40C {
         source: &'a str,
         atomic_vars: &mut HashMap<String, bool>,
     ) {
-        self.collect_atomic_vars_filtered(node, source, atomic_vars, &|_| true);
+        self.collect_declared_atomic_vars(
+            &query::find_descendants_of_kind(*node, "declaration"),
+            source,
+            atomic_vars,
+        );
     }
 
-    /// Like [`Self::collect_atomic_vars`], but only processes declarations
-    /// for which `filter` returns true.
-    fn collect_atomic_vars_filtered<'a>(
+    /// Record the atomic-typed variables declared by `decls`.
+    fn collect_declared_atomic_vars<'a>(
         &self,
-        node: &Node<'a>,
+        decls: &[Node<'a>],
         source: &'a str,
         atomic_vars: &mut HashMap<String, bool>,
-        filter: &dyn Fn(&Node) -> bool,
     ) {
-        // Check if this is an atomic variable declaration
-        for decl in query::find_descendants_of_kind(*node, "declaration") {
-            if !filter(&decl) {
-                continue;
-            }
+        for decl in decls {
             if let Some(type_node) = decl.child_by_field_name("type") {
                 let type_text = get_node_text(&type_node, source);
 
@@ -149,41 +161,33 @@ impl Con40C {
         atomic_vars: &HashMap<String, bool>,
         violations: &mut Vec<RuleViolation>,
     ) {
-        self.check_expressions_filtered(node, source, atomic_vars, violations, &|_| true);
+        self.check_expression_nodes(
+            &query::find_descendants_of_kinds(*node, EXPR_KINDS),
+            source,
+            atomic_vars,
+            violations,
+        );
     }
 
-    /// Like [`Self::check_expressions`], but only considers expressions for
-    /// which `filter` returns true.
-    fn check_expressions_filtered<'a>(
+    /// Check each expression in `exprs` for multiple references to the same
+    /// atomic variable.
+    fn check_expression_nodes<'a>(
         &self,
-        node: &Node<'a>,
+        exprs: &[Node<'a>],
         source: &'a str,
         atomic_vars: &HashMap<String, bool>,
         violations: &mut Vec<RuleViolation>,
-        filter: &dyn Fn(&Node) -> bool,
     ) {
-        let expr_kinds = [
-            "binary_expression",
-            "assignment_expression",
-            "call_expression",
-            "conditional_expression",
-            "unary_expression",
-            "parenthesized_expression",
-        ];
-
-        for expr in query::find_descendants_of_kinds(*node, &expr_kinds) {
-            if !filter(&expr) {
-                continue;
-            }
+        for expr in exprs {
             // Count references to each atomic variable in this expression
             let mut var_counts: HashMap<String, Vec<Node>> = HashMap::new();
-            self.count_var_references(&expr, source, atomic_vars, &mut var_counts);
+            self.count_var_references(expr, source, atomic_vars, &mut var_counts);
 
             // Check for variables referenced multiple times
             for (var_name, refs) in &var_counts {
                 if refs.len() >= 2 {
                     // Check if this is a compound assignment (which is safe)
-                    if !self.is_safe_compound_assignment(&expr, source, var_name) {
+                    if !self.is_safe_compound_assignment(expr, source, var_name) {
                         // Report violation on the expression node
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
