@@ -1,0 +1,298 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Licensing and content provenance &mdash; SqC  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Bibliography" href="bibliography.html" />
+    <link rel="prev" title="Contributing" href="contributing.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            SqC
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Licensing and content provenance</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#summary">Summary</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#the-cert-terms">The CERT terms</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#trademark-which-is-separate-from-copyright">Trademark, which is separate from copyright</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#what-a-packager-needs-to-write">What a packager needs to write</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#re-deriving-the-counts">Re-deriving the counts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#third-party-rust-dependencies">Third-party Rust dependencies</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">SqC</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Licensing and content provenance</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/licensing.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="licensing-and-content-provenance">
+<h1>Licensing and content provenance<a class="headerlink" href="#licensing-and-content-provenance" title="Link to this heading"></a></h1>
+<p>This page exists for one audience: someone deciding whether sqc can enter a
+distribution archive. It answers <em>what is in this source tree, who wrote it,
+and under what terms</em>.</p>
+<section id="summary">
+<h2>Summary<a class="headerlink" href="#summary" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 34.0%" />
+<col style="width: 22.0%" />
+<col style="width: 44.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Material</p></th>
+<th class="head"><p>License</p></th>
+<th class="head"><p>Where it lives</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>sqc’s own source code and packaging</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Apache-2.0</span></code></p></td>
+<td><p>everything not listed below</p></td>
+</tr>
+<tr class="row-odd"><td><p>sqc’s own documentation</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">CC-BY-4.0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">docs/</span></code> and the generated man page, as declared in <code class="docutils literal notranslate"><span class="pre">docs/conf.py</span></code>
+and <code class="docutils literal notranslate"><span class="pre">docs/sqc.1</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>SEI CERT C rule titles and rule prose</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">CC-BY-4.0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">metadata.title</span></code> / <code class="docutils literal notranslate"><span class="pre">metadata.description</span></code> in
+<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/&lt;RULE-ID&gt;.toml</span></code>, and the <code class="docutils literal notranslate"><span class="pre">description()</span></code>
+string in each rule’s <code class="docutils literal notranslate"><span class="pre">.rs</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>SEI CERT C code examples</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MIT</span></code></p></td>
+<td><p>the C snippets embedded in those <code class="docutils literal notranslate"><span class="pre">description</span></code> fields, and the
+wiki-derived fixtures under <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>Copyright in all of it is held by <strong>BISSELL Homecare, Inc.</strong> SqC is company
+work: it is written by BISSELL employees under BISSELL direction, so the
+holder is the entity, not the individuals. <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code>’s <code class="docutils literal notranslate"><span class="pre">authors</span></code> field
+still names individuals, and correctly — authorship is a statement of who
+wrote the code and is not the same as who owns it. <code class="docutils literal notranslate"><span class="pre">CONTRIBUTORS.md</span></code> is the
+fuller record.</p>
+<p><strong>SqC is licensed Apache-2.0.</strong> The CERT rows above are third-party material
+carried in the tree, not a change to that: they keep their own upstream terms,
+the way any vendored component does, and those terms are recorded in
+<code class="docutils literal notranslate"><span class="pre">NOTICE</span></code> and <code class="docutils literal notranslate"><span class="pre">thirdparty/cert/LICENSE</span></code> rather than in <code class="docutils literal notranslate"><span class="pre">LICENSE</span></code>.</p>
+<p>The attribution obligation reaches the binary, not only the source tarball:
+each rule compiles its CERT title in as a <code class="docutils literal notranslate"><span class="pre">&amp;'static</span> <span class="pre">str</span></code>, so a stripped
+<code class="docutils literal notranslate"><span class="pre">sqc</span></code> executable still carries CC BY 4.0 material. <code class="docutils literal notranslate"><span class="pre">NOTICE</span></code> ships in every
+release artifact for that reason.</p>
+<p>A packager describing the <em>contents of a binary package</em> will generally write
+the union rather than the project’s own license — <code class="docutils literal notranslate"><span class="pre">Apache-2.0</span> <span class="pre">AND</span> <span class="pre">MIT</span> <span class="pre">AND</span>
+<span class="pre">CC-BY-4.0</span></code> — which is why the DEP-5 stanzas below are split by path. That is
+a packaging-metadata convention and is not what SqC is licensed under.</p>
+</section>
+<section id="the-cert-terms">
+<h2>The CERT terms<a class="headerlink" href="#the-cert-terms" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">thirdparty/cert/LICENSE</span></code> holds, verbatim and unedited, the notice published
+by the SEI itself at
+<a class="reference external" href="https://github.com/cmu-sei/secure-coding-standards/blob/main/LICENSE">https://github.com/cmu-sei/secure-coding-standards/blob/main/LICENSE</a>. Its
+operative sentence:</p>
+<blockquote>
+<div><p>The SEI CERT® Coding Standards are licensed under a Creative Commons BY 4.0
+Attribution License […], and the code examples contained therein are
+licensed under a MIT license […]. Although the rights granted by the
+referenced licenses allow modification […]</p>
+</div></blockquote>
+<p>Both are DFSG-free and Fedora-allowed, and both permit modification — which
+matters, because sqc’s rule descriptions <em>are</em> modified (they are extracted
+from page markup and reflowed, and CC BY 4.0 section 3(a)(1)(B) requires that
+modification be indicated).</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>The SEI publishes a <strong>second, restrictive notice</strong> on its <em>technical
+reports</em> — reproduce-in-entirety-only, no modification, commercial use by
+permission. That notice is non-free and it does <strong>not</strong> govern the coding
+standards. An adjudication that quotes the technical-report boilerplate at
+this material has cited the wrong document and will reach the wrong answer.
+The standards’ own <code class="docutils literal notranslate"><span class="pre">LICENSE</span></code>, mirrored in <code class="docutils literal notranslate"><span class="pre">thirdparty/cert/</span></code>, is the
+governing text.</p>
+</div>
+</section>
+<section id="trademark-which-is-separate-from-copyright">
+<h2>Trademark, which is separate from copyright<a class="headerlink" href="#trademark-which-is-separate-from-copyright" title="Link to this heading"></a></h2>
+<p><em>Carnegie Mellon</em> and <em>CERT</em> are registered trademarks of Carnegie Mellon
+University. The copyright licenses above grant nothing here.</p>
+<ul class="simple">
+<li><p>Nominative use in prose is fine: “sqc checks C code against the SEI CERT C
+Coding Standard” describes what the tool does and is how the marks may be
+used.</p></li>
+<li><p><strong>Do not put CERT or Carnegie Mellon in the binary name, the package name,
+or any name that reads as a source identifier.</strong> The binary and the
+distribution package are both <code class="docutils literal notranslate"><span class="pre">sqc</span></code> deliberately. <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/</span></code>
+is an internal path, not a published name.</p></li>
+<li><p>Do not imply endorsement, certification, or affiliation.</p></li>
+</ul>
+</section>
+<section id="what-a-packager-needs-to-write">
+<h2>What a packager needs to write<a class="headerlink" href="#what-a-packager-needs-to-write" title="Link to this heading"></a></h2>
+<p>Debian <code class="docutils literal notranslate"><span class="pre">debian/copyright</span></code> (DEP-5) needs three stanzas rather than one:</p>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>Files: *
+Copyright: 2025-2026 BISSELL Homecare, Inc.
+License: Apache-2.0
+
+Files: docs/*
+Copyright: 2025-2026 BISSELL Homecare, Inc.
+License: CC-BY-4.0
+
+Files: src/rules/cert_c/*/*/tests/*
+Copyright: Carnegie Mellon University
+Comment: Fixtures derived from the SEI CERT C Coding Standard&#39;s compliant
+ and non-compliant code examples. See thirdparty/cert/LICENSE.
+License: Expat
+
+Files: src/rules/cert_c/*/*/*-C.toml
+Copyright: Carnegie Mellon University
+Comment: metadata.title and metadata.description are lifted from the SEI
+ CERT C Coding Standard and reflowed. Embedded C snippets are Expat.
+License: CC-BY-4.0 and Expat
+</pre></div>
+</div>
+<p>The fixture stanza is deliberately broader than reality: most fixtures are
+locally authored rather than wiki-derived, and each declares which it is in a
+<code class="docutils literal notranslate"><span class="pre">Source:</span></code> header comment. Claiming CMU copyright over all of them is the
+conservative direction to be wrong in — a packager who wants the tighter glob
+can generate it from <code class="docutils literal notranslate"><span class="pre">scripts/fixture_provenance.py</span> <span class="pre">--by-rule</span> <span class="pre">--json</span></code>,
+which reports the split per rule.</p>
+<p>Fedora <code class="docutils literal notranslate"><span class="pre">.spec</span></code>: <code class="docutils literal notranslate"><span class="pre">.github/workflows/release.yml</span></code> emits
+<code class="docutils literal notranslate"><span class="pre">License:</span> <span class="pre">Apache-2.0</span></code>, SqC’s own license. A Fedora packager who prefers the
+contents-union convention would write <code class="docutils literal notranslate"><span class="pre">Apache-2.0</span> <span class="pre">AND</span> <span class="pre">MIT</span> <span class="pre">AND</span> <span class="pre">CC-BY-4.0</span></code>
+instead; both describe the same package, and the <code class="docutils literal notranslate"><span class="pre">NOTICE</span></code> and
+<code class="docutils literal notranslate"><span class="pre">thirdparty/cert/LICENSE</span></code> files shipped alongside carry the detail either
+way.</p>
+</section>
+<section id="re-deriving-the-counts">
+<h2>Re-deriving the counts<a class="headerlink" href="#re-deriving-the-counts" title="Link to this heading"></a></h2>
+<p>Provenance is recorded in the files themselves, so the split can be recounted
+at any commit rather than trusted from prose:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># fixture corpus split by declared provenance, wiki vs local</span>
+python3<span class="w"> </span>scripts/fixture_provenance.py
+
+<span class="c1"># rule manifests carrying CERT title/description text</span>
+find<span class="w"> </span>src/rules<span class="w"> </span>-name<span class="w"> </span><span class="s1">&#39;*-C.toml&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>wc<span class="w"> </span>-l
+</pre></div>
+</div>
+<p>As of 2026-09-05: 313 rule manifests, every one carrying a CERT title and
+description, 310 citing their source wiki page, 33 embedding a CERT code
+example; and 1,337 fixtures declaring wiki provenance out of 3,577.</p>
+<p><code class="docutils literal notranslate"><span class="pre">fixture_provenance.py</span></code> reports what each header <em>declares</em>. The independent
+check on that claim is <code class="docutils literal notranslate"><span class="pre">scripts/audit_wiki_fixture_staleness.py</span></code>, which
+re-fetches each rule’s wiki page and measures how much of the original code
+block still appears in the fixture — relevant here because a fixture rewritten
+until it matched what the checker looks for is no longer meaningfully
+CERT-derived, in evidence or in copyright.</p>
+</section>
+<section id="third-party-rust-dependencies">
+<h2>Third-party Rust dependencies<a class="headerlink" href="#third-party-rust-dependencies" title="Link to this heading"></a></h2>
+<p>Unrelated to the above and handled separately: <code class="docutils literal notranslate"><span class="pre">cargo-about</span></code> generates
+<code class="docutils literal notranslate"><span class="pre">THIRD_PARTY_LICENSES.txt</span></code> and <code class="docutils literal notranslate"><span class="pre">cargo-cyclonedx</span></code> a CycloneDX SBOM on every
+release build. Both ship in every release artifact. The allowlist of
+acceptable dependency licenses is <code class="docutils literal notranslate"><span class="pre">about.toml</span></code>.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="contributing.html" class="btn btn-neutral float-left" title="Contributing" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="bibliography.html" class="btn btn-neutral float-right" title="Bibliography" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
