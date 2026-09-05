@@ -124,11 +124,12 @@ Debian ``debian/copyright`` (DEP-5) needs three stanzas rather than one:
     CERT C Coding Standard and reflowed. Embedded C snippets are Expat.
    License: CC-BY-4.0 and Expat
 
-The fixture stanza is deliberately broader than reality — roughly a third of
-the fixtures are locally authored rather than wiki-derived, and each declares
-which it is in a ``Source:`` header comment. Claiming CMU copyright over all
-of them is the conservative direction to be wrong in; splitting the glob
-requires the provenance audit tracked separately in the backlog.
+The fixture stanza is deliberately broader than reality: most fixtures are
+locally authored rather than wiki-derived, and each declares which it is in a
+``Source:`` header comment. Claiming CMU copyright over all of them is the
+conservative direction to be wrong in — a packager who wants the tighter glob
+can generate it from ``scripts/fixture_provenance.py --by-rule --json``,
+which reports the split per rule.
 
 Fedora ``.spec``: ``.github/workflows/release.yml`` emits
 ``License: Apache-2.0``, SqC's own license. A Fedora packager who prefers the
@@ -145,15 +146,22 @@ at any commit rather than trusted from prose:
 
 .. code-block:: bash
 
+   # fixture corpus split by declared provenance, wiki vs local
+   python3 scripts/fixture_provenance.py
+
    # rule manifests carrying CERT title/description text
    find src/rules -name '*-C.toml' | wc -l
 
-   # fixtures declaring wiki provenance in their header comment
-   grep -rl '^ \* Source: wiki' --include='*.c' src/rules | wc -l
-
 As of 2026-09-05: 313 rule manifests, every one carrying a CERT title and
 description, 310 citing their source wiki page, 33 embedding a CERT code
-example; and 1,337 of 3,578 fixtures declaring wiki provenance.
+example; and 1,337 fixtures declaring wiki provenance out of 3,577.
+
+``fixture_provenance.py`` reports what each header *declares*. The independent
+check on that claim is ``scripts/audit_wiki_fixture_staleness.py``, which
+re-fetches each rule's wiki page and measures how much of the original code
+block still appears in the fixture — relevant here because a fixture rewritten
+until it matched what the checker looks for is no longer meaningfully
+CERT-derived, in evidence or in copyright.
 
 Third-party Rust dependencies
 -----------------------------

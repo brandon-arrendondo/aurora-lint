@@ -43,7 +43,7 @@ use crate::analyze::buffer_size::{self, BufferInfo, BufferSize};
 use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, VarRangeMap};
 use crate::analyze::context::ProjectContext;
-use crate::analyze::function_summary::collect_param_names;
+use crate::analyze::function_summary::{collect_param_names, extract_function_name};
 use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
@@ -60,6 +60,7 @@ use crate::utility::cert_c::ast_utils::{
     get_identifier_from_declarator,
 };
 use crate::utility::cert_c::call_roles;
+use crate::utility::cert_c::guard_dominance::{has_dominating_comparison, ComparisonKind};
 
 pub struct Arr30C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
@@ -91,6 +92,13 @@ pub struct Arr30C {
     /// passes a tainted pointer (+offset) with no length argument. Built once per
     /// file; `None` until the root pass populates it. Cleared per file.
     helper_overread_summary: RefCell<Option<HashMap<String, Vec<usize>>>>,
+    /// Per-file caller-validation summary, keyed by function name: the
+    /// positional parameter indices that EVERY call site *in this file*
+    /// bounds-checks before passing. Drives the validate-then-act suppression
+    /// in `check_unvalidated_param_index`; see
+    /// `build_caller_validated_params`. `None` until the root pass populates
+    /// it. Cleared per file.
+    caller_validated_params: RefCell<Option<HashMap<String, HashSet<usize>>>>,
     /// File-scope-only buffer bindings (globals, struct/union member
     /// arrays, typedef-array members) — see `analyze_global_scope_buffers`.
     /// Computed once per file at the root `check()` call and used as the
@@ -229,6 +237,10 @@ impl CertRule for Arr30C {
             // walks unbounded. Consumed by `check_overread_helper_callsite`.
             *self.helper_overread_summary.borrow_mut() =
                 Some(self.build_helper_overread_summary(node, source));
+            // Which parameters this file's callers already bounds-check before
+            // passing (task 911). Consumed by `check_unvalidated_param_index`.
+            *self.caller_validated_params.borrow_mut() =
+                Some(self.build_caller_validated_params(node, source));
             let mut buffer_info = self.analyze_buffer_allocations(source);
             let pointer_aliases = self.analyze_pointer_aliases(source, &buffer_info);
             // Task 389: the file-scope-only base each function's own buffer
@@ -298,6 +310,7 @@ impl Arr30C {
             param_decode_buf_cache: RefCell::new(HashMap::new()),
             param_decode_reported: RefCell::new(HashSet::new()),
             helper_overread_summary: RefCell::new(None),
+            caller_validated_params: RefCell::new(None),
             global_scope_buffers: RefCell::new(HashMap::new()),
             cached_typedefs: RefCell::new(HashMap::new()),
         }
@@ -1575,6 +1588,22 @@ impl Arr30C {
         false
     }
 
+    /// Does `func_node` guard `param_name` with `if (size < param)` -- the
+    /// off-by-one spelling of `if (size <= param)` that the CERT wiki's
+    /// `insert_in_table` example turns on? It leaves `size == param` falling
+    /// through to `table[param]`, so it is an insufficient check rather than
+    /// a missing one, and no *other* evidence of validation (a dominating
+    /// comparison, a call site that range-checks the argument) may override
+    /// that verdict.
+    fn has_off_by_one_bound_check(func_node: &Node, param_name: &str, source: &str) -> bool {
+        let func_text = Self::text_sans_comments_and_strings(*func_node, source);
+        let pattern = format!(
+            r"\bif\s*\(\s*\w+\s*<\s*\b{}\b\s*\)",
+            regex::escape(param_name)
+        );
+        regex::Regex::new(&pattern).is_ok_and(|re| re.is_match(&func_text))
+    }
+
     /// Check if function has ANY bounds validation for a parameter
     fn has_function_parameter_bounds_check(
         &self,
@@ -1593,15 +1622,8 @@ impl Arr30C {
         // 3. Presence of size/length/count parameter
 
         // IMPORTANT: Check for OFF-BY-ONE errors first!
-        // Pattern: if (size < param) is WRONG - should be if (size <= param)
-        // This is an off-by-one error common in realloc/resize code
-        let off_by_one_pattern = format!(r"\bif\s*\(\s*\w+\s*<\s*{}\s*\)", param_b);
-        if let Ok(re) = regex::Regex::new(&off_by_one_pattern) {
-            if re.is_match(&func_text) {
-                // Found "if (size < param)" pattern - this is INSUFFICIENT bounds checking
-                // It should be "if (size <= param)" to properly handle the case where size == param
-                return false;
-            }
+        if Self::has_off_by_one_bound_check(func_node, param_name, source) {
+            return false;
         }
 
         let bounds_patterns = [
@@ -2495,6 +2517,25 @@ impl Arr30C {
         if self.has_function_parameter_bounds_check(&func_node, var, source) {
             return None;
         }
+        // A `false` from `has_function_parameter_bounds_check` can mean it found
+        // an off-by-one guard rather than no guard at all, and the two
+        // structural paths below must not talk over that verdict -- the guard
+        // they would find is the broken one.
+        if !Self::has_off_by_one_bound_check(&func_node, var, source) {
+            // The guard may be structural rather than one of the spellings
+            // `has_function_parameter_bounds_check`'s regexes recognise.
+            // pureftpd's `while (len != 0) { len--; ... msg[len] ... }` bounds
+            // `len` by the very loop condition it is decremented under -- the
+            // ordinary buffer-plus-its-own-length calling convention, read as
+            // an unvalidated index because the check is a `while` and not an
+            // `if`.
+            if has_dominating_comparison(var, node, source, ComparisonKind::Any) {
+                return None;
+            }
+            if self.param_validated_by_callers(&func_node, var, source) {
+                return None;
+            }
+        }
         if Self::index_is_bounded_by_alloc_roundup(&func_node, array_name, var, source) {
             return None;
         }
@@ -2515,6 +2556,134 @@ impl Arr30C {
             ),
             ..Default::default()
         })
+    }
+
+    /// Does every call site of `var`'s own function, within this file, already
+    /// bounds-check the argument it passes at `var`'s parameter position?
+    ///
+    /// The pattern this exists for is the deliberate validate-then-act split:
+    /// seL4's `decodeVCPUInjectIRQ()`/`invokeVCPUInjectIRQ()` pair, where decode
+    /// range-checks every argument and invoke is written to trust it (a
+    /// formally verified architectural convention, not a missing check), and
+    /// curl's `Curl_bufq_peek_at()`/`chunk_peek_at()`. Read on its own the
+    /// callee's index parameter is indistinguishable from an unvalidated one,
+    /// which is what made this the bulk of ARR30-C's real-world
+    /// unvalidated-parameter-index false positives.
+    fn param_validated_by_callers(&self, func_node: &Node, var: &str, source: &str) -> bool {
+        let Some(func_name) = extract_function_name(func_node, source) else {
+            return false;
+        };
+        let Some(param_idx) = collect_param_names(func_node, source)
+            .iter()
+            .position(|p| p == var)
+        else {
+            return false;
+        };
+        self.caller_validated_params
+            .borrow()
+            .as_ref()
+            .is_some_and(|summary| {
+                summary
+                    .get(&func_name)
+                    .is_some_and(|indices| indices.contains(&param_idx))
+            })
+    }
+
+    /// Build the per-file caller-validation summary consumed by
+    /// [`Self::param_validated_by_callers`]: function name -> the positional
+    /// argument indices that *every* call site in this file guards with a
+    /// dominating comparison on the variable it passes.
+    ///
+    /// Conservative in three deliberate ways. An argument that is not a bare
+    /// variable (parenthesis and cast wrappers aside) never counts as
+    /// validated; a single unguarded call site disqualifies that position for
+    /// the whole function; and a function with no call site in this file gets
+    /// no entry at all, so it keeps being checked on its own body as before.
+    /// The residual risk is a non-`static` callee whose callers in *other*
+    /// translation units validate nothing -- accepted, because the finding
+    /// class this suppresses labels every guarded call site wrong today.
+    fn build_caller_validated_params(
+        &self,
+        root: &Node,
+        source: &str,
+    ) -> HashMap<String, HashSet<usize>> {
+        let mut sites: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
+        Self::collect_call_arg_guards(root, source, &mut sites);
+
+        let mut summary: HashMap<String, HashSet<usize>> = HashMap::new();
+        for (callee, calls) in sites {
+            let arity = calls.iter().map(|c| c.len()).max().unwrap_or(0);
+            let validated: HashSet<usize> = (0..arity)
+                .filter(|idx| calls.iter().all(|c| c.get(*idx).copied().unwrap_or(false)))
+                .collect();
+            if !validated.is_empty() {
+                summary.insert(callee, validated);
+            }
+        }
+        summary
+    }
+
+    fn collect_call_arg_guards(
+        node: &Node,
+        source: &str,
+        out: &mut HashMap<String, Vec<Vec<bool>>>,
+    ) {
+        if node.kind() == "call_expression" {
+            if let Some(callee) = node.child_by_field_name("function") {
+                if callee.kind() == "identifier" {
+                    let name = source[callee.start_byte()..callee.end_byte()].to_string();
+                    out.entry(name)
+                        .or_default()
+                        .push(Self::call_arg_guards(node, source));
+                }
+            }
+        }
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                Self::collect_call_arg_guards(&child, source, out);
+            }
+        }
+    }
+
+    /// Per-argument "was this bounds-checked before the call?" flags for one
+    /// call site, in argument order.
+    fn call_arg_guards(call_node: &Node, source: &str) -> Vec<bool> {
+        let Some(arg_list) = call_node.child_by_field_name("arguments") else {
+            return Vec::new();
+        };
+        let mut guards = Vec::new();
+        for i in 0..arg_list.child_count() {
+            let Some(arg) = arg_list.child(i) else {
+                continue;
+            };
+            if !arg.is_named() || arg.kind() == "comment" {
+                continue;
+            }
+            let inner = Self::strip_arg_wrappers(&arg);
+            guards.push(
+                inner.kind() == "identifier"
+                    && has_dominating_comparison(
+                        &source[inner.start_byte()..inner.end_byte()],
+                        call_node,
+                        source,
+                        ComparisonKind::Any,
+                    ),
+            );
+        }
+        guards
+    }
+
+    /// Peel parentheses and casts off a call argument, so `f((word_t)index)`
+    /// reads as passing `index`.
+    fn strip_arg_wrappers<'a>(node: &Node<'a>) -> Node<'a> {
+        let mut current = Self::strip_parens(node);
+        while current.kind() == "cast_expression" {
+            let Some(value) = current.child_by_field_name("value") else {
+                break;
+            };
+            current = Self::strip_parens(&value);
+        }
+        current
     }
 
     /// Is `array_name[var]` provably in-bounds because `array_name` was

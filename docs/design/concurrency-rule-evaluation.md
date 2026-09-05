@@ -31,7 +31,7 @@ benchmark run.
 | CON07-C | CWE-366, 413, 567, 667 | 8.2% (CWE-366; 13.9% flaw-detection) | 2.4% (100%) | 45 in-scope / 0 TP / 45 FP (task 546) |
 | CON33-C | CWE-330, 377, 676 | 3.0% (CWE-377; 1.4% flaw-detection) | 0% (n/a — 0 TP) | 16 in-scope combined w/ CON34-C+CON37-C / 0 TP / 16 FP (task 549) |
 
-Sources: `JULIET_COVERAGE.md` (generated from `data/benchmarks.db`),
+Sources: `docs/juliet-coverage.md` (generated from `data/benchmarks.db`),
 `data/precision_audit/DELTA_BATCHC_TASK546.md`,
 `DELTA_BATCHD_TASK547.md`, `DELTA_LT2_TASK549.md`.
 
@@ -228,7 +228,7 @@ not built here):
    instead to the real-world adjudicated numbers in §1, with the causal
    attribution already written up in `DELTA_BATCHC_TASK546.md` /
    `DELTA_BATCHD_TASK547.md` / `DELTA_LT2_TASK549.md`. This is a doc-only
-   change (`JULIET_COVERAGE.md` generation script or its consuming docs),
+   change (`docs/juliet-coverage.md` generation script or its consuming docs),
    filed as a follow-on task, not done here.
 
 2. **Treat the real-world `ground_truth` pipeline as the primary
