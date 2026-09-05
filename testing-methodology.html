@@ -290,19 +290,36 @@ change that breaks any fixture — its own or another rule’s — cannot merge:
 the gate, not evidence about the rules.</p>
 <p>Two limits of the harness are worth stating, because the green result does
 not cover them.</p>
-<p><strong>The generated tests do not run the analyzer’s real context.</strong> Each test
-calls <code class="docutils literal notranslate"><span class="pre">rule.check()</span></code> directly and builds context itself, via
-<code class="docutils literal notranslate"><span class="pre">prescan_single_tree</span></code> — a helper with no other caller in <code class="docutils literal notranslate"><span class="pre">src/</span></code>, so the
-harness reimplements what <code class="docutils literal notranslate"><span class="pre">src/analyze/mod.rs</span></code> does for a real scan, and
-the two have drifted. Only 39 of the 1,594 <code class="docutils literal notranslate"><span class="pre">pass/</span></code> fixtures opt into
-context at all (a <code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">sqc-test:</span> <span class="pre">prescan</span></code> marker); the rest are checked
-with none. Scanning the corpus with the shipped binary instead finds <strong>17
-violations on 11 must-not-detect fixtures across 9 rules</strong> (ARR38-C,
-DCL31-C, DCL41-C, ENV03-C, EXP33-C, EXP34-C, INT10-C, INT32-C, INT33-C)
-whose unit tests pass. Each reproduces on the single file with only the
-owning rule enabled, so it is neither cross-rule interference nor an
-artifact of scanning a fixture directory. All 11 are among the 39 that ask
-for context — the divergence is in the context, not the rules.</p>
+<p><strong>Most fixtures are not tested under the context the analyzer really
+builds.</strong> Each test calls <code class="docutils literal notranslate"><span class="pre">rule.check()</span></code> directly. A fixture carrying a
+<code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">sqc-test:</span> <span class="pre">prescan</span></code> marker is given the scan’s own context —
+<code class="docutils literal notranslate"><span class="pre">prescan::prescan_single_file</span></code> (the file-list prescan behind <code class="docutils literal notranslate"><span class="pre">-d</span></code>,
+applied to that fixture alone) and then <code class="docutils literal notranslate"><span class="pre">analyze::build_file_analysis</span></code> for
+CFGs and value ranges, which is the call <code class="docutils literal notranslate"><span class="pre">analyze_one_file</span></code> makes. Only 55
+of roughly 4,000 fixtures carry the marker. The rest are checked with no
+project context, no CFGs and no value ranges at all — strictly weaker than
+any invocation of the shipped tool.</p>
+<p>How much that hides is measured, not estimated. Removing the gate so every
+fixture gets the real context takes the suite from 4,035 passing to 62
+failing, and each of the 62 was checked against the shipped binary, which
+agrees with the new result every time: 61 <code class="docutils literal notranslate"><span class="pre">fail/</span></code> fixtures are detected
+only under the weaker analysis and not by a real scan (INT30-C 21, INT32-C
+19, INT31-C 16, and one each from ARR30-C ×2, EXP33-C, INT33-C, MEM30-C),
+and one <code class="docutils literal notranslate"><span class="pre">pass/</span></code> fixture (MEM31-C’s <code class="docutils literal notranslate"><span class="pre">safe_wrapper_functions</span></code>) draws five
+findings once context exists. The INT3x cluster has a single cause: the
+provenance gate those rules share returns “risky” whenever
+<code class="docutils literal notranslate"><span class="pre">function_summaries</span></code> is empty, so a fixture with no context is flagged
+without the provenance analysis ever running. Closing the gap is tracked as
+its own work, since it changes what three rules report and so needs
+benchmarking, not just a green suite.</p>
+<p>A separate and earlier claim on this page — that scanning the corpus with
+the shipped binary finds 17 violations on 11 must-not-detect fixtures — was
+an artifact of invoking <code class="docutils literal notranslate"><span class="pre">sqc</span></code> with no <code class="docutils literal notranslate"><span class="pre">-d</span></code>. A scan with no <code class="docutils literal notranslate"><span class="pre">-d</span></code> builds
+no context for its own target: a single-file target sees sibling <code class="docutils literal notranslate"><span class="pre">.h</span></code>
+declarations only, a directory target sees nothing. Pass <code class="docutils literal notranslate"><span class="pre">-d</span></code>, even a
+directory holding just that one fixture, and all 17 go to zero. Every
+benchmark invocation passes <code class="docutils literal notranslate"><span class="pre">-d</span></code>, so no reported number was affected; the
+exposure is a first-touch <code class="docutils literal notranslate"><span class="pre">sqc</span> <span class="pre">foo.c</span></code> run, tracked separately.</p>
 <p><strong>Cross-rule interference is untested.</strong> A fixture is only ever checked
 against its owning rule, so a <code class="docutils literal notranslate"><span class="pre">pass/</span></code> fixture for one rule is never
 evidence about any other. Running the full rule set over the <code class="docutils literal notranslate"><span class="pre">pass/</span></code> tier
@@ -313,12 +330,19 @@ with EXP34-C has no obligation to be clean under DCL15-C, and most of these
 are legitimate. It is reported only to show the tier’s blind spot has real
 volume behind it.</p>
 <p>Scoring the <code class="docutils literal notranslate"><span class="pre">pass/</span></code> tier with the full rule set also surfaced a
-performance defect the per-rule harness cannot see: CON40-C, EXP33-C and
-MSC13-C each cost cubic time in block-nesting depth (roughly 8× per
-doubling — 46 ms at depth 100, 12 s at depth 800, independently per rule).
-MEM30-C’s own 2,000-level <code class="docutils literal notranslate"><span class="pre">pass/</span></code> fixture makes a full-rule-set scan of
-that one file effectively hang, while its MEM30-C-only unit test finishes in
-milliseconds.</p>
+performance defect the per-rule harness cannot see, since a fixture is only
+ever run against its owning rule. MEM30-C’s own 2,000-level <code class="docutils literal notranslate"><span class="pre">pass/</span></code>
+fixture finishes its MEM30-C unit test in milliseconds, but CON40-C,
+EXP33-C and MSC13-C each cost cubic time in its block-nesting depth, and a
+parallel full-rule-set scan of the directory holding it aborted outright on
+a worker thread’s stack. The cause of the cubic term is that
+<code class="docutils literal notranslate"><span class="pre">Node::parent()</span></code> recovers a parent by descending from the tree root, so an
+ancestor query per node costs O(depth²); the three rules now prune, carry a
+scope chain, or precompute byte ranges instead, and worker threads get an
+explicit stack. That file went from 120 s+, 120 s+ and 93 s to 40 ms, 1.8 s
+and 1.2 s, and the directory scan completes. Roughly twenty other rules
+still sit in the 0.3–3 s band on it for the same reason, which is tracked
+separately.</p>
 </section>
 </section>
 <section id="nist-juliet-test-suite-benchmarking">
