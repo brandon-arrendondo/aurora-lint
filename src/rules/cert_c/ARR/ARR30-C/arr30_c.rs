@@ -60,7 +60,9 @@ use crate::utility::cert_c::ast_utils::{
     get_identifier_from_declarator,
 };
 use crate::utility::cert_c::call_roles;
-use crate::utility::cert_c::guard_dominance::{has_dominating_comparison, ComparisonKind};
+use crate::utility::cert_c::guard_dominance::{
+    collect_call_arg_guards, has_dominating_comparison, ComparisonKind,
+};
 
 pub struct Arr30C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
@@ -99,6 +101,14 @@ pub struct Arr30C {
     /// `build_caller_validated_params`. `None` until the root pass populates
     /// it. Cleared per file.
     caller_validated_params: RefCell<Option<HashMap<String, HashSet<usize>>>>,
+    /// The cross-file half of the same summary, lifted from the prescan
+    /// (`FunctionSummary::callsite_param_validated`): parameter indices that
+    /// EVERY call site *in the whole scanned project* bounds-checks. Extends
+    /// `caller_validated_params` to a callee whose only callers live in another
+    /// translation unit, which the per-file summary cannot see at all. Empty
+    /// when no prescan ran (a single-file scan, a unit test), which is why both
+    /// summaries are kept rather than the file-local one being retired.
+    project_validated_params: RefCell<HashMap<String, HashSet<usize>>>,
     /// File-scope-only buffer bindings (globals, struct/union member
     /// arrays, typedef-array members) — see `analyze_global_scope_buffers`.
     /// Computed once per file at the root `check()` call and used as the
@@ -227,6 +237,12 @@ impl CertRule for Arr30C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.macro_constants.borrow_mut() = context.macro_constants.clone();
+        *self.project_validated_params.borrow_mut() = context
+            .function_summaries
+            .iter()
+            .filter(|(_, s)| !s.callsite_param_validated.is_empty())
+            .map(|(name, s)| (name.clone(), s.callsite_param_validated.clone()))
+            .collect();
     }
 
     fn needs_vra(&self) -> bool {
@@ -319,6 +335,7 @@ impl Arr30C {
             param_decode_reported: RefCell::new(HashSet::new()),
             helper_overread_summary: RefCell::new(None),
             caller_validated_params: RefCell::new(None),
+            project_validated_params: RefCell::new(HashMap::new()),
             global_scope_buffers: RefCell::new(HashMap::new()),
             null_sentinel_macros: RefCell::new(HashSet::new()),
             cached_typedefs: RefCell::new(HashMap::new()),
@@ -2567,8 +2584,13 @@ impl Arr30C {
         })
     }
 
-    /// Does every call site of `var`'s own function, within this file, already
-    /// bounds-check the argument it passes at `var`'s parameter position?
+    /// Does every call site of `var`'s own function already bounds-check the
+    /// argument it passes at `var`'s parameter position?
+    ///
+    /// Answered from two summaries: `caller_validated_params`, built from this
+    /// file's own call sites, and `project_validated_params`, lifted from the
+    /// prescan's project-wide view so a callee whose only callers live in
+    /// another translation unit is reachable at all.
     ///
     /// The pattern this exists for is the deliberate validate-then-act split:
     /// seL4's `decodeVCPUInjectIRQ()`/`invokeVCPUInjectIRQ()` pair, where decode
@@ -2588,14 +2610,28 @@ impl Arr30C {
         else {
             return false;
         };
-        self.caller_validated_params
-            .borrow()
-            .as_ref()
-            .is_some_and(|summary| {
-                summary
-                    .get(&func_name)
-                    .is_some_and(|indices| indices.contains(&param_idx))
-            })
+        let validated_in_file =
+            self.caller_validated_params
+                .borrow()
+                .as_ref()
+                .is_some_and(|summary| {
+                    summary
+                        .get(&func_name)
+                        .is_some_and(|indices| indices.contains(&param_idx))
+                });
+        // Either summary suffices. They are not refinements of each other: the
+        // project-wide one is absent without a prescan, and when both are
+        // present the file-local one can credit a position the project-wide one
+        // disqualifies (an unguarded caller in another file). Letting the
+        // cross-file view *revoke* a file-local suppression would be a separate
+        // decision in the other direction, reinstating findings task 911
+        // removed; this task only extends the suppression's reach.
+        validated_in_file
+            || self
+                .project_validated_params
+                .borrow()
+                .get(&func_name)
+                .is_some_and(|indices| indices.contains(&param_idx))
     }
 
     /// Build the per-file caller-validation summary consumed by
@@ -2617,7 +2653,7 @@ impl Arr30C {
         source: &str,
     ) -> HashMap<String, HashSet<usize>> {
         let mut sites: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
-        Self::collect_call_arg_guards(root, source, &mut sites);
+        collect_call_arg_guards(root, source, &mut sites);
 
         let mut summary: HashMap<String, HashSet<usize>> = HashMap::new();
         for (callee, calls) in sites {
@@ -2630,69 +2666,6 @@ impl Arr30C {
             }
         }
         summary
-    }
-
-    fn collect_call_arg_guards(
-        node: &Node,
-        source: &str,
-        out: &mut HashMap<String, Vec<Vec<bool>>>,
-    ) {
-        if node.kind() == "call_expression" {
-            if let Some(callee) = node.child_by_field_name("function") {
-                if callee.kind() == "identifier" {
-                    let name = source[callee.start_byte()..callee.end_byte()].to_string();
-                    out.entry(name)
-                        .or_default()
-                        .push(Self::call_arg_guards(node, source));
-                }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::collect_call_arg_guards(&child, source, out);
-            }
-        }
-    }
-
-    /// Per-argument "was this bounds-checked before the call?" flags for one
-    /// call site, in argument order.
-    fn call_arg_guards(call_node: &Node, source: &str) -> Vec<bool> {
-        let Some(arg_list) = call_node.child_by_field_name("arguments") else {
-            return Vec::new();
-        };
-        let mut guards = Vec::new();
-        for i in 0..arg_list.child_count() {
-            let Some(arg) = arg_list.child(i) else {
-                continue;
-            };
-            if !arg.is_named() || arg.kind() == "comment" {
-                continue;
-            }
-            let inner = Self::strip_arg_wrappers(&arg);
-            guards.push(
-                inner.kind() == "identifier"
-                    && has_dominating_comparison(
-                        &source[inner.start_byte()..inner.end_byte()],
-                        call_node,
-                        source,
-                        ComparisonKind::Any,
-                    ),
-            );
-        }
-        guards
-    }
-
-    /// Peel parentheses and casts off a call argument, so `f((word_t)index)`
-    /// reads as passing `index`.
-    fn strip_arg_wrappers<'a>(node: &Node<'a>) -> Node<'a> {
-        let mut current = Self::strip_parens(node);
-        while current.kind() == "cast_expression" {
-            let Some(value) = current.child_by_field_name("value") else {
-                break;
-            };
-            current = Self::strip_parens(&value);
-        }
-        current
     }
 
     /// Is `array_name[var]` provably in-bounds because `array_name` was

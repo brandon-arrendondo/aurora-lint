@@ -177,6 +177,19 @@ pub struct FunctionSummary {
     /// `callsite_param_tainted` for why this companion set exists.
     #[serde(default)]
     pub callsite_param_taint_observed: HashSet<usize>,
+    /// Parameter indices whose argument EVERY call site seen anywhere in the
+    /// scanned project already bounds-checks with a dominating comparison
+    /// before passing (`if (i < n) callee(i)`), with at least one such call
+    /// site observed. The cross-file half of ARR30-C's validate-then-act
+    /// suppression: a callee written to trust an index its callers range-check
+    /// reads, on its own body, exactly like one that forgot to check.
+    ///
+    /// Only bare-variable arguments can be validated — see
+    /// `guard_dominance::call_arg_guards`, which produces the per-site flags
+    /// this aggregates — so a single call site passing an expression, or
+    /// passing an unguarded variable, disqualifies the position entirely.
+    #[serde(default)]
+    pub callsite_param_validated: HashSet<usize>,
 }
 
 /// Names of functions that read externally-controlled data into their
