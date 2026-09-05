@@ -137,7 +137,7 @@ jobs:
           Section: devel
           Priority: optional
           Architecture: amd64
-          Maintainer: Brandon Arrendondo <brandon@arrendondo.dev>
+          Maintainer: Brandon Arrendondo <brandon.arrendondo@bissell.com>
           Homepage: https://github.com/brandon-arrendondo/tools_sqc
           Description: CERT C compliance checker
            Software Code Quality (sqc) is a fast CERT C static analyzer
