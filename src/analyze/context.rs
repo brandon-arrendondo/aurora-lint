@@ -141,6 +141,25 @@ pub struct ProjectContext {
     /// instead (task 652).
     #[serde(default)]
     pub value_only_globals: HashSet<String>,
+    /// Struct/union typedef aliases: `alias name -> the tag name its fields
+    /// are filed under in `struct_field_types``, for every
+    /// `typedef struct Tag Alias;` across the scanned files.
+    ///
+    /// `collect_from_typedef` files a BODIED typedef under both the tag and
+    /// the alias, so the gap this closes is the bodyless spelling:
+    /// sqlite's `vdbe.h` says `typedef struct sqlite3_value Mem;` while
+    /// `vdbeInt.h` declares `struct sqlite3_value { ... }`, so the fields are
+    /// filed under `sqlite3_value` and nothing maps `Mem` onto them. The
+    /// typedef and the use are routinely in different files, so no file-local
+    /// pass can close it (task 963).
+    ///
+    /// Deliberately kept OUT of `struct_field_types` itself. That map is read
+    /// by INT30-C, INT32-C, INT33-C and FLP03-C, and filing the alias there
+    /// would move four other rules' finding sets as a side effect of an
+    /// ARR36-C fix; a consumer opts in by resolving through this map, which
+    /// so far only ARR36-C does.
+    #[serde(default)]
+    pub struct_typedef_aliases: HashMap<String, String>,
     /// One-level `typedef` alias map: `alias name -> underlying type text as
     /// written` (e.g. `"paddr_t" -> "word_t"`, `"word_t" -> "unsigned long"`),
     /// collected across every scanned `.c`/`.h` file. Simple scalar aliases

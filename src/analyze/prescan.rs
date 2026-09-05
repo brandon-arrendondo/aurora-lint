@@ -32,6 +32,7 @@ struct FilePrescanResult {
     macro_aliases: HashMap<String, String>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     struct_field_types: HashMap<String, HashMap<String, String>>,
+    struct_typedef_aliases: HashMap<String, String>,
     typedef_types: HashMap<String, String>,
     packed_structs: HashSet<String>,
     packed_struct_candidates: Vec<(String, String)>,
@@ -77,6 +78,7 @@ impl FilePrescanResult {
             macro_aliases: HashMap::new(),
             function_macros: HashMap::new(),
             struct_field_types: HashMap::new(),
+            struct_typedef_aliases: HashMap::new(),
             typedef_types: HashMap::new(),
             packed_structs: HashSet::new(),
             packed_struct_candidates: Vec::new(),
@@ -162,6 +164,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         result.macro_aliases.extend(file_aliases);
 
         collect_struct_definitions(&root, &source, &mut result.struct_field_types);
+        collect_struct_typedef_aliases(&root, &source, &mut result.struct_typedef_aliases);
         collect_typedef_aliases(&root, &source, &mut result.typedef_types);
         collect_packed_structs(
             &root,
@@ -310,6 +313,7 @@ fn prescan_file_list(
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
         HashMap::new();
     let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
     let mut packed_structs: HashSet<String> = HashSet::new();
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
@@ -419,6 +423,7 @@ fn prescan_file_list(
             function_macros.entry(name).or_insert(m);
         }
         struct_field_types.extend(r.struct_field_types);
+        struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
         packed_structs.extend(r.packed_structs);
         packed_struct_candidates.extend(r.packed_struct_candidates);
@@ -638,6 +643,7 @@ fn prescan_file_list(
         macro_aliases,
         function_macros,
         struct_field_types,
+        struct_typedef_aliases,
         typedef_types,
         packed_structs,
         defined_macro_names,
@@ -4444,6 +4450,81 @@ fn collect_from_typedef(
                 }
             }
         }
+    }
+}
+
+/// Collect `typedef struct Tag Alias;` (and the `union` spelling), mapping
+/// `Alias -> Tag` -- the tag name whose fields `struct_field_types` files.
+///
+/// `collect_from_typedef` already files a BODIED typedef under both names, so
+/// the entry this adds for that spelling is redundant; it is recorded anyway
+/// rather than testing for a body, because skipping it would encode a fact
+/// about the other collector instead of a fact about C. What it exists for is
+/// the bodyless spelling, which every existing collector drops: prescan's
+/// `collect_typedef_aliases` takes only a primitive/sized/named RHS, and
+/// INT33-C's `register_typedef_aliases` is a text scan requiring exactly two
+/// tokens after `typedef` -- `typedef struct sqlite3_value Mem;` is three
+/// (task 963).
+///
+/// Mirrors `collect_struct_definitions`'s traversal so the two run over the
+/// same top-level declaration set.
+pub(crate) fn collect_struct_typedef_aliases(
+    node: &Node,
+    source: &str,
+    struct_typedef_aliases: &mut HashMap<String, String>,
+) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "type_definition" => {
+                    collect_from_struct_tag_typedef(&child, source, struct_typedef_aliases);
+                }
+                kind if kind.starts_with("preproc_")
+                    || kind == "linkage_specification"
+                    || kind == "declaration_list" =>
+                {
+                    collect_struct_typedef_aliases(&child, source, struct_typedef_aliases);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A `type_definition` whose right-hand type is a NAMED struct or union and
+/// whose declarator is a plain alias name. A pointer/array/function typedef
+/// is skipped: `typedef struct Foo *FooPtr;` makes `FooPtr` a pointer type,
+/// not another name for the struct, so resolving a member through it would be
+/// wrong.
+fn collect_from_struct_tag_typedef(
+    node: &Node,
+    source: &str,
+    struct_typedef_aliases: &mut HashMap<String, String>,
+) {
+    let Some(type_node) = node.child_by_field_name("type") else {
+        return;
+    };
+    if !matches!(type_node.kind(), "struct_specifier" | "union_specifier") {
+        return;
+    }
+    let Some(tag) = type_node.child_by_field_name("name") else {
+        return;
+    };
+    let tag = get_node_text(&tag, source).trim().to_string();
+    if tag.is_empty() {
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for declarator in node.children_by_field_name("declarator", &mut cursor) {
+        if declarator.kind() != "type_identifier" {
+            continue;
+        }
+        let alias = get_node_text(&declarator, source).trim().to_string();
+        if alias.is_empty() || alias == tag {
+            continue;
+        }
+        struct_typedef_aliases.insert(alias, tag.clone());
     }
 }
 

@@ -21,6 +21,10 @@ pub struct Arr36C {
     /// prescan. Empty without `-d`, which is what the file-local
     /// `CallSiteBases` pass still covers (task 936).
     project_call_sites: RefCell<HashMap<String, HashSet<(usize, usize)>>>,
+    /// `typedef struct Tag Alias;` from the prescan, `Alias -> Tag`. Without
+    /// it a member reached through the alias does not resolve and falls back
+    /// to naming storage (task 963).
+    struct_typedef_aliases: RefCell<HashMap<String, String>>,
 }
 
 impl Arr36C {
@@ -28,6 +32,7 @@ impl Arr36C {
         Self {
             struct_field_types: RefCell::new(HashMap::new()),
             project_call_sites: RefCell::new(HashMap::new()),
+            struct_typedef_aliases: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -55,6 +60,7 @@ impl CertRule for Arr36C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
+        *self.struct_typedef_aliases.borrow_mut() = context.struct_typedef_aliases.clone();
         *self.project_call_sites.borrow_mut() = context
             .function_summaries
             .iter()
@@ -84,7 +90,8 @@ impl Arr36C {
 
         // Second pass: per-function analysis with file-scope as base
         let project_fields = self.struct_field_types.borrow();
-        let field_types = merge_file_struct_fields(&project_fields, node, source);
+        let project_aliases = self.struct_typedef_aliases.borrow();
+        let field_types = merge_file_struct_fields(&project_fields, &project_aliases, node, source);
         let funcs = query::find_descendants_of_kind(*node, "function_definition");
         let analyzers: Vec<PointerAnalyzer> = funcs
             .iter()
@@ -909,19 +916,39 @@ impl PointerAnalyzer {
 /// case for a `.c` file that includes its headers.
 fn merge_file_struct_fields<'a>(
     project: &'a HashMap<String, HashMap<String, String>>,
+    project_aliases: &HashMap<String, String>,
     node: &Node,
     source: &str,
 ) -> Cow<'a, HashMap<String, HashMap<String, String>>> {
     let mut local = HashMap::new();
     prescan::collect_struct_definitions(node, source, &mut local);
-    if local.is_empty() {
-        return Cow::Borrowed(project);
+    let mut local_aliases = HashMap::new();
+    prescan::collect_struct_typedef_aliases(node, source, &mut local_aliases);
+
+    let mut merged = if local.is_empty() {
+        Cow::Borrowed(project)
+    } else if project.is_empty() {
+        Cow::Owned(local)
+    } else {
+        let mut merged = Cow::Borrowed(project);
+        merged.to_mut().extend(local);
+        merged
+    };
+
+    // `typedef struct sqlite3_value Mem;` files the fields under the TAG, so a
+    // member reached as `pOut->z` on a `Mem *` resolves only once the alias
+    // names the same field set. Done here, on the rule's own view of the map,
+    // rather than in the prescan's `struct_field_types`: that map is read by
+    // four other rules, and this must not move their finding sets.
+    let additions: Vec<(String, HashMap<String, String>)> = project_aliases
+        .iter()
+        .chain(local_aliases.iter())
+        .filter(|(alias, _)| !merged.contains_key(alias.as_str()))
+        .filter_map(|(alias, tag)| Some((alias.clone(), merged.get(tag)?.clone())))
+        .collect();
+    if !additions.is_empty() {
+        merged.to_mut().extend(additions);
     }
-    if project.is_empty() {
-        return Cow::Owned(local);
-    }
-    let mut merged = Cow::Borrowed(project);
-    merged.to_mut().extend(local);
     merged
 }
 
