@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Analysis Architecture &mdash; SqC  documentation</title>
+  <title>Analysis Architecture &mdash; aurora-lint  documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
@@ -32,7 +32,7 @@
           
           
           <a href="index.html" class="icon icon-home">
-            SqC
+            aurora-lint
           </a>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
@@ -75,7 +75,7 @@
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
           <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
-          <a href="index.html">SqC</a>
+          <a href="index.html">aurora-lint</a>
       </nav>
 
       <div class="wy-nav-content">
@@ -95,7 +95,7 @@
              
   <section id="analysis-architecture">
 <h1>Analysis Architecture<a class="headerlink" href="#analysis-architecture" title="Link to this heading"></a></h1>
-<p>SqC uses a multi-pass analysis architecture:</p>
+<p>aurora-lint uses a multi-pass analysis architecture:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Source</span> <span class="n">Files</span>
     <span class="o">|</span>
     <span class="n">v</span>
@@ -224,7 +224,8 @@ before writing any new AST/text heuristic in a rule file — filed as task
 479 after a near-duplication of DCL40-C’s macro-detection helpers in
 MSC12-C task 475.</p>
 </dd>
-<dt><strong>Suppression system</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/suppression.rs</span></code>).</dt><dd><p>Inline <code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">SQC-SUPPRESS</span></code> comments and <code class="docutils literal notranslate"><span class="pre">.sqc-suppress.toml</span></code> files.
+<dt><strong>Suppression system</strong> (<code class="docutils literal notranslate"><span class="pre">src/analyze/suppression.rs</span></code>).</dt><dd><p>Inline <code class="docutils literal notranslate"><span class="pre">//</span> <span class="pre">AURORA-SUPPRESS</span></code> comments and <code class="docutils literal notranslate"><span class="pre">suppress.toml</span></code> files (the
+pre-rename <code class="docutils literal notranslate"><span class="pre">SQC-SUPPRESS</span></code> / <code class="docutils literal notranslate"><span class="pre">.sqc-suppress.toml</span></code> spellings still parse).
 SHA-256 hash-based point suppressions and glob/prefix wildcard suppressions.</p>
 </dd>
 </dl>
@@ -392,7 +393,7 @@ CWE-369 and the residual CWE-121/476 share tied to pointer aliasing.</p>
 <td><p>AST + path-sensitive</p></td>
 <td><p>Free</p></td>
 </tr>
-<tr class="row-odd"><td><p><strong>SqC</strong></p></td>
+<tr class="row-odd"><td><p><strong>aurora-lint</strong></p></td>
 <td><p>67.5%</p></td>
 <td><p>32.5%</p></td>
 <td><p>AST + CFG + inter-procedural</p></td>
@@ -418,13 +419,13 @@ CWE-369 and the residual CWE-121/476 share tied to pointer aliasing.</p>
 </tr>
 </tbody>
 </table>
-<p><em>SqC row is from the v0.3.119 Juliet benchmark, held fixed here because the
+<p><em>aurora-lint row is from the v0.3.119 Juliet benchmark, held fixed here because the
 other four tools were not re-run at v0.4.116 — this table is a frozen
 snapshot of a one-time comparative study, not a continuously re-measured
-figure. SqC’s own overall TP rate has since risen to 83.8% (see above); it
+figure. aurora-lint’s own overall TP rate has since risen to 83.8% (see above); it
 is not directly comparable to the 67.5% row without re-running the other
 four tools on the same 15-CWE, 28,488-file slice.</em></p>
-<p>SqC achieved 100% precision (zero FP) on 48 of 74 benchmarked CWEs as of
+<p>aurora-lint achieved 100% precision (zero FP) on 48 of 74 benchmarked CWEs as of
 v0.4.116 (a frozen figure from this study, not re-measured since; see
 README.md’s Benchmark Highlights for the current 100%-precision-CWE count),
 including CWE-690, CWE-761, CWE-78, and CWE-190. Broadest CWE coverage

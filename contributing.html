@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Contributing &mdash; SqC  documentation</title>
+  <title>Contributing &mdash; aurora-lint  documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
@@ -32,7 +32,7 @@
           
           
           <a href="index.html" class="icon icon-home">
-            SqC
+            aurora-lint
           </a>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
@@ -73,7 +73,7 @@
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
           <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
-          <a href="index.html">SqC</a>
+          <a href="index.html">aurora-lint</a>
       </nav>
 
       <div class="wy-nav-content">
@@ -134,7 +134,7 @@ and <code class="docutils literal notranslate"><span class="pre">tests/pass/</sp
 <li><p>Add the rule entry to <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>.</p></li>
 <li><p>Build and test:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cargo</span> <span class="n">build</span>
-<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">sqc</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">RULE_ID</span><span class="p">::</span><span class="n">tests</span>
+<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">RULE_ID</span><span class="p">::</span><span class="n">tests</span>
 <span class="n">cargo</span> <span class="n">fmt</span>
 </pre></div>
 </div>
@@ -169,7 +169,7 @@ runs under), then run:</p>
 <p>This installs the Rust toolchain (rustup, picking up the channel and
 components pinned in <code class="docutils literal notranslate"><span class="pre">rust-toolchain.toml</span></code>), the native build dependencies
 <code class="docutils literal notranslate"><span class="pre">git2</span></code>’s vendored libgit2 build needs (a C toolchain, cmake, pkg-config),
-and – into a venv at <code class="docutils literal notranslate"><span class="pre">~/.venvs/sqc-dev</span></code> by default – the Sphinx + LaTeX
+and – into a venv at <code class="docutils literal notranslate"><span class="pre">~/.venvs/aurora-lint-dev</span></code> by default – the Sphinx + LaTeX
 toolchain this guide itself is built with, <code class="docutils literal notranslate"><span class="pre">invoke</span></code> (for the
 <code class="docutils literal notranslate"><span class="pre">invoke</span> <span class="pre">bump-version</span></code> workflow), <code class="docutils literal notranslate"><span class="pre">pre-commit</span></code> (installed as this
 checkout’s git hook – see CLAUDE.md’s “Git Commit Rules”), and
@@ -193,9 +193,9 @@ benchmark checkouts or the Juliet test suite (also <a class="reference external"
 reference, not to run benchmarks, can skip both and just copy an existing
 node’s <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT</span></code> directory over), or install editor/terminal
 conveniences (vim, htop, tmux). A node doing rule-development work that
-compares sqc’s output against these tools’ still needs
+compares aurora-lint’s output against these tools’ still needs
 <code class="docutils literal notranslate"><span class="pre">install-static-analyzers.yml</span></code> run separately – none of that is a
-dependency of building or testing sqc <em>itself</em>, which is this playbook’s
+dependency of building or testing aurora-lint <em>itself</em>, which is this playbook’s
 only scope.</p>
 </section>
 </section>

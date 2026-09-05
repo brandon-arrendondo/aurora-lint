@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CI/CD Integration &mdash; SqC  documentation</title>
+  <title>CI/CD Integration &mdash; aurora-lint  documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
@@ -32,7 +32,7 @@
           
           
           <a href="index.html" class="icon icon-home">
-            SqC
+            aurora-lint
           </a>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
@@ -75,7 +75,7 @@
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
           <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
-          <a href="index.html">SqC</a>
+          <a href="index.html">aurora-lint</a>
       </nav>
 
       <div class="wy-nav-content">
@@ -95,7 +95,7 @@
              
   <section id="ci-cd-integration">
 <h1>CI/CD Integration<a class="headerlink" href="#ci-cd-integration" title="Link to this heading"></a></h1>
-<p>SqC is designed for CI/CD pipelines with exit codes, severity thresholds,
+<p>aurora-lint is designed for CI/CD pipelines with exit codes, severity thresholds,
 diff-only analysis, and SARIF output for code scanning integrations.</p>
 <section id="general-strategy">
 <h2>General Strategy<a class="headerlink" href="#general-strategy" title="Link to this heading"></a></h2>
@@ -106,18 +106,18 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 </ol>
 <p>Both modes export SARIF for integration with code scanning dashboards.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># PR mode: fast, only changed files, fail on High+</span>
-<span class="n">sqc</span> <span class="o">.</span> <span class="o">--</span><span class="n">diff</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">.</span> <span class="o">--</span><span class="n">diff</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
 
 <span class="c1"># Full scan: entire repo with cross-file context</span>
-<span class="n">sqc</span> <span class="o">.</span> <span class="o">-</span><span class="n">d</span> <span class="o">.</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">.</span> <span class="o">-</span><span class="n">d</span> <span class="o">.</span> <span class="o">--</span><span class="nb">min</span><span class="o">-</span><span class="n">severity</span> <span class="n">Medium</span> <span class="o">--</span><span class="n">fail</span><span class="o">-</span><span class="n">on</span><span class="o">-</span><span class="n">severity</span> <span class="n">High</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span>
 </pre></div>
 </div>
 </section>
 <section id="github-actions">
 <h2>GitHub Actions<a class="headerlink" href="#github-actions" title="Link to this heading"></a></h2>
 <p>The repository includes a ready-to-use workflow at
-<code class="docutils literal notranslate"><span class="pre">.github/workflows/sqc-analysis.yml</span></code>:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SqC CERT C Analysis</span>
+<code class="docutils literal notranslate"><span class="pre">.github/workflows/aurora-lint-analysis.yml</span></code>:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint CERT C Analysis</span>
 
 <span class="nt">on</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">push</span><span class="p">:</span>
@@ -127,7 +127,7 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 
 <span class="nt">jobs</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">build</span><span class="p">:</span>
-<span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build SqC</span>
+<span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build aurora-lint</span>
 <span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ubuntu-latest</span>
 <span class="w">    </span><span class="nt">steps</span><span class="p">:</span>
 <span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/checkout@v4</span>
@@ -141,14 +141,14 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <span class="w">            </span><span class="no">target</span>
 <span class="w">          </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${{ runner.os }}-cargo-${{ hashFiles(&#39;**/Cargo.lock&#39;) }}</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build SqC</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build aurora-lint</span>
 <span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cargo build --release</span>
 
 <span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Upload binary</span>
 <span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/upload-artifact@v4</span>
 <span class="w">        </span><span class="nt">with</span><span class="p">:</span>
-<span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
-<span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">target/release/sqc</span>
+<span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint-binary</span>
+<span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">target/release/aurora-lint</span>
 
 <span class="w">  </span><span class="nt">analyze-pr</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Analyze PR (diff only)</span>
@@ -162,16 +162,16 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <span class="w">        </span><span class="nt">with</span><span class="p">:</span>
 <span class="w">          </span><span class="nt">fetch-depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">  </span><span class="c1"># Full history for --diff mode</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download SqC</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download aurora-lint</span>
 <span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/download-artifact@v4</span>
 <span class="w">        </span><span class="nt">with</span><span class="p">:</span>
-<span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
+<span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint-binary</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">chmod +x sqc</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">chmod +x aurora-lint</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run SqC (diff mode)</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run aurora-lint (diff mode)</span>
 <span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
-<span class="w">          </span><span class="no">./sqc . --diff \</span>
+<span class="w">          </span><span class="no">./aurora-lint . --diff \</span>
 <span class="w">            </span><span class="no">--min-severity Medium \</span>
 <span class="w">            </span><span class="no">--fail-on-severity High \</span>
 <span class="w">            </span><span class="no">--export results.sarif</span>
@@ -192,16 +192,16 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <span class="w">    </span><span class="nt">steps</span><span class="p">:</span>
 <span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/checkout@v4</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download SqC</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download aurora-lint</span>
 <span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/download-artifact@v4</span>
 <span class="w">        </span><span class="nt">with</span><span class="p">:</span>
-<span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
+<span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint-binary</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">chmod +x sqc</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">chmod +x aurora-lint</span>
 
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run SqC (full scan)</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run aurora-lint (full scan)</span>
 <span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
-<span class="w">          </span><span class="no">./sqc . -d . \</span>
+<span class="w">          </span><span class="no">./aurora-lint . -d . \</span>
 <span class="w">            </span><span class="no">--min-severity Medium \</span>
 <span class="w">            </span><span class="no">--fail-on-severity High \</span>
 <span class="w">            </span><span class="no">--export results.sarif</span>
@@ -218,16 +218,16 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <h2>Azure DevOps<a class="headerlink" href="#azure-devops" title="Link to this heading"></a></h2>
 <p>A ready-to-use Azure Pipelines configuration is provided at
 <code class="docutils literal notranslate"><span class="pre">docs/azure-pipelines.yml</span></code>:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># SqC Static Analysis - Azure DevOps Example Pipeline</span>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint Static Analysis - Azure DevOps Example Pipeline</span>
 <span class="c1">#</span>
-<span class="c1"># This pipeline runs SqC CERT C analysis on your C/C++ codebase.</span>
+<span class="c1"># This pipeline runs aurora-lint CERT C analysis on your C/C++ codebase.</span>
 <span class="c1"># - On PRs: analyzes only changed files (--diff mode)</span>
 <span class="c1"># - On push to main: full repository scan</span>
 <span class="c1"># - Publishes SARIF results as a build artifact</span>
 <span class="c1">#</span>
 <span class="c1"># Prerequisites:</span>
 <span class="c1">#   - Rust toolchain installed on the agent (or use a Rust container)</span>
-<span class="c1">#   - A sqc-rules.toml manifest (or use built-in defaults)</span>
+<span class="c1">#   - A aurora-lint-rules.toml manifest (or use built-in defaults)</span>
 
 <span class="nt">trigger</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">branches</span><span class="p">:</span>
@@ -247,10 +247,10 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 
 <span class="nt">stages</span><span class="p">:</span>
 <span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build</span>
-<span class="w">    </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build SqC</span>
+<span class="w">    </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build aurora-lint</span>
 <span class="w">    </span><span class="nt">jobs</span><span class="p">:</span>
-<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">BuildSqC</span>
-<span class="w">        </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build SqC binary</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">job</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">BuildAuroraLint</span>
+<span class="w">        </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build aurora-lint binary</span>
 <span class="w">        </span><span class="nt">steps</span><span class="p">:</span>
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Cache@2</span>
 <span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
@@ -262,13 +262,13 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">script</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
 <span class="w">              </span><span class="no">cargo build --release</span>
-<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build SqC</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Build aurora-lint</span>
 
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">PublishPipelineArtifact@1</span>
 <span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
-<span class="w">              </span><span class="nt">targetPath</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">target/release/sqc</span>
-<span class="w">              </span><span class="nt">artifactName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
-<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Publish SqC binary</span>
+<span class="w">              </span><span class="nt">targetPath</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">target/release/aurora-lint</span>
+<span class="w">              </span><span class="nt">artifactName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint-binary</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Publish aurora-lint binary</span>
 
 <span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Analyze</span>
 <span class="w">    </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run Analysis</span>
@@ -283,17 +283,17 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">DownloadPipelineArtifact@2</span>
 <span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
-<span class="w">              </span><span class="nt">artifactName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
+<span class="w">              </span><span class="nt">artifactName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint-binary</span>
 <span class="w">              </span><span class="nt">targetPath</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">$(Build.SourcesDirectory)</span>
-<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download SqC binary</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download aurora-lint binary</span>
 
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">script</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
-<span class="w">              </span><span class="no">chmod +x sqc</span>
-<span class="w">              </span><span class="no">./sqc . --diff \</span>
+<span class="w">              </span><span class="no">chmod +x aurora-lint</span>
+<span class="w">              </span><span class="no">./aurora-lint . --diff \</span>
 <span class="w">                </span><span class="no">--min-severity Medium \</span>
 <span class="w">                </span><span class="no">--fail-on-severity High \</span>
 <span class="w">                </span><span class="no">--export results.sarif</span>
-<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run SqC (diff mode)</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run aurora-lint (diff mode)</span>
 
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">PublishBuildArtifacts@1</span>
 <span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
@@ -310,17 +310,17 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">DownloadPipelineArtifact@2</span>
 <span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
-<span class="w">              </span><span class="nt">artifactName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sqc-binary</span>
+<span class="w">              </span><span class="nt">artifactName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aurora-lint-binary</span>
 <span class="w">              </span><span class="nt">targetPath</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">$(Build.SourcesDirectory)</span>
-<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download SqC binary</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Download aurora-lint binary</span>
 
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">script</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
-<span class="w">              </span><span class="no">chmod +x sqc</span>
-<span class="w">              </span><span class="no">./sqc . -d . \</span>
+<span class="w">              </span><span class="no">chmod +x aurora-lint</span>
+<span class="w">              </span><span class="no">./aurora-lint . -d . \</span>
 <span class="w">                </span><span class="no">--min-severity Medium \</span>
 <span class="w">                </span><span class="no">--fail-on-severity High \</span>
 <span class="w">                </span><span class="no">--export results.sarif</span>
-<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run SqC (full scan)</span>
+<span class="w">            </span><span class="nt">displayName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Run aurora-lint (full scan)</span>
 
 <span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">PublishBuildArtifacts@1</span>
 <span class="w">            </span><span class="nt">inputs</span><span class="p">:</span>
@@ -335,13 +335,13 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <h2>SARIF Integration Tips<a class="headerlink" href="#sarif-integration-tips" title="Link to this heading"></a></h2>
 <ul class="simple">
 <li><p><strong>GitHub Code Scanning</strong>: Use <code class="docutils literal notranslate"><span class="pre">github/codeql-action/upload-sarif&#64;v3</span></code> to
-surface SqC violations as code scanning alerts on PRs and the Security tab.</p></li>
+surface aurora-lint violations as code scanning alerts on PRs and the Security tab.</p></li>
 <li><p><strong>Azure DevOps</strong>: Publish SARIF as a build artifact. Third-party extensions
 (e.g., SARIF SAST Scans Tab) can render results inline.</p></li>
 <li><p><strong>VS Code</strong>: Open <code class="docutils literal notranslate"><span class="pre">.sarif</span></code> files with the
 <a class="reference external" href="https://marketplace.visualstudio.com/items?itemName=MS-SarifVSCode.sarif-viewer">SARIF Viewer</a>
 extension for inline annotations.</p></li>
-<li><p><strong>IDE Integration</strong>: Any tool that consumes SARIF 2.1.0 can display SqC results.</p></li>
+<li><p><strong>IDE Integration</strong>: Any tool that consumes SARIF 2.1.0 can display aurora-lint results.</p></li>
 </ul>
 </section>
 <section id="ci-cd-readiness">

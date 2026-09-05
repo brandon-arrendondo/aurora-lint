@@ -50,7 +50,7 @@ Adding a New CERT C Rule
    ::
 
        cargo build
-       cargo test --package sqc --lib -- rules::cert_c::RULE_ID::tests
+       cargo test --package aurora-lint --lib -- rules::cert_c::RULE_ID::tests
        cargo fmt
 
 Build Requirements
@@ -84,7 +84,7 @@ runs under), then run:
 This installs the Rust toolchain (rustup, picking up the channel and
 components pinned in ``rust-toolchain.toml``), the native build dependencies
 ``git2``'s vendored libgit2 build needs (a C toolchain, cmake, pkg-config),
-and -- into a venv at ``~/.venvs/sqc-dev`` by default -- the Sphinx + LaTeX
+and -- into a venv at ``~/.venvs/aurora-lint-dev`` by default -- the Sphinx + LaTeX
 toolchain this guide itself is built with, ``invoke`` (for the
 ``invoke bump-version`` workflow), ``pre-commit`` (installed as this
 checkout's git hook -- see CLAUDE.md's "Git Commit Rules"), and
@@ -111,7 +111,7 @@ benchmark checkouts or the Juliet test suite (also `Benchmark Setup
 reference, not to run benchmarks, can skip both and just copy an existing
 node's ``$SQC_BENCH_ROOT`` directory over), or install editor/terminal
 conveniences (vim, htop, tmux). A node doing rule-development work that
-compares sqc's output against these tools' still needs
+compares aurora-lint's output against these tools' still needs
 ``install-static-analyzers.yml`` run separately -- none of that is a
-dependency of building or testing sqc *itself*, which is this playbook's
+dependency of building or testing aurora-lint *itself*, which is this playbook's
 only scope.

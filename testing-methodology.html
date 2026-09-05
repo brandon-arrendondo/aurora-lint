@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Testing Methodology &mdash; SqC  documentation</title>
+  <title>Testing Methodology &mdash; aurora-lint  documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
@@ -32,7 +32,7 @@
           
           
           <a href="index.html" class="icon icon-home">
-            SqC
+            aurora-lint
           </a>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
@@ -102,7 +102,7 @@
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
           <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
-          <a href="index.html">SqC</a>
+          <a href="index.html">aurora-lint</a>
       </nav>
 
       <div class="wy-nav-content">
@@ -122,18 +122,18 @@
              
   <section id="testing-methodology">
 <h1>Testing Methodology<a class="headerlink" href="#testing-methodology" title="Link to this heading"></a></h1>
-<p>SqC employs a three-tier testing strategy: unit tests for individual rule logic,
+<p>aurora-lint employs a three-tier testing strategy: unit tests for individual rule logic,
 the NIST Juliet Test Suite for precision/recall measurement, and real-world
 open-source codebases for scalability and noise validation.</p>
 <section id="benchmark-strategy">
 <h2>Benchmark Strategy<a class="headerlink" href="#benchmark-strategy" title="Link to this heading"></a></h2>
-<p>SqC is benchmarked on two axes:</p>
+<p>aurora-lint is benchmarked on two axes:</p>
 <ol class="arabic simple">
 <li><p><strong>Juliet Test Suite</strong> (NIST) — 54,484 files with ground truth (OMITBAD/OMITGOOD
 sections). Measures TP rate, FP rate, and per-CWE coverage.</p></li>
 <li><p><strong>Real-World Open-Source Projects</strong> — 9 codebases (libcrc, sqlite, mosquitto,
 curl, hostap, lua, raylib, pure-ftpd, seL4); the original 7 are analyzed by
-sqc, cppcheck, and clang-tidy, the latter two (pure-ftpd, seL4) sqc-only so
+aurora-lint, cppcheck, and clang-tidy, the latter two (pure-ftpd, seL4) aurora-lint-only so
 far. No ground truth from the tools themselves — measures violation counts,
 rule distribution, and cross-tool agreement (a separate adjudicated
 ground-truth oracle covers precision/recall; see below).</p></li>
@@ -149,9 +149,9 @@ real-world for noise reduction</p></li>
 <ul class="simple">
 <li><p><strong>After every significant rule change</strong>: Juliet benchmark (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">juliet</span></code>, ~10 min)</p></li>
 <li><p><strong>After version milestones</strong>: Full real-world benchmark (<code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span>
-<span class="pre">realworld-run</span></code>, all 9 codebases; sqc on all 9, cppcheck/clang-tidy on the
+<span class="pre">realworld-run</span></code>, all 9 codebases; aurora-lint on all 9, cppcheck/clang-tidy on the
 original 7)</p></li>
-<li><p><strong>cppcheck/clang-tidy results are stable</strong> across sqc changes — run once and cache</p></li>
+<li><p><strong>cppcheck/clang-tidy results are stable</strong> across aurora-lint changes — run once and cache</p></li>
 </ul>
 </section>
 <section id="unit-tests">
@@ -180,10 +180,10 @@ are tracked but not implemented). Regenerate these counts with
 <span class="n">cargo</span> <span class="n">test</span>
 
 <span class="c1"># Tests for a specific rule</span>
-<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">sqc</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">sig01_c</span><span class="p">::</span><span class="n">tests</span>
+<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">sig01_c</span><span class="p">::</span><span class="n">tests</span>
 
 <span class="c1"># Tests for a category</span>
-<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">sqc</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">mem</span>
+<span class="n">cargo</span> <span class="n">test</span> <span class="o">--</span><span class="n">package</span> <span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">--</span><span class="n">lib</span> <span class="o">--</span> <span class="n">rules</span><span class="p">::</span><span class="n">cert_c</span><span class="p">::</span><span class="n">mem</span>
 </pre></div>
 </div>
 <p>Test cases are derived from patterns documented in the
@@ -245,14 +245,14 @@ line in its header comment:</p>
 </table>
 <p><strong>Wiki-derived</strong> fixtures come from the CERT C standard’s own compliant and
 non-compliant code examples. They are third-party evidence: SEI wrote them
-against the rule text with no knowledge of SqC, so a rule agreeing with them
+against the rule text with no knowledge of aurora-lint, so a rule agreeing with them
 is a conformance result rather than a self-consistency check. 300 of the 309
 rules with fixtures have at least one; the 9 without are regression-tested
 only.</p>
 <p><strong>Locally authored</strong> fixtures were written in this repo, almost all of them
 to pin a specific defect found in real code or to lock in a false-positive
 fix. They are regression evidence and nothing more — we chose both the input
-and the expected answer, so they cannot corroborate that SqC reads the
+and the expected answer, so they cannot corroborate that aurora-lint reads the
 standard correctly.</p>
 <p><strong>Undeclared</strong> fixtures simply predate the header convention. Every one
 inspected is locally authored (the <code class="docutils literal notranslate"><span class="pre">BRULE-*</span></code> JPL rules, which have no CERT
@@ -281,7 +281,7 @@ stale by that auditor’s own threshold.</p>
 <h3>What the Fixture Corpus Does and Does Not Measure<a class="headerlink" href="#what-the-fixture-corpus-does-and-does-not-measure" title="Link to this heading"></a></h3>
 <p>The corpus is a <strong>conformance and regression gate, not a benchmark.</strong> It is
 never reported alongside Juliet or the real-world oracle: those measure
-precision against labels SqC did not choose, while most of this corpus is
+precision against labels aurora-lint did not choose, while most of this corpus is
 labeled by the same people who wrote the analyzer.</p>
 <p>Scoring the corpus settles how much drift that gate has actually absorbed.
 <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code> runs on every push (<code class="docutils literal notranslate"><span class="pre">.github/workflows/ci.yml</span></code>), so a rule
@@ -328,12 +328,12 @@ build. <code class="docutils literal notranslate"><span class="pre">.cargo/confi
 fixture keeps testing the depth it was written for.</p>
 <p>A separate and earlier claim on this page — that scanning the corpus with
 the shipped binary finds 17 violations on 11 must-not-detect fixtures — was
-an artifact of invoking <code class="docutils literal notranslate"><span class="pre">sqc</span></code> with no <code class="docutils literal notranslate"><span class="pre">-d</span></code>. A scan with no <code class="docutils literal notranslate"><span class="pre">-d</span></code> builds
+an artifact of invoking <code class="docutils literal notranslate"><span class="pre">aurora-lint</span></code> with no <code class="docutils literal notranslate"><span class="pre">-d</span></code>. A scan with no <code class="docutils literal notranslate"><span class="pre">-d</span></code> builds
 no context for its own target: a single-file target sees sibling <code class="docutils literal notranslate"><span class="pre">.h</span></code>
 declarations only, a directory target sees nothing. Pass <code class="docutils literal notranslate"><span class="pre">-d</span></code>, even a
 directory holding just that one fixture, and all 17 go to zero. Every
 benchmark invocation passes <code class="docutils literal notranslate"><span class="pre">-d</span></code>, so no reported number was affected; the
-exposure is a first-touch <code class="docutils literal notranslate"><span class="pre">sqc</span> <span class="pre">foo.c</span></code> run, tracked separately.</p>
+exposure is a first-touch <code class="docutils literal notranslate"><span class="pre">aurora-lint</span> <span class="pre">foo.c</span></code> run, tracked separately.</p>
 <p>One limit of the harness does remain, and the green result does not cover it.</p>
 <p><strong>Cross-rule interference is untested.</strong> A fixture is only ever checked
 against its owning rule, so a <code class="docutils literal notranslate"><span class="pre">pass/</span></code> fixture for one rule is never
@@ -372,7 +372,7 @@ true positive and false positive rates.</p>
 <li><p><strong>CWE-matched manifests</strong>: For each CWE, a TOML manifest enables only the
 CERT C rules that map to that CWE (e.g., CWE-476 enables EXP34-C). This
 eliminates noise from unrelated rules.</p></li>
-<li><p><strong>Per-CWE analysis</strong>: SqC scans each CWE’s test cases with its matched manifest.
+<li><p><strong>Per-CWE analysis</strong>: aurora-lint scans each CWE’s test cases with its matched manifest.
 Violations in <code class="docutils literal notranslate"><span class="pre">bad</span></code> functions are true positives; violations in <code class="docutils literal notranslate"><span class="pre">good</span></code>
 functions are false positives.</p></li>
 <li><p><strong>Parallel execution</strong>: CWEs are processed in parallel via Python’s
@@ -425,7 +425,7 @@ per-CWE metrics, per-rule breakdowns, and cross-version comparison support.</p><
 </tr>
 </tbody>
 </table>
-<p>SqC achieves 100% precision (zero false positives) on 48 CWEs including:</p>
+<p>aurora-lint achieves 100% precision (zero false positives) on 48 CWEs including:</p>
 <ul class="simple">
 <li><p>CWE-78 (OS command injection)</p></li>
 <li><p>CWE-190 (Integer overflow)</p></li>
@@ -446,7 +446,7 @@ full current per-CWE data.</p>
 </section>
 <section id="fp-reduction-history">
 <h3>FP Reduction History<a class="headerlink" href="#fp-reduction-history" title="Link to this heading"></a></h3>
-<p>Over 30+ rounds of targeted optimization, SqC has reduced false positives by
+<p>Over 30+ rounds of targeted optimization, aurora-lint has reduced false positives by
 99.5% from baseline while improving the TP rate from 41.1% to 83.8%:</p>
 <table class="docutils align-default">
 <thead>
@@ -527,14 +527,14 @@ further 16.3 points of TP rate.</em></p>
 </section>
 <section id="real-world-code-analysis">
 <h2>Real-World Code Analysis<a class="headerlink" href="#real-world-code-analysis" title="Link to this heading"></a></h2>
-<p>SqC is benchmarked against 7 real-world open-source C codebases alongside
+<p>aurora-lint is benchmarked against 7 real-world open-source C codebases alongside
 cppcheck and clang-tidy:</p>
 <table class="docutils align-default">
 <thead>
 <tr class="row-odd"><th class="head"><p>Project</p></th>
 <th class="head"><p>C Files</p></th>
 <th class="head"><p>LOC</p></th>
-<th class="head"><p>sqc</p></th>
+<th class="head"><p>aurora-lint</p></th>
 <th class="head"><p>cppcheck</p></th>
 <th class="head"><p>clang-tidy</p></th>
 </tr>
@@ -598,8 +598,8 @@ cppcheck and clang-tidy:</p>
 </tr>
 </tbody>
 </table>
-<p><em>Data from sqc v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).</em></p>
-<p><strong>Why sqc reports more violations</strong>: SqC implements 311 CERT C rules, 307 enabled by default (both
+<p><em>Data from aurora-lint v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).</em></p>
+<p><strong>Why aurora-lint reports more violations</strong>: aurora-lint implements 311 CERT C rules, 307 enabled by default (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.</p>
 <p><strong>Measured precision/recall</strong>: 6.2% precision / 91.7% recall against the
@@ -620,17 +620,17 @@ in README.md’s “Rule-suite coverage” section.</p>
 <section id="apples-to-apples-concerns">
 <h3>Apples-to-Apples Concerns<a class="headerlink" href="#apples-to-apples-concerns" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
-<li><p><strong>Rule coverage</strong>: cppcheck/clang-tidy implement ~20 checks each vs. sqc’s
+<li><p><strong>Rule coverage</strong>: cppcheck/clang-tidy implement ~20 checks each vs. aurora-lint’s
 307 enabled rules. Raw violation counts are not directly comparable.</p></li>
 <li><p><strong>Translation unit scope</strong>: Use consistent scope (cross-file <code class="docutils literal notranslate"><span class="pre">-d</span></code> flag or
 single-file) when comparing.</p></li>
 <li><p><strong>Preprocessor handling</strong>: cppcheck evaluates all <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> configs;
-clang-tidy sees one; sqc analyzes all visible branches. For Juliet, compile
+clang-tidy sees one; aurora-lint analyzes all visible branches. For Juliet, compile
 with <code class="docutils literal notranslate"><span class="pre">-DOMITBAD</span></code>/<code class="docutils literal notranslate"><span class="pre">-DOMITGOOD</span></code> when needed.</p></li>
 <li><p><strong>Standard library awareness</strong>: cppcheck/clang-tidy have built-in stdlib
-knowledge. sqc uses <code class="docutils literal notranslate"><span class="pre">std_functions.rs</span></code> database.</p></li>
+knowledge. aurora-lint uses <code class="docutils literal notranslate"><span class="pre">std_functions.rs</span></code> database.</p></li>
 <li><p><strong>Severity mapping</strong>: cppcheck <code class="docutils literal notranslate"><span class="pre">error/warning/style</span></code>, clang-tidy
-<code class="docutils literal notranslate"><span class="pre">error/warning</span></code>, sqc <code class="docutils literal notranslate"><span class="pre">Low/Medium/High/Critical</span></code>. Map conservatively.</p></li>
+<code class="docutils literal notranslate"><span class="pre">error/warning</span></code>, aurora-lint <code class="docutils literal notranslate"><span class="pre">Low/Medium/High/Critical</span></code>. Map conservatively.</p></li>
 </ol>
 </section>
 <section id="recommended-comparison-workflow">
@@ -649,9 +649,9 @@ knowledge. sqc uses <code class="docutils literal notranslate"><span class="pre"
 <p>No published CERT-C violation rates per KLOC on production open-source code
 exist (Goseva2015). Valid comparison strategies:</p>
 <ol class="arabic simple">
-<li><p>sqc vs. cppcheck vs. clang-tidy on same codebase (done for 5 projects)</p></li>
-<li><p>sqc on JasPer with reference to SEI SCALe 2015 report (only named CERT-C audit)</p></li>
-<li><p>sqc TP rate vs. TrustInSoft’s synthetic CERT-C benchmark as upper bound</p></li>
+<li><p>aurora-lint vs. cppcheck vs. clang-tidy on same codebase (done for 5 projects)</p></li>
+<li><p>aurora-lint on JasPer with reference to SEI SCALe 2015 report (only named CERT-C audit)</p></li>
+<li><p>aurora-lint TP rate vs. TrustInSoft’s synthetic CERT-C benchmark as upper bound</p></li>
 </ol>
 <p>For academic context on tool effectiveness, FP rates, and the Juliet benchmark
 methodology, see <a class="reference internal" href="bibliography.html"><span class="doc">Bibliography</span></a>.</p>
@@ -755,7 +755,7 @@ and init state analysis have embedded Rust unit tests but no integration-level
 C test coverage</p></li>
 <li><p><strong>CLI flags</strong>: No tests for <code class="docutils literal notranslate"><span class="pre">--diff</span></code>, <code class="docutils literal notranslate"><span class="pre">--export</span></code>, <code class="docutils literal notranslate"><span class="pre">--format</span></code>, <code class="docutils literal notranslate"><span class="pre">--include-path</span></code>,
 <code class="docutils literal notranslate"><span class="pre">--save-prescan</span></code>, <code class="docutils literal notranslate"><span class="pre">--load-prescan</span></code>, <code class="docutils literal notranslate"><span class="pre">--jobs</span></code></p></li>
-<li><p><strong>Suppression</strong>: No tests for <code class="docutils literal notranslate"><span class="pre">.sqc-suppress.toml</span></code> hash-based suppression</p></li>
+<li><p><strong>Suppression</strong>: No tests for <code class="docutils literal notranslate"><span class="pre">.aurora-lint-suppress.toml</span></code> hash-based suppression</p></li>
 </ul>
 </section>
 <section id="coverage-gate">
@@ -865,9 +865,9 @@ regardless of whether null-termination is manually added afterward.</p></li>
 </section>
 <section id="benchmark-caveats-and-rule-suite-coverage">
 <h2>Benchmark Caveats And Rule-Suite Coverage<a class="headerlink" href="#benchmark-caveats-and-rule-suite-coverage" title="Link to this heading"></a></h2>
-<p>Moved out of <code class="docutils literal notranslate"><span class="pre">README.md</span></code> (2026-09-03), which should say how well SqC works
+<p>Moved out of <code class="docutils literal notranslate"><span class="pre">README.md</span></code> (2026-09-03), which should say how well aurora-lint works
 rather than how the measurement is constructed. These are the caveats a
-maintainer or a reviewer needs; see <a class="reference internal" href="tool-comparison.html"><span class="doc">Comparison To Other Tools</span></a> for how SqC scores
+maintainer or a reviewer needs; see <a class="reference internal" href="tool-comparison.html"><span class="doc">Comparison To Other Tools</span></a> for how aurora-lint scores
 against other analysers.</p>
 <p>Numbers below are <strong>not</strong> auto-refreshed with README’s highlights table, and
 that is deliberate: a caveat whose job is to say what a figure does not cover
@@ -886,10 +886,10 @@ maintainer workflow rather than a user-facing one.</p>
 </section>
 <section id="juliet-tp-rate-is-not-the-ceiling-signal-the-flaw-hit-rate-is">
 <h2>Juliet TP rate is not the ceiling signal — the flaw-hit rate is<a class="headerlink" href="#juliet-tp-rate-is-not-the-ceiling-signal-the-flaw-hit-rate-is" title="Link to this heading"></a></h2>
-<p><strong>Juliet TP Rate</strong> above is the share of sqc’s Juliet findings that are true
+<p><strong>Juliet TP Rate</strong> above is the share of aurora-lint’s Juliet findings that are true
 positives. It says how clean the output is, not how much of the suite’s
-planted defect set sqc actually locates. That second question is the
-<strong>flaw-hit rate</strong> — the fraction of Juliet’s known flaw lines sqc lands a
+planted defect set aurora-lint actually locates. That second question is the
+<strong>flaw-hit rate</strong> — the fraction of Juliet’s known flaw lines aurora-lint lands a
 finding on — and it moves independently: as of v0.4.321 it was 12.9%
 (17,100 of 132,406 flaw lines), essentially flat for weeks while the TP
 rate above was moving. Quoting only the TP rate overstates the tool; this
@@ -897,7 +897,7 @@ paragraph is not auto-refreshed with the table above (deliberately, per the
 lesson in the note above this section — see <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">bench</span> <span class="pre">compare</span></code> or
 <code class="docutils literal notranslate"><span class="pre">sqc_bench</span></code> Postgres for the current figure), so treat the number here as
 illustrative of the <em>gap</em>, not as a current measurement.</p>
-<p>Per-file detection rate (in the table above) sits between the two: sqc
+<p>Per-file detection rate (in the table above) sits between the two: aurora-lint
 flags something in over a third of flawed files, but lands on the specific
 planted flaw line in roughly an eighth of cases. When judging headroom, the
 flaw-hit rate is the honest signal to watch for movement, not the TP rate.</p>
@@ -943,8 +943,8 @@ the rest of the suite is substantial (measured 2026-09-02, run #226):</p>
 <p>A rule in that last group has never been shown to detect anything real —
 but that is usually a statement about the corpora, not about the rule. The
 nine real-world projects are mature, warning-clean C, which is the opposite
-population from sqc’s nominal use case (newer, in-progress, possibly
-non-compiling code wired into CI/CD early — sqc needs no build system, which
+population from aurora-lint’s nominal use case (newer, in-progress, possibly
+non-compiling code wired into CI/CD early — aurora-lint needs no build system, which
 is the whole point). A rule whose defect cannot survive review in released
 software is structurally incapable of scoring a true positive there. The 60
 never-firing rules include <code class="docutils literal notranslate"><span class="pre">WIN02-C</span></code> and <code class="docutils literal notranslate"><span class="pre">WIN30-C</span></code> — Windows rules against
@@ -954,7 +954,7 @@ suppression exist so the user decides which rules apply to their code,
 rather than detection logic silently deciding for them).</p>
 <p><strong>Worked example of why a per-rule 0.0% is sometimes a corpus artifact, not
 a rule defect</strong> (task 692): <code class="docutils literal notranslate"><span class="pre">DCL31-C</span></code> shows 364 findings, 324 labeled, 0
-TP — 0.0% precision. That figure measures sqc’s header reachability, not
+TP — 0.0% precision. That figure measures aurora-lint’s header reachability, not
 the rule’s quality. <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code> alone goes from 1,365 <code class="docutils literal notranslate"><span class="pre">DCL31-C</span></code> findings
 with no <code class="docutils literal notranslate"><span class="pre">-I</span></code> to 0 with <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code>. The rule guards a genuine defect —
 under C89 an implicit declaration makes the compiler assume <code class="docutils literal notranslate"><span class="pre">int</span> <span class="pre">f()</span></code>, so

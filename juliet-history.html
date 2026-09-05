@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Juliet Benchmark History &mdash; SqC  documentation</title>
+  <title>Juliet Benchmark History &mdash; aurora-lint  documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
@@ -32,7 +32,7 @@
           
           
           <a href="index.html" class="icon icon-home">
-            SqC
+            aurora-lint
           </a>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
@@ -120,7 +120,7 @@
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
           <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
-          <a href="index.html">SqC</a>
+          <a href="index.html">aurora-lint</a>
       </nav>
 
       <div class="wy-nav-content">
@@ -140,7 +140,7 @@
              
   <section id="juliet-benchmark-history">
 <h1>Juliet Benchmark History<a class="headerlink" href="#juliet-benchmark-history" title="Link to this heading"></a></h1>
-<p>This page is the detailed, round-by-round engineering history behind SqC’s
+<p>This page is the detailed, round-by-round engineering history behind aurora-lint’s
 Juliet Test Suite results: every FP-reduction round, per-CWE tier breakdowns,
 the Round 1 baseline table, competitor comparisons, and the full version
 history.</p>
@@ -864,7 +864,7 @@ Eliminates 12 FPs.</p></li>
 <li><p><strong>EXP33-C</strong>: When a variable is initialized in 2+ distinct conditional
 branches (if/else-if without final else), use <code class="docutils literal notranslate"><span class="pre">ConditionallyInitialized</span></code>
 instead of <code class="docutils literal notranslate"><span class="pre">Uninitialized</span></code>. Multi-branch chains indicate the programmer
-covers all cases (e.g., exhaustive enum dispatch); sqc cannot prove this
+covers all cases (e.g., exhaustive enum dispatch); aurora-lint cannot prove this
 statically. Single-branch if-without-else still flags. Also fixed position
 deduplication in <code class="docutils literal notranslate"><span class="pre">collect_init_func_calls_for_var</span></code> (identifier args were
 pushed twice). Eliminates 31 FPs.</p></li>
@@ -1861,7 +1861,7 @@ accuracy. The overall direction of changes was generally correct.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>SqC</p></td>
+<tr class="row-even"><td><p>aurora-lint</p></td>
 <td><p>44.6%</p></td>
 <td><p>55.4%</p></td>
 <td><p>AST + CFG + inter-procedural + call-site null + local var tracking + const_eval</p></td>
@@ -1935,7 +1935,7 @@ accuracy. The overall direction of changes was generally correct.</p>
 </tr>
 </tbody>
 </table>
-<p>The SqC row above is from the 44.6% full-suite era (v0.2.23); fast-mode TP
+<p>The aurora-lint row above is from the 44.6% full-suite era (v0.2.23); fast-mode TP
 rate was 83.8% as of v0.4.116 (see the fast-mode version table above; it has
 since moved further, see README.md’s Benchmark Highlights for the current
 figure) but is not directly comparable since the competitor figures below

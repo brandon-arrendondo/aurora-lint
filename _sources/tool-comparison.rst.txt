@@ -2,7 +2,7 @@
 Comparison To Other Tools
 =========================
 
-Where SqC sits against the other static analysers you would consider for C.
+Where aurora-lint sits against the other static analysers you would consider for C.
 The short version is in ``README.md``'s **Alternatives** section; this page is
 the measurement behind it.
 
@@ -21,7 +21,7 @@ The Tools
      - Needs a build?
      - CERT C rules
      - Notes
-   * - `SqC <https://github.com/brandon-arrendondo/tools_sqc>`_
+   * - `aurora-lint <https://github.com/brandon-arrendondo/tools_sqc>`_
      - 0.4.321 / 0.4.332
      - **No**
      - 311 implemented
@@ -31,7 +31,7 @@ The Tools
      - 2.13.0
      - No
      - ~20 via ``--addon=cert``
-     - Runs unbuilt like SqC. The cert addon is **not** enabled in our runs,
+     - Runs unbuilt like aurora-lint. The cert addon is **not** enabled in our runs,
        so its ids are native (``nullPointer``, ``uninitvar``).
    * - `clang-tidy <https://clang.llvm.org/extra/clang-tidy/>`_
      - LLVM 21.1.8
@@ -63,7 +63,7 @@ Coverage Is The Difference
      - Juliet CWEs
      - Real-world
      - 
-   * - SqC
+   * - aurora-lint
      - **75**
      - 9 projects
      - 311 CERT C rules across 17 categories
@@ -86,10 +86,10 @@ Coverage Is The Difference
 
 .. note::
 
-   SqC's 75 is CWEs **measured**, on the same rule as every other count here.
-   The runner enumerates all 118 Juliet CWE directories and SqC's list covers
+   aurora-lint's 75 is CWEs **measured**, on the same rule as every other count here.
+   The runner enumerates all 118 Juliet CWE directories and aurora-lint's list covers
    79 of them, but four — CWE-23, CWE-672, CWE-676 and CWE-762 — hold no
-   ``.c`` files at all, so SqC correctly scans none of them. Counting a
+   ``.c`` files at all, so aurora-lint correctly scans none of them. Counting a
    directory it declined would credit it with coverage it does not have.
    Verified across 52 completed runs, which agree on exactly those four; it
    is a property of the Juliet corpus rather than of any run.
@@ -137,7 +137,7 @@ Juliet, On The Overlap
 
 Juliet is the only benchmark where every tool can be scored the same way: the
 suite labels its own planted defects, so TP/FP needs no adjudication. This is
-SqC v0.4.321 (run ``sqc-0.4.321-daff4cf0``) against each competitor on the
+aurora-lint v0.4.321 (run ``sqc-0.4.321-daff4cf0``) against each competitor on the
 CWEs that competitor covers — precision, so higher is better.
 
 .. list-table::
@@ -145,9 +145,9 @@ CWEs that competitor covers — precision, so higher is better.
    :widths: 12 10 10 10 12 12 12 12
 
    * - CWE
-     - SqC TP
-     - SqC FP
-     - SqC
+     - aurora-lint TP
+     - aurora-lint FP
+     - aurora-lint
      - clang-tidy
      - cppcheck
      - Frama-C
@@ -274,18 +274,18 @@ CWEs that competitor covers — precision, so higher is better.
      - 58.1%
 
 **clang-tidy wins the overlap, and it is not close.** On the 15 CWEs it
-covers: clang-tidy 13,952 TP / 116 FP (99.2%), SqC 12,276 TP / 2,757 FP
+covers: clang-tidy 13,952 TP / 116 FP (99.2%), aurora-lint 12,276 TP / 2,757 FP
 (81.7%). It is at 100% on eleven of them, and it finds *more* true positives
-than SqC does on the same CWEs.
+than aurora-lint does on the same CWEs.
 
 Two things soften that without overturning it. 1,170 of clang-tidy's findings
 (8%) are ``unknown`` — neither matched to a planted flaw nor confidently
 outside one — against 75 for cppcheck and 0 for Frama-C and Infer. And it
 gets there by compiling the code, which is the trade described below.
 
-SqC leads on CWE-416 (use-after-free, 91.1% vs 60.3%) and matches at 100% on
+aurora-lint leads on CWE-416 (use-after-free, 91.1% vs 60.3%) and matches at 100% on
 six CWEs. Everywhere else on the overlap it is behind, and that is the honest
-read: **SqC's case is not that it is more precise than clang-tidy on the
+read: **aurora-lint's case is not that it is more precise than clang-tidy on the
 fifteen CWEs clang-tidy checks. It is the other 60 CWEs, the other 290 rules,
 and not needing your build.**
 
@@ -302,7 +302,7 @@ Real-world suite, 8 projects, run 215:
      - Findings
      - Wall clock
      - 
-   * - SqC
+   * - aurora-lint
      - 69,354
      - ~1,190 s
      - See the TODO below — run 215 recorded 0.0 s for two projects.
@@ -317,11 +317,11 @@ Real-world suite, 8 projects, run 215:
 
 .. note::
 
-   **TODO** — run 215's SqC rows for ``hostap`` and ``sqlite`` both record
-   ``duration_s = 0.0``, so its recorded SqC total is 490.9 s. The ~1,190 s
+   **TODO** — run 215's aurora-lint rows for ``hostap`` and ``sqlite`` both record
+   ``duration_s = 0.0``, so its recorded aurora-lint total is 490.9 s. The ~1,190 s
    above substitutes those two projects' run-229 figures (450.4 s and
    253.1 s), which mixes runs and is therefore not a citable number. Quoting
-   the 490.9 s would be wrong in SqC's favour, which is worse. Tracked as
+   the 490.9 s would be wrong in aurora-lint's favour, which is worse. Tracked as
    benchmarking_db task 740.
 
 Frama-C and Infer have no row here yet — see the note above. For an order of
@@ -370,7 +370,7 @@ Juliet, all four on one host (2026-09-04), CWE list sizes differing:
    machines, so precision and coverage cross the boundary freely. Only wall
    clock does not.
 
-   Speed is a real metric for SqC, but evaluating it means running the
+   Speed is a real metric for aurora-lint, but evaluating it means running the
    comparison on like hardware — which is a separate exercise from this one.
    The runs still record no hostname of their own; attribution lives in
    ``data/competitor_results/run_hosts.json`` with its source stated per
@@ -381,7 +381,7 @@ Juliet, all four on one host (2026-09-04), CWE list sizes differing:
 
    Every count on this page is **CWEs measured**, not CWEs requested.
 
-   SqC implements CERT **C**, so this benchmark is C-only and the runner
+   aurora-lint implements CERT **C**, so this benchmark is C-only and the runner
    globs ``*.c`` deliberately. Nine Juliet directories hold no C at all, and
    one of them — CWE-762, mismatched memory management, 6,092 ``.cpp`` files
    and no ``.c`` — sat in the cppcheck, clang-tidy and Infer lists scoring
@@ -394,7 +394,7 @@ Juliet, all four on one host (2026-09-04), CWE list sizes differing:
    the same as "the tool found nothing". The runs above predate that fix and
    still carry the row; the exported CSV distinguishes them as ``cwe_count``
    (rows present) and ``cwes_measured``. Tracked as tools_sqc task 909; the
-   same defect on SqC's own count is task 910.
+   same defect on aurora-lint's own count is task 910.
 
 Real-World Precision, Per Rule
 ==============================
@@ -403,7 +403,7 @@ Real-World Precision, Per Rule
 
    **TODO** — this section cannot be written yet.
 
-   ``realworld_violations`` holds 17.5M SqC rows and **zero** for cppcheck or
+   ``realworld_violations`` holds 17.5M aurora-lint rows and **zero** for cppcheck or
    clang-tidy. The runner's ``_parse_cppcheck_xml`` and
    ``_parse_clang_tidy_txt`` return a count per check id and discard file and
    line, so there is no coordinate to adjudicate — and a count cannot be
@@ -456,7 +456,7 @@ Real-World Precision, Per Rule
    materially in both directions — CWE-401 25.7% → 29.1%, CWE-476
    39.7% → 34.5% — so it was refreshed rather than re-dated.
 
-   The SqC column is still from 2026-09-02, so the table is now within days
+   The aurora-lint column is still from 2026-09-02, so the table is now within days
    of single-date rather than five months from it.  Tracked as tools_sqc
    task 768.
 
@@ -465,7 +465,7 @@ Real-World Precision, Per Rule
    **clang-tidy is pinned to LLVM 21, deliberately.**  Ubuntu 24.04 ships
    18.1.3 and tops out at 20, so a freshly-provisioned node would measure an
    *older* clang-tidy than this table — and since clang-tidy is the tool that
-   beats SqC on the overlap, that would flatter SqC by understating a rival.
+   beats aurora-lint on the overlap, that would flatter aurora-lint by understating a rival.
    ``playbooks/install-static-analyzers.yml`` adds ``apt.llvm.org`` for this
    reason.  cppcheck is deliberately *not* pinned: it drifted forward, and
    the runner records whichever version it saw.
@@ -473,12 +473,12 @@ Real-World Precision, Per Rule
 What The Trade Actually Is
 ==========================
 
-Every tool that beats SqC on precision above does it by compiling the code.
+Every tool that beats aurora-lint on precision above does it by compiling the code.
 clang-tidy, Frama-C and Infer all need a working build and correct flags;
 with a real preprocessor they know which branches exist, what a macro
 expands to, and what a type is, and they are right more often as a result.
 
-SqC parses source as written. That is why it runs on a partial checkout, a
+aurora-lint parses source as written. That is why it runs on a partial checkout, a
 tree you cannot build, or a file that was generated a moment ago — and it is
 also why it has a macro-expansion engine, a suppression system, and a
 false-positive backlog as substantial as its rule backlog. The precision gap
@@ -486,10 +486,10 @@ on those fifteen CWEs is the price of the property that makes it useful
 elsewhere.
 
 cppcheck is the honest control here: it also runs unbuilt, and on the same
-overlap it scores 36.7% to SqC's 81.7%.
+overlap it scores 36.7% to aurora-lint's 81.7%.
 
 The wall-clock gap is on the *real-world* suite, not this one: cppcheck's
-run-215 sweep of 8 projects took 11,452 s against SqC's ~1,190 s, roughly ten
+run-215 sweep of 8 projects took 11,452 s against aurora-lint's ~1,190 s, roughly ten
 times. On Juliet the ordering reverses — cppcheck is the fastest of the four
 competitors at 350 s. Both facts are about the same tool and neither is the
 other's counterexample: cppcheck is quick on 5,900 small generated files and

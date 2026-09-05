@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Configuration &mdash; SqC  documentation</title>
+  <title>Configuration &mdash; aurora-lint  documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
@@ -32,7 +32,7 @@
           
           
           <a href="index.html" class="icon icon-home">
-            SqC
+            aurora-lint
           </a>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
@@ -74,7 +74,7 @@
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
           <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
-          <a href="index.html">SqC</a>
+          <a href="index.html">aurora-lint</a>
       </nav>
 
       <div class="wy-nav-content">
@@ -100,10 +100,10 @@
 The default manifest (<code class="docutils literal notranslate"><span class="pre">rules_templates/rules-all.toml</span></code>) enables 307 of the 311 tracked rules.
 The other 4 are tracked but not implemented — see <a class="reference internal" href="#tracked-but-not-implemented">Tracked but not implemented</a> below.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Use default (all rules enabled)</span>
-<span class="n">sqc</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">code</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">code</span>
 
 <span class="c1"># Use a custom manifest</span>
-<span class="n">sqc</span> <span class="o">--</span><span class="n">manifest</span> <span class="n">my</span><span class="o">-</span><span class="n">rules</span><span class="o">.</span><span class="n">toml</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">code</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">--</span><span class="n">manifest</span> <span class="n">my</span><span class="o">-</span><span class="n">rules</span><span class="o">.</span><span class="n">toml</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">code</span>
 </pre></div>
 </div>
 </section>
@@ -221,7 +221,7 @@ in <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c
 <h2>Tracked but not implemented<a class="headerlink" href="#tracked-but-not-implemented" title="Link to this heading"></a></h2>
 <p>4 of the 311 tracked rules have a rule directory and a manifest entry but no
 detection logic (no <code class="docutils literal notranslate"><span class="pre">.rs</span></code> file). This is a deliberate policy, not a gap:
-sqc does not implement against incomplete CERT-C rule content, since there is
+aurora-lint does not implement against incomplete CERT-C rule content, since there is
 ample well-established work to do and a stub implementation would mean
 inventing a rule CERT itself has not written.</p>
 <p>Two are parked on upstream CERT publishing real content for the rule:</p>

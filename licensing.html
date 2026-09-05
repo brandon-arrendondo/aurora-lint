@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Licensing and content provenance &mdash; SqC  documentation</title>
+  <title>Licensing and content provenance &mdash; aurora-lint  documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
@@ -32,7 +32,7 @@
           
           
           <a href="index.html" class="icon icon-home">
-            SqC
+            aurora-lint
           </a>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
@@ -76,7 +76,7 @@
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
           <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
-          <a href="index.html">SqC</a>
+          <a href="index.html">aurora-lint</a>
       </nav>
 
       <div class="wy-nav-content">
@@ -96,7 +96,7 @@
              
   <section id="licensing-and-content-provenance">
 <h1>Licensing and content provenance<a class="headerlink" href="#licensing-and-content-provenance" title="Link to this heading"></a></h1>
-<p>This page exists for one audience: someone deciding whether sqc can enter a
+<p>This page exists for one audience: someone deciding whether aurora-lint can enter a
 distribution archive. It answers <em>what is in this source tree, who wrote it,
 and under what terms</em>.</p>
 <section id="summary">
@@ -114,14 +114,14 @@ and under what terms</em>.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>sqc’s own source code and packaging</p></td>
+<tr class="row-even"><td><p>aurora-lint’s own source code and packaging</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">Apache-2.0</span></code></p></td>
 <td><p>everything not listed below</p></td>
 </tr>
-<tr class="row-odd"><td><p>sqc’s own documentation</p></td>
+<tr class="row-odd"><td><p>aurora-lint’s own documentation</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">CC-BY-4.0</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">docs/</span></code> and the generated man page, as declared in <code class="docutils literal notranslate"><span class="pre">docs/conf.py</span></code>
-and <code class="docutils literal notranslate"><span class="pre">docs/sqc.1</span></code></p></td>
+and <code class="docutils literal notranslate"><span class="pre">docs/aurora-lint.1</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p>SEI CERT C rule titles and rule prose</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">CC-BY-4.0</span></code></p></td>
@@ -136,24 +136,24 @@ wiki-derived fixtures under <code class="docutils literal notranslate"><span cla
 </tr>
 </tbody>
 </table>
-<p>Copyright in all of it is held by <strong>BISSELL Homecare, Inc.</strong> SqC is company
+<p>Copyright in all of it is held by <strong>BISSELL Homecare, Inc.</strong> aurora-lint is company
 work: it is written by BISSELL employees under BISSELL direction, so the
 holder is the entity, not the individuals. <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code>’s <code class="docutils literal notranslate"><span class="pre">authors</span></code> field
 still names individuals, and correctly — authorship is a statement of who
 wrote the code and is not the same as who owns it. <code class="docutils literal notranslate"><span class="pre">CONTRIBUTORS.md</span></code> is the
 fuller record.</p>
-<p><strong>SqC is licensed Apache-2.0.</strong> The CERT rows above are third-party material
+<p><strong>aurora-lint is licensed Apache-2.0.</strong> The CERT rows above are third-party material
 carried in the tree, not a change to that: they keep their own upstream terms,
 the way any vendored component does, and those terms are recorded in
 <code class="docutils literal notranslate"><span class="pre">NOTICE</span></code> and <code class="docutils literal notranslate"><span class="pre">thirdparty/cert/LICENSE</span></code> rather than in <code class="docutils literal notranslate"><span class="pre">LICENSE</span></code>.</p>
 <p>The attribution obligation reaches the binary, not only the source tarball:
 each rule compiles its CERT title in as a <code class="docutils literal notranslate"><span class="pre">&amp;'static</span> <span class="pre">str</span></code>, so a stripped
-<code class="docutils literal notranslate"><span class="pre">sqc</span></code> executable still carries CC BY 4.0 material. <code class="docutils literal notranslate"><span class="pre">NOTICE</span></code> ships in every
+<code class="docutils literal notranslate"><span class="pre">aurora-lint</span></code> executable still carries CC BY 4.0 material. <code class="docutils literal notranslate"><span class="pre">NOTICE</span></code> ships in every
 release artifact for that reason.</p>
 <p>A packager describing the <em>contents of a binary package</em> will generally write
 the union rather than the project’s own license — <code class="docutils literal notranslate"><span class="pre">Apache-2.0</span> <span class="pre">AND</span> <span class="pre">MIT</span> <span class="pre">AND</span>
 <span class="pre">CC-BY-4.0</span></code> — which is why the DEP-5 stanzas below are split by path. That is
-a packaging-metadata convention and is not what SqC is licensed under.</p>
+a packaging-metadata convention and is not what aurora-lint is licensed under.</p>
 </section>
 <section id="the-cert-terms">
 <h2>The CERT terms<a class="headerlink" href="#the-cert-terms" title="Link to this heading"></a></h2>
@@ -168,7 +168,7 @@ licensed under a MIT license […]. Although the rights granted by the
 referenced licenses allow modification […]</p>
 </div></blockquote>
 <p>Both are DFSG-free and Fedora-allowed, and both permit modification — which
-matters, because sqc’s rule descriptions <em>are</em> modified (they are extracted
+matters, because aurora-lint’s rule descriptions <em>are</em> modified (they are extracted
 from page markup and reflowed, and CC BY 4.0 section 3(a)(1)(B) requires that
 modification be indicated).</p>
 <div class="admonition warning">
@@ -187,12 +187,12 @@ governing text.</p>
 <p><em>Carnegie Mellon</em> and <em>CERT</em> are registered trademarks of Carnegie Mellon
 University. The copyright licenses above grant nothing here.</p>
 <ul class="simple">
-<li><p>Nominative use in prose is fine: “sqc checks C code against the SEI CERT C
+<li><p>Nominative use in prose is fine: “aurora-lint checks C code against the SEI CERT C
 Coding Standard” describes what the tool does and is how the marks may be
 used.</p></li>
 <li><p><strong>Do not put CERT or Carnegie Mellon in the binary name, the package name,
 or any name that reads as a source identifier.</strong> The binary and the
-distribution package are both <code class="docutils literal notranslate"><span class="pre">sqc</span></code> deliberately. <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/</span></code>
+distribution package are both <code class="docutils literal notranslate"><span class="pre">aurora-lint</span></code> deliberately. <code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/</span></code>
 is an internal path, not a published name.</p></li>
 <li><p>Do not imply endorsement, certification, or affiliation.</p></li>
 </ul>
@@ -228,7 +228,7 @@ conservative direction to be wrong in — a packager who wants the tighter glob
 can generate it from <code class="docutils literal notranslate"><span class="pre">scripts/fixture_provenance.py</span> <span class="pre">--by-rule</span> <span class="pre">--json</span></code>,
 which reports the split per rule.</p>
 <p>Fedora <code class="docutils literal notranslate"><span class="pre">.spec</span></code>: <code class="docutils literal notranslate"><span class="pre">.github/workflows/release.yml</span></code> emits
-<code class="docutils literal notranslate"><span class="pre">License:</span> <span class="pre">Apache-2.0</span></code>, SqC’s own license. A Fedora packager who prefers the
+<code class="docutils literal notranslate"><span class="pre">License:</span> <span class="pre">Apache-2.0</span></code>, aurora-lint’s own license. A Fedora packager who prefers the
 contents-union convention would write <code class="docutils literal notranslate"><span class="pre">Apache-2.0</span> <span class="pre">AND</span> <span class="pre">MIT</span> <span class="pre">AND</span> <span class="pre">CC-BY-4.0</span></code>
 instead; both describe the same package, and the <code class="docutils literal notranslate"><span class="pre">NOTICE</span></code> and
 <code class="docutils literal notranslate"><span class="pre">thirdparty/cert/LICENSE</span></code> files shipped alongside carry the detail either

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Benchmark Setup &mdash; SqC  documentation</title>
+  <title>Benchmark Setup &mdash; aurora-lint  documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
@@ -32,7 +32,7 @@
           
           
           <a href="index.html" class="icon icon-home">
-            SqC
+            aurora-lint
           </a>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
@@ -76,7 +76,6 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#running-each-tool-manually">Running Each Tool Manually</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#sqc">sqc</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#id1">cppcheck</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#id2">clang-tidy</a></li>
 </ul>
@@ -112,7 +111,7 @@
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
           <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
-          <a href="index.html">SqC</a>
+          <a href="index.html">aurora-lint</a>
       </nav>
 
       <div class="wy-nav-content">
@@ -185,8 +184,8 @@ sudo<span class="w"> </span>make<span class="w"> </span>install
 clang-tidy 18.1.3 and tops out at 20, while the published comparison in
 <code class="docutils literal notranslate"><span class="pre">docs/tool-comparison.rst</span></code> is LLVM 21.1.  Taking the distro package makes a
 freshly-provisioned node measure an <em>older</em> competitor than the table it will
-be compared against, and clang-tidy is the tool currently beating SqC on the
-Juliet overlap (99.2% vs 81.7%) — so that regression would flatter SqC by
+be compared against, and clang-tidy is the tool currently beating aurora-lint on the
+Juliet overlap (99.2% vs 81.7%) — so that regression would flatter aurora-lint by
 understating a rival.  <code class="docutils literal notranslate"><span class="pre">playbooks/install-static-analyzers.yml</span></code> does this
 automatically; by hand:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>install<span class="w"> </span>-d<span class="w"> </span>-m<span class="w"> </span><span class="m">0755</span><span class="w"> </span>/etc/apt/keyrings
@@ -279,7 +278,7 @@ copied from an older doc will abort with “option is unknown”.</p>
 </section>
 <section id="build-based-tools-need-a-compile-database">
 <h3>Build-based tools need a compile database<a class="headerlink" href="#build-based-tools-need-a-compile-database" title="Link to this heading"></a></h3>
-<p>Infer and Frama-C cannot be pointed at a source tree the way sqc and cppcheck
+<p>Infer and Frama-C cannot be pointed at a source tree the way aurora-lint and cppcheck
 can — both need a real preprocess.  On the real-world suite they are driven
 from each checkout’s <code class="docutils literal notranslate"><span class="pre">compile_commands.json</span></code>, so
 <code class="docutils literal notranslate"><span class="pre">playbooks/setup-compile-commands.yml</span></code> must have run for a codebase before
@@ -318,7 +317,7 @@ Juliet Test Suite v1.3</a>:</p>
 </section>
 <section id="third-party-library-headers">
 <h2>Third-Party Library Headers<a class="headerlink" href="#third-party-library-headers" title="Link to this heading"></a></h2>
-<p>SqC uses <code class="docutils literal notranslate"><span class="pre">-I</span></code> include paths to resolve <code class="docutils literal notranslate"><span class="pre">#include</span></code> directives from third-party
+<p>aurora-lint uses <code class="docutils literal notranslate"><span class="pre">-I</span></code> include paths to resolve <code class="docutils literal notranslate"><span class="pre">#include</span></code> directives from third-party
 libraries. Without these, functions declared in external headers produce
 DCL31-C/DCL07-C false positives.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Core dependencies (covers most projects)</span>
@@ -518,11 +517,11 @@ python<span class="w"> </span>-m<span class="w"> </span>bench<span class="w"> </
 <p>It also flags three contamination cases independent of status:</p>
 <ul class="simple">
 <li><p>tracked files modified, so the scanned source is not the pin;</p></li>
-<li><p><strong>untracked ``*.c``/``*.h`` files, which sqc will scan</strong> and attribute to
-the pinned commit (untracked files sqc ignores are counted separately and
+<li><p><strong>untracked ``*.c``/``*.h`` files, which aurora-lint will scan</strong> and attribute to
+the pinned commit (untracked files aurora-lint ignores are counted separately and
 are harmless);</p></li>
 <li><p><strong>gitignored ``*.c``/``*.h`` files</strong>, which are invisible to <code class="docutils literal notranslate"><span class="pre">git</span>
-<span class="pre">status</span></code> but which sqc scans anyway – it dispatches on file extension and
+<span class="pre">status</span></code> but which aurora-lint scans anyway – it dispatches on file extension and
 never consults git. The case to watch is a build run inside a checkout:
 sqlite’s build generates a gitignored <code class="docutils literal notranslate"><span class="pre">sqlite3.c</span></code> amalgamation, which
 would silently add ~250k lines to every sqlite scan.</p></li>
@@ -594,25 +593,24 @@ checkout path for ad hoc manual runs. If you provisioned codebases via
 <code class="docutils literal notranslate"><span class="pre">$SQC_BENCH_ROOT/&lt;project&gt;</span></code> (default <code class="docutils literal notranslate"><span class="pre">~/toolchain/&lt;project&gt;</span></code>) instead
 – that’s the path <code class="docutils literal notranslate"><span class="pre">bench/realworld_runner.py</span></code> itself reads.</p>
 </div>
-<section id="sqc">
-<h3>sqc<a class="headerlink" href="#sqc" title="Link to this heading"></a></h3>
+<p>aurora-lint
+~~~</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Build</span>
 <span class="nb">cd</span><span class="w"> </span>~/data/tools_sqc
 cargo<span class="w"> </span>build<span class="w"> </span>--release
 
 <span class="c1"># Basic run</span>
-./target/release/sqc<span class="w"> </span>/path/to/source/<span class="w"> </span>--export<span class="w"> </span>results.json
+./target/release/aurora-lint<span class="w"> </span>/path/to/source/<span class="w"> </span>--export<span class="w"> </span>results.json
 
 <span class="c1"># With cross-file context</span>
-./target/release/sqc<span class="w"> </span>/path/to/source/<span class="w"> </span>-d<span class="w"> </span>/path/to/source/<span class="w"> </span>--export<span class="w"> </span>results.json
+./target/release/aurora-lint<span class="w"> </span>/path/to/source/<span class="w"> </span>-d<span class="w"> </span>/path/to/source/<span class="w"> </span>--export<span class="w"> </span>results.json
 
-<span class="c1"># When running from outside the sqc repo, pass --manifest explicitly</span>
-./target/release/sqc<span class="w"> </span>/path/to/source/<span class="w"> </span><span class="se">\</span>
+<span class="c1"># When running from outside the aurora-lint repo, pass --manifest explicitly</span>
+./target/release/aurora-lint<span class="w"> </span>/path/to/source/<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--export<span class="w"> </span>results.json
 </pre></div>
 </div>
-</section>
 <section id="id1">
 <h3>cppcheck<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
@@ -658,11 +656,11 @@ find<span class="w"> </span>/path/to/source/<span class="w"> </span>-name<span c
 <h2>Per-Project Commands<a class="headerlink" href="#per-project-commands" title="Link to this heading"></a></h2>
 <section id="libcrc">
 <h3>libcrc<a class="headerlink" href="#libcrc" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># sqc</span>
-~/data/tools_sqc/target/release/sqc<span class="w"> </span>~/data/comparisons/libcrc<span class="w"> </span><span class="se">\</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
+~/data/tools_sqc/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/libcrc<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/libcrc<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/sqc/libcrc/results.json
+<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/libcrc/results.json
 
 <span class="c1"># cppcheck</span>
 cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
@@ -680,11 +678,11 @@ run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class
 </section>
 <section id="sqlite">
 <h3>sqlite<a class="headerlink" href="#sqlite" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># sqc</span>
-~/data/tools_sqc/target/release/sqc<span class="w"> </span>~/data/comparisons/sqlite<span class="w"> </span><span class="se">\</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
+~/data/tools_sqc/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/sqlite<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/sqlite<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/sqc/sqlite/results.json
+<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/sqlite/results.json
 
 <span class="c1"># cppcheck</span>
 cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
@@ -702,11 +700,11 @@ run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class
 </section>
 <section id="mosquitto">
 <h3>mosquitto<a class="headerlink" href="#mosquitto" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># sqc</span>
-~/data/tools_sqc/target/release/sqc<span class="w"> </span>~/data/comparisons/mosquitto<span class="w"> </span><span class="se">\</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
+~/data/tools_sqc/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/mosquitto<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/mosquitto<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/sqc/mosquitto/results.json
+<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/mosquitto/results.json
 
 <span class="c1"># cppcheck</span>
 cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
@@ -729,11 +727,11 @@ run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class
 </section>
 <section id="curl">
 <h3>curl<a class="headerlink" href="#curl" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># sqc</span>
-~/data/tools_sqc/target/release/sqc<span class="w"> </span>~/data/comparisons/curl<span class="w"> </span><span class="se">\</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
+~/data/tools_sqc/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/curl<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/curl<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/sqc/curl/results.json
+<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/curl/results.json
 
 <span class="c1"># cppcheck</span>
 cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
@@ -756,12 +754,12 @@ run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class
 </section>
 <section id="hostap">
 <h3>hostap<a class="headerlink" href="#hostap" title="Link to this heading"></a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># sqc</span>
-~/data/tools_sqc/target/release/sqc<span class="w"> </span>~/data/comparisons/hostap<span class="w"> </span><span class="se">\</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
+~/data/tools_sqc/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/hostap<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/hostap/src<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/hostap/wpa_supplicant<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/sqc/hostap/results.json
+<span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/hostap/results.json
 
 <span class="c1"># cppcheck</span>
 cppcheck<span class="w"> </span>--enable<span class="o">=</span>all<span class="w"> </span>--std<span class="o">=</span>c11<span class="w"> </span>--xml<span class="w"> </span>--xml-version<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
@@ -794,10 +792,10 @@ run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">PROJECT</span><span class="o">=</span>libcrc
 <span class="nv">RESULTS</span><span class="o">=</span>~/data/comparisons/results
 
-<span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;=== sqc ===&quot;</span>
+<span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;=== aurora-lint ===&quot;</span>
 python3<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
 <span class="s2">import json, collections</span>
-<span class="s2">data = json.load(open(&#39;</span><span class="nv">$RESULTS</span><span class="s2">/sqc/</span><span class="nv">$PROJECT</span><span class="s2">/results.json&#39;))</span>
+<span class="s2">data = json.load(open(&#39;</span><span class="nv">$RESULTS</span><span class="s2">/aurora-lint/</span><span class="nv">$PROJECT</span><span class="s2">/results.json&#39;))</span>
 <span class="s2">rules = collections.Counter(v[&#39;rule_id&#39;] for v in data)</span>
 <span class="s2">print(f&#39;Total: {len(data)} findings, {len(rules)} rules&#39;)</span>
 <span class="s2">for r, c in rules.most_common(10): print(f&#39;  {r}: {c}&#39;)</span>
@@ -831,7 +829,7 @@ grep<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;war
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>sqc manifest not found</p></td>
+<tr class="row-even"><td><p>aurora-lint manifest not found</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">Failed</span> <span class="pre">to</span> <span class="pre">read</span> <span class="pre">manifest</span> <span class="pre">file</span></code></p></td>
 <td><p>Pass <code class="docutils literal notranslate"><span class="pre">--manifest</span></code> with absolute path</p></td>
 </tr>
@@ -864,11 +862,11 @@ grep<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;war
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">example</span><span class="o">.</span><span class="n">c</span><span class="p">:</span><span class="mi">5</span><span class="p">:</span><span class="mi">5</span><span class="p">:</span> <span class="n">warning</span><span class="p">:</span> <span class="o">...</span> <span class="p">[</span><span class="n">cert</span><span class="o">-</span><span class="n">arr30</span><span class="o">-</span><span class="n">c</span><span class="p">]</span>
 </pre></div>
 </div>
-<p><strong>sqc JSON</strong>:</p>
+<p><strong>aurora-lint JSON</strong>:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">[{</span><span class="nt">&quot;rule_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ARR30-C&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;severity&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;High&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;example.c&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;line&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">}]</span>
 </pre></div>
 </div>
-<p><strong>sqc SARIF</strong>: SARIF 2.1.0 compatible output with <code class="docutils literal notranslate"><span class="pre">ruleId</span></code> matching CERT C rule IDs.</p>
+<p><strong>aurora-lint SARIF</strong>: SARIF 2.1.0 compatible output with <code class="docutils literal notranslate"><span class="pre">ruleId</span></code> matching CERT C rule IDs.</p>
 <p><strong>Infer JSON</strong> (<code class="docutils literal notranslate"><span class="pre">infer-out/report.json</span></code>):</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">[{</span><span class="nt">&quot;bug_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;NULLPTR_DEREFERENCE&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;procedure&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;func_bad&quot;</span><span class="p">,</span>
 <span class="w">  </span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;test.c&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;line&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">26</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;severity&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ERROR&quot;</span><span class="p">}]</span>
@@ -884,8 +882,8 @@ grep<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;war
 <section id="distributed-benchmarking-with-gnu-parallel">
 <h2>Distributed Benchmarking with GNU Parallel<a class="headerlink" href="#distributed-benchmarking-with-gnu-parallel" title="Link to this heading"></a></h2>
 <p>For fast re-benchmarking across multiple machines after rule changes. Cppcheck and
-clang-tidy results are stable across sqc changes – run them once and cache. Only
-sqc needs re-running.</p>
+clang-tidy results are stable across aurora-lint changes – run them once and cache. Only
+aurora-lint needs re-running.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Prerequisites</span>
 sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>parallel
 parallel<span class="w"> </span>--citation<span class="w"> </span><span class="o">&lt;&lt;&lt;</span><span class="w"> </span><span class="s2">&quot;will cite&quot;</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
@@ -905,7 +903,7 @@ ssh-keygen<span class="w"> </span>-t<span class="w"> </span>ed25519<span class="
 </pre></div>
 </div>
 <p>Fast re-benchmark workflow:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Rebuild sqc</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Rebuild aurora-lint</span>
 <span class="nb">cd</span><span class="w"> </span>~/data/tools_sqc<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cargo<span class="w"> </span>build<span class="w"> </span>--release
 
 <span class="c1"># 2. Push binary to nodes (if no shared FS)</span>
@@ -918,7 +916,7 @@ find<span class="w"> </span><span class="nv">$JULIET_DIR</span><span class="w"> 
 <span class="c1"># 4. Run in parallel across nodes</span>
 parallel<span class="w"> </span>--sshloginfile<span class="w"> </span><span class="nv">$NODES_FILE</span><span class="w"> </span>-a<span class="w"> </span>/tmp/cwe_dirs.txt<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span><span class="s2">&quot;</span><span class="nv">$SQC_BIN</span><span class="s2"> {} -d </span><span class="nv">$JULIET_DIR</span><span class="s2"> -d </span><span class="nv">$JULIET_SUPPORT</span><span class="s2"> \</span>
-<span class="s2">    --export </span><span class="nv">$RESULTS_DIR</span><span class="s2">/sqc/juliet/{/.}.csv&quot;</span>
+<span class="s2">    --export </span><span class="nv">$RESULTS_DIR</span><span class="s2">/aurora-lint/juliet/{/.}.csv&quot;</span>
 </pre></div>
 </div>
 </section>

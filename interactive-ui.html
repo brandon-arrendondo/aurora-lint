@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Interactive Console UI &mdash; SqC  documentation</title>
+  <title>Interactive Console UI &mdash; aurora-lint  documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
@@ -32,7 +32,7 @@
           
           
           <a href="index.html" class="icon icon-home">
-            SqC
+            aurora-lint
           </a>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
@@ -81,7 +81,7 @@
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
           <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
-          <a href="index.html">SqC</a>
+          <a href="index.html">aurora-lint</a>
       </nav>
 
       <div class="wy-nav-content">
@@ -102,14 +102,14 @@
   <section id="interactive-console-ui">
 <h1>Interactive Console UI<a class="headerlink" href="#interactive-console-ui" title="Link to this heading"></a></h1>
 <p>The interactive terminal UI is an optional build-time feature (disabled by
-default, since the primary use of sqc is CLI + CI/CD). Build with the <code class="docutils literal notranslate"><span class="pre">tui</span></code>
+default, since the primary use of aurora-lint is CLI + CI/CD). Build with the <code class="docutils literal notranslate"><span class="pre">tui</span></code>
 feature to enable it:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">cargo</span> <span class="n">build</span> <span class="o">--</span><span class="n">release</span> <span class="o">--</span><span class="n">features</span> <span class="n">tui</span>
 </pre></div>
 </div>
 <p>Then launch it with <code class="docutils literal notranslate"><span class="pre">--interactive</span></code> (or <code class="docutils literal notranslate"><span class="pre">-i</span></code>):</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">sqc</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">--</span><span class="n">interactive</span>
-<span class="n">sqc</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">-</span><span class="n">d</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">-</span><span class="n">i</span>    <span class="c1"># with cross-file context</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">--</span><span class="n">interactive</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">-</span><span class="n">d</span> <span class="o">/</span><span class="n">path</span><span class="o">/</span><span class="n">to</span><span class="o">/</span><span class="n">project</span> <span class="o">-</span><span class="n">i</span>    <span class="c1"># with cross-file context</span>
 </pre></div>
 </div>
 <p>Running <code class="docutils literal notranslate"><span class="pre">--interactive</span></code> against a binary built without the <code class="docutils literal notranslate"><span class="pre">tui</span></code> feature
@@ -124,7 +124,7 @@ The UI adapts to terminal size and supports 256-color and truecolor terminals.</
 <section id="violations-tab">
 <h2>Violations Tab<a class="headerlink" href="#violations-tab" title="Link to this heading"></a></h2>
 <figure class="align-default" id="id2">
-<a class="reference internal image-reference" href="_images/violations-tab.png"><img alt="SqC Violations Tab showing grouped violations by file" src="_images/violations-tab.png" style="width: 100%;" />
+<a class="reference internal image-reference" href="_images/violations-tab.png"><img alt="aurora-lint Violations Tab showing grouped violations by file" src="_images/violations-tab.png" style="width: 100%;" />
 </a>
 <figcaption>
 <p><span class="caption-text"><em>Violations tab with violations grouped by file. The right panel shows a
@@ -137,7 +137,7 @@ selection, and inline source preview capabilities.</p>
 <section id="configuration-tab">
 <h2>Configuration Tab<a class="headerlink" href="#configuration-tab" title="Link to this heading"></a></h2>
 <figure class="align-default" id="id3">
-<a class="reference internal image-reference" href="_images/configuration-tab.png"><img alt="SqC Configuration Tab showing rule categories" src="_images/configuration-tab.png" style="width: 100%;" />
+<a class="reference internal image-reference" href="_images/configuration-tab.png"><img alt="aurora-lint Configuration Tab showing rule categories" src="_images/configuration-tab.png" style="width: 100%;" />
 </a>
 <figcaption>
 <p><span class="caption-text"><em>Configuration tab showing CERT C rule categories. Toggle individual rules
@@ -234,7 +234,7 @@ them on/off, and export a custom manifest file.</p>
 <td><p>Scan repository for violations</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">i</span></code></p></td>
-<td><p>Suppress checked violations (<code class="docutils literal notranslate"><span class="pre">.sqc-suppress.toml</span></code>)</p></td>
+<td><p>Suppress checked violations (<code class="docutils literal notranslate"><span class="pre">.aurora-lint-suppress.toml</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">e</span></code></p></td>
 <td><p>Export checked violations to file (CSV)</p></td>

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SqC Developer Guide &mdash; SqC  documentation</title>
+  <title>aurora-lint Developer Guide &mdash; aurora-lint  documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
 
@@ -31,7 +31,7 @@
           
           
           <a href="#" class="icon icon-home">
-            SqC
+            aurora-lint
           </a>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
@@ -67,7 +67,7 @@
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
           <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
-          <a href="#">SqC</a>
+          <a href="#">aurora-lint</a>
       </nav>
 
       <div class="wy-nav-content">
@@ -75,7 +75,7 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="#" class="icon icon-home" aria-label="Home"></a></li>
-      <li class="breadcrumb-item active">SqC Developer Guide</li>
+      <li class="breadcrumb-item active">aurora-lint Developer Guide</li>
       <li class="wy-breadcrumbs-aside">
             <a href="_sources/index.rst.txt" rel="nofollow"> View page source</a>
       </li>
@@ -85,9 +85,9 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="sqc-developer-guide">
-<h1>SqC Developer Guide<a class="headerlink" href="#sqc-developer-guide" title="Link to this heading"></a></h1>
-<p>SqC (Software Code Quality) is a terminal-based static analysis tool that validates
+  <section id="aurora-lint-developer-guide">
+<h1>aurora-lint Developer Guide<a class="headerlink" href="#aurora-lint-developer-guide" title="Link to this heading"></a></h1>
+<p>aurora-lint is a terminal-based static analysis tool that validates
 C code compliance with <a class="reference external" href="https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard">SEI CERT C Coding Standards</a>.
 It implements 311 rules (307 enabled by default) across 17 CERT C categories, using tree-sitter for fast
 AST-based analysis with cross-file context, control-flow graphs, and
@@ -114,6 +114,7 @@ testing methodology, project internals, and contributing.</p>
 <li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="suppression.html#design-intent-surface-don-t-silence">Design intent: surface, don’t silence</a></li>
 <li class="toctree-l2"><a class="reference internal" href="suppression.html#inline-comment-suppression">Inline Comment Suppression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="suppression.html#pre-rename-spellings-still-accepted">Pre-rename spellings (still accepted)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="suppression.html#external-suppression-file">External Suppression File</a></li>
 <li class="toctree-l2"><a class="reference internal" href="suppression.html#wildcard-suppression">Wildcard Suppression</a></li>
 <li class="toctree-l2"><a class="reference internal" href="suppression.html#hash-details">Hash Details</a></li>
@@ -276,7 +277,6 @@ testing methodology, project internals, and contributing.</p>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="benchmark-setup.html#running-each-tool-manually">Running Each Tool Manually</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#sqc">sqc</a></li>
 <li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#id1">cppcheck</a></li>
 <li class="toctree-l3"><a class="reference internal" href="benchmark-setup.html#id2">clang-tidy</a></li>
 </ul>
