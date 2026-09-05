@@ -2296,11 +2296,12 @@ impl Int32C {
         }
     }
 
-    /// When no cross-file context is present (`function_summaries` empty — e.g.
-    /// unit tests or a single-file run) the taint channels are a no-op; the
-    /// value-based VRA-overflow channel still applies, and otherwise the gate
-    /// returns true, preserving the rule's legacy behavior and existing test
-    /// expectations.
+    /// The gate runs in every configuration. When no cross-file context is
+    /// present (`function_summaries` empty — a run without `-d`) the
+    /// project-local taint channels find nothing to match, but the standard
+    /// taint-source names and the value-based VRA-overflow channel still apply,
+    /// so such a run reports a subset of what a `-d` run reports rather than
+    /// falling back to a louder, unmeasured rule.
     fn has_risky_operand_provenance(
         &self,
         node: &Node,
@@ -2323,9 +2324,6 @@ impl Int32C {
         }
 
         let summaries = self.function_summaries.borrow();
-        if summaries.is_empty() {
-            return true;
-        }
         let func = match ast_utils::find_containing_function(node) {
             Some(f) => f,
             None => return true,

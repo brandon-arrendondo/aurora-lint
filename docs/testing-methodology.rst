@@ -52,9 +52,9 @@ under ``src/rules/cert_c/<CATEGORY>/<RULE-ID>/tests/``:
         testcases_proper_signal_handling.c
         ...
 
-**Current coverage**: 3,574 C fixtures across 309 rules — 1,975 ``fail/``
-(must-detect), 1,594 ``pass/`` (must-not-detect) and 5 ``expected_fail/``
-(known limitations). These generate 4,032 Rust tests; all pass, 10 are
+**Current coverage**: 3,582 C fixtures across 309 rules — 1,921 ``fail/``
+(must-detect), 1,600 ``pass/`` (must-not-detect) and 61 ``expected_fail/``
+(known limitations). These generate 4,050 Rust tests; all pass, 66 are
 ``#[ignore]``\ d (the ``expected_fail`` tier plus fixtures for rules that
 are tracked but not implemented). Regenerate these counts with
 ``python3 scripts/fixture_provenance.py``.
@@ -105,25 +105,25 @@ line in its header comment:
      - Undeclared
      - Total
    * - ``fail/`` (must-detect)
-     - 603
-     - 1,293
-     - 79
-     - 1,975
+     - 590
+     - 1,254
+     - 77
+     - 1,921
    * - ``pass/`` (must-not-detect)
      - 730
-     - 776
-     - 88
-     - 1,594
+     - 777
+     - 93
+     - 1,600
    * - ``expected_fail/``
-     - 4
-     - 0
-     - 1
+     - 17
+     - 39
      - 5
+     - 61
    * - **All**
      - **1,337**
-     - **2,069**
-     - **168**
-     - **3,574**
+     - **2,070**
+     - **175**
+     - **3,582**
 
 **Wiki-derived** fixtures come from the CERT C standard's own compliant and
 non-compliant code examples. They are third-party evidence: SEI wrote them
@@ -184,24 +184,30 @@ builds.** Each test calls ``rule.check()`` directly. A fixture carrying a
 ``// sqc-test: prescan`` marker is given the scan's own context —
 ``prescan::prescan_single_file`` (the file-list prescan behind ``-d``,
 applied to that fixture alone) and then ``analyze::build_file_analysis`` for
-CFGs and value ranges, which is the call ``analyze_one_file`` makes. Only 55
-of roughly 4,000 fixtures carry the marker. The rest are checked with no
-project context, no CFGs and no value ranges at all — strictly weaker than
-any invocation of the shipped tool.
+CFGs and value ranges, which is the call ``analyze_one_file`` makes. Only 83
+of the 3,582 fixtures carry the marker. The rest are checked with no project
+context, no CFGs and no value ranges at all — strictly weaker than any
+invocation of the shipped tool.
 
 How much that hides is measured, not estimated. Removing the gate so every
-fixture gets the real context takes the suite from 4,035 passing to 62
-failing, and each of the 62 was checked against the shipped binary, which
-agrees with the new result every time: 61 ``fail/`` fixtures are detected
-only under the weaker analysis and not by a real scan (INT30-C 21, INT32-C
-19, INT31-C 16, and one each from ARR30-C ×2, EXP33-C, INT33-C, MEM30-C),
-and one ``pass/`` fixture (MEM31-C's ``safe_wrapper_functions``) draws five
-findings once context exists. The INT3x cluster has a single cause: the
-provenance gate those rules share returns "risky" whenever
-``function_summaries`` is empty, so a fixture with no context is flagged
-without the provenance analysis ever running. Closing the gap is tracked as
-its own work, since it changes what three rules report and so needs
-benchmarking, not just a green suite.
+fixture gets the real context was checked fixture by fixture, and each
+disagreement was confirmed against the shipped binary, which agrees with the
+context-built result every time. The largest cluster had a single cause: the
+provenance gate INT30-C, INT31-C and INT32-C share used to return "risky"
+whenever ``function_summaries`` was empty, so 56 ``fail/`` fixtures were
+reported without the provenance analysis ever running. That fail-open is
+gone — the gate now runs in every configuration — and those 56 fixtures moved
+to ``expected_fail/``, where their headers record which limitation each one
+sits behind: 46 are the gate treating a function parameter as bounded local
+state, 10 are a definite-overflow that no value-based channel currently
+proves. Restoring detection for either group changes what three high-volume
+rules report, so each is tracked as its own benchmarked work rather than
+folded into a harness change.
+
+What remains behind the marker gate is small: a handful of ``fail/`` fixtures
+(ARR30-C ×2, EXP33-C, INT33-C, MEM30-C) detected only under the weaker
+analysis, and one ``pass/`` fixture (MEM31-C's ``safe_wrapper_functions``)
+that draws five findings once context exists.
 
 A separate and earlier claim on this page — that scanning the corpus with
 the shipped binary finds 17 violations on 11 must-not-detect fixtures — was
