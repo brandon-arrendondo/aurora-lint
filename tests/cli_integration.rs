@@ -1211,3 +1211,107 @@ fn crossfile_sibling_header_suppresses_public_api_without_d_flag() {
         flagged_names
     );
 }
+
+// ─── Cross-file caller validation (ARR30-C) ─────────────────────────────────
+
+fn manifest_arr30() -> PathBuf {
+    fixtures().join("manifest_arr30.toml")
+}
+
+/// The message the unvalidated-parameter-index family reports under.
+fn unvalidated_index_findings(out: &std::path::Path) -> Vec<String> {
+    let content = std::fs::read_to_string(out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    violations
+        .iter()
+        .filter(|v| v["rule_id"] == "ARR30-C")
+        .filter_map(|v| v["message"].as_str())
+        .filter(|m| m.contains("unvalidated function parameter index"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn arr30_unvalidated_index_flagged_without_d_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, _) = run_aurora_lint(&[
+        fixtures()
+            .join("crossfile_arr30_validated/invoke.c")
+            .to_str()
+            .unwrap(),
+        "-m",
+        manifest_arr30().to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let findings = unvalidated_index_findings(&out);
+    assert!(
+        findings.iter().any(|m| m.contains("index")),
+        "Without -d there is no call site to summarise, so invoke_inject's \
+         index parameter must still be flagged (got: {:?})",
+        findings
+    );
+}
+
+#[test]
+fn arr30_unvalidated_index_suppressed_by_crossfile_caller() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, _) = run_aurora_lint(&[
+        fixtures()
+            .join("crossfile_arr30_validated/invoke.c")
+            .to_str()
+            .unwrap(),
+        "-m",
+        manifest_arr30().to_str().unwrap(),
+        "-d",
+        fixtures()
+            .join("crossfile_arr30_validated")
+            .to_str()
+            .unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let findings = unvalidated_index_findings(&out);
+    assert!(
+        findings.is_empty(),
+        "decode_inject range-checks index before the call; with -d the \
+         project-wide summary should reach across the file boundary (got: {:?})",
+        findings
+    );
+}
+
+#[test]
+fn arr30_unvalidated_index_survives_one_unguarded_caller() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, _) = run_aurora_lint(&[
+        fixtures()
+            .join("crossfile_arr30_unvalidated/invoke.c")
+            .to_str()
+            .unwrap(),
+        "-m",
+        manifest_arr30().to_str().unwrap(),
+        "-d",
+        fixtures()
+            .join("crossfile_arr30_unvalidated")
+            .to_str()
+            .unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let findings = unvalidated_index_findings(&out);
+    assert!(
+        findings.iter().any(|m| m.contains("index")),
+        "raw_inject passes index unchecked, which must disqualify the \
+         position for every caller (got: {:?})",
+        findings
+    );
+}

@@ -11,7 +11,6 @@
  * that requires walking the field's declared type through the full,
  * cross-file-shaped typedef chain rather than a one-level lookup.
  */
-// sqc-test: prescan
 
 #include <string.h>
 

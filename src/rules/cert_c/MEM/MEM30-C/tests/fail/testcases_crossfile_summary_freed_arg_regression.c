@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: MEM30-C
  * Source: hostap ground-truth audit (task 159 wave 30) / task 396

@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: EXP34-C
  * Source: testcases (Phase 4 — variant 66 array element null propagation)

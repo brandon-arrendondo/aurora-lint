@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: ENV03-C
  * Source: testcases (Juliet v68 bad pattern)

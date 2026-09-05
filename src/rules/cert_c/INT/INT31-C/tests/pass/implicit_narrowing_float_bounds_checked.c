@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: INT31-C
  * Source: custom

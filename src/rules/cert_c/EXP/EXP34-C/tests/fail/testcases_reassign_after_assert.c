@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: EXP34-C - Do not dereference null pointers
  * Status: FAIL - Should trigger EXP34-C violation

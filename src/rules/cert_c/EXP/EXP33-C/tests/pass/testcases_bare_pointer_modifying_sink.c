@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: EXP33-C
  * Source: testcases

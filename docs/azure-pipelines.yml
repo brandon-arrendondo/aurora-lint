@@ -29,7 +29,7 @@ stages:
   - stage: Build
     displayName: Build aurora-lint
     jobs:
-      - job: BuildSqC
+      - job: BuildAuroraLint
         displayName: Build aurora-lint binary
         steps:
           - task: Cache@2

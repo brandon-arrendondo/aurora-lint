@@ -441,6 +441,9 @@ condition rather than a preceding statement.
 | `dominating_conditions` | `(site: &Node) -> Vec<Node>` | Every condition already evaluated at `site`: those *enclosing* it (`if`/`while`/`for`/`switch` body, `?:` branch, left operand of an `&&`/`||` whose right operand holds the site) then conditions of `if` statements *preceding* it in an ancestor block. Returned as nodes so a caller can apply its own predicate (a null test, a status code) instead of the comparison one. |
 | `condition_compares_var` | `(condition: &Node, var: &str, source: &str, kind: ComparisonKind) -> bool` | Whether a condition tests `var`: either operand order, the variable nested at any depth in an operand (`x > SIZE_MAX - n`, `p->len < n`), `!var` read as `var == 0`. |
 | `mentions_var` | `(node: &Node, var: &str, source: &str) -> bool` | `var` appears as an `identifier` under `node`. Matched on the AST node, so `c` is not found in `abc` and a `p->n` field access is not a use of `n`. |
+| `call_arg_guards` | `(call_node: &Node, source: &str) -> Vec<bool>` | Per-argument "was this bounds-checked before the call?" flags for one call site, in argument order. Only a bare variable (parens and casts peeled) can be validated: `f((word_t)i)` asks about `i`, `f(get_index(cap))` and `f(i + 1)` are `false`. Aggregating these over every call site of a function is the "which parameters do all callers already check?" summary the validate-then-act split needs -- ARR30-C's per-file `build_caller_validated_params` and the prescan's project-wide `callsite_param_validated` are the same computation at two scopes. |
+| `collect_call_arg_guards` | `(node: &Node, source: &str, out: &mut HashMap<String, Vec<Vec<bool>>>)` | `call_arg_guards` for every call through a plain identifier under `node`, keyed by callee. Walks the whole subtree rather than only `function_definition` bodies, so a per-file caller and a project-wide one summarise the same set of call sites and cannot drift. A call in a static initializer has no dominating condition and is recorded as unguarded, erring toward keeping the finding. |
+| `strip_arg_wrappers` | `(node: &Node) -> Node` | Peel parentheses and casts off one call argument. |
 | `ComparisonKind` | `Any` \| `OrderingOrExtremeEquality` | Which comparisons count. Ordering operators always do; the split is about equality, which is not one thing. For a **bounds** question `len == 5` pins `len` as well as `len < 6` does (`Any`). For an **overflow** question it usually does not — `idx == BTREE_DATA_VERSION` leaves `36 + idx*4` exactly as unbounded as before, while `n == INT_MIN` before `-n` excludes precisely the value that overflows (`OrderingOrExtremeEquality`). |
 
 Two deliberate exclusions, both load-bearing:
@@ -522,6 +525,7 @@ are private implementation detail behind the small public surface below.
 | `propagate_transitive_param_taint` | `(summaries: &mut ...)` | Same transitive propagation for tainted-parameter status. |
 | `propagate_transitive_closes` | `(summaries: &mut ...)` | Same transitive propagation for "closes param N" (fclose/close/CloseHandle). |
 | `propagate_transitive_frees_param_fields` | `(summaries: &mut ...)` | Same transitive propagation, but for field-level frees (`frees_param_fields`, e.g. `free(x->will)`). |
+| `propagate_transitive_frees_param_pointees` | `(summaries: &mut ...)` | Same transitive propagation, but for pointee-level frees (`frees_param_pointees`, e.g. `free(*p)` reached through a forwarding wrapper). |
 | `propagate_return_taint` | `(summaries: &mut ...)` | Propagates "return value is tainted" through call chains. |
 
 `FunctionSummary`'s fields (all `pub`) are the actual payload most rules
@@ -529,7 +533,10 @@ read: `frees_params`/`unconditional_frees_params` (MAY-free vs. MUST-free,
 task 401), `can_return_null`, `returns_allocation`, `checks_null_params`,
 `modifies_params`, `dereferences_params`, `never_returns`,
 `callsite_param_null_states`, `return_range`, `param_passthroughs`,
-`frees_param_fields`, `has_env03_taint_source`, `returns_tainted`,
+`frees_param_fields`, `frees_param_pointees` (the `void **` "safe free"
+wrapper — `free(*param)`, called as `safe_free(&p)`, so the caller's own
+variable dies and an argument match by identifier never sees it),
+`has_env03_taint_source`, `returns_tainted`,
 `closes_params`, `callsite_param_buffer_size`, `produces_param_buffer_size`,
 and several more callsite-specific maps.
 
