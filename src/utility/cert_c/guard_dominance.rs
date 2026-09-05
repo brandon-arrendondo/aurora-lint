@@ -80,6 +80,103 @@ pub fn has_dominating_comparison(
         .any(|cond| condition_compares_var(cond, var, source, kind))
 }
 
+/// Per-argument "was this bounds-checked before the call?" flags for one call
+/// site, in argument order.
+///
+/// An argument that is not a bare variable once parentheses and casts are
+/// peeled off never counts as validated: `f(i)` and `f((word_t)i)` ask about
+/// `i`, but `f(get_index(cap))` and `f(i + 1)` are expressions this module has
+/// no dominating-comparison question to ask about.
+///
+/// Callers aggregating these across every call site of a function get the
+/// "which parameters do all callers already check?" summary that the
+/// validate-then-act split (a `decode`-style entry point range-checking every
+/// argument before an `invoke`-style callee written to trust it) needs in
+/// order not to read the callee's parameter as unvalidated.
+pub fn call_arg_guards(call_node: &Node, source: &str) -> Vec<bool> {
+    let Some(arg_list) = call_node.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+    let mut guards = Vec::new();
+    for i in 0..arg_list.child_count() {
+        let Some(arg) = arg_list.child(i) else {
+            continue;
+        };
+        if !arg.is_named() || arg.kind() == "comment" {
+            continue;
+        }
+        let inner = strip_arg_wrappers(&arg);
+        guards.push(
+            inner.kind() == "identifier"
+                && has_dominating_comparison(
+                    &get_node_text(&inner, source),
+                    call_node,
+                    source,
+                    ComparisonKind::Any,
+                ),
+        );
+    }
+    guards
+}
+
+/// Record [`call_arg_guards`] for every call through a plain identifier under
+/// `node`, keyed by callee name.
+///
+/// Walks the whole subtree rather than descending only into
+/// `function_definition` bodies, so that a per-file caller and a project-wide
+/// one summarise exactly the same set of call sites — the two scopes of this
+/// question are otherwise free to drift apart, and a suppression that appears
+/// or vanishes depending on which one answered would be untraceable. A call in
+/// a static initializer has no dominating condition and so is recorded as
+/// unguarded, which errs toward keeping the finding.
+pub fn collect_call_arg_guards(
+    node: &Node,
+    source: &str,
+    out: &mut std::collections::HashMap<String, Vec<Vec<bool>>>,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(callee) = node.child_by_field_name("function") {
+            if callee.kind() == "identifier" {
+                out.entry(get_node_text(&callee, source).to_string())
+                    .or_default()
+                    .push(call_arg_guards(node, source));
+            }
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_call_arg_guards(&child, source, out);
+        }
+    }
+}
+
+/// Peel parentheses and casts off a call argument, so `f((word_t)index)` reads
+/// as passing `index`.
+pub fn strip_arg_wrappers<'a>(node: &Node<'a>) -> Node<'a> {
+    let mut current = strip_parens(node);
+    while current.kind() == "cast_expression" {
+        let Some(value) = current.child_by_field_name("value") else {
+            break;
+        };
+        current = strip_parens(&value);
+    }
+    current
+}
+
+fn strip_parens<'a>(node: &Node<'a>) -> Node<'a> {
+    let mut n = *node;
+    while n.kind() == "parenthesized_expression" {
+        let Some(inner) = (0..n.child_count())
+            .filter_map(|i| n.child(i))
+            .find(|c| !matches!(c.kind(), "(" | ")"))
+        else {
+            break;
+        };
+        n = inner;
+    }
+    n
+}
+
 /// Every condition expression already evaluated when `site` executes.
 ///
 /// Two relations, in this order: conditions *enclosing* `site` (innermost

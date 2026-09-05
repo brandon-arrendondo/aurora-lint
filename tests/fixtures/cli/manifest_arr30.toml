@@ -1,0 +1,8 @@
+[metadata]
+name = "CLI Integration Test - ARR30-C only"
+version = "1.0.0"
+description = "Minimal manifest for ARR30-C cross-file tests"
+cert_version = "2016"
+
+[rules.cert_c.ARR30-C]
+enabled = true
