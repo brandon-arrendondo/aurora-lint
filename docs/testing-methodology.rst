@@ -179,19 +179,38 @@ the gate, not evidence about the rules.
 Two limits of the harness are worth stating, because the green result does
 not cover them.
 
-**The generated tests do not run the analyzer's real context.** Each test
-calls ``rule.check()`` directly and builds context itself, via
-``prescan_single_tree`` — a helper with no other caller in ``src/``, so the
-harness reimplements what ``src/analyze/mod.rs`` does for a real scan, and
-the two have drifted. Only 39 of the 1,594 ``pass/`` fixtures opt into
-context at all (a ``// sqc-test: prescan`` marker); the rest are checked
-with none. Scanning the corpus with the shipped binary instead finds **17
-violations on 11 must-not-detect fixtures across 9 rules** (ARR38-C,
-DCL31-C, DCL41-C, ENV03-C, EXP33-C, EXP34-C, INT10-C, INT32-C, INT33-C)
-whose unit tests pass. Each reproduces on the single file with only the
-owning rule enabled, so it is neither cross-rule interference nor an
-artifact of scanning a fixture directory. All 11 are among the 39 that ask
-for context — the divergence is in the context, not the rules.
+**Most fixtures are not tested under the context the analyzer really
+builds.** Each test calls ``rule.check()`` directly. A fixture carrying a
+``// sqc-test: prescan`` marker is given the scan's own context —
+``prescan::prescan_single_file`` (the file-list prescan behind ``-d``,
+applied to that fixture alone) and then ``analyze::build_file_analysis`` for
+CFGs and value ranges, which is the call ``analyze_one_file`` makes. Only 55
+of roughly 4,000 fixtures carry the marker. The rest are checked with no
+project context, no CFGs and no value ranges at all — strictly weaker than
+any invocation of the shipped tool.
+
+How much that hides is measured, not estimated. Removing the gate so every
+fixture gets the real context takes the suite from 4,035 passing to 62
+failing, and each of the 62 was checked against the shipped binary, which
+agrees with the new result every time: 61 ``fail/`` fixtures are detected
+only under the weaker analysis and not by a real scan (INT30-C 21, INT32-C
+19, INT31-C 16, and one each from ARR30-C ×2, EXP33-C, INT33-C, MEM30-C),
+and one ``pass/`` fixture (MEM31-C's ``safe_wrapper_functions``) draws five
+findings once context exists. The INT3x cluster has a single cause: the
+provenance gate those rules share returns "risky" whenever
+``function_summaries`` is empty, so a fixture with no context is flagged
+without the provenance analysis ever running. Closing the gap is tracked as
+its own work, since it changes what three rules report and so needs
+benchmarking, not just a green suite.
+
+A separate and earlier claim on this page — that scanning the corpus with
+the shipped binary finds 17 violations on 11 must-not-detect fixtures — was
+an artifact of invoking ``sqc`` with no ``-d``. A scan with no ``-d`` builds
+no context for its own target: a single-file target sees sibling ``.h``
+declarations only, a directory target sees nothing. Pass ``-d``, even a
+directory holding just that one fixture, and all 17 go to zero. Every
+benchmark invocation passes ``-d``, so no reported number was affected; the
+exposure is a first-touch ``sqc foo.c`` run, tracked separately.
 
 **Cross-rule interference is untested.** A fixture is only ever checked
 against its owning rule, so a ``pass/`` fixture for one rule is never

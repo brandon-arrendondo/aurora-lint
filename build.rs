@@ -648,8 +648,7 @@ fn write_main_integration_file(
     writeln!(main_file, "mod generated_tests {{")?;
     writeln!(main_file, "    use crate::parser::CParser;")?;
     writeln!(main_file, "    use crate::rules::RuleRegistry;")?;
-    writeln!(main_file, "    use std::path::Path;")?;
-    writeln!(main_file, "    use std::collections::HashMap;\n")?;
+    writeln!(main_file, "    use std::path::Path;\n")?;
 
     // Sort for consistent output
     rule_modules.sort();
@@ -703,7 +702,7 @@ fn generate_test_function(
         None => String::new(),
     };
 
-    // Check if the test file requests intra-file prescan context
+    // Check whether the test file opts into project context
     let needs_prescan = check_test_needs_prescan(test_path);
 
     // Check if rule is implemented by reading the TOML file
@@ -754,34 +753,33 @@ fn generate_test_function(
     writeln!(f, "    ")?;
 
     if needs_prescan {
-        // Build intra-file prescan context before calling rule.check()
+        // A fixture carrying `// sqc-test: prescan` is analysed with the context
+        // the shipped scan builds for it: a prescan of the file itself (what `-d`
+        // gives a real run -- see `prescan_single_file`), then CFGs and VRA
+        // through the same `build_file_analysis` the scan calls. Both come from
+        // the scan's own code rather than a test-only reimplementation of it
+        // (task 951, this repo).
+        //
+        // A fixture WITHOUT the marker still gets no context, no CFGs and no value
+        // ranges -- an analysis strictly weaker than the one that ships. Removing
+        // that gate is the rest of 951 and is a separate change: see the follow-up
+        // task, which carries the measured fallout.
         writeln!(
             f,
-            "    let context = crate::analyze::prescan::prescan_single_tree(&tree.root_node(), &source);"
+            "    let context = crate::analyze::prescan::prescan_single_file(&test_path, rule.needs_vra())"
+        )?;
+        writeln!(
+            f,
+            "        .unwrap_or_else(|e| panic!(\"Failed to prescan {{:?}}: {{}}\", test_path, e));"
         )?;
         writeln!(f, "    rule.set_project_context(&context);")?;
-        writeln!(f, "    let mut function_cfgs = HashMap::new();")?;
-        writeln!(
-            f,
-            "    crate::analyze::collect_function_cfgs(&tree.root_node(), &source, &mut function_cfgs);"
-        )?;
-        writeln!(f, "    rule.set_function_cfgs(&function_cfgs);")?;
-        // A rule whose suppression logic reads value ranges (INT10-C's
-        // guard-bounded-dividend check, INT30/31/32-C, ARR30-C) needs the
-        // same VRA state the real scan builds, or its PASS fixtures fail
-        // for want of ranges rather than for a real regression (task 674).
-        writeln!(
-            f,
-            "    let vra_results = crate::analyze::compute_vra_if_needed("
-        )?;
-        writeln!(f, "        rule.needs_vra(),")?;
-        writeln!(f, "        &function_cfgs,")?;
+        writeln!(f, "    let analysis = crate::analyze::build_file_analysis(")?;
         writeln!(f, "        &tree.root_node(),")?;
         writeln!(f, "        &source,")?;
-        writeln!(f, "        &context.function_summaries,")?;
-        writeln!(f, "        &context.macro_constants,")?;
+        writeln!(f, "        &context,")?;
+        writeln!(f, "        rule.needs_vra(),")?;
         writeln!(f, "    );")?;
-        writeln!(f, "    rule.set_vra_results(&vra_results);")?;
+        writeln!(f, "    analysis.apply_to(rule);")?;
         writeln!(f, "    ")?;
     }
 
@@ -902,10 +900,9 @@ fn check_if_rule_enabled(toml_path: &str) -> Result<bool> {
 
 /// Check if a `.c` test file contains the `// sqc-test: prescan` marker.
 ///
-/// When present, the generated test will build an intra-file prescan context
-/// (function summaries + call-site null states + CFGs) before calling
-/// `rule.check()`. This enables testing inter-procedural analysis patterns
-/// within a single translation unit.
+/// When present, the generated test builds the project context, CFGs and value
+/// ranges a real scan builds for that file before calling `rule.check()`, so
+/// inter-procedural patterns can be exercised from a single translation unit.
 fn check_test_needs_prescan(test_path: &std::path::Path) -> bool {
     fs::read_to_string(test_path)
         .map(|content| content.contains("// sqc-test: prescan"))

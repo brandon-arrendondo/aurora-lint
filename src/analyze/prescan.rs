@@ -249,8 +249,35 @@ pub fn prescan_directories(
         }
     }
 
+    prescan_file_list(all_files, dirs.len(), progress, needs_vra)
+}
+
+/// Build a [`ProjectContext`] for one file, exactly as a `-d` prescan of a
+/// directory holding only that file would.
+///
+/// Used by the generated rule fixture tests so that a green test means the
+/// shipped analysis is clean on that input, rather than a test-only
+/// reimplementation of it being clean (task 951, this repo).
+#[cfg(test)]
+pub fn prescan_single_file(path: &Path, needs_vra: bool) -> Result<ProjectContext> {
+    let is_header = path.extension().and_then(|ext| ext.to_str()) == Some("h");
+    prescan_file_list(vec![(path.to_path_buf(), is_header)], 1, None, needs_vra)
+}
+
+/// Parse `all_files` in parallel and fold the per-file results into one
+/// project-wide context. `unit_count` is only what the progress reporter is
+/// told it is starting on.
+///
+/// Shared by [`prescan_directories`] and [`prescan_single_file`] so that a
+/// single-file context can never drift from a directory one.
+fn prescan_file_list(
+    all_files: Vec<(PathBuf, bool)>,
+    unit_count: usize,
+    progress: Option<&dyn ProgressReporter>,
+    needs_vra: bool,
+) -> Result<ProjectContext> {
     if let Some(reporter) = progress {
-        reporter.report_prescan_start(dirs.len());
+        reporter.report_prescan_start(unit_count);
     }
 
     // Phase 2: parse and collect per-file data in parallel
@@ -671,153 +698,6 @@ pub fn prescan_sibling_headers(parent_dir: &str) -> Result<ProjectContext> {
     }
 
     Ok(context)
-}
-
-/// Build a [`ProjectContext`] from a single already-parsed tree.
-///
-/// This is the intra-file equivalent of [`prescan_directories`]: it computes
-/// function summaries and call-site null states so that inter-procedural rules
-/// (e.g. EXP34-C) can resolve parameter state within one translation unit.
-///
-/// Used by the generated integration tests when a `.c` file carries the
-/// `// sqc-test: prescan` marker.
-#[cfg(test)]
-pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
-    let macros = const_eval::collect_macro_constants(root, source);
-    let aliases = const_eval::collect_macro_aliases(root, source);
-    let taint_aliases: Vec<String> = aliases
-        .iter()
-        .filter(|(_, target)| {
-            function_summary::ENV03_TAINT_SOURCE_FUNCTIONS.contains(&target.as_str())
-        })
-        .map(|(alias, _)| alias.clone())
-        .collect();
-    let string_macros = const_eval::collect_string_literal_macros(root, source);
-    let function_macros = crate::analyze::macro_expand::collect_function_macros(root, source);
-    let mut function_summaries = function_summary::compute_summaries(
-        root,
-        source,
-        &macros,
-        false,
-        &taint_aliases,
-        &string_macros,
-        &function_macros,
-    );
-
-    let mut callsite_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
-    let mut callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>> =
-        HashMap::new();
-    let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
-    let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
-    let mut callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
-    let mut callsite_field_buf_args: HashMap<String, Vec<Vec<HashMap<String, usize>>>> =
-        HashMap::new();
-    let mut callsite_taint_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
-    collect_callsite_args_from_tree(
-        root,
-        source,
-        &mut callsite_args,
-        &mut callsite_field_args,
-        &mut callsite_pointee_args,
-    );
-    collect_callsite_int_args_from_tree(root, source, &mut callsite_int_args);
-    collect_callsite_buf_args_from_tree(
-        root,
-        source,
-        &mut callsite_buf_args,
-        &mut callsite_field_buf_args,
-    );
-    collect_callsite_taint_args_from_tree(root, source, &aliases, &mut callsite_taint_args);
-
-    let empty_headers = HashSet::new();
-    aggregate_callsite_null_states(&callsite_args, &mut function_summaries, &empty_headers);
-    aggregate_callsite_field_null_states(&callsite_field_args, &mut function_summaries);
-    aggregate_callsite_pointee_null_states(&callsite_pointee_args, &mut function_summaries);
-    aggregate_callsite_int_args(&callsite_int_args, &mut function_summaries, &empty_headers);
-    aggregate_callsite_field_buffer_sizes(
-        &callsite_field_buf_args,
-        &mut function_summaries,
-        &empty_headers,
-    );
-    aggregate_callsite_buf_args(&callsite_buf_args, &mut function_summaries, &empty_headers);
-    aggregate_callsite_taint_args(
-        &callsite_taint_args,
-        &mut function_summaries,
-        &empty_headers,
-    );
-    function_summary::propagate_transitive_param_taint(&mut function_summaries, &empty_headers);
-
-    let known_functions: HashSet<String> = function_summaries.keys().cloned().collect();
-
-    let mut struct_field_types = HashMap::new();
-    collect_struct_definitions(root, source, &mut struct_field_types);
-    let mut typedef_types = HashMap::new();
-    collect_typedef_aliases(root, source, &mut typedef_types);
-    let mut packed_structs = HashSet::new();
-    let mut packed_struct_candidates = Vec::new();
-    collect_packed_structs(
-        root,
-        source,
-        &mut packed_structs,
-        &mut packed_struct_candidates,
-    );
-    let mut packed_macro_names = HashSet::new();
-    crate::utility::cert_c::ast_utils::collect_packed_macro_names(source, &mut packed_macro_names);
-    for (struct_name, macro_name) in packed_struct_candidates {
-        if packed_macro_names.contains(&macro_name) {
-            packed_structs.insert(struct_name);
-        }
-    }
-
-    let mut file_statics: HashSet<String> = HashSet::new();
-    collect_static_pointer_globals(root, source, &mut file_statics);
-    let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
-    collect_global_writers(root, source, &file_statics, &mut global_writers);
-
-    let mut value_only_global_candidates: HashSet<String> = HashSet::new();
-    let mut pointer_named_globals: HashSet<String> = HashSet::new();
-    collect_value_only_global_candidates(
-        root,
-        source,
-        &mut value_only_global_candidates,
-        &mut pointer_named_globals,
-    );
-    let value_only_globals: HashSet<String> = value_only_global_candidates
-        .difference(&pointer_named_globals)
-        .cloned()
-        .collect();
-
-    // Single-file counterpart of the project-wide dispatch-table-callback
-    // computation in `prescan_project` (task 594/628): lets a rule test
-    // (`// sqc-test: prescan`) exercise the same exemption without needing
-    // the full multi-file prescan.
-    let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
-    collect_call_graph(root, source, &mut call_graph);
-    let mut initializer_function_refs: HashSet<String> = HashSet::new();
-    collect_initializer_function_refs(root, source, &mut initializer_function_refs);
-    let directly_called: HashSet<&str> = call_graph
-        .values()
-        .flat_map(|callees| callees.iter().map(|s| s.as_str()))
-        .collect();
-    let dispatch_table_callbacks: HashSet<String> = initializer_function_refs
-        .into_iter()
-        .filter(|name| known_functions.contains(name) && !directly_called.contains(name.as_str()))
-        .collect();
-
-    ProjectContext {
-        known_functions,
-        function_summaries,
-        macro_constants: macros,
-        function_macros,
-        struct_field_types,
-        typedef_types,
-        packed_structs,
-        global_writers,
-        call_graph,
-        dispatch_table_callbacks,
-        value_only_globals,
-        ..ProjectContext::default()
-    }
 }
 
 /// Collect function declarations (prototypes) from a header file.
