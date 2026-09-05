@@ -247,5 +247,17 @@ messages. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the people involved.
 
 ## License
 
-Apache-2.0. [LICENSE](LICENSE) is the unmodified Apache-2.0 text; copyright and
-attribution live in [NOTICE](NOTICE), per Apache-2.0 section 4(d).
+`Apache-2.0 AND MIT AND CC-BY-4.0`.
+
+sqc's own code is Apache-2.0 — [LICENSE](LICENSE) is the unmodified Apache-2.0
+text, and copyright and attribution live in [NOTICE](NOTICE), per Apache-2.0
+section 4(d). SqC also carries material from the SEI CERT C Coding Standard:
+rule titles and descriptions under CC BY 4.0, and CERT code examples under MIT.
+CMU's own notice is mirrored verbatim in
+[thirdparty/cert/LICENSE](thirdparty/cert/LICENSE);
+[docs/licensing.rst](docs/licensing.rst) has the full breakdown and what a
+distribution packager needs.
+
+Carnegie Mellon and CERT are registered trademarks of Carnegie Mellon
+University. SqC is not affiliated with, endorsed by, or certified by CMU or
+its Software Engineering Institute.

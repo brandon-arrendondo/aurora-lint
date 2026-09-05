@@ -18,3 +18,41 @@ Apache Software Foundation. Attribution belongs here, in NOTICE (Apache-2.0
 section 4(d)), and never inside LICENSE: an edited LICENSE stops matching
 the canonical text, which is what makes automated license detection and
 distribution review fail.
+
+-------------------------------------------------------------------------
+Third-party content: SEI CERT C Coding Standard
+-------------------------------------------------------------------------
+
+This product includes material from the SEI CERT C Coding Standard,
+(c) Carnegie Mellon University, used under its published terms:
+
+    https://github.com/cmu-sei/secure-coding-standards/blob/main/LICENSE
+
+That notice is reproduced verbatim in thirdparty/cert/LICENSE. Under it, the
+Coding Standards' prose is licensed CC BY 4.0
+(https://creativecommons.org/licenses/by/4.0/) and the code examples therein
+under the MIT license (https://opensource.org/license/mit).
+
+What is used, and how it was changed:
+
+  * Rule titles and rule descriptions (CC BY 4.0). Each rule manifest under
+    src/rules/cert_c/ carries the CERT title verbatim and a description
+    extracted from the corresponding wiki page. The descriptions have been
+    MODIFIED: extracted from page markup and reflowed, which loses some
+    inter-word spacing. Each manifest links the page it came from.
+  * Compliant and non-compliant code examples (MIT), embedded in some of
+    those descriptions and adapted into test fixtures under
+    src/rules/cert_c/*/*/tests/. Wiki-derived fixtures declare it in a
+    "Source: wiki" header comment.
+
+Carnegie Mellon and CERT are registered trademarks of Carnegie Mellon
+University. sqc is not affiliated with, endorsed by, or certified by
+Carnegie Mellon University or its Software Engineering Institute; the marks
+are used nominatively to name the standard the tool checks against.
+
+The SPDX expression for this work as a whole is:
+
+    Apache-2.0 AND MIT AND CC-BY-4.0
+
+See docs/licensing.rst for the full provenance breakdown and for what a
+distribution packager needs in debian/copyright or an RPM spec.

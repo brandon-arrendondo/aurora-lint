@@ -30,4 +30,5 @@ testing methodology, project internals, and contributing.
    project-structure
    future-rulesets
    contributing
+   licensing
    bibliography
