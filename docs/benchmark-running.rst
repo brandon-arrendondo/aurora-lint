@@ -205,6 +205,13 @@ outright and so decides which rules can reach the oracle at all. The config is t
 per-finding false positives among enabled rules are recorded in the
 ``ground_truth`` oracle instead, so analyzer misfires stay measured rather than
 hidden. See ``conf/realworld/README.md`` for the per-codebase audit workflow.
+
+Because a manifest is standalone and a scan iterates only its *enabled* rules, a
+rule with no entry at all never runs on that codebase and nothing reports the
+gap — an omission is indistinguishable from an oversight, which is a defect that
+has actually shipped. ``scripts/check_realworld_manifests.py`` (pre-commit hook
+``check-realworld-manifests``) asserts every manifest decides every rule, and
+that every ``enabled = false`` carries a comment naming its reason.
 ``libcrc`` is fully audited (every enabled-rule finding labelled); the four
 large codebases grow their labels incrementally.
 
