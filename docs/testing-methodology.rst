@@ -354,6 +354,32 @@ that repo's README) -- not in a hand-maintained file here
 why a per-rule 0.0% can be a corpus artifact rather than a rule defect, is
 in README.md's "Rule-suite coverage" section.
 
+Known Per-Rule Corpus Caveats
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**sqlite / DCL41-C.** Every historical DCL41-C label on sqlite sat in
+``ext/fts5/fts5_tcl.c`` (Tcl test-binding glue, not shipped library code) and
+all were adjudicated false positive: sqc's pre-fix switch-statement scan
+didn't expand the file's ``CASE(i,str)`` macro, so it never saw the real
+``case`` label hidden inside and misread every invocation as a declaration
+before the first visible case (see
+``data/precision_audit/DELTA_LT1_TASK548.md``). The parser bug itself was
+fixed in ``fea7a1a1`` — confirmed there to take that file's DCL41-C findings
+from 21 to 0 — so a current scan produces none of these findings at all,
+right or wrong; the only live question is what a *pre-fix* published DCL41-C
+figure for sqlite means. Since the file is test-only glue and every label on
+it was a parser artifact rather than a real declaration-placement violation,
+excluding it (as sqlite's corpus scope does — see ``benchmarking_db``'s
+``docs/corpus-scope.md``) discards zero true-positive evidence: sqlite's
+DCL41-C denominator is properly reported as N/A ("no in-scope labels"), not
+0%, for any run predating the fix.
+
+This is the general shape to watch for: a per-rule 0% (or N/A) on one corpus
+can be an artifact of one file, one macro, or one parser gap rather than a
+statement about the rule's real-world precision — check the file-level
+adjudication reasons in ``ground_truth`` before citing a rule's corpus figure
+as representative.
+
 Cross-Tool Comparison Methodology
 ----------------------------------
 
