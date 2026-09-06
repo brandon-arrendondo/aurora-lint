@@ -1,8 +1,8 @@
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::cfg::FunctionCfg;
+use crate::analyze::cfg::{self, FunctionCfg};
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
-use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
@@ -29,6 +29,12 @@ pub struct Int30C {
     /// Per-function memo of risky variable names, keyed by function node id;
     /// cleared per file.
     risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
+    /// Reverse call graph: callee name → the functions that call it. Backs the
+    /// parameter arm of the provenance gate (`int_provenance::ParamContext`).
+    callers: RefCell<HashMap<String, HashSet<String>>>,
+    /// Per-function memo of parameter names, keyed by function node id; cleared
+    /// per file alongside `risky_vars_cache`.
+    param_names_cache: RefCell<HashMap<usize, HashSet<String>>>,
     /// File-scope pointer names and pointer-returning functions, for the
     /// pointer-arithmetic gate. Rebuilt per file.
     pointer_facts: RefCell<PointerFacts>,
@@ -45,6 +51,8 @@ impl Int30C {
             function_summaries: RefCell::new(HashMap::new()),
             global_writers: RefCell::new(HashMap::new()),
             risky_vars_cache: RefCell::new(HashMap::new()),
+            callers: RefCell::new(HashMap::new()),
+            param_names_cache: RefCell::new(HashMap::new()),
             pointer_facts: RefCell::new(PointerFacts::default()),
         }
     }
@@ -96,6 +104,37 @@ impl Int30C {
         };
         let global_writers = self.global_writers.borrow();
 
+        // A parameter carries whatever its callers pass, so its provenance is a
+        // property of the call sites and needs the reverse call graph. Without
+        // cross-file context (`summaries` empty — a run without `-d`) there are
+        // no callers to reason from, so the parameter arm stays off and the
+        // gate keeps its older, narrower behaviour rather than firing on every
+        // parameter it cannot bound.
+        {
+            let mut cache = self.param_names_cache.borrow_mut();
+            cache.entry(func_id).or_insert_with(|| {
+                function_summary::collect_param_names(&func, source)
+                    .into_iter()
+                    .filter(|n| !n.is_empty())
+                    .collect()
+            });
+        }
+        let param_names = self.param_names_cache.borrow();
+        let callers = self.callers.borrow();
+        let param_ctx = match (
+            cfg::get_function_name(&func, source),
+            param_names.get(&func_id),
+        ) {
+            (Some(func_name), Some(params)) if !summaries.is_empty() => {
+                Some(int_provenance::ParamContext {
+                    func_name,
+                    params,
+                    callers: &callers,
+                })
+            }
+            _ => None,
+        };
+
         let mut operands = Vec::new();
         if let Some(l) = node.child_by_field_name("left") {
             operands.push(l);
@@ -108,7 +147,14 @@ impl Int30C {
         }
 
         operands.iter().any(|op| {
-            int_provenance::operand_is_risky(op, risky_vars, &summaries, &global_writers, source)
+            int_provenance::operand_is_risky(
+                op,
+                risky_vars,
+                &summaries,
+                &global_writers,
+                param_ctx.as_ref(),
+                source,
+            )
         })
     }
 
@@ -153,6 +199,17 @@ impl CertRule for Int30C {
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.global_writers.borrow_mut() = context.global_writers.clone();
+
+        let mut callers: HashMap<String, HashSet<String>> = HashMap::new();
+        for (caller, callees) in &context.call_graph {
+            for callee in callees {
+                callers
+                    .entry(callee.clone())
+                    .or_default()
+                    .insert(caller.clone());
+            }
+        }
+        *self.callers.borrow_mut() = callers;
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -178,6 +235,7 @@ impl CertRule for Int30C {
         // Risky-var memo is keyed on tree-sitter node ids, unique only within
         // one parse tree — reset per file.
         self.risky_vars_cache.borrow_mut().clear();
+        self.param_names_cache.borrow_mut().clear();
 
         *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);
 
