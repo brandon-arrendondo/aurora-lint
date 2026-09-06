@@ -97,8 +97,12 @@ impl Arr36C {
             .iter()
             .map(|func| {
                 let mut analyzer = PointerAnalyzer::from(&file_scope);
-                analyzer.collect_declarations(func, source);
+                // Member types FIRST: `collect_declarations` resolves a field
+                // path through its root only when the path holds no pointer
+                // member, so the answer has to be in the frame before the
+                // first declaration is read (task 993).
                 analyzer.collect_pointer_members(func, source, &field_types);
+                analyzer.collect_declarations(func, source);
                 analyzer
             })
             .collect();
@@ -647,6 +651,61 @@ impl PointerAnalyzer {
         }
     }
 
+    /// The object a field path denotes, when this frame knows the struct it
+    /// reaches through lives inside one.
+    ///
+    /// A path is kept whole by default -- `u.int_array` and `u.float_array`
+    /// are two arrays, and that is what ARR36-C-EX1 turns on. But a path
+    /// whose ROOT is a pointer with a tracked base names storage INSIDE that
+    /// base. `mgmt = (struct ieee80211_mgmt *) buf` followed by
+    /// `pos = mgmt->u.action.u.rrm.variable` puts pos in buf, so `end - pos`
+    /// walks one array twice rather than spanning two. The member really is
+    /// storage -- a flexible array member, which is why 935's
+    /// pointer-vs-array member test correctly leaves it naming storage -- but
+    /// it is storage inside the array the other operand walks (task 993).
+    ///
+    /// Only a POSITIVE fact collapses a path. A path rooted at a plain struct
+    /// variable is left alone, because the frame never learned that struct
+    /// sits anywhere: `o.in1.arr` and `o.in2.arr` stay two arrays.
+    ///
+    /// Three things stop the walk, each because the storage on the far side
+    /// is not in fact inside the root:
+    ///
+    /// - A POINTER member, at the end of the path or anywhere along it. Where
+    ///   the member points is unknowable here (task 935), and the root says
+    ///   nothing about it: the caller of `row_before_out(&m, &cur)` passes two
+    ///   distinct structs, which is not evidence that `pOut->z` and
+    ///   `pC->aRow` are two arrays. Resolving those to their roots would hand
+    ///   exactly that non-fact to the parameter model, which does treat two
+    ///   proven-distinct arguments as two objects.
+    /// - Anything that is not a member access: a subscript above all.
+    ///   `arr[0].data` and `arr[1].data` are two structs' members, and a root
+    ///   of `arr` is exactly the distinction that would be thrown away.
+    ///
+    /// Both member tests need resolved member types, so on a run without them
+    /// they are vacuous -- the direction ARR36-C takes everywhere else, where
+    /// missing information suppresses rather than reports.
+    fn field_path_root_base(&self, node: &Node, source: &str) -> Option<String> {
+        let text = |n: &Node| source[n.start_byte()..n.end_byte()].to_string();
+        if self.objects.pointer_members.contains(&text(node)) {
+            return None;
+        }
+        let mut current = *node;
+        loop {
+            let argument = match current.kind() {
+                "identifier" => return self.variable_arrays.get(&text(&current)).cloned(),
+                "field_expression" => current.child_by_field_name("argument")?,
+                _ => return None,
+            };
+            if argument.kind() == "field_expression"
+                && self.objects.pointer_members.contains(&text(&argument))
+            {
+                return None;
+            }
+            current = argument;
+        }
+    }
+
     fn extract_array_base(&self, node: &Node, source: &str) -> String {
         let result = match node.kind() {
             "identifier" => {
@@ -662,9 +721,11 @@ impl PointerAnalyzer {
                 }
             }
             "field_expression" => {
-                // Handle struct.member or union.member - capture full path
-                // This ensures u.int_array and u.float_array are distinct
-                source[node.start_byte()..node.end_byte()].to_string()
+                // A path rooted at a pointer whose base is known is storage
+                // inside that base (task 993). Otherwise the full path, so
+                // that u.int_array and u.float_array stay distinct.
+                self.field_path_root_base(node, source)
+                    .unwrap_or_else(|| source[node.start_byte()..node.end_byte()].to_string())
             }
             "cast_expression" => {
                 // Handle cast expressions like (int *)malloc(...) - unwrap to get the underlying value
@@ -788,11 +849,16 @@ impl PointerAnalyzer {
                 .cloned()
                 .unwrap_or_default(),
             // &struct.member: keep just the struct instance, so two members of
-            // one struct compare equal (ARR36-C-EX1).
-            "field_expression" => match argument.child_by_field_name("argument") {
-                Some(base) => self.resolve_base(text(&base)),
-                None => text(&argument),
-            },
+            // one struct compare equal (ARR36-C-EX1) -- unless the whole path
+            // resolves through its root to an object this frame tracks, which
+            // is one level more specific (task 993).
+            "field_expression" => {
+                self.field_path_root_base(&argument, source)
+                    .unwrap_or_else(|| match argument.child_by_field_name("argument") {
+                        Some(base) => self.resolve_base(text(&base)),
+                        None => text(&argument),
+                    })
+            }
             // &matrix[i][j] is based on "matrix", not "matrix[i]".
             "subscript_expression" => self.extract_deepest_base(&argument, source),
             _ => String::new(),
@@ -896,15 +962,19 @@ impl PointerAnalyzer {
                         "field_expression" => {
                             let field_path =
                                 source[argument.start_byte()..argument.end_byte()].to_string();
+                            // Root resolution first, so this reader and
+                            // `extract_base_from_address_or_deref` produce one
+                            // spelling for one object (task 770).
+                            let rooted = self.field_path_root_base(&argument, source);
                             if is_address_of {
-                                Some(
+                                Some(rooted.unwrap_or_else(|| {
                                     self.variable_arrays
                                         .get(&field_path)
                                         .cloned()
-                                        .unwrap_or(field_path),
-                                )
+                                        .unwrap_or(field_path)
+                                }))
                             } else {
-                                self.variable_arrays.get(&field_path).cloned()
+                                rooted.or_else(|| self.variable_arrays.get(&field_path).cloned())
                             }
                         }
                         _ => None,
