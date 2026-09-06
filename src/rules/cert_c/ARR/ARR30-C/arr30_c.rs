@@ -57,7 +57,7 @@ use tree_sitter::Node;
 use crate::utility::cert_c::ast_utils::{
     find_containing_for_loop, find_containing_function, find_containing_if_statement,
     find_enclosing_declaration_for_identifier, find_identifier_in_declarator,
-    get_identifier_from_declarator,
+    get_identifier_from_declarator, get_node_text,
 };
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance::{
@@ -301,6 +301,23 @@ impl CertRule for Arr30C {
                     buf.size = BufferSize::Unknown;
                 }
                 if let Some(buf) = self.global_scope_buffers.borrow_mut().get_mut(member) {
+                    buf.size = BufferSize::Unknown;
+                }
+            }
+
+            // Task 912: the same array declared with DIFFERENT sizes in two
+            // mutually exclusive preprocessor branches. Which one is compiled
+            // depends on a macro this analysis does not evaluate, so neither
+            // size is a fact about the built kernel -- and the name-keyed
+            // buffer map keeps whichever declaration it saw last, which is
+            // how accesses inside `#ifdef CHECKPOINT_PROFILER` came to be
+            // reported against the `#else` branch's much larger array. Treat
+            // the size as unknown rather than claim the wrong one.
+            for name in self.find_preproc_conflicted_arrays(node, source) {
+                if let Some(buf) = buffer_info.get_mut(&name) {
+                    buf.size = BufferSize::Unknown;
+                }
+                if let Some(buf) = self.global_scope_buffers.borrow_mut().get_mut(&name) {
                     buf.size = BufferSize::Unknown;
                 }
             }
@@ -5209,24 +5226,89 @@ impl Arr30C {
         violations
     }
 
-    /// Find while loops with increment in condition - unsafe pattern with flexible arrays
-    /// Pattern: while (ptr++ != ...) or while (ptr-- != ...)
+    /// Find a while loop whose condition walks the flexible array member
+    /// `member_name` with `++`/`--` -- the unsafe pattern when the member's
+    /// real extent lives at the allocation site rather than in its declared
+    /// size. Pattern: `while (first++ != last)` over `s->buf`.
+    ///
+    /// The loop must actually walk the member, either by name or through a
+    /// local initialized from it (`const char *first = s->buf;`). This
+    /// function used to ignore the member entirely (its parameter was named
+    /// `_member_name`) and return the line of ANY while loop with `++` or
+    /// `--` in its condition, anywhere in the function. Since the caller asks
+    /// once per flexible-array struct in the file, one such loop produced one
+    /// finding per struct -- all at that same line, each naming a struct and
+    /// member the line does not mention. In sqlite's fts5_index.c the loop
+    /// was `while( *p++ & 0x80 );`, an unrelated varint skip, credited to
+    /// five different structs at once (task 912).
     fn find_any_flexible_member_arithmetic(
         &self,
         node: &Node,
         source: &str,
-        _member_name: &str,
+        member_name: &str,
     ) -> Option<usize> {
-        // Look for while loops with increment/decrement in the condition
+        // Members are recorded as written in the declarator, so a pointer
+        // member arrives spelled `*apTombstone`; access sites spell the bare
+        // name.
+        let member = member_name.trim_start_matches('*').trim();
+        if member.is_empty() {
+            return None;
+        }
+        let walk_names = Self::member_walk_names(node, source, member);
+        self.find_member_walk_loop(node, source, &walk_names)
+    }
+
+    /// The names by which this function can walk `member`: the member itself,
+    /// plus every local whose initializer mentions it (`const char *first =
+    /// s->buf;` makes `first` a cursor into the member).
+    fn member_walk_names(node: &Node, source: &str, member: &str) -> HashSet<String> {
+        let mut names = HashSet::new();
+        names.insert(member.to_string());
+        for init in query::find_descendants_of_kind(*node, "init_declarator") {
+            let Some(value) = init.child_by_field_name("value") else {
+                continue;
+            };
+            if !Self::text_mentions_word(get_node_text(&value, source), member) {
+                continue;
+            }
+            let Some(declarator) = init.child_by_field_name("declarator") else {
+                continue;
+            };
+            let name = get_identifier_from_declarator(&declarator, source);
+            if !name.is_empty() {
+                names.insert(name);
+            }
+        }
+        names
+    }
+
+    /// True when `text` contains `word` as a whole identifier rather than as
+    /// a substring of a longer name.
+    fn text_mentions_word(text: &str, word: &str) -> bool {
+        text.split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|w| w == word)
+    }
+
+    /// Recursive search for a while loop whose condition increments or
+    /// decrements one of `walk_names`.
+    fn find_member_walk_loop(
+        &self,
+        node: &Node,
+        source: &str,
+        walk_names: &HashSet<String>,
+    ) -> Option<usize> {
         if node.kind() == "while_statement" {
-            // Get the condition part of the while loop
             if let Some(condition_node) = node.child_by_field_name("condition") {
                 let condition_text =
                     &source[condition_node.start_byte()..condition_node.end_byte()];
 
-                // Check if the condition contains increment or decrement operators
-                // This is the unsafe pattern when combined with flexible array members
-                if condition_text.contains("++") || condition_text.contains("--") {
+                // Both are required: the finding names the member, so a loop
+                // that never touches it is not evidence about it.
+                if (condition_text.contains("++") || condition_text.contains("--"))
+                    && walk_names
+                        .iter()
+                        .any(|name| Self::text_mentions_word(condition_text, name))
+                {
                     return Some(node.start_position().row + 1);
                 }
             }
@@ -5235,9 +5317,7 @@ impl Arr30C {
         // Recursively check children
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                if let Some(line) =
-                    self.find_any_flexible_member_arithmetic(&child, source, _member_name)
-                {
+                if let Some(line) = self.find_member_walk_loop(&child, source, walk_names) {
                     return Some(line);
                 }
             }
@@ -5615,6 +5695,82 @@ impl Arr30C {
         }
     }
 
+    /// Names declared as arrays with DIFFERENT sizes in two mutually
+    /// exclusive branches of one preprocessor conditional.
+    ///
+    /// `#ifdef CHECKPOINT_PROFILER` and its `#else` each declare
+    /// `profiler_entries`, at `MAX_UNIQUE_CHECKPOINTS` and
+    /// `MAX_UNIQUE_INSTRUCTIONS` elements. Exactly one is compiled, and
+    /// nothing in the AST says which, so a bound taken from either is a
+    /// coin flip -- reported as fact (task 912).
+    ///
+    /// Same-size redeclarations are NOT conflicts: both branches agree on the
+    /// bound, so it stays checkable.
+    fn find_preproc_conflicted_arrays(&self, root: &Node, source: &str) -> HashSet<String> {
+        let mut conflicted = HashSet::new();
+        for cond in query::find_descendants_of_kinds(*root, &["preproc_ifdef", "preproc_if"]) {
+            let Some(alternative) = cond.child_by_field_name("alternative") else {
+                continue;
+            };
+            // The `then` arm is everything under the conditional that is not
+            // its alternative subtree, so a chain of `#elif`/`#else` is
+            // compared against it as a whole -- every arm of the chain is
+            // mutually exclusive with the `then` arm either way.
+            let mut then_arm = HashMap::new();
+            for i in 0..cond.child_count() {
+                let Some(child) = cond.child(i) else { continue };
+                if child.id() == alternative.id() {
+                    continue;
+                }
+                Self::collect_array_sizes(&child, source, &mut then_arm);
+            }
+            let mut else_arm = HashMap::new();
+            Self::collect_array_sizes(&alternative, source, &mut else_arm);
+
+            for (name, size) in &then_arm {
+                if else_arm.get(name).is_some_and(|other| other != size) {
+                    conflicted.insert(name.clone());
+                }
+            }
+        }
+        conflicted
+    }
+
+    /// Record `{array name -> size expression as written}` for every
+    /// `array_declarator` under `node`.
+    fn collect_array_sizes(node: &Node, source: &str, out: &mut HashMap<String, String>) {
+        for decl in query::find_descendants_of_kind(*node, "array_declarator") {
+            let Some(name_node) = decl.child_by_field_name("declarator") else {
+                continue;
+            };
+            if name_node.kind() != "identifier" {
+                continue;
+            }
+            let name = get_node_text(&name_node, source).to_string();
+            let size = decl
+                .child_by_field_name("size")
+                .map(|n| get_node_text(&n, source).trim().to_string())
+                .unwrap_or_default();
+            out.insert(name, size);
+        }
+    }
+
+    /// True when this declaration has an ERROR child spanning an `=`, meaning
+    /// the parse lost the declarator/initializer boundary and any
+    /// declarator-shaped sibling after it is really initializer text.
+    ///
+    /// See the call sites for why the `=` is the discriminator rather than
+    /// `has_error()` alone (task 912).
+    fn declarator_split_by_parse_error(node: &Node, source: &str) -> bool {
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else { continue };
+            if child.kind() == "ERROR" && get_node_text(&child, source).contains('=') {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Extract buffer information from a declaration AST node (with typedef support)
     fn extract_buffer_from_declaration_with_typedefs(
         &self,
@@ -5622,6 +5778,25 @@ impl Arr30C {
         source: &str,
         typedefs: &HashMap<String, usize>,
     ) -> Option<BufferInfo> {
+        // tree-sitter's C grammar has no rule for the GNU register-asm form,
+        // so `register word_t r7 asm("x7") = smc_args.arg[7];` parses as an
+        // ERROR that swallows the declarator and its `=`, leaving the tail of
+        // the INITIALIZER -- the subscript read `arg[7]` -- behind as a stray
+        // `array_declarator`. Read as a declaration, that says `arg` has size
+        // 7, which made index 7 of an 8-element array look out of bounds
+        // (task 912).
+        //
+        // The `=` is what identifies this: an ERROR spanning it means the
+        // declarator/initializer boundary was mis-parsed, so a declarator-
+        // shaped node after it is really part of the initializer expression.
+        // A parse error that does NOT swallow an `=` leaves the declarator
+        // intact and is still trustworthy -- `_Thread_local int buf[8] = ...`
+        // errors on the unknown storage class alone, and its `buf[8]` is a
+        // real declaration.
+        if Self::declarator_split_by_parse_error(node, source) {
+            return None;
+        }
+
         // Look for declarator nodes that contain array or pointer declarations
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
@@ -5670,6 +5845,12 @@ impl Arr30C {
 
     /// Extract buffer information from a declaration AST node (without typedefs)
     fn extract_buffer_from_declaration(&self, node: &Node, source: &str) -> Option<BufferInfo> {
+        // See extract_buffer_from_declaration_with_typedefs: a declarator left
+        // behind by a mis-parsed initializer cannot size a buffer (task 912).
+        if Self::declarator_split_by_parse_error(node, source) {
+            return None;
+        }
+
         // Look for declarator nodes that contain array or pointer declarations
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
