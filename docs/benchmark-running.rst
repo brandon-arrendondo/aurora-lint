@@ -194,12 +194,13 @@ no cppcheck/clang-tidy baseline yet)
 Per-Codebase Rule Configs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Each codebase may carry its own aurora-lint rules manifest in ``conf/realworld/`` (the
+Each codebase carries its own aurora-lint rules manifest in ``conf/realworld/`` (the
 real-world analog of a project shipping its own ``aurora-lint-rules.toml``). The
 runner reuses it for **every** run of that codebase via the
 ``CODEBASES[<name>]["sqc"]["manifest"]`` registry entry, so rules that do not
-apply are ignored consistently. A codebase with no entry falls back to the
-shared base ``rules_templates/rules-benchmark.toml``. The config is the
+apply are ignored consistently. There is no shared fallback base: a codebase
+with no ``manifest`` entry is an error, because a manifest replaces the base
+outright and so decides which rules can reach the oracle at all. The config is the
 *categorical* filter (disable a whole rule only when it is inapplicable);
 per-finding false positives among enabled rules are recorded in the
 ``ground_truth`` oracle instead, so analyzer misfires stay measured rather than

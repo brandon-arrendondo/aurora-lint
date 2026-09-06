@@ -1,7 +1,7 @@
 [metadata]
 name = "seL4 CERT C Rules Configuration"
 version = "1.0.0"
-description = "Project rules manifest for seL4 (formally verified microkernel, src/ scope), onboarded task 381 as an 8th real-world oracle. Based on rules-benchmark.toml with one categorical disable: MSC12-C, which task 381's own adjudication (data/precision_audit/sel4/README.md) found is just as dominated by deliberate no-op idioms here as in every other oracle (busy-wait polling loops, commented no-op platform stubs/cases, macro-hidden lock/barrier statements) -- consistent with the other 7 codebases' MSC12-C disable (data/precision_audit/msc12_msc13_0.4.141/README.md). Everything else left at base defaults pending a full categorical-disable pass."
+description = "Project rules manifest for seL4 (formally verified microkernel, src/ scope), onboarded task 381 as an 8th real-world oracle. Based on rules_templates/rules-all.toml with one categorical disable: MSC12-C, which task 381's own adjudication (data/precision_audit/sel4/README.md) found is just as dominated by deliberate no-op idioms here as in every other oracle (busy-wait polling loops, commented no-op platform stubs/cases, macro-hidden lock/barrier statements) -- consistent with the other 7 codebases' MSC12-C disable (data/precision_audit/msc12_msc13_0.4.141/README.md). Everything else left at base defaults pending a full categorical-disable pass."
 cert_version = "2016"
 
 [rules.cert_c.API00-C]

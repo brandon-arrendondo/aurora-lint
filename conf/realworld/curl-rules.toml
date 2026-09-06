@@ -1,7 +1,7 @@
 [metadata]
 name = "curl CERT C Rules Configuration"
 version = "1.0.0"
-description = "Project rules manifest for curl/libcurl (pinned commit 3e198f7586) — cross-platform HTTP/transfer client library + CLI. Based on the shared benchmark base (rules-benchmark.toml). Cross-platform (incl. Windows) network client that parses untrusted server input; NOT a privileged daemon. WIN*, FIO*, MEM* (incl. sensitive-data), POSIX socket/thread, SIG* and CON* rules are all IN scope. Categorical disables below are the advisory/style recommendations this project does not adopt (same 14-rule baseline as conf/realworld/sqlite-rules.toml) plus POS05-C. Per-finding analyzer misfires among ENABLED rules (DCL13, MEM30, INT30/32, API00, EXP33/34, ...) are NOT suppressed here — they are recorded in the ground_truth oracle so they stay measured. See data/precision_audit/."
+description = "Project rules manifest for curl/libcurl (pinned commit 3e198f7586) — cross-platform HTTP/transfer client library + CLI. Based on the shared base rules_templates/rules-all.toml. Cross-platform (incl. Windows) network client that parses untrusted server input; NOT a privileged daemon. WIN*, FIO*, MEM* (incl. sensitive-data), POSIX socket/thread, SIG* and CON* rules are all IN scope. Categorical disables below are the advisory/style recommendations this project does not adopt (same 14-rule baseline as conf/realworld/sqlite-rules.toml) plus POS05-C. Per-finding analyzer misfires among ENABLED rules (DCL13, MEM30, INT30/32, API00, EXP33/34, ...) are NOT suppressed here — they are recorded in the ground_truth oracle so they stay measured. See data/precision_audit/."
 cert_version = "2016"
 
 [rules.cert_c.API00-C]

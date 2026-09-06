@@ -27,7 +27,7 @@ What `build.rs` actually does, in `main()` order:
 |---|---|
 | `winres` resource compile | `#[cfg(target_os = "windows")]` only; embeds `assets/icon.ico` (see note below) |
 | `generate_rules_all_toml()` | reads `src/rules/*/**/*.toml`, validates, writes `src/rules/<ruleset>/rules-all.toml` |
-| `sync_rules_templates()` | reads that file, writes `rules_templates/rules-all.toml` and `rules-benchmark.toml` |
+| `sync_rules_templates()` | reads that file, writes `rules_templates/rules-all.toml` |
 | `generate_integration_tests()` | walks `src/rules/**/tests/*.c` and `tests/`, writes generated Rust into `$OUT_DIR` |
 
 Its entire import surface is `anyhow`, `serde`, `std::collections`, `std::fs`,
@@ -65,12 +65,11 @@ it makes it visible. Fixing it means a Windows runner or an
 
 ### Caveat: the build writes into the source tree
 
-`generate_rules_all_toml()` and `sync_rules_templates()` write three files
+`generate_rules_all_toml()` and `sync_rules_templates()` write two files
 *outside* `$OUT_DIR`, which Cargo's build-script contract discourages:
 
 - `src/rules/cert_c/rules-all.toml`
 - `rules_templates/rules-all.toml`
-- `rules_templates/rules-benchmark.toml`
 
 This is deliberate — the generated manifests are committed, and
 `rules_templates/rules-all.toml` is `include_str!`'d into the binary as the
@@ -79,7 +78,7 @@ Debian or Fedora, both of which unpack into a writable build directory. Two
 consequences to keep in mind anyway:
 
 1. A build against a **read-only** source tree fails. If a packaging
-   environment ever imposes one, the fix is to make the three writes
+   environment ever imposes one, the fix is to make the two writes
    conditional on the generated content already matching.
 2. If a committed generated file ever drifts from its inputs, the write
    changes it during the verify build and `cargo package` fails with
