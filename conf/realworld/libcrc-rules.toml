@@ -1152,7 +1152,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC04-C]
-enabled = false  # no recursion in a table-driven CRC library -- categorically inapplicable, inherited from the d_lib_common embedded-C policy this config derives from (data/precision_audit/libcrc/README.md). Was expressed by OMITTING the entry, which a scan cannot distinguish from an oversight (enabled_rules() just never yields it); restated as an explicit disable so the decision is visible and survives.
+enabled = false  # no recursion in a table-driven CRC library -- categorically inapplicable, inherited from the d_lib_common embedded-C policy this config derives from (data/precision_audit/libcrc/README.md). Was expressed by OMITTING the entry, which a scan cannot distinguish from an oversight (enabled_rules() just never yields it); restated as an explicit disable so the decision is visible and survives. Measured 2026-09-06 at pinned commit 7719e2112a9a: 0 findings, so the exclusion costs no measurement. NOTE the rule is caller-agnostic -- it flags self-calls and call-graph CYCLES (find_cycle), never 'nothing calls this' -- so a library's uncalled public API cannot trigger it.
 
 [rules.cert_c.MSC05-C]
 enabled = true
@@ -1161,7 +1161,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC07-C]
-enabled = false  # categorically inapplicable, inherited with MSC04-C from the d_lib_common embedded-C policy this config derives from (data/precision_audit/libcrc/README.md); the per-rule rationale was never written down here. Same omitted-entry mechanism as MSC04-C above; restated as an explicit disable.
+enabled = false  # categorically inapplicable, inherited with MSC04-C from the d_lib_common embedded-C policy this config derives from (data/precision_audit/libcrc/README.md); the per-rule rationale was never written down here. Same omitted-entry mechanism as MSC04-C above; restated as an explicit disable. Measured 2026-09-06 at pinned commit 7719e2112a9a: 0 findings, so the exclusion costs no measurement. NOTE the rule is intra-block only -- statements after an unconditional return/break/continue/goto or a noreturn call in the SAME compound_statement -- with no call graph and no entry-point reachability, so a library's uncalled public API cannot trigger it either. If it ever grows a reachability channel, revisit.
 
 [rules.cert_c.MSC09-C]
 enabled = true
