@@ -2,7 +2,7 @@
 [metadata]
 name = "sqlite CERT C Rules Configuration"
 version = "1.0.0"
-description = "Project rules manifest for sqlite (pinned to commit b1a73ba34d), based on the shared benchmark base (rules-benchmark.toml). Precision SCOPE for the ground-truth oracle is the shipped engine + extensions (src/ + ext/), EXCLUDING vendored code (autosetup/jimsh0.c = Jim Tcl), build tooling (tool/, e.g. lemon.c), the test harness (test/, src/test*.c) and language bindings (ext/jni, ext/wasm). Categorical disables grow as adjudication finds whole rules that do not apply; per-finding false positives among enabled rules are recorded in the ground_truth oracle (data/benchmarks.db), not suppressed here. See data/precision_audit/sqlite/README.md."
+description = "Project rules manifest for sqlite (pinned to commit b1a73ba34d), based on the shared base rules_templates/rules-all.toml. Precision SCOPE for the ground-truth oracle is the shipped engine + extensions (src/ + ext/), EXCLUDING vendored code (autosetup/jimsh0.c = Jim Tcl), build tooling (tool/, e.g. lemon.c), the test harness (test/, src/test*.c) and language bindings (ext/jni, ext/wasm). Categorical disables grow as adjudication finds whole rules that do not apply; per-finding false positives among enabled rules are recorded in the ground_truth oracle (data/benchmarks.db), not suppressed here. See data/precision_audit/sqlite/README.md."
 cert_version = "2016"
 
 [rules.cert_c.API00-C]

@@ -39,7 +39,6 @@ from bench.config import opam_wrap as _opam_wrap
 from bench.db import BenchDB
 
 RESULTS_BASE = PROJECT_DIR / "results" / "realworld"
-MANIFEST = PROJECT_DIR / "rules_templates" / "rules-benchmark.toml"
 SQC_BIN = PROJECT_DIR / "target" / "release" / "aurora-lint"
 
 VALID_TOOLS = ("sqc", "cppcheck", "clang-tidy", "infer", "frama-c")
@@ -532,8 +531,23 @@ def _build_sqc_cmd(cfg: dict, results_dir: Path, run_id: str,
     extra = _expand(cfg["sqc"].get("extra_args", []), path)
     includes = _expand(cfg["sqc"].get("includes", []), path)
 
+    # No shared fallback base, on purpose. Every codebase names its own
+    # conf/realworld/<cb>-rules.toml, and a missing one is an error rather than
+    # a silent default: a manifest replaces the base outright (there is no
+    # `extends`) and the scan iterates RuleManifest::enabled_rules(), so
+    # whichever manifest is in force decides which rules can reach the oracle
+    # at all. Falling back would scan a new codebase under a policy nobody
+    # wrote for it and record the result as a measurement.
     rel_manifest = cfg["sqc"].get("manifest")
-    manifest = (PROJECT_DIR / rel_manifest) if rel_manifest else MANIFEST
+    if not rel_manifest:
+        raise ValueError(
+            "no 'manifest' in the CODEBASES sqc config -- add "
+            "conf/realworld/<codebase>-rules.toml and name it here "
+            "(see conf/realworld/README.md)"
+        )
+    manifest = PROJECT_DIR / rel_manifest
+    if not manifest.is_file():
+        raise FileNotFoundError(f"rules manifest not found: {manifest}")
 
     cmd = [
         str(SQC_BIN), scan_path,
