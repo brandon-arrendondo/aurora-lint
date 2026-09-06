@@ -368,12 +368,13 @@ no more knowable in the caller than in the callee.
 
 | Item | Signature | Description |
 |---|---|---|
-| `ObjectFrame` (struct) | `pointer_vars` / `array_objects` / `pointer_members` | What one function's frame knows about the names in scope: declared as a pointer, declared as storage, and which field paths are pointer-typed. |
+| `ObjectFrame` (struct) | `pointer_vars` / `array_objects` / `pointer_members` / `pointer_depth` | What one function's frame knows about the names in scope: declared as a pointer, declared as storage, which field paths are pointer-typed, and how many levels of indirection each declared name carries. |
 | `ObjectFrame::collect_file_scope` | `(&mut self, unit: &Node, source: &str)` | Records the translation unit's file-scope declarations (direct children only, descending `preproc_*`). |
 | `ObjectFrame::collect_function` | `(&mut self, func: &Node, source: &str)` | Records one function's declarations and parameters. |
 | `ObjectFrame::record_pointer_members` | `(&mut self, func, source, struct_field_types)` | Records the field paths in `func` whose terminal member is pointer-typed. An unresolved member type is left out, so it keeps naming storage (task 935). |
 | `ObjectFrame::argument_object_base` | `(&self, node: &Node, source: &str) -> Option<String>` | The storage object an argument expression names, or `None` when this frame cannot name one. |
-| `declared_pointers` | `(node: &Node, source: &str) -> Vec<DeclaredPointer>` | Every name a `declaration` node introduces with a pointer or array declarator, with `is_array` and the `init_declarator` carrying any initializer. |
+| `declared_pointers` | `(node: &Node, source: &str) -> Vec<DeclaredPointer>` | Every name a `declaration` node introduces with a pointer or array declarator, with `is_array`, `depth`, and the `init_declarator` carrying any initializer. |
+| `declarator_depth` | `(declarator: &Node) -> usize` | Levels of indirection a declarator spells: `char *s` 1, `u8 **pos` 2, `char buf[N]` 1, `char *argv[]` 2, `char (*rows)[16]` 2. Descends `parenthesized_declarator` and `function_declarator` without counting them. Use it to tell `*s` (a value) from `*pos` (still a pointer) — the fact a pointer-vs-not predicate cannot carry, and the reason `*s1 - *s2` over two `char *` read as pointer subtraction (task 934). |
 | `argument_nodes` | `(args: &Node) -> Vec<Node>` | A call's argument expressions in order, punctuation and comments skipped. |
 | `distinct_object_pairs` | `(frame, args: &[Node], source) -> Vec<(usize, usize)>` | The `(lower, higher)` argument positions at which ONE call site passes two named, different objects. Per-call-site by construction: two callers each naming one object prove nothing, because no single path holds both. |
 
