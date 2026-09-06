@@ -335,6 +335,31 @@ is shared.
 
 ## Pointer / lvalue / aliasing analysis
 
+### `src/utility/cert_c/pointer_typing.rs`
+**Problem solved:** "is this arithmetic on POINTERS?" — the question the
+integer-hazard rules must answer before reporting a wrap, an overflow or a
+narrowing. `ptr + int` is pointer arithmetic bounded by the pointee object
+and `ptr - ptr` is a `ptrdiff_t`; neither carries the hazard the
+same-shaped integer expression does, and out-of-bounds pointer formation
+belongs to ARR30-C. INT00-C, INT30-C, INT31-C and INT32-C each classified
+operand types from their own map and each independently lost the pointer,
+so `buf += readnb` read as a narrowing into `unsigned char` and
+`prot + prot_len - icv_len` as an unsigned subtraction (task 914).
+
+| Function | Signature | Description |
+|---|---|---|
+| `PointerFacts::collect` | `(root: &Node, source: &str) -> PointerFacts` | Per-file pointer names a function-local type map cannot hold: file-scope variables (arrays included — `buf + n` decays either way) and pointer-returning functions. A pointer-returning prototype has a `pointer_declarator` too, and is deliberately kept out of the variable set. |
+| `expr_is_pointer` | `(node, source, type_map, struct_field_types, facts) -> bool` | Positive-only determination that an expression's VALUE has pointer type. `ptr ± int` yes, `ptr - ptr` no (that is a `ptrdiff_t`), `&x` yes, `*p` no (the pointee's type is not tracked). A cast states the type in both directions. |
+| `is_pointer_arithmetic` | `(node, source, type_map, struct_field_types, facts) -> bool` | The gate the rules call: pointer-typed, or a pointer participates (`ptr - ptr`). Recurses through `+`/`-` chains and parentheses so `prot + prot_len - icv_len` is recognized whole — but NOT through a cast to an integer type, and not through `*`, so scaling a pointer difference stays checkable. |
+
+Inference is one-directional by design: an operand whose type does not
+resolve stays non-pointer, so callers keep their recall. Every caller uses
+the answer to SUPPRESS, never to fire. The type map must spell pointers
+with a trailing `*` — `overflow_helpers::collect_variable_types` and
+`ast_utils::resolve_field_expression_type` both do; a rule keeping its own
+map (as INT31-C did) has to be fixed to do the same before the gate can see
+anything.
+
 ### `src/analyze/points_to.rs`
 **Problem solved:** a structurally-canonical lvalue identity (`LValue`)
 that unifies every source spelling of the same storage location —

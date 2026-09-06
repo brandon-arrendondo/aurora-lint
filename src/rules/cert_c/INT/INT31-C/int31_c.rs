@@ -17,6 +17,7 @@ use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, is_function_parameter};
+use crate::utility::cert_c::declarator_utils;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -715,12 +716,27 @@ impl Int31C {
                                 if let Some(declarator) = child.child_by_field_name("declarator") {
                                     let var_name = Self::extract_var_name(&declarator, source);
                                     if !var_name.is_empty() {
-                                        var_types.insert(var_name, type_text.clone());
+                                        var_types.insert(
+                                            var_name,
+                                            Self::qualify_pointer(&type_text, &declarator),
+                                        );
                                     }
                                 }
                             } else if child.kind() == "identifier" {
                                 let var_name = get_node_text(&child, source).to_string();
                                 var_types.insert(var_name, type_text.clone());
+                            } else if child.kind() == "pointer_declarator" {
+                                // A pointer declared without an initializer
+                                // (`unsigned char *buf;`) is a direct
+                                // `pointer_declarator` child -- neither an
+                                // `init_declarator` nor a bare `identifier`.
+                                let var_name = Self::extract_var_name(&child, source);
+                                if !var_name.is_empty() {
+                                    var_types.insert(
+                                        var_name,
+                                        Self::qualify_pointer(&type_text, &child),
+                                    );
+                                }
                             }
                         }
                     }
@@ -735,11 +751,29 @@ impl Int31C {
                     if let Some(declarator) = n.child_by_field_name("declarator") {
                         let var_name = Self::extract_var_name(&declarator, source);
                         if !var_name.is_empty() {
-                            var_types.insert(var_name, type_text);
+                            var_types
+                                .insert(var_name, Self::qualify_pointer(&type_text, &declarator));
                         }
                     }
                 }
             }
+        }
+    }
+
+    /// Spell a pointer-declared variable's type with a trailing `*`.
+    ///
+    /// The type specifier alone is the *pointee* type: dropping the star
+    /// recorded `unsigned char *buf` as `unsigned char`, so `buf += readnb`
+    /// (an `ssize_t`) read as a 64-into-8-bit narrowing assignment rather than
+    /// a pointer advance (task 914). `get_type_width` matches type names
+    /// exactly, so a starred type has no integer width at all -- which is
+    /// precisely right for a pointer -- and the shared `pointer_typing` engine
+    /// reads the same spelling.
+    fn qualify_pointer(type_text: &str, declarator: &Node) -> String {
+        if declarator_utils::is_pointer_declarator(declarator) {
+            format!("{} *", type_text)
+        } else {
+            type_text.to_string()
         }
     }
 

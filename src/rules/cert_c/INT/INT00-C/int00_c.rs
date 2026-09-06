@@ -13,7 +13,8 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{self, get_node_text};
+use crate::utility::cert_c::declarator_utils;
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -466,9 +467,16 @@ impl Int00C {
             }
         }
         if type_parts.is_empty() {
-            None
-        } else {
-            Some(type_parts.join(" "))
+            return None;
+        }
+        let base = type_parts.join(" ");
+        // Keep the `*`: the type specifier alone is the POINTEE type, and
+        // `is_unsigned_type` would read `unsigned char *pos` as an unsigned
+        // integer and call `pos - orig_pos` an unguarded unsigned subtraction
+        // (task 914).
+        match param.child_by_field_name("declarator") {
+            Some(d) if declarator_utils::is_pointer_declarator(&d) => Some(format!("{} *", base)),
+            _ => Some(base),
         }
     }
 
@@ -502,9 +510,18 @@ impl Int00C {
                 }
                 if child.kind() == "init_declarator" {
                     if let Some(decl) = child.child_by_field_name("declarator") {
-                        let name = get_node_text(&decl, source).trim().to_string();
+                        // A pointer declarator's text is `*p`, which never
+                        // matches the operand name `p` this map is looked up
+                        // by; resolve the bound identifier and keep the
+                        // pointerness in the type instead (task 914).
+                        let name = ast_utils::get_identifier_from_declarator(&decl, source);
                         if !name.is_empty() && !type_text.is_empty() {
-                            var_types.insert(name, type_text.clone());
+                            let declared = if declarator_utils::is_pointer_declarator(&decl) {
+                                format!("{} *", type_text)
+                            } else {
+                                type_text.clone()
+                            };
+                            var_types.insert(name, declared);
                         }
                     }
                 }
@@ -513,6 +530,12 @@ impl Int00C {
     }
 
     fn is_unsigned_type(type_text: &str) -> bool {
+        // A pointer is not an unsigned integer however unsigned its pointee
+        // is: `ptr - ptr` is a signed ptrdiff_t, and cannot wrap the way the
+        // unsigned subtraction this rule guards does (task 914).
+        if ast_utils::is_pointer_type(type_text) {
+            return false;
+        }
         type_text.starts_with("unsigned")
             || matches!(
                 type_text,

@@ -323,14 +323,32 @@ fn generate_rules_all_toml() -> Result<()> {
     Ok(())
 }
 
-/// Rules disabled specifically in the real-world benchmark manifest because
-/// they're too noisy on real (non-Juliet) codebases to be useful signal
-/// there, while remaining enabled in the CLI's default manifest. Keep this
-/// list in sync with any manual curation of rules_templates/rules-benchmark.toml.
-const BENCHMARK_NOISE_DISABLED: &[&str] = &[
-    "DCL04-C", "DCL06-C", "DCL08-C", "EXP02-C", "EXP10-C", "EXP12-C", "EXP14-C", "EXP19-C",
-    "INT01-C", "INT02-C", "INT16-C", "INT17-C", "PRE31-C",
-];
+/// Rules the benchmark manifest disables while the CLI's default manifest
+/// keeps them enabled. **Empty on purpose, and adding to it needs oracle
+/// evidence.**
+///
+/// This list used to hold 13 rules (the DCL04/DCL06/DCL08, EXP02/EXP10/EXP12/
+/// EXP14/EXP19, INT01/INT02/INT16/INT17, PRE31 block) on the assumption that
+/// they were "too noisy on real codebases to be useful signal". Because one
+/// constant flipped all 13 together, the same block was inherited verbatim by
+/// every per-codebase manifest derived from this file, so the assumption was
+/// never testable: the rules could not fire where the ground-truth oracle
+/// could grade them.
+///
+/// Measured on the two corpora that did keep them enabled, the assumption is
+/// false for half of them: six (DCL04-C, DCL06-C, EXP12-C, EXP14-C, EXP19-C,
+/// INT17-C) score 73 TP / 14 FP on pure-ftpd, the best-precision rule group in
+/// the suite, and the other six score 0 TP / 57 FP there -- unproductive, but
+/// nowhere near enough volume to swamp a measurement. A whole-rule disable
+/// that hides a rule from the oracle is exactly what `conf/realworld/README.md`
+/// forbids, so the block is gone and every one of the 13 now runs on all nine
+/// real-world corpora.
+///
+/// Consequence to know about: this file is also the full-mode Juliet manifest
+/// (`bench/config.py: MANIFEST_ALL`), so emptying the list changes what a
+/// `--full` Juliet run measures, and it makes rules-benchmark.toml identical to
+/// rules-all.toml. Both are tracked as a follow-up.
+const BENCHMARK_NOISE_DISABLED: &[&str] = &[];
 
 /// Regenerate `rules_templates/rules-all.toml` (embedded into the aurora-lint binary
 /// via `include_str!` as its built-in default manifest) and
