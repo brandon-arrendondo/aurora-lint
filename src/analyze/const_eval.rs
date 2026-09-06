@@ -7,7 +7,8 @@
 //! This is NOT a full CFG-based dataflow — it's syntactic constant folding
 //! plus loop-bound ancestor walks.
 
-use std::collections::HashMap;
+use crate::utility::cert_c::ast_utils;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use tree_sitter::Node;
 
@@ -1059,6 +1060,145 @@ fn resolve_sizeof_node(node: &Node, source: &str) -> Option<i64> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Compile-time-constant recognition
+// ---------------------------------------------------------------------------
+
+/// An empty name set, so [`ConstantNameSets::none`] can hand out references.
+static NO_NAMES: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
+
+/// The project-wide names [`is_compile_time_constant_expr`] needs to recognize
+/// a constant whose definition is not in the file being analyzed.
+#[derive(Clone, Copy)]
+pub struct ConstantNameSets<'a> {
+    /// Object-like `#define` names — `ProjectContext::defined_macro_names`.
+    pub object_macros: &'a HashSet<String>,
+    /// Function-like `#define` names — `ProjectContext::function_macros`' keys.
+    pub function_macros: &'a HashSet<String>,
+    /// Names of real functions whose every `return` expression is itself a
+    /// compile-time constant, from `FunctionSummary`'s
+    /// `returns_only_compile_time_constants`.
+    pub constant_returning_functions: &'a HashSet<String>,
+}
+
+impl ConstantNameSets<'static> {
+    /// No project context: only `source` itself and the AST are consulted.
+    pub fn none() -> Self {
+        Self {
+            object_macros: &NO_NAMES,
+            function_macros: &NO_NAMES,
+            constant_returning_functions: &NO_NAMES,
+        }
+    }
+}
+
+/// True if `node` is an expression whose value is fixed at compile time:
+/// literals, `sizeof`/`alignof`, macro constants and enumerators (whether or
+/// not their value can be folded), function-like macro invocations over such
+/// operands, and arithmetic/bitwise combinations of any of those.
+///
+/// This is deliberately weaker than [`try_evaluate_expr`], which needs an
+/// actual integer. A shift by `PAGE_BITS` is no more of an INT34-C hazard
+/// than a shift by `12`, but sqc has no preprocessor and the header defining
+/// `PAGE_BITS` is frequently one it never parsed — so "did it fold?" is a
+/// fact about sqc's include coverage, not about the code under analysis.
+///
+/// `names` carries the project-wide facts that let a constant defined in
+/// another file still be recognized; [`ConstantNameSets::none`] is the
+/// single-file answer, where the `#define` scan of `source` and the
+/// unresolvable-identifier rule below still apply.
+pub fn is_compile_time_constant_expr(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    names: ConstantNameSets,
+) -> bool {
+    let recurse = |n: &Node| is_compile_time_constant_expr(n, source, macros, names);
+    match node.kind() {
+        "number_literal" | "char_literal" | "sizeof_expression" | "alignof_expression" => true,
+        "parenthesized_expression" => node.named_child(0).is_some_and(|inner| recurse(&inner)),
+        "unary_expression" => node
+            .child_by_field_name("argument")
+            .is_some_and(|arg| recurse(&arg)),
+        "binary_expression" => {
+            let op = ast_utils::get_binary_operator(node, source).unwrap_or_default();
+            if !matches!(
+                op,
+                "+" | "-" | "*" | "/" | "%" | "<<" | ">>" | "&" | "|" | "^"
+            ) {
+                return false;
+            }
+            let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            recurse(&left) && recurse(&right)
+        }
+        "conditional_expression" => (0..node.named_child_count())
+            .filter_map(|i| node.named_child(i))
+            .all(|c| recurse(&c)),
+        "cast_expression" => node
+            .child_by_field_name("value")
+            .is_some_and(|v| recurse(&v)),
+        // `MASK(n)`, `CBn_MAIRm_ATTR_SHIFT(id)` — a function-like macro over
+        // constant arguments is itself a constant, as is a call to a real
+        // function whose every `return` is one (seL4's `pageBitsForSize()`).
+        // A call to anything else is not: `x << get_amount()` stays open.
+        "call_expression" => {
+            let Some(callee) = node.child_by_field_name("function") else {
+                return false;
+            };
+            if callee.kind() != "identifier" {
+                return false;
+            }
+            let name = ast_utils::get_node_text(&callee, source);
+            if names.constant_returning_functions.contains(name) {
+                // The callee's own returns were already checked; its
+                // ARGUMENTS are irrelevant, since no return depends on them.
+                return true;
+            }
+            if !names.function_macros.contains(name)
+                && !ast_utils::is_defined_macro_name(name, source)
+            {
+                return false;
+            }
+            node.child_by_field_name("arguments")
+                .map(|args| {
+                    (0..args.named_child_count())
+                        .filter_map(|i| args.named_child(i))
+                        .all(|a| recurse(&a))
+                })
+                .unwrap_or(false)
+        }
+        "identifier" => {
+            let name = ast_utils::get_node_text(node, source);
+
+            // A `#define` or enumerator sqc did fold.
+            if macros.contains_key(name) {
+                return true;
+            }
+            // A `#define` sqc saw but could not fold (its replacement names
+            // something from a header outside the scan).
+            if names.object_macros.contains(name) || ast_utils::is_defined_macro_name(name, source)
+            {
+                return true;
+            }
+            // No binding anywhere sqc looked: not a local, not a parameter,
+            // not a file-scope declaration. C requires every identifier to be
+            // declared before use, so this one is a macro or an enumerator
+            // from a header that wasn't parsed — seL4's `seL4_PageBits`
+            // (generated per architecture) and `ARMSectionBits` (an
+            // enumerator in a header outside the scan root) both land here.
+            // It cannot be a local whose range we simply failed to compute,
+            // which is the case that matters.
+            ast_utils::resolve_identifier_binding(node, name, source).is_none()
+        }
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
