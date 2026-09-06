@@ -62,7 +62,10 @@
 <li class="toctree-l3"><a class="reference internal" href="#fp-reduction-history">FP Reduction History</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="#real-world-code-analysis">Real-World Code Analysis</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#real-world-code-analysis">Real-World Code Analysis</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#known-per-rule-corpus-caveats">Known Per-Rule Corpus Caveats</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#cross-tool-comparison-methodology">Cross-Tool Comparison Methodology</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#apples-to-apples-concerns">Apples-to-Apples Concerns</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#recommended-comparison-workflow">Recommended Comparison Workflow</a></li>
@@ -614,6 +617,30 @@ that repo’s README) – not in a hand-maintained file here
 2026-09-03). Oracle methodology, including the DCL31-C worked example of
 why a per-rule 0.0% can be a corpus artifact rather than a rule defect, is
 in README.md’s “Rule-suite coverage” section.</p>
+<section id="known-per-rule-corpus-caveats">
+<h3>Known Per-Rule Corpus Caveats<a class="headerlink" href="#known-per-rule-corpus-caveats" title="Link to this heading"></a></h3>
+<p><strong>sqlite / DCL41-C.</strong> Every historical DCL41-C label on sqlite sat in
+<code class="docutils literal notranslate"><span class="pre">ext/fts5/fts5_tcl.c</span></code> (Tcl test-binding glue, not shipped library code) and
+all were adjudicated false positive: sqc’s pre-fix switch-statement scan
+didn’t expand the file’s <code class="docutils literal notranslate"><span class="pre">CASE(i,str)</span></code> macro, so it never saw the real
+<code class="docutils literal notranslate"><span class="pre">case</span></code> label hidden inside and misread every invocation as a declaration
+before the first visible case (see
+<code class="docutils literal notranslate"><span class="pre">data/precision_audit/DELTA_LT1_TASK548.md</span></code>). The parser bug itself was
+fixed in <code class="docutils literal notranslate"><span class="pre">fea7a1a1</span></code> — confirmed there to take that file’s DCL41-C findings
+from 21 to 0 — so a current scan produces none of these findings at all,
+right or wrong; the only live question is what a <em>pre-fix</em> published DCL41-C
+figure for sqlite means. Since the file is test-only glue and every label on
+it was a parser artifact rather than a real declaration-placement violation,
+excluding it (as sqlite’s corpus scope does — see <code class="docutils literal notranslate"><span class="pre">benchmarking_db</span></code>’s
+<code class="docutils literal notranslate"><span class="pre">docs/corpus-scope.md</span></code>) discards zero true-positive evidence: sqlite’s
+DCL41-C denominator is properly reported as N/A (“no in-scope labels”), not
+0%, for any run predating the fix.</p>
+<p>This is the general shape to watch for: a per-rule 0% (or N/A) on one corpus
+can be an artifact of one file, one macro, or one parser gap rather than a
+statement about the rule’s real-world precision — check the file-level
+adjudication reasons in <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> before citing a rule’s corpus figure
+as representative.</p>
+</section>
 </section>
 <section id="cross-tool-comparison-methodology">
 <h2>Cross-Tool Comparison Methodology<a class="headerlink" href="#cross-tool-comparison-methodology" title="Link to this heading"></a></h2>
