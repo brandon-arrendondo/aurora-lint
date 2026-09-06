@@ -10,6 +10,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
 use crate::utility::cert_c::float_typing;
+use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use crate::utility::cert_c::std_functions;
@@ -2735,6 +2736,7 @@ impl Int32C {
             || self.has_function_level_overflow_check(node, source, &[" < "])
             || self.has_function_level_overflow_check(node, source, &[" >= "])
             || self.has_function_level_overflow_check(node, source, &[" <= "])
+            || guard_dominance::has_dominating_limit_guard(node, node, source)
     }
 
     fn has_overflow_check_subtraction(&self, node: &Node, source: &str) -> bool {
@@ -2748,7 +2750,7 @@ impl Int32C {
             node,
             source,
             &["INT_MAX", "INT_MIN", " + ", " > ", " < "],
-        )
+        ) || guard_dominance::has_dominating_limit_guard(node, node, source)
     }
 
     fn has_overflow_check_multiplication(&self, node: &Node, source: &str) -> bool {
@@ -2772,7 +2774,7 @@ impl Int32C {
             return true;
         }
 
-        false
+        guard_dominance::has_dominating_limit_guard(node, node, source)
     }
 
     fn has_division_overflow_check(&self, node: &Node, source: &str) -> bool {
@@ -2872,11 +2874,18 @@ impl Int32C {
     }
 
     fn has_allocation_overflow_check(&self, node: &Node, source: &str) -> bool {
+        // The text form demands "SIZE_MAX", " / " and " > " all with their
+        // surrounding spaces, so `count > SIZE_MAX/sizeof(int)` -- the exact
+        // idiom it exists to honour -- did not match. The dominance form is
+        // spacing- and order-insensitive and also sees the guard as an `&&`
+        // conjunct or an earlier `if` (task 916).
         self.has_surrounding_check(node, source, &["SIZE_MAX", " / ", " > ", "if"])
+            || guard_dominance::has_dominating_limit_guard(node, node, source)
     }
 
     fn has_memory_function_overflow_check(&self, node: &Node, source: &str) -> bool {
         self.has_surrounding_check(node, source, &["SIZE_MAX", " > ", "if"])
+            || guard_dominance::has_dominating_limit_guard(node, node, source)
     }
 
     fn has_abs_overflow_check(&self, node: &Node, source: &str) -> bool {
