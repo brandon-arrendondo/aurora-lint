@@ -9,6 +9,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
 use crate::utility::cert_c::float_typing;
+use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use crate::utility::cert_c::std_functions;
@@ -1833,6 +1834,7 @@ impl Int30C {
             || self.has_postcondition_check(node, source)
             || self.uses_wider_type(node, source)
             || self.is_inside_checked_block(node, source)
+            || guard_dominance::has_dominating_limit_guard(node, node, source)
     }
 
     fn has_overflow_check_subtraction(&self, node: &Node, source: &str) -> bool {
@@ -1851,6 +1853,7 @@ impl Int30C {
             || self.has_preceding_overflow_check(node, source)
             || self.uses_wider_type(node, source)
             || self.is_inside_checked_block(node, source)
+            || guard_dominance::has_dominating_limit_guard(node, node, source)
     }
 
     /// Check if there's an overflow check in the code preceding this node
@@ -1890,6 +1893,7 @@ impl Int30C {
         self.has_function_context_check(node, source, &["if", "UINT_MAX"])
             || self.has_function_context_check(node, source, &["if", "SIZE_MAX"])
             || self.is_inside_checked_block(node, source)
+            || guard_dominance::has_dominating_limit_guard(node, node, source)
     }
 
     fn has_overflow_check_update(&self, node: &Node, source: &str) -> bool {
@@ -2082,25 +2086,45 @@ impl Int30C {
     /// Patterns: `if (var > 0)`, `while (var > expr)`, `for (...; var > expr; ...)`.
     /// For unsigned types, `var > expr` implies `var >= 1`, making `var--` or `var - 1` safe.
     fn is_guarded_by_gt_zero(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        let mut current = *node;
-        while let Some(parent) = current.parent() {
-            if matches!(
-                parent.kind(),
-                "if_statement" | "while_statement" | "for_statement"
-            ) {
-                if let Some(condition) = parent.child_by_field_name("condition") {
-                    let cond_text = get_node_text(&condition, source);
-                    if self.condition_implies_positive(cond_text, var_name) {
-                        return true;
-                    }
-                }
+        // Every condition already evaluated here, not just the ancestor
+        // `if`/`while`/`for` chain this walked before: `&&` conjuncts and
+        // preceding `if`s establish the same fact and were being missed.
+        guard_dominance::dominating_conditions(node)
+            .iter()
+            .any(|cond| {
+                Self::condition_is_truthiness_test(cond, var_name, source)
+                    || self.condition_implies_positive(get_node_text(cond, source), var_name)
+            })
+    }
+
+    /// True when `cond` is a bare truthiness test of `var_name` — `while (n)`,
+    /// `if (len && ...)`. For an unsigned value that is exactly `n != 0`, so a
+    /// `n--` or `n - 1` under it cannot wrap. hostap's
+    /// `while (in_size) { in_size--; ... }` is the recorded example: the text
+    /// patterns below look for a comparison operator and there is none here.
+    fn condition_is_truthiness_test(cond: &Node, var_name: &str, source: &str) -> bool {
+        match cond.kind() {
+            "identifier" => get_node_text(cond, source).trim() == var_name.trim(),
+            "parenthesized_expression" => cond
+                .named_child(0)
+                .is_some_and(|inner| Self::condition_is_truthiness_test(&inner, var_name, source)),
+            "binary_expression" => {
+                let op = cond
+                    .child_by_field_name("operator")
+                    .map(|o| o.kind())
+                    .unwrap_or("");
+                // Both conjuncts hold once the body runs; `||` establishes neither.
+                op == "&&"
+                    && [
+                        cond.child_by_field_name("left"),
+                        cond.child_by_field_name("right"),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|side| Self::condition_is_truthiness_test(&side, var_name, source))
             }
-            if parent.kind() == "function_definition" {
-                break;
-            }
-            current = parent;
+            _ => false,
         }
-        false
     }
 
     /// Check if a condition text implies var_name > 0 (i.e., var is positive).
