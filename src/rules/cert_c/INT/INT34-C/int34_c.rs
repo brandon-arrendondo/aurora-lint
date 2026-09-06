@@ -3,6 +3,7 @@ use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
@@ -27,6 +28,17 @@ pub struct Int34C {
     /// amount written as `MASK(n)` is recognized as a macro invocation
     /// rather than an opaque call.
     project_function_macro_names: RefCell<HashSet<String>>,
+    /// The same macros with their replacement lists, for the expansion pass:
+    /// a bound that only exists inside a `#define` (`IDR0_NUMSIDB_VAL(v)`
+    /// masking `v` down to four bits) is invisible until the invocation is
+    /// expanded.
+    project_function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    /// `project_function_macros` plus the file under analysis, per-file
+    /// winning -- the same merge `current_macros` does for object-like
+    /// macros, and needed for the same reason: a `#define` private to one
+    /// `.c` file never reaches the project scan, which only walks the header
+    /// directories.
+    current_function_macros: RefCell<HashMap<String, FunctionMacro>>,
     /// Pre-scanned callee summaries, consulted for shift amounts written as a
     /// call: `return_range` bounds the amount when the returns fold.
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
@@ -45,6 +57,8 @@ impl Int34C {
             vra_results: RefCell::new(HashMap::new()),
             project_macro_names: RefCell::new(HashSet::new()),
             project_function_macro_names: RefCell::new(HashSet::new()),
+            project_function_macros: RefCell::new(HashMap::new()),
+            current_function_macros: RefCell::new(HashMap::new()),
             function_summaries: RefCell::new(HashMap::new()),
             constant_returning_functions: RefCell::new(HashSet::new()),
         }
@@ -77,6 +91,7 @@ impl CertRule for Int34C {
         *self.project_macro_names.borrow_mut() = context.defined_macro_names.clone();
         *self.project_function_macro_names.borrow_mut() =
             context.function_macros.keys().cloned().collect();
+        *self.project_function_macros.borrow_mut() = context.function_macros.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.constant_returning_functions.borrow_mut() = context
             .function_summaries
@@ -104,6 +119,10 @@ impl CertRule for Int34C {
         // Merge project-level macros with per-file macros (per-file wins)
         *self.current_macros.borrow_mut() =
             const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
+
+        let mut fmacros = self.project_function_macros.borrow().clone();
+        fmacros.extend(macro_expand::collect_function_macros(node, source));
+        *self.current_function_macros.borrow_mut() = fmacros;
 
         self.check_recursive(node, source, &mut violations);
         violations
@@ -203,6 +222,18 @@ impl Int34C {
                         return;
                     }
                 }
+            }
+
+            // Last pass before reporting: redo the range analysis with the
+            // project's function-like macros expanded, and with every local
+            // the amount names resolved to whatever it was last assigned.
+            // Both are ordinary ways for a real bound to sit one hop away
+            // from the shift -- a register field extracted by a `#define`
+            // that masks it, or that extraction parked in a local on the
+            // line above -- and neither is reachable from the shift
+            // expression alone.
+            if self.shift_amount_bounded_after_expansion(node, &right_node, source) {
+                return;
             }
 
             // Check if this is an unsigned type operation. Unsigned shifts
@@ -1102,6 +1133,58 @@ impl Int34C {
     /// Check if target is a descendant of node
     fn is_descendant(node: &Node, target: &Node) -> bool {
         query::find_first_descendant(*node, |n| n.id() == target.id()).is_some()
+    }
+
+    /// True when the shift amount is provably in range once the project's
+    /// function-like macros are expanded and the locals it names are resolved
+    /// to their last assignment.
+    ///
+    /// The two go together on purpose. `field = IDR1_NUMPAGENDXB_VAL(reg &
+    /// IDR1_NUMPAGENDXB); ... 1 << (field + 1)` needs both hops: without the
+    /// expansion the initialiser is an opaque call, and without the local
+    /// resolution the bound the expansion proves never reaches the shift.
+    ///
+    /// Identifiers are seeded rather than resolved inside the evaluator so
+    /// that a name already bounded by an enclosing loop or `if` keeps that
+    /// (tighter, control-flow-aware) bound.
+    fn shift_amount_bounded_after_expansion(
+        &self,
+        shift_node: &Node,
+        amount: &Node,
+        source: &str,
+    ) -> bool {
+        let fmacros = self.current_function_macros.borrow();
+        let macros = self.current_macros.borrow();
+
+        let mut var_ranges = const_eval::extract_loop_var_ranges(shift_node, source, &macros);
+        Self::extract_if_condition_ranges(shift_node, source, &macros, &mut var_ranges);
+
+        let mut names: Vec<String> = query::find_descendants_of_kind(*amount, "identifier")
+            .iter()
+            .map(|id| ast_utils::get_node_text(id, source).to_string())
+            .collect();
+        if amount.kind() == "identifier" {
+            names.push(ast_utils::get_node_text(amount, source).to_string());
+        }
+        let resolved: Vec<(String, const_eval::ValueRange)> = names
+            .into_iter()
+            .filter(|name| !var_ranges.contains_key(name))
+            .filter_map(|name| {
+                let range = const_eval::resolve_local_var_range_expanding(
+                    &name,
+                    shift_node,
+                    source,
+                    &macros,
+                    &var_ranges,
+                    &fmacros,
+                )?;
+                Some((name, range))
+            })
+            .collect();
+        var_ranges.extend(resolved);
+
+        const_eval::try_evaluate_range_expanding(amount, source, &macros, &var_ranges, &fmacros)
+            .is_some_and(|range| range.min >= 0 && (range.min == range.max || range.max < 32))
     }
 
     /// Evaluate the shift amount's range using CFG-based VRA.
