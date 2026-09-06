@@ -127,7 +127,7 @@ def main() -> int:
         print("\nThe manifest is the source of truth. Update the docs, or "
               "-- if docs/test-summary.md is listed above -- fix\n"
               "src/rules/cert_c/integration.rs and re-run "
-              "`cargo test --package sqc --lib -- rules::cert_c`.")
+              "`cargo test --package aurora-lint --lib -- rules::cert_c`.")
         return 1
     print(f"{checked} rule-count claim(s) across "
           f"{len(TARGETS)} file(s): all consistent")

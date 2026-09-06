@@ -3,7 +3,6 @@
  * Status: PASS - Shift amount validated with CHAR_BIT or PRECISION check
  */
 
-// sqc-test: prescan
 
 #define CHAR_BIT 8
 

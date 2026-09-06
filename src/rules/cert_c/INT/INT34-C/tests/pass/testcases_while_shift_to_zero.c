@@ -3,7 +3,6 @@
  * Status: PASS - While loop bounds shift via (mask >> bi) != 0 pattern
  */
 
-// sqc-test: prescan
 
 unsigned int count_bits(unsigned int mask) {
     unsigned int count = 0;

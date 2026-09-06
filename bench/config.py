@@ -5,7 +5,14 @@ from pathlib import Path
 
 # ── Project layout ────────────────────────────────────────────────────────────
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-SQC_BIN = PROJECT_DIR / "target" / "release" / "sqc"
+# The binary was renamed sqc -> aurora-lint. The *recorded* tool identifier
+# stays "sqc" throughout bench/ -- it is the value in `realworld_results.tool`,
+# the `runs.sqc_version` column and the `sqc-{version}-{sha}` run_id prefix, all
+# of which are keyed the same way in the shared Postgres instance and in
+# `ground_truth`'s (project, commit, file, line, rule) tuples. Renaming the
+# identifier would fork the namespace and drop every historical row out of
+# comparison; only the path on disk changed.
+SQC_BIN = PROJECT_DIR / "target" / "release" / "aurora-lint"
 MANIFEST_ALL = PROJECT_DIR / "rules_templates" / "rules-benchmark.toml"
 RULES_ALL_TOML = PROJECT_DIR / "rules_templates" / "rules-all.toml"
 MANIFEST_CWE_DIR = PROJECT_DIR / "rules_templates" / "cwe"

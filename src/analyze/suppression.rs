@@ -6,7 +6,24 @@ use std::path::Path;
 /// Maximum number of lines a suppress comment can appear before the violation it covers.
 const MAX_PROXIMITY: usize = 5;
 
-/// An inline `SQC-SUPPRESS` comment, parsed from a source file.
+/// The directive keyword written into new suppress comments.
+const CANONICAL_DIRECTIVE: &str = "AURORA-SUPPRESS";
+
+/// The pre-rename spelling. Still parsed so suppressions already committed to
+/// user source keep working; never emitted.
+const LEGACY_DIRECTIVE: &str = "SQC-SUPPRESS";
+
+/// This tool's name in a `suppress.toml` `tool` field or a unified
+/// `tools:suppress <tool>:RULE` comment, plus the pre-rename spelling.
+const TOOL_NAMES: [&str; 2] = ["aurora-lint", "sqc"];
+
+/// Whether `tool` names this tool under either spelling.
+fn is_own_tool(tool: &str) -> bool {
+    TOOL_NAMES.iter().any(|n| tool.eq_ignore_ascii_case(n))
+}
+
+/// An inline `AURORA-SUPPRESS` comment (or its legacy `SQC-SUPPRESS`
+/// spelling), parsed from a source file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Suppression {
     /// The rule ID being suppressed.
@@ -22,11 +39,12 @@ pub struct Suppression {
 
 /// A single `[[suppress]]` entry in the shared `suppress.toml` (see
 /// `lang_parsing_substrate/docs/unified-config-spec.md`). One file, all
-/// tools — `tool` scopes each entry to `"sqc"` or the wildcard `"*"`;
-/// entries for other tools (e.g. `"knots"`) are loaded and ignored.
+/// tools — `tool` scopes each entry to `"aurora-lint"` (or its legacy
+/// `"aurora-lint"` spelling) or the wildcard `"*"`; entries for other tools (e.g.
+/// `"knots"`) are loaded and ignored.
 ///
-/// `rule_glob` and `function_prefix` are sqc-specific extensions beyond the
-/// base spec, preserving CERT-C rule-family and identifier-prefix
+/// `rule_glob` and `function_prefix` are aurora-lint-specific extensions
+/// beyond the base spec, preserving CERT-C rule-family and identifier-prefix
 /// suppression that predates this migration.
 ///
 /// An entry is either hash-matched (`hash` + `file` + `rule` all present —
@@ -36,7 +54,7 @@ pub struct Suppression {
 pub struct SuppressEntry {
     /// Human-readable label, unique within the file.
     pub name: String,
-    /// `"sqc"`, or `"*"` to apply across every tool.
+    /// `"aurora-lint"` (legacy: `"aurora-lint"`), or `"*"` to apply across every tool.
     pub tool: String,
     /// Exact rule ID this entry applies to.
     #[serde(default)]
@@ -50,10 +68,10 @@ pub struct SuppressEntry {
     /// Required for hash-matched entries; omit for wildcard entries.
     #[serde(default)]
     pub hash: Option<String>,
-    /// Glob pattern for rule IDs (e.g., `"DCL*"`, `"INT3*-C"`) — sqc extension.
+    /// Glob pattern for rule IDs (e.g., `"DCL*"`, `"INT3*-C"`) — aurora-lint extension.
     #[serde(default)]
     pub rule_glob: Option<String>,
-    /// Prefix to match in violation messages (e.g., `"wolfSSL_"`) — sqc extension.
+    /// Prefix to match in violation messages (e.g., `"wolfSSL_"`) — aurora-lint extension.
     /// Matches if the message contains an identifier starting with this prefix.
     #[serde(default)]
     pub function_prefix: Option<String>,
@@ -94,12 +112,15 @@ pub struct SuppressFile {
 }
 
 impl Suppression {
-    /// Parse a SQC-SUPPRESS directive from a comment.
+    /// Parse an `AURORA-SUPPRESS` directive from a comment.
     ///
     /// `line_number` is 0-based (from enumerate). The comment may be a standalone
-    /// line (`// SQC-SUPPRESS: ...`) or an inline suffix on a code line.
+    /// line (`// AURORA-SUPPRESS: ...`) or an inline suffix on a code line.
+    /// The pre-rename `SQC-SUPPRESS` spelling is still accepted so existing
+    /// suppressions in user source keep working; the hash covers only the code
+    /// portion, so a comment written under either name matches the same hash.
     pub fn parse(comment: &str, line_number: usize) -> Option<Self> {
-        if !comment.contains("SQC-SUPPRESS") {
+        if !Self::has_directive(comment) {
             return None;
         }
 
@@ -131,7 +152,7 @@ impl Suppression {
             }
         }
 
-        // Hash the violation line (stripping any inline SQC-SUPPRESS comment)
+        // Hash the violation line (stripping any inline suppress comment)
         let code = Self::get_line(source, violation_line);
         let code = Self::strip_suppress_comment(&code);
         let current_hash = SuppressionManager::calculate_suppression_hash(&self.rule_id, &code);
@@ -147,20 +168,25 @@ impl Suppression {
             .to_string()
     }
 
-    /// Strip an inline `// SQC-SUPPRESS...` suffix from a code line so the hash
-    /// covers only the code portion.
+    /// Whether `text` carries a suppress directive under either spelling.
+    pub(crate) fn has_directive(text: &str) -> bool {
+        text.contains(CANONICAL_DIRECTIVE) || text.contains(LEGACY_DIRECTIVE)
+    }
+
+    /// Strip an inline `// AURORA-SUPPRESS...` suffix (or the legacy
+    /// `// SQC-SUPPRESS...`) from a code line so the hash covers only the code
+    /// portion.
     fn strip_suppress_comment(line: &str) -> String {
-        if let Some(pos) = line.find("// SQC-SUPPRESS") {
-            line[..pos].to_string()
-        } else if let Some(pos) = line.find("/* SQC-SUPPRESS") {
-            line[..pos].to_string()
-        } else {
-            line.to_string()
-        }
+        [CANONICAL_DIRECTIVE, LEGACY_DIRECTIVE]
+            .iter()
+            .flat_map(|d| [format!("// {d}"), format!("/* {d}")])
+            .filter_map(|opener| line.find(&opener))
+            .min()
+            .map_or_else(|| line.to_string(), |pos| line[..pos].to_string())
     }
 
     fn extract_rule_id(comment: &str) -> Option<String> {
-        let re = regex::Regex::new(r"SQC-SUPPRESS:\s*([A-Z0-9]+-[A-Z0-9]+)").ok()?;
+        let re = regex::Regex::new(r"(?:AURORA|SQC)-SUPPRESS:\s*([A-Z0-9]+-[A-Z0-9]+)").ok()?;
         re.captures(comment)?.get(1).map(|m| m.as_str().to_string())
     }
 
@@ -210,7 +236,8 @@ impl SuppressionManager {
         Self::default()
     }
 
-    /// Load suppressions from a `suppress.toml` (or legacy `.sqc-suppress.toml`) file.
+    /// Load suppressions from a `suppress.toml` (or legacy
+    /// `.aurora-lint-suppress.toml` / `.aurora-lint-suppress.toml`) file.
     pub fn load_from_toml(&mut self, toml_path: &str) -> Result<usize, String> {
         let content = std::fs::read_to_string(toml_path)
             .map_err(|e| format!("Cannot read {}: {}", toml_path, e))?;
@@ -219,7 +246,7 @@ impl SuppressionManager {
 
         let mut count = 0;
         for entry in parsed.suppress {
-            if !(entry.tool == "sqc" || entry.tool == "*") {
+            if !(is_own_tool(&entry.tool) || entry.tool == "*") {
                 continue;
             }
             match entry.hash.clone() {
@@ -260,17 +287,18 @@ impl SuppressionManager {
 
     /// Extract all suppressions from source code.
     ///
-    /// Scans every line for both the legacy `SQC-SUPPRESS` directive
-    /// (standalone or inline on a code line — kept during the deprecation
-    /// window described in `lang_parsing_substrate/docs/unified-config-spec.md`)
-    /// and the shared unified `tools:suppress sqc:RULE` comment (standalone
-    /// line only, matching the spec's own examples), via
+    /// Scans every line for both the native `AURORA-SUPPRESS` directive
+    /// (standalone or inline on a code line; the pre-rename `SQC-SUPPRESS`
+    /// spelling is accepted alongside it, per the deprecation window described
+    /// in `lang_parsing_substrate/docs/unified-config-spec.md`) and the shared
+    /// unified `tools:suppress aurora-lint:RULE` comment (standalone line only,
+    /// matching the spec's own examples), via
     /// `lang_parsing_substrate::suppressions`.
     pub fn extract_from_source(&mut self, file_path: &str, source: &str) {
         let mut file_suppressions = Vec::new();
 
         for (line_num, line) in source.lines().enumerate() {
-            if line.contains("SQC-SUPPRESS") {
+            if Suppression::has_directive(line) {
                 if let Some(suppression) = Suppression::parse(line, line_num) {
                     file_suppressions.push(suppression);
                 }
@@ -280,11 +308,11 @@ impl SuppressionManager {
         for s in
             lang_parsing_substrate::suppressions(source, lang_parsing_substrate::SlocMode::Default)
         {
-            if !s.tool.eq_ignore_ascii_case("sqc") {
+            if !is_own_tool(&s.tool) {
                 continue;
             }
             let Some(hash) = s.hash else {
-                // sqc suppressions require a HASH for tamper detection —
+                // aurora-lint suppressions require a HASH for tamper detection —
                 // matches the legacy parser's `extract_hash` requirement.
                 continue;
             };
@@ -326,7 +354,7 @@ impl SuppressionManager {
         // Suppress anything inside a branch that is never compiled when building
         // as C (`#if 0`, a `__cplusplus`-gated C++-only region, or a
         // locally-provable-dead `#ifdef`/`#if defined(MACRO)` branch): any
-        // finding there is unfixable noise, since sqc has no preprocessor and
+        // finding there is unfixable noise, since aurora-lint has no preprocessor and
         // would otherwise analyze the inactive branch.
         if let Some(ranges) = self.dead_code_ranges.get(file_path) {
             if ranges
@@ -584,6 +612,66 @@ mod tests {
         assert_eq!(s.comment_line, 1);
     }
 
+    /// `AURORA-SUPPRESS` is the spelling `--generate-suppression` emits; the
+    /// `SQC-SUPPRESS` form the surrounding tests use is the pre-rename spelling,
+    /// still accepted so suppressions already in user source keep working.
+    #[test]
+    fn test_parse_canonical_directive() {
+        let comment =
+            "// AURORA-SUPPRESS: ARR30-C HASH:a3f5d2b1 JUSTIFICATION: \"Bounds checked by caller\"";
+        let s = Suppression::parse(comment, 0).unwrap();
+        assert_eq!(s.rule_id, "ARR30-C");
+        assert_eq!(s.hash, "a3f5d2b1");
+        assert_eq!(s.justification, "Bounds checked by caller");
+    }
+
+    /// Both spellings must strip to the same code, or an inline suppression
+    /// written under the new name would hash differently from the old one.
+    #[test]
+    fn test_both_directives_strip_to_the_same_code() {
+        let code = "    *ptr = value;";
+        let canonical = format!("{code} // AURORA-SUPPRESS: EXP34-C HASH:abc");
+        let legacy = format!("{code} // SQC-SUPPRESS: EXP34-C HASH:abc");
+        assert_eq!(
+            Suppression::strip_suppress_comment(&canonical),
+            Suppression::strip_suppress_comment(&legacy)
+        );
+        assert!(Suppression::strip_suppress_comment(&canonical).starts_with(code));
+    }
+
+    #[test]
+    fn test_match_inline_canonical_directive() {
+        let rule_id = "EXP34-C";
+        let code_line = "    *ptr = value;";
+        let hash = SuppressionManager::calculate_suppression_hash(rule_id, code_line);
+        let source =
+            format!("{code_line} // AURORA-SUPPRESS: EXP34-C HASH:{hash} JUSTIFICATION: \"test\"");
+
+        let s = Suppression::parse(&source, 0).unwrap();
+        assert!(s.matches(&source, 1));
+    }
+
+    /// The unified comment's tool field accepts the pre-rename name too; the
+    /// canonical `aurora-lint` spelling is covered by the tests above.
+    #[test]
+    fn test_unified_syntax_accepts_legacy_tool_name() {
+        let rule_id = "EXP34-C";
+        let code_line = "    *ptr = value;";
+        let hash = SuppressionManager::calculate_suppression_hash(rule_id, code_line);
+        let source = format!(
+            "void f(int *ptr) {{\n\
+             // tools:suppress sqc:{rule_id} HASH:{hash} JUSTIFICATION:\"legacy tool name\"\n\
+             {code_line}\n\
+             }}"
+        );
+
+        let mut mgr = SuppressionManager::new();
+        mgr.extract_from_source("test.c", &source);
+        assert!(mgr
+            .should_suppress("test.c", "EXP34-C", 3, &source, "")
+            .is_some());
+    }
+
     #[test]
     fn test_parse_no_hash_returns_none() {
         let comment = "// SQC-SUPPRESS: ARR30-C JUSTIFICATION: \"no hash\"";
@@ -745,7 +833,7 @@ mod tests {
 
         let source = format!(
             "void f(int *ptr) {{\n\
-             // tools:suppress sqc:{} HASH:{} JUSTIFICATION:\"validated by caller\"\n\
+             // tools:suppress aurora-lint:{} HASH:{} JUSTIFICATION:\"validated by caller\"\n\
              {}\n\
              }}",
             rule_id, hash, code_line
@@ -764,7 +852,8 @@ mod tests {
 
     #[test]
     fn test_unified_syntax_requires_hash() {
-        let source = "// tools:suppress sqc:EXP34-C JUSTIFICATION:\"no hash\"\n    *ptr = value;\n";
+        let source =
+            "// tools:suppress aurora-lint:EXP34-C JUSTIFICATION:\"no hash\"\n    *ptr = value;\n";
         let mut mgr = SuppressionManager::new();
         mgr.extract_from_source("test.c", source);
         assert!(mgr
@@ -791,7 +880,7 @@ mod tests {
         let source = format!(
             "// SQC-SUPPRESS: EXP34-C HASH:{} JUSTIFICATION: \"legacy\"\n\
              *ptr = value;\n\
-             // tools:suppress sqc:INT30-C HASH:{} JUSTIFICATION:\"unified\"\n\
+             // tools:suppress aurora-lint:INT30-C HASH:{} JUSTIFICATION:\"unified\"\n\
              result = a + b;\n",
             hash_legacy, hash_unified
         );
@@ -1177,14 +1266,14 @@ mod tests {
         let toml_str = r#"
 [[suppress]]
 name = "vendor-dcl31"
-tool = "sqc"
+tool = "aurora-lint"
 file_glob = "src/vendor/**"
 rule = "DCL31-C"
 justification = "Vendor code"
 
 [[suppress]]
 name = "wolfssl-dcl"
-tool = "sqc"
+tool = "aurora-lint"
 rule_glob = "DCL*"
 function_prefix = "wolfSSL_"
 justification = "wolfSSL library"
@@ -1212,11 +1301,11 @@ tool = "sqc"
 file = "ringbuffer.c"
 rule = "INT30-C"
 hash = "a1f5861150a1e5b8"
-justification = "Hash-matched suppression"
+justification = "Hash-matched suppression (pre-rename tool name)"
 
 [[suppress]]
 name = "vendor-dcl31"
-tool = "sqc"
+tool = "aurora-lint"
 file_glob = "src/vendor/**"
 rule = "DCL31-C"
 justification = "Wildcard suppression"
@@ -1239,13 +1328,13 @@ justification = "Wildcard suppression"
 name = "knots-only"
 tool = "knots"
 rule_glob = "*"
-justification = "not sqc"
+justification = "not aurora-lint"
 
 [[suppress]]
-name = "sqc-wildcard"
-tool = "sqc"
+name = "aurora-lint-wildcard"
+tool = "aurora-lint"
 rule_glob = "DCL*"
-justification = "sqc wildcard"
+justification = "aurora-lint wildcard"
 "#,
         )
         .unwrap();

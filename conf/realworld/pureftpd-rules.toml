@@ -1,7 +1,7 @@
 [metadata]
 name = "pure-ftpd CERT C Rules Configuration"
 version = "1.0.0"
-description = "Project rules manifest for pure-ftpd (FTP daemon; onboarded task 301 for CWE-89 SQL-injection-sink signal via src/log_mysql.c + src/log_pgsql.c, which call mysql_real_query/PQexec as a client), pinned to commit cc28bff. threading=true, windows=true detected by sqc --detect-relevance (real Win32-conditional code in ftpd.c/simpleconf.c, not a false positive) so no CON*/WIN* auto-gating applies -- this is currently identical to the full base manifest. Per-finding false positives among ENABLED rules are not suppressed here; they are recorded in the ground_truth oracle (data/benchmarks.db) so precision is measured, not hidden. See data/precision_audit/pure-ftpd/README.md."
+description = "Project rules manifest for pure-ftpd (FTP daemon; onboarded task 301 for CWE-89 SQL-injection-sink signal via src/log_mysql.c + src/log_pgsql.c, which call mysql_real_query/PQexec as a client), pinned to commit cc28bff. threading=true, windows=true detected by aurora-lint --detect-relevance (real Win32-conditional code in ftpd.c/simpleconf.c, not a false positive) so no CON*/WIN* auto-gating applies -- this is currently identical to the full base manifest. Per-finding false positives among ENABLED rules are not suppressed here; they are recorded in the ground_truth oracle (data/benchmarks.db) so precision is measured, not hidden. See data/precision_audit/pure-ftpd/README.md."
 cert_version = "2016"
 
 [rules.cert_c.API00-C]

@@ -11,7 +11,7 @@ Place TUI screenshots here for the developer guide.
 
 ```bash
 # Launch interactive mode on a project with violations
-sqc /path/to/c-project -d /path/to/c-project --interactive
+aurora-lint /path/to/c-project -d /path/to/c-project --interactive
 
 # In the TUI:
 # 1. Press 's' to scan

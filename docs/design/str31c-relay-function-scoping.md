@@ -70,7 +70,7 @@ the same-file path had no cross-file equivalent to draw on.
 ## Verification
 
 - `cargo build --lib`, `cargo clippy --lib -- -D warnings`, `cargo fmt`: clean.
-- `cargo test --package sqc --lib`: 3793 passed, 0 failed, 12 ignored
+- `cargo test --package aurora-lint --lib`: 3793 passed, 0 failed, 12 ignored
   (unchanged from baseline) — includes all 59 STR31-C generated tests
   (Juliet-style + CERT-wiki fixtures), covering the relay-pattern flow
   variants this change touches.

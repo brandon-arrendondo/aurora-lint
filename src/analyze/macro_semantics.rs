@@ -2,7 +2,7 @@
 //! (utlist, uthash, BSD `<sys/queue.h>`, and a few project iterator macros).
 //!
 //! Phase 1 of the macro-expansion plan (`docs/design/macro-expansion.md`).
-//! sqc parses raw source with no preprocessor, so these macros are opaque: the
+//! aurora-lint parses raw source with no preprocessor, so these macros are opaque: the
 //! parser sees `MACRO(head, el, tmp)` as a `call_expression` and (for the
 //! block-bearing iterator macros) the loop body as a *detached following
 //! sibling* `compound_statement`. The macro actually initializes its

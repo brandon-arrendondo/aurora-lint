@@ -49,8 +49,11 @@ impl Int30C {
     /// unbounded input, or when the expression *definitely* wraps a 32-bit
     /// unsigned type (value-based VRA channel). When false, every operand is
     /// bounded local state and the wrap is treated as intended/non-overflowing.
-    /// No-op (returns true) without cross-file context, preserving legacy
-    /// behavior and existing tests.
+    /// Runs in every configuration: with no cross-file context the taint
+    /// channels simply have fewer sources to match (standard taint functions
+    /// still resolve by name, project-local summaries do not), so a run without
+    /// `-d` reports a subset of what one with `-d` reports rather than a
+    /// different, louder rule.
     fn has_risky_operand_provenance(&self, node: &Node, source: &str) -> bool {
         // VRA definite-wrap channel (UINT_MAX + 1 / 0u - 1). Unsigned wrap in
         // SQLite uses 32-bit width uniformly, matching the fits-checks.
@@ -65,9 +68,6 @@ impl Int30C {
         }
 
         let summaries = self.function_summaries.borrow();
-        if summaries.is_empty() {
-            return true;
-        }
         let func = match ast_utils::find_containing_function(node) {
             Some(f) => f,
             None => return true,

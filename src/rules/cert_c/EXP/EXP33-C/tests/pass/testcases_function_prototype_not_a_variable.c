@@ -5,7 +5,7 @@
  * `TCLSH_INIT_PROC` is an `extern` function prototype (pointer return type)
  * declared inline inside a function body, guarded by an `#if
  * defined(TCLSH_INIT_PROC)` whose macro isn't actually defined in this
- * translation unit -- sqc has no preprocessor, so the guarded prototype and
+ * translation unit -- aurora-lint has no preprocessor, so the guarded prototype and
  * its call site are both modeled as reachable. The prototype's declarator
  * shape (`pointer_declarator` wrapping a `function_declarator`) was
  * previously matched by the same code path as a plain pointer *variable*

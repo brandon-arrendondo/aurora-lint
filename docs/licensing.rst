@@ -1,7 +1,7 @@
 Licensing and content provenance
 ================================
 
-This page exists for one audience: someone deciding whether sqc can enter a
+This page exists for one audience: someone deciding whether aurora-lint can enter a
 distribution archive. It answers *what is in this source tree, who wrote it,
 and under what terms*.
 
@@ -15,13 +15,13 @@ Summary
    * - Material
      - License
      - Where it lives
-   * - sqc's own source code and packaging
+   * - aurora-lint's own source code and packaging
      - ``Apache-2.0``
      - everything not listed below
-   * - sqc's own documentation
+   * - aurora-lint's own documentation
      - ``CC-BY-4.0``
      - ``docs/`` and the generated man page, as declared in ``docs/conf.py``
-       and ``docs/sqc.1``
+       and ``docs/aurora-lint.1``
    * - SEI CERT C rule titles and rule prose
      - ``CC-BY-4.0``
      - ``metadata.title`` / ``metadata.description`` in
@@ -32,27 +32,27 @@ Summary
      - the C snippets embedded in those ``description`` fields, and the
        wiki-derived fixtures under ``src/rules/cert_c/*/*/tests/``
 
-Copyright in all of it is held by **BISSELL Homecare, Inc.** SqC is company
+Copyright in all of it is held by **BISSELL Homecare, Inc.** aurora-lint is company
 work: it is written by BISSELL employees under BISSELL direction, so the
 holder is the entity, not the individuals. ``Cargo.toml``'s ``authors`` field
 still names individuals, and correctly — authorship is a statement of who
 wrote the code and is not the same as who owns it. ``CONTRIBUTORS.md`` is the
 fuller record.
 
-**SqC is licensed Apache-2.0.** The CERT rows above are third-party material
+**aurora-lint is licensed Apache-2.0.** The CERT rows above are third-party material
 carried in the tree, not a change to that: they keep their own upstream terms,
 the way any vendored component does, and those terms are recorded in
 ``NOTICE`` and ``thirdparty/cert/LICENSE`` rather than in ``LICENSE``.
 
 The attribution obligation reaches the binary, not only the source tarball:
 each rule compiles its CERT title in as a ``&'static str``, so a stripped
-``sqc`` executable still carries CC BY 4.0 material. ``NOTICE`` ships in every
+``aurora-lint`` executable still carries CC BY 4.0 material. ``NOTICE`` ships in every
 release artifact for that reason.
 
 A packager describing the *contents of a binary package* will generally write
 the union rather than the project's own license — ``Apache-2.0 AND MIT AND
 CC-BY-4.0`` — which is why the DEP-5 stanzas below are split by path. That is
-a packaging-metadata convention and is not what SqC is licensed under.
+a packaging-metadata convention and is not what aurora-lint is licensed under.
 
 The CERT terms
 --------------
@@ -68,7 +68,7 @@ operative sentence:
    referenced licenses allow modification [...]
 
 Both are DFSG-free and Fedora-allowed, and both permit modification — which
-matters, because sqc's rule descriptions *are* modified (they are extracted
+matters, because aurora-lint's rule descriptions *are* modified (they are extracted
 from page markup and reflowed, and CC BY 4.0 section 3(a)(1)(B) requires that
 modification be indicated).
 
@@ -88,12 +88,12 @@ Trademark, which is separate from copyright
 *Carnegie Mellon* and *CERT* are registered trademarks of Carnegie Mellon
 University. The copyright licenses above grant nothing here.
 
-- Nominative use in prose is fine: "sqc checks C code against the SEI CERT C
+- Nominative use in prose is fine: "aurora-lint checks C code against the SEI CERT C
   Coding Standard" describes what the tool does and is how the marks may be
   used.
 - **Do not put CERT or Carnegie Mellon in the binary name, the package name,
   or any name that reads as a source identifier.** The binary and the
-  distribution package are both ``sqc`` deliberately. ``src/rules/cert_c/``
+  distribution package are both ``aurora-lint`` deliberately. ``src/rules/cert_c/``
   is an internal path, not a published name.
 - Do not imply endorsement, certification, or affiliation.
 
@@ -132,7 +132,7 @@ can generate it from ``scripts/fixture_provenance.py --by-rule --json``,
 which reports the split per rule.
 
 Fedora ``.spec``: ``.github/workflows/release.yml`` emits
-``License: Apache-2.0``, SqC's own license. A Fedora packager who prefers the
+``License: Apache-2.0``, aurora-lint's own license. A Fedora packager who prefers the
 contents-union convention would write ``Apache-2.0 AND MIT AND CC-BY-4.0``
 instead; both describe the same package, and the ``NOTICE`` and
 ``thirdparty/cert/LICENSE`` files shipped alongside carry the detail either

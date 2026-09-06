@@ -158,7 +158,7 @@ fn blank_occurrences(source: &str, names: &HashSet<String>) -> String {
 /// statement -- depending on compiler support). Either expansion means the
 /// real, preprocessed token stream never has a bare identifier directly
 /// abutting a `case`/`default` label with no separator; this text shape
-/// only arises here because sqc has no preprocessor, so blanking it can
+/// only arises here because aurora-lint has no preprocessor, so blanking it can
 /// only ever recover structure, never remove something a rule could
 /// otherwise have used (a fallthrough annotation carries no dataflow
 /// meaning for EXP33-C either way).

@@ -8,6 +8,7 @@ use crate::progress::ProgressReporter;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::declarator_utils;
+use crate::utility::cert_c::guard_dominance;
 
 use anyhow::Result;
 use lang_parsing_substrate::query;
@@ -53,6 +54,7 @@ struct FilePrescanResult {
     /// this file hands the callee two DIFFERENT named storage objects
     /// (task 936).
     callsite_distinct_objects: HashMap<String, HashSet<(usize, usize)>>,
+    callsite_validated_args: HashMap<String, Vec<Vec<bool>>>,
     source_path: Option<PathBuf>,
     /// File-scope variable names declared here with a plain (non-pointer,
     /// non-array, non-function) declarator -- candidates for
@@ -96,6 +98,7 @@ impl FilePrescanResult {
             callsite_field_buf_args: HashMap::new(),
             callsite_taint_args: HashMap::new(),
             callsite_distinct_objects: HashMap::new(),
+            callsite_validated_args: HashMap::new(),
             source_path: None,
             value_only_global_candidates: HashSet::new(),
             pointer_named_globals: HashSet::new(),
@@ -228,6 +231,11 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
                 &result.struct_field_types,
                 &mut result.callsite_distinct_objects,
             );
+            guard_dominance::collect_call_arg_guards(
+                &root,
+                &source,
+                &mut result.callsite_validated_args,
+            );
             result.source_path = Some(file_path.to_path_buf());
         }
     }
@@ -333,6 +341,7 @@ fn prescan_file_list(
         HashMap::new();
     let mut callsite_taint_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
     let mut callsite_distinct_objects: HashMap<String, HashSet<(usize, usize)>> = HashMap::new();
+    let mut callsite_validated_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
     let mut source_files: Vec<PathBuf> = Vec::new();
     let mut file_functions: HashMap<PathBuf, Vec<String>> = HashMap::new();
     let mut value_only_global_candidates: HashSet<String> = HashSet::new();
@@ -355,7 +364,7 @@ fn prescan_file_list(
         // Free/close facts are unioned (not "first wins") because a function
         // like hostap's os_free() has multiple platform-variant bodies
         // (os_unix.c / os_internal.c / os_none.c, ifdef-selected at build
-        // time) — sqc has no preprocessor, so it scans ALL of them under -d,
+        // time) — aurora-lint has no preprocessor, so it scans ALL of them under -d,
         // and "first wins" would let an arbitrary parallel-processing-order
         // pick of the WRONG variant (e.g. os_unix.c's debug-tracing body,
         // which frees a locally-derived pointer rather than the parameter
@@ -469,6 +478,12 @@ fn prescan_file_list(
         for (callee, args) in r.callsite_taint_args {
             callsite_taint_args.entry(callee).or_default().extend(args);
         }
+        for (callee, args) in r.callsite_validated_args {
+            callsite_validated_args
+                .entry(callee)
+                .or_default()
+                .extend(args);
+        }
 
         if let Some(path) = r.source_path {
             source_files.push(path);
@@ -561,6 +576,7 @@ fn prescan_file_list(
         &mut function_summaries,
         &header_declared_functions,
     );
+    aggregate_callsite_validated_args(&callsite_validated_args, &mut function_summaries);
     function_summary::propagate_transitive_param_taint(
         &mut function_summaries,
         &header_declared_functions,
@@ -583,6 +599,7 @@ fn prescan_file_list(
 
     function_summary::propagate_transitive_frees(&mut function_summaries);
     function_summary::propagate_transitive_frees_param_fields(&mut function_summaries);
+    function_summary::propagate_transitive_frees_param_pointees(&mut function_summaries);
     function_summary::propagate_transitive_closes(&mut function_summaries);
     function_summary::propagate_return_taint(&mut function_summaries);
 
@@ -699,7 +716,7 @@ fn compute_concurrency_reachable(
 /// Scan only the `.h` files directly inside `parent_dir` to collect public API
 /// function declarations.
 ///
-/// This is a lightweight alternative to [`prescan_directories`] used when sqc
+/// This is a lightweight alternative to [`prescan_directories`] used when aurora-lint
 /// is given a single `.c` file with no explicit `-d` directories.  It populates
 /// only `header_declared_functions` — the data needed by DCL15-C and DCL19-C to
 /// distinguish intentionally-public API from internal helpers.  It intentionally
@@ -1839,6 +1856,53 @@ pub(crate) fn aggregate_callsite_taint_args(
                         summary.callsite_param_tainted.insert(param_idx);
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Aggregate per-call-site argument-validation facts into
+/// `callsite_param_validated`.
+///
+/// A parameter index is recorded only when every call site observed anywhere in
+/// the scanned project guards the argument it passes there with a dominating
+/// comparison, and at least one call site was observed. One unguarded site — or
+/// one passing something other than a bare variable — disqualifies the position.
+///
+/// **Header-declared functions are deliberately NOT skipped here**, unlike every
+/// other `callsite_*` aggregation in this module. Those exist to prove a *bound*
+/// (a minimum buffer size, a null state) that must hold over all callers,
+/// including ones outside the scanned tree, so an exported function has to stay
+/// unresolved. This one supplements ARR30-C's pre-existing per-file summary,
+/// which already credits a suppression from the call sites in one translation
+/// unit alone and accepts, explicitly, that a caller elsewhere might validate
+/// nothing. Inheriting the skip would make the project-wide view — which sees
+/// strictly more call sites, and disqualifies on any of them — more conservative
+/// than the single-file view it extends, and would defeat the motivating cases
+/// outright: seL4's validate-then-act pairs are declared in headers precisely so
+/// the `decode` half can reach the `invoke` half across a file boundary.
+pub(crate) fn aggregate_callsite_validated_args(
+    callsite_validated_args: &HashMap<String, Vec<Vec<bool>>>,
+    summaries: &mut HashMap<String, FunctionSummary>,
+) {
+    for (callee_name, call_sites) in callsite_validated_args {
+        let Some(summary) = summaries.get_mut(callee_name) else {
+            continue;
+        };
+        let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
+        for param_idx in 0..max_params {
+            let mut any_site = false;
+            let mut all_guarded = true;
+            for site in call_sites {
+                // A call with fewer arguments than the widest site passed
+                // nothing here, so it has no bearing either way.
+                if let Some(&guarded) = site.get(param_idx) {
+                    any_site = true;
+                    all_guarded &= guarded;
+                }
+            }
+            if any_site && all_guarded {
+                summary.callsite_param_validated.insert(param_idx);
             }
         }
     }

@@ -1,6 +1,6 @@
-//! CLI integration tests for sqc.
+//! CLI integration tests for aurora-lint.
 //!
-//! These tests invoke the sqc binary as a subprocess and verify:
+//! These tests invoke the aurora-lint binary as a subprocess and verify:
 //! - Export formats (JSON, CSV, SARIF)
 //! - Exit codes (--fail-on-violation, --fail-on-severity)
 //! - Filtering (--rules, --min-severity)
@@ -12,8 +12,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-fn sqc_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_sqc"))
+fn aurora_lint_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_aurora-lint"))
 }
 
 fn fixtures() -> PathBuf {
@@ -28,12 +28,12 @@ fn manifest_dcl31() -> PathBuf {
     fixtures().join("manifest_dcl31.toml")
 }
 
-/// Run sqc with given args, return (exit_code, stdout, stderr).
-fn run_sqc(args: &[&str]) -> (i32, String, String) {
-    let output = Command::new(sqc_bin())
+/// Run aurora-lint with given args, return (exit_code, stdout, stderr).
+fn run_aurora_lint(args: &[&str]) -> (i32, String, String) {
+    let output = Command::new(aurora_lint_bin())
         .args(args)
         .output()
-        .expect("failed to execute sqc");
+        .expect("failed to execute aurora-lint");
     let code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -88,7 +88,7 @@ fn git_in(repo_dir: &std::path::Path, args: &[&str]) {
 fn export_json_structure() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -112,7 +112,7 @@ fn export_json_structure() {
 fn export_json_empty_for_clean_file() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("clean.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -130,7 +130,7 @@ fn export_json_empty_for_clean_file() {
 fn export_csv_has_header_and_row() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.csv");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -150,7 +150,7 @@ fn export_csv_has_header_and_row() {
 fn export_sarif_structure() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.sarif");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -174,7 +174,7 @@ fn export_sarif_structure() {
 
 #[test]
 fn exit_code_zero_no_violations() {
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("clean.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -184,7 +184,7 @@ fn exit_code_zero_no_violations() {
 
 #[test]
 fn exit_code_zero_without_fail_flag() {
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -195,7 +195,7 @@ fn exit_code_zero_without_fail_flag() {
 
 #[test]
 fn fail_on_violation_exits_one() {
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -206,7 +206,7 @@ fn fail_on_violation_exits_one() {
 
 #[test]
 fn fail_on_violation_exits_zero_when_clean() {
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("clean.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -218,7 +218,7 @@ fn fail_on_violation_exits_zero_when_clean() {
 #[test]
 fn fail_on_severity_exits_one_when_met() {
     // MSC04-C is Medium severity
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -231,7 +231,7 @@ fn fail_on_severity_exits_one_when_met() {
 #[test]
 fn fail_on_severity_exits_zero_when_below() {
     // MSC04-C is Medium — threshold High means no match
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -248,7 +248,7 @@ fn min_severity_filters_below_threshold() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     // MSC04-C is Medium — High threshold should filter it out
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -271,7 +271,7 @@ fn min_severity_filters_below_threshold() {
 fn min_severity_passes_at_threshold() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -291,7 +291,7 @@ fn min_severity_passes_at_threshold() {
 fn rules_filter_includes_matching_rule() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -311,7 +311,7 @@ fn rules_filter_includes_matching_rule() {
 fn rules_filter_excludes_non_matching() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -343,7 +343,7 @@ fn prescan_save_load_round_trip() {
     let helpers_dir = fixtures().join("project/helpers");
 
     // Save prescan — with -d, DCL31-C violation is suppressed
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         project_main.to_str().unwrap(),
         "-m",
         manifest_dcl31().to_str().unwrap(),
@@ -358,7 +358,7 @@ fn prescan_save_load_round_trip() {
     assert!(cache.exists(), "prescan cache file should be created");
 
     // Load prescan — same result without needing -d
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         project_main.to_str().unwrap(),
         "-m",
         manifest_dcl31().to_str().unwrap(),
@@ -398,7 +398,7 @@ fn function_like_macro_not_flagged_as_undeclared() {
     let main_c = fixtures().join("macro_wrappers/main.c");
     let include_dir = fixtures().join("macro_wrappers/include");
 
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         main_c.to_str().unwrap(),
         "-m",
         manifest_dcl31().to_str().unwrap(),
@@ -437,7 +437,7 @@ fn macro_output_arg_not_flagged_uninitialized() {
     let main_c = fixtures().join("macro_out_param/main.c");
     let include_dir = fixtures().join("macro_out_param/include");
 
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         main_c.to_str().unwrap(),
         "-m",
         manifest_exp33().to_str().unwrap(),
@@ -463,7 +463,7 @@ fn macro_output_arg_not_flagged_uninitialized() {
 fn inline_suppression_hides_violation() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, stdout, _) = run_sqc(&[
+    let (code, stdout, _) = run_aurora_lint(&[
         fixtures().join("suppressed_inline.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -484,11 +484,40 @@ fn inline_suppression_hides_violation() {
     );
 }
 
+/// The pre-rename `SQC-SUPPRESS` spelling stays accepted (see
+/// `inline_suppression_hides_violation`, whose fixture still uses it), but new
+/// suppressions are written as `AURORA-SUPPRESS`. Both must resolve to the same
+/// hash, since the hash covers only the code portion of the line.
+#[test]
+fn inline_suppression_accepts_canonical_directive() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, stdout, _) = run_aurora_lint(&[
+        fixtures()
+            .join("suppressed_inline_aurora.c")
+            .to_str()
+            .unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("1 suppressed"),
+        "AURORA-SUPPRESS should suppress just as SQC-SUPPRESS does"
+    );
+
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(violations.is_empty());
+}
+
 #[test]
 fn toml_suppression_hides_violation() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, stdout, _) = run_sqc(&[
+    let (code, stdout, _) = run_aurora_lint(&[
         fixtures().join("violation.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -511,10 +540,33 @@ fn toml_suppression_hides_violation() {
     );
 }
 
+/// `suppress.toml`'s `tool` field accepts the new name; the legacy `"sqc"`
+/// value is covered by `toml_suppression_hides_violation`'s fixture.
+#[test]
+fn toml_suppression_accepts_canonical_tool_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, stdout, _) = run_aurora_lint(&[
+        fixtures().join("violation.c").to_str().unwrap(),
+        "-m",
+        manifest_msc04().to_str().unwrap(),
+        "--suppress-file",
+        fixtures().join("suppress_aurora.toml").to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("1 suppressed"));
+
+    let content = std::fs::read_to_string(&out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(violations.is_empty());
+}
+
 #[test]
 fn fail_on_violation_ignores_suppressed() {
     // Suppressed violations should NOT trigger exit code 1
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("suppressed_inline.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -528,7 +580,7 @@ fn fail_on_violation_ignores_suppressed() {
 
 #[test]
 fn generate_suppression_outputs_hash() {
-    let (code, stdout, _) = run_sqc(&[
+    let (code, stdout, _) = run_aurora_lint(&[
         "--generate-suppression",
         &format!(
             "{}:1:MSC04-C",
@@ -538,8 +590,8 @@ fn generate_suppression_outputs_hash() {
         manifest_msc04().to_str().unwrap(),
     ]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("SQC-SUPPRESS: MSC04-C"));
-    assert!(stdout.contains("tools:suppress sqc:MSC04-C"));
+    assert!(stdout.contains("AURORA-SUPPRESS: MSC04-C"));
+    assert!(stdout.contains("tools:suppress aurora-lint:MSC04-C"));
     assert!(stdout.contains("HASH:745a35718a0e2d31"));
     assert!(stdout.contains("[[suppress]]"));
 }
@@ -550,7 +602,7 @@ fn generate_suppression_outputs_hash() {
 fn without_d_flag_reports_undeclared_function() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("project/main.c").to_str().unwrap(),
         "-m",
         manifest_dcl31().to_str().unwrap(),
@@ -573,7 +625,7 @@ fn without_d_flag_reports_undeclared_function() {
 fn with_d_flag_suppresses_cross_file_function() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("project/main.c").to_str().unwrap(),
         "-m",
         manifest_dcl31().to_str().unwrap(),
@@ -602,7 +654,7 @@ fn manifest_exp34() -> PathBuf {
 fn crossfile_global_null_deref_detected_with_d_flag() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("crossfile_null/sink.c").to_str().unwrap(),
         "-m",
         manifest_exp34().to_str().unwrap(),
@@ -626,7 +678,7 @@ fn crossfile_global_null_deref_detected_with_d_flag() {
 fn crossfile_global_null_guard_not_flagged() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures()
             .join("crossfile_null/sink_safe.c")
             .to_str()
@@ -656,7 +708,7 @@ fn crossfile_global_null_guard_not_flagged() {
 fn crossfile_global_null_not_detected_without_d_flag() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("crossfile_null/sink.c").to_str().unwrap(),
         "-m",
         manifest_exp34().to_str().unwrap(),
@@ -710,10 +762,10 @@ fn diff_mode_only_analyzes_modified_files() {
     let out = repo_dir.join("out.json");
 
     // --diff should only analyze the new/modified file
-    // Must run from within the repo so sqc detects the git context correctly.
-    // Scrub inherited git env vars so sqc's internal `git diff` targets this
+    // Must run from within the repo so aurora-lint detects the git context correctly.
+    // Scrub inherited git env vars so aurora-lint's internal `git diff` targets this
     // temp repo, not a parent hook's repo (see git_in).
-    let output = scrub_git_env(&mut Command::new(sqc_bin()))
+    let output = scrub_git_env(&mut Command::new(aurora_lint_bin()))
         .args([
             repo_dir.to_str().unwrap(),
             "-m",
@@ -724,7 +776,7 @@ fn diff_mode_only_analyzes_modified_files() {
         ])
         .current_dir(repo_dir)
         .output()
-        .expect("failed to execute sqc");
+        .expect("failed to execute aurora-lint");
 
     let code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -748,7 +800,7 @@ fn diff_mode_only_analyzes_modified_files() {
 fn sarif_includes_suppressed_violations() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.sarif");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixtures().join("suppressed_inline.c").to_str().unwrap(),
         "-m",
         manifest_msc04().to_str().unwrap(),
@@ -781,7 +833,7 @@ fn crossfile_callsite_null_detected_with_d_flag() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join("crossfile_callsite_null");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixture_dir.join("callee.c").to_str().unwrap(),
         "-m",
         manifest_exp34().to_str().unwrap(),
@@ -810,7 +862,7 @@ fn crossfile_callsite_null_not_detected_without_d_flag() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join("crossfile_callsite_null");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixture_dir.join("callee.c").to_str().unwrap(),
         "-m",
         manifest_exp34().to_str().unwrap(),
@@ -850,7 +902,7 @@ fn crossfile_callsite_safe_not_flagged() {
     .unwrap();
 
     let out = dir.path().join("out.json");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         safe_dir.join("callee.c").to_str().unwrap(),
         "-m",
         manifest_exp34().to_str().unwrap(),
@@ -882,7 +934,7 @@ fn crossfile_nullable_return_detected_with_d_flag() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join("crossfile_callsite_null");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixture_dir.join("nullable_user_bad.c").to_str().unwrap(),
         "-m",
         manifest_exp34().to_str().unwrap(),
@@ -911,7 +963,7 @@ fn crossfile_nullable_return_safe_not_flagged() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join("crossfile_callsite_null");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixture_dir.join("nullable_user_safe.c").to_str().unwrap(),
         "-m",
         manifest_exp34().to_str().unwrap(),
@@ -955,7 +1007,7 @@ fn safe_free_macro_not_flagged_double_free() {
     let main_c = fixtures().join("safe_free_macro/main.c");
     let include_dir = fixtures().join("safe_free_macro/include");
 
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         main_c.to_str().unwrap(),
         "-m",
         manifest_mem30().to_str().unwrap(),
@@ -988,7 +1040,7 @@ fn crossfile_frees_param_suppresses_leak() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join("crossfile_frees");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixture_dir.join("caller_good.c").to_str().unwrap(),
         "-m",
         manifest_mem31().to_str().unwrap(),
@@ -1013,11 +1065,11 @@ fn crossfile_frees_param_suppresses_leak() {
 
 #[test]
 fn crossfile_frees_param_not_suppressed_without_d_flag() {
-    // Without -d, sqc can't know that cleanup_buffer frees param → MEM31-C flags leak.
+    // Without -d, aurora-lint can't know that cleanup_buffer frees param → MEM31-C flags leak.
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join("crossfile_frees");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixture_dir.join("caller_good.c").to_str().unwrap(),
         "-m",
         manifest_mem31().to_str().unwrap(),
@@ -1044,7 +1096,7 @@ fn crossfile_actual_leak_detected() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join("crossfile_frees");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixture_dir.join("caller_leak.c").to_str().unwrap(),
         "-m",
         manifest_mem31().to_str().unwrap(),
@@ -1081,7 +1133,7 @@ fn crossfile_header_declared_suppresses_dcl15c() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join("crossfile_header");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixture_dir.join("impl.c").to_str().unwrap(),
         "-m",
         manifest_dcl15().to_str().unwrap(),
@@ -1120,13 +1172,13 @@ fn crossfile_header_declared_suppresses_dcl15c() {
 
 #[test]
 fn crossfile_sibling_header_suppresses_public_api_without_d_flag() {
-    // sqc auto-scans sibling .h files even without -d, so public API functions
+    // aurora-lint auto-scans sibling .h files even without -d, so public API functions
     // declared in public_api.h should NOT be flagged by DCL15-C.
     // Only internal_helper() — which has no header prototype — should be flagged.
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.json");
     let fixture_dir = fixtures().join("crossfile_header");
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         fixture_dir.join("impl.c").to_str().unwrap(),
         "-m",
         manifest_dcl15().to_str().unwrap(),
@@ -1160,6 +1212,110 @@ fn crossfile_sibling_header_suppresses_public_api_without_d_flag() {
     );
 }
 
+// ─── Cross-file caller validation (ARR30-C) ─────────────────────────────────
+
+fn manifest_arr30() -> PathBuf {
+    fixtures().join("manifest_arr30.toml")
+}
+
+/// The message the unvalidated-parameter-index family reports under.
+fn unvalidated_index_findings(out: &std::path::Path) -> Vec<String> {
+    let content = std::fs::read_to_string(out).unwrap();
+    let violations: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    violations
+        .iter()
+        .filter(|v| v["rule_id"] == "ARR30-C")
+        .filter_map(|v| v["message"].as_str())
+        .filter(|m| m.contains("unvalidated function parameter index"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn arr30_unvalidated_index_flagged_without_d_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, _) = run_aurora_lint(&[
+        fixtures()
+            .join("crossfile_arr30_validated/invoke.c")
+            .to_str()
+            .unwrap(),
+        "-m",
+        manifest_arr30().to_str().unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let findings = unvalidated_index_findings(&out);
+    assert!(
+        findings.iter().any(|m| m.contains("index")),
+        "Without -d there is no call site to summarise, so invoke_inject's \
+         index parameter must still be flagged (got: {:?})",
+        findings
+    );
+}
+
+#[test]
+fn arr30_unvalidated_index_suppressed_by_crossfile_caller() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, _) = run_aurora_lint(&[
+        fixtures()
+            .join("crossfile_arr30_validated/invoke.c")
+            .to_str()
+            .unwrap(),
+        "-m",
+        manifest_arr30().to_str().unwrap(),
+        "-d",
+        fixtures()
+            .join("crossfile_arr30_validated")
+            .to_str()
+            .unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let findings = unvalidated_index_findings(&out);
+    assert!(
+        findings.is_empty(),
+        "decode_inject range-checks index before the call; with -d the \
+         project-wide summary should reach across the file boundary (got: {:?})",
+        findings
+    );
+}
+
+#[test]
+fn arr30_unvalidated_index_survives_one_unguarded_caller() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
+    let (code, _, _) = run_aurora_lint(&[
+        fixtures()
+            .join("crossfile_arr30_unvalidated/invoke.c")
+            .to_str()
+            .unwrap(),
+        "-m",
+        manifest_arr30().to_str().unwrap(),
+        "-d",
+        fixtures()
+            .join("crossfile_arr30_unvalidated")
+            .to_str()
+            .unwrap(),
+        "-e",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0);
+
+    let findings = unvalidated_index_findings(&out);
+    assert!(
+        findings.iter().any(|m| m.contains("index")),
+        "raw_inject passes index unchecked, which must disqualify the \
+         position for every caller (got: {:?})",
+        findings
+    );
+}
+
 fn manifest_arr36() -> PathBuf {
     fixtures().join("manifest_arr36.toml")
 }
@@ -1176,7 +1332,7 @@ fn arr36_cross_file_caller_proves_distinct_arrays() {
     let out = dir.path().join("out.json");
     let project = fixtures().join("crossfile_arr36/distinct");
 
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         project.join("callee.c").to_str().unwrap(),
         "-m",
         manifest_arr36().to_str().unwrap(),
@@ -1207,7 +1363,7 @@ fn arr36_cross_file_caller_passing_one_buffer_proves_nothing() {
     let out = dir.path().join("out.json");
     let project = fixtures().join("crossfile_arr36/shared");
 
-    let (code, _, _) = run_sqc(&[
+    let (code, _, _) = run_aurora_lint(&[
         project.join("callee.c").to_str().unwrap(),
         "-m",
         manifest_arr36().to_str().unwrap(),

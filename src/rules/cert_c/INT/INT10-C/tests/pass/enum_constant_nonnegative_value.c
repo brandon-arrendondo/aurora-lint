@@ -11,7 +11,6 @@
  * modulo operand backed by such a constant can't produce a negative
  * remainder, so `int_irq_min % 32` should not be flagged.
  */
-// sqc-test: prescan
 
 #define IRQ_INT_OFFSET 0x20
 

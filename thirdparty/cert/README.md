@@ -1,4 +1,4 @@
-# SEI CERT C content vendored into sqc
+# SEI CERT C content vendored into aurora-lint
 
 `LICENSE` in this directory is retrieved verbatim from the SEI's own repository
 for the secure coding standards and is the notice CMU asks redistributors to

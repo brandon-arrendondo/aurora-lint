@@ -305,7 +305,7 @@ pub fn generate_manifest_toml(base: &RuleManifest, profile: &ProjectProfile) -> 
     out.push_str(&format!("name = {:?}\n", base.metadata.name));
     out.push_str(&format!("version = {:?}\n", base.metadata.version));
     let description = format!(
-        "{} (relevance-gated by sqc --detect-relevance: threading={}, windows={})",
+        "{} (relevance-gated by aurora-lint --detect-relevance: threading={}, windows={})",
         base.metadata
             .description
             .clone()

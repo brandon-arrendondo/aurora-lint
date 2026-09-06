@@ -4,19 +4,19 @@
 Juliet ships as a flat pile of independent .c files under testcases/CWE*/
 (optionally split into s01/s02/... subdirs for large CWEs) plus a shared
 testcasesupport/ directory of helper .c/.h files -- there is no per-CWE
-Makefile in the tree sqc's benchmark harness downloads (see
+Makefile in the tree aurora-lint's benchmark harness downloads (see
 docs/benchmark-setup.rst, "Juliet Test Suite Setup"), so there is nothing to
 `bear -- make` against. Each file is meant to be compiled on its own, so this
 walks the corpus and emits one entry per .c file instead of driving a real
 build.
 
-Flags mirror exactly what bench/runner.py already passes to sqc for every
+Flags mirror exactly what bench/runner.py already passes to aurora-lint for every
 Juliet scan (`-d <cwe_dir> -d testcasesupport`, no OMITGOOD/OMITBAD/
 INCLUDEMAIN defines) so the synthesized compile DB doesn't imply a different
-view of the source than sqc's own invocation: just `-I testcasesupport`,
-no macro predefinitions. The fidelity gain over sqc's current directory-based
+view of the source than aurora-lint's own invocation: just `-I testcasesupport`,
+no macro predefinitions. The fidelity gain over aurora-lint's current directory-based
 resolution is system header / target-ABI info a real `cc` invocation carries
-(and any new sqc feature that consumes compile_commands.json can use), not a
+(and any new aurora-lint feature that consumes compile_commands.json can use), not a
 different set of active preprocessor branches.
 
 Usage:

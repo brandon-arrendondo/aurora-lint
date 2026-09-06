@@ -19,7 +19,7 @@ use tree_sitter::Node;
 ///
 /// # Examples
 /// ```
-/// use sqc::utility::cert_c::size_analysis::find_element_size;
+/// use aurora_lint::utility::cert_c::size_analysis::find_element_size;
 /// // Works when declaration is found before usage point
 /// let code = "int numbers[10];";
 /// assert_eq!(find_element_size("numbers", code), 4);
@@ -85,7 +85,7 @@ pub fn find_element_size(var_name: &str, preceding_text: &str) -> usize {
 ///
 /// # Examples
 /// ```no_run
-/// use sqc::utility::cert_c::size_analysis::find_string_literal_length;
+/// use aurora_lint::utility::cert_c::size_analysis::find_string_literal_length;
 /// use tree_sitter::Node;
 /// // When checking the strcpy call with msg:
 /// // let node: Node = /* get from parsed AST */;
@@ -138,7 +138,7 @@ pub fn find_string_literal_length(var_name: &str, node: &Node, source: &str) -> 
 ///
 /// # Examples
 /// ```
-/// use sqc::utility::cert_c::size_analysis::find_allocation_size;
+/// use aurora_lint::utility::cert_c::size_analysis::find_allocation_size;
 /// let code = "int *arr = malloc(10 * sizeof(int)); for (i = 0; i < 15; i++)";
 /// assert_eq!(find_allocation_size("arr", code), Some(10));
 ///

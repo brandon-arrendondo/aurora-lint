@@ -245,7 +245,7 @@ doesn't need the benchmark node:
    `tests/pass`/`tests/fail` convention — CON03-C/CON07-C likely already have
    some; check before assuming none exist, per the STR34-C lesson from task
    574 where fixtures existed but weren't found by a naive filename grep).
-2. Run `sqc` directly against `~/toolchain/{mosquitto,curl,sqlite,hostap,
+2. Run `aurora-lint` directly against `~/toolchain/{mosquitto,curl,sqlite,hostap,
    lua,raylib}` with `-d` before/after, diff CON03-C/CON07-C finding counts
    and exact `file:line`s.
 3. **Hard requirement, not optional:** confirm all 6 known TPs in the table

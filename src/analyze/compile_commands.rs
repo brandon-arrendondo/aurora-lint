@@ -10,7 +10,7 @@
 //! back-mapping fidelity.
 //!
 //! This module takes the cheap half of that idea and skips the expensive half.
-//! sqc *already* has the machinery a compile DB would feed:
+//! aurora-lint *already* has the machinery a compile DB would feed:
 //!
 //! - [`crate::analyze::prescan::resolve_includes`] already resolves `#include`
 //!   directives transitively against a caller-supplied include-path list, and
@@ -20,7 +20,7 @@
 //!   on demand, and is already wired into EXP33-C, EXP34-C, MEM30-C, MEM31-C
 //!   and DCL31-C.
 //!
-//! The only reason §5(B) says sqc "cannot expand macros from unscanned system
+//! The only reason §5(B) says aurora-lint "cannot expand macros from unscanned system
 //! headers" is that nothing ever *tells* it where those headers live. A compile
 //! DB knows. So instead of preprocessing anything, this module reads the DB for
 //! its `-I`/`-isystem`/`-iquote`/`-idirafter` search paths and its `-D`/`-U`
@@ -38,7 +38,7 @@
 //!   merged with `or_insert` semantics *after* the source-derived prescan, so a
 //!   real `#define` in real source always wins over a build flag. A build flag
 //!   can only supply a name the tree never defined. This is the conservative
-//!   direction: it can reveal a constant sqc previously treated as opaque, but
+//!   direction: it can reveal a constant aurora-lint previously treated as opaque, but
 //!   it can never change the meaning of one it already resolved.
 //! - **Paths are merged, not scoped per-file.** A compile DB is per-TU, but
 //!   `resolve_includes` takes one global search list. Union-ing the entries is

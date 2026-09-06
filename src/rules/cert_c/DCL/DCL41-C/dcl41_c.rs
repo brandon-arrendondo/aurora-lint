@@ -24,7 +24,7 @@ use tree_sitter::Node;
 pub struct Dcl41C {
     /// Cross-file function-like macro definitions (from the prescan / macro
     /// engine). Used to recognize macros like sqlite's `CASE(i,str)` that
-    /// expand to a real `case i:` label sqc's tree-sitter-based parse can't
+    /// expand to a real `case i:` label aurora-lint's tree-sitter-based parse can't
     /// see directly — the invocation parses as an ordinary call expression.
     function_macros: RefCell<HashMap<String, FunctionMacro>>,
 }

@@ -3,7 +3,6 @@
  * Status: PASS - Compound if condition bounds shift amount
  */
 
-// sqc-test: prescan
 
 void f(int val, int shift) {
     if (shift >= 0 && shift < 32) {

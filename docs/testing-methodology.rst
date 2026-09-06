@@ -1,21 +1,21 @@
 Testing Methodology
 ===================
 
-SqC employs a three-tier testing strategy: unit tests for individual rule logic,
+aurora-lint employs a three-tier testing strategy: unit tests for individual rule logic,
 the NIST Juliet Test Suite for precision/recall measurement, and real-world
 open-source codebases for scalability and noise validation.
 
 Benchmark Strategy
 ------------------
 
-SqC is benchmarked on two axes:
+aurora-lint is benchmarked on two axes:
 
 1. **Juliet Test Suite** (NIST) — 54,484 files with ground truth (OMITBAD/OMITGOOD
    sections). Measures TP rate, FP rate, and per-CWE coverage.
 
 2. **Real-World Open-Source Projects** — 9 codebases (libcrc, sqlite, mosquitto,
    curl, hostap, lua, raylib, pure-ftpd, seL4); the original 7 are analyzed by
-   sqc, cppcheck, and clang-tidy, the latter two (pure-ftpd, seL4) sqc-only so
+   aurora-lint, cppcheck, and clang-tidy, the latter two (pure-ftpd, seL4) aurora-lint-only so
    far. No ground truth from the tools themselves — measures violation counts,
    rule distribution, and cross-tool agreement (a separate adjudicated
    ground-truth oracle covers precision/recall; see below).
@@ -31,9 +31,9 @@ SqC is benchmarked on two axes:
 
 - **After every significant rule change**: Juliet benchmark (``python -m bench juliet``, ~10 min)
 - **After version milestones**: Full real-world benchmark (``python -m bench
-  realworld-run``, all 9 codebases; sqc on all 9, cppcheck/clang-tidy on the
+  realworld-run``, all 9 codebases; aurora-lint on all 9, cppcheck/clang-tidy on the
   original 7)
-- **cppcheck/clang-tidy results are stable** across sqc changes — run once and cache
+- **cppcheck/clang-tidy results are stable** across aurora-lint changes — run once and cache
 
 Unit Tests
 ----------
@@ -52,9 +52,9 @@ under ``src/rules/cert_c/<CATEGORY>/<RULE-ID>/tests/``:
         testcases_proper_signal_handling.c
         ...
 
-**Current coverage**: 3,574 C fixtures across 309 rules — 1,975 ``fail/``
-(must-detect), 1,594 ``pass/`` (must-not-detect) and 5 ``expected_fail/``
-(known limitations). These generate 4,032 Rust tests; all pass, 10 are
+**Current coverage**: 3,584 C fixtures across 309 rules — 1,917 ``fail/``
+(must-detect), 1,601 ``pass/`` (must-not-detect) and 66 ``expected_fail/``
+(known limitations). These generate 4,052 Rust tests; all pass, 71 are
 ``#[ignore]``\ d (the ``expected_fail`` tier plus fixtures for rules that
 are tracked but not implemented). Regenerate these counts with
 ``python3 scripts/fixture_provenance.py``.
@@ -68,10 +68,10 @@ Tests are auto-generated into Rust test functions from ``.c`` files — no embed
     cargo test
 
     # Tests for a specific rule
-    cargo test --package sqc --lib -- rules::cert_c::sig01_c::tests
+    cargo test --package aurora-lint --lib -- rules::cert_c::sig01_c::tests
 
     # Tests for a category
-    cargo test --package sqc --lib -- rules::cert_c::mem
+    cargo test --package aurora-lint --lib -- rules::cert_c::mem
 
 Test cases are derived from patterns documented in the
 `SEI CERT C Coding Standard <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard>`_
@@ -105,29 +105,29 @@ line in its header comment:
      - Undeclared
      - Total
    * - ``fail/`` (must-detect)
-     - 603
-     - 1,293
-     - 79
-     - 1,975
+     - 589
+     - 1,251
+     - 77
+     - 1,917
    * - ``pass/`` (must-not-detect)
      - 730
-     - 776
-     - 88
-     - 1,594
+     - 778
+     - 93
+     - 1,601
    * - ``expected_fail/``
-     - 4
-     - 0
-     - 1
+     - 18
+     - 43
      - 5
+     - 66
    * - **All**
      - **1,337**
-     - **2,069**
-     - **168**
-     - **3,574**
+     - **2,072**
+     - **175**
+     - **3,584**
 
 **Wiki-derived** fixtures come from the CERT C standard's own compliant and
 non-compliant code examples. They are third-party evidence: SEI wrote them
-against the rule text with no knowledge of SqC, so a rule agreeing with them
+against the rule text with no knowledge of aurora-lint, so a rule agreeing with them
 is a conformance result rather than a self-consistency check. 300 of the 309
 rules with fixtures have at least one; the 9 without are regression-tested
 only.
@@ -135,7 +135,7 @@ only.
 **Locally authored** fixtures were written in this repo, almost all of them
 to pin a specific defect found in real code or to lock in a false-positive
 fix. They are regression evidence and nothing more — we chose both the input
-and the expected answer, so they cannot corroborate that SqC reads the
+and the expected answer, so they cannot corroborate that aurora-lint reads the
 standard correctly.
 
 **Undeclared** fixtures simply predate the header convention. Every one
@@ -167,7 +167,7 @@ What the Fixture Corpus Does and Does Not Measure
 
 The corpus is a **conformance and regression gate, not a benchmark.** It is
 never reported alongside Juliet or the real-world oracle: those measure
-precision against labels SqC did not choose, while most of this corpus is
+precision against labels aurora-lint did not choose, while most of this corpus is
 labeled by the same people who wrote the analyzer.
 
 Scoring the corpus settles how much drift that gate has actually absorbed.
@@ -176,41 +176,59 @@ change that breaks any fixture — its own or another rule's — cannot merge:
 **zero of the 309 rules fail their own fixtures**, and that is a property of
 the gate, not evidence about the rules.
 
-Two limits of the harness are worth stating, because the green result does
-not cover them.
+**Every fixture is tested under the context the analyzer really builds.**
+Each test calls ``rule.check()`` directly, but first it builds that call's
+context the way a scan does: ``prescan::prescan_single_file`` (the file-list
+prescan behind ``-d``, applied to that fixture alone), then
+``analyze::build_file_analysis`` for CFGs and value ranges, which is the call
+``analyze_one_file`` makes. Neither is a test-only reimplementation; both are
+the scan's own code.
 
-**Most fixtures are not tested under the context the analyzer really
-builds.** Each test calls ``rule.check()`` directly. A fixture carrying a
-``// sqc-test: prescan`` marker is given the scan's own context —
-``prescan::prescan_single_file`` (the file-list prescan behind ``-d``,
-applied to that fixture alone) and then ``analyze::build_file_analysis`` for
-CFGs and value ranges, which is the call ``analyze_one_file`` makes. Only 55
-of roughly 4,000 fixtures carry the marker. The rest are checked with no
-project context, no CFGs and no value ranges at all — strictly weaker than
-any invocation of the shipped tool.
+This was not always so. The context used to be opt-in behind a
+``// sqc-test: prescan`` marker that 86 of 3,584 fixtures carried, and every
+other fixture was checked with no project context, no CFGs and no value
+ranges at all — an analysis strictly weaker than any invocation of the
+shipped tool, so a green result under it said nothing about what a real scan
+does. Removing the gate cost 62 fixtures their green, each one confirmed
+against the release binary, which agreed with the context-built result every
+time: the harness was right and the old pass was the artifact.
 
-How much that hides is measured, not estimated. Removing the gate so every
-fixture gets the real context takes the suite from 4,035 passing to 62
-failing, and each of the 62 was checked against the shipped binary, which
-agrees with the new result every time: 61 ``fail/`` fixtures are detected
-only under the weaker analysis and not by a real scan (INT30-C 21, INT32-C
-19, INT31-C 16, and one each from ARR30-C ×2, EXP33-C, INT33-C, MEM30-C),
-and one ``pass/`` fixture (MEM31-C's ``safe_wrapper_functions``) draws five
-findings once context exists. The INT3x cluster has a single cause: the
-provenance gate those rules share returns "risky" whenever
-``function_summaries`` is empty, so a fixture with no context is flagged
-without the provenance analysis ever running. Closing the gap is tracked as
-its own work, since it changes what three rules report and so needs
-benchmarking, not just a green suite.
+Those 62 are now in ``expected_fail/``, and each header records which
+limitation it sits behind. 56 were a single cause — the provenance gate
+INT30-C, INT31-C and INT32-C share returned "risky" whenever
+``function_summaries`` was empty, so those fixtures were reported without the
+provenance analysis ever running. That fail-open is gone and the gate runs in
+every configuration; of the 56, 46 are the gate treating a function parameter
+as bounded local state and 10 are a definite overflow no value-based channel
+currently proves. Of the remaining six, one (MEM31-C's
+``safe_wrapper_functions``) was a real false positive and is fixed rather than
+reclassified: the rule now understands a free through a ``void **`` wrapper's
+pointee. Five are genuine false negatives that the weaker analysis papered
+over — ARR30-C ×2 and INT33-C, where the out-of-bounds index or zero divisor
+is a property of a loop rather than of the expression, and EXP33-C and
+MEM30-C, where a callee's summary reports a conditional write or a
+conditional free with no MAY/MUST distinction to say so.
+
+Restoring detection for any of these groups changes what a shipped rule
+reports, so each is tracked as its own benchmarked work rather than folded
+into a harness change.
+
+One consequence worth knowing about: with real value ranges in play, a
+fixture that nests 2,000 ``if`` statements (MEM30-C's stack-safety case)
+recurses deep enough to overflow a default test thread in an unoptimized
+build. ``.cargo/config.toml`` raises ``RUST_MIN_STACK`` repo-wide so the
+fixture keeps testing the depth it was written for.
 
 A separate and earlier claim on this page — that scanning the corpus with
 the shipped binary finds 17 violations on 11 must-not-detect fixtures — was
-an artifact of invoking ``sqc`` with no ``-d``. A scan with no ``-d`` builds
+an artifact of invoking ``aurora-lint`` with no ``-d``. A scan with no ``-d`` builds
 no context for its own target: a single-file target sees sibling ``.h``
 declarations only, a directory target sees nothing. Pass ``-d``, even a
 directory holding just that one fixture, and all 17 go to zero. Every
 benchmark invocation passes ``-d``, so no reported number was affected; the
-exposure is a first-touch ``sqc foo.c`` run, tracked separately.
+exposure is a first-touch ``aurora-lint foo.c`` run, tracked separately.
+
+One limit of the harness does remain, and the green result does not cover it.
 
 **Cross-rule interference is untested.** A fixture is only ever checked
 against its owning rule, so a ``pass/`` fixture for one rule is never
@@ -253,7 +271,7 @@ How Juliet Benchmarking Works
    CERT C rules that map to that CWE (e.g., CWE-476 enables EXP34-C). This
    eliminates noise from unrelated rules.
 
-2. **Per-CWE analysis**: SqC scans each CWE's test cases with its matched manifest.
+2. **Per-CWE analysis**: aurora-lint scans each CWE's test cases with its matched manifest.
    Violations in ``bad`` functions are true positives; violations in ``good``
    functions are false positives.
 
@@ -292,7 +310,7 @@ Metric                           Value
 **FP Reduction from Baseline**   -99.5%
 ===============================  ==========
 
-SqC achieves 100% precision (zero false positives) on 48 CWEs including:
+aurora-lint achieves 100% precision (zero false positives) on 48 CWEs including:
 
 - CWE-78 (OS command injection)
 - CWE-190 (Integer overflow)
@@ -315,7 +333,7 @@ full current per-CWE data.
 FP Reduction History
 ~~~~~~~~~~~~~~~~~~~~
 
-Over 30+ rounds of targeted optimization, SqC has reduced false positives by
+Over 30+ rounds of targeted optimization, aurora-lint has reduced false positives by
 99.5% from baseline while improving the TP rate from 41.1% to 83.8%:
 
 ========  ==========================================  ==========  =========  =========
@@ -345,11 +363,11 @@ further 16.3 points of TP rate.*
 Real-World Code Analysis
 ------------------------
 
-SqC is benchmarked against 7 real-world open-source C codebases alongside
+aurora-lint is benchmarked against 7 real-world open-source C codebases alongside
 cppcheck and clang-tidy:
 
 ===========  =========  =============  ============  ============  ============
-Project      C Files    LOC            sqc           cppcheck      clang-tidy
+Project      C Files    LOC            aurora-lint   cppcheck      clang-tidy
 ===========  =========  =============  ============  ============  ============
 libcrc       9          1,034          391           40            2
 lua          33         31,637         3,068         49            107
@@ -361,9 +379,9 @@ hostap       430        589,724        37,432        1,761         1,710
 **Total**    **956**    **1,122,823**  **104,733**   **4,246**     **2,585**
 ===========  =========  =============  ============  ============  ============
 
-*Data from sqc v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).*
+*Data from aurora-lint v0.4.120, cppcheck 2.10, clang-tidy 21.1.6 (run #118).*
 
-**Why sqc reports more violations**: SqC implements 311 CERT C rules, 307 enabled by default (both
+**Why aurora-lint reports more violations**: aurora-lint implements 311 CERT C rules, 307 enabled by default (both
 advisory and mandatory) while cppcheck and clang-tidy implement ~20 checks each.
 The difference reflects rule coverage breadth, not false positive rate.
 
@@ -386,21 +404,21 @@ Cross-Tool Comparison Methodology
 Apples-to-Apples Concerns
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-1. **Rule coverage**: cppcheck/clang-tidy implement ~20 checks each vs. sqc's
+1. **Rule coverage**: cppcheck/clang-tidy implement ~20 checks each vs. aurora-lint's
    307 enabled rules. Raw violation counts are not directly comparable.
 
 2. **Translation unit scope**: Use consistent scope (cross-file ``-d`` flag or
    single-file) when comparing.
 
 3. **Preprocessor handling**: cppcheck evaluates all ``#ifdef`` configs;
-   clang-tidy sees one; sqc analyzes all visible branches. For Juliet, compile
+   clang-tidy sees one; aurora-lint analyzes all visible branches. For Juliet, compile
    with ``-DOMITBAD``/``-DOMITGOOD`` when needed.
 
 4. **Standard library awareness**: cppcheck/clang-tidy have built-in stdlib
-   knowledge. sqc uses ``std_functions.rs`` database.
+   knowledge. aurora-lint uses ``std_functions.rs`` database.
 
 5. **Severity mapping**: cppcheck ``error/warning/style``, clang-tidy
-   ``error/warning``, sqc ``Low/Medium/High/Critical``. Map conservatively.
+   ``error/warning``, aurora-lint ``Low/Medium/High/Critical``. Map conservatively.
 
 Recommended Comparison Workflow
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -418,9 +436,9 @@ Published CERT-C Results
 No published CERT-C violation rates per KLOC on production open-source code
 exist (Goseva2015). Valid comparison strategies:
 
-1. sqc vs. cppcheck vs. clang-tidy on same codebase (done for 5 projects)
-2. sqc on JasPer with reference to SEI SCALe 2015 report (only named CERT-C audit)
-3. sqc TP rate vs. TrustInSoft's synthetic CERT-C benchmark as upper bound
+1. aurora-lint vs. cppcheck vs. clang-tidy on same codebase (done for 5 projects)
+2. aurora-lint on JasPer with reference to SEI SCALe 2015 report (only named CERT-C audit)
+3. aurora-lint TP rate vs. TrustInSoft's synthetic CERT-C benchmark as upper bound
 
 For academic context on tool effectiveness, FP rates, and the Juliet benchmark
 methodology, see :doc:`bibliography`.
@@ -481,7 +499,7 @@ What Tests Do NOT Cover
   C test coverage
 - **CLI flags**: No tests for ``--diff``, ``--export``, ``--format``, ``--include-path``,
   ``--save-prescan``, ``--load-prescan``, ``--jobs``
-- **Suppression**: No tests for ``.sqc-suppress.toml`` hash-based suppression
+- **Suppression**: No tests for ``.aurora-lint-suppress.toml`` hash-based suppression
 
 Coverage Gate
 ~~~~~~~~~~~~~
@@ -561,9 +579,9 @@ implementation cannot detect them correctly.
 Benchmark Caveats And Rule-Suite Coverage
 -----------------------------------------
 
-Moved out of ``README.md`` (2026-09-03), which should say how well SqC works
+Moved out of ``README.md`` (2026-09-03), which should say how well aurora-lint works
 rather than how the measurement is constructed. These are the caveats a
-maintainer or a reviewer needs; see :doc:`tool-comparison` for how SqC scores
+maintainer or a reviewer needs; see :doc:`tool-comparison` for how aurora-lint scores
 against other analysers.
 
 Numbers below are **not** auto-refreshed with README's highlights table, and
@@ -585,10 +603,10 @@ maintainer workflow rather than a user-facing one.
 Juliet TP rate is not the ceiling signal — the flaw-hit rate is
 ---------------------------------------------------------------
 
-**Juliet TP Rate** above is the share of sqc's Juliet findings that are true
+**Juliet TP Rate** above is the share of aurora-lint's Juliet findings that are true
 positives. It says how clean the output is, not how much of the suite's
-planted defect set sqc actually locates. That second question is the
-**flaw-hit rate** — the fraction of Juliet's known flaw lines sqc lands a
+planted defect set aurora-lint actually locates. That second question is the
+**flaw-hit rate** — the fraction of Juliet's known flaw lines aurora-lint lands a
 finding on — and it moves independently: as of v0.4.321 it was 12.9%
 (17,100 of 132,406 flaw lines), essentially flat for weeks while the TP
 rate above was moving. Quoting only the TP rate overstates the tool; this
@@ -597,7 +615,7 @@ lesson in the note above this section — see ``python -m bench compare`` or
 ``sqc_bench`` Postgres for the current figure), so treat the number here as
 illustrative of the *gap*, not as a current measurement.
 
-Per-file detection rate (in the table above) sits between the two: sqc
+Per-file detection rate (in the table above) sits between the two: aurora-lint
 flags something in over a third of flawed files, but lands on the specific
 planted flaw line in roughly an eighth of cases. When judging headroom, the
 flaw-hit rate is the honest signal to watch for movement, not the TP rate.
@@ -635,8 +653,8 @@ the rest of the suite is substantial (measured 2026-09-02, run #226):
 A rule in that last group has never been shown to detect anything real —
 but that is usually a statement about the corpora, not about the rule. The
 nine real-world projects are mature, warning-clean C, which is the opposite
-population from sqc's nominal use case (newer, in-progress, possibly
-non-compiling code wired into CI/CD early — sqc needs no build system, which
+population from aurora-lint's nominal use case (newer, in-progress, possibly
+non-compiling code wired into CI/CD early — aurora-lint needs no build system, which
 is the whole point). A rule whose defect cannot survive review in released
 software is structurally incapable of scoring a true positive there. The 60
 never-firing rules include ``WIN02-C`` and ``WIN30-C`` — Windows rules against
@@ -647,7 +665,7 @@ rather than detection logic silently deciding for them).
 
 **Worked example of why a per-rule 0.0% is sometimes a corpus artifact, not
 a rule defect** (task 692): ``DCL31-C`` shows 364 findings, 324 labeled, 0
-TP — 0.0% precision. That figure measures sqc's header reachability, not
+TP — 0.0% precision. That figure measures aurora-lint's header reachability, not
 the rule's quality. ``mosquitto`` alone goes from 1,365 ``DCL31-C`` findings
 with no ``-I`` to 0 with ``-I /usr/include``. The rule guards a genuine defect —
 under C89 an implicit declaration makes the compiler assume ``int f()``, so

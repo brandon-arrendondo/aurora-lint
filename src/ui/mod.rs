@@ -335,7 +335,7 @@ impl TerminalUI {
         let mut stdout = io::stdout();
         execute!(
             stdout,
-            SetTitle("sqc - Software Code Quality"),
+            SetTitle("aurora-lint - CERT C static analyzer"),
             EnterAlternateScreen,
             EnableMouseCapture
         )
@@ -918,9 +918,9 @@ impl TerminalUI {
                 .title(ratatui::text::Line::from(vec![
                     Span::styled("✓", Style::default().fg(Color::Green)),
                     Span::styled("{", Style::default().fg(Color::Cyan)),
-                    Span::raw("SQC"),
+                    Span::raw("aurora-lint"),
                     Span::styled("}", Style::default().fg(Color::Cyan)),
-                    Span::raw(" - Software Code Quality"),
+                    Span::raw(" - CERT C static analyzer"),
                 ])),
         );
 
@@ -1286,14 +1286,14 @@ impl TerminalUI {
                 Span::raw(" "),
                 Span::styled("{", Style::default().fg(Color::Cyan)),
                 Span::styled(
-                    "SQC",
+                    "aurora-lint",
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("}", Style::default().fg(Color::Cyan)),
             ]),
-            Line::from("Software Code Quality"),
+            Line::from("CERT C static analyzer"),
             Line::from(format!(
                 "Total Rules: {} | Tab: Configuration",
                 self.manifest.rules.cert_c.len()

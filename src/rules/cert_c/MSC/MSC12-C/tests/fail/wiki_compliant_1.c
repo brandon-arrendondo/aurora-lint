@@ -7,7 +7,7 @@
  * wiki) -- it isn't claiming the empty comment-only if-bodies
  * themselves are meaningful code. Both empty-body if statements below
  * are mechanically empty with no effect, which is exactly what
- * MSC12-C targets; sqc's detection is correct even though the wiki
+ * MSC12-C targets; aurora-lint's detection is correct even though the wiki
  * used placeholder comments instead of real code for illustration.
  */
 
