@@ -26,11 +26,20 @@ wrote for it.
       (`ENV04-C`, `MSC18-C`, `MSC19-C`, `MSC25-C`).
    3. **Measurement-swamping misfire** — the rule is implemented so poorly that
       leaving it enabled buries every other rule's findings rather than
-      producing a measurement. `API05-C` (2,445 FP / 2 TP across the suite) and
-      `MSC12-C` are the only two. This category is a debt, not a verdict: a
-      disable claiming it **must** cite the FP-reduction task that will re-enable
-      the rule, or nothing tracks the debt. The two open gates are tools_sqc
-      tasks 998 (`API05-C`) and 999 (`MSC12-C`).
+      producing a measurement. `MSC12-C` is the only one left. This category is
+      a debt, not a verdict: a disable claiming it **must** cite the
+      FP-reduction task that will re-enable the rule, or nothing tracks the
+      debt. The open gate is tools_sqc task 999 (`MSC12-C`).
+
+      **Volume is what this category is about, and it must be measured against
+      the current binary, not a label count.** `ground_truth` accumulates rows
+      across every run a rule was ever enabled for, so a rule whose detection
+      logic was later narrowed keeps its old labels and reads as far noisier
+      than it is. `API05-C` sat here on a 2,445 FP / 2 TP label count that
+      predated the fix which collapsed it to 35 findings across all nine
+      corpora; it now runs everywhere. Before claiming this category, scan the
+      pinned checkouts with a rule-only manifest and count what the rule
+      actually emits today.
 
    Everything else stays enabled. In particular, **"the project does not follow
    this recommendation" is not a reason to disable** — that is a disagreement
@@ -104,9 +113,10 @@ this config just switched on.
 ## Status
 
 Label counts are as of the 2026-09-03 scope audit; ask `benchmarking_db` for
-current ones. Every row predates the config change described above, so each
-codebase now has unadjudicated findings from the 13 rules this change
-enabled — no row is "Full" again until those are labelled.
+current ones. Every row predates the config changes described above, so each
+codebase now has unadjudicated findings from the 13 rules that change enabled,
+plus `API05-C`'s 35 (curl 20, hostap 9, pureftpd 3, mosquitto 2, sqlite 1) —
+no row is "Full" again until those are labelled.
 
 | Codebase  | Config                    | Adjudicated? |
 |-----------|---------------------------|--------------|
