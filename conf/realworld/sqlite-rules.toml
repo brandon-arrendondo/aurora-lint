@@ -26,7 +26,7 @@ enabled = true
 
 
 [rules.cert_c.API05-C]
-enabled = false  # ZERO real-world adoption of C99 conformant-array-param syntax found anywhere the suite has checked (task 194: 11+ repos + raylib + monocypher, zero genuine uses); ground_truth measures 2445 FP / 2 TP (0.08%) across all 8 oracles combined, and the 2 "TP" instances are the identical pointer+size-param shape every other adjudicator called a stylistic non-issue -- categorical policy exclusion (task 628), not FP suppression; see `todo-sqlite-cli show 194` for the synthetic-fixture positive-validation track this rule still has
+enabled = false  # ZERO real-world adoption of C99 conformant-array-param syntax found anywhere the suite has checked (task 194: 11+ repos + raylib + monocypher, zero genuine uses); ground_truth measures 2445 FP / 2 TP (0.08%) across all 8 oracles combined, and the 2 "TP" instances are the identical pointer+size-param shape every other adjudicator called a stylistic non-issue -- measurement-swamping misfire (README policy 3, task 628), not a per-finding FP suppression; re-enable gated on tools_sqc task 994; see `todo-sqlite-cli show 194` for the synthetic-fixture positive-validation track this rule still has
 
 
 [rules.cert_c.API07-C]
@@ -186,7 +186,7 @@ enabled = true
 
 
 [rules.cert_c.DCL04-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.DCL05-C]
@@ -194,7 +194,7 @@ enabled = false  # "complex function pointer declaration should use typedef" —
 
 
 [rules.cert_c.DCL06-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.DCL07-C]
@@ -202,7 +202,7 @@ enabled = true
 
 
 [rules.cert_c.DCL08-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.DCL09-C]
@@ -374,7 +374,7 @@ enabled = true
 
 
 [rules.cert_c.EXP02-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.EXP03-C]
@@ -398,7 +398,7 @@ enabled = true
 
 
 [rules.cert_c.EXP10-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.EXP11-C]
@@ -406,7 +406,7 @@ enabled = true
 
 
 [rules.cert_c.EXP12-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.EXP13-C]
@@ -414,7 +414,7 @@ enabled = true
 
 
 [rules.cert_c.EXP14-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.EXP15-C]
@@ -426,7 +426,7 @@ enabled = true
 
 
 [rules.cert_c.EXP19-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.EXP20-C]
@@ -690,11 +690,11 @@ enabled = true
 
 
 [rules.cert_c.INT01-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.INT02-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.INT04-C]
@@ -738,11 +738,11 @@ enabled = true
 
 
 [rules.cert_c.INT16-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.INT17-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.INT18-C]
@@ -1022,7 +1022,7 @@ enabled = true
 
 
 [rules.cert_c.PRE31-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.PRE32-C]
@@ -1148,7 +1148,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.ENV04-C]
-enabled = false
+enabled = false  # not implemented (no rule module under src/rules/cert_c/ENV/ENV04-C) and CERT has published no ENV04-C content to implement against; dead config, not a suppression -- see tools_sqc tasks 330 and 611
 
 [rules.cert_c.FLP38-C]
 enabled = true
@@ -1175,7 +1175,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC12-C]
-enabled = false  # empty-body-by-design is pervasive real-world C idiom (commented no-ops, stub functions, no-op scan loops); categorical policy exclusion, not FP suppression -- see data/precision_audit/msc12_msc13_0.4.141/README.md
+enabled = false  # empty-body-by-design is pervasive real-world C idiom (commented no-ops, stub functions, no-op scan loops); measurement-swamping misfire (README policy 3), not a per-finding FP suppression; re-enable gated on tools_sqc task 995 -- see data/precision_audit/msc12_msc13_0.4.141/README.md
 
 [rules.cert_c.MSC13-C]
 enabled = true
@@ -1190,10 +1190,10 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC18-C]
-enabled = false
+enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC18-C); dead config, not a suppression -- see tools_sqc task 342
 
 [rules.cert_c.MSC19-C]
-enabled = false
+enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC19-C); dead config, not a suppression -- see tools_sqc task 343
 
 [rules.cert_c.MSC20-C]
 enabled = true
@@ -1211,7 +1211,7 @@ enabled = true
 enabled = true
 
 [rules.cert_c.MSC25-C]
-enabled = false
+enabled = false  # not implemented (no rule module under src/rules/cert_c/MSC/MSC25-C) and CERT has published no MSC25-C content to implement against; dead config, not a suppression -- see tools_sqc tasks 349 and 908
 
 [rules.cert_c.MSC42-C]
 enabled = true
