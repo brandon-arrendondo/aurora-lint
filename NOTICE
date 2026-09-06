@@ -1,4 +1,4 @@
-sqc — Software Code Quality (CERT C compliance checker)
+aurora-lint — a CERT C compliance checker
 Copyright 2025-2026 BISSELL Homecare, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -46,11 +46,11 @@ What is used, and how it was changed:
     "Source: wiki" header comment.
 
 Carnegie Mellon and CERT are registered trademarks of Carnegie Mellon
-University. sqc is not affiliated with, endorsed by, or certified by
+University. aurora-lint is not affiliated with, endorsed by, or certified by
 Carnegie Mellon University or its Software Engineering Institute; the marks
 are used nominatively to name the standard the tool checks against.
 
-SqC itself is licensed Apache-2.0; the CERT material above is third-party
+aurora-lint itself is licensed Apache-2.0; the CERT material above is third-party
 content carried under its own upstream terms. A packager describing the
 contents of a binary package would write the union of the two,
 Apache-2.0 AND MIT AND CC-BY-4.0.

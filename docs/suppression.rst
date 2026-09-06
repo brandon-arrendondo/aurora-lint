@@ -1,14 +1,14 @@
 Suppression System
 ==================
 
-SqC supports suppressing false positives via inline source comments or an external
+aurora-lint supports suppressing false positives via inline source comments or an external
 TOML file. Each suppression includes a SHA-256 hash of the violation line, ensuring
 suppressions break automatically when the underlying code changes.
 
 Design intent: surface, don't silence
 --------------------------------------
 
-SqC's job is to correctly surface every violation of a rule as the rule is written
+aurora-lint's job is to correctly surface every violation of a rule as the rule is written
 -- not to guess which violations a given team will care about. Whether a correctly
 detected finding is worth acting on, is a deliberate style choice, or applies to a
 particular codebase at all is a per-project judgment call, and this suppression
@@ -29,32 +29,56 @@ Inline Comment Suppression
 .. code-block:: c
 
     // Line-before style (most common):
-    // SQC-SUPPRESS: ARR30-C HASH:a1b2c3d4e5f67890 JUSTIFICATION: "Bounds validated by caller"
+    // AURORA-SUPPRESS: ARR30-C HASH:a1b2c3d4e5f67890 JUSTIFICATION: "Bounds validated by caller"
     arr[index] = value;
 
     // Inline style (same line as violation):
-    arr[index] = value; // SQC-SUPPRESS: ARR30-C HASH:a1b2c3d4e5f67890 JUSTIFICATION: "Bounds checked"
+    arr[index] = value; // AURORA-SUPPRESS: ARR30-C HASH:a1b2c3d4e5f67890 JUSTIFICATION: "Bounds checked"
 
     // Stacked (multiple rules on one line):
-    // SQC-SUPPRESS: ERR00-C HASH:aaaa... JUSTIFICATION: "return captured in bytes_read"
-    // SQC-SUPPRESS: EXP34-C HASH:bbbb... JUSTIFICATION: "buf checked at function entry"
+    // AURORA-SUPPRESS: ERR00-C HASH:aaaa... JUSTIFICATION: "return captured in bytes_read"
+    // AURORA-SUPPRESS: EXP34-C HASH:bbbb... JUSTIFICATION: "buf checked at function entry"
     bytes_read = fread(buf, 1, file_size, fp);
 
 Generate the hash with:
 
 ::
 
-    sqc --generate-suppression src/main.c:42:ARR30-C
+    aurora-lint --generate-suppression src/main.c:42:ARR30-C
+
+.. _suppression-legacy-spelling:
+
+Pre-rename spellings (still accepted)
+-------------------------------------
+
+The tool was named ``sqc`` before it was renamed ``aurora-lint``. Every
+suppression written under the old name keeps working, so no existing
+suppression needs to be rewritten:
+
+==========================================  ==========================================
+Pre-rename                                  Current
+==========================================  ==========================================
+``// SQC-SUPPRESS: RULE ...``               ``// AURORA-SUPPRESS: RULE ...``
+``// tools:suppress sqc:RULE ...``          ``// tools:suppress aurora-lint:RULE ...``
+``tool = "sqc"`` in ``suppress.toml``       ``tool = "aurora-lint"``
+``.sqc-suppress.toml``                      ``.aurora-lint-suppress.toml``
+==========================================  ==========================================
+
+Both spellings of a directive hash identically -- the hash covers only the code
+portion of the line -- so renaming a comment in place does not invalidate it.
+``--generate-suppression`` emits only the current spelling.
 
 External Suppression File
 -------------------------
 
-For read-only codebases, place a ``.sqc-suppress.toml`` in the project root
-(auto-detected) or specify with ``--suppress-file``:
+For read-only codebases, place a ``suppress.toml`` in the project root -- the
+shared, all-tools file -- or specify one with ``--suppress-file``. Failing that,
+``.aurora-lint-suppress.toml`` and the pre-rename ``.sqc-suppress.toml`` are
+auto-detected too, in that order:
 
 .. code-block:: toml
 
-    # .sqc-suppress.toml
+    # .aurora-lint-suppress.toml
 
     [[suppression]]
     file = "ringbuffer.c"

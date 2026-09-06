@@ -100,7 +100,7 @@ file, leading with the `sqlite3_*` public API in each.
 
 Both build-based tools filter the checkout's `compile_commands.json` down to
 the same fileset `_count_c_source` counts: under a curated cppcheck
-`source_dir`, minus sqc's `--exclude` globs. All five tools are then measured
+`source_dir`, minus aurora-lint's `--exclude` globs. All five tools are then measured
 over one denominator. Duplicate TUs are dropped (curl compiles `lib/` twice,
 once for the shared and once for the static library), which would otherwise
 inflate both the clock and the finding count. The filtered database is written
@@ -151,7 +151,7 @@ never as coverage.
 Consequences that must travel with any published figure:
 
 - **A finding count is a floor, never a total.** Unanalysed entry points hide
-  alarms; a Frama-C count is not comparable to a cppcheck or sqc count as a
+  alarms; a Frama-C count is not comparable to a cppcheck or aurora-lint count as a
   volume measure.
 - **Precision is the only defensible cross-tool statistic here** — the
   fraction of what Frama-C *did* report that is real. That is unaffected by
@@ -182,7 +182,7 @@ supported route for a real codebase, and the right answer if the goal were to
 verify one project. It is an interactive, per-project effort — stubbing libc
 usage, choosing entry points, iterating on precision — measured in
 engineer-days per corpus, not a sweep. That is a research contribution about
-Frama-C, not a measurement of sqc.
+Frama-C, not a measurement of aurora-lint.
 
 **Skipping Frama-C on real-world code.** What the suite did until this task,
 and it left `docs/tool-comparison.rst` comparing five tools on Juliet and
@@ -193,7 +193,7 @@ code someone actually shipped" missing its two strongest competitors.
 
 Frama-C is the expensive tool by a wide margin, which is why the default
 budget is a ceiling rather than a target. For scale, on the existing suite:
-cppcheck's run-215 sweep of 8 projects took 11,452 s against sqc's ~491 s, and
+cppcheck's run-215 sweep of 8 projects took 11,452 s against aurora-lint's ~491 s, and
 Frama-C's 6-CWE Juliet run alone took 9,914 s. A five-tool real-world sweep is
 a multi-hour job and wants scheduling through `benchmarking_db`'s queue rather
 than a local invocation.

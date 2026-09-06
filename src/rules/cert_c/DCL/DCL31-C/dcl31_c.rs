@@ -86,7 +86,7 @@ impl Dcl31C {
             // attribute tail (task 650, seL4 e.g. `pml4e_t arr[N]
             // ALIGN(BIT(X)) VISIBLE;` -> a real `pml4e_t arr[N]` declaration
             // plus a second, spurious `ALIGN(BIT(X)) VISIBLE;` "declaration"
-            // with no recognizable type). Since sqc can't tell that shape
+            // with no recognizable type). Since aurora-lint can't tell that shape
             // apart from a real macro-based declaration without expanding
             // the macro, treat its presence as satisfying "has a type" --
             // conservative in both directions, and this rule's low-severity,

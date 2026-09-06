@@ -1,6 +1,6 @@
 /*
  * Rule: MSC13-C
- * Status: PASS - the variable IS read, inside a macro body sqc does not
+ * Status: PASS - the variable IS read, inside a macro body aurora-lint does not
  * expand. A macro is textual substitution, so a free identifier in its
  * replacement list binds to whatever that name means at the call site --
  * here `IdChar(...)` both writes and reads the caller's `c`, and the name

@@ -6,7 +6,7 @@
  * an off-by-one loop bound makes the inner "if" reachable, per the
  * live wiki) -- it isn't claiming the empty comment-only if-body
  * itself is meaningful code. The if-body below is mechanically empty
- * with no effect, which is exactly what MSC12-C targets; sqc's
+ * with no effect, which is exactly what MSC12-C targets; aurora-lint's
  * detection is correct even though the wiki used a placeholder
  * comment instead of real code for illustration.
  */

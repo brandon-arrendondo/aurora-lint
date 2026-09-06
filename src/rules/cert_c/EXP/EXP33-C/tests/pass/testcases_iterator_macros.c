@@ -4,7 +4,7 @@
  * Status: PASS - Should NOT trigger EXP33-C
  *
  * utlist/uthash/BSD-queue iterator/find/output macros write their
- * iterator/temp/out arguments. sqc has no preprocessor, so these used to be
+ * iterator/temp/out arguments. aurora-lint has no preprocessor, so these used to be
  * flagged as "used uninitialized". The macro_semantics registry models them.
  */
 

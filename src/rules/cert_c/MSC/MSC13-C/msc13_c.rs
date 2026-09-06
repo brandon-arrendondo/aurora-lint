@@ -356,7 +356,7 @@ impl Msc13C {
 
     /// True if some function-like macro invoked inside `body` has a
     /// replacement list that names `var_name` as a free identifier — in
-    /// which case the variable IS used, in text sqc's identifier walk never
+    /// which case the variable IS used, in text aurora-lint's identifier walk never
     /// sees, because the name does not appear at the call site at all.
     ///
     /// sqlite's `src/complete.c` is the worked example. `unsigned char c;`

@@ -9,7 +9,7 @@
  * guard the scan used to walk past must not become "an if statement appears
  * near this parameter". Task 664's sample contains a cohort of hostap
  * forwarding wrappers where a guard checks OTHER pointers and leaves the
- * flagged one unchecked, and sqc's per-parameter attribution was right in
+ * flagged one unchecked, and aurora-lint's per-parameter attribution was right in
  * every one of them.
  *
  * The other functions here are cases the old TEXT matcher suppressed by

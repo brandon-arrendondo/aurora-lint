@@ -98,6 +98,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "aurora-lint"
+version = "0.4.336"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "chrono",
+ "clap",
+ "crossterm",
+ "csv",
+ "ctor",
+ "git2",
+ "lang-parsing-substrate",
+ "lazy_static",
+ "ratatui",
+ "rayon",
+ "regex",
+ "rust_xlsxwriter",
+ "serde",
+ "serde_json",
+ "sha2",
+ "streaming-iterator",
+ "tempfile",
+ "thiserror 1.0.69",
+ "toml 0.8.23",
+ "tree-sitter",
+ "walkdir",
+ "winres",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1273,36 +1303,6 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
-
-[[package]]
-name = "sqc"
-version = "0.4.336"
-dependencies = [
- "anyhow",
- "bincode",
- "chrono",
- "clap",
- "crossterm",
- "csv",
- "ctor",
- "git2",
- "lang-parsing-substrate",
- "lazy_static",
- "ratatui",
- "rayon",
- "regex",
- "rust_xlsxwriter",
- "serde",
- "serde_json",
- "sha2",
- "streaming-iterator",
- "tempfile",
- "thiserror 1.0.69",
- "toml 0.8.23",
- "tree-sitter",
- "walkdir",
- "winres",
-]
 
 [[package]]
 name = "stable_deref_trait"

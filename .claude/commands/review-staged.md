@@ -180,7 +180,7 @@ git show abc1234 -- src/rules/cert_c/FIO/FIO37-C/fio37_c.rs | grep -A5 -B5 "unwr
 **Run acceptance criteria checks (if automated):**
 
 ```bash
-cargo test --package sqc --lib -- rules::cert_c::fio::fio37_c::tests
+cargo test --package aurora-lint --lib -- rules::cert_c::fio::fio37_c::tests
 ```
 
 #### C. Interactive Decision

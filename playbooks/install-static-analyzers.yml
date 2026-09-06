@@ -1,5 +1,5 @@
 ---
-# Ansible playbook: install every tool sqc is compared against, on Debian 12
+# Ansible playbook: install every tool aurora-lint is compared against, on Debian 12
 # (bookworm) or Ubuntu 24.04 (noble)
 #
 # Usage:
@@ -24,8 +24,8 @@
 # tops out at 20, while the published comparison in docs/tool-comparison.rst
 # is LLVM 21.1 -- so taking the distro default makes a freshly-provisioned
 # node measure an OLDER competitor than the table it will be compared
-# against. clang-tidy is the tool currently beating sqc on the Juliet overlap
-# (99.2% vs 81.7%), so that regression would flatter sqc by understating a
+# against. clang-tidy is the tool currently beating aurora-lint on the Juliet overlap
+# (99.2% vs 81.7%), so that regression would flatter aurora-lint by understating a
 # rival, which is the one direction a benchmark must never drift. Hence
 # apt.llvm.org and an explicit version.
 #
@@ -33,7 +33,7 @@
 # is per-release, so the apt source line follows it.
 #
 # Infer and Frama-C are the BUILD-BASED pair: neither can be pointed at a
-# source tree the way cppcheck and sqc can, so a real-world run of either
+# source tree the way cppcheck and aurora-lint can, so a real-world run of either
 # also needs playbooks/setup-compile-commands.yml to have generated that
 # checkout's compile_commands.json (task 767).
 #

@@ -1,7 +1,7 @@
 # Distro packaging audit
 
 Answer sheet for the questions a Debian/Fedora/Homebrew packager asks before
-adopting sqc. Written so a reviewer does not have to re-derive any of it, and
+adopting aurora-lint. Written so a reviewer does not have to re-derive any of it, and
 so we do not silently regress a property a downstream packager depends on.
 
 **The unit distros consume is the crates.io tarball, not the GitHub release
@@ -59,7 +59,7 @@ on every Linux build to do nothing.
 It does nothing on the release path either: `.github/workflows/release.yml`
 cross-compiles the Windows binary from `ubuntu-latest` with
 `--target x86_64-pc-windows-gnu`, so the host is Linux and the icon has never
-actually been embedded in a shipped `sqc.exe`. The gating did not cause that —
+actually been embedded in a shipped `aurora-lint.exe`. The gating did not cause that —
 it makes it visible. Fixing it means a Windows runner or an
 `embed-resource`-style crate that keys on the *target*.
 
@@ -93,8 +93,8 @@ consequences to keep in mind anyway:
 
 **Status: already collapsed to C and C++. No action needed.**
 
-`lang-parsing-substrate` ships 16 tree-sitter grammars behind features. sqc
-takes `default-features = false, features = ["lang-c", "lang-cpp"]`, and sqc's
+`lang-parsing-substrate` ships 16 tree-sitter grammars behind features. aurora-lint
+takes `default-features = false, features = ["lang-c", "lang-cpp"]`, and aurora-lint's
 own `default = []`, so the resolved tree contains exactly two:
 
 ```
@@ -108,9 +108,9 @@ lang-parsing-substrate v0.7.0
 `Cargo.lock` agrees — it names four `tree-sitter*` crates total
 (`tree-sitter`, `-c`, `-cpp`, `-language`) and none of the other grammars.
 This matters because several of the substrate's grammars
-(`kotlin-ng`, `ada`, `swift`, `scala`) are not packaged for Debian; sqc dodges
+(`kotlin-ng`, `ada`, `swift`, `scala`) are not packaged for Debian; aurora-lint dodges
 them entirely via the feature narrowing. A sibling tool that needs all 16 does
-not, which is an argument for packaging sqc first.
+not, which is an argument for packaging aurora-lint first.
 
 Re-verify with:
 
@@ -127,18 +127,18 @@ be a behaviour change, not a packaging cleanup.
 ## Debian dependency availability
 
 Checked against `api.ftp-master.debian.org/madison`. Two direct dependencies
-are **not in Debian at all** and must be packaged before sqc can be:
+are **not in Debian at all** and must be packaged before aurora-lint can be:
 
 | Crate | Debian `librust-*-dev` | Note |
 |---|---|---|
 | `lang-parsing-substrate` | **absent** | our own crate; needs packaging first |
 | `rust_xlsxwriter` | **absent** | used for `--format xlsx` reports |
 
-Several others exist but at versions outside sqc's requirement in *testing*,
+Several others exist but at versions outside aurora-lint's requirement in *testing*,
 which debcargo will surface as a version-relaxation decision rather than a
 blocker:
 
-| Crate | sqc wants | Debian testing | Debian stable |
+| Crate | aurora-lint wants | Debian testing | Debian stable |
 |---|---|---|---|
 | `tree-sitter` | `0.25` | 0.26.11 | 0.22.6 |
 | `tree-sitter-c` | `0.24` | 0.24.1 | 0.21.3 |
@@ -148,7 +148,7 @@ blocker:
 | `thiserror` | `1.0` | 2.0.18 | 2.0.11 |
 
 `thiserror` is the one worth acting on independently: Debian carries only 2.x,
-and sqc is the last thing here pinning 1.0.
+and aurora-lint is the last thing here pinning 1.0.
 
 Everything else (`anyhow`, `chrono`, `clap`, `csv`, `git2`, `rayon`, `regex`,
 `serde`, `serde_json`, `streaming-iterator`, `walkdir`, `globset`,
@@ -168,7 +168,7 @@ curl -s "https://api.ftp-master.debian.org/madison?package=librust-<crate>-dev&t
 
 `cargo package --list` is authoritative. Confirmed present: `src/**`,
 `tests/**`, `rules_templates/**`, `build.rs`, `README.md`, `LICENSE`, `NOTICE`,
-`thirdparty/cert/**`, `assets/icon.ico`, `docs/sqc.1`. Confirmed absent:
+`thirdparty/cert/**`, `assets/icon.ico`, `docs/aurora-lint.1`. Confirmed absent:
 `data/`, `bench/`, `conf/`, `todo-sqlite-cli.db`, `.env.example`, `tasks.py`,
 `playbooks/`.
 
@@ -178,19 +178,19 @@ under MIT — and those two files are where the attribution and CMU's own notice
 live. What is vendored, under what terms, and the DEP-5 stanzas a packager
 needs are in [`../licensing.rst`](../licensing.rst).
 
-**The man page ships in the crate** (`docs/sqc.1`, hand-maintained,
+**The man page ships in the crate** (`docs/aurora-lint.1`, hand-maintained,
 version-stamped by `tasks.py` on a version bump). Without it a generated
-`.deb`/`.rpm` installs `/usr/bin/sqc` with no man page — a Debian Policy 12.1
-bug. Keep the `docs/sqc.1` entry in `include`.
+`.deb`/`.rpm` installs `/usr/bin/aurora-lint` with no man page — a Debian Policy 12.1
+bug. Keep the `docs/aurora-lint.1` entry in `include`.
 
 **`THIRD_PARTY_LICENSES.txt` is deliberately not in the crate.** It is
 generated at release time by `cargo about` for the *statically linked binary*
 artifacts, where bundling dependency licenses is required. A distro build links
 against separately packaged `librust-*-dev` crates that each carry their own
 copyright file, so a bundled list there would be redundant and would go stale.
-`LICENSE` (Apache-2.0, sqc's own) is present and is what `debcargo`/`rust2rpm`
+`LICENSE` (Apache-2.0, aurora-lint's own) is present and is what `debcargo`/`rust2rpm`
 read.
 
-**sqc ships no shell completions**, in the crate or in the release assets —
+**aurora-lint ships no shell completions**, in the crate or in the release assets —
 `clap`'s completion generator is not wired up. Nothing is being dropped by the
 `include` allowlist here; the feature simply does not exist yet.

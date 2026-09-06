@@ -154,7 +154,7 @@ def main():
     lines.append("# Juliet C Test Suite — Coverage Report")
     lines.append("")
     lines.append(
-        f"**Version**: sqc v{version} ({run_id})\n"
+        f"**Version**: aurora-lint v{version} ({run_id})\n"
         f"**Overall**: {total_tp:,} TP / {total_fp:,} FP — "
         f"**{overall_tp_rate:.1f}% TP rate** across {n_cwes} CWEs "
         f"({total_files:,} files)"

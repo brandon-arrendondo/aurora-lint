@@ -57,7 +57,7 @@ written, evidence-backed case that the suppressed rule adds **zero**
 information in **every** instance — not just most of them. Absent that case,
 both findings are reported, optionally tagged as related so a downstream
 consumer (a report, the paper's aggregate counts, a human triager) can choose
-to collapse them, but sqc itself never hides one on the other's say-so.
+to collapse them, but aurora-lint itself never hides one on the other's say-so.
 
 This rejects decision option (3) from task 625's scoping ("central dedup at
 aggregation, keep the higher-precedence rule") as a *general* mechanism. It
@@ -191,7 +191,7 @@ Implementation section:
 
 ## Measurement appendix (task 625, 2026-08-27, bench node)
 
-Real-world (sqc, latest run, all 8 oracles): 8,254 / 52,790 flagged locations
+Real-world (aurora-lint, latest run, all 8 oracles): 8,254 / 52,790 flagged locations
 (15.6%) share a `(project, file, line)` with a different rule. Of the
 20,366 ground-truth-labeled co-located pairs, 17,420 agree and 2,946 (14.5%)
 disagree.

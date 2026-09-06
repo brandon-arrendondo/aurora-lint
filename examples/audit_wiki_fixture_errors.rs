@@ -16,7 +16,9 @@ use tree_sitter::Parser;
 
 fn main() {
     let mut parser = Parser::new();
-    parser.set_language(&sqc::parser::c_language()).unwrap();
+    parser
+        .set_language(&aurora_lint::parser::c_language())
+        .unwrap();
 
     let mut files = Vec::new();
     walk(Path::new("src/rules/cert_c"), &mut files);

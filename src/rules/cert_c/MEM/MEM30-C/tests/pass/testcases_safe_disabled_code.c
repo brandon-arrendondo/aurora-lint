@@ -5,7 +5,7 @@
  *
  * Code inside #if 0 ... #endif blocks is never compiled and must not be
  * analysed. Mirrors FP-002 from the Catapult RC624 firmware review where
- * sqc flagged an integer macro (FAULT_WASTE_BIN_FULL) inside a #if 0 block
+ * aurora-lint flagged an integer macro (FAULT_WASTE_BIN_FULL) inside a #if 0 block
  * as "use-after-free: passing freed pointer to function."
  */
 
@@ -25,7 +25,7 @@ void test_integer_macro_in_dead_code(void)
 
 #if 0
     /* FAULT_MASK is an integer constant, not a heap pointer. This block
-     * is never compiled; sqc must not flag it as use-after-free. */
+     * is never compiled; aurora-lint must not flag it as use-after-free. */
     some_function(FAULT_MASK);
 #endif
 }

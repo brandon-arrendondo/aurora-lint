@@ -1,3 +1,6 @@
+/// Which storage object a call argument names, in the caller's frame
+/// (task 936).
+pub mod argument_objects;
 /// Shared AST-based fixed-array-declaration size resolution (task 504).
 pub mod array_size;
 pub mod buffer_size;
@@ -30,7 +33,7 @@ pub mod preproc_dangling_else;
 /// that builds the [`context::ProjectContext`] later rule passes consume.
 pub mod prescan;
 pub mod relevance;
-/// Inline `SQC-SUPPRESS` comment parsing and suppression-file matching.
+/// Inline `AURORA-SUPPRESS` comment parsing and suppression-file matching.
 pub mod suppression;
 /// Recovering the compiler's *implicit* system header directories
 /// (`cc -E -Wp,-v -`), which a `compile_commands.json` can never contain.
@@ -52,7 +55,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// A violation that was suppressed by an inline SQC-SUPPRESS comment.
+/// A violation that was suppressed by an inline AURORA-SUPPRESS comment.
 pub struct SuppressedViolation {
     /// The violation that would have fired without the suppression.
     pub violation: RuleViolation,
@@ -458,8 +461,9 @@ fn relative_to_root(path: &str, root: &str) -> String {
 /// Build a suppression manager, loading the TOML suppression file if provided
 /// or auto-detected at `<root>/suppress.toml` — the shared, all-tools file
 /// from `lang_parsing_substrate/docs/unified-config-spec.md` — falling back
-/// to the legacy `<root>/.sqc-suppress.toml` name if `suppress.toml` isn't
-/// present (both are parsed with the same `[[suppress]]` schema).
+/// to the legacy `<root>/.aurora-lint-suppress.toml` and `<root>/.sqc-suppress.toml`
+/// names if `suppress.toml` isn't present (all are parsed with the same
+/// `[[suppress]]` schema).
 fn build_suppression_manager(
     suppress_file: Option<&str>,
     project_source: &ProjectSource,
@@ -468,10 +472,14 @@ fn build_suppression_manager(
 
     let toml_path = suppress_file.map(String::from).or_else(|| {
         let root = std::path::Path::new(project_source.get_root_path());
-        [root.join("suppress.toml"), root.join(".sqc-suppress.toml")]
-            .into_iter()
-            .find(|p| p.exists())
-            .and_then(|p| p.to_str().map(String::from))
+        [
+            root.join("suppress.toml"),
+            root.join(".aurora-lint-suppress.toml"),
+            root.join(".sqc-suppress.toml"),
+        ]
+        .into_iter()
+        .find(|p| p.exists())
+        .and_then(|p| p.to_str().map(String::from))
     });
     if let Some(ref path) = toml_path {
         match suppression_manager.load_from_toml(path) {
@@ -635,15 +643,19 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Get the code line, stripping any existing SQC-SUPPRESS comment
+    // Get the code line, stripping any existing suppress comment (either
+    // spelling) so the hash covers only the code portion.
     let raw_line = lines[line - 1];
-    let code = if let Some(pos) = raw_line.find("// SQC-SUPPRESS") {
-        &raw_line[..pos]
-    } else if let Some(pos) = raw_line.find("/* SQC-SUPPRESS") {
-        &raw_line[..pos]
-    } else {
-        raw_line
-    };
+    let code = [
+        "// AURORA-SUPPRESS",
+        "/* AURORA-SUPPRESS",
+        "// SQC-SUPPRESS",
+        "/* SQC-SUPPRESS",
+    ]
+    .iter()
+    .filter_map(|opener| raw_line.find(opener))
+    .min()
+    .map_or(raw_line, |pos| &raw_line[..pos]);
 
     let hash = SuppressionManager::calculate_suppression_hash(rule_id, code);
 
@@ -662,20 +674,20 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
 
     println!("Add on the line before (standalone comment):");
     println!(
-        "// tools:suppress sqc:{} HASH:{} JUSTIFICATION:\"TODO: Add justification\"",
+        "// tools:suppress aurora-lint:{} HASH:{} JUSTIFICATION:\"TODO: Add justification\"",
         rule_id, hash
     );
     println!();
-    println!("Legacy form (also accepted; standalone or inline):");
+    println!("Native form (also accepted; standalone or inline):");
     println!(
-        "// SQC-SUPPRESS: {} HASH:{} JUSTIFICATION: \"TODO: Add justification\"",
+        "// AURORA-SUPPRESS: {} HASH:{} JUSTIFICATION: \"TODO: Add justification\"",
         rule_id, hash
     );
     println!();
     println!("Or add to suppress.toml (for read-only codebases):");
     println!("[[suppress]]");
     println!("name = \"TODO-unique-name\"");
-    println!("tool = \"sqc\"");
+    println!("tool = \"aurora-lint\"");
     println!("file = \"{}\"", filename);
     println!("rule = \"{}\"", rule_id);
     println!("hash = \"{}\"", hash);

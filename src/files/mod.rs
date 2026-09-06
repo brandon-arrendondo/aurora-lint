@@ -6,7 +6,7 @@ use git::GitRepo;
 
 use anyhow::Result;
 
-/// Whether `ext` is a C source/header extension sqc analyzes.
+/// Whether `ext` is a C source/header extension aurora-lint analyzes.
 ///
 /// Deliberately NOT `lang_parsing_substrate::is_parseable_extension`: that
 /// function reflects every language feature compiled into the substrate,

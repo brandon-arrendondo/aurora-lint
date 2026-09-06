@@ -17,13 +17,14 @@
 ehthumbs.db
 Thumbs.db
 
-# SqC specific
+# aurora-lint specific
 .todo-sqlite-cli
 .env
 .env.*
 # ...but the benchmark-config template is tracked on purpose (see
 # docs/benchmark-setup.rst); it holds no secrets, only local paths.
 !.env.example
+aurora-lint-results.json
 sqc-results.json
 results/
 *.log
@@ -67,7 +68,7 @@ docs/_build/
 # Local MCP server configuration (contains org-specific paths and credentials)
 .mcp.json
 
-# Personal-network / local machine setup notes (not sqc tooling)
+# Personal-network / local machine setup notes (not aurora-lint tooling)
 BENCHMARK_PULLING.md
 PARALLEL_NODES_ISSUES.md
 

@@ -1,7 +1,7 @@
 CI/CD Integration
 =================
 
-SqC is designed for CI/CD pipelines with exit codes, severity thresholds,
+aurora-lint is designed for CI/CD pipelines with exit codes, severity thresholds,
 diff-only analysis, and SARIF output for code scanning integrations.
 
 General Strategy
@@ -17,20 +17,20 @@ Both modes export SARIF for integration with code scanning dashboards.
 ::
 
     # PR mode: fast, only changed files, fail on High+
-    sqc . --diff --min-severity Medium --fail-on-severity High --export results.sarif
+    aurora-lint . --diff --min-severity Medium --fail-on-severity High --export results.sarif
 
     # Full scan: entire repo with cross-file context
-    sqc . -d . --min-severity Medium --fail-on-severity High --export results.sarif
+    aurora-lint . -d . --min-severity Medium --fail-on-severity High --export results.sarif
 
 GitHub Actions
 --------------
 
 The repository includes a ready-to-use workflow at
-``.github/workflows/sqc-analysis.yml``:
+``.github/workflows/aurora-lint-analysis.yml``:
 
 .. code-block:: yaml
 
-    name: SqC CERT C Analysis
+    name: aurora-lint CERT C Analysis
 
     on:
       push:
@@ -40,7 +40,7 @@ The repository includes a ready-to-use workflow at
 
     jobs:
       build:
-        name: Build SqC
+        name: Build aurora-lint
         runs-on: ubuntu-latest
         steps:
           - uses: actions/checkout@v4
@@ -54,14 +54,14 @@ The repository includes a ready-to-use workflow at
                 target
               key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-          - name: Build SqC
+          - name: Build aurora-lint
             run: cargo build --release
 
           - name: Upload binary
             uses: actions/upload-artifact@v4
             with:
-              name: sqc-binary
-              path: target/release/sqc
+              name: aurora-lint-binary
+              path: target/release/aurora-lint
 
       analyze-pr:
         name: Analyze PR (diff only)
@@ -75,16 +75,16 @@ The repository includes a ready-to-use workflow at
             with:
               fetch-depth: 0  # Full history for --diff mode
 
-          - name: Download SqC
+          - name: Download aurora-lint
             uses: actions/download-artifact@v4
             with:
-              name: sqc-binary
+              name: aurora-lint-binary
 
-          - run: chmod +x sqc
+          - run: chmod +x aurora-lint
 
-          - name: Run SqC (diff mode)
+          - name: Run aurora-lint (diff mode)
             run: |
-              ./sqc . --diff \
+              ./aurora-lint . --diff \
                 --min-severity Medium \
                 --fail-on-severity High \
                 --export results.sarif
@@ -105,16 +105,16 @@ The repository includes a ready-to-use workflow at
         steps:
           - uses: actions/checkout@v4
 
-          - name: Download SqC
+          - name: Download aurora-lint
             uses: actions/download-artifact@v4
             with:
-              name: sqc-binary
+              name: aurora-lint-binary
 
-          - run: chmod +x sqc
+          - run: chmod +x aurora-lint
 
-          - name: Run SqC (full scan)
+          - name: Run aurora-lint (full scan)
             run: |
-              ./sqc . -d . \
+              ./aurora-lint . -d . \
                 --min-severity Medium \
                 --fail-on-severity High \
                 --export results.sarif
@@ -138,13 +138,13 @@ SARIF Integration Tips
 ----------------------
 
 - **GitHub Code Scanning**: Use ``github/codeql-action/upload-sarif@v3`` to
-  surface SqC violations as code scanning alerts on PRs and the Security tab.
+  surface aurora-lint violations as code scanning alerts on PRs and the Security tab.
 - **Azure DevOps**: Publish SARIF as a build artifact. Third-party extensions
   (e.g., SARIF SAST Scans Tab) can render results inline.
 - **VS Code**: Open ``.sarif`` files with the
   `SARIF Viewer <https://marketplace.visualstudio.com/items?itemName=MS-SarifVSCode.sarif-viewer>`_
   extension for inline annotations.
-- **IDE Integration**: Any tool that consumes SARIF 2.1.0 can display SqC results.
+- **IDE Integration**: Any tool that consumes SARIF 2.1.0 can display aurora-lint results.
 
 CI/CD Readiness
 ---------------

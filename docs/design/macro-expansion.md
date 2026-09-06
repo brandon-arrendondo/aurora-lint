@@ -1,4 +1,4 @@
-# Scoping: Macro Expansion in sqc
+# Scoping: Macro Expansion in aurora-lint
 
 **Status:** IMPLEMENTED (as of 2026-07-22; originally scoped 2026-06-16).
 The engine described here (`src/analyze/macro_expand.rs`,
@@ -13,7 +13,7 @@ matching `*_free`/`*_FREE` by string) without first checking whether
 `context.function_macros` + the helpers above already solve it
 name-independently — this has been done by mistake at least once (task 2,
 MEM31-C, v0.4.117-119, before the engine was wired in at v0.4.120).
-**Driver:** Recurring, codebase-independent false positives rooted in sqc's
+**Driver:** Recurring, codebase-independent false positives rooted in aurora-lint's
 inability to see through C macros. Tracked from task 180 (EXP33/EXP34 macro
 opacity), but the problem is broader than two rules.
 
@@ -21,7 +21,7 @@ opacity), but the problem is broader than two rules.
 
 ## 1. Problem statement & evidence
 
-sqc analyzes **raw, un-preprocessed C source**: each file is read with
+aurora-lint analyzes **raw, un-preprocessed C source**: each file is read with
 `fs::read_to_string` (`src/analyze/mod.rs:428`) and parsed by tree-sitter-c
 (`CParser` / `tree_sitter::Parser`, `src/analyze/mod.rs:204,301`). **There is no
 C preprocessor pass.** Consequently:
@@ -124,10 +124,10 @@ A solution must be evaluated against the *whole* taxonomy, not just FOREACH:
 
 ## 4. Constraints & design principles
 
-- **Preserve the no-build-system model.** sqc runs per-file / per-directory with
+- **Preserve the no-build-system model.** aurora-lint runs per-file / per-directory with
   sibling-header prescan; there is no `compile_commands.json`, include-path, or
   toolchain integration anywhere in `src/`. This is a deliberate usability
-  property (point sqc at any tree, get results). A solution that *requires* full
+  property (point aurora-lint at any tree, get results). A solution that *requires* full
   build config is a different product.
 - **Recall safety is non-negotiable.** Expansion must never *hide* a genuine
   uninitialized read, null deref, or overflow. Validate Juliet recall stays flat.
@@ -154,7 +154,7 @@ add utlist/uthash to `FOR_EACH_MACROS` + mark the right arg indices).
 - **Verdict:** acceptable **stopgap** for the top-2 libraries; not the answer.
 
 ### B. In-tree selective function-like macro expansion
-Build a mini-expander over macro **definitions sqc already parses**
+Build a mini-expander over macro **definitions aurora-lint already parses**
 (`preproc_function_def` in the file + prescanned sibling/included headers). When
 a dataflow analysis encounters a function-like macro invocation, substitute the
 body (argument substitution, `#`/`##`, nested rescan), parse the expanded
@@ -234,7 +234,7 @@ recall-gated independently:
   already crosses headers, this captures vendored single-header libs
   (utlist/uthash) and project macros once, cached — analysis-time expansion is a
   lookup, not a re-walk. NB: adding a `ProjectContext` field changes the bincode
-  layout of sqc's `--save-prescan`/`--load-prescan` cache format (see
+  layout of aurora-lint's `--save-prescan`/`--load-prescan` cache format (see
   `src/analyze/context.rs`); bump a cache-format version if that CLI-level cache
   is ever used. The benchmark runners do not use it (task 209: measured ~10%
   wall-time savings on sqlite, not worth the staleness risk — every benchmark
@@ -278,7 +278,7 @@ Phases 1→3 each ship behind a Juliet-recall gate and a real-world FP-delta che
 
 ## 8a. Phase 0 spike results (2026-06-16, task 184) — GO
 
-Verified against sqc's **exact grammar** (tree-sitter-c 0.21) via
+Verified against aurora-lint's **exact grammar** (tree-sitter-c 0.21) via
 `examples/dump_ast.rs` (a kept dev tool: `echo CODE | cargo run --example dump_ast`).
 
 **Parse shapes (authoritative):**
@@ -296,7 +296,7 @@ Verified against sqc's **exact grammar** (tree-sitter-c 0.21) via
   name + `preproc_params` + body as a single `preproc_arg` **text blob** —
   name/params/body all recoverable (Phase 2 substitutes into this text).
 
-**Premise reproduced** on current sqc for the FOREACH snippet:
+**Premise reproduced** on current aurora-lint for the FOREACH snippet:
 `EXP33 'el'/'tmp' used uninitialized` (at the arg positions) + `EXP34 'el'
 potential null deref` (inside the body) — i.e. exactly the oracle FPs. The
 detached body **is** visited by the CFG (the EXP34 hit lands inside it), so
@@ -430,7 +430,7 @@ scoped it as "shell out to `cpp`/`clang -E`, parse the expanded TU, back-map via
 ### Why the scope changed
 
 Re-reading §5(C) against the code showed the expensive half of approach C buys
-very little that sqc cannot already do:
+very little that aurora-lint cannot already do:
 
 - `prescan::resolve_includes` already resolves `#include` transitively against a
   caller-supplied search list, and already harvests `macro_constants`,
@@ -438,8 +438,8 @@ very little that sqc cannot already do:
 - `macro_expand` already expands those `function_macros`, and is already wired
   into EXP33-C, EXP34-C, MEM30-C, MEM31-C and DCL31-C.
 
-So the reason §5(B) says sqc "cannot expand macros from unscanned system
-headers" was never a missing *engine* — it was that nothing ever told sqc where
+So the reason §5(B) says aurora-lint "cannot expand macros from unscanned system
+headers" was never a missing *engine* — it was that nothing ever told aurora-lint where
 those headers live. A compile database knows. Feeding it the search paths and
 `-D` state reaches most of the Phase-4 payoff while avoiding every §5(C) con:
 no subprocess, no 10–100× TU blowup, no `#line` back-mapping, no second raw
@@ -467,7 +467,7 @@ keep in sync.
 - **Gap-filling, never overriding.** `-D` macros merge with `or_insert`
   semantics *after* prescan and include resolution, so a real `#define` in real
   source always wins. A build flag can only supply a name the tree never
-  defined — it can reveal a constant sqc previously treated as opaque, but can
+  defined — it can reveal a constant aurora-lint previously treated as opaque, but can
   never change the meaning of one it already resolved.
 - **Merged, not per-TU.** A compile DB is per-file; `resolve_includes` takes one
   global list. The union is an approximation that can only make *more* headers
@@ -525,7 +525,7 @@ tree therefore lets a libc macro win over a project macro of the same name.
 That is pre-existing behavior for any `-I` path, but this flag is the first
 thing to aim it at all of `/usr/include`. Measured below; no sign of it.
 
-### Measured (2026-09-02, sqc 0.4.323, runs #224 vs #225)
+### Measured (2026-09-02, aurora-lint 0.4.323, runs #224 vs #225)
 
 A/B on one binary, differing only in whether the runner passes the flag:
 
@@ -556,7 +556,7 @@ Both halves of Phase 4 are now measured on the real-world corpus, and both are
 non-factors: the compile database at −0.09% of findings, system includes at
 −0.015%, neither moving precision or recall. §1 of this document motivated the
 whole line of work as *"recurring, codebase-independent false positives rooted
-in sqc's inability to see through C macros"*, and that framing was right about
+in aurora-lint's inability to see through C macros"*, and that framing was right about
 the FP class — but the reachability half of it is done and it bought almost
 nothing measurable here. What did move real-world numbers was per-rule
 structural work (task 553's MSC17-C fix alone: −81% of that rule's findings).
@@ -587,7 +587,7 @@ CLAUDE.md's delta-adjudication protocol means findings can move to
 `(file, line)` pairs outside the `ground_truth` denominator. A compile-DB run
 is a changed-rule delta, not a like-for-like comparison.
 
-### Measured on the real-world corpus (2026-09-01, sqc 0.4.320 @742e92a6)
+### Measured on the real-world corpus (2026-09-01, aurora-lint 0.4.320 @742e92a6)
 
 First end-to-end measurement, after generating a compile database for all 9
 projects on the benchmark host (`playbooks/setup-compile-commands.yml`; all 10
@@ -630,7 +630,7 @@ all adjudicated **FP**:
 - the 24 INT34-C + 1 INT33-C *removals* — shift amounts are `seL4_PageBits`=12,
   `seL4_PageTableBits`=12, `seL4_LargePageBits`=21, `seL4_HugePageBits`=30, all
   far below the operand width (and still so at x86-32's 22), and
-  `CONFIG_WORD_SIZE`=64 is a nonzero constant. sqc warned only because the
+  `CONFIG_WORD_SIZE`=64 is a nonzero constant. aurora-lint warned only because the
   macro was opaque, which is precisely the FP class this flag exists to kill.
 - the 14 ARR30-C *additions* — each indexes an array declared
   `[CONFIG_MAX_NUM_NODES]` by a CPU index bounded by construction
@@ -663,13 +663,13 @@ Why so small is worth knowing before investing further: 4 of the 9 benchmark
 projects (sqlite, mosquitto, curl, hostap) already hand-feed `-I /usr/include`
 and friends in `bench/realworld_runner.py`'s `CODEBASES`, and
 `prescan_directories` already crosses project headers without any `-I` at all.
-The database was largely telling sqc things it already knew.
+The database was largely telling aurora-lint things it already knew.
 
 **Caveat found in the sel4 numbers — a compile DB is one build configuration.**
 sel4's database is configured `KernelPlatform=pc99 KernelArch=x86`, but every
 finding it moved is in `src/arch/arm/` or `src/arch/riscv/`. The mechanism:
 `-I <build>/gen_config` makes the x86 build's `gen_config/kernel/gen_config.h`
-reachable, which defines `CONFIG_MAX_NUM_NODES 1`; sqc then folds
+reachable, which defines `CONFIG_MAX_NUM_NODES 1`; aurora-lint then folds
 `static word_t mpidr_map[CONFIG_MAX_NUM_NODES]` in `arch/arm/machine/gic_v3.c`
 to a one-element array and reports ARR30-C on indexing it. The values are
 correct *for x86*, applied to source that would only ever compile under a

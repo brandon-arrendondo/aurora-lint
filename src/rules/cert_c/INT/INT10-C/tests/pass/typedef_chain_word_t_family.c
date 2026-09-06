@@ -11,7 +11,6 @@
  * Also covers `sizeof(...)`, which always yields `size_t` regardless of the
  * sized expression's own type.
  */
-// sqc-test: prescan
 
 typedef unsigned long word_t;
 typedef word_t paddr_t;

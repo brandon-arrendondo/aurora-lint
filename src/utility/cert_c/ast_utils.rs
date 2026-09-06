@@ -19,7 +19,7 @@ pub fn get_node_text<'a>(node: &Node, source: &'a str) -> &'a str {
 /// handling and the prescan field-frees collector (`frees_param_fields`),
 /// so a macro-wrapped free like `#define mosquitto_FREE(A) free(A)` is
 /// recognized consistently in both places (task 2: MEM31-C ownership model —
-/// sqc has no preprocessor, so such wrapper calls are otherwise invisible).
+/// aurora-lint has no preprocessor, so such wrapper calls are otherwise invisible).
 pub fn is_deallocation_call_name(func_name: &str) -> bool {
     if crate::analyze::macro_semantics::is_container_unlink_macro(func_name) {
         return false;
@@ -869,7 +869,7 @@ pub fn is_in_sizeof(node: &Node) -> bool {
 ///
 /// # Examples
 /// ```no_run
-/// use sqc::utility::cert_c::ast_utils::find_containing_for_loop;
+/// use aurora_lint::utility::cert_c::ast_utils::find_containing_for_loop;
 /// use tree_sitter::Node;
 /// // When checking a subscript inside a for loop:
 /// // let subscript_node: Node = /* get from parsed AST */;
@@ -891,7 +891,7 @@ pub fn find_containing_for_loop<'a>(node: &Node<'a>) -> Option<Node<'a>> {
 ///
 /// # Examples
 /// ```no_run
-/// use sqc::utility::cert_c::ast_utils::find_containing_if_statement;
+/// use aurora_lint::utility::cert_c::ast_utils::find_containing_if_statement;
 /// use tree_sitter::Node;
 /// // When checking if array access is within a bounds check:
 /// // let subscript_node: Node = /* get from parsed AST */;
@@ -1054,7 +1054,7 @@ pub enum PackedSignal {
     /// terminating `;`/field name (e.g. `struct foo { ... } STRUCT_PACKED;`)
     /// that *might* be a packed-attribute macro — its `#define` may live in
     /// a different file (a header this one doesn't textually include in
-    /// sqc's no-preprocessor model), so the caller must resolve the name
+    /// aurora-lint's no-preprocessor model), so the caller must resolve the name
     /// against a project-wide macro-name set.
     MacroCandidate(String),
 }
@@ -1147,7 +1147,7 @@ pub fn collect_packed_macro_names(source: &str, out: &mut std::collections::Hash
 /// what it expands to. Used to recognize a trailing bare identifier right
 /// after a struct/union/enum body (e.g. `struct foo { ... } SOME_MACRO;`) as
 /// an attribute-position macro invocation rather than a genuine object
-/// declaration: sqc has no preprocessor, so such a macro is parsed as if it
+/// declaration: aurora-lint has no preprocessor, so such a macro is parsed as if it
 /// were the declared object's name, but a real C identifier can never
 /// collide with an in-scope `#define` name (the preprocessor would have
 /// substituted it first) — so if the name is a known macro, this can't be a
@@ -1179,7 +1179,7 @@ pub fn is_defined_macro_name(name: &str, source: &str) -> bool {
 ///
 /// # Examples
 /// ```
-/// use sqc::utility::cert_c::ast_utils::is_likely_macro_constant;
+/// use aurora_lint::utility::cert_c::ast_utils::is_likely_macro_constant;
 /// assert!(is_likely_macro_constant("MAX_SIZE"));
 /// assert!(is_likely_macro_constant("_BUF_LEN2"));
 /// assert!(!is_likely_macro_constant("bufLen"));

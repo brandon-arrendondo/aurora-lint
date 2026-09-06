@@ -7,7 +7,6 @@
  * uint8_t or uint16_t value is cast to uint32_t and combined with another
  * narrow value or a small constant, the result provably fits in uint32_t.
  */
-// sqc-test: prescan
 
 #include <stdint.h>
 

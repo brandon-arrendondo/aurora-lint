@@ -1,7 +1,7 @@
-//! Library interface for `sqc`, a static analysis tool checking C code
+//! Library interface for `aurora-lint`, a static analysis tool checking C code
 //! against the SEI CERT C Coding Standard (285 rules across 17 categories).
 //! Exists to let `cargo test` exercise the analysis engine directly; the
-//! `sqc` binary (`main.rs`) is a thin CLI wrapper around
+//! `aurora-lint` binary (`main.rs`) is a thin CLI wrapper around
 //! [`analyze::analyze_project`]. See this crate's README for the full
 //! feature set (export formats, diff-only mode, the optional TUI).
 #![warn(missing_docs)]
@@ -36,7 +36,7 @@ pub mod ui;
 pub mod utility;
 
 /// Common types and functions re-exported for a typical consumer, so most
-/// uses need only `use sqc::prelude::*;`.
+/// uses need only `use aurora_lint::prelude::*;`.
 pub mod prelude {
     pub use crate::files::ProjectSource;
     pub use crate::manifest::{RuleManifest, Severity};

@@ -1,0 +1,113 @@
+# aurora-lint Static Analysis - GitHub Actions Example Workflow
+#
+# This workflow runs aurora-lint CERT C analysis on your C/C++ codebase.
+# - On PRs: analyzes only changed files (--diff mode)
+# - On push to main: full repository scan
+# - Uploads SARIF results to GitHub Code Scanning
+#
+# Prerequisites:
+#   - aurora-lint must be built or available as a binary
+#   - A aurora-lint-rules.toml manifest (or use built-in defaults)
+
+name: aurora-lint CERT C Analysis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build aurora-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build aurora-lint
+        run: cargo build --release
+
+      - name: Upload aurora-lint binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurora-lint-binary
+          path: target/release/aurora-lint
+          retention-days: 1
+
+  analyze-pr:
+    name: Analyze PR (diff only)
+    if: github.event_name == 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for --diff mode
+
+      - name: Download aurora-lint binary
+        uses: actions/download-artifact@v4
+        with:
+          name: aurora-lint-binary
+
+      - name: Make aurora-lint executable
+        run: chmod +x aurora-lint
+
+      - name: Run aurora-lint (diff mode)
+        run: |
+          ./aurora-lint . --diff \
+            --min-severity Medium \
+            --fail-on-severity High \
+            --export results.sarif
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+
+  analyze-full:
+    name: Full Analysis
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download aurora-lint binary
+        uses: actions/download-artifact@v4
+        with:
+          name: aurora-lint-binary
+
+      - name: Make aurora-lint executable
+        run: chmod +x aurora-lint
+
+      - name: Run aurora-lint (full scan)
+        run: |
+          ./aurora-lint . -d . \
+            --min-severity Medium \
+            --fail-on-severity High \
+            --export results.sarif
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif

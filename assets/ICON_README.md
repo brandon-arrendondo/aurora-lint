@@ -1,6 +1,6 @@
-# SQC Icon Installation
+# aurora-lint Icon Installation
 
-The SQC (Software Code Quality) program includes icon files that can be used in different environments.
+The aurora-lint program includes icon files that can be used in different environments.
 
 ## Icon Files
 
@@ -11,23 +11,23 @@ The SQC (Software Code Quality) program includes icon files that can be used in 
 
 ### 1. Terminal User Interface (TUI)
 The icon is integrated into the TUI as a visual element:
-- Header shows: `✓ { SQC }` with colored styling
-- Footer shows: `✓{ SQC } - Software Code Quality`
+- Header shows: `✓ { aurora-lint }` with colored styling
+- Footer shows: `✓{ aurora-lint } - CERT C static analyzer`
 - The checkmark (✓) is green and the brackets ({}) are cyan
 
 ### 2. Terminal Window Title
 When running in interactive mode, the terminal window title is set to:
-`sqc - Software Code Quality`
+`aurora-lint`
 
 ### 3. Linux Desktop Launcher (Optional)
-To add SQC to your application menu:
+To add aurora-lint to your application menu:
 
 ```bash
 # Copy the icon to system icons directory
-sudo cp assets/icon.png /usr/local/share/pixmaps/sqc.png
+sudo cp assets/icon.png /usr/local/share/pixmaps/aurora-lint.png
 
 # Copy the desktop file
-sudo cp assets/sqc.desktop /usr/local/share/applications/
+sudo cp assets/aurora-lint.desktop /usr/local/share/applications/
 
 # Update desktop database
 sudo update-desktop-database

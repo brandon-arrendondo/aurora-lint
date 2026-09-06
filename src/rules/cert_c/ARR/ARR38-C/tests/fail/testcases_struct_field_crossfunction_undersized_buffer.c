@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: ARR38-C
  * Source: Juliet flow variant 67 ("struct passed in a struct from one

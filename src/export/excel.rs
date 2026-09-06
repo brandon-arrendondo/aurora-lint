@@ -49,7 +49,7 @@ pub fn export_all_violations_to_excel(
         let code_snippet = get_code_snippet(&violation.file_path, violation.line)?;
         let rule_description = get_rule_description(&registry, &violation.rule_id);
         let review_note = if violation.needs_manual_review() {
-            " (sqc could not confidently determine this is a violation -- review before acting.)"
+            " (aurora-lint could not confidently determine this is a violation -- review before acting.)"
         } else {
             ""
         };

@@ -1,7 +1,7 @@
 # Contributors
 
-SqC is developed at [BISSELL](https://www.bissell.com/). Listed by role rather
-than by commit count — the counts below say who was involved and when, which
+aurora-lint is developed at [BISSELL](https://www.bissell.com/). Listed by role
+rather than by commit count — the counts below say who was involved and when, which
 they establish well, and not how much each contribution was worth, which they
 do not. 85 commits that create a working analyzer from nothing are not
 commensurable with 85 commits of refinement.
@@ -10,9 +10,9 @@ commensurable with 85 commits of refinement.
 
 Both are named in `Cargo.toml`'s `authors` field.
 
-**Eric Buehler** — originator and founding principal author. Created SqC and
-did the initial lifting (Sep–Nov 2025, 85 commits), and has directed the work
-throughout. The tool exists, and continues to be pursued, because of that
+**Eric Buehler** — originator and founding principal author. Created
+aurora-lint and did the initial lifting (Sep–Nov 2025, 85 commits), and has
+directed the work throughout. The tool exists, and continues to be pursued, because of that
 direction.
 
 **Brandon Arrendondo** — primary contributor and maintainer. Has driven
@@ -24,8 +24,8 @@ infrastructure, packaging and documentation.
 
 **Tristan VanFossen** — second heaviest contributor (Nov–Dec 2025, 337
 commits). Also the author of [clew](https://github.com/tvanfossen/clew), the
-symbol-graph indexer SqC uses for code navigation — an ongoing dependency, not
-only a past contribution.
+symbol-graph indexer aurora-lint uses for code navigation — an ongoing
+dependency, not only a past contribution.
 
 The following contributed during a focused team effort in November 2025, which
 doubled as the group's hands-on introduction to working with Claude:
@@ -37,7 +37,7 @@ doubled as the group's hands-on introduction to working with Claude:
 
 ## AI assistance
 
-SqC was developed with substantial assistance from
+aurora-lint was developed with substantial assistance from
 [Claude](https://claude.ai) (Anthropic) — code generation, rule
 implementation, false-positive analysis, and documentation. See the **AI
 Assistance** section of `README.md`.

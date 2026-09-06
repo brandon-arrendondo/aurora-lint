@@ -38,14 +38,14 @@ long-pole/straggler.
 
 `start_time` is taken at `bench/runner.py:121` and `duration_s` is computed
 at line 135, **immediately after `subprocess.run` returns and before
-`analyze_cwe` is called**. **[verified]** So the numbers above are *sqc
+`analyze_cwe` is called**. **[verified]** So the numbers above are *aurora-lint
 subprocess time only*.
 
 This scope is already documented and honestly surfaced — no bug here:
 `bench/db.py:635-642` states `analysis_s` "sums each CWE's own
-sqc-subprocess duration (each including its own prescan+scan)" and notes it
+aurora-lint-subprocess duration (each including its own prescan+scan)" and notes it
 normally exceeds `wall_s` under parallelism; `bench/db.py:330-332` repeats
-it; `bench/__main__.py:116` prints "summed per-CWE sqc time". **[verified]**
+it; `bench/__main__.py:116` prints "summed per-CWE aurora-lint time". **[verified]**
 
 The residue that *does* matter for this work is narrower: the **Python
 analysis phase** (`analyze_cwe`, which re-reads and re-parses every `.c`
@@ -56,7 +56,7 @@ size is unknown.
 Two consequences:
 
 - The long pole in `duration_s` is genuinely the Rust scan, so sharding the
-  sqc invocation is aimed at the right thing.
+  aurora-lint invocation is aimed at the right thing.
 - If the Python phase turns out to be a large fraction of per-CWE wall
   time, it is a *second* long pole that sharding the subprocess alone will
   not fix, and the shard design must fan out the analysis too (it can — see
@@ -135,12 +135,12 @@ pre-existing and out of scope.)
 ## 4. The prescan is the make-or-break constraint
 
 Today each CWE scan passes `-d <cwe_dir> -d <testcasesupport>`
-(`bench/runner.py:127-129`) **[verified]**, so sqc prescans the whole CWE
+(`bench/runner.py:127-129`) **[verified]**, so aurora-lint prescans the whole CWE
 for cross-file context. **Naively sharding makes all N shards repeat that
 full-CWE prescan, which can eat the entire gain** — this is the single
 most likely way for this work to produce a disappointing result.
 
-sqc already has the escape hatch: `--save-prescan` / `--load-prescan`,
+aurora-lint already has the escape hatch: `--save-prescan` / `--load-prescan`,
 documented as "Load prescan context from cache instead of scanning -d
 directories". **[verified]** In `src/analyze/mod.rs:261-287`, `load_prescan`
 short-circuits `prescan_directories` entirely and deserializes the same
@@ -152,7 +152,7 @@ equivalent to a freshly prescanned one.
 ### 4a. There is no standalone prescan mode
 
 `--save-prescan` is a side effect *inside* `load_project_context`, reached
-only on a real analysis run. **[verified]** You cannot ask sqc to "just
+only on a real analysis run. **[verified]** You cannot ask aurora-lint to "just
 prescan". Two ways to live with that:
 
 - **Warm step (recommended).** Before fanning out a big CWE, run one cheap
@@ -181,7 +181,7 @@ task should be reconsidered rather than implemented.
 
 ## 5. Fallback for a flat long-pole CWE
 
-If §2's measurement shows a long-pole CWE has no `sNN` split, sqc's CLI
+If §2's measurement shows a long-pole CWE has no `sNN` split, aurora-lint's CLI
 gives no way to pass a file list — PATH is "a file, directory, or git
 repository" **[verified]**, and `--exclude` is subtractive-only, so
 expressing "just this bucket" needs one exclude glob per non-member file.
@@ -258,7 +258,7 @@ proceeds.
 ## 9. Protocol reminder
 
 Per `CLAUDE.md`: never modify code while a benchmark is running (the
-benchmark executes `target/release/sqc`), and bump version + commit +
+benchmark executes `target/release/aurora-lint`), and bump version + commit +
 `cargo build --release` *before* starting any run. The measurements in §6
-require running sqc against Juliet, so sequence them against benchmark
+require running aurora-lint against Juliet, so sequence them against benchmark
 occupancy on that node.

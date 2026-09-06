@@ -1,6 +1,6 @@
 # Files Module
 
-This module manages file system operations, source file discovery, and Git repository integration for the SqC analyzer.
+This module manages file system operations, source file discovery, and Git repository integration for the aurora-lint analyzer.
 
 ## Core Functionality
 

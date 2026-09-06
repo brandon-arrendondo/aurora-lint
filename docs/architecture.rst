@@ -1,7 +1,7 @@
 Analysis Architecture
 =====================
 
-SqC uses a multi-pass analysis architecture:
+aurora-lint uses a multi-pass analysis architecture:
 
 ::
 
@@ -148,7 +148,8 @@ Analysis Modules
   MSC12-C task 475.
 
 **Suppression system** (``src/analyze/suppression.rs``).
-  Inline ``// SQC-SUPPRESS`` comments and ``.sqc-suppress.toml`` files.
+  Inline ``// AURORA-SUPPRESS`` comments and ``suppress.toml`` files (the
+  pre-rename ``SQC-SUPPRESS`` / ``.sqc-suppress.toml`` spellings still parse).
   SHA-256 hash-based point suppressions and glob/prefix wildcard suppressions.
 
 Current Capabilities
@@ -241,24 +242,24 @@ Competitor Landscape
 
 5-tool comparison on 15 overlapping Juliet CWEs (28,488 files):
 
-==============  ==============  =========  ====================================  ===========
-Tool            Detection Rate  FP Rate    Analysis Depth                        Price
-==============  ==============  =========  ====================================  ===========
-clang-tidy      91.6%           0.8%       AST + path-sensitive                  Free
-**SqC**         67.5%           32.5%      AST + CFG + inter-procedural          --
-Frama-C         61.0%           39.0%      Abstract interpretation               Free
-Infer           43.6%           56.4%      Separation logic                      Free
-cppcheck        36.4%           63.6%      Data-flow                             Free
-==============  ==============  =========  ====================================  ===========
+===============  ==============  =========  ====================================  ===========
+Tool             Detection Rate  FP Rate    Analysis Depth                        Price
+===============  ==============  =========  ====================================  ===========
+clang-tidy       91.6%           0.8%       AST + path-sensitive                  Free
+**aurora-lint**  67.5%           32.5%      AST + CFG + inter-procedural          --
+Frama-C          61.0%           39.0%      Abstract interpretation               Free
+Infer            43.6%           56.4%      Separation logic                      Free
+cppcheck         36.4%           63.6%      Data-flow                             Free
+===============  ==============  =========  ====================================  ===========
 
-*SqC row is from the v0.3.119 Juliet benchmark, held fixed here because the
+*aurora-lint row is from the v0.3.119 Juliet benchmark, held fixed here because the
 other four tools were not re-run at v0.4.116 — this table is a frozen
 snapshot of a one-time comparative study, not a continuously re-measured
-figure. SqC's own overall TP rate has since risen to 83.8% (see above); it
+figure. aurora-lint's own overall TP rate has since risen to 83.8% (see above); it
 is not directly comparable to the 67.5% row without re-running the other
 four tools on the same 15-CWE, 28,488-file slice.*
 
-SqC achieved 100% precision (zero FP) on 48 of 74 benchmarked CWEs as of
+aurora-lint achieved 100% precision (zero FP) on 48 of 74 benchmarked CWEs as of
 v0.4.116 (a frozen figure from this study, not re-measured since; see
 README.md's Benchmark Highlights for the current 100%-precision-CWE count),
 including CWE-690, CWE-761, CWE-78, and CWE-190. Broadest CWE coverage

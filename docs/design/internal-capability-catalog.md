@@ -36,7 +36,7 @@ current source, trust the source and fix this doc in the same commit.
 ## Macro detection & expansion
 
 ### `src/analyze/macro_expand.rs`
-**Problem solved:** sqc has no C preprocessor, so function-like macro
+**Problem solved:** aurora-lint has no C preprocessor, so function-like macro
 *invocations* are opaque to dataflow; this module collects function-like
 macro *definitions* from parsed source (crossing headers via the prescan
 pre-pass) and expands an invocation on demand via token-aware parameter
@@ -64,7 +64,7 @@ for `defined_macro_names`.
 ### `src/analyze/macro_semantics.rs`
 **Problem solved:** shared dataflow semantics for known *external*
 function-like macro families (utlist, uthash, BSD `<sys/queue.h>`) and a
-few project iterator macros — sqc sees `MACRO(head, el, tmp)` as an opaque
+few project iterator macros — aurora-lint sees `MACRO(head, el, tmp)` as an opaque
 `call_expression`, but the macro actually initializes its iterator/temp/out
 arguments and (for loop macros) guarantees the iterator is non-null inside
 the body block. This is a *positional* registry (unlike `macro_expand.rs`,
@@ -356,6 +356,35 @@ are two different dictionary keys.
 any expression node within a single-file analysis. Already adopted by
 MEM30-C, DCL13-C, MEM31-C.
 
+### `src/analyze/argument_objects.rs`
+**Problem solved:** whether a call argument NAMES a storage object, answered
+in the caller's frame. Distinct from `points_to`'s `LValue`, which
+canonicalizes *which* location an expression denotes; this answers the prior
+question of whether the expression pins down an object at all. A declared
+array, `&scalar`, `&s.member`, `&arr[i]`, a literal and a fresh allocation
+do; a bare pointer variable and `&ptr` deliberately do **not**, because
+`f(&pos, end)` passes a cursor and its bound and which buffer they walk is
+no more knowable in the caller than in the callee.
+
+| Item | Signature | Description |
+|---|---|---|
+| `ObjectFrame` (struct) | `pointer_vars` / `array_objects` / `pointer_members` | What one function's frame knows about the names in scope: declared as a pointer, declared as storage, and which field paths are pointer-typed. |
+| `ObjectFrame::collect_file_scope` | `(&mut self, unit: &Node, source: &str)` | Records the translation unit's file-scope declarations (direct children only, descending `preproc_*`). |
+| `ObjectFrame::collect_function` | `(&mut self, func: &Node, source: &str)` | Records one function's declarations and parameters. |
+| `ObjectFrame::record_pointer_members` | `(&mut self, func, source, struct_field_types)` | Records the field paths in `func` whose terminal member is pointer-typed. An unresolved member type is left out, so it keeps naming storage (task 935). |
+| `ObjectFrame::argument_object_base` | `(&self, node: &Node, source: &str) -> Option<String>` | The storage object an argument expression names, or `None` when this frame cannot name one. |
+| `declared_pointers` | `(node: &Node, source: &str) -> Vec<DeclaredPointer>` | Every name a `declaration` node introduces with a pointer or array declarator, with `is_array` and the `init_declarator` carrying any initializer. |
+| `argument_nodes` | `(args: &Node) -> Vec<Node>` | A call's argument expressions in order, punctuation and comments skipped. |
+| `distinct_object_pairs` | `(frame, args: &[Node], source) -> Vec<(usize, usize)>` | The `(lower, higher)` argument positions at which ONE call site passes two named, different objects. Per-call-site by construction: two callers each naming one object prove nothing, because no single path holds both. |
+
+**Wiring pattern:** dual, and both halves are live. ARR36-C builds an
+`ObjectFrame` per function and reads the call sites in the file under check;
+the prescan (`collect_callsite_distinct_objects_from_tree`) runs the same
+predicate over every translation unit and aggregates the result onto
+`FunctionSummary::distinct_object_param_pairs`, which the rule merges in
+through `set_project_context`. The file-local half is what still answers on
+a run with no `-d` (task 936).
+
 ## Constant folding & value-range analysis
 
 ### `src/analyze/const_eval.rs`
@@ -459,7 +488,7 @@ Two deliberate exclusions, both load-bearing:
   establishes nothing on the first iteration.
 
 Preprocessor wrappers (`preproc_if`/`ifdef`/`else`/`elif`) are treated as
-block-like when scanning preceding statements: sqc does not preprocess, so a
+block-like when scanning preceding statements: aurora-lint does not preprocess, so a
 guard and the arithmetic it protects can both sit inside one `#if` and would
 otherwise not look like siblings. Dominance is the AST approximation, not a CFG
 dominator computation — `goto` into a guarded region is not modelled — which is
@@ -525,6 +554,7 @@ are private implementation detail behind the small public surface below.
 | `propagate_transitive_param_taint` | `(summaries: &mut ...)` | Same transitive propagation for tainted-parameter status. |
 | `propagate_transitive_closes` | `(summaries: &mut ...)` | Same transitive propagation for "closes param N" (fclose/close/CloseHandle). |
 | `propagate_transitive_frees_param_fields` | `(summaries: &mut ...)` | Same transitive propagation, but for field-level frees (`frees_param_fields`, e.g. `free(x->will)`). |
+| `propagate_transitive_frees_param_pointees` | `(summaries: &mut ...)` | Same transitive propagation, but for pointee-level frees (`frees_param_pointees`, e.g. `free(*p)` reached through a forwarding wrapper). |
 | `propagate_return_taint` | `(summaries: &mut ...)` | Propagates "return value is tainted" through call chains. |
 
 `FunctionSummary`'s fields (all `pub`) are the actual payload most rules
@@ -532,9 +562,13 @@ read: `frees_params`/`unconditional_frees_params` (MAY-free vs. MUST-free,
 task 401), `can_return_null`, `returns_allocation`, `checks_null_params`,
 `modifies_params`, `dereferences_params`, `never_returns`,
 `callsite_param_null_states`, `return_range`, `param_passthroughs`,
-`frees_param_fields`, `has_env03_taint_source`, `returns_tainted`,
+`frees_param_fields`, `frees_param_pointees` (the `void **` "safe free"
+wrapper — `free(*param)`, called as `safe_free(&p)`, so the caller's own
+variable dies and an argument match by identifier never sees it),
+`has_env03_taint_source`, `returns_tainted`,
 `closes_params`, `callsite_param_buffer_size`, `produces_param_buffer_size`,
-and several more callsite-specific maps.
+`distinct_object_param_pairs` (task 936), and several more callsite-specific
+maps.
 
 **Wiring pattern:** `compute_summaries` runs once (typically during
 prescan) over the whole translation unit, then the `propagate_transitive_*`
@@ -558,15 +592,15 @@ directly, as MSC12-C's `check_no_effect_expression` does for the BOOT_BSS
 
 ### `src/analyze/suppression.rs`
 **Problem solved:** the mechanism for a human to silence a specific
-finding — either an inline `SQC-SUPPRESS` comment near the violating line,
+finding — either an inline `AURORA-SUPPRESS` comment near the violating line,
 or a wildcard/hash-matched entry in a shared `suppress.toml` config.
 
 | Item | Signature | Description |
 |---|---|---|
-| `Suppression::parse` | `(comment: &str, line_number: usize) -> Option<Self>` | Parses one inline `SQC-SUPPRESS` comment. |
+| `Suppression::parse` | `(comment: &str, line_number: usize) -> Option<Self>` | Parses one inline `AURORA-SUPPRESS` comment. |
 | `Suppression::matches` | `(&self, source: &str, violation_line: usize) -> bool` | True if this suppression covers a violation at `violation_line` (within `MAX_PROXIMITY` = 5 lines, and hash-tamper-checked). |
 | `SuppressionManager::load_from_toml` | `(&mut self, toml_path: &str) -> Result<usize, String>` | Loads `[[suppress]]` entries from `suppress.toml` (shared cross-tool format). |
-| `SuppressionManager::extract_from_source` | `(&mut self, file_path: &str, source: &str)` | Extracts inline `SQC-SUPPRESS` comments from a source file. |
+| `SuppressionManager::extract_from_source` | `(&mut self, file_path: &str, source: &str)` | Extracts inline `AURORA-SUPPRESS` comments from a source file. |
 | `SuppressionManager::should_suppress` | `(...) -> bool` (see source for full signature) | The actual per-violation decision: checked before a violation is finalized. |
 | `SuppressionManager::calculate_suppression_hash` | `(rule_id: &str, code: &str) -> String` | Computes the tamper-detection hash a hash-matched suppression entry is checked against. |
 
@@ -583,7 +617,7 @@ heuristic to disambiguate a genuinely ambiguous case, consider whether
 
 ## Cross-file project context (`ProjectContext` fields, `src/analyze/context.rs`)
 
-**Problem solved:** sqc analyzes one file at a time but many real answers
+**Problem solved:** aurora-lint analyzes one file at a time but many real answers
 (is this name a macro? is this function's summary known? is this struct
 packed?) depend on other files, especially headers. The prescan pre-pass
 (triggered by `-d <dir>`) scans a wider directory tree once and populates
@@ -591,7 +625,7 @@ packed?) depend on other files, especially headers. The prescan pre-pass
 `CertRule::set_project_context(&self, context: &ProjectContext)` to clone
 the fields it needs into its own `RefCell` state (see DCL40-C, and MSC12-C
 task 475, for the canonical wiring pattern). **Without `-d`, this context
-is empty** — running sqc by hand on a single file loses all cross-file
+is empty** — running aurora-lint by hand on a single file loses all cross-file
 recall.
 
 | Field | Type | Description |
@@ -603,6 +637,7 @@ recall.
 | `macro_constants` | `HashMap<String, i64>` | `#define` constants collected across all scanned files. |
 | `macro_aliases` | `HashMap<String, String>` | `#define ALIAS identifier` function-name aliases (e.g. `SYSTEM` → `system`). |
 | `struct_field_types` | `HashMap<String, HashMap<String, String>>` | `struct_name -> field_name -> type_text`, for resolving `field_expression` types cross-file. |
+| `struct_typedef_aliases` | `HashMap<String, String>` | `Alias -> Tag` for every `typedef struct Tag Alias;`. `struct_field_types` files a struct's fields under the TAG, and a bodyless typedef in a different file (sqlite's `typedef struct sqlite3_value Mem;`) leaves the alias unresolvable — a member reached as `pOut->z` on a `Mem *` then has no type. Deliberately NOT folded into `struct_field_types`: four rules read that map, so filing the alias there would move their finding sets; a consumer opts in by resolving through this one, which so far only ARR36-C does (task 963). |
 | `packed_structs` | `HashSet<String>` | Struct/typedef names declared `__attribute__((packed))`, directly or via a macro. |
 | `global_constants` | `HashMap<String, i64>` | File-scope `[const] TYPE NAME = VALUE;` across all scanned files. |
 | `global_var_null_states` | `HashMap<String, NullState>` | Global pointer variables' joined null state across all assignment sites (resolves `extern` pointer globals declared elsewhere). |

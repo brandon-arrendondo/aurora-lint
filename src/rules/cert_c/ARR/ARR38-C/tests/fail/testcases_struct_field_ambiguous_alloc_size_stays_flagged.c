@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: ARR38-C
  * Source: CWE-131 "Incorrect Calculation of Buffer Size" combined with

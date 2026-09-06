@@ -73,7 +73,7 @@ defect is pure type/trust confusion, not a sizing bug.
 Confirmed genuine, permanent gap per the task's own hypothesis: none of
 CWE-123's manifest rules are a plausible semantic fit, and closing it would
 require either a new taint-tracking rule outside the CERT-C rule set's scope
-(sqc targets CERT-C compliance, not general CWE coverage — see
+(aurora-lint targets CERT-C compliance, not general CWE coverage — see
 [`docs/index.rst`](../index.rst) project structure) or weakening EXP39-C's
 char* exception in a way that contradicts the C standard and would generate
 large real-world noise on legitimate serialization/IPC code. No fix is

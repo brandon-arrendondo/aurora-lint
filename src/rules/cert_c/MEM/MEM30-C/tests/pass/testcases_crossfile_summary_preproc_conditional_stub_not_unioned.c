@@ -1,4 +1,3 @@
-// sqc-test: prescan
 /*
  * Rule: MEM30-C
  * Source: hostap wpa_supplicant/eapol_test.c + src/eapol_supp/eapol_supp_sm.h
@@ -8,7 +7,7 @@
  * hostap's eapol_supp_sm.h declares the real eapol_sm_init() under
  * `#if IEEE8021X_EAPOL` but also provides a `#else`-guarded stub with the
  * same name that unconditionally frees its argument (a "feature compiled
- * out" no-op). sqc has no preprocessor, so both bodies get parsed and their
+ * out" no-op). aurora-lint has no preprocessor, so both bodies get parsed and their
  * free-related facts were being unioned into one cross-file FunctionSummary
  * -- crediting the REAL init_ctx() (which never frees its argument) with
  * "unconditionally frees param 0" purely because of the unrelated,

@@ -64,8 +64,8 @@ clang-tidy
 clang-tidy 18.1.3 and tops out at 20, while the published comparison in
 ``docs/tool-comparison.rst`` is LLVM 21.1.  Taking the distro package makes a
 freshly-provisioned node measure an *older* competitor than the table it will
-be compared against, and clang-tidy is the tool currently beating SqC on the
-Juliet overlap (99.2% vs 81.7%) — so that regression would flatter SqC by
+be compared against, and clang-tidy is the tool currently beating aurora-lint on the
+Juliet overlap (99.2% vs 81.7%) — so that regression would flatter aurora-lint by
 understating a rival.  ``playbooks/install-static-analyzers.yml`` does this
 automatically; by hand:
 
@@ -171,7 +171,7 @@ Manual install:
 Build-based tools need a compile database
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Infer and Frama-C cannot be pointed at a source tree the way sqc and cppcheck
+Infer and Frama-C cannot be pointed at a source tree the way aurora-lint and cppcheck
 can — both need a real preprocess.  On the real-world suite they are driven
 from each checkout's ``compile_commands.json``, so
 ``playbooks/setup-compile-commands.yml`` must have run for a codebase before
@@ -212,7 +212,7 @@ Juliet Test Suite v1.3 <https://samate.nist.gov/SARD/test-suites/112>`_:
 Third-Party Library Headers
 ---------------------------
 
-SqC uses ``-I`` include paths to resolve ``#include`` directives from third-party
+aurora-lint uses ``-I`` include paths to resolve ``#include`` directives from third-party
 libraries. Without these, functions declared in external headers produce
 DCL31-C/DCL07-C false positives.
 
@@ -369,11 +369,11 @@ OK           Detached at the pinned commit
 It also flags three contamination cases independent of status:
 
 * tracked files modified, so the scanned source is not the pin;
-* **untracked ``*.c``/``*.h`` files, which sqc will scan** and attribute to
-  the pinned commit (untracked files sqc ignores are counted separately and
+* **untracked ``*.c``/``*.h`` files, which aurora-lint will scan** and attribute to
+  the pinned commit (untracked files aurora-lint ignores are counted separately and
   are harmless);
 * **gitignored ``*.c``/``*.h`` files**, which are invisible to ``git
-  status`` but which sqc scans anyway -- it dispatches on file extension and
+  status`` but which aurora-lint scans anyway -- it dispatches on file extension and
   never consults git. The case to watch is a build run inside a checkout:
   sqlite's build generates a gitignored ``sqlite3.c`` amalgamation, which
   would silently add ~250k lines to every sqlite scan.
@@ -447,7 +447,7 @@ Running Each Tool Manually
     ``$SQC_BENCH_ROOT/<project>`` (default ``~/toolchain/<project>``) instead
     -- that's the path ``bench/realworld_runner.py`` itself reads.
 
-sqc
+aurora-lint
 ~~~
 
 .. code-block:: bash
@@ -457,13 +457,13 @@ sqc
     cargo build --release
 
     # Basic run
-    ./target/release/sqc /path/to/source/ --export results.json
+    ./target/release/aurora-lint /path/to/source/ --export results.json
 
     # With cross-file context
-    ./target/release/sqc /path/to/source/ -d /path/to/source/ --export results.json
+    ./target/release/aurora-lint /path/to/source/ -d /path/to/source/ --export results.json
 
-    # When running from outside the sqc repo, pass --manifest explicitly
-    ./target/release/sqc /path/to/source/ \
+    # When running from outside the aurora-lint repo, pass --manifest explicitly
+    ./target/release/aurora-lint /path/to/source/ \
       --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
       --export results.json
 
@@ -513,11 +513,11 @@ libcrc
 
 .. code-block:: bash
 
-    # sqc
-    ~/data/tools_sqc/target/release/sqc ~/data/comparisons/libcrc \
+    # aurora-lint
+    ~/data/tools_sqc/target/release/aurora-lint ~/data/comparisons/libcrc \
       -d ~/data/comparisons/libcrc \
       --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
-      --export ~/data/comparisons/results/sqc/libcrc/results.json
+      --export ~/data/comparisons/results/aurora-lint/libcrc/results.json
 
     # cppcheck
     cppcheck --enable=all --std=c11 --xml --xml-version=2 \
@@ -536,11 +536,11 @@ sqlite
 
 .. code-block:: bash
 
-    # sqc
-    ~/data/tools_sqc/target/release/sqc ~/data/comparisons/sqlite \
+    # aurora-lint
+    ~/data/tools_sqc/target/release/aurora-lint ~/data/comparisons/sqlite \
       -d ~/data/comparisons/sqlite \
       --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
-      --export ~/data/comparisons/results/sqc/sqlite/results.json
+      --export ~/data/comparisons/results/aurora-lint/sqlite/results.json
 
     # cppcheck
     cppcheck --enable=all --std=c11 --xml --xml-version=2 \
@@ -559,11 +559,11 @@ mosquitto
 
 .. code-block:: bash
 
-    # sqc
-    ~/data/tools_sqc/target/release/sqc ~/data/comparisons/mosquitto \
+    # aurora-lint
+    ~/data/tools_sqc/target/release/aurora-lint ~/data/comparisons/mosquitto \
       -d ~/data/comparisons/mosquitto \
       --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
-      --export ~/data/comparisons/results/sqc/mosquitto/results.json
+      --export ~/data/comparisons/results/aurora-lint/mosquitto/results.json
 
     # cppcheck
     cppcheck --enable=all --std=c11 --xml --xml-version=2 \
@@ -587,11 +587,11 @@ curl
 
 .. code-block:: bash
 
-    # sqc
-    ~/data/tools_sqc/target/release/sqc ~/data/comparisons/curl \
+    # aurora-lint
+    ~/data/tools_sqc/target/release/aurora-lint ~/data/comparisons/curl \
       -d ~/data/comparisons/curl \
       --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
-      --export ~/data/comparisons/results/sqc/curl/results.json
+      --export ~/data/comparisons/results/aurora-lint/curl/results.json
 
     # cppcheck
     cppcheck --enable=all --std=c11 --xml --xml-version=2 \
@@ -615,12 +615,12 @@ hostap
 
 .. code-block:: bash
 
-    # sqc
-    ~/data/tools_sqc/target/release/sqc ~/data/comparisons/hostap \
+    # aurora-lint
+    ~/data/tools_sqc/target/release/aurora-lint ~/data/comparisons/hostap \
       -d ~/data/comparisons/hostap/src \
       -d ~/data/comparisons/hostap/wpa_supplicant \
       --manifest ~/data/tools_sqc/rules_templates/rules-benchmark.toml \
-      --export ~/data/comparisons/results/sqc/hostap/results.json
+      --export ~/data/comparisons/results/aurora-lint/hostap/results.json
 
     # cppcheck
     cppcheck --enable=all --std=c11 --xml --xml-version=2 \
@@ -653,10 +653,10 @@ Verifying Results
     PROJECT=libcrc
     RESULTS=~/data/comparisons/results
 
-    echo "=== sqc ==="
+    echo "=== aurora-lint ==="
     python3 -c "
     import json, collections
-    data = json.load(open('$RESULTS/sqc/$PROJECT/results.json'))
+    data = json.load(open('$RESULTS/aurora-lint/$PROJECT/results.json'))
     rules = collections.Counter(v['rule_id'] for v in data)
     print(f'Total: {len(data)} findings, {len(rules)} rules')
     for r, c in rules.most_common(10): print(f'  {r}: {c}')
@@ -684,7 +684,7 @@ Known Pitfalls
    * - Pitfall
      - Symptom
      - Fix
-   * - sqc manifest not found
+   * - aurora-lint manifest not found
      - ``Failed to read manifest file``
      - Pass ``--manifest`` with absolute path
    * - cppcheck ``--addon=cert`` missing
@@ -713,13 +713,13 @@ Output Format Reference
 
     example.c:5:5: warning: ... [cert-arr30-c]
 
-**sqc JSON**:
+**aurora-lint JSON**:
 
 .. code-block:: json
 
     [{"rule_id": "ARR30-C", "severity": "High", "file": "example.c", "line": 5, "message": "..."}]
 
-**sqc SARIF**: SARIF 2.1.0 compatible output with ``ruleId`` matching CERT C rule IDs.
+**aurora-lint SARIF**: SARIF 2.1.0 compatible output with ``ruleId`` matching CERT C rule IDs.
 
 **Infer JSON** (``infer-out/report.json``):
 
@@ -740,8 +740,8 @@ Distributed Benchmarking with GNU Parallel
 -------------------------------------------
 
 For fast re-benchmarking across multiple machines after rule changes. Cppcheck and
-clang-tidy results are stable across sqc changes -- run them once and cache. Only
-sqc needs re-running.
+clang-tidy results are stable across aurora-lint changes -- run them once and cache. Only
+aurora-lint needs re-running.
 
 .. code-block:: bash
 
@@ -766,7 +766,7 @@ Fast re-benchmark workflow:
 
 .. code-block:: bash
 
-    # 1. Rebuild sqc
+    # 1. Rebuild aurora-lint
     cd ~/data/tools_sqc && cargo build --release
 
     # 2. Push binary to nodes (if no shared FS)
@@ -779,7 +779,7 @@ Fast re-benchmark workflow:
     # 4. Run in parallel across nodes
     parallel --sshloginfile $NODES_FILE -a /tmp/cwe_dirs.txt \
       "$SQC_BIN {} -d $JULIET_DIR -d $JULIET_SUPPORT \
-        --export $RESULTS_DIR/sqc/juliet/{/.}.csv"
+        --export $RESULTS_DIR/aurora-lint/juliet/{/.}.csv"
 
 Exporting competitor results for ingest
 ---------------------------------------

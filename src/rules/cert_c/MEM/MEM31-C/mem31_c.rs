@@ -10,6 +10,44 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
+/// Reduce a call argument to the variable it names, reporting whether it was
+/// named by address.
+///
+/// `p` yields `(p, false)`; `&p` and `(void **)&p` yield `(p, true)`.
+/// Parentheses and casts are transparent. Anything else — a field, a
+/// subscript, a nested call — yields `None`.
+fn strip_call_argument(arg: Node) -> Option<(Node, bool)> {
+    fn peel(mut n: Node) -> Node {
+        loop {
+            let inner = match n.kind() {
+                "parenthesized_expression" => n.named_child(0),
+                "cast_expression" => n.child_by_field_name("value"),
+                _ => None,
+            };
+            match inner {
+                Some(i) => n = i,
+                None => return n,
+            }
+        }
+    }
+
+    let node = peel(arg);
+    if node.kind() == "identifier" {
+        return Some((node, false));
+    }
+    if node.kind() == "pointer_expression" {
+        let op = node.child_by_field_name("operator")?;
+        if op.kind() != "&" {
+            return None;
+        }
+        let inner = peel(node.child_by_field_name("argument")?);
+        if inner.kind() == "identifier" {
+            return Some((inner, true));
+        }
+    }
+    None
+}
+
 pub struct Mem31C {
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
     value_only_globals: RefCell<HashSet<String>>,
@@ -1292,7 +1330,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // Check if assigning result of allocation
             if self.is_allocation_call(&right, source) {
                 // If the variable was already allocated and not freed, it's a leak
-                if was_allocated && !self.freed_memory.contains_key(&var_name) {
+                // -- unless the allocating call is the thing that released it.
+                // `p = realloc(p, n)` and its wrappers consume the old block and
+                // hand back a new one, so the old allocation never leaks.
+                if was_allocated
+                    && !self.freed_memory.contains_key(&var_name)
+                    && !self.call_releases_var(&right, source, &var_name)
+                {
                     // The old allocation is now leaked - we need to create a unique identifier for it
                     // Since we can't track the old allocation separately, we'll generate a violation now
                     if let Some(old_alloc) = self.allocated_memory.get(&var_name) {
@@ -1593,6 +1637,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
     /// Handle a call to a user function whose prescan summary indicates it frees
     /// one of its parameters: mark the matching allocated argument as freed.
+    ///
+    /// Two argument shapes count. `release(p)` matches `frees_params` — the
+    /// pointer value handed in is released. `safe_free(&p)` matches
+    /// `frees_param_pointees` — the callee frees `*param`, so it is the
+    /// caller's own variable that dies, and the argument names it by address.
+    /// Casts and parentheses are transparent in both, which matters because
+    /// the `void **` idiom is almost always written `safe_free((void **)&p)`.
     fn process_freeing_callee(&mut self, node: &Node, source: &str, func_name: &str) {
         // Check if passing allocated memory to a function that frees it.
         // Use prescan function summaries to determine if the callee frees
@@ -1609,11 +1660,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
                     continue;
                 }
-                if arg.kind() == "identifier" {
-                    let var_name = ast_utils::get_node_text_owned(&arg, source);
-                    if self.allocated_memory.contains_key(&var_name)
-                        && summary.frees_params.contains(&param_idx)
-                    {
+                if let Some((target, through_address_of)) = strip_call_argument(arg) {
+                    let frees = if through_address_of {
+                        summary.frees_param_pointees.contains(&param_idx)
+                    } else {
+                        summary.frees_params.contains(&param_idx)
+                    };
+                    let var_name = ast_utils::get_node_text_owned(&target, source);
+                    if frees && self.allocated_memory.contains_key(&var_name) {
                         let free_pos = node.start_position();
                         self.freed_memory
                             .insert(var_name, (free_pos.row + 1, free_pos.column + 1));
@@ -1622,6 +1676,68 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 param_idx += 1;
             }
         }
+    }
+
+    /// True when `expr` is a call that releases `var_name` as it runs: a
+    /// project-local wrapper whose prescan summary frees the parameter `p` is
+    /// passed to, either by value (`frees_params`, the safe-realloc shape) or
+    /// through its pointee (`frees_param_pointees`). Without this the
+    /// reassignment reads as an allocation dropped on the floor.
+    ///
+    /// Deliberately excludes bare `realloc(p, n)`: `p = realloc(p, n)` loses the
+    /// original block when the call fails, which is a finding this rule is
+    /// meant to make (see tests/fail/testcases_realloc_leak.c). A wrapper that
+    /// hands the original pointer back on failure does not have that hole,
+    /// which is what its summary records.
+    fn call_releases_var(&self, expr: &Node, source: &str, var_name: &str) -> bool {
+        let mut call = *expr;
+        loop {
+            let inner = match call.kind() {
+                "parenthesized_expression" => call.named_child(0),
+                "cast_expression" => call.child_by_field_name("value"),
+                _ => None,
+            };
+            match inner {
+                Some(i) => call = i,
+                None => break,
+            }
+        }
+        if call.kind() != "call_expression" {
+            return false;
+        }
+        let Some(function) = call.child_by_field_name("function") else {
+            return false;
+        };
+        let func_name = ast_utils::get_node_text_owned(&function, source);
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            return false;
+        };
+        let summary = self.function_summaries.get(&func_name);
+        let mut param_idx = 0usize;
+        for i in 0..arguments.child_count() {
+            let Some(arg) = arguments.child(i) else {
+                continue;
+            };
+            if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
+                continue;
+            }
+            if let Some((target, through_address_of)) = strip_call_argument(arg) {
+                if ast_utils::get_node_text_owned(&target, source) == var_name {
+                    if let Some(summary) = summary {
+                        let frees = if through_address_of {
+                            summary.frees_param_pointees.contains(&param_idx)
+                        } else {
+                            summary.frees_params.contains(&param_idx)
+                        };
+                        if frees {
+                            return true;
+                        }
+                    }
+                }
+            }
+            param_idx += 1;
+        }
+        false
     }
 
     fn process_return(&mut self, node: &Node, source: &str) {
