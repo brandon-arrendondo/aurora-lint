@@ -21,7 +21,7 @@ The Tools
      - Needs a build?
      - CERT C rules
      - Notes
-   * - `aurora-lint <https://github.com/brandon-arrendondo/tools_sqc>`_
+   * - `aurora-lint <https://github.com/brandon-arrendondo/aurora-lint>`_
      - 0.4.321 / 0.4.332
      - **No**
      - 311 implemented

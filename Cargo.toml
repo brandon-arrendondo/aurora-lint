@@ -8,9 +8,9 @@ authors = ["Eric Buehler <eric.buehler@bissell.com>", "Brandon Arrendondo <brand
 # keeps its own upstream terms (CC BY 4.0 prose, MIT code examples),
 # recorded in NOTICE, thirdparty/cert/LICENSE and docs/licensing.rst.
 license = "Apache-2.0"
-repository = "https://github.com/brandon-arrendondo/tools_sqc"
-homepage = "https://brandon-arrendondo.github.io/tools_sqc"
-documentation = "https://brandon-arrendondo.github.io/tools_sqc"
+repository = "https://github.com/brandon-arrendondo/aurora-lint"
+homepage = "https://brandon-arrendondo.github.io/aurora-lint"
+documentation = "https://brandon-arrendondo.github.io/aurora-lint"
 readme = "README.md"
 keywords = ["cert-c", "static-analysis", "security", "linter", "c"]
 categories = ["development-tools", "command-line-utilities"]

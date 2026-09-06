@@ -138,7 +138,7 @@ jobs:
           Priority: optional
           Architecture: amd64
           Maintainer: Brandon Arrendondo <brandon.arrendondo@bissell.com>
-          Homepage: https://github.com/brandon-arrendondo/tools_sqc
+          Homepage: https://github.com/brandon-arrendondo/aurora-lint
           Description: CERT C compliance checker
            aurora-lint is a fast CERT C static analyzer
            built on tree-sitter for accurate C language analysis.
@@ -213,7 +213,7 @@ jobs:
           Release:        1%{?dist}
           Summary:        CERT C compliance checker
           License:        Apache-2.0
-          URL:            https://github.com/brandon-arrendondo/tools_sqc
+          URL:            https://github.com/brandon-arrendondo/aurora-lint
           Source0:        %{name}-%{version}.tar.gz
 
           %description

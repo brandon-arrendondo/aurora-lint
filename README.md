@@ -156,8 +156,8 @@ cargo install aurora-lint
 Or build from source:
 
 ```bash
-git clone https://github.com/brandon-arrendondo/tools_sqc
-cd tools_sqc
+git clone https://github.com/brandon-arrendondo/aurora-lint
+cd aurora-lint
 cargo build --release
 ```
 

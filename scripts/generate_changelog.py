@@ -201,7 +201,7 @@ def build(tasks, releases, unreleased_version):
 
 
 def compare_links(releases, unreleased_version, has_pending):
-    base = "https://github.com/brandon-arrendondo/tools_sqc"
+    base = "https://github.com/brandon-arrendondo/aurora-lint"
     lines = []
     if has_pending and releases:
         lines.append(f"[Unreleased]: {base}/compare/{releases[-1][1]}...HEAD")
