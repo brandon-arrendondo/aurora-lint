@@ -7,7 +7,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Int34C {
@@ -17,6 +17,15 @@ pub struct Int34C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     /// Per-function VRA results
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+    /// Every `#define NAME ...` name seen across the pre-scanned project,
+    /// object-like and function-like alike. A shift amount naming one of
+    /// these is a compile-time constant even when its replacement text
+    /// can't be folded to an integer.
+    project_macro_names: RefCell<HashSet<String>>,
+    /// Function-like macro names from the pre-scanned project, so a shift
+    /// amount written as `MASK(n)` is recognized as a macro invocation
+    /// rather than an opaque call.
+    project_function_macro_names: RefCell<HashSet<String>>,
 }
 
 impl Int34C {
@@ -26,6 +35,8 @@ impl Int34C {
             current_macros: RefCell::new(MacroConstantMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
+            project_macro_names: RefCell::new(HashSet::new()),
+            project_function_macro_names: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -53,6 +64,9 @@ impl CertRule for Int34C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
+        *self.project_macro_names.borrow_mut() = context.defined_macro_names.clone();
+        *self.project_function_macro_names.borrow_mut() =
+            context.function_macros.keys().cloned().collect();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -119,6 +133,25 @@ impl Int34C {
             // to [0, modulus-1] — guaranteed within type width for any standard
             // integer type.
             if self.shift_amount_bounded_by_modulo(&right_node, source) {
+                return;
+            }
+
+            // An explicit bitmask clamp on the shift amount — `(n - g) &
+            // MASK(wordRadix)`, `bit & 31` — is the compliant idiom CERT's
+            // own solution uses, and the one real code writes when it has
+            // already thought about this exact hazard.
+            if self.shift_amount_masked(&right_node, source) {
+                return;
+            }
+
+            // Whole shift amount is fixed at compile time (a `#define`, an
+            // enumerator, `sizeof`, or arithmetic over those), even when its
+            // value can't be folded because the header defining it wasn't
+            // parsed. Same reasoning the literal case above already applies:
+            // a constant shift amount is a compiler-visible property, not a
+            // runtime hazard, and INT34-C is only meaningful for shift
+            // amounts that vary at run time.
+            if self.is_compile_time_constant(&right_node, source) {
                 return;
             }
 
@@ -209,6 +242,152 @@ impl Int34C {
             )),
             ..Default::default()
         });
+    }
+
+    /// True if the shift amount is masked with a compile-time constant —
+    /// `expr & M` (either operand order). `M` bounds the result to
+    /// `[0, M]`, so a foldable mask is accepted only when it is small
+    /// enough to be in range for any standard integer type (mirroring the
+    /// modulo check below).
+    ///
+    /// A mask that is a compile-time constant sqc cannot *fold* (seL4's
+    /// `MASK(wordRadix)`, whose `wordRadix` lives in a per-architecture
+    /// header) is accepted as written. The clamp is deliberate and its
+    /// width is fixed by the target, not by run-time data, which is the
+    /// hazard class this rule exists to find.
+    fn shift_amount_masked(&self, node: &Node, source: &str) -> bool {
+        if node.kind() == "parenthesized_expression" {
+            return node
+                .named_child(0)
+                .is_some_and(|inner| self.shift_amount_masked(&inner, source));
+        }
+        if node.kind() != "binary_expression" {
+            return false;
+        }
+        if ast_utils::get_binary_operator(node, source) != Some("&") {
+            return false;
+        }
+        let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) else {
+            return false;
+        };
+        [left, right]
+            .iter()
+            .any(|mask| self.mask_bounds_shift_amount(mask, source))
+    }
+
+    /// One operand of an `&` acting as a bound on the shift amount.
+    fn mask_bounds_shift_amount(&self, mask: &Node, source: &str) -> bool {
+        if !self.is_compile_time_constant(mask, source) {
+            return false;
+        }
+        let macros = self.current_macros.borrow();
+        match const_eval::try_evaluate_expr(mask, source, &macros) {
+            // Foldable: the mask is the exact upper bound of the amount.
+            Some(value) => (0..=63).contains(&value),
+            // Not foldable, but constant — see the doc comment above.
+            None => true,
+        }
+    }
+
+    /// True if `node` is an expression whose value is fixed at compile time:
+    /// literals, `sizeof`, macro constants and enumerators (whether or not
+    /// their value can be folded), function-like macro invocations over such
+    /// operands, and arithmetic/bitwise combinations of any of those.
+    ///
+    /// This is deliberately weaker than `const_eval::try_evaluate_expr`,
+    /// which needs an actual integer. A shift by `PAGE_BITS` is no more of
+    /// an INT34-C hazard than a shift by `12`, but sqc has no preprocessor
+    /// and the header defining `PAGE_BITS` is frequently one it never
+    /// parsed — so "did it fold?" is a fact about sqc's include coverage,
+    /// not about the code under analysis.
+    fn is_compile_time_constant(&self, node: &Node, source: &str) -> bool {
+        match node.kind() {
+            "number_literal" | "char_literal" | "sizeof_expression" | "alignof_expression" => true,
+            "parenthesized_expression" => node
+                .named_child(0)
+                .is_some_and(|inner| self.is_compile_time_constant(&inner, source)),
+            "unary_expression" => node
+                .child_by_field_name("argument")
+                .is_some_and(|arg| self.is_compile_time_constant(&arg, source)),
+            "binary_expression" => {
+                let op = ast_utils::get_binary_operator(node, source).unwrap_or_default();
+                if !matches!(
+                    op,
+                    "+" | "-" | "*" | "/" | "%" | "<<" | ">>" | "&" | "|" | "^"
+                ) {
+                    return false;
+                }
+                let (Some(left), Some(right)) = (
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ) else {
+                    return false;
+                };
+                self.is_compile_time_constant(&left, source)
+                    && self.is_compile_time_constant(&right, source)
+            }
+            "conditional_expression" => (0..node.named_child_count())
+                .filter_map(|i| node.named_child(i))
+                .all(|c| self.is_compile_time_constant(&c, source)),
+            "cast_expression" => node
+                .child_by_field_name("value")
+                .is_some_and(|v| self.is_compile_time_constant(&v, source)),
+            // `MASK(n)`, `CBn_MAIRm_ATTR_SHIFT(id)` — a function-like macro
+            // over constant arguments is itself a constant. A call to a real
+            // function is not: `x << get_amount()` stays a violation.
+            "call_expression" => {
+                let Some(callee) = node.child_by_field_name("function") else {
+                    return false;
+                };
+                if callee.kind() != "identifier" {
+                    return false;
+                }
+                let name = ast_utils::get_node_text(&callee, source);
+                if !self.project_function_macro_names.borrow().contains(name)
+                    && !ast_utils::is_defined_macro_name(name, source)
+                {
+                    return false;
+                }
+                node.child_by_field_name("arguments")
+                    .map(|args| {
+                        (0..args.named_child_count())
+                            .filter_map(|i| args.named_child(i))
+                            .all(|a| self.is_compile_time_constant(&a, source))
+                    })
+                    .unwrap_or(false)
+            }
+            "identifier" => self.identifier_is_compile_time_constant(node, source),
+            _ => false,
+        }
+    }
+
+    /// True if a bare identifier names a compile-time constant rather than a
+    /// run-time value.
+    fn identifier_is_compile_time_constant(&self, ident: &Node, source: &str) -> bool {
+        let name = ast_utils::get_node_text(ident, source);
+
+        // A `#define` or enumerator sqc did fold.
+        if self.current_macros.borrow().contains_key(name) {
+            return true;
+        }
+        // A `#define` sqc saw but could not fold (its replacement names
+        // something from a header outside the scan).
+        if self.project_macro_names.borrow().contains(name)
+            || ast_utils::is_defined_macro_name(name, source)
+        {
+            return true;
+        }
+        // No binding anywhere sqc looked: not a local, not a parameter, not
+        // a file-scope declaration. C requires every identifier to be
+        // declared before use, so this one is a macro or an enumerator from
+        // a header that wasn't parsed — seL4's `seL4_PageBits` (generated
+        // per architecture) and `ARMSectionBits` (an enumerator in a header
+        // outside the scan root) both land here. It cannot be a local whose
+        // range we simply failed to compute, which is the case that matters.
+        ast_utils::resolve_identifier_binding(ident, name, source).is_none()
     }
 
     /// Returns true if the shift amount expression is bounded by a modulo operation
