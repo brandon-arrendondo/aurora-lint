@@ -26,20 +26,29 @@ wrote for it.
       (`ENV04-C`, `MSC18-C`, `MSC19-C`, `MSC25-C`).
    3. **Measurement-swamping misfire** — the rule is implemented so poorly that
       leaving it enabled buries every other rule's findings rather than
-      producing a measurement. `MSC12-C` is the only one left. This category is
-      a debt, not a verdict: a disable claiming it **must** cite the
-      FP-reduction task that will re-enable the rule, or nothing tracks the
-      debt. The open gate is tools_sqc task 999 (`MSC12-C`).
+      producing a measurement. **No rule currently qualifies**, and the bar for
+      putting one here is now explicit. This category is a debt, not a verdict:
+      a disable claiming it **must** cite the FP-reduction task that will
+      re-enable the rule, or nothing tracks the debt.
 
-      **Volume is what this category is about, and it must be measured against
-      the current binary, not a label count.** `ground_truth` accumulates rows
-      across every run a rule was ever enabled for, so a rule whose detection
-      logic was later narrowed keeps its old labels and reads as far noisier
-      than it is. `API05-C` sat here on a 2,445 FP / 2 TP label count that
-      predated the fix which collapsed it to 35 findings across all nine
-      corpora; it now runs everywhere. Before claiming this category, scan the
-      pinned checkouts with a rule-only manifest and count what the rule
-      actually emits today.
+      **Volume is what this category is about, it must be measured against the
+      current binary, and it must be measured as a share of the suite.**
+      `ground_truth` accumulates rows across every run a rule was ever enabled
+      for, so a rule whose detection logic was later narrowed keeps its old
+      labels and reads as far noisier than it is. Before claiming this
+      category, scan the pinned checkouts with a rule-only manifest and count
+      what the rule emits *today*, against the ~139k findings the suite already
+      produces. Both former occupants failed that test once someone ran it:
+      `API05-C` sat here on a 2,445 FP / 2 TP label count that predated the fix
+      collapsing it to 35 findings across all nine corpora, and `MSC12-C` on FP
+      families that were 0.78% of suite volume and turned out to be rule
+      defects — fixing the four largest took it to 0.29%. Both now run
+      everywhere.
+
+      **Low precision is not this category.** A rule that produces few findings
+      and gets most of them wrong belongs in the oracle, where the FPs are
+      counted and motivate a fix. Only sheer volume — enough to bury other
+      rules' findings — justifies hiding one from the measurement.
 
    Everything else stays enabled. In particular, **"the project does not follow
    this recommendation" is not a reason to disable** — that is a disagreement
@@ -115,8 +124,10 @@ this config just switched on.
 Label counts are as of the 2026-09-03 scope audit; ask `benchmarking_db` for
 current ones. Every row predates the config changes described above, so each
 codebase now has unadjudicated findings from the 13 rules that change enabled,
-plus `API05-C`'s 35 (curl 20, hostap 9, pureftpd 3, mosquitto 2, sqlite 1) —
-no row is "Full" again until those are labelled.
+plus `API05-C`'s 35 (curl 20, hostap 9, pureftpd 3, mosquitto 2, sqlite 1) and
+`MSC12-C`'s 399 (hostap 135, sqlite 84, curl 53, sel4 42, raylib 37, mosquitto
+24, pureftpd 19, lua 5, libcrc 0) — no row is "Full" again until those are
+labelled.
 
 | Codebase  | Config                    | Adjudicated? |
 |-----------|---------------------------|--------------|
@@ -128,7 +139,7 @@ no row is "Full" again until those are labelled.
 | lua       | `lua-rules.toml`          | Was **full** — 5th ground-truth oracle (0 TP / 3309 FP / 2 FN). See `data/precision_audit/lua/`. |
 | raylib    | `raylib-rules.toml`       | Was **full** — 6th ground-truth oracle, structural-C99 target (23/23 files, 5263 labels, 2.6% precision/87.3% recall). See `data/precision_audit/raylib/`. |
 | pureftpd  | `pureftpd-rules.toml`     | Partial, scoped — SQL-client-API oracle (task 301). `src/log_mysql.c`+`log_pgsql.c`+headers fully labelled (449 findings; 25.4% precision); rest of the daemon scanned but unlabeled. See `data/precision_audit/pureftpd/`. |
-| sel4      | `sel4-rules.toml`         | Partial, scoped — 8th oracle, formally verified microkernel (task 381). Onboarded to give MSC12-C a 2nd real measurement (10.0%, 40 findings labelled); MSC12-C stays disabled here too (same busy-wait/no-op-stub/macro-hidden-effect FP families as the other 7). Rest of the codebase scanned but unlabeled. See `data/precision_audit/sel4/`. |
+| sel4      | `sel4-rules.toml`         | Partial, scoped — 8th oracle, formally verified microkernel (task 381). Onboarded to give MSC12-C a 2nd real measurement (10.0%, 40 findings labelled); MSC12-C now runs here again (task 999), so those labels predate the fixes and its 42 current findings need re-adjudicating. Rest of the codebase scanned but unlabeled. See `data/precision_audit/sel4/`. |
 
 All nine codebases now have their own manifest; the shared base only applies to
 a codebase not yet registered here. libcrc is the worked template (small enough
