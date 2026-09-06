@@ -1,10 +1,10 @@
 # Changelog
 
-All notable changes to sqc are documented here. The format follows
+All notable changes to aurora-lint are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 **Versions here are published releases**, not every version the crate passed
-through. sqc bumps the patch version on nearly every commit, and only tagged
+through. aurora-lint bumps the patch version on nearly every commit, and only tagged
 versions are built, signed and published; a section therefore covers every
 change since the previous release, not since the previous version number.
 
@@ -13,6 +13,21 @@ task database. Edit a task, not this file -- a hand edit is overwritten on the
 next regeneration, and CI checks the two agree.
 
 ## [Unreleased]
+
+### Fixed
+
+- INT30-C/INT31-C/INT32-C/ARR30-C: pointer arithmetic misclassified as integer arithmetic
+- INT34-C: flags almost any non-literal shift amount with no value-range reasoning (0/104 TP on sel4)
+- ARR36-C: '*p' is treated as a pointer whatever p points to, so '*s1 - *s2' on two char* reads as pointer subtraction
+- ARR30-C: three location-attribution bugs (wrong array size, wrong line, conflated #ifdef branches)
+- ARR36-C: a flexible-array member IS storage, but storage inside the array the other operand walks
+
+### Changed
+
+- Publish aurora-lint to crates.io (coordinator-node only, holds the publish credentials)
+- Rename the GitHub repo tools_sqc -> aurora-lint, then point Cargo.toml repository/homepage at it
+
+## [0.4.336] - 2026-09-06
 
 ### Added
 
@@ -66,6 +81,18 @@ next regeneration, and CI checks the two agree.
 - bench compare: rule rows fabricate base_tp/base_fp 0 for any rule outside the base run's top-20-by-FP
 - INT32-C: bare sizeof/single-variable malloc args flagged as overflowing arithmetic; realloc arg1 (pointer) checked as if it were the size arg
 - ARR36-C: every pointer parameter gets a unique synthetic base, so any end-minus-pos is a violation (0.1% precision)
+- ARR30-C: 'unvalidated function parameter index' doesn't recognize caller-side validation (seL4 decode/invoke split, size-parameter-defines-bound convention)
+- Generated fixture tests build context via prescan_single_tree, which no production path uses -- 17 findings on 11 pass fixtures the tests call clean
+- ARR30-C: 'unbounded while loop with pointer increment' doesn't recognize NUL-terminated string / NULL-terminated pointer-array scans
+- CON40-C, EXP33-C and MSC13-C are each cubic in block-nesting depth; MEM30-C's 2000-level pass fixture hangs a full-rule-set scan
+- ARR36-C: a field-path base is treated as naming storage, so a pointer-valued struct member reads as its own array
+- int_provenance risky-operand gate fails open on empty function_summaries, so 56 INT30/31/32-C fail fixtures have been passing on the no-context fallback, not on the rule
+- MEM31-C learns wrapper allocators from prescan but not a void** free wrapper, so safe_free() callers leak 5 findings under -d
+- ARR30-C: caller-side index validation is file-local, so a callee whose only callers live in another file stays flagged
+- ARR30-C: 'unbounded while loop with pointer increment' still fires on flag/counter conditions, bare producer calls and ctype predicates
+- ARR36-C: the caller-side proof for parameter pairs is file-local, so a cross-file caller cannot be read
+- ARR36-C: an untracked bare pointer variable's raw name is used as a base, so a pointer with an unknown target reads as its own array
+- ARR36-C: 'typedef struct X Alias;' leaves Alias unresolvable, so a member reached through it falls back to storage-naming
 
 ### Changed
 
@@ -93,6 +120,9 @@ next regeneration, and CI checks the two agree.
 - Upgrade installed knots 1.0.0 -> 1.16.0, then use AICP to target interprocedural-analysis work
 - Upstream sqlite: fts5TestUtf8 never validates the 4th continuation byte and advances i by 3 not 4
 - INT31-C: get_type_width() doesn't recognize float/double, so double->int narrowing conversions are silently missed
+- mosquitto scope: add include/ + config.h to data/benchmark_repos.json and the precision_audit README, exclude the C++ wrapper by name
+- sqlite scope 656: check oracle for labels on the 7 newly-excluded paths
+- Drop the '// sqc-test: prescan' gate so every fixture is tested under the context the scan builds (62 fixtures fall over when it lands)
 
 ### Documentation
 
@@ -698,11 +728,12 @@ _No user-visible changes; see the commit log for internal work._
 - PRE10-C: recognize do-while(0) wrapper spanning multiple lines with backslash continuation
 
 
-[Unreleased]: https://github.com/brandon-arrendondo/tools_sqc/compare/v0.4.315...HEAD
-[0.4.315]: https://github.com/brandon-arrendondo/tools_sqc/compare/v0.4.314...v0.4.315
-[0.4.314]: https://github.com/brandon-arrendondo/tools_sqc/compare/v0.4.311...v0.4.314
-[0.4.311]: https://github.com/brandon-arrendondo/tools_sqc/compare/v0.4.123...v0.4.311
-[0.4.123]: https://github.com/brandon-arrendondo/tools_sqc/compare/v0.4.84...v0.4.123
-[0.4.84]: https://github.com/brandon-arrendondo/tools_sqc/compare/v0.4.13...v0.4.84
-[0.4.13]: https://github.com/brandon-arrendondo/tools_sqc/compare/v0.4.0...v0.4.13
-[0.4.0]: https://github.com/brandon-arrendondo/tools_sqc/releases/tag/v0.4.0
+[Unreleased]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.4.336...HEAD
+[0.4.336]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.4.315...v0.4.336
+[0.4.315]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.4.314...v0.4.315
+[0.4.314]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.4.311...v0.4.314
+[0.4.311]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.4.123...v0.4.311
+[0.4.123]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.4.84...v0.4.123
+[0.4.84]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.4.13...v0.4.84
+[0.4.13]: https://github.com/brandon-arrendondo/aurora-lint/compare/v0.4.0...v0.4.13
+[0.4.0]: https://github.com/brandon-arrendondo/aurora-lint/releases/tag/v0.4.0
