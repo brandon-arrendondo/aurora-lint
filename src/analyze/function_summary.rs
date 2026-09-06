@@ -89,6 +89,20 @@ pub struct FunctionSummary {
     /// `Some(range)` when all return paths provably return values in [min, max].
     /// `None` for void, pointer-returning, or unevaluable return expressions.
     pub return_range: Option<ValueRange>,
+    /// True when the function returns a value and EVERY `return` expression in
+    /// its body is fixed at compile time — a literal, `sizeof`, a macro
+    /// constant or enumerator, or arithmetic over those — in the weak sense of
+    /// [`const_eval::is_compile_time_constant_expr`], which does not require
+    /// the value to fold.
+    ///
+    /// The fact `return_range` cannot carry: seL4's `pageBitsForSize()` is a
+    /// switch returning one of three enumerators whose definitions live in a
+    /// generated header outside the scan, so every return expression is
+    /// unfoldable and `return_range` is `None` even though the call is no more
+    /// of a runtime hazard than a literal. Lets INT34-C hoist its
+    /// constant-shift-amount reasoning across a call.
+    #[serde(default)]
+    pub returns_only_compile_time_constants: bool,
     /// Parameter pass-through: which of this function's params are forwarded to
     /// callees. Maps caller_param_idx → Vec<(callee_name, callee_param_idx)>.
     /// Used for transitive free propagation (MEM31-C).
@@ -700,6 +714,8 @@ fn analyze_function(
         // Compute return value range for integer-returning functions (only when VRA is needed)
         if compute_return_ranges && !is_void_return && !is_pointer_return {
             summary.return_range = compute_return_range(&body, source, macros);
+            summary.returns_only_compile_time_constants =
+                returns_only_compile_time_constants(&body, source, macros);
         }
 
         // Only a pointer-returning function can hand a written-into
@@ -2139,6 +2155,36 @@ fn compute_return_range(
     }
 
     combined
+}
+
+/// True when the body has at least one `return expr;` and every one of them is
+/// a compile-time constant in the weak sense of
+/// [`const_eval::is_compile_time_constant_expr`] — see
+/// [`FunctionSummary::returns_only_compile_time_constants`].
+///
+/// Only per-file macro names are available here, so the project-wide sets are
+/// [`const_eval::ConstantNameSets::none`]; the unresolvable-identifier rule
+/// inside the predicate is what carries the cross-header cases.
+fn returns_only_compile_time_constants(
+    body: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+) -> bool {
+    let mut return_exprs = Vec::new();
+    collect_return_expressions(body, source, &mut return_exprs);
+
+    if return_exprs.is_empty() {
+        return false;
+    }
+
+    return_exprs.iter().all(|expr| {
+        const_eval::is_compile_time_constant_expr(
+            expr,
+            source,
+            macros,
+            const_eval::ConstantNameSets::none(),
+        )
+    })
 }
 
 /// Recursively collect the expression child of every `return_statement` in `node`.

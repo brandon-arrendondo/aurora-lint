@@ -434,6 +434,7 @@ preprocessor.
 | `expression_fits_in_signed_vra` / `expression_fits_in_unsigned_vra` | `(...) -> bool` | CFG-based value-range-analysis version of the above, falling back to the syntactic version. |
 | `expression_overflows_signed_vra` / `expression_overflows_unsigned_vra` | `(...) -> bool` | True only when the *entire* computed range lies outside the representable band (a **definite** overflow, e.g. `INT_MAX + 1`) — deliberately stronger than `!fits_*`, since a range merely straddling the bound is only a *possible* overflow. |
 | `resolve_identifiers_in_expr` | — | Resolves identifiers in an expression by scanning local assignments. |
+| `is_compile_time_constant_expr` | `(node, source, macros, names: ConstantNameSets) -> bool` | True when an expression's value is *fixed at compile time* without requiring it to **fold**: literals, `sizeof`, macro constants and enumerators (including ones whose `#define` lives in an unparsed header), function-like macro invocations over such, calls to functions whose every `return` is itself constant, and arithmetic over any of those. Deliberately weaker than `try_evaluate_expr`, because "did it fold?" is a fact about sqc's include coverage, not about the code. `ConstantNameSets` carries the project-wide `#define` names plus `FunctionSummary::returns_only_compile_time_constants`; `ConstantNameSets::none()` is the single-file answer. Used by INT34-C (a shift by `PAGE_BITS` is no more of a hazard than a shift by `12`) and by `function_summary` to compute that same flag. |
 | `promoted_range_for_type` | `(type_name: &str) -> Option<ValueRange>` | The range a narrow (`char`/`short` family) type takes after integer promotion to `int` — i.e. its own full representable range. `None` for anything already `int`-wide. Seed a `VarRangeMap` with these before `try_evaluate_range` to prove what promotion guarantees: no `+`/`-`/`*` over two promoted narrow operands can leave `int`. `INT08-C` and `INT32-C` each independently reached the opposite premise (treating `char + char` as 8-bit arithmetic) before sharing this. |
 
 ### `src/analyze/value_range.rs`
@@ -587,7 +588,10 @@ are private implementation detail behind the small public surface below.
 read: `frees_params`/`unconditional_frees_params` (MAY-free vs. MUST-free,
 task 401), `can_return_null`, `returns_allocation`, `checks_null_params`,
 `modifies_params`, `dereferences_params`, `never_returns`,
-`callsite_param_null_states`, `return_range`, `param_passthroughs`,
+`callsite_param_null_states`, `return_range`,
+`returns_only_compile_time_constants` (every `return` is constant even though
+none of them folds — the fact `return_range` cannot carry),
+`param_passthroughs`,
 `frees_param_fields`, `frees_param_pointees` (the `void **` "safe free"
 wrapper — `free(*param)`, called as `safe_free(&p)`, so the caller's own
 variable dies and an argument match by identifier never sees it),
