@@ -41,6 +41,14 @@ pub struct ObjectFrame {
     /// target, which this frame cannot name any better than a pointer
     /// parameter's (task 935).
     pub pointer_members: HashSet<String>,
+    /// Levels of indirection each declared name carries: `char *s` is 1,
+    /// `u8 **pos` is 2, `char buf[N]` is 1, `char *argv[]` is 2.
+    ///
+    /// `pointer_vars` answers "can this name hold a pointer at all"; this
+    /// answers "how many dereferences until it stops being one". A name the
+    /// frame never saw declared is absent rather than 0 -- no depth is not a
+    /// depth of none (task 934).
+    pub pointer_depth: HashMap<String, usize>,
 }
 
 impl ObjectFrame {
@@ -50,17 +58,19 @@ impl ObjectFrame {
     }
 
     /// Record a name declared with a pointer or array declarator.
-    pub fn note_declared(&mut self, name: &str, is_array: bool) {
-        self.pointer_vars.insert(name.to_string());
-        if is_array {
-            self.array_objects.insert(name.to_string());
+    pub fn note_declared(&mut self, declared: &DeclaredPointer) {
+        self.pointer_vars.insert(declared.name.clone());
+        if declared.is_array {
+            self.array_objects.insert(declared.name.clone());
         }
+        self.pointer_depth
+            .insert(declared.name.clone(), declared.depth);
     }
 
     /// Record every pointer or array name a `declaration` node introduces.
     pub fn record_declaration(&mut self, node: &Node, source: &str) {
         for declared in declared_pointers(node, source) {
-            self.note_declared(&declared.name, declared.is_array);
+            self.note_declared(&declared);
         }
     }
 
@@ -79,6 +89,10 @@ impl ObjectFrame {
             return None;
         }
         self.pointer_vars.insert(name.clone());
+        // A parameter that reached here spells a pointer or an array, so it
+        // carries at least one level however the declarator nests.
+        self.pointer_depth
+            .insert(name.clone(), declarator_depth(&declarator).max(1));
         Some(name)
     }
 
@@ -228,6 +242,8 @@ pub struct DeclaredPointer<'tree> {
     /// True when the declarator is an array declarator, so the name denotes
     /// storage of its own.
     pub is_array: bool,
+    /// Levels of indirection the declarator spells (`declarator_depth`).
+    pub depth: usize,
     /// The `init_declarator` this name came from, when it has an initializer
     /// to read.
     pub init_declarator: Option<Node<'tree>>,
@@ -264,10 +280,44 @@ pub fn declared_pointers<'tree>(node: &Node<'tree>, source: &str) -> Vec<Declare
         declared.push(DeclaredPointer {
             name,
             is_array: declarator.kind() == "array_declarator",
+            depth: declarator_depth(&declarator),
             init_declarator: (child.kind() == "init_declarator").then_some(child),
         });
     }
     declared
+}
+
+/// Levels of indirection a declarator spells: `char *s` is 1, `u8 **pos` is
+/// 2, `char buf[N]` is 1, `char *argv[]` is 2.
+///
+/// A dereference spends one of them, which is the only thing that tells `*s`
+/// (a char) from `*pos` (still a pointer). Both are a `pointer_expression`
+/// over a tracked identifier, so a frame that does not count levels reads
+/// `*s1 - *s2` as pointer subtraction (task 934). Counting is preferred to a
+/// predicate over the pointee's spelling because the same counter answers the
+/// `u8 **` case on purpose rather than by accident.
+///
+/// A wrapper that adds no indirection is descended through without counting:
+/// the parentheses of `int (*fp)(void)` and the parameter list of a
+/// pointer-returning function.
+pub fn declarator_depth(declarator: &Node) -> usize {
+    match declarator.kind() {
+        "pointer_declarator" | "array_declarator" => {
+            1 + declarator
+                .child_by_field_name("declarator")
+                .map_or(0, |inner| declarator_depth(&inner))
+        }
+        "init_declarator" | "function_declarator" => declarator
+            .child_by_field_name("declarator")
+            .map_or(0, |inner| declarator_depth(&inner)),
+        // No `declarator` field to follow -- the declarator is just wrapped.
+        "parenthesized_declarator" => (0..declarator.named_child_count())
+            .filter_map(|i| declarator.named_child(i))
+            .map(|child| declarator_depth(&child))
+            .max()
+            .unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// Whether a declarator spells a pointer or an array.

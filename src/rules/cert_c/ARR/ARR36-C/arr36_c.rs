@@ -557,8 +557,7 @@ impl PointerAnalyzer {
             // Declared pointer or array. Recorded even when the base is
             // unknown (a bare `int *p;`), because a later `p = buf;` is
             // only trackable if we know p can hold a pointer at all.
-            self.objects
-                .note_declared(&declared.name, declared.is_array);
+            self.objects.note_declared(&declared);
             // Array declarations create their own storage — the variable IS its own base.
             if declared.is_array {
                 self.variable_arrays
@@ -836,6 +835,25 @@ impl PointerAnalyzer {
         }
     }
 
+    /// Whether `*name` is still a pointer.
+    ///
+    /// A dereference spends one level of indirection. `*cursor` over a
+    /// `u8 **cursor` is a pointer and keeps cursor's base; `*s` over a
+    /// single-level `char *s` is the pointed-to VALUE and has no base at all,
+    /// so `return *s1 - *s2;` is char arithmetic rather than pointer
+    /// subtraction between two arrays (task 934).
+    ///
+    /// A name this frame never saw declared keeps the old reading. Absence of
+    /// a recorded depth is not evidence of a depth -- the stance
+    /// `record_pointer_members` already takes for a member whose type does not
+    /// resolve.
+    fn dereference_yields_pointer(&self, name: &str) -> bool {
+        self.objects
+            .pointer_depth
+            .get(name)
+            .is_none_or(|depth| *depth > 1)
+    }
+
     fn get_pointer_info(&self, node: &Node, source: &str) -> Option<String> {
         match node.kind() {
             "identifier" => {
@@ -868,9 +886,11 @@ impl PointerAnalyzer {
                                         .cloned()
                                         .unwrap_or(var_name),
                                 )
-                            } else {
+                            } else if self.dereference_yields_pointer(&var_name) {
                                 // *ptr: follow alias chain
                                 self.variable_arrays.get(&var_name).cloned()
+                            } else {
+                                None
                             }
                         }
                         "field_expression" => {
