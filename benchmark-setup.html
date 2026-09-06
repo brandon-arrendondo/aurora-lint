@@ -607,7 +607,7 @@ cargo<span class="w"> </span>build<span class="w"> </span>--release
 
 <span class="c1"># When running from outside the aurora-lint repo, pass --manifest explicitly</span>
 ./target/release/aurora-lint<span class="w"> </span>/path/to/source/<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--export<span class="w"> </span>results.json
 </pre></div>
 </div>
@@ -659,7 +659,7 @@ find<span class="w"> </span>/path/to/source/<span class="w"> </span>-name<span c
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
 ~/data/tools_sqc/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/libcrc<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/libcrc<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/libcrc/results.json
 
 <span class="c1"># cppcheck</span>
@@ -681,7 +681,7 @@ run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
 ~/data/tools_sqc/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/sqlite<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/sqlite<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/sqlite/results.json
 
 <span class="c1"># cppcheck</span>
@@ -703,7 +703,7 @@ run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
 ~/data/tools_sqc/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/mosquitto<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/mosquitto<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/mosquitto/results.json
 
 <span class="c1"># cppcheck</span>
@@ -730,7 +730,7 @@ run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># aurora-lint</span>
 ~/data/tools_sqc/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/curl<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/curl<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/curl/results.json
 
 <span class="c1"># cppcheck</span>
@@ -758,7 +758,7 @@ run-clang-tidy<span class="w"> </span>-checks<span class="o">=</span><span class
 ~/data/tools_sqc/target/release/aurora-lint<span class="w"> </span>~/data/comparisons/hostap<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/hostap/src<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span>~/data/comparisons/hostap/wpa_supplicant<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-benchmark.toml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--manifest<span class="w"> </span>~/data/tools_sqc/rules_templates/rules-all.toml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--export<span class="w"> </span>~/data/comparisons/results/aurora-lint/hostap/results.json
 
 <span class="c1"># cppcheck</span>

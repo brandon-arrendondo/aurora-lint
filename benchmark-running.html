@@ -319,16 +319,23 @@ fleet of remote hosts, that’s the kind of thing the maintainer’s
 </div>
 <section id="per-codebase-rule-configs">
 <h3>Per-Codebase Rule Configs<a class="headerlink" href="#per-codebase-rule-configs" title="Link to this heading"></a></h3>
-<p>Each codebase may carry its own aurora-lint rules manifest in <code class="docutils literal notranslate"><span class="pre">conf/realworld/</span></code> (the
+<p>Each codebase carries its own aurora-lint rules manifest in <code class="docutils literal notranslate"><span class="pre">conf/realworld/</span></code> (the
 real-world analog of a project shipping its own <code class="docutils literal notranslate"><span class="pre">aurora-lint-rules.toml</span></code>). The
 runner reuses it for <strong>every</strong> run of that codebase via the
 <code class="docutils literal notranslate"><span class="pre">CODEBASES[&lt;name&gt;][&quot;sqc&quot;][&quot;manifest&quot;]</span></code> registry entry, so rules that do not
-apply are ignored consistently. A codebase with no entry falls back to the
-shared base <code class="docutils literal notranslate"><span class="pre">rules_templates/rules-benchmark.toml</span></code>. The config is the
+apply are ignored consistently. There is no shared fallback base: a codebase
+with no <code class="docutils literal notranslate"><span class="pre">manifest</span></code> entry is an error, because a manifest replaces the base
+outright and so decides which rules can reach the oracle at all. The config is the
 <em>categorical</em> filter (disable a whole rule only when it is inapplicable);
 per-finding false positives among enabled rules are recorded in the
 <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> oracle instead, so analyzer misfires stay measured rather than
-hidden. See <code class="docutils literal notranslate"><span class="pre">conf/realworld/README.md</span></code> for the per-codebase audit workflow.
+hidden. See <code class="docutils literal notranslate"><span class="pre">conf/realworld/README.md</span></code> for the per-codebase audit workflow.</p>
+<p>Because a manifest is standalone and a scan iterates only its <em>enabled</em> rules, a
+rule with no entry at all never runs on that codebase and nothing reports the
+gap — an omission is indistinguishable from an oversight, which is a defect that
+has actually shipped. <code class="docutils literal notranslate"><span class="pre">scripts/check_realworld_manifests.py</span></code> (pre-commit hook
+<code class="docutils literal notranslate"><span class="pre">check-realworld-manifests</span></code>) asserts every manifest decides every rule, and
+that every <code class="docutils literal notranslate"><span class="pre">enabled</span> <span class="pre">=</span> <span class="pre">false</span></code> carries a comment naming its reason.
 <code class="docutils literal notranslate"><span class="pre">libcrc</span></code> is fully audited (every enabled-rule finding labelled); the four
 large codebases grow their labels incrementally.</p>
 </section>
