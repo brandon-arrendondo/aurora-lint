@@ -72,9 +72,9 @@ in the benchmark (see Verification).
 ## Verification
 
 - `cargo build --lib`, `cargo clippy --lib -- -D warnings`, `cargo fmt`: clean.
-- `cargo test --package sqc --lib`: 3793 passed, 0 failed, 12 ignored —
+- `cargo test --package aurora-lint --lib`: 3793 passed, 0 failed, 12 ignored —
   unchanged from baseline, including all 59 STR31-C generated tests.
-- Real-world benchmark (sqc-only, 9 codebases) run before/after — see task
+- Real-world benchmark (aurora-lint-only, 9 codebases) run before/after — see task
   507 for the run ids and result.
 
 ## Residual scope not touched by this change

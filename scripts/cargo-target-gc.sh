@@ -12,7 +12,7 @@
 #      --no-run` on top takes it to 2.4G, 1.6G of it incremental.
 #   3. If a repo is STILL over $MAX_TARGET_GB after (1) and (2), its whole
 #      dev profile is cleaned. target/release is never touched at any
-#      stage -- benchmarks run against target/release/sqc and a run must
+#      stage -- benchmarks run against target/release/aurora-lint and a run must
 #      not be disturbed mid-flight (see CLAUDE.md).
 #
 # Never runs while a build is in flight: cargo would race the deletion.

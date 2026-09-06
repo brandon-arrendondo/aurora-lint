@@ -1,0 +1,348 @@
+.\" aurora-lint - CERT C static analyzer
+.\" Man page for aurora-lint(1)
+.TH aurora-lint 1 "September 2026" "aurora-lint 0.4.336" "User Commands"
+.SH NAME
+aurora-lint \- CERT C compliance checker for C source code
+.SH SYNOPSIS
+.B aurora-lint
+[\fIOPTIONS\fR] [\fIPATH\fR]
+.SH DESCRIPTION
+.B aurora-lint
+is a static analysis tool that checks C source code
+for violations of the SEI CERT C Coding Standard. It performs AST-based,
+control-flow, dataflow, and inter-procedural analysis to detect defects
+including null pointer dereferences, integer overflows, buffer overflows,
+use-after-free, and resource leaks.
+.PP
+.B aurora-lint
+requires no build system, no compilation and no
+.IR compile_commands.json .
+It parses C with tree-sitter rather than driving a compiler, so it needs
+neither a toolchain, system headers, nor a working build, and will analyze
+source that cannot currently be built. A
+.IR compile_commands.json
+and
+.BR \-I / \-D
+flags are used when supplied \(em they improve cross-file context and reduce
+false positives \(em but are never required.
+.PP
+.B aurora-lint
+analyzes C
+.RI ( .c
+and
+.IR .h )
+against the CERT C standard. It is not a C++ checker.
+.PP
+If \fIPATH\fR is omitted, the current directory is analyzed.
+\fIPATH\fR may be a single C source file, a directory (analyzed recursively),
+or a git repository (with \fB\-\-diff\fR to analyze only changed files).
+.SH OPTIONS
+.SS "Input & Configuration"
+.TP
+\fB\-m\fR, \fB\-\-manifest\fR \fIFILE\fR
+Path to the rules manifest file (TOML format). The manifest controls which
+rules are enabled and their severity levels. Default:
+.IR rules_templates/rules\-all.toml .
+.TP
+\fB\-d\fR, \fB\-\-directories\fR \fIDIR\fR
+Additional directories to pre-scan for function definitions, providing
+cross-file context for inter-procedural analysis. May be specified multiple
+times. For best results, include all source directories in the project.
+.TP
+\fB\-I\fR, \fB\-\-include\-path\fR \fIDIR\fR
+Include search paths for resolving \fB#include\fR directives, analogous to the
+compiler \fB\-I\fR flag. May be specified multiple times.
+.TP
+\fB\-\-compile\-commands\fR \fIFILE\fR
+Read include search paths (\fB\-I\fR, \fB\-isystem\fR, \fB\-iquote\fR,
+\fB\-idirafter\fR) and command-line macros (\fB\-D\fR, \fB\-U\fR) out of a
+\fIcompile_commands.json\fR and feed them to the pre-scan. Optional: aurora-lint needs
+no build system, and without this flag behavior is unchanged. No preprocessor is
+run and the parse tree is untouched, so findings keep their source locations.
+Paths in a database are absolute; if it was generated on another host, aurora-lint warns
+rather than silently resolving nothing.
+.TP
+\fB\-\-system\-includes\fR
+Also search the compiler's own built-in system header directories, discovered by
+asking it (\fBcc \-E \-Wp,\-v \-\fR) and appended at lowest priority. A
+compile database lists only the flags a build \fIpasses\fR, so it can never
+contain these; with one, each compiler the database names is asked, and without
+one the platform default \fBcc\fR is. Off by default because it spawns a
+compiler. A compiler that cannot be run is reported and skipped, not fatal.
+.TP
+\fB\-\-suppress\-file\fR \fIFILE\fR
+Path to a
+.I .aurora-lint\-suppress.toml
+suppression file. If not specified, aurora-lint auto-detects a suppression file in
+the project root. The file supports \fB[[suppression]]\fR entries (by hash) and
+\fB[[wildcard]]\fR entries (by glob or prefix pattern).
+.SS "Output & Reporting"
+.TP
+\fB\-e\fR, \fB\-\-export\fR \fIFILE\fR
+Export violations to a file. The output format is determined by the file
+extension:
+.RS
+.TP
+.B .csv
+Comma-separated values
+.TP
+.B .json
+JSON array of violation objects
+.TP
+.B .xlsx
+Excel workbook with formatted columns and severity coloring
+.TP
+.B .sarif\fR, \fB.sarif.json
+SARIF v2.1.0 for IDE and CI/CD integration
+.RE
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Increase output verbosity. May be specified multiple times:
+.B \-v
+shows per-rule progress;
+.B \-vv
+shows per-violation detail.
+.SS "Analysis Modes"
+.TP
+\fB\-i\fR, \fB\-\-interactive\fR
+Run in interactive terminal UI mode with keyboard navigation, filtering,
+and inline code preview. Conflicts with \fB\-\-export\fR and
+\fB\-\-generate\-suppression\fR. Requires a binary built with
+\fB\-\-features tui\fR (disabled by default).
+.TP
+\fB\-\-diff\fR
+Only analyze C files that are modified or new according to
+.BR git\-diff (1).
+Requires the target path to be inside a git repository.
+.TP
+\fB\-\-generate\-suppression\fR \fIFILE\fR:\fILINE\fR:\fIRULE\fR
+Generate a suppression comment for the specified violation. Output is printed
+to stdout. Conflicts with \fB\-\-interactive\fR and \fB\-\-export\fR.
+.SS "Project-Relevance Detection"
+.TP
+\fB\-\-detect\-relevance\fR
+Scan \fIPATH\fR and any \fB\-d\fR directories for evidence of threading
+(\fBpthread\fR, \fI<threads.h>\fR, \fB_Atomic\fR) and Windows API usage, then
+generate a rules manifest with the categorically-inapplicable rule classes
+disabled (\fBCON\fR* if no threading evidence is found, \fBWIN\fR* if no
+Windows API evidence is found). Does not run an analysis; pair with
+\fB\-\-write\-manifest\fR to save the result. Detection is conservative: a
+rule class is disabled only when no evidence of it is found anywhere in the
+scanned corpus, including resolved \fB\-I\fR/\fB\-d\fR includes. An
+unresolved include path leaves the affected rules enabled with an
+\fB# unresolved: ...\fR comment rather than guessing.
+.TP
+\fB\-\-write\-manifest\fR \fIFILE\fR
+With \fB\-\-detect\-relevance\fR, write the generated manifest to \fIFILE\fR.
+Requires \fB\-\-detect\-relevance\fR.
+.SS "Filtering"
+.TP
+\fB\-\-min\-severity\fR \fILEVEL\fR
+Only report violations at or above this severity level.
+\fILEVEL\fR is one of: \fBLow\fR, \fBMedium\fR, \fBHigh\fR, \fBCritical\fR.
+.TP
+\fB\-\-rules\fR \fIRULE1\fR,\fIRULE2\fR,...
+Only report violations from the specified rules. Comma-separated list of
+CERT C rule identifiers (e.g., \fBARR30\-C,MEM31\-C,STR32\-C\fR).
+.TP
+\fB\-\-exclude\fR \fIGLOB\fR
+Exclude files matching this path glob from analysis. May be specified
+multiple times. Useful for checked-in amalgamations, vendored code, test
+harnesses, or build tooling that isn't part of the shipped product. Globs
+are matched against each file's path relative to the scan root and are
+merged with any patterns from the project's own
+.I toolchain.toml
+.B [ignore].paths .
+Unlike
+.BR \-d ,
+.B \-\-exclude
+is the only flag that actually removes files from the scan;
+.B \-d
+only adds cross-file pre-scan context and never restricts which files are
+analyzed.
+.SS "Exit Code Control"
+.TP
+\fB\-\-fail\-on\-violation\fR
+Exit with code 1 if any violations are found.
+.TP
+\fB\-\-fail\-on\-severity\fR \fILEVEL\fR
+Exit with code 1 if any violation meets or exceeds the specified severity.
+\fILEVEL\fR is one of: \fBLow\fR, \fBMedium\fR, \fBHigh\fR, \fBCritical\fR.
+.SS "Performance & Parallelism"
+.TP
+\fB\-j\fR, \fB\-\-jobs\fR \fIN\fR
+Number of parallel analysis threads. \fB0\fR (default) auto-detects the
+number of CPU cores. \fB1\fR forces sequential single-threaded analysis.
+Each thread gets its own parser and rule registry; cross-file context is
+shared read-only via \fB\-d\fR prescan data.
+.TP
+\fB\-\-save\-prescan\fR \fIFILE\fR
+Save pre-scan context (function summaries, macro aliases, type information)
+to a binary cache file. Useful for CI/CD workflows where prescan data can
+be computed once and reused across runs.
+.TP
+\fB\-\-load\-prescan\fR \fIFILE\fR
+Load pre-scan context from a cache file instead of scanning \fB\-d\fR
+directories. The cache must have been generated by a prior
+\fB\-\-save\-prescan\fR invocation.
+.SS "Metadata"
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help message and exit.
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version information and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+Success. No violations found, or no violations meeting the failure threshold.
+.TP
+.B 1
+Violations found and \fB\-\-fail\-on\-violation\fR or \fB\-\-fail\-on\-severity\fR
+was set.
+.TP
+.B 2
+Analysis error (invalid path, bad manifest, parse failure).
+.SH CONFIGURATION
+.SS "Rules Manifest"
+The rules manifest is a TOML file that controls which rules are enabled.
+Each rule has a section with \fBenabled\fR and \fBseverity\fR fields:
+.PP
+.RS
+.nf
+[ARR30-C]
+enabled = true
+severity = "High"
+
+[MEM31-C]
+enabled = true
+severity = "Critical"
+.fi
+.RE
+.PP
+A default manifest enabling all rules is provided at
+.IR rules_templates/rules\-all.toml .
+.SS "Suppression File"
+The suppression file
+.RI ( .aurora-lint\-suppress.toml )
+allows silencing specific violations:
+.PP
+.RS
+.nf
+# Suppress by hash (from --generate-suppression)
+[[suppression]]
+hash = "a1b2c3d4e5f6"
+reason = "Intentional cast"
+
+# Suppress by pattern
+[[wildcard]]
+rule = "DCL06-C"
+file_glob = "third_party/**"
+reason = "External code"
+.fi
+.RE
+.SH EXAMPLES
+Analyze a project directory:
+.PP
+.RS
+.nf
+aurora-lint /path/to/project
+.fi
+.RE
+.PP
+Analyze with cross-file context and include paths:
+.PP
+.RS
+.nf
+aurora-lint -d src/ -d lib/ -I include/ src/
+.fi
+.RE
+.PP
+Export results as SARIF for CI integration:
+.PP
+.RS
+.nf
+aurora-lint --diff --min-severity Medium \\
+    --fail-on-severity High \\
+    --export results.sarif .
+.fi
+.RE
+.PP
+Interactive mode:
+.PP
+.RS
+.nf
+aurora-lint -i /path/to/project
+.fi
+.RE
+.PP
+Filter to specific rules:
+.PP
+.RS
+.nf
+aurora-lint --rules ARR30-C,MEM31-C,EXP34-C src/
+.fi
+.RE
+.PP
+Generate a suppression for a specific finding:
+.PP
+.RS
+.nf
+aurora-lint --generate-suppression src/main.c:42:ARR30-C .
+.fi
+.RE
+.PP
+Parallel analysis using 8 threads:
+.PP
+.RS
+.nf
+aurora-lint -j 8 -d src/ -d lib/ src/
+.fi
+.RE
+.PP
+Exclude vendored code and test harnesses from a scan:
+.PP
+.RS
+.nf
+aurora-lint . --exclude "tests/**" --exclude "vendor/**" --exclude "**/onelua.c"
+.fi
+.RE
+.PP
+Generate a relevance-gated manifest for a codebase with no tailored
+manifest, then use it for the actual scan:
+.PP
+.RS
+.nf
+aurora-lint /path/to/project --detect-relevance --write-manifest gated-rules.toml
+aurora-lint /path/to/project -m gated-rules.toml
+.fi
+.RE
+.SH FILES
+.TP
+.I rules_templates/rules\-all.toml
+Default rules manifest enabling all CERT C rules.
+.TP
+.I .aurora-lint\-suppress.toml
+Project-level suppression file (auto-detected in project root).
+.SH SEE ALSO
+.BR cppcheck (1),
+.BR clang\-tidy (1),
+.BR gcc (1)
+.PP
+SEI CERT C Coding Standard:
+.UR https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard
+.UE
+.SH AUTHORS
+Eric Buehler <eric.buehler@bissell.com>
+.br
+Brandon Arrendondo <brandon.arrendondo@bissell.com>
+.PP
+See
+.I CONTRIBUTORS.md
+in the source distribution for the full list of contributors.
+.SH COPYRIGHT
+Copyright \(co 2025-2026 BISSELL Homecare, Inc.
+.br
+Source code licensed under the Apache License, Version 2.0.
+.br
+Documentation licensed under CC BY 4.0.

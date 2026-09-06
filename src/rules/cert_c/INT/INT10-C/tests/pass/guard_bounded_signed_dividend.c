@@ -16,7 +16,6 @@
  * been folded, which is what makes this fixture also cover the VRA macro
  * plumbing the real seL4 case needed.
  */
-// sqc-test: prescan
 
 #define BASIC_IRQ_OFFSET  32
 #define NORMAL_IRQ_OFFSET (BASIC_IRQ_OFFSET + 32)

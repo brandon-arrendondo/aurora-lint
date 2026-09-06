@@ -3,17 +3,17 @@ Future Rulesets Beyond CERT C
 ==============================
 
 This page documents embedded coding standards and rule families that predate or
-complement MISRA and could be added to SqC in the future. All listed rules are
+complement MISRA and could be added to aurora-lint in the future. All listed rules are
 freely implementable — they come from open/public-domain standards.
 
 Why CERT C Is The Base Standard
 ================================
 
 Everything below is framed as complementing MISRA, which only makes sense once
-you know why MISRA is not what SqC implements. It is a fit-to-domain choice,
+you know why MISRA is not what aurora-lint implements. It is a fit-to-domain choice,
 not a fallback:
 
-- **CERT C is open.** Public and freely implementable, so every rule SqC
+- **CERT C is open.** Public and freely implementable, so every rule aurora-lint
   enforces can be read and checked against the analyzer's behaviour. That is
   load-bearing for this repo specifically: the false-positive work is
   reviewable because a reader can look up what the rule actually says, and the
@@ -26,8 +26,8 @@ not a fallback:
 - **The residual difference is process, not coverage.** MISRA's
   mandatory/required/advisory apparatus, its subsetting rules and its
   certification-oriented deviation process exist to satisfy a certification
-  body. SqC does not implement that apparatus. That is a statement about what
-  SqC is and not about who should use it — nothing here is domain-restricted,
+  body. aurora-lint does not implement that apparatus. That is a statement about what
+  aurora-lint is and not about who should use it — nothing here is domain-restricted,
   and C written for automotive, medical or aerospace is subject to these rules
   like anyone else's.
 
@@ -59,7 +59,7 @@ statically analyse. They complement MISRA C guidelines.
    **Rules 3 and 9 are already implemented**, as ``BRULE-060`` (no dynamic
    memory allocation after initialisation) and ``BRULE-065`` (no excessive
    pointer indirection) in ``src/rules/brules/``. They are the only non-CERT-C
-   rules SqC ships, and they are enabled through
+   rules aurora-lint ships, and they are enabled through
    ``src/rules/brules/rules-all.toml`` rather than the CERT C manifests. The
    rest of the Power of Ten remains a candidate: rules 1, 2, 4, 6 and 8 are
    plausibly checkable with the AST and CFG infrastructure already here, while

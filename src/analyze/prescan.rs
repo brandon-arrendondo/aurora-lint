@@ -1,3 +1,4 @@
+use super::argument_objects::{self, ObjectFrame};
 use super::const_eval;
 use super::context::ProjectContext;
 use super::function_summary::{self, FunctionSummary};
@@ -7,6 +8,7 @@ use crate::progress::ProgressReporter;
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::ast_utils::get_node_text;
 use crate::utility::cert_c::declarator_utils;
+use crate::utility::cert_c::guard_dominance;
 
 use anyhow::Result;
 use lang_parsing_substrate::query;
@@ -31,6 +33,7 @@ struct FilePrescanResult {
     macro_aliases: HashMap<String, String>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     struct_field_types: HashMap<String, HashMap<String, String>>,
+    struct_typedef_aliases: HashMap<String, String>,
     typedef_types: HashMap<String, String>,
     packed_structs: HashSet<String>,
     packed_struct_candidates: Vec<(String, String)>,
@@ -47,6 +50,11 @@ struct FilePrescanResult {
     callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>>,
     callsite_field_buf_args: HashMap<String, Vec<Vec<HashMap<String, usize>>>>,
     callsite_taint_args: HashMap<String, Vec<Vec<bool>>>,
+    /// Per callee name, the argument-position pairs at which a call site in
+    /// this file hands the callee two DIFFERENT named storage objects
+    /// (task 936).
+    callsite_distinct_objects: HashMap<String, HashSet<(usize, usize)>>,
+    callsite_validated_args: HashMap<String, Vec<Vec<bool>>>,
     source_path: Option<PathBuf>,
     /// File-scope variable names declared here with a plain (non-pointer,
     /// non-array, non-function) declarator -- candidates for
@@ -72,6 +80,7 @@ impl FilePrescanResult {
             macro_aliases: HashMap::new(),
             function_macros: HashMap::new(),
             struct_field_types: HashMap::new(),
+            struct_typedef_aliases: HashMap::new(),
             typedef_types: HashMap::new(),
             packed_structs: HashSet::new(),
             packed_struct_candidates: Vec::new(),
@@ -88,6 +97,8 @@ impl FilePrescanResult {
             callsite_buf_args: HashMap::new(),
             callsite_field_buf_args: HashMap::new(),
             callsite_taint_args: HashMap::new(),
+            callsite_distinct_objects: HashMap::new(),
+            callsite_validated_args: HashMap::new(),
             source_path: None,
             value_only_global_candidates: HashSet::new(),
             pointer_named_globals: HashSet::new(),
@@ -156,6 +167,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         result.macro_aliases.extend(file_aliases);
 
         collect_struct_definitions(&root, &source, &mut result.struct_field_types);
+        collect_struct_typedef_aliases(&root, &source, &mut result.struct_typedef_aliases);
         collect_typedef_aliases(&root, &source, &mut result.typedef_types);
         collect_packed_structs(
             &root,
@@ -213,6 +225,17 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
                 &result.macro_aliases,
                 &mut result.callsite_taint_args,
             );
+            collect_callsite_distinct_objects_from_tree(
+                &root,
+                &source,
+                &result.struct_field_types,
+                &mut result.callsite_distinct_objects,
+            );
+            guard_dominance::collect_call_arg_guards(
+                &root,
+                &source,
+                &mut result.callsite_validated_args,
+            );
             result.source_path = Some(file_path.to_path_buf());
         }
     }
@@ -249,8 +272,35 @@ pub fn prescan_directories(
         }
     }
 
+    prescan_file_list(all_files, dirs.len(), progress, needs_vra)
+}
+
+/// Build a [`ProjectContext`] for one file, exactly as a `-d` prescan of a
+/// directory holding only that file would.
+///
+/// Used by the generated rule fixture tests so that a green test means the
+/// shipped analysis is clean on that input, rather than a test-only
+/// reimplementation of it being clean (task 951, this repo).
+#[cfg(test)]
+pub fn prescan_single_file(path: &Path, needs_vra: bool) -> Result<ProjectContext> {
+    let is_header = path.extension().and_then(|ext| ext.to_str()) == Some("h");
+    prescan_file_list(vec![(path.to_path_buf(), is_header)], 1, None, needs_vra)
+}
+
+/// Parse `all_files` in parallel and fold the per-file results into one
+/// project-wide context. `unit_count` is only what the progress reporter is
+/// told it is starting on.
+///
+/// Shared by [`prescan_directories`] and [`prescan_single_file`] so that a
+/// single-file context can never drift from a directory one.
+fn prescan_file_list(
+    all_files: Vec<(PathBuf, bool)>,
+    unit_count: usize,
+    progress: Option<&dyn ProgressReporter>,
+    needs_vra: bool,
+) -> Result<ProjectContext> {
     if let Some(reporter) = progress {
-        reporter.report_prescan_start(dirs.len());
+        reporter.report_prescan_start(unit_count);
     }
 
     // Phase 2: parse and collect per-file data in parallel
@@ -271,6 +321,7 @@ pub fn prescan_directories(
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
         HashMap::new();
     let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
     let mut packed_structs: HashSet<String> = HashSet::new();
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
@@ -289,6 +340,8 @@ pub fn prescan_directories(
     let mut callsite_field_buf_args: HashMap<String, Vec<Vec<HashMap<String, usize>>>> =
         HashMap::new();
     let mut callsite_taint_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
+    let mut callsite_distinct_objects: HashMap<String, HashSet<(usize, usize)>> = HashMap::new();
+    let mut callsite_validated_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
     let mut source_files: Vec<PathBuf> = Vec::new();
     let mut file_functions: HashMap<PathBuf, Vec<String>> = HashMap::new();
     let mut value_only_global_candidates: HashSet<String> = HashSet::new();
@@ -311,7 +364,7 @@ pub fn prescan_directories(
         // Free/close facts are unioned (not "first wins") because a function
         // like hostap's os_free() has multiple platform-variant bodies
         // (os_unix.c / os_internal.c / os_none.c, ifdef-selected at build
-        // time) — sqc has no preprocessor, so it scans ALL of them under -d,
+        // time) — aurora-lint has no preprocessor, so it scans ALL of them under -d,
         // and "first wins" would let an arbitrary parallel-processing-order
         // pick of the WRONG variant (e.g. os_unix.c's debug-tracing body,
         // which frees a locally-derived pointer rather than the parameter
@@ -379,6 +432,7 @@ pub fn prescan_directories(
             function_macros.entry(name).or_insert(m);
         }
         struct_field_types.extend(r.struct_field_types);
+        struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
         packed_structs.extend(r.packed_structs);
         packed_struct_candidates.extend(r.packed_struct_candidates);
@@ -396,6 +450,12 @@ pub fn prescan_directories(
         }
         for (callee, args) in r.callsite_field_args {
             callsite_field_args.entry(callee).or_default().extend(args);
+        }
+        for (callee, pairs) in r.callsite_distinct_objects {
+            callsite_distinct_objects
+                .entry(callee)
+                .or_default()
+                .extend(pairs);
         }
         for (callee, args) in r.callsite_pointee_args {
             callsite_pointee_args
@@ -417,6 +477,12 @@ pub fn prescan_directories(
         }
         for (callee, args) in r.callsite_taint_args {
             callsite_taint_args.entry(callee).or_default().extend(args);
+        }
+        for (callee, args) in r.callsite_validated_args {
+            callsite_validated_args
+                .entry(callee)
+                .or_default()
+                .extend(args);
         }
 
         if let Some(path) = r.source_path {
@@ -479,6 +545,12 @@ pub fn prescan_directories(
 
     aggregate_callsite_field_null_states(&callsite_field_args, &mut function_summaries);
 
+    for (callee, pairs) in callsite_distinct_objects {
+        if let Some(summary) = function_summaries.get_mut(&callee) {
+            summary.distinct_object_param_pairs.extend(pairs);
+        }
+    }
+
     aggregate_callsite_pointee_null_states(&callsite_pointee_args, &mut function_summaries);
 
     aggregate_callsite_int_args(
@@ -504,6 +576,7 @@ pub fn prescan_directories(
         &mut function_summaries,
         &header_declared_functions,
     );
+    aggregate_callsite_validated_args(&callsite_validated_args, &mut function_summaries);
     function_summary::propagate_transitive_param_taint(
         &mut function_summaries,
         &header_declared_functions,
@@ -526,6 +599,7 @@ pub fn prescan_directories(
 
     function_summary::propagate_transitive_frees(&mut function_summaries);
     function_summary::propagate_transitive_frees_param_fields(&mut function_summaries);
+    function_summary::propagate_transitive_frees_param_pointees(&mut function_summaries);
     function_summary::propagate_transitive_closes(&mut function_summaries);
     function_summary::propagate_return_taint(&mut function_summaries);
 
@@ -586,6 +660,7 @@ pub fn prescan_directories(
         macro_aliases,
         function_macros,
         struct_field_types,
+        struct_typedef_aliases,
         typedef_types,
         packed_structs,
         defined_macro_names,
@@ -641,7 +716,7 @@ fn compute_concurrency_reachable(
 /// Scan only the `.h` files directly inside `parent_dir` to collect public API
 /// function declarations.
 ///
-/// This is a lightweight alternative to [`prescan_directories`] used when sqc
+/// This is a lightweight alternative to [`prescan_directories`] used when aurora-lint
 /// is given a single `.c` file with no explicit `-d` directories.  It populates
 /// only `header_declared_functions` — the data needed by DCL15-C and DCL19-C to
 /// distinguish intentionally-public API from internal helpers.  It intentionally
@@ -671,153 +746,6 @@ pub fn prescan_sibling_headers(parent_dir: &str) -> Result<ProjectContext> {
     }
 
     Ok(context)
-}
-
-/// Build a [`ProjectContext`] from a single already-parsed tree.
-///
-/// This is the intra-file equivalent of [`prescan_directories`]: it computes
-/// function summaries and call-site null states so that inter-procedural rules
-/// (e.g. EXP34-C) can resolve parameter state within one translation unit.
-///
-/// Used by the generated integration tests when a `.c` file carries the
-/// `// sqc-test: prescan` marker.
-#[cfg(test)]
-pub fn prescan_single_tree(root: &Node, source: &str) -> ProjectContext {
-    let macros = const_eval::collect_macro_constants(root, source);
-    let aliases = const_eval::collect_macro_aliases(root, source);
-    let taint_aliases: Vec<String> = aliases
-        .iter()
-        .filter(|(_, target)| {
-            function_summary::ENV03_TAINT_SOURCE_FUNCTIONS.contains(&target.as_str())
-        })
-        .map(|(alias, _)| alias.clone())
-        .collect();
-    let string_macros = const_eval::collect_string_literal_macros(root, source);
-    let function_macros = crate::analyze::macro_expand::collect_function_macros(root, source);
-    let mut function_summaries = function_summary::compute_summaries(
-        root,
-        source,
-        &macros,
-        false,
-        &taint_aliases,
-        &string_macros,
-        &function_macros,
-    );
-
-    let mut callsite_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
-    let mut callsite_field_args: HashMap<String, Vec<Vec<HashMap<String, NullState>>>> =
-        HashMap::new();
-    let mut callsite_pointee_args: HashMap<String, Vec<Vec<NullState>>> = HashMap::new();
-    let mut callsite_int_args: HashMap<String, Vec<Vec<Option<i64>>>> = HashMap::new();
-    let mut callsite_buf_args: HashMap<String, Vec<Vec<Option<usize>>>> = HashMap::new();
-    let mut callsite_field_buf_args: HashMap<String, Vec<Vec<HashMap<String, usize>>>> =
-        HashMap::new();
-    let mut callsite_taint_args: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
-    collect_callsite_args_from_tree(
-        root,
-        source,
-        &mut callsite_args,
-        &mut callsite_field_args,
-        &mut callsite_pointee_args,
-    );
-    collect_callsite_int_args_from_tree(root, source, &mut callsite_int_args);
-    collect_callsite_buf_args_from_tree(
-        root,
-        source,
-        &mut callsite_buf_args,
-        &mut callsite_field_buf_args,
-    );
-    collect_callsite_taint_args_from_tree(root, source, &aliases, &mut callsite_taint_args);
-
-    let empty_headers = HashSet::new();
-    aggregate_callsite_null_states(&callsite_args, &mut function_summaries, &empty_headers);
-    aggregate_callsite_field_null_states(&callsite_field_args, &mut function_summaries);
-    aggregate_callsite_pointee_null_states(&callsite_pointee_args, &mut function_summaries);
-    aggregate_callsite_int_args(&callsite_int_args, &mut function_summaries, &empty_headers);
-    aggregate_callsite_field_buffer_sizes(
-        &callsite_field_buf_args,
-        &mut function_summaries,
-        &empty_headers,
-    );
-    aggregate_callsite_buf_args(&callsite_buf_args, &mut function_summaries, &empty_headers);
-    aggregate_callsite_taint_args(
-        &callsite_taint_args,
-        &mut function_summaries,
-        &empty_headers,
-    );
-    function_summary::propagate_transitive_param_taint(&mut function_summaries, &empty_headers);
-
-    let known_functions: HashSet<String> = function_summaries.keys().cloned().collect();
-
-    let mut struct_field_types = HashMap::new();
-    collect_struct_definitions(root, source, &mut struct_field_types);
-    let mut typedef_types = HashMap::new();
-    collect_typedef_aliases(root, source, &mut typedef_types);
-    let mut packed_structs = HashSet::new();
-    let mut packed_struct_candidates = Vec::new();
-    collect_packed_structs(
-        root,
-        source,
-        &mut packed_structs,
-        &mut packed_struct_candidates,
-    );
-    let mut packed_macro_names = HashSet::new();
-    crate::utility::cert_c::ast_utils::collect_packed_macro_names(source, &mut packed_macro_names);
-    for (struct_name, macro_name) in packed_struct_candidates {
-        if packed_macro_names.contains(&macro_name) {
-            packed_structs.insert(struct_name);
-        }
-    }
-
-    let mut file_statics: HashSet<String> = HashSet::new();
-    collect_static_pointer_globals(root, source, &mut file_statics);
-    let mut global_writers: HashMap<String, HashSet<String>> = HashMap::new();
-    collect_global_writers(root, source, &file_statics, &mut global_writers);
-
-    let mut value_only_global_candidates: HashSet<String> = HashSet::new();
-    let mut pointer_named_globals: HashSet<String> = HashSet::new();
-    collect_value_only_global_candidates(
-        root,
-        source,
-        &mut value_only_global_candidates,
-        &mut pointer_named_globals,
-    );
-    let value_only_globals: HashSet<String> = value_only_global_candidates
-        .difference(&pointer_named_globals)
-        .cloned()
-        .collect();
-
-    // Single-file counterpart of the project-wide dispatch-table-callback
-    // computation in `prescan_project` (task 594/628): lets a rule test
-    // (`// sqc-test: prescan`) exercise the same exemption without needing
-    // the full multi-file prescan.
-    let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
-    collect_call_graph(root, source, &mut call_graph);
-    let mut initializer_function_refs: HashSet<String> = HashSet::new();
-    collect_initializer_function_refs(root, source, &mut initializer_function_refs);
-    let directly_called: HashSet<&str> = call_graph
-        .values()
-        .flat_map(|callees| callees.iter().map(|s| s.as_str()))
-        .collect();
-    let dispatch_table_callbacks: HashSet<String> = initializer_function_refs
-        .into_iter()
-        .filter(|name| known_functions.contains(name) && !directly_called.contains(name.as_str()))
-        .collect();
-
-    ProjectContext {
-        known_functions,
-        function_summaries,
-        macro_constants: macros,
-        function_macros,
-        struct_field_types,
-        typedef_types,
-        packed_structs,
-        global_writers,
-        call_graph,
-        dispatch_table_callbacks,
-        value_only_globals,
-        ..ProjectContext::default()
-    }
 }
 
 /// Collect function declarations (prototypes) from a header file.
@@ -1473,6 +1401,85 @@ pub(crate) fn aggregate_callsite_int_args(
     }
 }
 
+/// Record, for every direct call in this translation unit, the argument
+/// positions at which the CALLER hands the callee two named, DIFFERENT
+/// storage objects.
+///
+/// The cross-file half of ARR36-C's parameter model (task 936). The rule
+/// itself reads only the call sites in the file under check, so a function
+/// whose every caller lives in another translation unit has no proof
+/// available and its parameter pair stays assumed to share an object. This
+/// runs the same predicate -- `ObjectFrame::argument_object_base`, the code
+/// the rule uses -- over every file, and the result is aggregated onto
+/// `FunctionSummary::distinct_object_param_pairs`.
+///
+/// Each call site is reduced to its proven pairs on the spot rather than
+/// kept as a vector of bases: distinctness is a per-call-site fact, so
+/// nothing outside one argument list is ever compared, and what survives to
+/// the merge is a handful of index pairs per callee instead of every
+/// argument spelling in the project.
+///
+/// `struct_field_types` is this FILE's own struct declarations -- the merged
+/// project map does not exist yet at this point in the prescan -- so a
+/// member declared in a header this file does not itself declare stays
+/// unresolved and keeps naming storage, exactly as the rule behaves on a run
+/// with no `-d` (task 935).
+pub(crate) fn collect_callsite_distinct_objects_from_tree(
+    node: &Node,
+    source: &str,
+    struct_field_types: &HashMap<String, HashMap<String, String>>,
+    callsite_distinct_objects: &mut HashMap<String, HashSet<(usize, usize)>>,
+) {
+    let mut file_scope = ObjectFrame::new();
+    file_scope.collect_file_scope(node, source);
+
+    for func in query::find_descendants_of_kind(*node, "function_definition") {
+        // Only a name resolves to a definition; `obj->cb(...)` is opaque. A
+        // one-argument call can never carry a pair. Gathered before any frame
+        // is built so a function that makes no such call costs one walk.
+        let calls: Vec<(Node, Vec<Node>)> =
+            query::find_descendants_of_kind(func, "call_expression")
+                .into_iter()
+                .filter_map(|call| {
+                    let callee = call.child_by_field_name("function")?;
+                    let args = call.child_by_field_name("arguments")?;
+                    if callee.kind() != "identifier" {
+                        return None;
+                    }
+                    let args = argument_objects::argument_nodes(&args);
+                    (args.len() >= 2).then_some((callee, args))
+                })
+                .collect();
+        if calls.is_empty() {
+            continue;
+        }
+
+        let mut frame = file_scope.clone();
+        frame.collect_function(&func, source);
+        // `pointer_members` is read only for an `&`-of-field argument, and
+        // resolving every field type in the function is the expensive half of
+        // the frame, so it is skipped when no argument mentions a field at
+        // all.
+        if calls.iter().any(|(_, args)| {
+            args.iter()
+                .any(|arg| !query::find_descendants_of_kind(*arg, "field_expression").is_empty())
+        }) {
+            frame.record_pointer_members(&func, source, struct_field_types);
+        }
+
+        for (callee, args) in calls {
+            let pairs = argument_objects::distinct_object_pairs(&frame, &args, source);
+            if pairs.is_empty() {
+                continue;
+            }
+            callsite_distinct_objects
+                .entry(get_node_text(&callee, source).to_string())
+                .or_default()
+                .extend(pairs);
+        }
+    }
+}
+
 /// Collect integer constant call-site argument values from a translation unit.
 ///
 /// For each function call, records the constant value (if determinable) for each
@@ -1849,6 +1856,53 @@ pub(crate) fn aggregate_callsite_taint_args(
                         summary.callsite_param_tainted.insert(param_idx);
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Aggregate per-call-site argument-validation facts into
+/// `callsite_param_validated`.
+///
+/// A parameter index is recorded only when every call site observed anywhere in
+/// the scanned project guards the argument it passes there with a dominating
+/// comparison, and at least one call site was observed. One unguarded site — or
+/// one passing something other than a bare variable — disqualifies the position.
+///
+/// **Header-declared functions are deliberately NOT skipped here**, unlike every
+/// other `callsite_*` aggregation in this module. Those exist to prove a *bound*
+/// (a minimum buffer size, a null state) that must hold over all callers,
+/// including ones outside the scanned tree, so an exported function has to stay
+/// unresolved. This one supplements ARR30-C's pre-existing per-file summary,
+/// which already credits a suppression from the call sites in one translation
+/// unit alone and accepts, explicitly, that a caller elsewhere might validate
+/// nothing. Inheriting the skip would make the project-wide view — which sees
+/// strictly more call sites, and disqualifies on any of them — more conservative
+/// than the single-file view it extends, and would defeat the motivating cases
+/// outright: seL4's validate-then-act pairs are declared in headers precisely so
+/// the `decode` half can reach the `invoke` half across a file boundary.
+pub(crate) fn aggregate_callsite_validated_args(
+    callsite_validated_args: &HashMap<String, Vec<Vec<bool>>>,
+    summaries: &mut HashMap<String, FunctionSummary>,
+) {
+    for (callee_name, call_sites) in callsite_validated_args {
+        let Some(summary) = summaries.get_mut(callee_name) else {
+            continue;
+        };
+        let max_params = call_sites.iter().map(|v| v.len()).max().unwrap_or(0);
+        for param_idx in 0..max_params {
+            let mut any_site = false;
+            let mut all_guarded = true;
+            for site in call_sites {
+                // A call with fewer arguments than the widest site passed
+                // nothing here, so it has no bearing either way.
+                if let Some(&guarded) = site.get(param_idx) {
+                    any_site = true;
+                    all_guarded &= guarded;
+                }
+            }
+            if any_site && all_guarded {
+                summary.callsite_param_validated.insert(param_idx);
             }
         }
     }
@@ -4352,7 +4406,10 @@ fn extract_declarator_name(decl: &Node, source: &str) -> String {
 /// 1. `struct Name { type field; ... };`
 /// 2. `typedef struct { type field; ... } Name;`
 /// 3. `typedef struct Name { type field; ... } Name;` (or alias)
-fn collect_struct_definitions(
+///
+/// Visible to rules so one can collect the file it is scanning, which is the
+/// half of the answer that survives a run with no `-d` (ARR36-C).
+pub(crate) fn collect_struct_definitions(
     node: &Node,
     source: &str,
     struct_field_types: &mut HashMap<String, HashMap<String, String>>,
@@ -4457,6 +4514,81 @@ fn collect_from_typedef(
                 }
             }
         }
+    }
+}
+
+/// Collect `typedef struct Tag Alias;` (and the `union` spelling), mapping
+/// `Alias -> Tag` -- the tag name whose fields `struct_field_types` files.
+///
+/// `collect_from_typedef` already files a BODIED typedef under both names, so
+/// the entry this adds for that spelling is redundant; it is recorded anyway
+/// rather than testing for a body, because skipping it would encode a fact
+/// about the other collector instead of a fact about C. What it exists for is
+/// the bodyless spelling, which every existing collector drops: prescan's
+/// `collect_typedef_aliases` takes only a primitive/sized/named RHS, and
+/// INT33-C's `register_typedef_aliases` is a text scan requiring exactly two
+/// tokens after `typedef` -- `typedef struct sqlite3_value Mem;` is three
+/// (task 963).
+///
+/// Mirrors `collect_struct_definitions`'s traversal so the two run over the
+/// same top-level declaration set.
+pub(crate) fn collect_struct_typedef_aliases(
+    node: &Node,
+    source: &str,
+    struct_typedef_aliases: &mut HashMap<String, String>,
+) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "type_definition" => {
+                    collect_from_struct_tag_typedef(&child, source, struct_typedef_aliases);
+                }
+                kind if kind.starts_with("preproc_")
+                    || kind == "linkage_specification"
+                    || kind == "declaration_list" =>
+                {
+                    collect_struct_typedef_aliases(&child, source, struct_typedef_aliases);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A `type_definition` whose right-hand type is a NAMED struct or union and
+/// whose declarator is a plain alias name. A pointer/array/function typedef
+/// is skipped: `typedef struct Foo *FooPtr;` makes `FooPtr` a pointer type,
+/// not another name for the struct, so resolving a member through it would be
+/// wrong.
+fn collect_from_struct_tag_typedef(
+    node: &Node,
+    source: &str,
+    struct_typedef_aliases: &mut HashMap<String, String>,
+) {
+    let Some(type_node) = node.child_by_field_name("type") else {
+        return;
+    };
+    if !matches!(type_node.kind(), "struct_specifier" | "union_specifier") {
+        return;
+    }
+    let Some(tag) = type_node.child_by_field_name("name") else {
+        return;
+    };
+    let tag = get_node_text(&tag, source).trim().to_string();
+    if tag.is_empty() {
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for declarator in node.children_by_field_name("declarator", &mut cursor) {
+        if declarator.kind() != "type_identifier" {
+            continue;
+        }
+        let alias = get_node_text(&declarator, source).trim().to_string();
+        if alias.is_empty() || alias == tag {
+            continue;
+        }
+        struct_typedef_aliases.insert(alias, tag.clone());
     }
 }
 

@@ -14,7 +14,7 @@
 ///
 /// # Examples
 /// ```
-/// use sqc::utility::cert_c::variable_analysis::is_user_input_variable;
+/// use aurora_lint::utility::cert_c::variable_analysis::is_user_input_variable;
 /// let code = r#"int count; scanf("%d", &count);"#;
 /// assert!(is_user_input_variable("count", code));
 /// ```
@@ -48,7 +48,7 @@ pub fn is_user_input_variable(var_name: &str, preceding_text: &str) -> bool {
 ///
 /// # Examples
 /// ```
-/// use sqc::utility::cert_c::variable_analysis::has_validation_before_loop;
+/// use aurora_lint::utility::cert_c::variable_analysis::has_validation_before_loop;
 /// let code = r#"scanf("%d", &count); if (count > MAX) { exit(1); } for (int i = 0; i < count; i++)"#;
 /// assert!(has_validation_before_loop("count", code, 50, code));
 /// ```
@@ -94,7 +94,7 @@ pub fn has_validation_before_loop(
 ///
 /// # Examples
 /// ```
-/// use sqc::utility::cert_c::variable_analysis::is_uninitialized_variable;
+/// use aurora_lint::utility::cert_c::variable_analysis::is_uninitialized_variable;
 /// let code = "int size; for (int i = 0; i < size; i++)";
 /// assert!(is_uninitialized_variable("size", code));
 ///
@@ -159,7 +159,7 @@ pub fn is_uninitialized_variable(var_name: &str, preceding_text: &str) -> bool {
 ///
 /// # Examples
 /// ```
-/// use sqc::utility::cert_c::variable_analysis::has_bounds_validation;
+/// use aurora_lint::utility::cert_c::variable_analysis::has_bounds_validation;
 /// let code = "if (index < 0 || index >= size) { return; } arr[index] = val;";
 /// assert!(has_bounds_validation("index", code));
 /// ```

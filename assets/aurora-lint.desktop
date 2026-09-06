@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=aurora-lint
+Comment=CERT C compliance checker
+Exec=/usr/local/bin/aurora-lint --interactive
+Icon=/usr/local/share/pixmaps/aurora-lint.png
+Terminal=true
+Categories=Development;

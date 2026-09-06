@@ -9,7 +9,7 @@
  * Status: FAIL
  * Reason: sqlite3_malloc64() returns NULL on OOM, exactly like malloc(), but
  * is a project-specific allocator wrapper rather than the stdlib name --
- * without recognizing the wrapper by name, sqc missed this exact live FN in
+ * without recognizing the wrapper by name, aurora-lint missed this exact live FN in
  * sqlite's own ext/misc/vfstrace.c:895-903 (task 173). The memset() call
  * dereferences pNew with no intervening NULL check.
  */

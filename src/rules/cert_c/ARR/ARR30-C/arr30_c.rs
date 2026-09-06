@@ -60,7 +60,9 @@ use crate::utility::cert_c::ast_utils::{
     get_identifier_from_declarator,
 };
 use crate::utility::cert_c::call_roles;
-use crate::utility::cert_c::guard_dominance::{has_dominating_comparison, ComparisonKind};
+use crate::utility::cert_c::guard_dominance::{
+    collect_call_arg_guards, has_dominating_comparison, ComparisonKind,
+};
 
 pub struct Arr30C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
@@ -99,6 +101,14 @@ pub struct Arr30C {
     /// `build_caller_validated_params`. `None` until the root pass populates
     /// it. Cleared per file.
     caller_validated_params: RefCell<Option<HashMap<String, HashSet<usize>>>>,
+    /// The cross-file half of the same summary, lifted from the prescan
+    /// (`FunctionSummary::callsite_param_validated`): parameter indices that
+    /// EVERY call site *in the whole scanned project* bounds-checks. Extends
+    /// `caller_validated_params` to a callee whose only callers live in another
+    /// translation unit, which the per-file summary cannot see at all. Empty
+    /// when no prescan ran (a single-file scan, a unit test), which is why both
+    /// summaries are kept rather than the file-local one being retired.
+    project_validated_params: RefCell<HashMap<String, HashSet<usize>>>,
     /// File-scope-only buffer bindings (globals, struct/union member
     /// arrays, typedef-array members) — see `analyze_global_scope_buffers`.
     /// Computed once per file at the root `check()` call and used as the
@@ -107,6 +117,13 @@ pub struct Arr30C {
     /// functions with a same-named local buffer never conflate each
     /// other's size/allocation_line (task 389). Cleared per file.
     global_scope_buffers: RefCell<HashMap<String, BufferInfo>>,
+    /// Names of object-like macros whose replacement text is exactly the null
+    /// terminator (`#define EOS '\0'`, `#define NUL 0`), so that the
+    /// terminator-bound test in `check_while_loop_pointer_increment` reads
+    /// `while (*p != EOS)` as the NUL-terminated walk it is. Kept separate from
+    /// `macro_constants` because `const_eval` evaluates integer literals only,
+    /// so a character-literal `#define` never lands there. Cleared per file.
+    null_sentinel_macros: RefCell<HashSet<String>>,
     /// Typedef-array-size table for the current file (`analyze_typedefs`),
     /// cached alongside `global_scope_buffers` so re-scanning each
     /// function's own locals doesn't re-run the whole-file regex scan once
@@ -220,6 +237,12 @@ impl CertRule for Arr30C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.macro_constants.borrow_mut() = context.macro_constants.clone();
+        *self.project_validated_params.borrow_mut() = context
+            .function_summaries
+            .iter()
+            .filter(|(_, s)| !s.callsite_param_validated.is_empty())
+            .map(|(name, s)| (name.clone(), s.callsite_param_validated.clone()))
+            .collect();
     }
 
     fn needs_vra(&self) -> bool {
@@ -232,6 +255,7 @@ impl CertRule for Arr30C {
             self.decode_taint_cache.borrow_mut().clear();
             self.param_decode_buf_cache.borrow_mut().clear();
             self.param_decode_reported.borrow_mut().clear();
+            *self.null_sentinel_macros.borrow_mut() = collect_null_sentinel_macros(node, source);
             // Build the interprocedural over-read helper summary for this file
             // (task 211): function name -> indices of `const char *` params it
             // walks unbounded. Consumed by `check_overread_helper_callsite`.
@@ -311,7 +335,9 @@ impl Arr30C {
             param_decode_reported: RefCell::new(HashSet::new()),
             helper_overread_summary: RefCell::new(None),
             caller_validated_params: RefCell::new(None),
+            project_validated_params: RefCell::new(HashMap::new()),
             global_scope_buffers: RefCell::new(HashMap::new()),
+            null_sentinel_macros: RefCell::new(HashSet::new()),
             cached_typedefs: RefCell::new(HashMap::new()),
         }
     }
@@ -2558,8 +2584,13 @@ impl Arr30C {
         })
     }
 
-    /// Does every call site of `var`'s own function, within this file, already
-    /// bounds-check the argument it passes at `var`'s parameter position?
+    /// Does every call site of `var`'s own function already bounds-check the
+    /// argument it passes at `var`'s parameter position?
+    ///
+    /// Answered from two summaries: `caller_validated_params`, built from this
+    /// file's own call sites, and `project_validated_params`, lifted from the
+    /// prescan's project-wide view so a callee whose only callers live in
+    /// another translation unit is reachable at all.
     ///
     /// The pattern this exists for is the deliberate validate-then-act split:
     /// seL4's `decodeVCPUInjectIRQ()`/`invokeVCPUInjectIRQ()` pair, where decode
@@ -2579,14 +2610,28 @@ impl Arr30C {
         else {
             return false;
         };
-        self.caller_validated_params
-            .borrow()
-            .as_ref()
-            .is_some_and(|summary| {
-                summary
-                    .get(&func_name)
-                    .is_some_and(|indices| indices.contains(&param_idx))
-            })
+        let validated_in_file =
+            self.caller_validated_params
+                .borrow()
+                .as_ref()
+                .is_some_and(|summary| {
+                    summary
+                        .get(&func_name)
+                        .is_some_and(|indices| indices.contains(&param_idx))
+                });
+        // Either summary suffices. They are not refinements of each other: the
+        // project-wide one is absent without a prescan, and when both are
+        // present the file-local one can credit a position the project-wide one
+        // disqualifies (an unguarded caller in another file). Letting the
+        // cross-file view *revoke* a file-local suppression would be a separate
+        // decision in the other direction, reinstating findings task 911
+        // removed; this task only extends the suppression's reach.
+        validated_in_file
+            || self
+                .project_validated_params
+                .borrow()
+                .get(&func_name)
+                .is_some_and(|indices| indices.contains(&param_idx))
     }
 
     /// Build the per-file caller-validation summary consumed by
@@ -2608,7 +2653,7 @@ impl Arr30C {
         source: &str,
     ) -> HashMap<String, HashSet<usize>> {
         let mut sites: HashMap<String, Vec<Vec<bool>>> = HashMap::new();
-        Self::collect_call_arg_guards(root, source, &mut sites);
+        collect_call_arg_guards(root, source, &mut sites);
 
         let mut summary: HashMap<String, HashSet<usize>> = HashMap::new();
         for (callee, calls) in sites {
@@ -2623,69 +2668,6 @@ impl Arr30C {
         summary
     }
 
-    fn collect_call_arg_guards(
-        node: &Node,
-        source: &str,
-        out: &mut HashMap<String, Vec<Vec<bool>>>,
-    ) {
-        if node.kind() == "call_expression" {
-            if let Some(callee) = node.child_by_field_name("function") {
-                if callee.kind() == "identifier" {
-                    let name = source[callee.start_byte()..callee.end_byte()].to_string();
-                    out.entry(name)
-                        .or_default()
-                        .push(Self::call_arg_guards(node, source));
-                }
-            }
-        }
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::collect_call_arg_guards(&child, source, out);
-            }
-        }
-    }
-
-    /// Per-argument "was this bounds-checked before the call?" flags for one
-    /// call site, in argument order.
-    fn call_arg_guards(call_node: &Node, source: &str) -> Vec<bool> {
-        let Some(arg_list) = call_node.child_by_field_name("arguments") else {
-            return Vec::new();
-        };
-        let mut guards = Vec::new();
-        for i in 0..arg_list.child_count() {
-            let Some(arg) = arg_list.child(i) else {
-                continue;
-            };
-            if !arg.is_named() || arg.kind() == "comment" {
-                continue;
-            }
-            let inner = Self::strip_arg_wrappers(&arg);
-            guards.push(
-                inner.kind() == "identifier"
-                    && has_dominating_comparison(
-                        &source[inner.start_byte()..inner.end_byte()],
-                        call_node,
-                        source,
-                        ComparisonKind::Any,
-                    ),
-            );
-        }
-        guards
-    }
-
-    /// Peel parentheses and casts off a call argument, so `f((word_t)index)`
-    /// reads as passing `index`.
-    fn strip_arg_wrappers<'a>(node: &Node<'a>) -> Node<'a> {
-        let mut current = Self::strip_parens(node);
-        while current.kind() == "cast_expression" {
-            let Some(value) = current.child_by_field_name("value") else {
-                break;
-            };
-            current = Self::strip_parens(&value);
-        }
-        current
-    }
-
     /// Is `array_name[var]` provably in-bounds because `array_name` was
     /// allocated to a size that's a "round `var` up to a multiple of `D`,
     /// plus padding" expression of `var` itself (task 446)?
@@ -2696,7 +2678,7 @@ impl Arr30C {
     /// unsigned char *msg = RL_CALLOC(newDataSize + K_OUTER, 1);
     /// msg[dataSize] = 128;
     /// ```
-    /// sqc has no preprocessor and doesn't track `RL_CALLOC`/similar aliases
+    /// aurora-lint has no preprocessor and doesn't track `RL_CALLOC`/similar aliases
     /// as allocation calls at all, so `msg` was never a tracked buffer and
     /// this rule fell through to the generic "unvalidated function parameter
     /// index" check, which knows nothing about the allocation. Rather than
@@ -2907,7 +2889,7 @@ impl Arr30C {
     /// assignment, optionally through a pointer cast). Matches any call
     /// whose function name contains "alloc"/"ALLOC" -- this is intentionally
     /// broad (covers `malloc`/`calloc`/`realloc`/`alloca` and macro aliases
-    /// like `RL_MALLOC`/`RL_CALLOC` that sqc has no preprocessor to resolve)
+    /// like `RL_MALLOC`/`RL_CALLOC` that aurora-lint has no preprocessor to resolve)
     /// since an accidental match on an unrelated function only feeds into
     /// `match_roundup_formula`'s exact algebraic pattern match, which will
     /// simply fail to match and change nothing.
@@ -3734,6 +3716,12 @@ impl Arr30C {
                         matches!(&source[o.start_byte()..o.end_byte()], "++" | "--")
                     })
                 })
+                // An increment sitting inside a *nested* loop is that loop's
+                // to bound, not this one's: seL4's
+                // `while (1) { for (; is_space(*p) && *p != 0; p++); ... }`
+                // is bounded by the inner header, and blaming the outer
+                // `while (1)` for it reports a walk nothing here controls.
+                .filter(|u| Self::innermost_loop_of(u).is_some_and(|l| l.id() == while_node.id()))
                 .filter_map(|u| u.child_by_field_name("argument"))
                 .map(|arg| source[arg.start_byte()..arg.end_byte()].to_string())
                 .collect();
@@ -3760,7 +3748,26 @@ impl Arr30C {
                 });
         let has_bound_named_identifier =
             subtree_has_bound_named_identifier(condition, source, BOUND_NAME_SUBSTRINGS_WITH_LEN);
-        let has_bounds_check = has_relational_comparison || has_bound_named_identifier;
+        // A NUL/NULL sentinel test or an explicit end-pointer comparison bounds
+        // the walk just as a size comparison does -- the terminator IS the
+        // bound. Without this the single most common correct C idiom
+        // (`while (*s) s++;`, `while (*argp != NULL) argp++;`) reads as an
+        // unbounded increment.
+        let has_terminator_bound = condition_has_terminator_bound(
+            condition,
+            source,
+            &incremented_pointers,
+            &self.null_sentinel_macros.borrow(),
+        );
+        // A counter that provably decreases by one every iteration bounds the
+        // walk as surely as a size comparison does -- see
+        // `loop_has_decrementing_counter_bound` for why only the unary form,
+        // and only an unconditional one, is accepted.
+        let has_counter_bound = loop_has_decrementing_counter_bound(condition, body, source);
+        let has_bounds_check = has_relational_comparison
+            || has_bound_named_identifier
+            || has_terminator_bound
+            || has_counter_bound;
 
         if !has_bounds_check {
             // Unbounded pointer increment detected — check if any incremented
@@ -5110,7 +5117,7 @@ impl Arr30C {
             // size of exactly 1 as the trailing field); or identifier[NAME]
             // where NAME's own spelling names it as a flexible-array-size
             // macro (e.g. sqlite's `FLEXARRAY`, which expands to nothing
-            // under C99 or `1` otherwise -- sqc has no preprocessor, so the
+            // under C99 or `1` otherwise -- aurora-lint has no preprocessor, so the
             // bracket contents are seen as a bare, unresolved identifier
             // either way). All three are the same "real size lives at the
             // allocation site, not the declaration" pattern (task 554).
@@ -6964,6 +6971,396 @@ fn subtree_has_bound_named_identifier(root: Node, source: &str, bound_substrings
         .any(|id| {
             let text = &source[id.start_byte()..id.end_byte()];
             bound_substrings.iter().any(|s| text.contains(s))
+        })
+}
+
+/// Non-numeric spellings of the null terminator that ends a C string or a
+/// NULL-terminated pointer array (`argv`/`environ`-style). Numeric spellings
+/// are handled by [`is_zero_valued_text`] instead, which asks what the literal
+/// is *worth* rather than which spellings someone remembered to list -- the
+/// enumerated form silently missed `0x00` and, worse, read it as a definitely
+/// non-NUL constant, so `while (*p == 0x00) p++;` counted as terminator-bounded
+/// when it is the one comparison that isn't.
+///
+/// What a walk compares against still decides whether the walk is bounded at
+/// all -- see [`condition_has_terminator_bound`] -- so this stays a test for
+/// *zero*, never "any integer literal".
+const NULL_SENTINEL_LITERALS: &[&str] = &["'\\0'", "L'\\0'", "NULL", "nullptr"];
+
+/// True when `text` is a numeric constant expression worth exactly zero, in any
+/// spelling (`0`, `0x0`, `0x00`, `0UL`, `00`).
+fn is_zero_valued_text(text: &str) -> bool {
+    const_eval::try_evaluate_text_public(text, &HashMap::new()) == Some(0)
+}
+
+/// Names of object-like macros defined in this translation unit whose
+/// replacement text is exactly a null terminator (`#define EOS '\0'`).
+///
+/// `const_eval::collect_macro_constants` cannot supply these: it evaluates
+/// integer constant expressions, and a character literal is not one, so the
+/// pervasive `#define EOS '\0'` spelling resolves to nothing there.
+fn collect_null_sentinel_macros(root: &Node, source: &str) -> HashSet<String> {
+    query::find_descendants_of_kind(*root, "preproc_def")
+        .iter()
+        .filter_map(|def| {
+            let name = def.child_by_field_name("name")?;
+            let value = def.child_by_field_name("value")?;
+            let value_text = source[value.start_byte()..value.end_byte()].trim();
+            (NULL_SENTINEL_LITERALS.contains(&value_text) || is_zero_valued_text(value_text))
+                .then(|| source[name.start_byte()..name.end_byte()].to_string())
+        })
+        .collect()
+}
+
+/// `node` with parentheses and casts peeled off, so `((void *)0)` and `0` are
+/// the same expression to the sentinel tests below.
+fn strip_parens_and_casts<'a>(node: Node<'a>) -> Node<'a> {
+    let mut cur = node;
+    loop {
+        let inner = match cur.kind() {
+            "parenthesized_expression" => cur.named_child(0),
+            "cast_expression" => cur.child_by_field_name("value"),
+            _ => None,
+        };
+        match inner {
+            Some(n) => cur = n,
+            None => return cur,
+        }
+    }
+}
+
+/// True when `node` denotes the null terminator: one of
+/// [`NULL_SENTINEL_LITERALS`], or a macro that expands to one.
+fn is_null_sentinel(node: Node, source: &str, sentinel_macros: &HashSet<String>) -> bool {
+    let n = strip_parens_and_casts(node);
+    let text = source[n.start_byte()..n.end_byte()].trim();
+    NULL_SENTINEL_LITERALS.contains(&text)
+        || is_zero_valued_text(text)
+        || sentinel_macros.contains(text)
+}
+
+/// True when `node` denotes a constant that is definitely *not* the null
+/// terminator -- a non-`'\0'` character literal, a non-zero integer literal, or
+/// a name that is not a known null-sentinel macro. Used only for the `==`
+/// direction, where a non-NUL comparand is what makes the walk terminate.
+fn is_non_null_constant(node: Node, source: &str, sentinel_macros: &HashSet<String>) -> bool {
+    let n = strip_parens_and_casts(node);
+    if !matches!(n.kind(), "char_literal" | "number_literal" | "identifier") {
+        return false;
+    }
+    !is_null_sentinel(n, source, sentinel_macros)
+}
+
+/// True when `node` reads through the walked pointer -- a dereference (`*p`), a
+/// subscript (`p[0]`), a field access, or an assignment capturing such a read
+/// (`(c = *p++)`). This is the operand a sentinel comparison has to be testing
+/// for the comparison to be a terminator check rather than an unrelated scalar
+/// one.
+fn reads_walked_data(node: Node, source: &str) -> bool {
+    let n = strip_parens_and_casts(node);
+    match n.kind() {
+        "pointer_expression" => n
+            .child_by_field_name("operator")
+            .is_some_and(|o| &source[o.start_byte()..o.end_byte()] == "*"),
+        "subscript_expression" | "field_expression" => true,
+        "assignment_expression" => n.child_by_field_name("right").is_some_and(|r| {
+            let r = strip_parens_and_casts(r);
+            r.kind() == "call_expression" || reads_walked_data(r, source)
+        }),
+        _ => false,
+    }
+}
+
+/// As [`reads_walked_data`], plus a bare producer call -- the
+/// `while (fgets(line, sizeof line, fp) != NULL)` / `while (readdir(d) != NULL)`
+/// shape, where the loop stops on the call's sentinel return. Accepted only
+/// against an explicit sentinel comparison, never as a bare truth value.
+fn is_terminator_read_operand(node: Node, source: &str) -> bool {
+    let n = strip_parens_and_casts(node);
+    n.kind() == "call_expression" || reads_walked_data(n, source)
+}
+
+/// True when `node`, used directly as a truth value, is a read through a
+/// pointer -- the sentinel test with the comparison left implicit
+/// (`while (*s)`, `while (p != NULL && *p)`, `while (!*s)`) -- or a NUL-false
+/// `<ctype.h>` classifier applied to one, which is the same test written as a
+/// predicate (`while (isdigit(*z))`). Recurses through `&&`, `||` and `!` so a
+/// compound condition counts on either operand, which is what makes
+/// `while (end_not_reached && IS_DIGIT(*curr))` read correctly.
+fn boolean_operand_reads_walked_data(node: Node, source: &str) -> bool {
+    let n = strip_parens_and_casts(node);
+    if n.kind() == "binary_expression" {
+        let is_logical = n
+            .child_by_field_name("operator")
+            .is_some_and(|o| matches!(&source[o.start_byte()..o.end_byte()], "&&" | "||"));
+        if !is_logical {
+            return false;
+        }
+        return n
+            .child_by_field_name("left")
+            .is_some_and(|l| boolean_operand_reads_walked_data(l, source))
+            || n.child_by_field_name("right")
+                .is_some_and(|r| boolean_operand_reads_walked_data(r, source));
+    }
+    if n.kind() == "unary_expression" {
+        return n
+            .child_by_field_name("argument")
+            .is_some_and(|a| boolean_operand_reads_walked_data(a, source));
+    }
+    reads_walked_data(n, source) || is_nul_false_classifier_call(n, source)
+}
+
+/// `<ctype.h>` classifiers that are FALSE for the null terminator, so
+/// `while (isX(*p)) p++;` stops at the end of a NUL-terminated string exactly
+/// as `while (*p != 0) p++;` does.
+///
+/// `iscntrl` and `isascii` are deliberately absent: both are TRUE for `'\0'`,
+/// so a walk they gate is not terminator-bounded and must stay flagged. That
+/// asymmetry is the whole reason this is a list and not "any call named `is*`".
+const NUL_FALSE_CTYPE_CLASSIFIERS: &[&str] = &[
+    "isalnum", "isalpha", "isblank", "isdigit", "isgraph", "islower", "isprint", "ispunct",
+    "isspace", "isupper", "isxdigit",
+];
+
+/// Does `name` name one of [`NUL_FALSE_CTYPE_CLASSIFIERS`], allowing for the
+/// project-local aliases these are almost always reached through?
+///
+/// Matched on the normalised name's *suffix* because the wrappers are named
+/// every which way -- `sqlite3Isdigit`, `IS_DIGIT`, `ISDIGIT`, lua's `lisdigit`
+/// -- while all of them end in the classifier they forward to. Underscores are
+/// dropped and case folded first, so `IS_DIGIT` and `isdigit` are one name.
+///
+/// A suffix match alone would be far too generous, which is why the caller also
+/// requires the argument to be a read through the pointer the loop walks: a
+/// classifier applied to something else says nothing about this walk.
+fn is_nul_false_classifier_name(name: &str) -> bool {
+    let normalized: String = name
+        .chars()
+        .filter(|c| *c != '_')
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    NUL_FALSE_CTYPE_CLASSIFIERS
+        .iter()
+        .any(|c| normalized.ends_with(c))
+}
+
+/// Maximum wrapper calls unwrapped around a classifier's argument. Two covers
+/// every observed shape (`isspace(UCHAR(*p))`, `lisdigit(cast_uchar(**pc))`);
+/// the bound is here so a pathological nest cannot walk the tree forever.
+const MAX_CLASSIFIER_ARG_WRAPPERS: usize = 2;
+
+/// True when `node`, after peeling parens, casts and up to
+/// [`MAX_CLASSIFIER_ARG_WRAPPERS`] single-argument wrapper calls, reads through
+/// a pointer. The wrappers are the `(unsigned char)` coercion every codebase
+/// puts around a `<ctype.h>` argument, spelled as a macro or a function
+/// depending on the project -- `UCHAR(*pc->p)`, `cast_uchar(**pc)`.
+fn classifier_arg_reads_walked_data(node: Node, source: &str, depth: usize) -> bool {
+    let n = strip_parens_and_casts(node);
+    if reads_walked_data(n, source) {
+        return true;
+    }
+    if depth >= MAX_CLASSIFIER_ARG_WRAPPERS || n.kind() != "call_expression" {
+        return false;
+    }
+    let Some(args) = n.child_by_field_name("arguments") else {
+        return false;
+    };
+    let inner: Vec<Node> = (0..args.child_count())
+        .filter_map(|i| args.child(i))
+        .filter(|a| a.is_named() && a.kind() != "comment")
+        .collect();
+    match inner.as_slice() {
+        [only] => classifier_arg_reads_walked_data(*only, source, depth + 1),
+        _ => false,
+    }
+}
+
+/// True when `node` is a call to a NUL-false `<ctype.h>` classifier applied to
+/// a read through the walked pointer.
+///
+/// This is the same insight as the sentinel test one layer up: the classifier
+/// is false for `'\0'`, so it *is* the terminator check, just written as a
+/// predicate. `while (sqlite3Isdigit(*z)) z++;` cannot run off the end of a
+/// terminated string any more than `while (*z != 0) z++;` can.
+fn is_nul_false_classifier_call(node: Node, source: &str) -> bool {
+    let n = strip_parens_and_casts(node);
+    if n.kind() != "call_expression" {
+        return false;
+    }
+    let Some(callee) = n.child_by_field_name("function") else {
+        return false;
+    };
+    if callee.kind() != "identifier"
+        || !is_nul_false_classifier_name(&source[callee.start_byte()..callee.end_byte()])
+    {
+        return false;
+    }
+    let Some(args) = n.child_by_field_name("arguments") else {
+        return false;
+    };
+    (0..args.child_count())
+        .filter_map(|i| args.child(i))
+        .filter(|a| a.is_named() && a.kind() != "comment")
+        .any(|a| classifier_arg_reads_walked_data(a, source, 0))
+}
+
+/// True when the loop is bounded by a counter that provably decreases by one on
+/// every iteration, in either of the two places the idiom is written:
+///
+/// * in the condition -- `while (n--)`, `while (--left != 0)`, `while (tmp--)`.
+///   The decrement runs whenever the condition is evaluated, so the loop cannot
+///   run more times than the counter's initial value.
+/// * as an unconditional statement at the top level of the body --
+///   `while (left) { *p++ = ...; left--; }`. Top level is what makes it
+///   *dominate* the pointer increment; a decrement nested inside an `if`, a
+///   `switch` or an inner loop may not run on an iteration that still advances
+///   the pointer, and is deliberately not accepted.
+///
+/// Only the unary `--` counts. `left -= len` is the same idiom to a reader but
+/// not to this test: it terminates only if `len` is positive, and hostap's
+/// `left -= len; rpos += len;` pairs it with a pointer advanced by that same
+/// variable amount -- a bound that exists in the data, not in the loop shape.
+/// Those stay flagged.
+///
+/// A counter that the loop reads *through* is never accepted: `while (p--)`
+/// with `*p` in the body walks a pointer downward, which is a walk to bound
+/// rather than a bound on one. Note this cannot be phrased as "not one of the
+/// incremented pointers" -- that list collects `--` updates too, so a genuine
+/// counter decremented in the body would exclude itself.
+fn loop_has_decrementing_counter_bound(condition: Node, body: Node, source: &str) -> bool {
+    let dereferenced = |name: &str| -> bool {
+        [condition, body].iter().any(|root| {
+            query::find_descendants_of_kinds(
+                *root,
+                &[
+                    "pointer_expression",
+                    "subscript_expression",
+                    "field_expression",
+                ],
+            )
+            .iter()
+            .any(|n| {
+                n.child_by_field_name("argument")
+                    .into_iter()
+                    .chain(n.child_by_field_name("value"))
+                    .any(|a| {
+                        let a = strip_parens_and_casts(a);
+                        a.kind() == "identifier" && source[a.start_byte()..a.end_byte()] == *name
+                    })
+            })
+        })
+    };
+
+    let decremented_name = |u: &Node| -> Option<String> {
+        let op = u.child_by_field_name("operator")?;
+        if &source[op.start_byte()..op.end_byte()] != "--" {
+            return None;
+        }
+        let arg = u.child_by_field_name("argument")?;
+        if arg.kind() != "identifier" {
+            return None;
+        }
+        let name = source[arg.start_byte()..arg.end_byte()].to_string();
+        (!dereferenced(&name)).then_some(name)
+    };
+
+    if query::find_descendants_of_kind(condition, "update_expression")
+        .iter()
+        .any(|u| decremented_name(u).is_some())
+    {
+        return true;
+    }
+
+    // Body form: the condition must be exactly the counter's truthiness, so
+    // that the identifier the body decrements is unambiguously the one the
+    // loop tests. `while (*c != K)` and `while (!done)` name identifiers too,
+    // and neither is a counter.
+    let counter = strip_parens_and_casts(condition);
+    if counter.kind() != "identifier" {
+        return false;
+    }
+    let counter = &source[counter.start_byte()..counter.end_byte()];
+    (0..body.child_count())
+        .filter_map(|i| body.child(i))
+        .filter(|st| st.kind() == "expression_statement")
+        .filter_map(|st| st.named_child(0))
+        .filter(|e| e.kind() == "update_expression")
+        .any(|e| decremented_name(&e).as_deref() == Some(counter))
+}
+
+/// True when `condition` bounds the walk through a *terminator* rather than a
+/// size comparison, which is all `check_while_loop_pointer_increment`'s
+/// relational and bound-name tests look for. Without this the most common
+/// correct C idiom there is -- scanning to a NUL/NULL sentinel -- reads as an
+/// unbounded pointer increment.
+///
+/// Which comparand terminates the walk is decided by the operator, because the
+/// question is only ever "does the NUL byte stop this loop?":
+///
+/// - `*p != K` continues while the pointee differs from `K`, so the terminator
+///   stops it exactly when `K` is NUL. `while (*p != 0)`, `while (*p != EOS)`
+///   and `while ((c = *p++) != 0)` are bounded; `while (*p != delim)` and
+///   `while (*p != 0xFE)` are the genuine violations and stay flagged.
+/// - `*p == K` continues while the pointee equals `K`, so the terminator stops
+///   it for every `K` except NUL -- `while (*p == '-') p++;` cannot run off the
+///   end of a terminated string.
+///
+/// Three further shapes count: a bare dereference used as the truth value
+/// (`while (*s) s++;`); a NUL-false `<ctype.h>` classifier applied to such a
+/// read (`while (sqlite3Isdigit(*z)) z++;`), which is the terminator test
+/// written as a predicate -- see [`is_nul_false_classifier_call`]; and a
+/// `==`/`!=` naming one of the loop's own incremented pointers as a bare
+/// identifier, which is either an explicit end-pointer stop
+/// (`while (filepnt != fileend)`) or a pointer-array sentinel scan
+/// (`while (path != NULL && *path != NULL)`).
+///
+/// The comparison's other operand must be a read *through* a pointer (or a
+/// producer call), so testing a neighbouring scalar against zero is never
+/// mistaken for a terminator check.
+fn condition_has_terminator_bound(
+    condition: Node,
+    source: &str,
+    incremented: &[String],
+    sentinel_macros: &HashSet<String>,
+) -> bool {
+    if boolean_operand_reads_walked_data(condition, source) {
+        return true;
+    }
+    query::find_descendants_of_kind(condition, "binary_expression")
+        .iter()
+        .any(|cmp| {
+            let Some(op) = cmp.child_by_field_name("operator") else {
+                return false;
+            };
+            let op = &source[op.start_byte()..op.end_byte()];
+            if !matches!(op, "==" | "!=") {
+                return false;
+            }
+            let (Some(left), Some(right)) = (
+                cmp.child_by_field_name("left"),
+                cmp.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            for (value, other) in [(left, right), (right, left)] {
+                let terminates = if op == "!=" {
+                    is_null_sentinel(other, source, sentinel_macros)
+                } else {
+                    is_non_null_constant(other, source, sentinel_macros)
+                };
+                if terminates && is_terminator_read_operand(value, source) {
+                    return true;
+                }
+                let bare = strip_parens_and_casts(value);
+                if bare.kind() == "identifier"
+                    && incremented
+                        .iter()
+                        .any(|p| p == &source[bare.start_byte()..bare.end_byte()])
+                {
+                    return true;
+                }
+            }
+            false
         })
 }
 

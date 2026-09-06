@@ -19,7 +19,7 @@ pub fn get_node_text<'a>(node: &Node, source: &'a str) -> &'a str {
 /// handling and the prescan field-frees collector (`frees_param_fields`),
 /// so a macro-wrapped free like `#define mosquitto_FREE(A) free(A)` is
 /// recognized consistently in both places (task 2: MEM31-C ownership model —
-/// sqc has no preprocessor, so such wrapper calls are otherwise invisible).
+/// aurora-lint has no preprocessor, so such wrapper calls are otherwise invisible).
 pub fn is_deallocation_call_name(func_name: &str) -> bool {
     if crate::analyze::macro_semantics::is_container_unlink_macro(func_name) {
         return false;
@@ -90,6 +90,35 @@ pub fn find_containing_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
     query::nearest_ancestor_of_kind(*node, "function_definition")
 }
 
+/// Every descendant of `root` matching one of `kinds` that lies **outside**
+/// any function definition, found by pruning at `function_definition` on the
+/// way down.
+///
+/// Use this instead of collecting all descendants and rejecting the ones
+/// [`find_containing_function`] answers for. `Node::parent()` is not a
+/// pointer hop: tree-sitter recovers a parent by descending from the tree
+/// root, so it costs O(depth). An ancestor query per candidate therefore
+/// costs O(depth²), and running one over a whole file whose node count grows
+/// with its nesting depth makes the pass cubic — 800 nested `if`s took
+/// CON40-C 23 s before this replaced two such filters (task 952, this repo).
+/// Pruning is O(n) and needs no ancestor query at all.
+pub fn file_scope_descendants_of_kinds<'a>(root: Node<'a>, kinds: &[&str]) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "function_definition" {
+            continue;
+        }
+        if kinds.contains(&node.kind()) {
+            out.push(node);
+        }
+        let mut cursor = node.walk();
+        let children: Vec<Node<'a>> = node.children(&mut cursor).collect();
+        stack.extend(children.into_iter().rev());
+    }
+    out
+}
+
 /// Walk up from `ident_node` through enclosing scopes — `compound_statement`
 /// blocks and `for_statement` init clauses — to find the nearest
 /// `declaration` that binds `name`, preferring the latest (highest byte
@@ -122,25 +151,51 @@ pub fn find_enclosing_declaration_for_identifier<'a>(
     name: &str,
     source: &str,
 ) -> Option<Node<'a>> {
+    let mut scopes = Vec::new();
     let mut search_from = *ident_node;
-    loop {
-        let scope = query::find_ancestor(search_from, |n| {
-            matches!(n.kind(), "compound_statement" | "for_statement")
-        })?;
+    while let Some(scope) = query::find_ancestor(search_from, |n| is_declaration_scope(&n)) {
+        scopes.push(scope);
+        search_from = scope;
+    }
+    find_declaration_in_scope_chain(&scopes, ident_node.start_byte(), name, source)
+}
+
+/// True if `node` opens one of the scopes
+/// [`find_enclosing_declaration_for_identifier`] searches.
+pub fn is_declaration_scope(node: &Node) -> bool {
+    matches!(node.kind(), "compound_statement" | "for_statement")
+}
+
+/// The body of [`find_enclosing_declaration_for_identifier`], over a scope
+/// chain the caller already has: `scopes` innermost-first, `ident_start` the
+/// identifier's start byte.
+///
+/// A caller already descending the tree can keep that chain on a stack for
+/// free. Rediscovering it per identifier cannot: `Node::parent()` recovers a
+/// parent by descending from the tree root, so it costs O(depth), one
+/// resolution costs O(depth²), and resolving every read in a file whose node
+/// count grows with its nesting depth is cubic -- 2,000 nested `if`s took
+/// MSC13-C 93 s (task 952, this repo).
+pub fn find_declaration_in_scope_chain<'a>(
+    scopes: &[Node<'a>],
+    ident_start: usize,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    for scope in scopes {
         let mut declarations = Vec::new();
-        collect_declarations_transparent_to_preproc(&scope, &mut declarations);
+        collect_declarations_transparent_to_preproc(scope, &mut declarations);
         let best = declarations
             .into_iter()
             .filter(|child| {
-                child.start_byte() < ident_node.start_byte()
-                    && declaration_binds_name(child, name, source)
+                child.start_byte() < ident_start && declaration_binds_name(child, name, source)
             })
             .max_by_key(|child| child.start_byte());
         if best.is_some() {
             return best;
         }
-        search_from = scope;
     }
+    None
 }
 
 /// Collect every `declaration` directly inside `scope`, transparently
@@ -814,7 +869,7 @@ pub fn is_in_sizeof(node: &Node) -> bool {
 ///
 /// # Examples
 /// ```no_run
-/// use sqc::utility::cert_c::ast_utils::find_containing_for_loop;
+/// use aurora_lint::utility::cert_c::ast_utils::find_containing_for_loop;
 /// use tree_sitter::Node;
 /// // When checking a subscript inside a for loop:
 /// // let subscript_node: Node = /* get from parsed AST */;
@@ -836,7 +891,7 @@ pub fn find_containing_for_loop<'a>(node: &Node<'a>) -> Option<Node<'a>> {
 ///
 /// # Examples
 /// ```no_run
-/// use sqc::utility::cert_c::ast_utils::find_containing_if_statement;
+/// use aurora_lint::utility::cert_c::ast_utils::find_containing_if_statement;
 /// use tree_sitter::Node;
 /// // When checking if array access is within a bounds check:
 /// // let subscript_node: Node = /* get from parsed AST */;
@@ -999,7 +1054,7 @@ pub enum PackedSignal {
     /// terminating `;`/field name (e.g. `struct foo { ... } STRUCT_PACKED;`)
     /// that *might* be a packed-attribute macro — its `#define` may live in
     /// a different file (a header this one doesn't textually include in
-    /// sqc's no-preprocessor model), so the caller must resolve the name
+    /// aurora-lint's no-preprocessor model), so the caller must resolve the name
     /// against a project-wide macro-name set.
     MacroCandidate(String),
 }
@@ -1092,7 +1147,7 @@ pub fn collect_packed_macro_names(source: &str, out: &mut std::collections::Hash
 /// what it expands to. Used to recognize a trailing bare identifier right
 /// after a struct/union/enum body (e.g. `struct foo { ... } SOME_MACRO;`) as
 /// an attribute-position macro invocation rather than a genuine object
-/// declaration: sqc has no preprocessor, so such a macro is parsed as if it
+/// declaration: aurora-lint has no preprocessor, so such a macro is parsed as if it
 /// were the declared object's name, but a real C identifier can never
 /// collide with an in-scope `#define` name (the preprocessor would have
 /// substituted it first) — so if the name is a known macro, this can't be a
@@ -1124,7 +1179,7 @@ pub fn is_defined_macro_name(name: &str, source: &str) -> bool {
 ///
 /// # Examples
 /// ```
-/// use sqc::utility::cert_c::ast_utils::is_likely_macro_constant;
+/// use aurora_lint::utility::cert_c::ast_utils::is_likely_macro_constant;
 /// assert!(is_likely_macro_constant("MAX_SIZE"));
 /// assert!(is_likely_macro_constant("_BUF_LEN2"));
 /// assert!(!is_likely_macro_constant("bufLen"));

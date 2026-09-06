@@ -25,7 +25,8 @@ not the project's measurements, and must never be transcribed into a published
 document or cited as a project result.
 
 **The test for any new benchmarking/measurement code: would a stranger cloning
-this repo need it to evaluate sqc on their own codebase?** If no, it belongs in
+this repo need it to evaluate aurora-lint on their own codebase?** If no, it
+belongs in
 `benchmarking_db`. Two corollaries:
 
 - Do not reintroduce a local mirror, cache, or sync of benchmark data for speed
@@ -42,7 +43,8 @@ the shared instance in anything you add. That seam is what keeps `bench/`
 usable by a fresh clone. See `benchmarking_db/docs/ownership.md` for what that
 repo owns.
 
-**The adjudication dataset** (TP/FP/FN labels) is valuable beyond sqc, which is
+**The adjudication dataset** (TP/FP/FN labels) is valuable beyond aurora-lint,
+which is
 an argument for *sharing* it the way research datasets are shared — object
 storage, a hosted dataset — not for holding it in git. Keep export from
 Postgres trivial; do not let its portability become a reason to put it in-repo.
@@ -90,7 +92,8 @@ the expected one. Since `ground_truth` is keyed on
 `(project, commit, file, line, rule)`, findings from a drifted tree fall out of
 the precision/recall denominator with no error. The check exits nonzero and
 prints the `git checkout --detach` fix per row. It also flags untracked **and
-gitignored** `*.c`/`*.h` files: sqc dispatches on file extension and never
+gitignored** `*.c`/`*.h` files: aurora-lint dispatches on file extension and
+never
 consults git, so a build run inside a checkout (e.g. sqlite's generated
 `sqlite3.c` amalgamation) contaminates a scan while staying invisible to
 `git status`.
@@ -108,14 +111,22 @@ consults git, so a build run inside a checkout (e.g. sqlite's generated
    both sides write the same string, so git reports no conflict and `doctor`
    only checks display ids. Version numbers are a **release** artifact.
 
+   **The binary is `aurora-lint`; the benchmark tool id is still `sqc`.** The
+   crate and binary were renamed, but `realworld_results.tool`, the
+   `runs.sqc_version` column and the `sqc-{version}-{sha}` run_id prefix all
+   stay `sqc`, because Postgres rows and `ground_truth`'s
+   `(project, commit, file, line, rule)` keys are written that way. Renaming
+   the identifier forks the namespace and silently drops every historical row
+   out of comparison. Do not "fix" the `"sqc"` literals in `bench/`.
+
    **Consequence to accept:** address a real-world run by its integer id and a
    Juliet run by its full run_id or SHA. A bare version string is now
    ambiguous and quoting one without a SHA is meaningless — say
    `0.4.336-27785c4a`, or just the SHA.
 
 2. **NEVER modify code while a benchmark is running.** It uses
-   `target/release/sqc`; rebuilding mid-run corrupts results. Make all changes
-   and commits first.
+   `target/release/aurora-lint`; rebuilding mid-run corrupts results. Make all
+   changes and commits first.
 
 3. **Wait for completion.** Fast-mode Juliet ~32-40 min, full Juliet ~40-50 min,
    real-world sqc-only ~10-15 min. Check `python -m bench status` at most every
@@ -210,7 +221,7 @@ repo root.
 Do not `add` or reopen another repo's work here. Completed history was not
 duplicated when the backlogs split, so old done tasks of every kind remain in
 this DB. Same clone-experience test as everywhere else: would a stranger
-cloning this repo need it to evaluate sqc on their own codebase?
+cloning this repo need it to evaluate aurora-lint on their own codebase?
 
 **Cross-repo dependency edges cannot be enforced.** Separate DBs mean no `next`
 in either repo will honour one, so record it as prose in the task's details —
@@ -356,8 +367,8 @@ with vocabulary close to an actual doc comment, then grep
 
 ```bash
 cargo build
-cargo test --package sqc --lib -- rules::cert_c::RULE_ID::tests  # inline unit tests
-cargo test --package sqc --lib -- RULE_ID  # all tests (inline + generated from .c files)
+cargo test --package aurora-lint --lib -- rules::cert_c::RULE_ID::tests  # inline unit tests
+cargo test --package aurora-lint --lib -- RULE_ID  # all tests (inline + generated from .c files)
 cargo fmt
 ```
 
@@ -374,7 +385,8 @@ register in `mod.rs`, enable in the TOML, then build and test.
 
 **Before fixing a macro-related FP/FN**, check whether
 `src/analyze/macro_expand.rs` already solves it — do **not** reach for a
-name-heuristic workaround. sqc has a real, name-independent macro-expansion
+name-heuristic workaround. aurora-lint has a real, name-independent
+macro-expansion
 engine (`collect_function_macros`, `macro_nulls_param_indices` for free+null
 "safe free" macros, `macro_output_param_indices` for output-param macros),
 already wired into MEM30-C, MEM31-C, EXP33-C and DCL31-C.

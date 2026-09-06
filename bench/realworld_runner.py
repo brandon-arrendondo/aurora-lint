@@ -40,7 +40,7 @@ from bench.db import BenchDB
 
 RESULTS_BASE = PROJECT_DIR / "results" / "realworld"
 MANIFEST = PROJECT_DIR / "rules_templates" / "rules-benchmark.toml"
-SQC_BIN = PROJECT_DIR / "target" / "release" / "sqc"
+SQC_BIN = PROJECT_DIR / "target" / "release" / "aurora-lint"
 
 VALID_TOOLS = ("sqc", "cppcheck", "clang-tidy", "infer", "frama-c")
 

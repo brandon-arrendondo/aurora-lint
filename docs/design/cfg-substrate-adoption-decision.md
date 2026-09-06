@@ -1,4 +1,4 @@
-# Decision: Keep sqc's Own CFG Builder, Don't Adopt substrate::cfg v1 (task 253)
+# Decision: Keep aurora-lint's Own CFG Builder, Don't Adopt substrate::cfg v1 (task 253)
 
 **Status:** DECIDED, no swap. Re-evaluate only if the trigger in §3 occurs.
 
@@ -7,7 +7,7 @@
 `lang-parsing-substrate` (the shared crate also used for `substrate::query`
 AST search, see [`internal-utility-layer-vs-lang_parsing_substrate`] memory)
 shipped a CFG builder (`substrate::cfg::build_function_cfg`, v0.1.5+)
-mirroring sqc's own `BasicBlock`/`CfgEdge`/`FunctionCfg` types. Should sqc
+mirroring aurora-lint's own `BasicBlock`/`CfgEdge`/`FunctionCfg` types. Should aurora-lint
 swap `src/analyze/cfg.rs`'s `build_function_cfg` for the substrate's?
 
 ## 2. Why not, right now
@@ -20,7 +20,7 @@ its v1 scope explicitly excludes, by design:
 - constant-condition dead-branch folding (explicitly deferred as
   "tools_sqc's `MacroConstantMap` is a C-preprocessor-specific concept")
 
-sqc's own `cfg.rs` implements all three, and they are load-bearing, not
+aurora-lint's own `cfg.rs` implements all three, and they are load-bearing, not
 theoretical:
 
 - `process_switch` builds one block per `case`/`default` arm with proper
@@ -53,10 +53,10 @@ API is currently a strict subset of the source, not an improvement.
 
 The substrate's own doc comment defers switch/goto/constant-folding
 "until a second language needs it" — i.e., until some other consumer of
-`substrate::cfg` (not sqc) needs feature parity and funds building it
+`substrate::cfg` (not aurora-lint) needs feature parity and funds building it
 generically. If that happens, revisit: at that point building the
-compat/parity layer once, in the substrate, and having sqc adopt it
+compat/parity layer once, in the substrate, and having aurora-lint adopt it
 becomes a net deduplication win rather than pure cost. Until then, `cfg.rs`
-stays sqc's own, exactly as `alias-analysis` infra investment stays off the
+stays aurora-lint's own, exactly as `alias-analysis` infra investment stays off the
 table per [`ceiling-decision-alias-vs-realworld`] — this is the same kind
 of "no measured real-world driver yet" call.

@@ -1,6 +1,6 @@
 # raylib Upstream Bugfix PRs — Tier 1
 
-Surfaced by the sqc real-world audit of **raylib @ `962bbfc`** (ground-truth oracle `raylib-v1.0`, task 227).
+Surfaced by the aurora-lint real-world audit of **raylib @ `962bbfc`** (ground-truth oracle `raylib-v1.0`, task 227).
 These are the **Tier 1** findings: genuine public-API memory-safety bugs reachable with *ordinary* inputs —
 **independent of raylib's "load trusted assets only" threat model**. In two of three, the author's own
 guard is present but ineffective, and all three have bounds-checking *siblings*, so each is a clear

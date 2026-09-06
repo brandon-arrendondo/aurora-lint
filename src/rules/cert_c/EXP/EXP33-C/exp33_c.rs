@@ -305,6 +305,8 @@ fn check_reads(
     reported: &mut HashSet<String>,
     config: &init_state::InitAnalysisConfig,
 ) {
+    let asm_ranges = asm_call_ranges(body, source);
+
     for n in query::find_descendants_of_kinds(
         *node,
         &["identifier", "pointer_expression", "subscript_expression"],
@@ -312,7 +314,15 @@ fn check_reads(
         match n.kind() {
             "identifier" => {
                 check_identifier_read(
-                    &n, source, analysis, cfg, body, violations, reported, config,
+                    &n,
+                    source,
+                    analysis,
+                    cfg,
+                    body,
+                    violations,
+                    reported,
+                    config,
+                    &asm_ranges,
                 );
             }
             "pointer_expression" => {
@@ -492,7 +502,7 @@ fn blanked_label_guard_key(node: &Node, boundary: &Node, source: &str) -> Option
 /// EVERY such write site sits under the identical `#ifdef`/`#ifndef` guard
 /// as `read_guard_key` (from [`enclosing_ifdef_guard_key`] at the read site).
 ///
-/// Motivation (task 590): sqc has no preprocessor, so
+/// Motivation (task 590): aurora-lint has no preprocessor, so
 /// `cfg::process_preproc_conditional` models each `#ifdef GUARD ... #endif`
 /// occurrence as an independent "maybe compiled, maybe not" branch+join.
 /// When a variable's only writes AND the read in question are all under the
@@ -544,7 +554,7 @@ fn all_write_sites_ifdef_correlated(
 /// almost always the alternative branch of an `#ifdef`/`#ifndef` whose
 /// other branch assigns a same-named real variable, e.g. sqlite's
 /// `#ifndef SQLITE_OMIT_TRIGGER pTrigger = sqlite3TriggersExist(...); #else
-/// # define pTrigger 0 #endif`. sqc has no preprocessor, so a later,
+/// # define pTrigger 0 #endif`. aurora-lint has no preprocessor, so a later,
 /// unconditional read of `var_name` after the `#endif` looks like a join of
 /// "assigned in one branch, untouched in the other" -- MaybeUninitialized.
 /// But that's not a real risk in any actually-compiled configuration:
@@ -751,6 +761,7 @@ fn check_identifier_read(
     violations: &mut Vec<RuleViolation>,
     reported: &mut HashSet<String>,
     config: &init_state::InitAnalysisConfig,
+    asm_ranges: &[(usize, usize)],
 ) {
     let var_name = get_node_text(node, source).to_string();
 
@@ -765,7 +776,7 @@ fn check_identifier_read(
     }
 
     // Skip if this is NOT a read context
-    if !is_read_context(node, source, &config.cross_file_output_params) {
+    if !is_read_context(node, source, &config.cross_file_output_params, asm_ranges) {
         return;
     }
 
@@ -849,7 +860,7 @@ fn check_identifier_read(
         }
     }
 
-    // sqc has no preprocessor, so an `#ifdef GUARD ... #endif` block is
+    // aurora-lint has no preprocessor, so an `#ifdef GUARD ... #endif` block is
     // modeled as possibly-compiled-or-possibly-skipped, independently at
     // each occurrence (see `cfg::process_preproc_conditional`). When a
     // variable is written ONLY inside one or more `#ifdef`/`#ifndef` blocks
@@ -1134,38 +1145,52 @@ fn check_subscript_read(
 /// every identifier inside such an asm-keyword call as asm-opaque — never a
 /// genuine uninitialized read. Properly-parsed `__asm__` uses `gnu_asm_*` nodes
 /// and is handled by the match in `is_read_context`.
-fn is_in_asm_call(node: &Node, source: &str) -> bool {
-    let mut cur = node.parent();
-    while let Some(n) = cur {
-        if n.kind() == "call_expression" {
-            if let Some(func) = n.child_by_field_name("function") {
-                if func.kind() == "identifier" {
-                    let name = get_node_text(&func, source).to_ascii_lowercase();
-                    if name == "asm" || name == "__asm" || name == "__asm__" {
-                        return true;
-                    }
-                }
-            }
+/// Byte ranges of the `asm(...)` / `__asm(...)` / `__asm__(...)` calls in
+/// `body`, collected once per function.
+///
+/// The containment test this feeds replaces an ancestor walk per identifier.
+/// `Node::parent()` is not a pointer hop -- tree-sitter recovers a parent by
+/// descending from the tree root, so it costs O(depth) -- and walking from
+/// every identifier up to its function therefore cost O(depth^2) each,
+/// O(depth^3) over a file whose node count grows with its nesting depth. 800
+/// nested `if`s took this rule 12 s before the change (task 952, this repo).
+/// Nearly all C has no inline asm at all, so the usual result is an empty
+/// slice and no test at all.
+fn asm_call_ranges(body: &Node, source: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    for call in query::find_descendants_of_kind(*body, "call_expression") {
+        let Some(func) = call.child_by_field_name("function") else {
+            continue;
+        };
+        if func.kind() != "identifier" {
+            continue;
         }
-        // Bound the walk at the enclosing function.
-        if n.kind() == "function_definition" {
-            break;
+        let name = get_node_text(&func, source).to_ascii_lowercase();
+        if name == "asm" || name == "__asm" || name == "__asm__" {
+            ranges.push((call.start_byte(), call.end_byte()));
         }
-        cur = n.parent();
     }
-    false
+    ranges
+}
+
+fn is_in_asm_call(node: &Node, asm_ranges: &[(usize, usize)]) -> bool {
+    let start = node.start_byte();
+    asm_ranges
+        .iter()
+        .any(|&(from, to)| start >= from && start < to)
 }
 
 fn is_read_context(
     node: &Node,
     source: &str,
     cross_file_output_params: &HashMap<String, HashSet<usize>>,
+    asm_ranges: &[(usize, usize)],
 ) -> bool {
     // GNU asm is opaque to uninitialized analysis, and tree-sitter-c misparses
     // the __asm(...) / __ASM(...) call forms differently across grammar
     // versions. Any identifier inside such an asm-keyword call is asm-related,
     // not a real read — short-circuit before the shape-specific logic below.
-    if is_in_asm_call(node, source) {
+    if is_in_asm_call(node, asm_ranges) {
         return false;
     }
 
@@ -1173,7 +1198,7 @@ fn is_read_context(
     // all: `# define pTrigger 0` inside a conditionally-compiled `#else`
     // branch parses to a `preproc_def` whose `name` field is an `identifier`
     // node holding the same text as an unrelated tracked variable declared
-    // in the surrounding function. sqc has no preprocessor, so this
+    // in the surrounding function. aurora-lint has no preprocessor, so this
     // directive's tokens land as ordinary descendants of the function body
     // and fell through to the catch-all `_ => true` below, misflagging the
     // `#define` line itself as a read of that variable (task 461 category

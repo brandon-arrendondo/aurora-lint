@@ -1,0 +1,7 @@
+[[suppress]]
+name = "violation-msc04"
+tool = "aurora-lint"
+file = "violation.c"
+rule = "MSC04-C"
+hash = "745a35718a0e2d31"
+justification = "Bounded by external call limit"

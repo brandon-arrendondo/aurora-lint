@@ -1,11 +1,41 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::argument_objects::{self, ObjectFrame};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::prescan;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Arr36C;
+pub struct Arr36C {
+    /// `struct_name -> field_name -> type_text` from the prescan, which is
+    /// how a member's type is known when its struct is declared in another
+    /// file. Empty without `-d`, so it is merged with the scanned file's own
+    /// declarations rather than relied on (see `collect_pointer_members`).
+    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
+    /// `callee name -> argument-position pairs some call site ANYWHERE in the
+    /// pre-scanned project proves denote two different objects`, from the
+    /// prescan. Empty without `-d`, which is what the file-local
+    /// `CallSiteBases` pass still covers (task 936).
+    project_call_sites: RefCell<HashMap<String, HashSet<(usize, usize)>>>,
+    /// `typedef struct Tag Alias;` from the prescan, `Alias -> Tag`. Without
+    /// it a member reached through the alias does not resolve and falls back
+    /// to naming storage (task 963).
+    struct_typedef_aliases: RefCell<HashMap<String, String>>,
+}
+
+impl Arr36C {
+    pub fn new() -> Self {
+        Self {
+            struct_field_types: RefCell::new(HashMap::new()),
+            project_call_sites: RefCell::new(HashMap::new()),
+            struct_typedef_aliases: RefCell::new(HashMap::new()),
+        }
+    }
+}
 
 impl CertRule for Arr36C {
     fn rule_id(&self) -> &'static str {
@@ -28,6 +58,17 @@ impl CertRule for Arr36C {
         "ARR36-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
+        *self.struct_typedef_aliases.borrow_mut() = context.struct_typedef_aliases.clone();
+        *self.project_call_sites.borrow_mut() = context
+            .function_summaries
+            .iter()
+            .filter(|(_, summary)| !summary.distinct_object_param_pairs.is_empty())
+            .map(|(name, summary)| (name.clone(), summary.distinct_object_param_pairs.clone()))
+            .collect();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
@@ -48,12 +89,16 @@ impl Arr36C {
         file_scope.collect_file_scope(node, source);
 
         // Second pass: per-function analysis with file-scope as base
+        let project_fields = self.struct_field_types.borrow();
+        let project_aliases = self.struct_typedef_aliases.borrow();
+        let field_types = merge_file_struct_fields(&project_fields, &project_aliases, node, source);
         let funcs = query::find_descendants_of_kind(*node, "function_definition");
         let analyzers: Vec<PointerAnalyzer> = funcs
             .iter()
             .map(|func| {
                 let mut analyzer = PointerAnalyzer::from(&file_scope);
                 analyzer.collect_declarations(func, source);
+                analyzer.collect_pointer_members(func, source, &field_types);
                 analyzer
             })
             .collect();
@@ -66,11 +111,14 @@ impl Arr36C {
             call_sites.collect_from(func, source, analyzer);
         }
 
+        let project_call_sites = self.project_call_sites.borrow();
         for (func, analyzer) in funcs.iter().zip(&analyzers) {
             let frame = FrameContext {
                 function_name: function_name_of(func, source),
                 param_indices: parameter_indices(func, source),
+                objects: &analyzer.objects,
                 call_sites: &call_sites,
+                project_call_sites: &project_call_sites,
             };
             self.check_node(func, source, analyzer, &frame, violations);
         }
@@ -184,8 +232,24 @@ impl Arr36C {
     }
 }
 
-/// What one function's frame knows about its own parameters, used to decide
-/// whether a parameter-vs-parameter report is warranted at all.
+/// Where a base came from, as far as the frame that produced it can tell.
+enum BaseOrigin {
+    /// The base names storage: a declared array, an allocation, a literal, or
+    /// an array-typed struct member.
+    Storage,
+    /// A pointer parameter of this function, at this position in its list.
+    OwnParam(usize),
+    /// A pointer-typed struct member.
+    PointerMember,
+    /// A pointer variable this frame declared but never learned a target for
+    /// -- a bare `const u8 *next;`, or one assigned from a call the frame
+    /// cannot see into. Its NAME is the base only because there was nothing
+    /// better to record, not because it denotes storage.
+    UntrackedPointer,
+}
+
+/// What one function's frame knows about the bases it produced, used to
+/// decide whether a mismatched pair is a report this frame can make at all.
 struct FrameContext<'a> {
     /// This function's name, when its declarator gives one. Call sites are
     /// matched to it by name, which is exact within one translation unit.
@@ -194,30 +258,86 @@ struct FrameContext<'a> {
     /// of THIS function, pointer or not: an argument's position has to line
     /// up with the whole list.
     param_indices: HashMap<String, usize>,
+    /// What this function's frame knows about which names denote storage,
+    /// which merely hold a pointer, and which field paths are pointer-typed.
+    objects: &'a ObjectFrame,
     call_sites: &'a CallSiteBases,
+    /// The same predicate over every pre-scanned translation unit, so a
+    /// callee whose callers all live elsewhere is still decided (task 936).
+    project_call_sites: &'a HashMap<String, HashSet<(usize, usize)>>,
 }
 
 impl FrameContext<'_> {
     /// Whether a mismatched base pair is a violation this frame can claim.
+    ///
+    /// Two bases differ implies two arrays only when each base NAMES an
+    /// object. Two kinds of base do not:
     ///
     /// A pointer parameter's base is synthetic (`param:name`), so two
     /// distinct parameters ALWAYS compare unequal -- which made every
     /// `(u8 **pos, u8 *end)` bounds check a violation even though the caller
     /// derives both from one buffer. Nothing inside the function settles it;
     /// the fact lives in the caller. So the default is inverted here: two
-    /// parameters are taken to share an object unless a call site in this
-    /// file passes two provably distinct objects (task 753). Every other base
-    /// pair is unaffected -- a local array against a parameter is still
-    /// decided inside the frame that declares it.
+    /// parameters are taken to share an object unless a call site passes two
+    /// provably distinct objects -- in this file, or anywhere the prescan
+    /// reached (tasks 753 and 936).
+    ///
+    /// A pointer-typed struct member is the same thing one level over
+    /// (task 935): `pOut->z` and `pC->aRow` are two different paths, and what
+    /// they point AT is exactly as unknowable here as a parameter's target.
+    /// An ARRAY-typed member is not -- `u.int_array` really is its own
+    /// object, which is what ARR36-C-EX1 turns on -- so the two are told
+    /// apart by the member's declared type, not by the shape of the path.
+    ///
+    /// An untracked pointer variable is the third instance of the same shape
+    /// (task 962). `extract_array_base` returns the RAW NAME for an
+    /// identifier it has no base for, so `end = next` over a bare
+    /// `const u8 *next;` records `next` as a base and it then compares as
+    /// though it named storage -- the one case the analyzer explicitly knows
+    /// nothing about is the one whose name is taken at face value. A name
+    /// declared a pointer and never declared as an array is exactly "a
+    /// pointer whose target this frame never learned"; a declared array, a
+    /// typedef array, an extern the frame never saw, and the address of a
+    /// non-pointer scalar are all still storage, so ARR36-C-EX1 and every
+    /// fail fixture are untouched.
+    ///
+    /// A pair with storage on either side is decided as before: a local array
+    /// against a parameter is still settled inside the frame that declares
+    /// it.
     fn reportable(&self, left: &str, right: &str) -> bool {
-        let (Some(left), Some(right)) = (self.own_param_index(left), self.own_param_index(right))
-        else {
-            return true;
-        };
-        match &self.function_name {
-            Some(name) => self.call_sites.proves_distinct(name, left, right),
-            None => false,
+        match (self.origin(left), self.origin(right)) {
+            // Two parameters: only a call site in this file settles it.
+            (BaseOrigin::OwnParam(left), BaseOrigin::OwnParam(right)) => {
+                match &self.function_name {
+                    Some(name) => {
+                        proves_distinct(&self.call_sites.per_callee, name, left, right)
+                            || proves_distinct(self.project_call_sites, name, left, right)
+                    }
+                    None => false,
+                }
+            }
+            // Neither side names an object, so nothing here says they are two.
+            (
+                BaseOrigin::OwnParam(_) | BaseOrigin::PointerMember | BaseOrigin::UntrackedPointer,
+                BaseOrigin::OwnParam(_) | BaseOrigin::PointerMember | BaseOrigin::UntrackedPointer,
+            ) => false,
+            _ => true,
         }
+    }
+
+    fn origin(&self, base: &str) -> BaseOrigin {
+        if let Some(index) = self.own_param_index(base) {
+            return BaseOrigin::OwnParam(index);
+        }
+        if self.objects.pointer_members.contains(base) {
+            return BaseOrigin::PointerMember;
+        }
+        // Declared a pointer and never declared as an array: the frame knows
+        // the name can hold a pointer and knows nothing about its target.
+        if self.objects.pointer_vars.contains(base) && !self.objects.array_objects.contains(base) {
+            return BaseOrigin::UntrackedPointer;
+        }
+        BaseOrigin::Storage
     }
 
     /// Position of the parameter a `param:` base names, when it is a
@@ -231,17 +351,18 @@ impl FrameContext<'_> {
     }
 }
 
-/// Every direct call in this file, by callee name, recording which storage
-/// OBJECT each argument denotes.
+/// Every direct call in this file, by callee name, recording the argument
+/// positions at which one call site hands the callee two DIFFERENT named
+/// storage objects.
 ///
 /// This is the caller-side fact the parameter model needs, gathered in the
-/// only frame `check()` actually has. It is deliberately file-local: a callee
-/// whose callers all live in other translation units has no proof here, and
-/// its parameters stay assumed to share an object. Closing that gap needs the
-/// same predicate computed during prescan.
+/// only frame `check()` has to itself. It is file-local by construction; the
+/// prescan runs the same predicate over the whole project and delivers it as
+/// `Arr36C::project_call_sites`, so a callee whose callers all live in other
+/// translation units is covered there and only there (task 936).
 #[derive(Default)]
 struct CallSiteBases {
-    per_callee: HashMap<String, Vec<Vec<Option<String>>>>,
+    per_callee: HashMap<String, HashSet<(usize, usize)>>,
 }
 
 impl CallSiteBases {
@@ -260,42 +381,40 @@ impl CallSiteBases {
             if callee.kind() != "identifier" {
                 continue;
             }
-            let bases = argument_nodes(&args)
-                .iter()
-                .map(|arg| analyzer.argument_object_base(arg, source))
-                .collect();
+            let pairs = argument_objects::distinct_object_pairs(
+                &analyzer.objects,
+                &argument_objects::argument_nodes(&args),
+                source,
+            );
+            if pairs.is_empty() {
+                continue;
+            }
             self.per_callee
                 .entry(ast_utils::get_node_text(&callee, source).to_string())
                 .or_default()
-                .push(bases);
+                .extend(pairs);
         }
-    }
-
-    /// True if some call site passes two named, DIFFERENT storage objects at
-    /// positions `left` and `right`. One such call site is enough: if any
-    /// caller passes two distinct arrays, the comparison inside the callee is
-    /// undefined whenever that caller's path runs.
-    fn proves_distinct(&self, callee: &str, left: usize, right: usize) -> bool {
-        let Some(sites) = self.per_callee.get(callee) else {
-            return false;
-        };
-        sites
-            .iter()
-            .any(|args| match (args.get(left), args.get(right)) {
-                (Some(Some(left)), Some(Some(right))) => left != right,
-                _ => false,
-            })
     }
 }
 
-/// The argument expressions of a call, in order. `argument_list` also holds
-/// the parentheses and commas, which are unnamed, and any comment between
-/// arguments.
-fn argument_nodes<'tree>(args: &Node<'tree>) -> Vec<Node<'tree>> {
-    (0..args.child_count())
-        .filter_map(|i| args.child(i))
-        .filter(|child| child.is_named() && child.kind() != "comment")
-        .collect()
+/// True if some call site recorded in `per_callee` passes two named,
+/// DIFFERENT storage objects at positions `left` and `right`. One such call
+/// site is enough: if any caller passes two distinct arrays, the comparison
+/// inside the callee is undefined whenever that caller's path runs.
+fn proves_distinct(
+    per_callee: &HashMap<String, HashSet<(usize, usize)>>,
+    callee: &str,
+    left: usize,
+    right: usize,
+) -> bool {
+    let pair = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    per_callee
+        .get(callee)
+        .is_some_and(|pairs| pairs.contains(&pair))
 }
 
 /// Name of a function definition, from its (possibly pointer-wrapped)
@@ -339,32 +458,26 @@ fn parameter_indices(func: &Node, source: &str) -> HashMap<String, usize> {
 struct PointerAnalyzer {
     // Maps variable names to their array base (for tracking which array they belong to)
     variable_arrays: HashMap<String, String>,
-    // Every name DECLARED as a pointer or array, whether or not its base is
-    // known. `variable_arrays` answers "which array is this in"; this answers
-    // the prior question of whether the name can be in an array at all.
-    pointer_vars: HashSet<String>,
-    // Names declared with an array declarator -- `char buf[N]` -- and so
-    // naming storage of their own. A pointer variable is NOT in here however
-    // well its base is known, because only a declaration of storage settles
-    // which object an argument hands to a callee (see
-    // `argument_object_base`).
-    array_objects: HashSet<String>,
+    // Which names in scope denote storage, which merely hold a pointer, and
+    // which field paths are pointer-typed. `variable_arrays` answers "which
+    // array is this in"; this answers the prior questions, and is shared with
+    // the prescan so that a call site reads the same way in either frame
+    // (`analyze::argument_objects`).
+    objects: ObjectFrame,
 }
 
 impl PointerAnalyzer {
     fn new() -> Self {
         Self {
             variable_arrays: HashMap::new(),
-            pointer_vars: HashSet::new(),
-            array_objects: HashSet::new(),
+            objects: ObjectFrame::new(),
         }
     }
 
     fn from(base: &PointerAnalyzer) -> Self {
         Self {
             variable_arrays: base.variable_arrays.clone(),
-            pointer_vars: base.pointer_vars.clone(),
-            array_objects: base.array_objects.clone(),
+            objects: base.objects.clone(),
         }
     }
 
@@ -378,10 +491,7 @@ impl PointerAnalyzer {
                     if let Some(child) = node.child(i) {
                         if child.kind() == "declaration" {
                             self.process_declaration(&child, source);
-                        } else if matches!(
-                            child.kind(),
-                            "preproc_ifdef" | "preproc_if" | "preproc_else" | "preproc_elif"
-                        ) {
+                        } else if child.kind().starts_with("preproc_") {
                             self.collect_file_scope(&child, source);
                         }
                     }
@@ -416,74 +526,72 @@ impl PointerAnalyzer {
         }
     }
 
-    fn process_declaration(&mut self, node: &Node, source: &str) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                let declarator = if child.kind() == "init_declarator" {
-                    child.child_by_field_name("declarator")
-                } else if Self::is_pointer_declarator(&child) || child.kind() == "array_declarator"
-                {
-                    // Bare declarations without initializer: `int nums[SIZE];`, `int *p;`
-                    Some(child)
-                } else {
-                    None
-                };
-                if let Some(declarator) = declarator {
-                    if !Self::is_pointer_declarator(&declarator) {
-                        continue;
-                    }
-                    let var_name = ast_utils::get_identifier_from_declarator(&declarator, source);
-                    if var_name.is_empty() {
-                        continue;
-                    }
-                    // Declared pointer or array. Recorded even when the base is
-                    // unknown (a bare `int *p;`), because a later `p = buf;` is
-                    // only trackable if we know p can hold a pointer at all.
-                    self.pointer_vars.insert(var_name.clone());
-                    // Array declarations create their own storage — the variable IS its own base.
-                    if declarator.kind() == "array_declarator" {
-                        self.array_objects.insert(var_name.clone());
-                        self.variable_arrays.insert(var_name.clone(), var_name);
-                        continue;
-                    }
-                    // Pointer with initializer: track which array it aliases
-                    if child.kind() == "init_declarator" {
-                        if let Some(value) = child.child_by_field_name("value") {
-                            let array_base = self.extract_array_base(&value, source);
-                            if !array_base.is_empty() {
-                                self.variable_arrays.insert(var_name, array_base);
-                            }
-                        }
-                    }
-                    // Bare pointer declarations without initializer: not tracked
-                    // (we don't know what they point to)
-                }
-            }
-        }
+    /// Record every field path in `func` whose terminal member is declared as
+    /// a POINTER.
+    ///
+    /// `extract_array_base` keeps a field path whole -- `u.int_array`,
+    /// `pPg->aData` -- so two different paths read as two different arrays.
+    /// That is right for an ARRAY member, which is storage of its own
+    /// (ARR36-C-EX1), and wrong for a pointer member, whose target this frame
+    /// cannot name any better than it can name a pointer parameter's
+    /// (task 935). The member's declared type is what separates the two, so
+    /// it is read rather than guessed at from the path.
+    ///
+    /// A path whose type does not resolve -- no `-d`, and no declaration in
+    /// the file either -- is deliberately left as storage-naming. Absence of
+    /// type information is not evidence that a member is a pointer, and
+    /// treating it as such would switch off the EX1 detection wholesale on
+    /// every single-file run.
+    fn collect_pointer_members(
+        &mut self,
+        func: &Node,
+        source: &str,
+        struct_field_types: &HashMap<String, HashMap<String, String>>,
+    ) {
+        self.objects
+            .record_pointer_members(func, source, struct_field_types);
     }
 
-    /// Check if a declarator represents a pointer type (pointer_declarator or array_declarator).
-    fn is_pointer_declarator(declarator: &Node) -> bool {
-        matches!(declarator.kind(), "pointer_declarator" | "array_declarator")
+    fn process_declaration(&mut self, node: &Node, source: &str) {
+        for declared in argument_objects::declared_pointers(node, source) {
+            // Declared pointer or array. Recorded even when the base is
+            // unknown (a bare `int *p;`), because a later `p = buf;` is
+            // only trackable if we know p can hold a pointer at all.
+            self.objects
+                .note_declared(&declared.name, declared.is_array);
+            // Array declarations create their own storage — the variable IS its own base.
+            if declared.is_array {
+                self.variable_arrays
+                    .insert(declared.name.clone(), declared.name);
+                continue;
+            }
+            // Pointer with initializer: track which array it aliases.
+            // A bare pointer declaration is not tracked -- we don't know what
+            // it points to.
+            let Some(value) = declared
+                .init_declarator
+                .and_then(|init| init.child_by_field_name("value"))
+            else {
+                continue;
+            };
+            let array_base = self.extract_array_base(&value, source);
+            if !array_base.is_empty() {
+                self.variable_arrays.insert(declared.name, array_base);
+            }
+        }
     }
 
     fn process_parameter(&mut self, node: &Node, source: &str) {
         // For function parameters, only track pointer/array parameters as distinct arrays.
         // Non-pointer parameters (int, uint32_t, etc.) are scalars — comparing them
         // is not pointer comparison and should not trigger ARR36-C.
-        if !self.is_pointer_or_array_parameter(node) {
+        let Some(param_name) = self.objects.record_parameter(node, source) else {
             return;
-        }
-        if let Some(declarator) = node.child_by_field_name("declarator") {
-            let param_name = ast_utils::get_identifier_from_declarator(&declarator, source);
-            if !param_name.is_empty() {
-                self.pointer_vars.insert(param_name.clone());
-                // Use the parameter name itself as the "array base" to make it unique
-                // This ensures parameters are only equal to themselves
-                self.variable_arrays
-                    .insert(param_name.clone(), format!("param:{}", param_name));
-            }
-        }
+        };
+        // Use the parameter name itself as the "array base" to make it unique
+        // This ensures parameters are only equal to themselves
+        self.variable_arrays
+            .insert(param_name.clone(), format!("param:{}", param_name));
     }
 
     /// Process simple assignment expressions like `slashPtr = strchr(string1, '/')`.
@@ -527,7 +635,7 @@ impl PointerAnalyzer {
                         // floats -- puts both names in `variable_arrays`, and the
                         // subtraction below them is then reported as pointer
                         // subtraction between different arrays (task 769).
-                        if !self.pointer_vars.contains(&var_name) {
+                        if !self.objects.pointer_vars.contains(&var_name) {
                             continue;
                         }
                         let array_base = self.extract_array_base(&right, source);
@@ -538,33 +646,6 @@ impl PointerAnalyzer {
                 }
             }
         }
-    }
-
-    /// Check if a parameter declaration is a pointer or array type.
-    fn is_pointer_or_array_parameter(&self, param_node: &Node) -> bool {
-        // Check declarator for pointer_declarator or array_declarator
-        if let Some(declarator) = param_node.child_by_field_name("declarator") {
-            if declarator.kind() == "pointer_declarator" || declarator.kind() == "array_declarator"
-            {
-                return true;
-            }
-            // Check children for nested pointer/array declarators
-            for i in 0..declarator.child_count() {
-                if let Some(child) = declarator.child(i) {
-                    if child.kind() == "pointer_declarator" || child.kind() == "array_declarator" {
-                        return true;
-                    }
-                }
-            }
-        }
-        // Check if the type itself contains a pointer
-        if let Some(type_node) = param_node.child_by_field_name("type") {
-            // Abstract pointer declarators (e.g., `void *` without name)
-            if type_node.kind() == "pointer_declarator" {
-                return true;
-            }
-        }
-        false
     }
 
     fn extract_array_base(&self, node: &Node, source: &str) -> String {
@@ -755,85 +836,6 @@ impl PointerAnalyzer {
         }
     }
 
-    /// The storage OBJECT an argument expression hands to a callee, when this
-    /// frame can name one: a declared array, the address of a non-pointer
-    /// variable or struct member, a string or compound literal, or a fresh
-    /// allocation.
-    ///
-    /// `None` for anything whose object this frame cannot name -- above all a
-    /// bare pointer variable and `&ptr`. That is the point rather than a
-    /// limitation: `f(&pos, end)` passes a cursor and its bound, and which
-    /// buffer they walk is no more knowable in the caller than in the callee,
-    /// so counting two pointer variables as two objects would restate one
-    /// frame up exactly the assumption this is here to remove (task 753).
-    fn argument_object_base(&self, node: &Node, source: &str) -> Option<String> {
-        let text = |n: &Node| source[n.start_byte()..n.end_byte()].to_string();
-        match node.kind() {
-            "identifier" => {
-                let name = text(node);
-                self.array_objects.contains(&name).then_some(name)
-            }
-            // Each literal is its own object, as `extract_array_base` has it.
-            "string_literal" | "compound_literal_expression" => {
-                Some(format!("{}@{}", text(node), node.start_byte()))
-            }
-            "cast_expression" => {
-                self.argument_object_base(&node.child_by_field_name("value")?, source)
-            }
-            // `arr + n` is still in `arr`.
-            "binary_expression" => {
-                self.argument_object_base(&node.child_by_field_name("left")?, source)
-            }
-            "call_expression" => self.allocation_object(node, source),
-            "pointer_expression" | "unary_expression" => {
-                let operator = node.child(0)?;
-                if ast_utils::get_node_text(&operator, source) != "&" {
-                    // `*p` names whatever p points to, which is the unknown.
-                    return None;
-                }
-                self.object_of_lvalue(&node.child_by_field_name("argument")?, source)
-            }
-            _ => None,
-        }
-    }
-
-    /// The object an lvalue names, for the `&lvalue` case.
-    ///
-    /// A pointer variable is excluded even though `&ptr` does name storage:
-    /// what the callee then compares is `*param`, whose object is the
-    /// pointer's target, not the pointer.
-    fn object_of_lvalue(&self, node: &Node, source: &str) -> Option<String> {
-        let text = |n: &Node| source[n.start_byte()..n.end_byte()].to_string();
-        match node.kind() {
-            "identifier" => {
-                let name = text(node);
-                let names_storage =
-                    self.array_objects.contains(&name) || !self.pointer_vars.contains(&name);
-                names_storage.then_some(name)
-            }
-            // Two members of one struct are two objects.
-            "field_expression" => Some(text(node)),
-            // `&matrix[i]` is in `matrix`.
-            "subscript_expression" => {
-                self.object_of_lvalue(&node.child_by_field_name("argument")?, source)
-            }
-            _ => None,
-        }
-    }
-
-    /// A fresh allocation is its own object, so two allocation calls are two
-    /// objects. Mirrors the allocation arm of `extract_array_base`.
-    fn allocation_object(&self, node: &Node, source: &str) -> Option<String> {
-        let func_node = node.child_by_field_name("function")?;
-        let func_name = ast_utils::get_node_text(&func_node, source);
-        let canonical = func_name.strip_prefix("os_").unwrap_or(func_name);
-        matches!(
-            canonical,
-            "malloc" | "calloc" | "realloc" | "aligned_alloc" | "alloca"
-        )
-        .then(|| format!("alloc@{}", node.start_byte()))
-    }
-
     fn get_pointer_info(&self, node: &Node, source: &str) -> Option<String> {
         match node.kind() {
             "identifier" => {
@@ -902,6 +904,52 @@ impl PointerAnalyzer {
             _ => None,
         }
     }
+}
+
+/// The struct field types in scope for one file: the prescan's project-wide
+/// map, overlaid with the declarations the file makes itself.
+///
+/// The file's own pass is what keeps the member-type test working on a run
+/// with no `-d`, where `project` is empty -- the canonical
+/// cross-file-OR-same-file wiring. The project map is borrowed rather than
+/// copied when the file declares no structs of its own, which is the common
+/// case for a `.c` file that includes its headers.
+fn merge_file_struct_fields<'a>(
+    project: &'a HashMap<String, HashMap<String, String>>,
+    project_aliases: &HashMap<String, String>,
+    node: &Node,
+    source: &str,
+) -> Cow<'a, HashMap<String, HashMap<String, String>>> {
+    let mut local = HashMap::new();
+    prescan::collect_struct_definitions(node, source, &mut local);
+    let mut local_aliases = HashMap::new();
+    prescan::collect_struct_typedef_aliases(node, source, &mut local_aliases);
+
+    let mut merged = if local.is_empty() {
+        Cow::Borrowed(project)
+    } else if project.is_empty() {
+        Cow::Owned(local)
+    } else {
+        let mut merged = Cow::Borrowed(project);
+        merged.to_mut().extend(local);
+        merged
+    };
+
+    // `typedef struct sqlite3_value Mem;` files the fields under the TAG, so a
+    // member reached as `pOut->z` on a `Mem *` resolves only once the alias
+    // names the same field set. Done here, on the rule's own view of the map,
+    // rather than in the prescan's `struct_field_types`: that map is read by
+    // four other rules, and this must not move their finding sets.
+    let additions: Vec<(String, HashMap<String, String>)> = project_aliases
+        .iter()
+        .chain(local_aliases.iter())
+        .filter(|(alias, _)| !merged.contains_key(alias.as_str()))
+        .filter_map(|(alias, tag)| Some((alias.clone(), merged.get(tag)?.clone())))
+        .collect();
+    if !additions.is_empty() {
+        merged.to_mut().extend(additions);
+    }
+    merged
 }
 
 fn get_operator(node: &Node, source: &str) -> Option<String> {

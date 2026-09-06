@@ -3,7 +3,6 @@
  * Status: PASS - For loop variable bounded by condition < 32
  */
 
-// sqc-test: prescan
 
 unsigned int f(unsigned int val) {
     unsigned int result = 0;

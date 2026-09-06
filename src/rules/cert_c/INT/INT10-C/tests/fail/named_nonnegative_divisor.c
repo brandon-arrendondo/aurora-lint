@@ -15,7 +15,6 @@
  * the divisor here has to be NAMED to exercise the bug -- which is also how
  * real code spells it.
  */
-// sqc-test: prescan
 
 #define GRANULE 8
 

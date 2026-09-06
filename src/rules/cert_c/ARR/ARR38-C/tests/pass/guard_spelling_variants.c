@@ -79,7 +79,7 @@ void asserted_bound(const unsigned char *src, size_t n) {
     memcpy(buf, src, n);
 }
 
-/* The same assert, written under the `#ifndef NDEBUG` sqc never preprocesses. */
+/* The same assert, written under the `#ifndef NDEBUG` aurora-lint never preprocesses. */
 void preproc_wrapped_assert(const unsigned char *src, size_t n) {
     unsigned char buf[64];
 #ifndef NDEBUG

@@ -6,7 +6,7 @@ Full Command Reference
 
 ::
 
-    sqc [OPTIONS] [PATH]
+    aurora-lint [OPTIONS] [PATH]
 
     Arguments:
       [PATH]  Path to the file, directory, or git repository to analyze [default: .]
@@ -32,7 +32,7 @@ Full Command Reference
                                        (repeatable, e.g. --exclude '**/onelua.c'
                                        --exclude 'testes/**')
           --diff                       Only analyze modified/new C files (requires git repo)
-          --suppress-file <FILE>       Path to .sqc-suppress.toml file
+          --suppress-file <FILE>       Path to suppress.toml file
                                        (auto-detected in project root if not specified;
                                        supports [[suppression]] hash entries and
                                        [[wildcard]] glob/prefix entries)
@@ -76,13 +76,13 @@ and DCL07-C (type mismatches) that would otherwise flag externally-defined symbo
 ::
 
     # Pre-scan the project directory for cross-file context
-    sqc /path/to/project -d /path/to/project
+    aurora-lint /path/to/project -d /path/to/project
 
     # Include additional directories (e.g., shared headers, sibling modules)
-    sqc /path/to/project -d /path/to/project -d /path/to/shared/headers
+    aurora-lint /path/to/project -d /path/to/project -d /path/to/shared/headers
 
     # Multiple -d flags stack — all are pre-scanned before analysis begins
-    sqc src/ -d src/ -d vendor/ -d third_party/
+    aurora-lint src/ -d src/ -d vendor/ -d third_party/
 
 The pre-scan collects:
 
@@ -103,16 +103,16 @@ The pre-scan collects:
 Using a Compile Database
 ------------------------
 
-sqc needs no build system: point it at any tree and it works. ``--compile-commands``
+aurora-lint needs no build system: point it at any tree and it works. ``--compile-commands``
 is a purely optional upgrade for projects that *already* produce a
 ``compile_commands.json`` (CMake's ``CMAKE_EXPORT_COMPILE_COMMANDS``, ``bear``,
 ``compiledb``). Without the flag, nothing changes.
 
 ::
 
-    sqc src/ -d src/ --compile-commands build/compile_commands.json
+    aurora-lint src/ -d src/ --compile-commands build/compile_commands.json
 
-sqc does **not** run a preprocessor. It reads two things out of the database and
+aurora-lint does **not** run a preprocessor. It reads two things out of the database and
 feeds them to the pre-scan that already exists:
 
 - **Include search paths** (``-I``, ``-isystem``, ``-iquote``, ``-idirafter``,
@@ -137,8 +137,8 @@ compiler's built-in search directories — the compiler already knows them.
 (``cc -E -Wp,-v -``) and appending what it reports, lowest priority, after
 everything you or the database named::
 
-    sqc src/ -d src/ --system-includes
-    sqc src/ -d src/ --compile-commands build/compile_commands.json --system-includes
+    aurora-lint src/ -d src/ --system-includes
+    aurora-lint src/ -d src/ --compile-commands build/compile_commands.json --system-includes
 
 With a compile database, each distinct compiler the database names is asked (so
 a cross-compiled project gets *its* toolchain's directories); without one, the
@@ -171,7 +171,7 @@ Two properties worth knowing:
   name the scanned tree never defined; a real ``#define`` always wins.
 - **Paths are absolute and host-specific.** A database generated on another
   machine or inside a container names directories that may not exist locally.
-  sqc warns when compile-database include paths are missing rather than
+  aurora-lint warns when compile-database include paths are missing rather than
   silently resolving nothing.
 
 The compiler's own built-in system header directories are *not* in a compile
@@ -190,13 +190,13 @@ Repeatable; each occurrence adds one more glob:
 ::
 
     # Drop a single generated/amalgamated file
-    sqc /path/to/project --exclude '**/onelua.c'
+    aurora-lint /path/to/project --exclude '**/onelua.c'
 
     # Drop a whole subtree
-    sqc /path/to/project --exclude 'tests/**' --exclude 'vendor/**'
+    aurora-lint /path/to/project --exclude 'tests/**' --exclude 'vendor/**'
 
     # Combine multiple globs to scope down to just the shipped product
-    sqc /path/to/repo \
+    aurora-lint /path/to/repo \
         --exclude 'tests/**' --exclude 'docs/**' --exclude 'scripts/**'
 
 Globs are matched against each file's path relative to the scan root (same
@@ -222,7 +222,7 @@ directory.
 Export Formats
 --------------
 
-SqC determines the export format from the file extension:
+aurora-lint determines the export format from the file extension:
 
 =========== ===============================================================
 Extension   Format
@@ -235,10 +235,10 @@ Extension   Format
 
 ::
 
-    sqc /path/to/repo --export results.csv
-    sqc /path/to/repo --export results.xlsx
-    sqc /path/to/repo --export results.json
-    sqc /path/to/repo --export results.sarif
+    aurora-lint /path/to/repo --export results.csv
+    aurora-lint /path/to/repo --export results.xlsx
+    aurora-lint /path/to/repo --export results.json
+    aurora-lint /path/to/repo --export results.sarif
 
 JSON export produces an array of violation objects, each containing:
 
@@ -263,13 +263,13 @@ Control which violations are reported and which trigger failure:
 ::
 
     # Only report Medium and above (suppress Low-severity noise)
-    sqc /path/to/repo --min-severity Medium
+    aurora-lint /path/to/repo --min-severity Medium
 
     # Fail only on High or Critical (gate CI but still report Medium)
-    sqc /path/to/repo --min-severity Medium --fail-on-severity High
+    aurora-lint /path/to/repo --min-severity Medium --fail-on-severity High
 
     # Strict mode: fail on any violation
-    sqc /path/to/repo --fail-on-violation
+    aurora-lint /path/to/repo --fail-on-violation
 
 
 Rule Filtering
@@ -280,10 +280,10 @@ Restrict analysis to specific rules:
 ::
 
     # Only check memory and array rules
-    sqc /path/to/repo --rules MEM30-C,MEM31-C,ARR30-C,ARR32-C
+    aurora-lint /path/to/repo --rules MEM30-C,MEM31-C,ARR30-C,ARR32-C
 
     # Combine with severity and export
-    sqc /path/to/repo --rules STR31-C,STR32-C --min-severity High --export str-results.sarif
+    aurora-lint /path/to/repo --rules STR31-C,STR32-C --min-severity High --export str-results.sarif
 
 
 Diff Mode
@@ -295,7 +295,7 @@ changes vs HEAD):
 ::
 
     # Only analyze changed C files
-    sqc /path/to/repo --diff
+    aurora-lint /path/to/repo --diff
 
 This is particularly useful in CI pipelines to provide fast feedback on pull
 requests without scanning the entire codebase.
@@ -316,10 +316,10 @@ save the generated manifest, then pass that manifest to a normal scan via
 ::
 
     # Generate a relevance-gated manifest for a POSIX-only codebase
-    sqc /path/to/repo --detect-relevance --write-manifest gated-rules.toml
+    aurora-lint /path/to/repo --detect-relevance --write-manifest gated-rules.toml
 
     # Use it for the actual scan
-    sqc /path/to/repo -m gated-rules.toml
+    aurora-lint /path/to/repo -m gated-rules.toml
 
 Detection is conservative by design: a rule class is disabled only when no
 evidence of it was found anywhere in the scanned corpus (including

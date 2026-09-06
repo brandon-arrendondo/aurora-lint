@@ -34,17 +34,17 @@ SQLite Schema
    * - ``cwe_scans``
      - One row per CWE per run (file count, violations, duration)
    * - ``violations``
-     - Every individual sqc finding with TP/FP classification
+     - Every individual aurora-lint finding with TP/FP classification
    * - ``cwe_metrics``
      - Pre-computed aggregates per CWE (TP/FP rates)
    * - ``rule_cwe_breakdown``
      - Per-rule per-CWE counts
    * - ``realworld_runs``
-     - Real-world benchmark runs (sqc version, machine)
+     - Real-world benchmark runs (aurora-lint version, machine)
    * - ``realworld_results``
      - Per-project per-tool violation counts (+ codebase_commit)
    * - ``realworld_violations``
-     - Every individual real-world sqc finding (file, line, rule)
+     - Every individual real-world aurora-lint finding (file, line, rule)
    * - ``ground_truth``
      - Adjudicated TP/FP oracle keyed on (project, commit, file, line, rule)
 
@@ -62,7 +62,7 @@ Benchmark Workflow Protocol
        starting. The run_id is ``sqc-{version}-{sha}``.
 
     2. **NEVER modify code while a benchmark is running**: The benchmark uses
-       ``target/release/sqc``. Rebuilding while running corrupts results.
+       ``target/release/aurora-lint``. Rebuilding while running corrupts results.
 
     3. **Wait for completion**: Fast-mode ~8-10 min (4-core), ~3-5 min (24-core).
        Full-suite ~40-50 min. Check status no more than once every 5 minutes.
@@ -95,9 +95,9 @@ Juliet Benchmark
 Run identifiers accepted by ``status``/``compare``:
 
 - ``"latest"`` -- most recent run (default)
-- Full run name: ``"sqc-0.3.20-abc1234"``
+- Full run name: ``"aurora-lint-0.3.20-abc1234"``
 - Commit SHA: ``"abc1234"``
-- Historical runs: ``"sqc-0.3.17-historical"``
+- Historical runs: ``"aurora-lint-0.3.17-historical"``
 
 **Notes**:
 
@@ -114,13 +114,13 @@ Run identifiers accepted by ``status``/``compare``:
 Compile-Database Runs
 ~~~~~~~~~~~~~~~~~~~~~
 
-``--compile-commands`` makes a run pass sqc's ``--compile-commands`` flag,
+``--compile-commands`` makes a run pass aurora-lint's ``--compile-commands`` flag,
 adding the build's include search paths and
 ``-D`` macro state to the cross-file context. It is **off by default** -- a
 plain run is unchanged.
 
 The run_id is suffixed ``-cdb`` (and, for real-world runs, so is the results
-directory), so a with/without pair on the *same* sqc build stays two distinct,
+directory), so a with/without pair on the *same* aurora-lint build stays two distinct,
 comparable runs. Without that suffix the second run would collide: Juliet's
 resume logic skips a run_id already marked ``completed``, and the real-world
 runner reuses the id for its results directory.
@@ -166,20 +166,20 @@ own terminal, against their own SQLite DB. See ``bench/realworld_runner.py``.
 
 .. code-block:: bash
 
-    python -m bench realworld-run [--tool sqc,cppcheck,clang-tidy] [--codebase C,C] [--compile-commands]
+    python -m bench realworld-run [--tool aurora-lint,cppcheck,clang-tidy] [--codebase C,C] [--compile-commands]
     python -m bench realworld [RUN] [--compare BASE]   # FP dashboard
     python -m bench realworld-runs                     # list runs
     python -m bench realworld-score [RUN]               # measured precision/recall
 
-``realworld-run`` defaults to ``sqc`` against every codebase; narrow either
+``realworld-run`` defaults to ``aurora-lint`` against every codebase; narrow either
 flag as needed. It blocks until every requested combo finishes, then ingests
-the sqc results and scores them against the oracle -- no separate ingest
+the aurora-lint results and scores them against the oracle -- no separate ingest
 step, no polling.
 
-Supported tools: ``sqc``, ``cppcheck``, ``clang-tidy``
+Supported tools: ``aurora-lint``, ``cppcheck``, ``clang-tidy``
 
 Supported codebases: ``libcrc``, ``sqlite``, ``mosquitto``, ``curl``, ``hostap``,
-``lua``, ``raylib``, ``pureftpd``, ``sel4`` (sqc-only for the latter two —
+``lua``, ``raylib``, ``pureftpd``, ``sel4`` (aurora-lint-only for the latter two —
 no cppcheck/clang-tidy baseline yet)
 
 .. note::
@@ -194,8 +194,8 @@ no cppcheck/clang-tidy baseline yet)
 Per-Codebase Rule Configs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Each codebase may carry its own sqc rules manifest in ``conf/realworld/`` (the
-real-world analog of a project shipping its own ``sqc-rules.toml``). The
+Each codebase may carry its own aurora-lint rules manifest in ``conf/realworld/`` (the
+real-world analog of a project shipping its own ``aurora-lint-rules.toml``). The
 runner reuses it for **every** run of that codebase via the
 ``CODEBASES[<name>]["sqc"]["manifest"]`` registry entry, so rules that do not
 apply are ignored consistently. A codebase with no entry falls back to the
@@ -242,14 +242,14 @@ denominator no longer matches what's being scanned).
 
     **That mismatch is not hypothetical, and it is measured.** Scope is
     declared in *three* places per codebase and nothing keeps them in sync:
-    the ``--exclude`` globs here (what sqc reads), ``scope_include`` /
+    the ``--exclude`` globs here (what aurora-lint reads), ``scope_include`` /
     ``scope_exclude`` in ``data/benchmark_repos.json`` (what the oracle may
     adjudicate), and the ``## Scope`` section of
     ``data/precision_audit/<codebase>/README.md`` (the rationale the other
     two claim to derive from).
 
     Audited across all nine codebases, six agree and three do not — always
-    in the same direction, with the scan wider than the scope, so sqc emits
+    in the same direction, with the scan wider than the scope, so aurora-lint emits
     findings that can never be labelled: **sqlite 992, mosquitto 168, curl
     144**. That is 1,304 findings, roughly a fifth of that run's whole
     unlabelled pool, unadjudicable by construction. They depress label
@@ -273,14 +273,14 @@ denominator no longer matches what's being scanned).
 
     ``benchmark_repos.json``'s globs are **path-aware**: ``*`` stops at
     ``/`` and ``**`` crosses it, so ``src/**`` and ``src/*.c`` are different
-    things. The ``--exclude`` globs here are sqc's own and follow sqc's
+    things. The ``--exclude`` globs here are aurora-lint's own and follow aurora-lint's
     rules; do not assume the two spellings are interchangeable when copying
     a pattern between the files.
 
 Auto-Scoring
 ~~~~~~~~~~~~~
 
-When ``realworld-run`` finishes, it ingests the sqc results and **auto-scores**
+When ``realworld-run`` finishes, it ingests the aurora-lint results and **auto-scores**
 them against the oracle: it writes a ``<run-dir>.score.json`` sidecar and
 prints a one-line measured precision/recall. Scoring only joins findings to
 *existing* labels — it never adjudicates new findings. Re-run any time with
@@ -299,7 +299,7 @@ Typical real-world workflow:
 
 .. code-block:: bash
 
-    python -m bench realworld-run --tool sqc          # blocks until every codebase is done
+    python -m bench realworld-run --tool aurora-lint          # blocks until every codebase is done
     python -m bench realworld latest                   # view results
     python -m bench realworld latest --compare 0.2.6   # compare against a prior run
 
@@ -312,7 +312,7 @@ Volume deltas and CWE-aware Juliet rates do not predict real-world precision
 the real-world codebases --- the real-world analog of Juliet's
 OMITGOOD/OMITBAD. Because each benchmark checkout is pinned to a fixed git
 SHA, a label keyed on ``(project, codebase_commit, file_path, line, rule_id)``
-stays valid across sqc versions: only the tool changes, never the code. Labels
+stays valid across aurora-lint versions: only the tool changes, never the code. Labels
 are appended over time, never tied to a single run.
 
 CLI::
@@ -408,7 +408,7 @@ Juliet
 
 .. code-block:: bash
 
-    python -m bench compare sqc-0.3.17-historical latest
+    python -m bench compare aurora-lint-0.3.17-historical latest
 
 Positive FP delta = regression. Negative = improvement.
 
@@ -424,7 +424,7 @@ Competitor Benchmarks (Infer / Frama-C)
 
 The ``bench/competitors.py`` module runs Facebook Infer and Frama-C EVA on
 Juliet test cases and classifies findings as TP/FP using the same ground truth
-as the sqc benchmark (``OMITBAD``/``OMITGOOD`` guards and procedure names).
+as the aurora-lint benchmark (``OMITBAD``/``OMITGOOD`` guards and procedure names).
 
 Results are written to ``data/competitor_results/<tool>_<timestamp>.json``.
 
@@ -529,7 +529,7 @@ Resolved Issues
   ``jimsh0.c``'s STR31-C count dropped from 180,297 to 10. (Migrated here
   2026-09-03 from ``REALWORLD_RESULTS.md``, retired that day.)
 
-- **Output Buffer Saturation**: SqC emits one status line per rule per file
+- **Output Buffer Saturation**: aurora-lint emits one status line per rule per file
   (~100 rules × N files). Always suppress or redirect output during scans::
 
-      ./target/release/sqc directory/ --export results.csv 2>/dev/null
+      ./target/release/aurora-lint directory/ --export results.csv 2>/dev/null

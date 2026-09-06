@@ -8,7 +8,7 @@
  * state at `if (p)`. This is a genuine violation and must still be
  * detected at the real read site.
  *
- * Before the fix, sqc's flat (non-block-scoped) dataflow could leak this
+ * Before the fix, aurora-lint's flat (non-block-scoped) dataflow could leak this
  * variable's join state across the loop's back edge into the loop header,
  * which is a predecessor of the loop body -- so the bare declaration line
  * itself (`Foo *p;`), which is never a read, got flagged as "may be used

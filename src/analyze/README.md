@@ -15,7 +15,7 @@ The main analysis module that coordinates:
 ### `suppression.rs` - Violation Suppression System
 Implements SHA-256 based suppression management:
 - Generation of unique hashes for violations
-- Loading suppression files (`suppress.toml`, falling back to the legacy `.sqc-suppress.toml` name)
+- Loading suppression files (`suppress.toml`, falling back to the legacy `.aurora-lint-suppress.toml` name)
 - Filtering of suppressed violations from results
 - Audit trail for suppression reasons
 
@@ -55,7 +55,7 @@ Main entry point that:
 
 ### `handle_generate_suppression()`
 Prints ready-to-paste suppression snippets for a `file:line:rule` spec:
-- The unified inline comment (`tools:suppress sqc:RULE HASH:... JUSTIFICATION:"..."`)
+- The unified inline comment (`tools:suppress aurora-lint:RULE HASH:... JUSTIFICATION:"..."`)
 - The legacy inline comment (`SQC-SUPPRESS: RULE HASH:... JUSTIFICATION: "..."`)
 - A `suppress.toml` `[[suppress]]` entry, for read-only codebases
 
@@ -69,14 +69,14 @@ Filters violations by:
 
 `suppress.toml` — the shared, all-tools file from
 `lang_parsing_substrate/docs/unified-config-spec.md`. `tool` scopes each
-entry to `"sqc"` or the wildcard `"*"`; `rule_glob`/`function_prefix` are
-sqc-specific extensions beyond the base spec.
+entry to `"aurora-lint"` or the wildcard `"*"`; `rule_glob`/`function_prefix` are
+aurora-lint-specific extensions beyond the base spec.
 
 ```toml
 # Hash-matched: exact code match, tamper-detected.
 [[suppress]]
 name          = "example-arr30"
-tool          = "sqc"
+tool          = "aurora-lint"
 file          = "src/example.c"
 rule          = "ARR30-C"
 hash          = "a1b2c3d4e5f6..."
@@ -85,7 +85,7 @@ justification = "Bounds check performed in calling function"
 # Wildcard: no hash — matches by file_glob/rule/rule_glob/function_prefix (ANDed).
 [[suppress]]
 name          = "vendor-dcl"
-tool          = "sqc"
+tool          = "aurora-lint"
 file_glob     = "src/vendor/**"
 rule_glob     = "DCL*"
 justification = "Vendor code"

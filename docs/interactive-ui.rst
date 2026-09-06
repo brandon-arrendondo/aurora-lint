@@ -2,7 +2,7 @@ Interactive Console UI
 ======================
 
 The interactive terminal UI is an optional build-time feature (disabled by
-default, since the primary use of sqc is CLI + CI/CD). Build with the ``tui``
+default, since the primary use of aurora-lint is CLI + CI/CD). Build with the ``tui``
 feature to enable it:
 
 ::
@@ -13,8 +13,8 @@ Then launch it with ``--interactive`` (or ``-i``):
 
 ::
 
-    sqc /path/to/project --interactive
-    sqc /path/to/project -d /path/to/project -i    # with cross-file context
+    aurora-lint /path/to/project --interactive
+    aurora-lint /path/to/project -d /path/to/project -i    # with cross-file context
 
 Running ``--interactive`` against a binary built without the ``tui`` feature
 exits with an error telling you to rebuild with ``--features tui``.
@@ -31,7 +31,7 @@ Violations Tab
 --------------
 
 .. figure:: screenshots/violations-tab.png
-   :alt: SqC Violations Tab showing grouped violations by file
+   :alt: aurora-lint Violations Tab showing grouped violations by file
    :width: 100%
 
    *Violations tab with violations grouped by file. The right panel shows a
@@ -44,7 +44,7 @@ Configuration Tab
 -----------------
 
 .. figure:: screenshots/configuration-tab.png
-   :alt: SqC Configuration Tab showing rule categories
+   :alt: aurora-lint Configuration Tab showing rule categories
    :width: 100%
 
    *Configuration tab showing CERT C rule categories. Toggle individual rules
@@ -99,7 +99,7 @@ Violations Tab -- Actions
 Key                             Action
 ==============================  =============================================
 ``s``                           Scan repository for violations
-``i``                           Suppress checked violations (``.sqc-suppress.toml``)
+``i``                           Suppress checked violations (``.aurora-lint-suppress.toml``)
 ``e``                           Export checked violations to file (CSV)
 ``h``                           Toggle suppressed violations and clean files
 ``p``                           Toggle file preview panel

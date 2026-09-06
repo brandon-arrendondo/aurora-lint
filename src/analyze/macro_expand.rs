@@ -1,7 +1,7 @@
 //! Textual expansion of function-like C macros — Phase 2 of the macro-expansion
 //! plan (`docs/design/macro-expansion.md`).
 //!
-//! sqc has no preprocessor, so function-like macro *invocations* are opaque to
+//! aurora-lint has no preprocessor, so function-like macro *invocations* are opaque to
 //! dataflow. This module collects function-like macro *definitions* from the
 //! parsed source (the prescan pre-pass crosses headers, so vendored/project
 //! macros are visible) and expands an invocation on demand via token-aware

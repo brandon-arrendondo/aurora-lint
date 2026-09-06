@@ -9,7 +9,7 @@
 #     first time cargo/rustc runs inside the repo.
 #   - Native build deps for `cargo build` itself -- git2's vendored
 #     libgit2-sys build needs a C toolchain, cmake, and pkg-config even
-#     though sqc is otherwise pure Rust.
+#     though aurora-lint is otherwise pure Rust.
 #   - Docs toolchain -- docs/conf.py builds with Sphinx + sphinx_rtd_theme
 #     (HTML) and LaTeX/texlive (PDF); neither is installed by any existing
 #     playbook or documented anywhere in docs/.
@@ -51,7 +51,7 @@
 #     real-world codebase checkouts (see setup-benchmark-repos.yml),
 #     third-party library -I headers for those checkouts (also
 #     benchmark-setup.rst), and editor/terminal conveniences (vim, htop,
-#     tmux) -- none of those are dependencies of building or testing sqc.
+#     tmux) -- none of those are dependencies of building or testing aurora-lint.
 #
 # Usage:
 #   ansible-playbook playbooks/setup-dev-environment.yml -i "localhost," -c local \
@@ -75,7 +75,7 @@
     # Override with -e dev_venv=... (e.g. an existing venv shared across
     # repos, like ~/data-enterprise/venv) to install into it instead of
     # creating a new dedicated one.
-    dev_venv: "{{ ansible_env.HOME }}/.venvs/sqc-dev"
+    dev_venv: "{{ ansible_env.HOME }}/.venvs/aurora-lint-dev"
     install_disk_guard: true
 
   tasks:
@@ -124,12 +124,12 @@
       register: cargo_version_out
       changed_when: false
 
-    - name: Confirm sqc itself builds
+    - name: Confirm aurora-lint itself builds
       command: "{{ ansible_env.HOME }}/.cargo/bin/cargo build --release"
       args:
         chdir: "{{ project_dir }}"
       register: cargo_build_out
-      changed_when: "'Compiling sqc' in cargo_build_out.stderr or 'Finished' in cargo_build_out.stderr"
+      changed_when: "'Compiling aurora-lint' in cargo_build_out.stderr or 'Finished' in cargo_build_out.stderr"
 
     # ── Docs toolchain (Sphinx HTML + LaTeX/PDF) + invoke ────────────────
 
@@ -161,7 +161,7 @@
     - name: Verify the docs build (HTML)
       command: >-
         {{ dev_venv }}/bin/sphinx-build -b html
-        {{ project_dir }}/docs /tmp/sqc-docs-check
+        {{ project_dir }}/docs /tmp/aurora-lint-docs-check
       register: sphinx_check
       changed_when: false
 

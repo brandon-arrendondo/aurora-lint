@@ -1,3 +1,6 @@
+/// Which storage object a call argument names, in the caller's frame
+/// (task 936).
+pub mod argument_objects;
 /// Shared AST-based fixed-array-declaration size resolution (task 504).
 pub mod array_size;
 pub mod buffer_size;
@@ -30,7 +33,7 @@ pub mod preproc_dangling_else;
 /// that builds the [`context::ProjectContext`] later rule passes consume.
 pub mod prescan;
 pub mod relevance;
-/// Inline `SQC-SUPPRESS` comment parsing and suppression-file matching.
+/// Inline `AURORA-SUPPRESS` comment parsing and suppression-file matching.
 pub mod suppression;
 /// Recovering the compiler's *implicit* system header directories
 /// (`cc -E -Wp,-v -`), which a `compile_commands.json` can never contain.
@@ -52,7 +55,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// A violation that was suppressed by an inline SQC-SUPPRESS comment.
+/// A violation that was suppressed by an inline AURORA-SUPPRESS comment.
 pub struct SuppressedViolation {
     /// The violation that would have fired without the suppression.
     pub violation: RuleViolation,
@@ -134,8 +137,16 @@ pub fn analyze_project(
 
     if effective_jobs > 1 && total_files > 1 {
         // Parallel analysis with rayon — per-file parser and rule registry
+        // Worker threads get an explicit stack, not the 2 MiB a spawned
+        // thread defaults to on Linux. Several analyses recurse with AST
+        // nesting depth, and real C reaches thousands of levels, so a
+        // parallel scan aborted the whole process on input a `-j 1` run --
+        // which does this work on the 8 MiB main thread -- completed
+        // (task 952, this repo).
+        const WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(effective_jobs)
+            .stack_size(WORKER_STACK_BYTES)
             .build()?;
         let has_cross_file_data = context.has_cross_file_data();
         let file_counter = AtomicUsize::new(0);
@@ -450,8 +461,9 @@ fn relative_to_root(path: &str, root: &str) -> String {
 /// Build a suppression manager, loading the TOML suppression file if provided
 /// or auto-detected at `<root>/suppress.toml` — the shared, all-tools file
 /// from `lang_parsing_substrate/docs/unified-config-spec.md` — falling back
-/// to the legacy `<root>/.sqc-suppress.toml` name if `suppress.toml` isn't
-/// present (both are parsed with the same `[[suppress]]` schema).
+/// to the legacy `<root>/.aurora-lint-suppress.toml` and `<root>/.sqc-suppress.toml`
+/// names if `suppress.toml` isn't present (all are parsed with the same
+/// `[[suppress]]` schema).
 fn build_suppression_manager(
     suppress_file: Option<&str>,
     project_source: &ProjectSource,
@@ -460,10 +472,14 @@ fn build_suppression_manager(
 
     let toml_path = suppress_file.map(String::from).or_else(|| {
         let root = std::path::Path::new(project_source.get_root_path());
-        [root.join("suppress.toml"), root.join(".sqc-suppress.toml")]
-            .into_iter()
-            .find(|p| p.exists())
-            .and_then(|p| p.to_str().map(String::from))
+        [
+            root.join("suppress.toml"),
+            root.join(".aurora-lint-suppress.toml"),
+            root.join(".sqc-suppress.toml"),
+        ]
+        .into_iter()
+        .find(|p| p.exists())
+        .and_then(|p| p.to_str().map(String::from))
     });
     if let Some(ref path) = toml_path {
         match suppression_manager.load_from_toml(path) {
@@ -527,19 +543,10 @@ fn analyze_one_file(
 
         let root_node = tree.root_node();
 
-        // Build CFGs for all function definitions in this file
-        let mut function_cfgs: HashMap<usize, cfg::FunctionCfg> = HashMap::new();
-        collect_function_cfgs(&root_node, &source, &mut function_cfgs);
-
-        // Compute VRA if any enabled rule needs it
-        let vra_results = compute_vra_if_needed(
-            needs_vra,
-            &function_cfgs,
-            &root_node,
-            &source,
-            &context.function_summaries,
-            &context.macro_constants,
-        );
+        // CFGs for every function definition in this file, plus VRA if any
+        // enabled rule needs it. The generated fixture tests build their state
+        // through this same call (task 951, this repo).
+        let analysis = build_file_analysis(&root_node, &source, context, needs_vra);
 
         // Extract suppressions from the current file
         suppression_manager.extract_from_source(file_path, &source);
@@ -561,12 +568,9 @@ fn analyze_one_file(
                 if !rule.applies_to_file(file_path) {
                     continue;
                 }
-                // Provide CFGs for flow-sensitive rules (e.g. EXP34-C)
-                rule.set_function_cfgs(&function_cfgs);
-                // Provide VRA results for integer-range-sensitive rules
-                if !vra_results.is_empty() {
-                    rule.set_vra_results(&vra_results);
-                }
+                // Provide CFGs for flow-sensitive rules (e.g. EXP34-C) and
+                // VRA results for integer-range-sensitive ones.
+                analysis.apply_to(rule);
                 let mut rule_violations = rule.check(&root_node, &source);
 
                 // Set file path and severity on all violations
@@ -639,15 +643,19 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Get the code line, stripping any existing SQC-SUPPRESS comment
+    // Get the code line, stripping any existing suppress comment (either
+    // spelling) so the hash covers only the code portion.
     let raw_line = lines[line - 1];
-    let code = if let Some(pos) = raw_line.find("// SQC-SUPPRESS") {
-        &raw_line[..pos]
-    } else if let Some(pos) = raw_line.find("/* SQC-SUPPRESS") {
-        &raw_line[..pos]
-    } else {
-        raw_line
-    };
+    let code = [
+        "// AURORA-SUPPRESS",
+        "/* AURORA-SUPPRESS",
+        "// SQC-SUPPRESS",
+        "/* SQC-SUPPRESS",
+    ]
+    .iter()
+    .filter_map(|opener| raw_line.find(opener))
+    .min()
+    .map_or(raw_line, |pos| &raw_line[..pos]);
 
     let hash = SuppressionManager::calculate_suppression_hash(rule_id, code);
 
@@ -666,26 +674,75 @@ pub fn handle_generate_suppression(spec: &str) -> Result<()> {
 
     println!("Add on the line before (standalone comment):");
     println!(
-        "// tools:suppress sqc:{} HASH:{} JUSTIFICATION:\"TODO: Add justification\"",
+        "// tools:suppress aurora-lint:{} HASH:{} JUSTIFICATION:\"TODO: Add justification\"",
         rule_id, hash
     );
     println!();
-    println!("Legacy form (also accepted; standalone or inline):");
+    println!("Native form (also accepted; standalone or inline):");
     println!(
-        "// SQC-SUPPRESS: {} HASH:{} JUSTIFICATION: \"TODO: Add justification\"",
+        "// AURORA-SUPPRESS: {} HASH:{} JUSTIFICATION: \"TODO: Add justification\"",
         rule_id, hash
     );
     println!();
     println!("Or add to suppress.toml (for read-only codebases):");
     println!("[[suppress]]");
     println!("name = \"TODO-unique-name\"");
-    println!("tool = \"sqc\"");
+    println!("tool = \"aurora-lint\"");
     println!("file = \"{}\"", filename);
     println!("rule = \"{}\"", rule_id);
     println!("hash = \"{}\"", hash);
     println!("justification = \"TODO: Add justification\"");
 
     Ok(())
+}
+
+/// The per-file analysis state a scan hands to every rule: control-flow graphs
+/// for each function definition, plus value ranges when some enabled rule asks
+/// for them.
+///
+/// Both `analyze_one_file` and the fixture tests `build.rs` generates go
+/// through [`build_file_analysis`] and [`FileAnalysis::apply_to`], so a rule
+/// can never be exercised in tests under a context the shipped scan does not
+/// build (task 951, this repo).
+pub(crate) struct FileAnalysis {
+    pub(crate) function_cfgs: HashMap<usize, cfg::FunctionCfg>,
+    pub(crate) vra_results: HashMap<usize, value_range::RangeAnalysisResult>,
+}
+
+impl FileAnalysis {
+    /// Hand this file's state to `rule` the way a scan does -- VRA only when
+    /// there is any, matching the shipped gate.
+    pub(crate) fn apply_to<R: crate::rules::CertRule + ?Sized>(&self, rule: &R) {
+        rule.set_function_cfgs(&self.function_cfgs);
+        if !self.vra_results.is_empty() {
+            rule.set_vra_results(&self.vra_results);
+        }
+    }
+}
+
+/// Build the per-file analysis state for one already-parsed file.
+pub(crate) fn build_file_analysis(
+    root_node: &tree_sitter::Node,
+    source: &str,
+    context: &context::ProjectContext,
+    needs_vra: bool,
+) -> FileAnalysis {
+    let mut function_cfgs: HashMap<usize, cfg::FunctionCfg> = HashMap::new();
+    collect_function_cfgs(root_node, source, &mut function_cfgs);
+
+    let vra_results = compute_vra_if_needed(
+        needs_vra,
+        &function_cfgs,
+        root_node,
+        source,
+        &context.function_summaries,
+        &context.macro_constants,
+    );
+
+    FileAnalysis {
+        function_cfgs,
+        vra_results,
+    }
 }
 
 /// Compute VRA for all functions if any enabled rule needs it.

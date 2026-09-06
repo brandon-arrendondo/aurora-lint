@@ -7,7 +7,6 @@
  *         inf/nan on a zero divisor), so none of these should be flagged.
  *         Mirrors the raymath.h idioms that produced 388 false positives.
  */
-// sqc-test: prescan
 
 typedef struct Vector2 {
     float x;

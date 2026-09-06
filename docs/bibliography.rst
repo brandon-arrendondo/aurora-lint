@@ -1,7 +1,7 @@
 Bibliography
 ============
 
-Academic papers, reports, and industry references used to benchmark SqC and
+Academic papers, reports, and industry references used to benchmark aurora-lint and
 contextualize its results against the static analysis landscape.
 
 Juliet & Vulnerability Detection Studies
@@ -180,7 +180,7 @@ Standards & Specifications
 
 | https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard
 
-311 rules across 17 categories. The rule set implemented by SqC.
+311 rules across 17 categories. The rule set implemented by aurora-lint.
 
 ----
 
@@ -189,7 +189,7 @@ Standards & Specifications
 
 | https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
 
-The output format used by SqC for CI/CD integration.
+The output format used by aurora-lint for CI/CD integration.
 
 NASA & Aerospace
 -----------------

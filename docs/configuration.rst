@@ -11,10 +11,10 @@ The other 4 are tracked but not implemented — see `Tracked but not implemented
 ::
 
     # Use default (all rules enabled)
-    sqc /path/to/code
+    aurora-lint /path/to/code
 
     # Use a custom manifest
-    sqc --manifest my-rules.toml /path/to/code
+    aurora-lint --manifest my-rules.toml /path/to/code
 
 Custom Manifest Format
 ----------------------
@@ -78,7 +78,7 @@ Tracked but not implemented
 
 4 of the 311 tracked rules have a rule directory and a manifest entry but no
 detection logic (no ``.rs`` file). This is a deliberate policy, not a gap:
-sqc does not implement against incomplete CERT-C rule content, since there is
+aurora-lint does not implement against incomplete CERT-C rule content, since there is
 ample well-established work to do and a stub implementation would mean
 inventing a rule CERT itself has not written.
 

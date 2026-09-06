@@ -1,12 +1,12 @@
-# Per-codebase sqc rule configs (real-world benchmark)
+# Per-codebase aurora-lint rule configs (real-world benchmark)
 
-Each real-world benchmark codebase gets its own sqc rules manifest here, the
-real-world analog of a project shipping its own `sqc-rules.toml` (cf.
-`d_lib_common/conf/sqc-rules.toml`). The real-world runner
+Each real-world benchmark codebase gets its own aurora-lint rules manifest here, the
+real-world analog of a project shipping its own `aurora-lint-rules.toml` (cf.
+`d_lib_common/conf/aurora-lint-rules.toml`). The real-world runner
 (`bench/realworld_runner.py`) reads the per-codebase manifest named in the
 `CODEBASES[<name>]["sqc"]["manifest"]` registry entry and reuses it for **every**
 run of that codebase, so rules that do not apply are ignored consistently —
-exactly as you would configure sqc on a real project.
+exactly as you would configure aurora-lint on a real project.
 
 A codebase with no entry here falls back to the shared benchmark base,
 `rules_templates/rules-benchmark.toml`.
@@ -51,7 +51,7 @@ oversight.
 1. Scan with the candidate config + the codebase's include/context flags
    (see the codebase's `CODEBASES` entry for `includes` / `extra_args`):
 
-       sqc <codebase> -I ... -d ... --manifest conf/realworld/<cb>-rules.toml \
+       aurora-lint <codebase> -I ... -d ... --manifest conf/realworld/<cb>-rules.toml \
            --export data/precision_audit/<cb>/<cb>_cfg.json
 
 2. Decide categorical disables → write `conf/realworld/<cb>-rules.toml` (start

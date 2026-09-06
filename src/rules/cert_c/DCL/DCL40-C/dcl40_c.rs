@@ -66,7 +66,7 @@ impl Dcl40C {
 
     /// True if `decl_node`'s `type` field is a struct/union/enum specifier
     /// that carries its own body (i.e. this declaration also *defines* the
-    /// type, not merely references an existing tag) — the shape sqc's
+    /// type, not merely references an existing tag) — the shape aurora-lint's
     /// preprocessor-less parser misreads a trailing attribute macro into
     /// (`struct foo { ... } SOME_MACRO;`).
     fn type_field_is_definition_with_body(decl_node: &Node) -> bool {
@@ -288,7 +288,7 @@ impl Dcl40C {
 
             // A bare identifier declarator directly on a struct/union/enum
             // *definition* (not a reference to an existing tag) that happens
-            // to match a known #define is sqc's preprocessor-less parser
+            // to match a known #define is aurora-lint's preprocessor-less parser
             // misreading a trailing attribute-position macro (e.g. hostap's
             // `struct foo { ... } STRUCT_PACKED;`) as if it declared an
             // object named after the macro — it never does, and every such

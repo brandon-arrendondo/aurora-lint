@@ -1,4 +1,4 @@
-//! Common imports used throughout the SQC project
+//! Common imports used throughout the aurora-lint project
 
 // Re-export commonly used types and traits
 pub use crate::manifest::RuleManifest;

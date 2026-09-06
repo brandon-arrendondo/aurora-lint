@@ -64,7 +64,7 @@
 //! *real* nested function) refuses to see across a `function_definition`
 //! boundary.
 //!
-//! sqc has no C preprocessor (`docs/design/macro-expansion.md`) and already
+//! aurora-lint has no C preprocessor (`docs/design/macro-expansion.md`) and already
 //! treats both arms of a normal, self-contained `#if`/`#else`/`#endif` as
 //! unconditionally reachable for analysis (`process_preproc_conditional` in
 //! `analyze::cfg`). A guard wrapping an *incomplete* fragment can't be

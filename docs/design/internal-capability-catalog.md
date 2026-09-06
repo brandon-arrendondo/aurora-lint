@@ -36,7 +36,7 @@ current source, trust the source and fix this doc in the same commit.
 ## Macro detection & expansion
 
 ### `src/analyze/macro_expand.rs`
-**Problem solved:** sqc has no C preprocessor, so function-like macro
+**Problem solved:** aurora-lint has no C preprocessor, so function-like macro
 *invocations* are opaque to dataflow; this module collects function-like
 macro *definitions* from parsed source (crossing headers via the prescan
 pre-pass) and expands an invocation on demand via token-aware parameter
@@ -64,7 +64,7 @@ for `defined_macro_names`.
 ### `src/analyze/macro_semantics.rs`
 **Problem solved:** shared dataflow semantics for known *external*
 function-like macro families (utlist, uthash, BSD `<sys/queue.h>`) and a
-few project iterator macros — sqc sees `MACRO(head, el, tmp)` as an opaque
+few project iterator macros — aurora-lint sees `MACRO(head, el, tmp)` as an opaque
 `call_expression`, but the macro actually initializes its iterator/temp/out
 arguments and (for loop macros) guarantees the iterator is non-null inside
 the body block. This is a *positional* registry (unlike `macro_expand.rs`,
@@ -158,6 +158,9 @@ step, not from within a rule.
 | Function | Signature | Description |
 |---|---|---|
 | `find_enclosing_declaration_for_identifier` | `(ident_node: &Node, name: &str, source: &str) -> Option<Node>` | Walks up through enclosing `compound_statement` blocks to find the nearest **scope- and shadowing-aware** declaration binding `name` — correctly disambiguates two different declarations of the same identifier in sibling/nested blocks, unlike a flat whole-file text scan. Stops at the function body (does not resolve to a parameter). **This is the primitive a hand-rolled unscoped declaration scan duplicated in task 146 (ARR39-C) — see the "leverage shared utility layer" lesson.** |
+| `find_declaration_in_scope_chain` | `(scopes: &[Node], ident_start: usize, name: &str, source: &str) -> Option<Node>` | The body of `find_enclosing_declaration_for_identifier`, over a scope chain (innermost first) the caller already holds. **Use this from any pass that is already descending the tree** — keep enclosing `compound_statement`/`for_statement` nodes on a stack (`is_declaration_scope` tests for one) and resolution costs nothing extra. Rediscovering the chain per identifier does not: see the ancestor-walk warning below. |
+| `is_declaration_scope` | `(node: &Node) -> bool` | True for the node kinds that open a scope the two functions above search (`compound_statement`, `for_statement`). |
+| `file_scope_descendants_of_kinds` | `(root: Node, kinds: &[&str]) -> Vec<Node>` | Descendants matching `kinds` that lie outside every function, found by pruning at `function_definition`. Replaces the "collect everything, then reject what `find_containing_function` answers for" shape. |
 | `get_identifier_from_declarator` | `(declarator: &Node, source: &str) -> String` | Extracts the identifier name from a declarator (simple, pointer, array, function-pointer). Returns `""` on failure (not `Option`). |
 | `find_identifier_in_declarator` | `(declarator: &Node, source: &str) -> Option<String>` | Same job as `get_identifier_from_declarator` but returns `Option` instead of an empty-string sentinel. **Note: these two are NOT interchangeable** — pick based on whether the call site can handle an `Option` (task 387 documents a real regression from picking the wrong one). |
 | `get_function_parameters` | `(function_node: &Node, source: &str) -> Option<Vec<(String, String)>>` | Extracts `(name, full_type)` pairs for a function's parameters, correctly finding the `function_declarator` even when nested inside a `pointer_declarator` (pointer-returning functions). |
@@ -165,6 +168,19 @@ step, not from within a rule.
 | `is_array_parameter_type` / `is_pointer_type` / `is_signed_type` / `is_unsigned_type` | `(type_str: &str) -> bool` | Type-string classifiers over a type's textual representation (not the AST node) — array/pointer/signed-integer/unsigned-integer. |
 | `extract_struct_name_from_type` | `(type_str: &str) -> Option<&str>` | Extracts a bare struct name from a type string (`"struct MyStruct *"` → `"MyStruct"`), stripping qualifiers and pointer stars; returns `None` for primitives/stdint types. |
 | `resolve_field_expression_type` | `(node: &Node, source, type_map, struct_field_types) -> Option<String>` | Resolves the type of a `field_expression` (`s->count`) by looking up the base variable's type, then the struct's field type — handles chained access (`a.b.c`) and one level of pointer dereference. |
+
+> **Ancestor walks are not free, and the cost is invisible in the source.**
+> `Node::parent()` is not a pointer hop: tree-sitter recovers a parent by
+> descending from the tree root, so one call costs O(depth). A walk up to the
+> enclosing function therefore costs O(depth²), and doing that once per node in
+> a file whose node count grows with its nesting depth is **cubic** — 2,000
+> levels of `if` nesting cost CON40-C 120 s+, EXP33-C 120 s+ and MSC13-C 93 s
+> before this was found (task 952, this repo), and roughly twenty other rules
+> still sit in the 0.3–3 s band on that input for the same reason. Prefer, in
+> order: prune on the way down (`file_scope_descendants_of_kinds`); carry what
+> you need on a stack as you descend (`find_declaration_in_scope_chain`);
+> precompute the answer once per function as byte ranges and test containment.
+> A bounded walk (a fixed few levels) is fine.
 
 ### `src/utility/cert_c/declarator_utils.rs`
 **Problem solved:** reusable checks for whether a declarator subtree
@@ -340,6 +356,35 @@ are two different dictionary keys.
 any expression node within a single-file analysis. Already adopted by
 MEM30-C, DCL13-C, MEM31-C.
 
+### `src/analyze/argument_objects.rs`
+**Problem solved:** whether a call argument NAMES a storage object, answered
+in the caller's frame. Distinct from `points_to`'s `LValue`, which
+canonicalizes *which* location an expression denotes; this answers the prior
+question of whether the expression pins down an object at all. A declared
+array, `&scalar`, `&s.member`, `&arr[i]`, a literal and a fresh allocation
+do; a bare pointer variable and `&ptr` deliberately do **not**, because
+`f(&pos, end)` passes a cursor and its bound and which buffer they walk is
+no more knowable in the caller than in the callee.
+
+| Item | Signature | Description |
+|---|---|---|
+| `ObjectFrame` (struct) | `pointer_vars` / `array_objects` / `pointer_members` | What one function's frame knows about the names in scope: declared as a pointer, declared as storage, and which field paths are pointer-typed. |
+| `ObjectFrame::collect_file_scope` | `(&mut self, unit: &Node, source: &str)` | Records the translation unit's file-scope declarations (direct children only, descending `preproc_*`). |
+| `ObjectFrame::collect_function` | `(&mut self, func: &Node, source: &str)` | Records one function's declarations and parameters. |
+| `ObjectFrame::record_pointer_members` | `(&mut self, func, source, struct_field_types)` | Records the field paths in `func` whose terminal member is pointer-typed. An unresolved member type is left out, so it keeps naming storage (task 935). |
+| `ObjectFrame::argument_object_base` | `(&self, node: &Node, source: &str) -> Option<String>` | The storage object an argument expression names, or `None` when this frame cannot name one. |
+| `declared_pointers` | `(node: &Node, source: &str) -> Vec<DeclaredPointer>` | Every name a `declaration` node introduces with a pointer or array declarator, with `is_array` and the `init_declarator` carrying any initializer. |
+| `argument_nodes` | `(args: &Node) -> Vec<Node>` | A call's argument expressions in order, punctuation and comments skipped. |
+| `distinct_object_pairs` | `(frame, args: &[Node], source) -> Vec<(usize, usize)>` | The `(lower, higher)` argument positions at which ONE call site passes two named, different objects. Per-call-site by construction: two callers each naming one object prove nothing, because no single path holds both. |
+
+**Wiring pattern:** dual, and both halves are live. ARR36-C builds an
+`ObjectFrame` per function and reads the call sites in the file under check;
+the prescan (`collect_callsite_distinct_objects_from_tree`) runs the same
+predicate over every translation unit and aggregates the result onto
+`FunctionSummary::distinct_object_param_pairs`, which the rule merges in
+through `set_project_context`. The file-local half is what still answers on
+a run with no `-d` (task 936).
+
 ## Constant folding & value-range analysis
 
 ### `src/analyze/const_eval.rs`
@@ -425,6 +470,9 @@ condition rather than a preceding statement.
 | `dominating_conditions` | `(site: &Node) -> Vec<Node>` | Every condition already evaluated at `site`: those *enclosing* it (`if`/`while`/`for`/`switch` body, `?:` branch, left operand of an `&&`/`||` whose right operand holds the site) then conditions of `if` statements *preceding* it in an ancestor block. Returned as nodes so a caller can apply its own predicate (a null test, a status code) instead of the comparison one. |
 | `condition_compares_var` | `(condition: &Node, var: &str, source: &str, kind: ComparisonKind) -> bool` | Whether a condition tests `var`: either operand order, the variable nested at any depth in an operand (`x > SIZE_MAX - n`, `p->len < n`), `!var` read as `var == 0`. |
 | `mentions_var` | `(node: &Node, var: &str, source: &str) -> bool` | `var` appears as an `identifier` under `node`. Matched on the AST node, so `c` is not found in `abc` and a `p->n` field access is not a use of `n`. |
+| `call_arg_guards` | `(call_node: &Node, source: &str) -> Vec<bool>` | Per-argument "was this bounds-checked before the call?" flags for one call site, in argument order. Only a bare variable (parens and casts peeled) can be validated: `f((word_t)i)` asks about `i`, `f(get_index(cap))` and `f(i + 1)` are `false`. Aggregating these over every call site of a function is the "which parameters do all callers already check?" summary the validate-then-act split needs -- ARR30-C's per-file `build_caller_validated_params` and the prescan's project-wide `callsite_param_validated` are the same computation at two scopes. |
+| `collect_call_arg_guards` | `(node: &Node, source: &str, out: &mut HashMap<String, Vec<Vec<bool>>>)` | `call_arg_guards` for every call through a plain identifier under `node`, keyed by callee. Walks the whole subtree rather than only `function_definition` bodies, so a per-file caller and a project-wide one summarise the same set of call sites and cannot drift. A call in a static initializer has no dominating condition and is recorded as unguarded, erring toward keeping the finding. |
+| `strip_arg_wrappers` | `(node: &Node) -> Node` | Peel parentheses and casts off one call argument. |
 | `ComparisonKind` | `Any` \| `OrderingOrExtremeEquality` | Which comparisons count. Ordering operators always do; the split is about equality, which is not one thing. For a **bounds** question `len == 5` pins `len` as well as `len < 6` does (`Any`). For an **overflow** question it usually does not — `idx == BTREE_DATA_VERSION` leaves `36 + idx*4` exactly as unbounded as before, while `n == INT_MIN` before `-n` excludes precisely the value that overflows (`OrderingOrExtremeEquality`). |
 
 Two deliberate exclusions, both load-bearing:
@@ -440,7 +488,7 @@ Two deliberate exclusions, both load-bearing:
   establishes nothing on the first iteration.
 
 Preprocessor wrappers (`preproc_if`/`ifdef`/`else`/`elif`) are treated as
-block-like when scanning preceding statements: sqc does not preprocess, so a
+block-like when scanning preceding statements: aurora-lint does not preprocess, so a
 guard and the arithmetic it protects can both sit inside one `#if` and would
 otherwise not look like siblings. Dominance is the AST approximation, not a CFG
 dominator computation — `goto` into a guarded region is not modelled — which is
@@ -506,6 +554,7 @@ are private implementation detail behind the small public surface below.
 | `propagate_transitive_param_taint` | `(summaries: &mut ...)` | Same transitive propagation for tainted-parameter status. |
 | `propagate_transitive_closes` | `(summaries: &mut ...)` | Same transitive propagation for "closes param N" (fclose/close/CloseHandle). |
 | `propagate_transitive_frees_param_fields` | `(summaries: &mut ...)` | Same transitive propagation, but for field-level frees (`frees_param_fields`, e.g. `free(x->will)`). |
+| `propagate_transitive_frees_param_pointees` | `(summaries: &mut ...)` | Same transitive propagation, but for pointee-level frees (`frees_param_pointees`, e.g. `free(*p)` reached through a forwarding wrapper). |
 | `propagate_return_taint` | `(summaries: &mut ...)` | Propagates "return value is tainted" through call chains. |
 
 `FunctionSummary`'s fields (all `pub`) are the actual payload most rules
@@ -513,9 +562,13 @@ read: `frees_params`/`unconditional_frees_params` (MAY-free vs. MUST-free,
 task 401), `can_return_null`, `returns_allocation`, `checks_null_params`,
 `modifies_params`, `dereferences_params`, `never_returns`,
 `callsite_param_null_states`, `return_range`, `param_passthroughs`,
-`frees_param_fields`, `has_env03_taint_source`, `returns_tainted`,
+`frees_param_fields`, `frees_param_pointees` (the `void **` "safe free"
+wrapper — `free(*param)`, called as `safe_free(&p)`, so the caller's own
+variable dies and an argument match by identifier never sees it),
+`has_env03_taint_source`, `returns_tainted`,
 `closes_params`, `callsite_param_buffer_size`, `produces_param_buffer_size`,
-and several more callsite-specific maps.
+`distinct_object_param_pairs` (task 936), and several more callsite-specific
+maps.
 
 **Wiring pattern:** `compute_summaries` runs once (typically during
 prescan) over the whole translation unit, then the `propagate_transitive_*`
@@ -539,15 +592,15 @@ directly, as MSC12-C's `check_no_effect_expression` does for the BOOT_BSS
 
 ### `src/analyze/suppression.rs`
 **Problem solved:** the mechanism for a human to silence a specific
-finding — either an inline `SQC-SUPPRESS` comment near the violating line,
+finding — either an inline `AURORA-SUPPRESS` comment near the violating line,
 or a wildcard/hash-matched entry in a shared `suppress.toml` config.
 
 | Item | Signature | Description |
 |---|---|---|
-| `Suppression::parse` | `(comment: &str, line_number: usize) -> Option<Self>` | Parses one inline `SQC-SUPPRESS` comment. |
+| `Suppression::parse` | `(comment: &str, line_number: usize) -> Option<Self>` | Parses one inline `AURORA-SUPPRESS` comment. |
 | `Suppression::matches` | `(&self, source: &str, violation_line: usize) -> bool` | True if this suppression covers a violation at `violation_line` (within `MAX_PROXIMITY` = 5 lines, and hash-tamper-checked). |
 | `SuppressionManager::load_from_toml` | `(&mut self, toml_path: &str) -> Result<usize, String>` | Loads `[[suppress]]` entries from `suppress.toml` (shared cross-tool format). |
-| `SuppressionManager::extract_from_source` | `(&mut self, file_path: &str, source: &str)` | Extracts inline `SQC-SUPPRESS` comments from a source file. |
+| `SuppressionManager::extract_from_source` | `(&mut self, file_path: &str, source: &str)` | Extracts inline `AURORA-SUPPRESS` comments from a source file. |
 | `SuppressionManager::should_suppress` | `(...) -> bool` (see source for full signature) | The actual per-violation decision: checked before a violation is finalized. |
 | `SuppressionManager::calculate_suppression_hash` | `(rule_id: &str, code: &str) -> String` | Computes the tamper-detection hash a hash-matched suppression entry is checked against. |
 
@@ -564,7 +617,7 @@ heuristic to disambiguate a genuinely ambiguous case, consider whether
 
 ## Cross-file project context (`ProjectContext` fields, `src/analyze/context.rs`)
 
-**Problem solved:** sqc analyzes one file at a time but many real answers
+**Problem solved:** aurora-lint analyzes one file at a time but many real answers
 (is this name a macro? is this function's summary known? is this struct
 packed?) depend on other files, especially headers. The prescan pre-pass
 (triggered by `-d <dir>`) scans a wider directory tree once and populates
@@ -572,7 +625,7 @@ packed?) depend on other files, especially headers. The prescan pre-pass
 `CertRule::set_project_context(&self, context: &ProjectContext)` to clone
 the fields it needs into its own `RefCell` state (see DCL40-C, and MSC12-C
 task 475, for the canonical wiring pattern). **Without `-d`, this context
-is empty** — running sqc by hand on a single file loses all cross-file
+is empty** — running aurora-lint by hand on a single file loses all cross-file
 recall.
 
 | Field | Type | Description |
@@ -584,6 +637,7 @@ recall.
 | `macro_constants` | `HashMap<String, i64>` | `#define` constants collected across all scanned files. |
 | `macro_aliases` | `HashMap<String, String>` | `#define ALIAS identifier` function-name aliases (e.g. `SYSTEM` → `system`). |
 | `struct_field_types` | `HashMap<String, HashMap<String, String>>` | `struct_name -> field_name -> type_text`, for resolving `field_expression` types cross-file. |
+| `struct_typedef_aliases` | `HashMap<String, String>` | `Alias -> Tag` for every `typedef struct Tag Alias;`. `struct_field_types` files a struct's fields under the TAG, and a bodyless typedef in a different file (sqlite's `typedef struct sqlite3_value Mem;`) leaves the alias unresolvable — a member reached as `pOut->z` on a `Mem *` then has no type. Deliberately NOT folded into `struct_field_types`: four rules read that map, so filing the alias there would move their finding sets; a consumer opts in by resolving through this one, which so far only ARR36-C does (task 963). |
 | `packed_structs` | `HashSet<String>` | Struct/typedef names declared `__attribute__((packed))`, directly or via a macro. |
 | `global_constants` | `HashMap<String, i64>` | File-scope `[const] TYPE NAME = VALUE;` across all scanned files. |
 | `global_var_null_states` | `HashMap<String, NullState>` | Global pointer variables' joined null state across all assignment sites (resolves `extern` pointer globals declared elsewhere). |

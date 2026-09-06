@@ -10,7 +10,7 @@
  * "init_declarator"; a pointer wraps the identifier in a "pointer_declarator"
  * layer first, which fell through to the read-context catch-all. That is
  * normally harmless (nothing is tracked yet at a fresh declaration), but
- * combined with sqc's dataflow having no block-scoping (a variable declared
+ * combined with aurora-lint's dataflow having no block-scoping (a variable declared
  * inside a loop body can leak state across the loop's back edge into a
  * shared predecessor of every iteration), it produced real false positives
  * on straight-line "declare, assign unconditionally, use immediately"

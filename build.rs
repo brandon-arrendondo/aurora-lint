@@ -332,7 +332,7 @@ const BENCHMARK_NOISE_DISABLED: &[&str] = &[
     "INT01-C", "INT02-C", "INT16-C", "INT17-C", "PRE31-C",
 ];
 
-/// Regenerate `rules_templates/rules-all.toml` (embedded into the sqc binary
+/// Regenerate `rules_templates/rules-all.toml` (embedded into the aurora-lint binary
 /// via `include_str!` as its built-in default manifest) and
 /// `rules_templates/rules-benchmark.toml` (used by the real-world benchmark)
 /// from the just-generated `src/rules/cert_c/rules-all.toml`, so both stay
@@ -648,8 +648,7 @@ fn write_main_integration_file(
     writeln!(main_file, "mod generated_tests {{")?;
     writeln!(main_file, "    use crate::parser::CParser;")?;
     writeln!(main_file, "    use crate::rules::RuleRegistry;")?;
-    writeln!(main_file, "    use std::path::Path;")?;
-    writeln!(main_file, "    use std::collections::HashMap;\n")?;
+    writeln!(main_file, "    use std::path::Path;\n")?;
 
     // Sort for consistent output
     rule_modules.sort();
@@ -703,9 +702,6 @@ fn generate_test_function(
         None => String::new(),
     };
 
-    // Check if the test file requests intra-file prescan context
-    let needs_prescan = check_test_needs_prescan(test_path);
-
     // Check if rule is implemented by reading the TOML file
     let toml_path = format!("{}/{}.toml", rule_base_path, rule_id);
     let is_enabled = check_if_rule_enabled(&toml_path)?;
@@ -753,37 +749,31 @@ fn generate_test_function(
     )?;
     writeln!(f, "    ")?;
 
-    if needs_prescan {
-        // Build intra-file prescan context before calling rule.check()
-        writeln!(
-            f,
-            "    let context = crate::analyze::prescan::prescan_single_tree(&tree.root_node(), &source);"
-        )?;
-        writeln!(f, "    rule.set_project_context(&context);")?;
-        writeln!(f, "    let mut function_cfgs = HashMap::new();")?;
-        writeln!(
-            f,
-            "    crate::analyze::collect_function_cfgs(&tree.root_node(), &source, &mut function_cfgs);"
-        )?;
-        writeln!(f, "    rule.set_function_cfgs(&function_cfgs);")?;
-        // A rule whose suppression logic reads value ranges (INT10-C's
-        // guard-bounded-dividend check, INT30/31/32-C, ARR30-C) needs the
-        // same VRA state the real scan builds, or its PASS fixtures fail
-        // for want of ranges rather than for a real regression (task 674).
-        writeln!(
-            f,
-            "    let vra_results = crate::analyze::compute_vra_if_needed("
-        )?;
-        writeln!(f, "        rule.needs_vra(),")?;
-        writeln!(f, "        &function_cfgs,")?;
-        writeln!(f, "        &tree.root_node(),")?;
-        writeln!(f, "        &source,")?;
-        writeln!(f, "        &context.function_summaries,")?;
-        writeln!(f, "        &context.macro_constants,")?;
-        writeln!(f, "    );")?;
-        writeln!(f, "    rule.set_vra_results(&vra_results);")?;
-        writeln!(f, "    ")?;
-    }
+    // Every fixture is analysed with the context the shipped scan builds for it:
+    // a prescan of the file itself (what `-d` gives a real run -- see
+    // `prescan_single_file`), then CFGs and VRA through the same
+    // `build_file_analysis` the scan calls. Both come from the scan's own code
+    // rather than a test-only reimplementation of it. There is no opt-in: a
+    // fixture checked without context exercises an analysis strictly weaker than
+    // anything the tool ships, and a green result under it says nothing about
+    // what a real scan does.
+    writeln!(
+        f,
+        "    let context = crate::analyze::prescan::prescan_single_file(&test_path, rule.needs_vra())"
+    )?;
+    writeln!(
+        f,
+        "        .unwrap_or_else(|e| panic!(\"Failed to prescan {{:?}}: {{}}\", test_path, e));"
+    )?;
+    writeln!(f, "    rule.set_project_context(&context);")?;
+    writeln!(f, "    let analysis = crate::analyze::build_file_analysis(")?;
+    writeln!(f, "        &tree.root_node(),")?;
+    writeln!(f, "        &source,")?;
+    writeln!(f, "        &context,")?;
+    writeln!(f, "        rule.needs_vra(),")?;
+    writeln!(f, "    );")?;
+    writeln!(f, "    analysis.apply_to(rule);")?;
+    writeln!(f, "    ")?;
 
     writeln!(
         f,
@@ -898,18 +888,6 @@ fn check_if_rule_enabled(toml_path: &str) -> Result<bool> {
 
     // Default to false if format is unclear
     Ok(false)
-}
-
-/// Check if a `.c` test file contains the `// sqc-test: prescan` marker.
-///
-/// When present, the generated test will build an intra-file prescan context
-/// (function summaries + call-site null states + CFGs) before calling
-/// `rule.check()`. This enables testing inter-procedural analysis patterns
-/// within a single translation unit.
-fn check_test_needs_prescan(test_path: &std::path::Path) -> bool {
-    fs::read_to_string(test_path)
-        .map(|content| content.contains("// sqc-test: prescan"))
-        .unwrap_or(false)
 }
 
 /// Extract a human-readable description from a test `.c` file's header block.

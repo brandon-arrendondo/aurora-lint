@@ -53,13 +53,10 @@ impl Int31C {
     /// tainted-summary callee return, or a tainted global). When false, the
     /// value is bounded local state and the conversion is treated as safe —
     /// the same opt-in philosophy as INT30-C/INT32-C, applied to the converted
-    /// operand. No-op (returns true) without cross-file context, preserving
-    /// legacy behavior and existing tests.
+    /// operand. Runs in every configuration; without cross-file context the
+    /// project-local summary channels simply find nothing to match.
     fn converted_value_is_risky(&self, operand: &Node, source: &str) -> bool {
         let summaries = self.function_summaries.borrow();
-        if summaries.is_empty() {
-            return true;
-        }
         let func = match ast_utils::find_containing_function(operand) {
             Some(f) => f,
             None => return true,

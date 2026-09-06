@@ -1,6 +1,6 @@
-# SqC Source Code
+# aurora-lint Source Code
 
-This directory contains the core implementation of the SqC (Software Code Quality) CERT C compliance checker.
+This directory contains the core implementation of the aurora-lint CERT C compliance checker.
 
 ## Module Structure
 

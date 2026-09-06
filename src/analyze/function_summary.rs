@@ -29,6 +29,21 @@ pub struct FunctionSummary {
     /// (task 401).
     #[serde(default)]
     pub unconditional_frees_params: HashSet<usize>,
+    /// Parameter indices whose **pointee** this function frees — `free(*param)`,
+    /// the `void **` "safe free" wrapper idiom:
+    ///
+    /// ```c
+    /// void safe_free(void **ptr) { if (ptr && *ptr) { free(*ptr); *ptr = NULL; } }
+    /// ```
+    ///
+    /// Distinct from `frees_params`, which says the pointer value handed in is
+    /// released. Here it is the caller's own pointer *variable* that is
+    /// released, and the call site names it as `&var`, so a rule matching
+    /// arguments by identifier never sees the connection — which is what made
+    /// every allocation in a `safe_free()`-using function look unmatched.
+    /// A MAY-free fact, like `frees_params`.
+    #[serde(default)]
+    pub frees_param_pointees: HashSet<usize>,
     /// Whether this function can return NULL.
     pub can_return_null: bool,
     /// Whether this function returns dynamically allocated memory.
@@ -45,6 +60,21 @@ pub struct FunctionSummary {
     /// Aggregated null states of arguments at all call sites (populated by prescan second pass).
     /// Maps parameter index → joined NullState from all callers.
     pub callsite_param_null_states: HashMap<usize, NullState>,
+    /// Argument-position pairs `(lower, higher)` at which SOME call site
+    /// anywhere in the pre-scanned project hands this function two named,
+    /// DIFFERENT storage objects.
+    ///
+    /// The caller-side fact ARR36-C's parameter model needs: two pointer
+    /// parameters are taken to share an object unless a caller proves
+    /// otherwise, and a callee whose callers all live in other translation
+    /// units has no such proof in its own file (task 936). Distinctness is
+    /// per CALL SITE rather than per position -- one caller passing `a` at
+    /// index 0 and a different caller passing `b` at index 1 proves nothing,
+    /// because no single path ever holds both. One proving call site IS
+    /// enough: the comparison inside the callee is undefined whenever that
+    /// caller's path runs.
+    #[serde(default)]
+    pub distinct_object_param_pairs: HashSet<(usize, usize)>,
     /// Aggregated null states of struct fields within arguments at all call sites.
     /// Maps parameter index → field name → joined NullState from all callers.
     /// Used for variant 67 struct field null propagation across functions.
@@ -177,6 +207,19 @@ pub struct FunctionSummary {
     /// `callsite_param_tainted` for why this companion set exists.
     #[serde(default)]
     pub callsite_param_taint_observed: HashSet<usize>,
+    /// Parameter indices whose argument EVERY call site seen anywhere in the
+    /// scanned project already bounds-checks with a dominating comparison
+    /// before passing (`if (i < n) callee(i)`), with at least one such call
+    /// site observed. The cross-file half of ARR30-C's validate-then-act
+    /// suppression: a callee written to trust an index its callers range-check
+    /// reads, on its own body, exactly like one that forgot to check.
+    ///
+    /// Only bare-variable arguments can be validated — see
+    /// `guard_dominance::call_arg_guards`, which produces the per-site flags
+    /// this aggregates — so a single call site passing an expression, or
+    /// passing an unguarded variable, disqualifies the position entirely.
+    #[serde(default)]
+    pub callsite_param_validated: HashSet<usize>,
 }
 
 /// Names of functions that read externally-controlled data into their
@@ -473,7 +516,7 @@ fn find_nested_function_boundary(node: &Node, source: &str) -> Option<usize> {
 
 /// True if `func_node` (a whole `function_definition`) sits inside a
 /// preprocessor conditional branch (`#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`).
-/// sqc has no preprocessor, so when a function has one definition guarded by
+/// aurora-lint has no preprocessor, so when a function has one definition guarded by
 /// such a branch and another unconditional (or differently-guarded)
 /// definition of the same name, only one is ever really compiled in — but
 /// both get parsed and their facts unioned into one cross-file
@@ -1054,6 +1097,45 @@ fn is_unconditionally_reached(node: &Node, body: &Node) -> bool {
     }
 }
 
+/// Reduce a `free()` argument to the identifier it releases, reporting whether
+/// the release goes through the identifier's pointee.
+///
+/// `free(p)` yields `(p, false)`; `free(*p)` and `free((*p))` yield `(p, true)`
+/// — the `void **` "safe free" wrapper shape. Parentheses and casts are
+/// transparent, so `free((char *) *p)` still resolves. Anything else (a field,
+/// a subscript, a call) yields `None`.
+fn strip_free_argument(arg: Node) -> Option<(Node, bool)> {
+    fn peel(mut n: Node) -> Node {
+        loop {
+            let inner = match n.kind() {
+                "parenthesized_expression" => n.named_child(0),
+                "cast_expression" => n.child_by_field_name("value"),
+                _ => None,
+            };
+            match inner {
+                Some(i) => n = i,
+                None => return n,
+            }
+        }
+    }
+
+    let node = peel(arg);
+    if node.kind() == "identifier" {
+        return Some((node, false));
+    }
+    if node.kind() == "pointer_expression" {
+        let op = node.child_by_field_name("operator")?;
+        if op.kind() != "*" {
+            return None;
+        }
+        let inner = peel(node.child_by_field_name("argument")?);
+        if inner.kind() == "identifier" {
+            return Some((inner, true));
+        }
+    }
+    None
+}
+
 /// Credit `summary.frees_params` (MAY-free) and `summary.
 /// unconditional_frees_params` (MUST-free) for every `free(param)` call in
 /// `body` whose sole argument is exactly one of `params` by simple
@@ -1082,13 +1164,17 @@ fn credit_frees_params(
         let [arg] = real.as_slice() else {
             continue;
         };
-        if arg.kind() != "identifier" {
+        let Some((target, through_pointee)) = strip_free_argument(*arg) else {
             continue;
-        }
-        let arg_name = arg.utf8_text(source.as_bytes()).unwrap_or("");
+        };
+        let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
         let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) else {
             continue;
         };
+        if through_pointee {
+            summary.frees_param_pointees.insert(idx);
+            continue;
+        }
         summary.frees_params.insert(idx);
         if is_unconditionally_reached(&call, body) {
             summary.unconditional_frees_params.insert(idx);
@@ -1184,7 +1270,7 @@ fn analyze_param_usage(
 
 /// POSIX fd_set macros (`FD_ZERO`, `FD_SET`, `FD_CLR`) write through their
 /// `fd_set *` argument -- the sole arg for `FD_ZERO`, the last arg for
-/// `FD_SET`/`FD_CLR` -- but they're opaque system macros sqc's
+/// `FD_SET`/`FD_CLR` -- but they're opaque system macros aurora-lint's
 /// macro-expansion engine never sees a definition for, so the arrow/subscript
 /// text scan above can't see the write either (task 456; hostap's
 /// `eloop_sock_table_set_fds(struct eloop_sock_table *table, fd_set *fds)`
@@ -1301,7 +1387,7 @@ fn closes_param_before_reassignment(body: &Node, source: &str, param_name: &str)
 ///     don't null their argument, where the engine has nothing to say.
 ///     Every argument is a candidate, as for literal `free`.
 ///
-/// sqc has no preprocessor, so for (2)/(3) the macro/helper call itself is
+/// aurora-lint has no preprocessor, so for (2)/(3) the macro/helper call itself is
 /// the only AST evidence available that a free happened inside it (task 2:
 /// MEM31-C ownership model).
 fn collect_frees_param_fields(
@@ -1849,6 +1935,40 @@ pub fn propagate_transitive_closes(summaries: &mut HashMap<String, FunctionSumma
                             summary.closes_params.insert(*caller_idx);
                             changed = true;
                         }
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Propagate transitive pointee-frees through param pass-through chains.
+///
+/// Mirrors `propagate_transitive_frees` but for `frees_param_pointees`: a
+/// wrapper that hands its own `void **` parameter to a `safe_free()`-style
+/// callee frees that parameter's pointee too. Same shape as the field version,
+/// and needed for the same reason — real code layers these helpers.
+pub fn propagate_transitive_frees_param_pointees(summaries: &mut HashMap<String, FunctionSummary>) {
+    for _pass in 0..10 {
+        let mut changed = false;
+        let snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.frees_param_pointees.clone()))
+            .collect();
+
+        for summary in summaries.values_mut() {
+            for (caller_idx, callees) in &summary.param_passthroughs {
+                for (callee_name, callee_idx) in callees {
+                    let frees_pointee = snapshot
+                        .get(callee_name)
+                        .is_some_and(|s| s.contains(callee_idx));
+                    if frees_pointee && !summary.frees_param_pointees.contains(caller_idx) {
+                        summary.frees_param_pointees.insert(*caller_idx);
+                        changed = true;
                     }
                 }
             }

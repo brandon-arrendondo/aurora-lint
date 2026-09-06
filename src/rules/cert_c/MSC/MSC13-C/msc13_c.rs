@@ -32,7 +32,7 @@ use crate::analyze::macro_expand::{
 };
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
-    find_enclosing_declaration_for_identifier, get_identifier_from_declarator, get_node_text,
+    self, find_enclosing_declaration_for_identifier, get_identifier_from_declarator, get_node_text,
 };
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
@@ -292,16 +292,30 @@ impl Msc13C {
         decl_starts: Option<&[usize]>,
     ) -> usize {
         let mut count = 0;
-        self.walk_for_reads(body, source, var_name, decl_starts, &mut count);
+        // Scopes enclosing `body`, innermost first -- the walk below extends
+        // this as it descends, so resolving a read never has to rediscover
+        // its scope chain with ancestor queries (see
+        // `ast_utils::find_declaration_in_scope_chain`).
+        let mut scopes = Vec::new();
+        let mut search_from = *body;
+        while let Some(scope) =
+            query::find_ancestor(search_from, |n| ast_utils::is_declaration_scope(&n))
+        {
+            scopes.push(scope);
+            search_from = scope;
+        }
+        scopes.insert(0, *body);
+        self.walk_for_reads(body, source, var_name, decl_starts, &mut scopes, &mut count);
         count
     }
 
-    fn walk_for_reads(
+    fn walk_for_reads<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
         var_name: &str,
         decl_starts: Option<&[usize]>,
+        scopes: &mut Vec<Node<'a>>,
         count: &mut usize,
     ) {
         if node.kind() == "identifier" {
@@ -309,10 +323,13 @@ impl Msc13C {
             if text == var_name && self.is_read_context(node, source) {
                 let in_scope = match decl_starts {
                     None => true,
-                    Some(targets) => {
-                        find_enclosing_declaration_for_identifier(node, var_name, source)
-                            .is_some_and(|d| targets.contains(&d.start_byte()))
-                    }
+                    Some(targets) => ast_utils::find_declaration_in_scope_chain(
+                        scopes,
+                        node.start_byte(),
+                        var_name,
+                        source,
+                    )
+                    .is_some_and(|d| targets.contains(&d.start_byte())),
                 };
                 if in_scope {
                     *count += 1;
@@ -324,7 +341,14 @@ impl Msc13C {
             if let Some(child) = node.child(i) {
                 // Don't recurse into nested function definitions
                 if child.kind() != "function_definition" {
-                    self.walk_for_reads(&child, source, var_name, decl_starts, count);
+                    let opens_scope = ast_utils::is_declaration_scope(&child);
+                    if opens_scope {
+                        scopes.insert(0, child);
+                    }
+                    self.walk_for_reads(&child, source, var_name, decl_starts, scopes, count);
+                    if opens_scope {
+                        scopes.remove(0);
+                    }
                 }
             }
         }
@@ -332,7 +356,7 @@ impl Msc13C {
 
     /// True if some function-like macro invoked inside `body` has a
     /// replacement list that names `var_name` as a free identifier — in
-    /// which case the variable IS used, in text sqc's identifier walk never
+    /// which case the variable IS used, in text aurora-lint's identifier walk never
     /// sees, because the name does not appear at the call site at all.
     ///
     /// sqlite's `src/complete.c` is the worked example. `unsigned char c;`

@@ -1,9 +1,0 @@
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=SQC - Software Code Quality
-Comment=CERT C compliance checker
-Exec=/usr/local/bin/sqc --interactive
-Icon=/usr/local/share/pixmaps/sqc.png
-Terminal=true
-Categories=Development;
