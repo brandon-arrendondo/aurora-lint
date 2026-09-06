@@ -185,7 +185,7 @@ enabled = true
 
 
 [rules.cert_c.DCL04-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.DCL05-C]
@@ -193,7 +193,7 @@ enabled = true
 
 
 [rules.cert_c.DCL06-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.DCL07-C]
@@ -201,7 +201,7 @@ enabled = true
 
 
 [rules.cert_c.DCL08-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.DCL09-C]
@@ -381,7 +381,7 @@ enabled = true
 
 
 [rules.cert_c.EXP02-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.EXP03-C]
@@ -405,7 +405,7 @@ enabled = true
 
 
 [rules.cert_c.EXP10-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.EXP11-C]
@@ -413,7 +413,7 @@ enabled = true
 
 
 [rules.cert_c.EXP12-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.EXP13-C]
@@ -421,7 +421,7 @@ enabled = true
 
 
 [rules.cert_c.EXP14-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.EXP15-C]
@@ -433,7 +433,7 @@ enabled = true
 
 
 [rules.cert_c.EXP19-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.EXP20-C]
@@ -701,11 +701,11 @@ enabled = true
 
 
 [rules.cert_c.INT01-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.INT02-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.INT04-C]
@@ -749,11 +749,11 @@ enabled = true
 
 
 [rules.cert_c.INT16-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.INT17-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.INT18-C]
@@ -1121,7 +1121,7 @@ enabled = true
 
 
 [rules.cert_c.PRE31-C]
-enabled = false
+enabled = true
 
 
 [rules.cert_c.PRE32-C]
