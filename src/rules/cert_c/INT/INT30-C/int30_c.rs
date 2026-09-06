@@ -10,6 +10,7 @@ use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
 use crate::utility::cert_c::float_typing;
 use crate::utility::cert_c::overflow_helpers;
+use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -28,6 +29,9 @@ pub struct Int30C {
     /// Per-function memo of risky variable names, keyed by function node id;
     /// cleared per file.
     risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
+    /// File-scope pointer names and pointer-returning functions, for the
+    /// pointer-arithmetic gate. Rebuilt per file.
+    pointer_facts: RefCell<PointerFacts>,
 }
 
 impl Int30C {
@@ -41,6 +45,7 @@ impl Int30C {
             function_summaries: RefCell::new(HashMap::new()),
             global_writers: RefCell::new(HashMap::new()),
             risky_vars_cache: RefCell::new(HashMap::new()),
+            pointer_facts: RefCell::new(PointerFacts::default()),
         }
     }
 
@@ -174,6 +179,8 @@ impl CertRule for Int30C {
         // one parse tree — reset per file.
         self.risky_vars_cache.borrow_mut().clear();
 
+        *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);
+
         self.check_node(node, source, &mut violations, &type_map);
 
         violations
@@ -289,6 +296,14 @@ impl Int30C {
             return;
         }
 
+        // `ptr + int` / `ptr - int` is pointer arithmetic and `ptr - ptr` a
+        // ptrdiff_t computation; neither is the unsigned integer wrap this
+        // rule detects. Forming an out-of-bounds pointer is ARR30-C's
+        // concern (task 914).
+        if self.is_pointer_arithmetic(node, source, type_map) {
+            return;
+        }
+
         if let Some(operator) = self.get_operator(node, source) {
             match operator.as_str() {
                 "+" => self.check_addition(node, source, violations, type_map),
@@ -314,6 +329,11 @@ impl Int30C {
             return;
         }
 
+        // See check_binary_operation: `buf += readnb` advances a pointer.
+        if self.is_pointer_arithmetic(node, source, type_map) {
+            return;
+        }
+
         if let Some(operator) = self.get_assignment_operator(node, source) {
             match operator.as_str() {
                 "+=" => self.check_compound_addition(node, source, violations, type_map),
@@ -331,6 +351,20 @@ impl Int30C {
     fn expr_is_float(&self, node: &Node, source: &str, type_map: &HashMap<String, String>) -> bool {
         let sft = self.struct_field_types.borrow();
         float_typing::expr_is_float(node, source, type_map, &sft)
+    }
+
+    /// Best-effort: is this expression pointer arithmetic rather than integer
+    /// arithmetic? Delegates to the shared [`pointer_typing`] engine, supplying
+    /// INT30-C's struct field map and this file's pointer facts.
+    fn is_pointer_arithmetic(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> bool {
+        let sft = self.struct_field_types.borrow();
+        let facts = self.pointer_facts.borrow();
+        pointer_typing::is_pointer_arithmetic(node, source, type_map, &sft, &facts)
     }
 
     /// True if `node`'s left or right operand is float-typed, making this a

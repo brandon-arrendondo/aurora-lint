@@ -13,6 +13,10 @@ pub mod float_typing;
 pub mod guard_dominance;
 /// Shared helpers for arithmetic-overflow-detection rules (INT30-C, INT32-C).
 pub mod overflow_helpers;
+/// Positive pointer-type inference, so the integer-hazard rules (INT00-C,
+/// INT30-C, INT31-C, INT32-C) stop reading pointer arithmetic as integer
+/// arithmetic.
+pub mod pointer_typing;
 pub mod size_analysis;
 /// Lookup of known C standard library / POSIX / Windows socket function names.
 pub mod std_functions;
