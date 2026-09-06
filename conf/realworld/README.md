@@ -29,7 +29,7 @@ A codebase with no entry here falls back to the shared benchmark base,
       `MSC12-C` are the only two. This category is a debt, not a verdict: a
       disable claiming it **must** cite the FP-reduction task that will re-enable
       the rule, or nothing tracks the debt. The two open gates are tools_sqc
-      tasks 994 (`API05-C`) and 995 (`MSC12-C`).
+      tasks 998 (`API05-C`) and 999 (`MSC12-C`).
 
    Everything else stays enabled. In particular, **"the project does not follow
    this recommendation" is not a reason to disable** — that is a disagreement
