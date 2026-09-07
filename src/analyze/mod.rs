@@ -14,6 +14,7 @@ pub mod const_eval;
 /// pre-scan phase and injected into rules that need whole-project data.
 pub mod context;
 pub mod dataflow;
+pub mod embedded_js_blank;
 pub mod empty_macro_blank;
 pub mod function_summary;
 pub mod init_state;

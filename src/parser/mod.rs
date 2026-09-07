@@ -62,6 +62,14 @@ impl CParser {
     pub fn parse_file(&mut self, file_path: &str) -> Result<(Tree, String)> {
         let source = fs::read_to_string(file_path)
             .with_context(|| format!("Failed to read file: {}", file_path))?;
+        // Task 1043: neutralize emscripten EM_ASM/EM_JS embedded-JavaScript
+        // macro bodies. A JS block parses as ordinary-looking C rather than
+        // an ERROR node, so without this every rule walks it -- DCL31-C
+        // reported every JS call in reach as an undeclared function, the JS
+        // keyword `function` among them. Runs first so the passes below see
+        // only C. Length- and newline-preserving.
+        let source = crate::analyze::embedded_js_blank::blank_embedded_js(&source);
+
         // Task 435: blank empty WINAPI/RLAPI-style export-specifier macros
         // before parsing -- tree-sitter-c's grammar can't parse a bare
         // identifier immediately before a declaration's type, and the
@@ -116,7 +124,8 @@ impl CParser {
     /// task 663), so text sliced from the wrong string at an otherwise
     /// correct byte range can silently return stale content.
     pub fn parse_source(&mut self, source: &str) -> Result<(Tree, String)> {
-        let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(source);
+        let source = crate::analyze::embedded_js_blank::blank_embedded_js(source);
+        let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
         let (tree, source) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
