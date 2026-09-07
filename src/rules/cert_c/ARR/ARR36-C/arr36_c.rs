@@ -755,11 +755,69 @@ impl PointerAnalyzer {
         loop {
             let argument = match current.kind() {
                 "identifier" => {
-                    return self
-                        .variable_arrays
-                        .at(&text(&current), current.start_byte())
-                        .cloned()
+                    let name = text(&current);
+                    if let Some(base) = self.variable_arrays.at(&name, current.start_byte()) {
+                        return Some(base.clone());
+                    }
+                    // An UNTRACKED pointer root still names the object the
+                    // path lives in, because `extract_array_base` hands its
+                    // raw name back as a base (task 962). Leaving the path
+                    // whole here spells one object two ways -- hostap's
+                    // `ml_end = ml + n` records `ml` while
+                    // `pos = common_info->variable` records `ml->variable`,
+                    // and the pair reads as two arrays. A path ROOTED at N
+                    // cannot be a different object from N, whether or not
+                    // this frame ever learned what N points at.
+                    //
+                    // A plain struct variable is deliberately NOT included:
+                    // the frame knows that object and its layout, so
+                    // `o.in1.arr` and `o.in2.arr` stay two arrays (task 993).
+                    if self.objects.pointer_vars.contains(&name)
+                        && !self.objects.array_objects.contains(&name)
+                    {
+                        return Some(name);
+                    }
+                    return None;
                 }
+                "field_expression" => current.child_by_field_name("argument")?,
+                _ => return None,
+            };
+            if argument.kind() == "field_expression"
+                && self.objects.pointer_members.contains(&text(&argument))
+            {
+                return None;
+            }
+            current = argument;
+        }
+    }
+
+    /// The object `&path` names, when the path is rooted at a variable this
+    /// frame never resolved to a base: the ROOT itself.
+    ///
+    /// `field_path_root_base` answers a different question -- "which tracked
+    /// array does this path live inside" -- and deliberately answers nothing
+    /// for a path rooted at a plain struct variable, so that `o.in1.arr` and
+    /// `o.in2.arr` stay two arrays (task 993). Taking an ADDRESS is where the
+    /// containing object is the right answer: `&iwe_buf.u.data.length` and
+    /// `&iwe_buf` are a member and the object holding it, which ARR36-C-EX1
+    /// treats as one object, and which is what the old spelling meant by
+    /// "keep just the struct instance". It stripped ONE member, which says
+    /// `iwe_buf` for `&iwe_buf.member` and `iwe_buf.u.data` for a path one
+    /// level deeper -- so hostap's `dpos - (char *) &iwe_buf` read as two
+    /// arrays purely because the member sits two levels down.
+    ///
+    /// A pointer member anywhere on the path stops the walk for the reason it
+    /// stops `field_path_root_base`'s: what it points at is not inside the
+    /// root, so the root is not the object (task 935).
+    fn field_path_container(&self, node: &Node, source: &str) -> Option<String> {
+        let text = |n: &Node| source[n.start_byte()..n.end_byte()].to_string();
+        if self.objects.pointer_members.contains(&text(node)) {
+            return None;
+        }
+        let mut current = *node;
+        loop {
+            let argument = match current.kind() {
+                "identifier" => return Some(text(&current)),
                 "field_expression" => current.child_by_field_name("argument")?,
                 _ => return None,
             };
@@ -920,13 +978,10 @@ impl PointerAnalyzer {
             // one struct compare equal (ARR36-C-EX1) -- unless the whole path
             // resolves through its root to an object this frame tracks, which
             // is one level more specific (task 993).
-            "field_expression" => {
-                self.field_path_root_base(&argument, source)
-                    .unwrap_or_else(|| match argument.child_by_field_name("argument") {
-                        Some(base) => self.resolve_base(text(&base), base.start_byte()),
-                        None => text(&argument),
-                    })
-            }
+            "field_expression" => self
+                .field_path_root_base(&argument, source)
+                .or_else(|| self.field_path_container(&argument, source))
+                .unwrap_or_else(|| text(&argument)),
             // &matrix[i][j] is based on "matrix", not "matrix[i]".
             "subscript_expression" => self.extract_deepest_base(&argument, source),
             _ => String::new(),
@@ -1040,12 +1095,20 @@ impl PointerAnalyzer {
                             // spelling for one object (task 770).
                             let rooted = self.field_path_root_base(&argument, source);
                             if is_address_of {
-                                Some(rooted.unwrap_or_else(|| {
-                                    self.variable_arrays
-                                        .at(&field_path, argument.start_byte())
-                                        .cloned()
-                                        .unwrap_or(field_path)
-                                }))
+                                // Same order as
+                                // `extract_base_from_address_or_deref`: the
+                                // tracked base, then the whole path if IT is
+                                // tracked, then the object the path sits in.
+                                Some(
+                                    rooted
+                                        .or_else(|| {
+                                            self.variable_arrays
+                                                .at(&field_path, argument.start_byte())
+                                                .cloned()
+                                        })
+                                        .or_else(|| self.field_path_container(&argument, source))
+                                        .unwrap_or(field_path),
+                                )
                             } else {
                                 rooted.or_else(|| {
                                     self.variable_arrays
