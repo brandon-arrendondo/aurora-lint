@@ -79,6 +79,25 @@ jobs:
       - name: cargo test (tui feature)
         run: cargo test --features tui
 
+  # macos-latest resolves to an Apple Silicon (arm64) runner. Task 1030
+  # validated a clean build + full test suite on macOS with only Xcode CLT
+  # (preinstalled on GitHub-hosted runners), so no extra system-dep step.
+  test-macos:
+    name: Test (macOS aarch64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test (default features)
+        run: cargo test
+
+      - name: cargo test (tui feature)
+        run: cargo test --features tui
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
