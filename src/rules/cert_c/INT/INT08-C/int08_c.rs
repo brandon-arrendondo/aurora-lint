@@ -484,6 +484,16 @@ impl Int08C {
     /// rule's (see `is_narrow_integer_type`'s doc). Falling back re-emitted
     /// the very inverted premise task 755 fixed, on every expression the
     /// range engine could not resolve -- in real code, most of them.
+    ///
+    /// This channel has zero measured recall (task 927): zero findings on
+    /// the official real-world run (sqc-0.4.336-117d1624, all nine oracle
+    /// codebases) and absent from Juliet's own CWE-190/191/197 rule
+    /// breakdowns. Not a wiring bug -- the requirement that the WHOLE
+    /// expression resolve is apparently just rarely satisfied by a narrow-var
+    /// arithmetic expression in either corpus. Kept enabled anyway: CERT
+    /// rates INT08-C Medium/P4/L3, and a correct rule with no demonstrated
+    /// recall is a legitimate thing to keep -- just don't expect it to
+    /// contribute real-world or Juliet volume.
     fn promoted_arithmetic_overflows_int(
         &self,
         expr: &Node,
