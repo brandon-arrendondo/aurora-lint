@@ -3,7 +3,7 @@ use crate::analyze::argument_objects::{self, ObjectFrame};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::prescan;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::{ast_utils, overflow_helpers};
 use lang_parsing_substrate::query;
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -102,6 +102,7 @@ impl Arr36C {
                 // member, so the answer has to be in the frame before the
                 // first declaration is read (task 993).
                 analyzer.collect_pointer_members(func, source, &field_types);
+                analyzer.collect_local_types(func, source);
                 analyzer.collect_declarations(func, source);
                 analyzer
             })
@@ -512,6 +513,13 @@ struct PointerAnalyzer {
     // Which array each name is in, at each point in the source: the base a
     // name holds is a function of position, not of the whole function.
     variable_arrays: PointerBases,
+    // `name -> declared type` for one function's parameters and locals,
+    // pointers spelled with a trailing `*`. The one fact `ObjectFrame` cannot
+    // carry: it records only names declared as a POINTER or an ARRAY, so
+    // "absent from it" spans an integer local, a typedef array and a name the
+    // frame never saw at all. Reading the declared type separates the first
+    // from the other two (task 1049).
+    local_types: HashMap<String, String>,
     // Which names in scope denote storage, which merely hold a pointer, and
     // which field paths are pointer-typed. `variable_arrays` answers "which
     // array is this in"; this answers the prior questions, and is shared with
@@ -524,6 +532,7 @@ impl PointerAnalyzer {
     fn new() -> Self {
         Self {
             variable_arrays: PointerBases::default(),
+            local_types: HashMap::new(),
             objects: ObjectFrame::new(),
         }
     }
@@ -531,7 +540,50 @@ impl PointerAnalyzer {
     fn from(base: &PointerAnalyzer) -> Self {
         Self {
             variable_arrays: base.variable_arrays.clone(),
+            local_types: HashMap::new(),
             objects: base.objects.clone(),
+        }
+    }
+
+    /// Read the declared type of every parameter and local of one function.
+    fn collect_local_types(&mut self, func: &Node, source: &str) {
+        self.local_types = overflow_helpers::collect_variable_types(func, source);
+    }
+
+    /// Whether `node` is a name this frame watched being declared with a
+    /// type that is neither a pointer nor an array.
+    ///
+    /// A cast is looked through, because sel4 spells the same thing both ways
+    /// -- `(T *) (behind_tag + 8)` and `(T *) behind_tag + 8` -- and it is the
+    /// cast, not the name, that makes the result a pointer. Only the ARITHMETIC
+    /// operand is read this way; `&count` never reaches here, so the address of
+    /// a non-pointer scalar keeps naming an object (task 962).
+    ///
+    /// Positive-only, and deliberately so: a name with no declaration in this
+    /// frame -- an extern, a global -- answers `false` and keeps the reading it
+    /// had, because absence of a type is not evidence of one. That is the same
+    /// stance `collect_pointer_members` takes for a member whose type does not
+    /// resolve. The one thing it reads wrong is a typedef that hides an array
+    /// (`buf_t b;`), which it calls a scalar and so declines to base -- the
+    /// suppressing direction, which is the one this rule takes everywhere.
+    fn is_declared_scalar(&self, node: &Node, source: &str) -> bool {
+        let mut current = *node;
+        while current.kind() == "cast_expression" {
+            match current.child_by_field_name("value") {
+                Some(value) => current = value,
+                None => return false,
+            }
+        }
+        if current.kind() != "identifier" {
+            return false;
+        }
+        let name = &source[current.start_byte()..current.end_byte()];
+        if self.objects.pointer_vars.contains(name) || self.objects.array_objects.contains(name) {
+            return false;
+        }
+        match self.local_types.get(name) {
+            Some(declared) => !declared.contains('*'),
+            None => false,
         }
     }
 
@@ -926,11 +978,24 @@ impl PointerAnalyzer {
             }
             "binary_expression" => {
                 // Handle pointer arithmetic like arr + size or ptr - offset
-                // The base array is determined by the left operand
-                if let Some(left) = node.child_by_field_name("left") {
-                    self.extract_array_base(&left, source)
-                } else {
-                    String::new()
+                // The base array is determined by the left operand -- unless
+                // the left operand is an INTEGER, in which case there is no
+                // array. sel4 converts an address into a `word_t` and casts it
+                // back, `(multiboot2_memory_t *)(behind_tag + 8)`, and taking
+                // the left name unconditionally records `behind_tag` as a
+                // base; the name is neither a declared pointer nor a declared
+                // array, so it then reads as STORAGE and is reported against a
+                // real object (task 1049).
+                //
+                // Note the narrow test: only a name whose non-pointer
+                // declaration this frame actually read is dropped. Adding
+                // integer names to the untracked-pointer bucket instead would
+                // be wrong -- the address of a non-pointer scalar IS storage,
+                // and `&count` has to keep naming an object (task 962).
+                match node.child_by_field_name("left") {
+                    Some(left) if self.is_declared_scalar(&left, source) => String::new(),
+                    Some(left) => self.extract_array_base(&left, source),
+                    None => String::new(),
                 }
             }
             "pointer_expression" | "unary_expression" => {
