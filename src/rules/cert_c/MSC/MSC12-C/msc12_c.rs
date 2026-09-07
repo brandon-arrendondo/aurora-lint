@@ -28,12 +28,17 @@ pub struct Msc12C {
     // as a statement (`NODE_LOCK_SYS;`) commonly has its #define in a
     // different file (a header) than the .c file that invokes it.
     cross_file_macro_names: RefCell<HashSet<String>>,
+    // Functions this project prototypes in a `.h` header, collected during
+    // pre-scan. An empty definition of one is an interface being satisfied,
+    // not dead code -- see `is_declared_interface_stub`.
+    header_declared_functions: RefCell<HashSet<String>>,
 }
 
 impl Msc12C {
     pub fn new() -> Self {
         Self {
             cross_file_macro_names: RefCell::new(HashSet::new()),
+            header_declared_functions: RefCell::new(HashSet::new()),
         }
     }
 
@@ -995,6 +1000,8 @@ impl Msc12C {
             if self.is_empty_body(&body)
                 && !self.empty_body_has_comment(&body)
                 && !Self::is_static_inline(node, source)
+                && !self.is_declared_interface_stub(node, source)
+                && !Self::is_nested_function_definition(node)
             {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
@@ -1257,6 +1264,60 @@ impl Msc12C {
     /// storage class is what states the intent. A plain empty `static`
     /// function with no `inline` stays flagged -- nothing outside its own
     /// TU can call it, so it really may be dead.
+    /// True if `node` sits inside another function's body. C has no nested
+    /// function definitions, so an empty one is the parser reading something
+    /// that is not C as a function — raylib's emscripten `EM_ASM` blocks put
+    /// JavaScript in a macro argument, and `catch (e) { }` in there parses as
+    /// a function named `catch` with an empty body. Same root cause as the
+    /// EM_ASM misparses the expression-statement checks decline (task 1004),
+    /// reaching a different check.
+    ///
+    /// GCC's nested-function extension is real C some projects use, but an
+    /// *empty* nested function is not a shape it takes, and neither the
+    /// dead-code nor the interface-stub argument applies to one.
+    fn is_nested_function_definition(node: &Node) -> bool {
+        node.parent()
+            .is_some_and(|p| p.kind() == "compound_statement")
+    }
+
+    /// True if `node` is an externally visible definition of a function this
+    /// project prototypes in a header — a null backend or platform HAL no-op
+    /// (`tls_none.c`'s `tls_connection_deinit`, `crypto_none.c`'s
+    /// `crypto_unload`, seL4's per-platform `plat_cleanL2Range`).
+    ///
+    /// The body is empty because *this* build configuration has nothing to
+    /// do, not because the function is dead: the header prototype is the
+    /// codebase asserting the symbol is part of an interface, and every
+    /// caller's build depends on it existing. Removing the body is a link
+    /// error, which is the same argument the `static inline` exception
+    /// already accepts — it just needs cross-file knowledge instead of a
+    /// storage class.
+    ///
+    /// Deliberately does not cover a plain `static` empty function: nothing
+    /// outside its own translation unit can call one, so it may really be
+    /// dead and stays flagged. Uses the pre-scan's own
+    /// `header_declared_functions`, the set DCL15-C/DCL19-C already read for
+    /// "this is public API, do not tell it to be static" — a scan with no
+    /// `-d` pre-scan has an empty set and suppresses nothing, which is the
+    /// same graceful degradation `cross_file_macro_names` has.
+    fn is_declared_interface_stub(&self, node: &Node, source: &str) -> bool {
+        if Self::has_storage_class(node, source, "static") {
+            return false;
+        }
+        crate::analyze::cfg::get_function_name(node, source)
+            .is_some_and(|name| self.header_declared_functions.borrow().contains(name))
+    }
+
+    /// True if `node`'s declaration specifiers include `storage_class`.
+    fn has_storage_class(node: &Node, source: &str, storage_class: &str) -> bool {
+        (0..node.child_count()).any(|i| {
+            node.child(i).is_some_and(|child| {
+                child.kind() == "storage_class_specifier"
+                    && get_node_text(&child, source).trim() == storage_class
+            })
+        })
+    }
+
     fn is_static_inline(node: &Node, source: &str) -> bool {
         let mut has_static = false;
         let mut has_inline = false;
@@ -1641,6 +1702,7 @@ impl CertRule for Msc12C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.cross_file_macro_names.borrow_mut() = context.defined_macro_names.clone();
+        *self.header_declared_functions.borrow_mut() = context.header_declared_functions.clone();
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
