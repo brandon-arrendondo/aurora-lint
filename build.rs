@@ -729,16 +729,6 @@ fn generate_test_function(
         "        .unwrap_or_else(|e| panic!(\"Failed to read {{:?}}: {{}}\", test_path, e));"
     )?;
     writeln!(f, "    ")?;
-    writeln!(
-        f,
-        "    let mut parser = CParser::new().expect(\"Failed to create parser\");"
-    )?;
-    writeln!(f, "    let (tree, source) = parser.parse_source(&source)")?;
-    writeln!(
-        f,
-        "        .unwrap_or_else(|e| panic!(\"Failed to parse {{:?}}: {{}}\", test_path, e));"
-    )?;
-    writeln!(f, "    ")?;
 
     // Every fixture is analysed with the context the shipped scan builds for it:
     // a prescan of the file itself (what `-d` gives a real run -- see
@@ -748,6 +738,11 @@ fn generate_test_function(
     // fixture checked without context exercises an analysis strictly weaker than
     // anything the tool ships, and a green result under it says nothing about
     // what a real scan does.
+    //
+    // The prescan runs BEFORE the parse for the same reason: the parse-repair
+    // pass consults its macro table to decide which token a misparsed
+    // declaration should lose (task 1019), so parsing first would hand the rule
+    // a weaker repair than a real scan performs.
     writeln!(
         f,
         "    let context = crate::analyze::prescan::prescan_single_file(&test_path, rule.needs_vra())"
@@ -757,6 +752,17 @@ fn generate_test_function(
         "        .unwrap_or_else(|e| panic!(\"Failed to prescan {{:?}}: {{}}\", test_path, e));"
     )?;
     writeln!(f, "    rule.set_project_context(&context);")?;
+    writeln!(f, "    ")?;
+    writeln!(
+        f,
+        "    let mut parser = CParser::new().expect(\"Failed to create parser\");"
+    )?;
+    writeln!(f, "    parser.set_repair_macros_from_context(&context);")?;
+    writeln!(f, "    let (tree, source) = parser.parse_source(&source)")?;
+    writeln!(
+        f,
+        "        .unwrap_or_else(|e| panic!(\"Failed to parse {{:?}}: {{}}\", test_path, e));"
+    )?;
     writeln!(f, "    let analysis = crate::analyze::build_file_analysis(")?;
     writeln!(f, "        &tree.root_node(),")?;
     writeln!(f, "        &source,")?;

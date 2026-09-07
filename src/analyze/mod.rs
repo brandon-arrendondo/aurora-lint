@@ -120,6 +120,14 @@ pub fn analyze_project(
         }
     }
 
+    // The parse-repair pass consults the prescan's macro table to blank a
+    // stranded declaration's *macro* rather than its real type or declarator
+    // (task 1019). Built once and shared: parallel mode makes one parser per
+    // file.
+    let repair_macros = std::sync::Arc::new(
+        unknown_identifier_recovery::RepairMacros::from_context(&context),
+    );
+
     warn_unimplemented_rules(manifest, &registry);
 
     let c_files = collect_c_files(project_source, diff_only, excludes)?;
@@ -166,6 +174,7 @@ pub fn analyze_project(
                         Ok(p) => p,
                         Err(_) => return (Vec::new(), Vec::new()),
                     };
+                    parser.set_repair_macros(std::sync::Arc::clone(&repair_macros));
                     let file_registry = RuleRegistry::new();
                     if has_cross_file_data {
                         for rule in file_registry.all_rules() {
@@ -225,6 +234,7 @@ pub fn analyze_project(
     // Sequential analysis (single-threaded)
     // Fresh registry per file to prevent cross-file state leakage from RefCell fields
     let mut parser = CParser::new()?;
+    parser.set_repair_macros(std::sync::Arc::clone(&repair_macros));
     let has_cross_file_data = context.has_cross_file_data();
 
     for (file_idx, file_path) in c_files.iter().enumerate() {

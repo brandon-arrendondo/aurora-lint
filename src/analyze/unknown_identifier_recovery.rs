@@ -30,6 +30,22 @@
 //! `has_error()` has fully cleared (some files may have unrelated parse
 //! issues this pass isn't meant to touch).
 //!
+//! Task 1019 made the choice of WHICH token to blank macro-aware. Blanking
+//! the stranded token is right only when that token really is the macro the
+//! parser could not place; in `MACRO type f(...)` shapes tree-sitter instead
+//! strands the *type* (`CURL_EXTERN CURLcode curl_easy_setopt(...)` strands
+//! `CURLcode`, `Tcl_Obj *CONST objv[]` strands `objv`), so blanking it threw
+//! away real code and left the macro standing as the type -- every rule
+//! downstream then read a wrong type or a wrong declared name. Measured over
+//! the nine pinned real-world checkouts before the fix: 686 of 1574 blanks
+//! landed inside a declaration, and 328 of those blanked a real identifier
+//! whose immediately preceding token was a known project macro. When the
+//! prescan's object-like macro table is available (see [`RepairMacros`]),
+//! that preceding macro is blanked instead -- but only if re-parsing that
+//! way is no worse than re-parsing the original blank, so the parser's own
+//! failure signal still has the last word. With no macro table (prescan
+//! itself, single-file callers, tests) the pass behaves exactly as before.
+//!
 //! Task 438 added a second, differently-shaped recovery target to the same
 //! loop: a lone `{`/`}` ERROR-wrapped inside a `#if defined(__cplusplus)`
 //! (or `#ifdef`/`#elif`) conditional -- the dual-C/C++-header idiom for
@@ -38,7 +54,49 @@
 //! contained defect was observed cascading into a file-spanning ERROR node
 //! on raylib's rlgl.h.
 
+use std::collections::HashSet;
 use tree_sitter::{Node, Parser, Tree};
+
+use crate::analyze::context::ProjectContext;
+
+/// Project-wide macro knowledge the repair pass consults when deciding which
+/// token to blank. Empty means "no prescan data" -- every decision then
+/// falls back to the token tree-sitter stranded, which is what this pass did
+/// before task 1019.
+#[derive(Debug, Default, Clone)]
+pub struct RepairMacros {
+    /// Every `#define NAME ...` name seen project-wide
+    /// ([`ProjectContext::defined_macro_names`]). A token in here cannot be
+    /// the declaration's real type or declarator, so it is the safe thing to
+    /// blank when it sits next to one the parser could not place.
+    pub object_macros: HashSet<String>,
+    /// Object-like macros expanding to an unused-attribute annotation
+    /// ([`ProjectContext::unused_attribute_macros`]). Blanking one destroys
+    /// the author's "may go unused" statement before any rule can read it,
+    /// so these leave [`UNUSED_ATTRIBUTE_MARKER`] behind instead.
+    pub unused_attribute_macros: HashSet<String>,
+}
+
+impl RepairMacros {
+    /// The two macro sets the prescan already collects, copied out of a
+    /// [`ProjectContext`].
+    pub fn from_context(context: &ProjectContext) -> Self {
+        Self {
+            object_macros: context.defined_macro_names.clone(),
+            unused_attribute_macros: context.unused_attribute_macros.clone(),
+        }
+    }
+}
+
+/// Marker written in place of a blanked [`RepairMacros::unused_attribute_macros`]
+/// token, the same length-preserving recoverable-marker idiom task 663 uses
+/// for label-guarded directives and task 648 for `NORETURN`. Without it the
+/// declaration reaching MSC13-C reads `word_t totalObjectSize       ;` --
+/// correctly parsed, correctly named, and with the annotation that makes it
+/// legitimate silently gone (task 1019). Consumers must accept it both
+/// inside the declaration's own span and immediately before it, since the
+/// macro can sit on either side of the type.
+pub const UNUSED_ATTRIBUTE_MARKER: &str = "/*U*/";
 
 /// Each iteration is a full re-parse of the file; capped to bound worst-case
 /// cost on a pathological input. Real files have needed at most a handful
@@ -127,17 +185,125 @@ fn blank_range(source: &str, start: usize, end: usize) -> String {
 /// `__attribute__((noreturn))` in a header this single-file parse never
 /// sees), write `crate::analyze::noreturn::MARKER` in its place instead of
 /// plain blanking -- the same length-preserving recoverable-marker idiom
-/// task 663 introduced for label-guarded preprocessor directives. Every
-/// other unknown identifier is blanked exactly as before; only this
-/// specific, safe, fixed name list gets the marker treatment.
-fn blank_or_mark_noreturn(source: &str, start: usize, end: usize) -> String {
+/// task 663 introduced for label-guarded preprocessor directives.
+///
+/// An unused-attribute macro (task 1019, resolved through the prescan's
+/// [`RepairMacros::unused_attribute_macros`] rather than by spelling) leaves
+/// [`UNUSED_ATTRIBUTE_MARKER`] behind for the same reason: what the macro
+/// expanded to is the author's statement that the variable may go unread,
+/// and blanking it hands MSC13-C a declaration with nothing left to read.
+/// Every other unknown identifier is blanked exactly as before -- only these
+/// two narrow, purpose-known cases get the marker treatment.
+fn blank_or_mark(source: &str, start: usize, end: usize, macros: &RepairMacros) -> String {
     let trimmed = source[start..end].trim();
     if crate::analyze::noreturn::NORETURN_ATTRIBUTE_MACRO_NAMES.contains(&trimmed) {
         if let Some(marked) = crate::analyze::noreturn::write_marker(source, start, end) {
             return marked;
         }
     }
+    if macros.unused_attribute_macros.contains(trimmed) {
+        if let Some(marked) = write_padded_marker(source, start, end, UNUSED_ATTRIBUTE_MARKER) {
+            return marked;
+        }
+    }
     blank_range(source, start, end)
+}
+
+/// Write `marker` into `source[start..end]`, right-padded with spaces to
+/// preserve the original byte length. `None` when the marker doesn't fit --
+/// a macro name shorter than the marker just gets a plain blank, exactly as
+/// before.
+fn write_padded_marker(source: &str, start: usize, end: usize, marker: &str) -> Option<String> {
+    let len = end - start;
+    if len < marker.len() {
+        return None;
+    }
+    let mut out = String::with_capacity(source.len());
+    out.push_str(&source[..start]);
+    out.push_str(marker);
+    out.push_str(&" ".repeat(len - marker.len()));
+    out.push_str(&source[end..]);
+    Some(out)
+}
+
+/// The known object-like macro tokens standing in front of `start` within
+/// the same run of whitespace-separated words, nearest first.
+///
+/// This is the `MACRO type declarator` shape (curl's
+/// `CURL_EXTERN CURLcode curl_easy_setopt(...)`, seL4's
+/// `UNUSED pptr_t vaddr = ...`): whatever the parser stranded, the macro is
+/// the token that genuinely cannot be there, so it is the one to blank. The
+/// macro is not always the immediate predecessor -- in the seL4 shape the
+/// type sits between it and the stranded declarator -- so the whole run is
+/// walked, capped at [`MAX_PRECEDING_TOKENS`] words.
+///
+/// Deliberately strict about what may sit between two words. Anything that
+/// is not whitespace -- a `;`, a `)`, a `,`, a `#`, the tail of a comment --
+/// ends the backward scan, which keeps this from reaching across a
+/// statement boundary or into an unrelated construct. A macro on a
+/// preprocessor line of its own (`#define X Y`, where `X` is by definition a
+/// known macro name) is rejected outright: blanking it would destroy the
+/// definition the prescan reads.
+fn preceding_macro_tokens(
+    source: &str,
+    start: usize,
+    macros: &RepairMacros,
+) -> Vec<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut found = Vec::new();
+    let mut i = start;
+    for _ in 0..MAX_PRECEDING_TOKENS {
+        let scan_from = i;
+        while i > 0 && (bytes[i - 1] as char).is_ascii_whitespace() {
+            i -= 1;
+        }
+        let token_end = i;
+        if token_end == scan_from {
+            // Nothing separates this position from the previous word, so
+            // there is no further word to consider.
+            break;
+        }
+        while i > 0 && ((bytes[i - 1] as char).is_ascii_alphanumeric() || bytes[i - 1] == b'_') {
+            i -= 1;
+        }
+        let token_start = i;
+        if token_start == token_end {
+            break;
+        }
+        let token = &source[token_start..token_end];
+        if is_bare_identifier(token)
+            && macros.object_macros.contains(token)
+            && !line_is_preprocessor_directive(source, token_start)
+        {
+            found.push((token_start, token_end));
+        }
+    }
+    found
+}
+
+/// How far back [`preceding_macro_tokens`] looks for the macro. A
+/// declaration's macro sits at most a type and a qualifier or two away from
+/// the token the parser stranded; every extra word is another candidate
+/// re-parse for no observed gain.
+const MAX_PRECEDING_TOKENS: usize = 4;
+
+/// True if the line containing `byte` begins (ignoring leading whitespace)
+/// with `#`.
+fn line_is_preprocessor_directive(source: &str, byte: usize) -> bool {
+    let line_start = source[..byte].rfind('\n').map_or(0, |i| i + 1);
+    source[line_start..].trim_start().starts_with('#')
+}
+
+/// Number of `ERROR` and `MISSING` nodes in the tree -- the comparison used
+/// to decide between two candidate repairs of the same defect.
+fn error_node_count(node: &Node) -> usize {
+    let mut count = usize::from(node.is_error() || node.is_missing());
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            count += error_node_count(&child);
+        }
+    }
+    count
 }
 
 /// Depth-first search for a `preproc_if`/`preproc_ifdef`/`preproc_elif`-style
@@ -247,7 +413,11 @@ fn find_blankable_preproc_brace_error(
 /// tree-sitter itself fails to produce a tree at all (e.g. parser
 /// misconfiguration), matching `Parser::parse`'s own `Option` contract --
 /// this never panics.
-pub fn parse_with_recovery(parser: &mut Parser, source: String) -> Option<(Tree, String)> {
+pub fn parse_with_recovery(
+    parser: &mut Parser,
+    source: String,
+    macros: &RepairMacros,
+) -> Option<(Tree, String)> {
     let mut text = source;
     let mut tree = parser.parse(&text, None)?;
 
@@ -256,7 +426,10 @@ pub fn parse_with_recovery(parser: &mut Parser, source: String) -> Option<(Tree,
             break;
         }
         if let Some((start, end)) = find_blankable_identifier_error(&tree.root_node(), &text) {
-            text = blank_or_mark_noreturn(&text, start, end);
+            let (repaired, repaired_tree) = choose_repair(parser, &text, start, end, macros)?;
+            text = repaired;
+            tree = repaired_tree;
+            continue;
         } else if let Some(((s1, e1), (s2, e2))) =
             find_blankable_preproc_brace_error(&tree.root_node(), &text)
         {
@@ -271,16 +444,64 @@ pub fn parse_with_recovery(parser: &mut Parser, source: String) -> Option<(Tree,
     Some((tree, text))
 }
 
+/// Repair the defect tree-sitter reported by stranding `source[start..end]`,
+/// returning the repaired text and its re-parse.
+///
+/// Two candidates: blank the stranded token (what this pass has always
+/// done), or -- when the stranded token is not itself a known macro and the
+/// token right before it is one -- blank that macro instead, leaving the
+/// stranded token, which is real code, in place. The macro candidate is
+/// taken whenever its re-parse is no *worse* than the stranded one's, ties
+/// included: an equally clean parse that keeps the declaration's real type
+/// and name is strictly better for every rule downstream, and the macro is
+/// the token that provably cannot appear in preprocessed source anyway.
+fn choose_repair(
+    parser: &mut Parser,
+    source: &str,
+    start: usize,
+    end: usize,
+    macros: &RepairMacros,
+) -> Option<(String, Tree)> {
+    let stranded_text = blank_or_mark(source, start, end, macros);
+    let stranded_tree = parser.parse(&stranded_text, None)?;
+
+    if !macros.object_macros.contains(&source[start..end]) {
+        let stranded_errors = error_node_count(&stranded_tree.root_node());
+        for (macro_start, macro_end) in preceding_macro_tokens(source, start, macros) {
+            let macro_text = blank_or_mark(source, macro_start, macro_end, macros);
+            if let Some(macro_tree) = parser.parse(&macro_text, None) {
+                if error_node_count(&macro_tree.root_node()) <= stranded_errors {
+                    return Some((macro_text, macro_tree));
+                }
+            }
+        }
+    }
+
+    Some((stranded_text, stranded_tree))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parser::c_language;
 
     fn recover(src: &str) -> (bool, String) {
+        recover_with(src, &RepairMacros::default())
+    }
+
+    /// As [`recover`], but with a prescan macro table in play.
+    fn recover_with(src: &str, macros: &RepairMacros) -> (bool, String) {
         let mut parser = Parser::new();
         parser.set_language(&c_language()).unwrap();
-        let (tree, text) = parse_with_recovery(&mut parser, src.to_string()).unwrap();
+        let (tree, text) = parse_with_recovery(&mut parser, src.to_string(), macros).unwrap();
         (tree.root_node().has_error(), text)
+    }
+
+    fn macros(object: &[&str], unused_attr: &[&str]) -> RepairMacros {
+        RepairMacros {
+            object_macros: object.iter().map(|s| (*s).to_string()).collect(),
+            unused_attribute_macros: unused_attr.iter().map(|s| (*s).to_string()).collect(),
+        }
     }
 
     #[test]
@@ -322,6 +543,74 @@ mod tests {
         let (_, text) = recover(src);
         // "void" must survive untouched, whatever else changed.
         assert!(text.contains("void f(void)"));
+    }
+
+    #[test]
+    fn blanks_the_macro_not_the_stranded_type_when_the_table_knows_it() {
+        // curl's `CURL_EXTERN CURLcode curl_easy_setopt(...)`: tree-sitter
+        // takes CURL_EXTERN for the type and strands CURLcode, so blanking
+        // the stranded token throws away the real return type and leaves a
+        // macro standing in its place.
+        let src = "CURL_EXTERN CURLcode curl_easy_setopt(int o);\n";
+        let (has_error, text) = recover_with(src, &macros(&["CURL_EXTERN"], &[]));
+        assert!(!has_error);
+        assert!(
+            text.contains("CURLcode curl_easy_setopt"),
+            "the declaration's real type must survive: {text:?}"
+        );
+        assert!(
+            !text.contains("CURL_EXTERN"),
+            "the macro is what goes: {text:?}"
+        );
+        assert_eq!(text.len(), src.len());
+    }
+
+    #[test]
+    fn without_a_macro_table_the_stranded_token_is_still_the_one_blanked() {
+        // The prescan itself parses, so it runs with no table -- that path
+        // must keep behaving exactly as it did before task 1019.
+        let src = "CURL_EXTERN CURLcode curl_easy_setopt(int o);\n";
+        let (_, text) = recover(src);
+        assert!(text.contains("CURL_EXTERN"));
+        assert!(!text.contains("CURLcode"));
+    }
+
+    #[test]
+    fn never_blanks_a_macro_named_on_its_own_define_line() {
+        // `X` is by definition in the macro table while its own `#define`
+        // is being read; blanking it there would destroy the definition.
+        let src = "#define X\nX GLuint counter;\n";
+        let (_, text) = recover_with(src, &macros(&["X", "GLuint"], &[]));
+        assert!(
+            text.contains("#define X"),
+            "definition must survive: {text:?}"
+        );
+    }
+
+    #[test]
+    fn leaves_a_marker_where_a_trailing_unused_attribute_macro_was() {
+        // seL4's `word_t totalObjectSize UNUSED;` -- the macro is what the
+        // parser strands, so blanking it is right, but MSC13-C still has to
+        // be able to see that the author annotated the declaration.
+        let src =
+            "typedef unsigned long word_t;\nvoid f(void) {\n  word_t totalObjectSize UNUSED;\n}\n";
+        let (has_error, text) = recover_with(src, &macros(&["UNUSED"], &["UNUSED"]));
+        assert!(!has_error);
+        assert!(text.contains(UNUSED_ATTRIBUTE_MARKER), "{text:?}");
+        assert_eq!(text.len(), src.len());
+    }
+
+    #[test]
+    fn leaves_a_marker_where_a_leading_unused_attribute_macro_was() {
+        // `UNUSED pptr_t vaddr = ...` -- here the macro precedes the type,
+        // so the marker lands just before the recovered declaration rather
+        // than inside it, and the declared name is finally the real one.
+        let src = "typedef unsigned long pptr_t;\nvoid f(void) {\n  UNUSED pptr_t vaddr = 1;\n}\n";
+        let (has_error, text) = recover_with(src, &macros(&["UNUSED"], &["UNUSED"]));
+        assert!(!has_error);
+        assert!(text.contains(UNUSED_ATTRIBUTE_MARKER), "{text:?}");
+        assert!(text.contains("pptr_t vaddr = 1;"), "{text:?}");
+        assert_eq!(text.len(), src.len());
     }
 
     #[test]
@@ -453,7 +742,8 @@ mod tests {
         }
         let mut parser = Parser::new();
         parser.set_language(&c_language()).unwrap();
-        let (_, text) = parse_with_recovery(&mut parser, src.clone()).unwrap();
+        let (_, text) =
+            parse_with_recovery(&mut parser, src.clone(), &RepairMacros::default()).unwrap();
         assert_eq!(text.len(), src.len());
     }
 }
