@@ -157,6 +157,34 @@ uses the parser's own failure signal.
 **Wiring pattern:** Called from the parsing entry point as a recovery
 step, not from within a rule.
 
+## Preprocessor branch structure
+
+### `src/analyze/preproc_arms.rs`
+**Problem solved:** which byte offsets a conditional puts in MUTUALLY
+EXCLUSIVE arms. aurora-lint does not preprocess, so tree-sitter parses BOTH
+arms of an `#ifdef`/`#else`; a name declared once per arm becomes one name
+whose recorded history interleaves two lifetimes that never occur together.
+Any analysis answering "what did this name hold at byte P" by reading
+backwards through the file will otherwise answer from the branch P is not
+in — which is how ARR36-C gave hostap's `#else`-arm `pos` the allocation its
+`#ifdef`-arm namesake held (task 1048).
+
+| Item | Signature | Description |
+|---|---|---|
+| `PreprocArms::collect` | `(root: &Node) -> PreprocArms` | Reads every `#if`/`#ifdef` chain under `root` as the byte ranges of its arms, following the `alternative` field through `#elif`/`#elifdef`/`#else`. A chain nested inside an arm is its own entry, so the answer composes at any depth. A chain with no alternative is dropped: it separates nothing. |
+| `PreprocArms::exclusive` | `(&self, a: usize, b: usize) -> bool` | Whether some chain puts the two offsets in DIFFERENT arms. Positive-only: an offset above the `#if` or below the `#endif` is in no arm and coexists with all of them, so it answers `false`. |
+
+This is the OPPOSITE stance to
+`ast_utils::collect_declarations_transparent_to_preproc`, and deliberately
+so: a declaration in EITHER arm is a declaration, so a *search* for one
+should look through the fork. The fact here is narrower and positive — these
+two offsets cannot both be compiled — so use it to reject a pairing, never
+to conclude a name is undeclared.
+
+**Wiring pattern:** collect once per translation unit and share it (ARR36-C
+holds it behind an `Rc` on the file-scope frame every function clones), then
+consult it wherever a positional lookup walks backwards.
+
 ## Declaration / type / declarator resolution
 
 ### `src/utility/cert_c/ast_utils.rs` (declaration/declarator subset)

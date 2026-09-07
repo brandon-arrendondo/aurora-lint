@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::argument_objects::{self, ObjectFrame};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::preproc_arms::PreprocArms;
 use crate::analyze::prescan;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::{ast_utils, overflow_helpers};
@@ -8,6 +9,7 @@ use lang_parsing_substrate::query;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use tree_sitter::Node;
 
 pub struct Arr36C {
@@ -86,6 +88,9 @@ impl Arr36C {
     fn visit_functions(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // First pass: collect file-scope declarations (global arrays, static vars)
         let mut file_scope = PointerAnalyzer::new();
+        // Before any collection: `collect_file_scope` reads bases back through
+        // `at`, so the arm layout has to be in place first.
+        file_scope.variable_arrays.arms = Rc::new(PreprocArms::collect(node));
         file_scope.collect_file_scope(node, source);
 
         // Second pass: per-function analysis with file-scope as base
@@ -486,6 +491,10 @@ fn parameter_indices(func: &Node, source: &str) -> HashMap<String, usize> {
 struct PointerBases {
     /// `name -> [(byte offset, base)]`, each vector ascending by offset.
     by_name: HashMap<String, Vec<(usize, String)>>,
+    /// The file's preprocessor arm layout, so a record written in a branch
+    /// this position cannot be in is not an answer. Shared by every function's
+    /// clone of the file-scope frame.
+    arms: Rc<PreprocArms>,
 }
 
 impl PointerBases {
@@ -501,11 +510,24 @@ impl PointerBases {
     }
 
     /// The base `name` holds at byte offset `pos`: the last one recorded at
-    /// or before it, or `None` when nothing was recorded above `pos`.
+    /// or before it that `pos` can coexist with, or `None` when there is
+    /// none.
+    ///
+    /// A record from the other arm of an `#ifdef` is SKIPPED rather than
+    /// answered with, and the walk continues past it. aurora-lint does not
+    /// preprocess, so tree-sitter parses both arms and a name declared once
+    /// per arm has a single timeline interleaving two lifetimes that never
+    /// occur together -- hostap's `wpa_driver_ndis_get_names` declares `pos`
+    /// in each arm, and the `#ifdef` arm's allocation was answering the
+    /// `#else` arm's `pos - names` (task 1048).
     fn at(&self, name: &str, pos: usize) -> Option<&String> {
         let entries = self.by_name.get(name)?;
         let above = entries.partition_point(|(offset, _)| *offset <= pos);
-        Some(&entries[above.checked_sub(1)?].1)
+        entries[..above]
+            .iter()
+            .rev()
+            .find(|(offset, _)| !self.arms.exclusive(*offset, pos))
+            .map(|(_, base)| base)
     }
 }
 
