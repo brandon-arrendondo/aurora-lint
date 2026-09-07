@@ -169,6 +169,21 @@ impl Msc12C {
                         return;
                     }
                 }
+                // The unbraced form of the empty-then-branch-with-an-else
+                // idiom (`if (cond)\n  ;\nelse if (...)`, pervasive in
+                // curl's header-filtering chains). Same argument as
+                // check_empty_control_flow: the `;` absorbs its condition
+                // so the later arms don't run for it, and removing it
+                // changes which branch executes.
+                if let Some(parent) = node.parent() {
+                    if parent.kind() == "if_statement"
+                        && parent.child_by_field_name("consequence").map(|c| c.id())
+                            == Some(node.id())
+                        && parent.child_by_field_name("alternative").is_some()
+                    {
+                        return;
+                    }
+                }
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: self.severity(),
@@ -801,7 +816,23 @@ impl Msc12C {
             "if_statement" => {
                 // Check if the consequence (then-branch) is empty
                 if let Some(consequence) = node.child_by_field_name("consequence") {
-                    if self.is_empty_body(&consequence)
+                    // An empty then-branch belonging to an if that has an
+                    // `else` is NOT code with no effect: it absorbs its
+                    // condition so the later arms don't run for it.
+                    // `if (a) { } else if (b) { f(); }` is not equivalent to
+                    // `if (b) { f(); }` -- delete the empty arm and f() now
+                    // runs whenever a && b. That makes it deliberate case
+                    // enumeration ("nothing to do in this case"), the
+                    // dominant real-world shape of this finding (sqlite's
+                    // `if(xDel==0){ /* noop */ }else if(...)`, hostap's
+                    // config parsers, mosquitto's protocol dispatch).
+                    //
+                    // CERT's own noncompliant examples, and this rule's
+                    // fail fixtures, are all STANDALONE ifs with no else --
+                    // which stay flagged, because deleting one of those
+                    // really does change nothing.
+                    if node.child_by_field_name("alternative").is_none()
+                        && self.is_empty_body(&consequence)
                         && !self.empty_body_has_verification_annotation(&consequence, source)
                     {
                         violations.push(RuleViolation {
@@ -882,14 +913,12 @@ impl Msc12C {
     }
 
     /// Check for function definitions with empty bodies
-    fn check_empty_function(
-        &self,
-        node: &Node,
-        _source: &str,
-        violations: &mut Vec<RuleViolation>,
-    ) {
+    fn check_empty_function(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         if let Some(body) = node.child_by_field_name("body") {
-            if self.is_empty_body(&body) && !self.empty_body_has_comment(&body) {
+            if self.is_empty_body(&body)
+                && !self.empty_body_has_comment(&body)
+                && !Self::is_static_inline(node, source)
+            {
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
                     severity: self.severity(),
@@ -959,6 +988,13 @@ impl Msc12C {
                 })
                 .collect();
 
+            // Two passes: the first records what each label contains, the
+            // second decides what to report -- a case's removability
+            // depends on whether the switch has a `default:` that would
+            // catch its value, which is not knowable until every label has
+            // been inspected.
+            let mut cases: Vec<(Node, bool, bool)> = Vec::new();
+
             for (pos, &i) in case_indices.iter().enumerate() {
                 let case_node = match body.child(i) {
                     Some(c) => c,
@@ -1024,32 +1060,59 @@ impl Msc12C {
                     }
                 }
 
-                if !has_real_code {
-                    let _ = source;
-                    // Unlike an empty function body (task 474 -- an
-                    // explanatory comment reliably means "documented
-                    // no-op"), a bare `break;` case has no comparable
-                    // signal: `case cap_asid_control_cap: break;` (deliberate
-                    // no-op for this enum value) and a genuinely forgotten
-                    // case body are structurally identical. Flag instead of
-                    // suppressing or guessing -- see
-                    // data/precision_audit/sel4/README.md (task 474) for the
-                    // measured ambiguity this is responding to.
-                    violations.push(RuleViolation {
-                        rule_id: self.rule_id().to_string(),
-                        severity: self.severity(),
-                        message: "Empty case statement has no effect.".to_string(),
-                        file_path: String::new(),
-                        line: case_node.start_position().row + 1,
-                        column: case_node.start_position().column + 1,
-                        suggestion: Some(
-                            "Add code to the case, or a comment explaining the no-op is \
-                             intentional, or remove it"
-                                .to_string(),
-                        ),
-                        requires_manual_review: Some(true),
-                    });
+                cases.push((case_node, value_id.is_none(), has_real_code));
+            }
+
+            // Does this switch have a `default:` that actually does
+            // something? If so, no empty case in it is removable: delete
+            // `case X: break;` and X stops matching a label, so it falls
+            // to the default handler and the program behaves differently.
+            // hostap's channel-width masking is the canonical shape --
+            // `case WIDTH_160_80PLUS80: break;` next to `default: cap &=
+            // ~WIDTH_MASK; break;` means "this width is fine, leave it
+            // alone", and dropping the case silently masks the width out.
+            let default_handles_the_rest = cases
+                .iter()
+                .any(|&(_, is_default, has_real_code)| is_default && has_real_code);
+
+            for &(case_node, is_default, has_real_code) in &cases {
+                if has_real_code {
+                    continue;
                 }
+                // `default: break;` is not dead code either: MISRA C 2012
+                // Rule 16.4 requires every switch to carry a default label,
+                // and an empty one is the canonical way to say "every other
+                // value is deliberately ignored". Removing it is a
+                // standards regression, not a cleanup, and compilers ask
+                // for it under -Wswitch-default.
+                if is_default {
+                    continue;
+                }
+                if default_handles_the_rest {
+                    continue;
+                }
+                let _ = source;
+                // What remains: a `case X: break;` in a switch with no
+                // acting default. Deleting it really is behaviour-preserving,
+                // and there is no structural signal separating a deliberate
+                // no-op from a forgotten body -- `case cap_asid_control_cap:
+                // break;` and an unfinished case look identical. Flag
+                // rather than guess; see data/precision_audit/sel4/README.md
+                // (task 474) for the measured ambiguity.
+                violations.push(RuleViolation {
+                    rule_id: self.rule_id().to_string(),
+                    severity: self.severity(),
+                    message: "Empty case statement has no effect.".to_string(),
+                    file_path: String::new(),
+                    line: case_node.start_position().row + 1,
+                    column: case_node.start_position().column + 1,
+                    suggestion: Some(
+                        "Add code to the case, or remove it if the switch's default \
+                         already handles this value"
+                            .to_string(),
+                    ),
+                    requires_manual_review: Some(true),
+                });
             }
         }
     }
@@ -1098,6 +1161,40 @@ impl Msc12C {
                 ..Default::default()
             });
         }
+    }
+
+    /// True if this `function_definition` is declared `static inline`.
+    ///
+    /// An empty `static inline` function is a BUILD-CONFIGURATION SHIM, not
+    /// dead code: it is the `#else` arm of a feature `#ifdef` in a header,
+    /// defined so every call site compiles unchanged when the feature is
+    /// off. Deleting it does not remove code that has no effect -- it
+    /// breaks the build of every translation unit that calls it. hostap
+    /// alone carries 226 of these (`static inline void
+    /// wpas_nan_flush(struct wpa_supplicant *wpa_s) {}` and friends),
+    /// which made "empty function body" the second-largest MSC12-C finding
+    /// family on the real-world suite.
+    ///
+    /// `static inline` is the signal, not the file extension or the name:
+    /// the rule sees only a syntax tree and a source buffer, and the
+    /// storage class is what states the intent. A plain empty `static`
+    /// function with no `inline` stays flagged -- nothing outside its own
+    /// TU can call it, so it really may be dead.
+    fn is_static_inline(node: &Node, source: &str) -> bool {
+        let mut has_static = false;
+        let mut has_inline = false;
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else { continue };
+            if child.kind() != "storage_class_specifier" {
+                continue;
+            }
+            match get_node_text(&child, source).trim() {
+                "static" => has_static = true,
+                "inline" | "__inline" | "__inline__" => has_inline = true,
+                _ => {}
+            }
+        }
+        has_static && has_inline
     }
 
     /// Returns true if a compound_statement contains no meaningful statements
