@@ -206,3 +206,37 @@ a fix, because if it is the shared budget then this is not a DCL31-C bug at all.
   and "build-generated header absent" are the same mechanism seen in two
   places, split because the remedies differ. The 89% headline is robust to
   redrawing them; the individual small buckets are not.
+
+## CORRECTION 2026-09-07: the "Unity build" row is an artifact of the repro command
+
+The raylib command under "Reproducing" passes no `-d`, so that arm builds **no
+cross-file context at all**. The runner does pass one — `_build_sqc_cmd` adds
+`-d <path>` whenever a codebase's `extra_args` names none — and with it
+`rcore.c`'s `static void InitTimer(void);` / `static void SetupViewport(int,
+int);` are in `known_functions`, so the platform backends that `#include` that
+file resolve them and the 15 findings do not exist.
+
+Measured on one binary, raylib under the full include set:
+
+| arm | rows | InitTimer + SetupViewport |
+|---|--:|--:|
+| `-I src -I /usr/include --system-includes` (this document's) | 328 | 15 |
+| the same plus `-d <path>` | 313 | 0 |
+| the runner's own (`-d <path> -I src`) | 325 | 0 |
+
+The 15 rows are exactly the difference between the first two arms, and the
+third arm reproduces run 238's raylib count of 325 without them. So the
+oracle population contains no unity-build finding, and the bucket table's 15
+should be read as a property of the repro command rather than of the rule.
+Nothing else in the table moves: the other buckets were attributed from
+findings that are present in both arms.
+
+The general statement the bucket was filed on is still true — a `.c` file
+`#include`d by another `.c` file does not inherit the includer's file-scope
+declarations — but with `-d` supplied the project-wide prescan covers those
+declarations anyway, so it costs nothing measurable here. What it does cost
+is a scan run with no `-d` at all, which is the subject of its own task about
+a scan building no context for its own target.
+
+**Anyone re-deriving these buckets should add `-d <path>` to the raylib arm**,
+matching the runner, or the same 15 will reappear.

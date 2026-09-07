@@ -449,6 +449,71 @@ pub fn get_identifier_from_declarator(declarator: &Node, source: &str) -> String
     }
 }
 
+/// Names of the functions declared by an `ERROR` node wrapping declarations
+/// tree-sitter could not finish.
+///
+/// A prototype or definition decorated with a trailing attribute macro
+/// (`__THROW`, `__wur`, `__nonnull ((1))`), or interrupted by a preprocessor
+/// conditional inside its own declarator, does not parse as a `declaration`
+/// or a `function_definition` at all: tree-sitter emits an `ERROR` node whose
+/// children are the specifiers, the `function_declarator`, and the undigested
+/// tokens. glibc writes most of POSIX that way — every `sigaction`,
+/// `sigprocmask` and `setuid` prototype has this shape — so a walk that only
+/// visits `declaration`/`function_definition` nodes reads the whole POSIX
+/// surface as undeclared (task 1038). sqlite's `columnNullValue`, whose
+/// definition carries a conditional `__attribute__((aligned(8)))`, is the
+/// same node shape reached from the other cause.
+///
+/// Returns *every* such declaration, because one `ERROR` is not always one
+/// declaration: recovery in a heavily macro-decorated file can collapse the
+/// whole translation unit into a single `ERROR` whose children are its
+/// top-level items (pure-ftpd's `src/ftpd.c` does this), and there stopping at
+/// the first match would recover one name out of hundreds.
+///
+/// What is recognized is a run of type/storage specifiers immediately followed
+/// by a function declarator — the shape of a declaration and nothing else. Any
+/// other child ends the run, so a misparsed *call* recovered inside an `ERROR`,
+/// which never has specifiers in front of it, is not read back as a
+/// declaration.
+///
+/// A pointer-returning prototype (`char *strdup(...) __THROW`) is *not*
+/// affected — it still parses as a `declaration` — so this is a supplement to
+/// the normal declaration walk, never a replacement for it: call it on the
+/// `ERROR`, then keep recursing.
+pub fn function_names_in_error_declaration(node: &Node, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    if node.kind() != "ERROR" {
+        return names;
+    }
+    let mut saw_specifier = false;
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        match child.kind() {
+            "storage_class_specifier"
+            | "type_qualifier"
+            | "primitive_type"
+            | "sized_type_specifier"
+            | "type_identifier"
+            | "struct_specifier"
+            | "union_specifier"
+            | "enum_specifier" => saw_specifier = true,
+            "function_declarator" | "pointer_declarator" if saw_specifier => {
+                saw_specifier = false;
+                if crate::utility::cert_c::declarator_utils::is_function_declarator(&child) {
+                    let name = get_identifier_from_declarator(&child, source);
+                    if !name.is_empty() {
+                        names.push(name);
+                    }
+                }
+            }
+            _ => saw_specifier = false,
+        }
+    }
+    names
+}
+
 /// Find identifier in a declarator node, returns Option instead of "unknown" string.
 ///
 /// Delegates to [`get_identifier_from_declarator`], which (unlike this
