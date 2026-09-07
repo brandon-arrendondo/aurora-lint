@@ -1,7 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, integer_type_width, is_unsigned_type};
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
@@ -56,6 +56,7 @@ impl CertRule for Int08C {
                 &macros,
                 &mut violations,
             );
+            self.check_truncating_stores(node, source, &variables, &macros, &mut violations);
         } else {
             for func in functions {
                 let mut variables: HashMap<String, (String, usize)> = HashMap::new();
@@ -69,6 +70,7 @@ impl CertRule for Int08C {
                     &macros,
                     &mut violations,
                 );
+                self.check_truncating_stores(&func, source, &variables, &macros, &mut violations);
             }
         }
 
@@ -236,6 +238,172 @@ impl Int08C {
         for child in node.children(&mut cursor) {
             self.check_arithmetic_expressions(&child, source, variables, types, macros, violations);
         }
+    }
+
+    /// Stores whose value provably does not fit the narrow object they are
+    /// stored into.
+    ///
+    /// ```c
+    /// short a = 32000, b = 1000;
+    /// short result = a + b;      /* 33000 truncates to -32536 */
+    /// ```
+    ///
+    /// The *arithmetic* there is correct and deliberately not flagged: both
+    /// operands promote to `int` and 33000 fits it comfortably (task 755
+    /// moved this shape out of tests/fail for exactly that reason). The
+    /// **store** is the defect, and it is what this rule's own title asks
+    /// about -- verify that all integer values are in range. Nothing else in
+    /// the suite catches it: INT31-C's conversion check compares DECLARED
+    /// widths, so `short = short + short` is width-equal and it stays silent
+    /// (a value-based channel there is its own task), and INT32-C's premise
+    /// is about the arithmetic, which is fine here (task 925).
+    ///
+    /// Both rules firing would be acceptable under
+    /// `docs/design/cross-rule-overlap.md`; INT08-C takes it because the
+    /// promoted-range machinery is already wired here.
+    ///
+    /// Definite only. The stored range has to lie ENTIRELY outside the
+    /// destination's, which in practice means operands the range engine can
+    /// resolve to constants -- a range merely straddling the bound is a
+    /// *possible* truncation and not this rule's claim. That is why the
+    /// expected volume is low: this is recall work, not FP work.
+    fn check_truncating_stores(
+        &self,
+        node: &Node,
+        source: &str,
+        variables: &HashMap<String, (String, usize)>,
+        macros: &MacroConstantMap,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        for (destination, value) in Self::collect_stores(node, source) {
+            let Some((var_type, _)) = variables.get(&destination) else {
+                continue;
+            };
+            if !self.is_narrow_integer_type(var_type) {
+                continue;
+            }
+            let Some(width) = integer_type_width(var_type) else {
+                continue;
+            };
+            let Some(range) = self.stored_value_range(&value, source, macros) else {
+                continue;
+            };
+            if !Self::range_is_entirely_outside(&range, width, is_unsigned_type(var_type)) {
+                continue;
+            }
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                message: format!(
+                    "Value of '{}' is {} and cannot be represented in '{} {}' -- the store truncates",
+                    get_node_text(&value, source)
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    if range.min == range.max {
+                        range.min.to_string()
+                    } else {
+                        format!("in [{}, {}]", range.min, range.max)
+                    },
+                    var_type,
+                    destination
+                ),
+                severity: self.severity(),
+                line: value.start_position().row + 1,
+                column: value.start_position().column + 1,
+                file_path: String::new(),
+                suggestion: Some(format!(
+                    "Widen '{}' to a type that holds the computed value, or bound the value before storing it",
+                    destination
+                )),
+                requires_manual_review: None,
+            });
+        }
+    }
+
+    /// Every `(destination name, stored expression)` pair under `node`: both
+    /// `short r = a + b;` and a later `r = a + b;`.
+    ///
+    /// Only a bare identifier destination counts. A field, subscript or
+    /// dereference names an object whose declared type this rule's
+    /// `variables` map does not hold, and guessing one is how the inverted
+    /// premise task 755 removed got in.
+    fn collect_stores<'a>(node: &Node<'a>, source: &str) -> Vec<(String, Node<'a>)> {
+        let mut stores = Vec::new();
+        for init in query::find_descendants_of_kind(*node, "init_declarator") {
+            let (Some(declarator), Some(value)) = (
+                init.child_by_field_name("declarator"),
+                init.child_by_field_name("value"),
+            ) else {
+                continue;
+            };
+            if declarator.kind() == "identifier" {
+                stores.push((get_node_text(&declarator, source).to_string(), value));
+            }
+        }
+        for assign in query::find_descendants_of_kind(*node, "assignment_expression") {
+            if assign.child_by_field_name("operator").map(|o| o.kind()) != Some("=") {
+                continue;
+            }
+            let (Some(left), Some(right)) = (
+                assign.child_by_field_name("left"),
+                assign.child_by_field_name("right"),
+            ) else {
+                continue;
+            };
+            if left.kind() == "identifier" {
+                stores.push((get_node_text(&left, source).to_string(), right));
+            }
+        }
+        stores
+    }
+
+    /// The range of a stored expression, with each identifier in it resolved
+    /// from its own preceding initialisation rather than from its type.
+    ///
+    /// The type's promoted range is the wrong seed here: it is what proves an
+    /// arithmetic expression *can* leave `int`, whereas this channel has to
+    /// prove a specific value *does* leave the destination, so only a
+    /// resolvable value will do.
+    fn stored_value_range(
+        &self,
+        value: &Node,
+        source: &str,
+        macros: &MacroConstantMap,
+    ) -> Option<ValueRange> {
+        let mut var_ranges: VarRangeMap = HashMap::new();
+        for ident in query::find_descendants_of_kind(*value, "identifier") {
+            let name = get_node_text(&ident, source).to_string();
+            if var_ranges.contains_key(&name) {
+                continue;
+            }
+            if let Some(range) = const_eval::resolve_local_var_range(
+                &name,
+                value,
+                source,
+                macros,
+                &VarRangeMap::new(),
+            ) {
+                var_ranges.insert(name, range);
+            }
+        }
+        const_eval::try_evaluate_range(value, source, macros, &var_ranges)
+    }
+
+    /// Does no value in `range` fit a `width`-bit integer of this signedness?
+    ///
+    /// Deliberately stronger than `!fits_in_*`, which is true of a range that
+    /// merely straddles the bound -- the same distinction
+    /// `expression_overflows_signed_vra` draws against `expression_fits_*`.
+    fn range_is_entirely_outside(range: &ValueRange, width: u32, unsigned: bool) -> bool {
+        if width == 0 || width >= 64 {
+            return false;
+        }
+        let (type_min, type_max) = if unsigned {
+            (0i64, (1i64 << width) - 1)
+        } else {
+            (-(1i64 << (width - 1)), (1i64 << (width - 1)) - 1)
+        };
+        range.min > type_max || range.max < type_min
     }
 
     /// True only when interval arithmetic over the operands' promoted
