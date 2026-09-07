@@ -48,7 +48,8 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::null_state::{condition_tests_null, NullState};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
-    get_function_parameters, get_node_text, get_sanitized_node_text, is_pointer_type,
+    get_function_parameters, get_node_text, get_sanitized_node_text, integer_type_width,
+    is_pointer_type, is_unsigned_type,
 };
 use crate::utility::cert_c::float_typing::StructFieldTypes;
 use crate::utility::cert_c::guard_dominance;
@@ -215,11 +216,13 @@ impl Api00C {
             .map(|(name, ty)| (name.as_str(), ty.as_str()))
             .collect();
 
-        // Filter for integer parameters that could overflow
-        let integer_params: Vec<String> = params
+        // Filter for integer parameters that could overflow, keeping each
+        // one's declared type: the shift check below needs the width and
+        // signedness it names.
+        let integer_params: Vec<(String, String)> = params
             .iter()
             .filter(|(_, param_type)| self.is_integer_type(param_type))
-            .map(|(name, _)| name.clone())
+            .map(|(name, ty)| (name.clone(), ty.clone()))
             .collect();
 
         // Get function body
@@ -310,14 +313,14 @@ impl Api00C {
         &self,
         function_node: &Node,
         body: &Node,
-        integer_params: &[String],
+        integer_params: &[(String, String)],
         source: &str,
         pointer_types: &PointerTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for arithmetic operations using integer parameters without overflow checks
-        for param_name in integer_params {
-            if self.has_unchecked_arithmetic(body, param_name, source, pointer_types) {
+        for (param_name, param_type) in integer_params {
+            if self.has_unchecked_arithmetic(body, param_name, param_type, source, pointer_types) {
                 self.report_violation(function_node, param_name, "integer", source, violations);
             }
         }
@@ -351,10 +354,12 @@ impl Api00C {
         &self,
         body: &Node,
         param_name: &str,
+        param_type: &str,
         source: &str,
         pointer_types: &PointerTypes,
     ) -> bool {
-        let sites = Self::collect_arithmetic_sites(body, param_name, source, pointer_types);
+        let sites =
+            Self::collect_arithmetic_sites(body, param_name, param_type, source, pointer_types);
         if sites.is_empty() {
             return false;
         }
@@ -449,17 +454,26 @@ impl Api00C {
     fn collect_arithmetic_sites<'a>(
         body: &Node<'a>,
         param_name: &str,
+        param_type: &str,
         source: &str,
         pointer_types: &PointerTypes,
     ) -> Vec<Node<'a>> {
         let mut sites = Vec::new();
-        Self::walk_arithmetic_sites(body, param_name, source, pointer_types, &mut sites);
+        Self::walk_arithmetic_sites(
+            body,
+            param_name,
+            param_type,
+            source,
+            pointer_types,
+            &mut sites,
+        );
         sites
     }
 
     fn walk_arithmetic_sites<'a>(
         node: &Node<'a>,
         param_name: &str,
+        param_type: &str,
         source: &str,
         pointer_types: &PointerTypes,
         sites: &mut Vec<Node<'a>>,
@@ -508,7 +522,9 @@ impl Api00C {
                 pointer_types.type_map,
                 pointer_types.struct_field_types,
                 pointer_types.facts,
-            );
+            )
+            && !Self::is_defined_unsigned_shift(node, param_name, param_type, source)
+            && !Self::is_inside_assert(node, source);
 
         if is_site {
             sites.push(*node);
@@ -516,8 +532,114 @@ impl Api00C {
 
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            Self::walk_arithmetic_sites(&child, param_name, source, pointer_types, sites);
+            Self::walk_arithmetic_sites(
+                &child,
+                param_name,
+                param_type,
+                source,
+                pointer_types,
+                sites,
+            );
         }
+    }
+
+    /// `crc << 8` on a `uint64_t` is not an overflow hazard: unsigned
+    /// wraparound is *defined* behaviour (C11 6.2.5p9), and in a CRC it is the
+    /// algorithm (libcrc's `update_crc_64`). The only undefined shift of an
+    /// unsigned value is one whose count reaches the operand's width, so a
+    /// literal count below that width settles it outright (task 741).
+    ///
+    /// Deliberately narrow. The parameter must be the *shifted value*, not the
+    /// count -- `x << n` for a parameter `n` is exactly the unbounded-count
+    /// case this leaves alone -- and the count must be a literal, since a
+    /// variable count is what the rule is there to ask about. An unrecognized
+    /// type spelling answers `None` and keeps the site.
+    fn is_defined_unsigned_shift(
+        node: &Node,
+        param_name: &str,
+        param_type: &str,
+        source: &str,
+    ) -> bool {
+        let operator = node.child_by_field_name("operator").map(|op| op.kind());
+        let (value, count) = match node.kind() {
+            "binary_expression" if operator == Some("<<") => (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ),
+            "assignment_expression" if operator == Some("<<=") => (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ),
+            _ => return false,
+        };
+        let (Some(value), Some(count)) = (value, count) else {
+            return false;
+        };
+        if !Self::is_param_operand(&value, param_name, source) {
+            return false;
+        }
+        let declared = Self::param_base_type(param_type, param_name);
+        if !is_unsigned_type(declared) {
+            return false;
+        }
+        let Some(width) = integer_type_width(declared) else {
+            return false;
+        };
+        if count.kind() != "number_literal" {
+            return false;
+        }
+        get_node_text(&count, source)
+            .trim()
+            .trim_end_matches(['u', 'U', 'l', 'L'])
+            .parse::<u32>()
+            .is_ok_and(|shift| shift < width)
+    }
+
+    /// The type half of a parameter declaration.
+    ///
+    /// `get_function_parameters` hands back the whole `parameter_declaration`
+    /// text as the "type" (`"unsigned long long crc"`), which every `contains`
+    /// test in this rule tolerates but an exact-match width table does not.
+    /// Dropping the trailing declarator name is enough for the simple
+    /// declarators this is asked about; anything else falls through to the
+    /// untrimmed text and the width table answers `None`, keeping the site.
+    fn param_base_type<'a>(param_type: &'a str, param_name: &str) -> &'a str {
+        param_type
+            .trim()
+            .strip_suffix(param_name)
+            .map_or(param_type, str::trim)
+    }
+
+    /// True when `node` sits inside an `assert`-shaped call.
+    ///
+    /// An assert compiles out under `NDEBUG`, so arithmetic that happens only
+    /// there is not a production computation and the rule has nothing to ask
+    /// about it (task 741). This is the same direction as
+    /// [`guard_dominance`], which deliberately refuses to credit an assert as
+    /// *validation*: an assert neither validates nor counts as a use.
+    ///
+    /// Name-shape matched rather than a fixed list, because every project
+    /// spells it its own way (`assert`, curl's `DEBUGASSERT`, hostap's
+    /// `WPA_ASSERT`) -- the same match ARR38-C uses.
+    fn is_inside_assert(node: &Node, source: &str) -> bool {
+        let mut current = node.parent();
+        while let Some(ancestor) = current {
+            if ancestor.kind() == "call_expression" {
+                if let Some(func) = ancestor.child_by_field_name("function") {
+                    if get_node_text(&func, source)
+                        .to_ascii_lowercase()
+                        .contains("assert")
+                    {
+                        return true;
+                    }
+                }
+            }
+            if ancestor.kind() == "function_definition" {
+                break;
+            }
+            current = ancestor.parent();
+        }
+        false
     }
 
     /// True when `operand` is the parameter itself, looking through redundant
