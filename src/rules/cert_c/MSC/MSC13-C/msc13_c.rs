@@ -32,17 +32,28 @@ use crate::analyze::macro_expand::{
 };
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
-    self, find_enclosing_declaration_for_identifier, get_identifier_from_declarator, get_node_text,
+    self, collect_unused_attribute_macro_names, find_enclosing_declaration_for_identifier,
+    get_identifier_from_declarator, get_node_text, has_unused_attribute, is_c_keyword,
 };
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Msc13C;
+pub struct Msc13C {
+    /// Object-like macros that expand to an unused-attribute annotation,
+    /// gathered project-wide by the prescan (see
+    /// `ProjectContext::unused_attribute_macros`). The `#define` for seL4's
+    /// `UNUSED` and friends lives in a header, so the per-file scan in
+    /// `check()` alone cannot see it.
+    project_unused_attr_macros: RefCell<HashSet<String>>,
+}
 
 impl Msc13C {
     pub fn new() -> Self {
-        Self
+        Self {
+            project_unused_attr_macros: RefCell::new(HashSet::new()),
+        }
     }
 
     /// Collect all local variable declarations in a function body.
@@ -215,6 +226,85 @@ impl Msc13C {
         }
     }
 
+    /// Byte offsets of the `declaration` nodes in `body` that carry an
+    /// unused-attribute annotation, so the unused-variable pass can leave
+    /// their names alone.
+    ///
+    /// MSC13-C exists to make the author remove a value nobody reads;
+    /// `__attribute__((unused))` is the author saying, in the one place the
+    /// language provides for it, that this one is deliberate. Reporting it
+    /// is not a smaller finding, it is the wrong finding.
+    ///
+    /// Two forms are recognized, both name-independently: the attribute
+    /// written out (`__attribute__((unused))`, `[[maybe_unused]]`, the
+    /// reserved `__unused` spellings), and an object-like macro that
+    /// *expands* to one, resolved through `unused_attr_macros` rather than
+    /// by matching the spelling `UNUSED`. The macro form is the common one
+    /// and is also why these declarations misparse in the first place:
+    /// aurora-lint has no preprocessor, so a macro sitting where a type or
+    /// declarator belongs is absorbed into the declaration and the recovered
+    /// parse names the wrong token. Keyed on the declaration rather than the
+    /// name for exactly that reason -- the name recovered from such a parse
+    /// is not trustworthy, but the annotation's presence is.
+    fn collect_unused_annotated_decls(
+        &self,
+        body: &Node,
+        source: &str,
+        unused_attr_macros: &HashSet<String>,
+    ) -> HashSet<usize> {
+        let mut out = HashSet::new();
+        self.walk_for_unused_annotated_decls(body, source, unused_attr_macros, &mut out);
+        out
+    }
+
+    fn walk_for_unused_annotated_decls(
+        &self,
+        node: &Node,
+        source: &str,
+        unused_attr_macros: &HashSet<String>,
+        out: &mut HashSet<usize>,
+    ) {
+        if node.kind() == "declaration" {
+            let text = get_node_text(node, source);
+            if has_unused_attribute(text)
+                || (!unused_attr_macros.is_empty()
+                    && Self::mentions_any_identifier(text, unused_attr_macros))
+            {
+                out.insert(node.start_byte());
+            }
+        }
+
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() != "function_definition" {
+                    self.walk_for_unused_annotated_decls(&child, source, unused_attr_macros, out);
+                }
+            }
+        }
+    }
+
+    /// True if `text` contains, as a whole token, any name in `names`.
+    /// Whole-token so `UNUSED` does not match `UNUSED_COUNT`.
+    fn mentions_any_identifier(text: &str, names: &HashSet<String>) -> bool {
+        let chars: Vec<char> = text.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i].is_ascii_alphabetic() || chars[i] == '_' {
+                let start = i;
+                while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                    i += 1;
+                }
+                let tok: String = chars[start..i].iter().collect();
+                if names.contains(&tok) {
+                    return true;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        false
+    }
+
     fn extract_declared_names(
         &self,
         node: &Node,
@@ -241,6 +331,18 @@ impl Msc13C {
             // Plain identifier declaration: `int x;`
             "identifier" => {
                 let name = get_node_text(node, source).to_string();
+                // A C keyword can never be a variable name -- the grammar
+                // reserves it, so the preprocessor-less parse that landed
+                // one here misread the declaration. seL4/hostap's
+                // attribute macros do exactly this: a bare object-like
+                // macro at statement position (`LIBXML_TEST_VERSION` on its
+                // own line, no parens, no semicolon) is absorbed as a
+                // declaration's type and swallows the next token, so the
+                // following `return xctx;` yields a "variable" named
+                // `return`. Cheap and independent of any macro table.
+                if is_c_keyword(&name) {
+                    return;
+                }
                 vars.push((
                     name,
                     node.start_position().row + 1,
@@ -521,10 +623,20 @@ impl CertRule for Msc13C {
         // once per file, not per function.
         let macros = collect_function_macro_alternatives(source);
 
+        // Object-like macros expanding to an unused-attribute annotation:
+        // whatever the prescan found project-wide, plus this file's own
+        // `#define`s so a single-file run still recognizes them.
+        let mut unused_attr_macros = self.project_unused_attr_macros.borrow().clone();
+        collect_unused_attribute_macro_names(source, &mut unused_attr_macros);
+
         // Walk all function definitions
-        self.check_functions(node, source, &macros, &mut violations);
+        self.check_functions(node, source, &macros, &unused_attr_macros, &mut violations);
 
         violations
+    }
+
+    fn set_project_context(&self, context: &crate::analyze::context::ProjectContext) {
+        *self.project_unused_attr_macros.borrow_mut() = context.unused_attribute_macros.clone();
     }
 }
 
@@ -534,11 +646,19 @@ impl Msc13C {
         node: &Node,
         source: &str,
         macros: &HashMap<String, Vec<FunctionMacro>>,
+        unused_attr_macros: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
         if node.kind() == "function_definition" {
             if let Some(body) = node.child_by_field_name("body") {
-                self.check_function_body(node, &body, source, macros, violations);
+                self.check_function_body(
+                    node,
+                    &body,
+                    source,
+                    macros,
+                    unused_attr_macros,
+                    violations,
+                );
             }
         }
 
@@ -549,7 +669,7 @@ impl Msc13C {
                     || node.kind() == "translation_unit"
                     || node.kind().starts_with("preproc_")
                 {
-                    self.check_functions(&child, source, macros, violations);
+                    self.check_functions(&child, source, macros, unused_attr_macros, violations);
                 }
             }
         }
@@ -561,10 +681,14 @@ impl Msc13C {
         body: &Node,
         source: &str,
         macros: &HashMap<String, Vec<FunctionMacro>>,
+        unused_attr_macros: &HashSet<String>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Collect all local variable declarations
         let local_vars = self.collect_local_vars(body, source);
+        // Declarations the author annotated as legitimately-unused.
+        let unused_annotated =
+            self.collect_unused_annotated_decls(body, source, unused_attr_macros);
         // Same-scope, same-name declarations split across mutually
         // exclusive `#if`/`#elif`/`#else` branches are one liveness entity
         // (task 751): group them so a read resolving to any one of them
@@ -577,6 +701,9 @@ impl Msc13C {
                 .get(decl_start)
                 .cloned()
                 .unwrap_or_else(|| vec![*decl_start]);
+            if unused_annotated.contains(decl_start) {
+                continue;
+            }
             let reads = self.count_reads(body, source, name, Some(&targets));
             if reads == 0 && !self.macro_hides_use(body, source, macros, name) {
                 let msg = if *has_init {

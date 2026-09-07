@@ -82,6 +82,22 @@ pub struct ProjectContext {
     /// different file than the struct (task 432).
     #[serde(default)]
     pub defined_macro_names: HashSet<String>,
+    /// Names of every object-like `#define` whose replacement text is an
+    /// unused-attribute annotation — `__attribute__((unused))`,
+    /// `[[maybe_unused]]`, and the reserved spellings — collected across all
+    /// scanned files (incl. headers). seL4's `UNUSED`, hostap's
+    /// `STRUCT_PACKED`-adjacent annotations and the rest are recognized by
+    /// what they *expand to*, never by name, and the `#define` almost always
+    /// lives in a different file from the declaration it annotates.
+    ///
+    /// Used by MSC13-C: aurora-lint has no preprocessor, so such a macro sits
+    /// in the declaration where a type or declarator is expected and the
+    /// recovered parse misnames the variable. The annotation is the author
+    /// stating the variable may legitimately go unused, which is exactly
+    /// what MSC13-C exists to respect, so a declaration carrying one is not
+    /// reported at all.
+    #[serde(default)]
+    pub unused_attribute_macros: HashSet<String>,
     /// Functions whose name appears as a bare value inside an aggregate
     /// initializer (e.g. `{ "mysql", pw_mysql_parse, pw_mysql_check,
     /// pw_mysql_exit }` or a designated `.check = pw_mysql_check`) — the
