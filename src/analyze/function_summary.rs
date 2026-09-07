@@ -58,6 +58,21 @@ pub struct FunctionSummary {
     /// Parameter indices that this function dereferences in any way (read or write).
     /// Superset of modifies_params — includes `*param`, `param[i]`, `param->field`.
     pub dereferences_params: HashSet<usize>,
+    /// Parameter indices this function null-checks **before** its first
+    /// dereference of them. Subset of `checks_null_params`.
+    ///
+    /// The ordering is the whole point. A caller asking "is it safe to hand
+    /// this callee an unvalidated pointer?" is answered by
+    /// `checks_null_params` only when the check happens first: a callee that
+    /// dereferences `conn` at `if (conn->client)` and null-tests it on some
+    /// later path has still crashed. That distinction is what separates a
+    /// real callee summary from "the pointer was forwarded to a helper,
+    /// assume it is checked" — a shortcut that turns confirmed true positives
+    /// into misses, since at the flagged function a safe forwarding wrapper
+    /// and an unsafe one are structurally identical and only the callee's
+    /// body tells them apart (task 744, tools_sqc).
+    #[serde(default)]
+    pub checks_null_params_before_deref: HashSet<usize>,
     /// Whether this function never returns (calls abort/exit/longjmp).
     pub never_returns: bool,
     /// Aggregated null states of arguments at all call sites (populated by prescan second pass).
@@ -1359,6 +1374,19 @@ fn analyze_param_usage(
             || body_matches_alias_null_check(body_text, param_name)
         {
             summary.checks_null_params.insert(idx);
+            // ... and, separately, whether that check happens before the
+            // first dereference. Same predicates, run against the body text
+            // truncated at the first deref, so no spelling drifts between the
+            // two answers.
+            let before_deref = match first_deref_offset(body_text, param_name) {
+                Some(offset) => &body_text[..offset],
+                None => body_text,
+            };
+            if body_matches_null_check(before_deref, param_name)
+                || body_matches_alias_null_check(before_deref, param_name)
+            {
+                summary.checks_null_params_before_deref.insert(idx);
+            }
         }
 
         // Check if parameter is written through (dereferenced on left side of assignment).
@@ -1614,6 +1642,27 @@ fn collect_frees_param_fields(
 /// `==`/`!=` and LIT is `NULL`/`0`/`nullptr`, plus the `!PARAM` unary form.
 /// Guards against false matches on substrings (e.g., `foo` matching inside
 /// `foobar`) via word-boundary checks.
+/// Byte offset of the first dereference of `param_name` in `body_text`, or
+/// `None` when there is none.
+///
+/// The patterns are exactly the ones `dereferences_params` is computed from,
+/// so the two answers cannot disagree about what a dereference is. `*param`
+/// also matches a multiplication (`x * param`), which shortens the
+/// before-the-deref prefix and so can only *withhold* a
+/// `checks_null_params_before_deref` credit — the conservative direction for
+/// a caller using it to suppress.
+fn first_deref_offset(body_text: &str, param_name: &str) -> Option<usize> {
+    [
+        format!("*{}", param_name),
+        format!("{}->", param_name),
+        format!("{}[", param_name),
+        format!("*){}", param_name),
+    ]
+    .iter()
+    .filter_map(|pattern| body_text.find(pattern.as_str()))
+    .min()
+}
+
 fn body_matches_null_check(body_text: &str, param_name: &str) -> bool {
     // Fast reject: body must at least contain the param name
     if !body_text.contains(param_name) {
