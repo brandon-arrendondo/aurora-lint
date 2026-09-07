@@ -11,7 +11,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::{self, FunctionCfg};
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
-use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
@@ -24,6 +24,11 @@ use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Int31C {
+    /// Project-wide `#define` constants, for the value-based truncation
+    /// channel; the other INT rules already carry these.
+    project_macros: RefCell<MacroConstantMap>,
+    /// `project_macros` merged with the current file's own defines (file wins).
+    current_macros: RefCell<MacroConstantMap>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
@@ -34,17 +39,23 @@ pub struct Int31C {
     /// Per-function memo of risky variable names, keyed by function node id;
     /// cleared per file.
     risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
+    /// Per-function memo of parameter names, keyed by function node id; cleared
+    /// per file alongside `risky_vars_cache`.
+    param_names_cache: RefCell<HashMap<usize, HashSet<String>>>,
 }
 
 impl Int31C {
     pub fn new() -> Self {
         Self {
+            project_macros: RefCell::new(MacroConstantMap::new()),
+            current_macros: RefCell::new(MacroConstantMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
             function_summaries: RefCell::new(HashMap::new()),
             callers: RefCell::new(HashMap::new()),
             global_writers: RefCell::new(HashMap::new()),
             risky_vars_cache: RefCell::new(HashMap::new()),
+            param_names_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -79,7 +90,46 @@ impl Int31C {
             None => return true,
         };
         let global_writers = self.global_writers.borrow();
-        int_provenance::operand_is_risky(operand, risky_vars, &summaries, &global_writers, source)
+
+        // A parameter carries whatever its callers pass, so its provenance is a
+        // property of the call sites and needs the reverse call graph. Without
+        // cross-file context (`summaries` empty — a run without `-d`) there are
+        // no callers to reason from, so the parameter arm stays off and the
+        // gate keeps its older, narrower behaviour rather than firing on every
+        // parameter it cannot bound.
+        {
+            let mut cache = self.param_names_cache.borrow_mut();
+            cache.entry(func_id).or_insert_with(|| {
+                function_summary::collect_param_names(&func, source)
+                    .into_iter()
+                    .filter(|n| !n.is_empty())
+                    .collect()
+            });
+        }
+        let param_names = self.param_names_cache.borrow();
+        let callers = self.callers.borrow();
+        let param_ctx = match (
+            cfg::get_function_name(&func, source),
+            param_names.get(&func_id),
+        ) {
+            (Some(func_name), Some(params)) if !summaries.is_empty() => {
+                Some(int_provenance::ParamContext {
+                    func_name,
+                    params,
+                    callers: &callers,
+                })
+            }
+            _ => None,
+        };
+
+        int_provenance::operand_is_risky(
+            operand,
+            risky_vars,
+            &summaries,
+            &global_writers,
+            param_ctx.as_ref(),
+            source,
+        )
     }
 
     fn vra_var_ranges_at(&self, expr_node: &Node) -> Option<VarRangeMap> {
@@ -128,6 +178,65 @@ impl Int31C {
         }
 
         false
+    }
+
+    /// Value-based definite-truncation channel — the conversion analogue of
+    /// the `expression_overflows_*_vra` channels INT30-C and INT32-C run ahead
+    /// of their provenance gates.
+    ///
+    /// Returns true only when VRA gives the converted expression a known range
+    /// and *every* value in it fails to fit the target type, so the conversion
+    /// provably loses data (`1000` into `uint8_t`, `LONG_MAX` into
+    /// `signed char`). A range that merely straddles the target band is a
+    /// possible, not definite, truncation and returns false, leaving the
+    /// provenance gate to decide — the same "definite" contract, so bounded
+    /// local values stay suppressed.
+    fn conversion_definitely_truncates(
+        &self,
+        node: &Node,
+        source_expr_node: &Node,
+        source: &str,
+        target_width: u32,
+        target_signed: bool,
+    ) -> bool {
+        if target_width == 0 || target_width > 63 {
+            return false;
+        }
+        // Intra-block forward simulation, not block-entry state: `uint16_t
+        // wide = 1000; uint8_t narrow = wide;` puts both statements in one
+        // basic block, so the entry state this rule's suppression path uses
+        // has no value for `wide` at all. Detection needs the stronger view;
+        // the suppression path is deliberately left on entry semantics so this
+        // does not silently change what INT31-C suppresses.
+        let macros = self.current_macros.borrow();
+        let var_ranges = match vra_access::var_ranges_replay_at(
+            &self.function_cfgs.borrow(),
+            &self.vra_results.borrow(),
+            node,
+            source,
+            &macros,
+        ) {
+            Some(r) => r,
+            None => return false,
+        };
+        let range = const_eval::try_evaluate_range(source_expr_node, source, &macros, &var_ranges)
+            .or_else(|| {
+                var_ranges
+                    .get(get_node_text(source_expr_node, source).trim())
+                    .copied()
+            });
+        let range = match range {
+            Some(r) => r,
+            None => return false,
+        };
+        if target_signed {
+            let target_max = (1i64 << (target_width - 1)) - 1;
+            let target_min = -(1i64 << (target_width - 1));
+            range.min > target_max || range.max < target_min
+        } else {
+            let target_max = (1i64 << target_width) - 1;
+            range.min > target_max || range.max < 0
+        }
     }
 
     /// Heuristic: is the value of `var_name` in the enclosing function
@@ -638,6 +747,7 @@ impl CertRule for Int31C {
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.global_writers.borrow_mut() = context.global_writers.clone();
 
@@ -659,9 +769,13 @@ impl CertRule for Int31C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        // Merge project-level macros with this file's own (file wins).
+        *self.current_macros.borrow_mut() =
+            const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
         // Risky-var memo is keyed on tree-sitter node ids, unique only within
         // one parse tree — reset per file.
         self.risky_vars_cache.borrow_mut().clear();
+        self.param_names_cache.borrow_mut().clear();
         self.check_function(node, source, &mut violations);
         violations
     }
@@ -1541,7 +1655,10 @@ impl Int31C {
         // untrusted/unbounded; a bounded-local value is safe. Applies to all
         // three conversion paths below.
         if let Some(ref op_node) = operand_node {
-            if !self.converted_value_is_risky(op_node, source) {
+            let definite = target_width.is_some_and(|tw| {
+                self.conversion_definitely_truncates(node, op_node, source, tw, target_signed)
+            });
+            if !definite && !self.converted_value_is_risky(op_node, source) {
                 return;
             }
         }
@@ -1935,7 +2052,9 @@ impl Int31C {
         // Opt-in provenance gate (mirrors INT30-C/INT32-C): only flag a
         // narrowing assignment when the RHS derives from untrusted/unbounded
         // input. A bounded-local wider value rarely actually loses data.
-        if !self.converted_value_is_risky(&rhs_node, source) {
+        if !self.conversion_definitely_truncates(node, &rhs_node, source, lhs_width, lhs_signed)
+            && !self.converted_value_is_risky(&rhs_node, source)
+        {
             return;
         }
 

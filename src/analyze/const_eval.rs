@@ -106,6 +106,51 @@ impl ValueRange {
         })
     }
 
+    /// The range of `self / other`, or `None` when the divisor range spans
+    /// zero (a possible division by zero bounds nothing) or a corner overflows
+    /// `i64`.
+    ///
+    /// `a / b` is monotone in each argument once `b` keeps a fixed sign, so —
+    /// as with multiplication — the extremes sit at the four corners. Those
+    /// corners are what carry `INT_MIN / -1` upward: the quotient 2147483648
+    /// leaves the 32-bit signed band, and it is `expression_overflows_signed_vra`,
+    /// not this method, that calls that an overflow.
+    pub fn div(&self, other: &ValueRange) -> Option<Self> {
+        if other.min <= 0 && other.max >= 0 {
+            return None;
+        }
+        let corners = [
+            self.min.checked_div(other.min)?,
+            self.min.checked_div(other.max)?,
+            self.max.checked_div(other.min)?,
+            self.max.checked_div(other.max)?,
+        ];
+        Some(Self {
+            min: *corners.iter().min().unwrap(),
+            max: *corners.iter().max().unwrap(),
+        })
+    }
+
+    /// The range of `self % other`, or `None` when the divisor range spans
+    /// zero. C truncates toward zero, so the remainder takes the dividend's
+    /// sign and its magnitude stays strictly below the largest magnitude the
+    /// divisor can take.
+    ///
+    /// This bounds a `%` result; it cannot itself signal the one case where
+    /// `%` is undefined (`INT_MIN % -1`, undefined because the corresponding
+    /// division overflows). That signal comes from `div` on the same operands.
+    pub fn rem(&self, other: &ValueRange) -> Option<Self> {
+        if other.min <= 0 && other.max >= 0 {
+            return None;
+        }
+        let magnitude = other.min.checked_abs()?.max(other.max.checked_abs()?);
+        let bound = magnitude.checked_sub(1)?;
+        Some(Self {
+            min: if self.min < 0 { -bound } else { 0 },
+            max: if self.max > 0 { bound } else { 0 },
+        })
+    }
+
     /// Returns true if every value in this range fits in a signed integer of the given bit width.
     pub fn fits_in_signed(&self, bits: u32) -> bool {
         if bits == 0 || bits > 64 {
@@ -1274,7 +1319,34 @@ pub fn try_evaluate_range(
                 "+" => lr.add(&rr),
                 "-" => lr.sub(&rr),
                 "*" => lr.mul(&rr),
+                "/" => lr.div(&rr),
+                "%" => lr.rem(&rr),
                 "<<" => lr.shl(&rr),
+                _ => None,
+            }
+        }
+        // `x += 1` evaluates to the value stored, so its range is that of the
+        // equivalent binary expression. Without this arm a compound assignment
+        // yielded no range at all, which is what hid `value1 += 1` with
+        // `value1 == INT_MAX` from the definite-overflow check. A plain `=`
+        // evaluates to its RHS.
+        "assignment_expression" => {
+            let left = node.child_by_field_name("left")?;
+            let right = node.child_by_field_name("right")?;
+            let rr = try_evaluate_range(&right, source, macros, var_ranges)?;
+            let op_text = assignment_operator_text(node, source);
+            if op_text == "=" {
+                return Some(rr);
+            }
+            let lr = try_evaluate_range(&left, source, macros, var_ranges)?;
+            match op_text.as_str() {
+                "+=" => lr.add(&rr),
+                "-=" => lr.sub(&rr),
+                "*=" => lr.mul(&rr),
+                "/=" => lr.div(&rr),
+                "%=" => lr.rem(&rr),
+                "<<=" => lr.shl(&rr),
+                "&=" => lr.bitand(&rr),
                 _ => None,
             }
         }
@@ -2091,6 +2163,19 @@ pub fn expression_overflows_signed_vra(
         return false;
     }
     if let Some(var_ranges) = vra_var_ranges {
+        // Left-shifting a definitely-negative value is undefined whatever the
+        // result's magnitude, so no overflow-band check can prove it. Requiring
+        // the whole left range to be negative keeps this as *definite* as the
+        // band check below.
+        if node.kind() == "binary_expression" && is_left_shift(node, source) {
+            if let Some(left) = node.child_by_field_name("left") {
+                if let Some(lr) = try_evaluate_range(&left, source, macros, var_ranges) {
+                    if lr.max < 0 {
+                        return true;
+                    }
+                }
+            }
+        }
         if let Some(range) = try_evaluate_range(node, source, macros, var_ranges) {
             let signed_max = (1i64 << (bits - 1)) - 1;
             let signed_min = -(1i64 << (bits - 1));
@@ -2180,6 +2265,46 @@ pub fn resolve_identifiers_in_expr(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// The operator text of an `assignment_expression` (`=`, `+=`, `<<=`, ...).
+/// Exposed as the `operator` field by the grammar; the scan is the same
+/// fallback `value_range::get_assignment_operator` keeps for older trees.
+fn assignment_operator_text(node: &Node, source: &str) -> String {
+    if let Some(op) = node.child_by_field_name("operator") {
+        if let Ok(text) = op.utf8_text(source.as_bytes()) {
+            return text.to_string();
+        }
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            let kind = child.kind();
+            if matches!(
+                kind,
+                "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "|=" | "^="
+            ) {
+                return kind.to_string();
+            }
+        }
+    }
+    "=".to_string()
+}
+
+/// True when `node` is a `<<` expression specifically (not `>>`).
+fn is_left_shift(node: &Node, source: &str) -> bool {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == "<<" {
+                return true;
+            }
+            if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                if text == "<<" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
 
 fn is_shift_operator(node: &Node, source: &str) -> bool {
     for i in 0..node.child_count() {
