@@ -15,7 +15,7 @@ from pathlib import Path
 
 from bench.analyzer import analyze_shard, merge_shards
 from bench.config import (
-    DEFAULT_JOBS, GENERATE_MAP_SCRIPT, JULIET_BASE, MANIFEST_ALL,
+    DEFAULT_JOBS, GENERATE_MAP_SCRIPT, JULIET_BASE, MANIFEST_JULIET_FULL,
     MANIFEST_CWE_DIR, RULE_CWE_MAP, SQC_BIN,
     JULIET_COMPILE_DB, apply_run_suffix,
 )
@@ -82,7 +82,7 @@ def _resolve_manifest(cwe_dir_name: str, fast_mode: bool) -> str | None:
             if manifest.exists():
                 return str(manifest)
         return None  # Skip in fast mode if no per-CWE manifest
-    return str(MANIFEST_ALL)
+    return str(MANIFEST_JULIET_FULL)
 
 
 def _enumerate_cwes() -> list[str]:

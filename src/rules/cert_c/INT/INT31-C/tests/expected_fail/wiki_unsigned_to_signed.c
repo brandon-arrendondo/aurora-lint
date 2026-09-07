@@ -1,11 +1,12 @@
 /*
  * Rule: INT31-C
  * Source: wiki
- * Status: EXPECTED FAIL - Known limitation: ULONG_MAX provably does not fit a
- * signed char, but INT31-C has no value-based definite-truncation channel
- * ahead of its provenance gate (INT30-C and INT32-C both have one), so a
- * local initialised from a constant reads as bounded local state. A
- * genuine INT31-C violation.
+ * Status: EXPECTED FAIL, by measurement rather than oversight. INT31-C now has a
+ * definite-truncation channel, but it cannot evaluate this operand: the
+ * converted value is ULONG_MAX, and ValueRange is i64-based, so 2^64-1 is
+ * unrepresentable. The builtin limit table therefore has no unsigned 64-bit
+ * entries, and saturating one in would put a knowingly-wrong constant in front
+ * of every rule that evaluates constants. Genuine violation; kept as evidence.
  */
 
 #include <limits.h>

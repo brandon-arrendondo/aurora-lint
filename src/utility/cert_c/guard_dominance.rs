@@ -42,6 +42,7 @@
 //! needs no CFG build per query.
 
 use super::ast_utils::get_node_text;
+use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
 /// Operators that order a variable against something — these always bound it.
@@ -420,6 +421,56 @@ fn is_integer_limit_name(text: &str) -> bool {
         || text.ends_with("_MAX")
         || text.starts_with("SMALLEST_")
         || text.starts_with("LARGEST_")
+}
+
+/// True when a condition already evaluated at `site` bounds one of the
+/// variables appearing in `expr` against an integer limit — `n > SIZE_MAX /
+/// sizeof(T)`, `count >= UINT_MAX - len`, `a > INT_MAX / b`.
+///
+/// This is the overflow-guard question INT30-C and INT32-C each answered with
+/// a text search for one canonical spelling. Those searches required the
+/// literal `" / "` and `" > "` *with surrounding spaces*, so the very idiom
+/// they exist to honour slipped past whenever it was written
+/// `SIZE_MAX/sizeof(x)`, and they scanned ancestor statements only, missing an
+/// `&&` conjunct or a preceding `if`.
+///
+/// Requiring a limit name in the condition keeps this far narrower than
+/// [`has_dominating_comparison`] alone: an ordinary `if (n < 5)` bounds `n`
+/// but is not read here as an overflow guard.
+pub fn has_dominating_limit_guard(expr: &Node, site: &Node, source: &str) -> bool {
+    let vars = expression_variables(expr, source);
+    if vars.is_empty() {
+        return false;
+    }
+    dominating_conditions(site).iter().any(|cond| {
+        condition_mentions_integer_limit(cond, source)
+            && vars.iter().any(|v| {
+                condition_compares_var(cond, v, source, ComparisonKind::OrderingOrExtremeEquality)
+            })
+    })
+}
+
+/// The identifier names appearing in `expr` — the operands of the arithmetic
+/// whose guard is being looked for.
+fn expression_variables(expr: &Node, source: &str) -> Vec<String> {
+    let mut names: Vec<String> = query::find_descendants_of_kind(*expr, "identifier")
+        .iter()
+        .filter_map(|n| n.utf8_text(source.as_bytes()).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && !is_integer_limit_name(s))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// True when `condition` names an integer type's extreme value anywhere inside
+/// it — the marker that separates an overflow guard from an ordinary bound.
+fn condition_mentions_integer_limit(condition: &Node, source: &str) -> bool {
+    query::find_descendants_of_kind(*condition, "identifier")
+        .iter()
+        .filter_map(|n| n.utf8_text(source.as_bytes()).ok())
+        .any(|text| is_integer_limit_name(text.trim()))
 }
 
 /// True when `var` appears as an identifier anywhere under `node`.

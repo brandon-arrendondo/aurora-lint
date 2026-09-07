@@ -2,6 +2,8 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
@@ -26,6 +28,24 @@ pub struct Int34C {
     /// amount written as `MASK(n)` is recognized as a macro invocation
     /// rather than an opaque call.
     project_function_macro_names: RefCell<HashSet<String>>,
+    /// The same macros with their replacement lists, for the expansion pass:
+    /// a bound that only exists inside a `#define` (`IDR0_NUMSIDB_VAL(v)`
+    /// masking `v` down to four bits) is invisible until the invocation is
+    /// expanded.
+    project_function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    /// `project_function_macros` plus the file under analysis, per-file
+    /// winning -- the same merge `current_macros` does for object-like
+    /// macros, and needed for the same reason: a `#define` private to one
+    /// `.c` file never reaches the project scan, which only walks the header
+    /// directories.
+    current_function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    /// Pre-scanned callee summaries, consulted for shift amounts written as a
+    /// call: `return_range` bounds the amount when the returns fold.
+    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    /// The subset of `function_summaries` whose every return expression is a
+    /// compile-time constant, pre-projected into the name set
+    /// `const_eval::ConstantNameSets` wants.
+    constant_returning_functions: RefCell<HashSet<String>>,
 }
 
 impl Int34C {
@@ -37,6 +57,10 @@ impl Int34C {
             vra_results: RefCell::new(HashMap::new()),
             project_macro_names: RefCell::new(HashSet::new()),
             project_function_macro_names: RefCell::new(HashSet::new()),
+            project_function_macros: RefCell::new(HashMap::new()),
+            current_function_macros: RefCell::new(HashMap::new()),
+            function_summaries: RefCell::new(HashMap::new()),
+            constant_returning_functions: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -67,6 +91,14 @@ impl CertRule for Int34C {
         *self.project_macro_names.borrow_mut() = context.defined_macro_names.clone();
         *self.project_function_macro_names.borrow_mut() =
             context.function_macros.keys().cloned().collect();
+        *self.project_function_macros.borrow_mut() = context.function_macros.clone();
+        *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.constant_returning_functions.borrow_mut() = context
+            .function_summaries
+            .iter()
+            .filter(|(_, summary)| summary.returns_only_compile_time_constants)
+            .map(|(name, _)| name.clone())
+            .collect();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -87,6 +119,10 @@ impl CertRule for Int34C {
         // Merge project-level macros with per-file macros (per-file wins)
         *self.current_macros.borrow_mut() =
             const_eval::merged_macro_constants(&self.project_macros.borrow(), node, source);
+
+        let mut fmacros = self.project_function_macros.borrow().clone();
+        fmacros.extend(macro_expand::collect_function_macros(node, source));
+        *self.current_function_macros.borrow_mut() = fmacros;
 
         self.check_recursive(node, source, &mut violations);
         violations
@@ -155,6 +191,12 @@ impl Int34C {
                 return;
             }
 
+            // The amount is a call whose pre-scanned return range is already
+            // within any standard operand's width.
+            if self.shift_amount_bounded_by_callee_return(&right_node, source) {
+                return;
+            }
+
             // Try CFG-based VRA first (more precise)
             if let Some(range) = self.eval_shift_range_via_vra(node, &right_node, source) {
                 // A compile-time constant shift (min == max, non-negative) is
@@ -180,6 +222,18 @@ impl Int34C {
                         return;
                     }
                 }
+            }
+
+            // Last pass before reporting: redo the range analysis with the
+            // project's function-like macros expanded, and with every local
+            // the amount names resolved to whatever it was last assigned.
+            // Both are ordinary ways for a real bound to sit one hop away
+            // from the shift -- a register field extracted by a `#define`
+            // that masks it, or that extraction parked in a local on the
+            // line above -- and neither is reachable from the shift
+            // expression alone.
+            if self.shift_amount_bounded_after_expansion(node, &right_node, source) {
+                return;
             }
 
             // Check if this is an unsigned type operation. Unsigned shifts
@@ -292,102 +346,53 @@ impl Int34C {
         }
     }
 
-    /// True if `node` is an expression whose value is fixed at compile time:
-    /// literals, `sizeof`, macro constants and enumerators (whether or not
-    /// their value can be folded), function-like macro invocations over such
-    /// operands, and arithmetic/bitwise combinations of any of those.
-    ///
-    /// This is deliberately weaker than `const_eval::try_evaluate_expr`,
-    /// which needs an actual integer. A shift by `PAGE_BITS` is no more of
-    /// an INT34-C hazard than a shift by `12`, but sqc has no preprocessor
-    /// and the header defining `PAGE_BITS` is frequently one it never
-    /// parsed — so "did it fold?" is a fact about sqc's include coverage,
-    /// not about the code under analysis.
+    /// True if the shift amount is fixed at compile time, in the weak sense
+    /// [`const_eval::is_compile_time_constant_expr`] defines: the value need
+    /// not fold, because "did it fold?" is a fact about sqc's include
+    /// coverage, not about the code under analysis.
     fn is_compile_time_constant(&self, node: &Node, source: &str) -> bool {
-        match node.kind() {
-            "number_literal" | "char_literal" | "sizeof_expression" | "alignof_expression" => true,
-            "parenthesized_expression" => node
-                .named_child(0)
-                .is_some_and(|inner| self.is_compile_time_constant(&inner, source)),
-            "unary_expression" => node
-                .child_by_field_name("argument")
-                .is_some_and(|arg| self.is_compile_time_constant(&arg, source)),
-            "binary_expression" => {
-                let op = ast_utils::get_binary_operator(node, source).unwrap_or_default();
-                if !matches!(
-                    op,
-                    "+" | "-" | "*" | "/" | "%" | "<<" | ">>" | "&" | "|" | "^"
-                ) {
-                    return false;
-                }
-                let (Some(left), Some(right)) = (
-                    node.child_by_field_name("left"),
-                    node.child_by_field_name("right"),
-                ) else {
-                    return false;
-                };
-                self.is_compile_time_constant(&left, source)
-                    && self.is_compile_time_constant(&right, source)
-            }
-            "conditional_expression" => (0..node.named_child_count())
-                .filter_map(|i| node.named_child(i))
-                .all(|c| self.is_compile_time_constant(&c, source)),
-            "cast_expression" => node
-                .child_by_field_name("value")
-                .is_some_and(|v| self.is_compile_time_constant(&v, source)),
-            // `MASK(n)`, `CBn_MAIRm_ATTR_SHIFT(id)` — a function-like macro
-            // over constant arguments is itself a constant. A call to a real
-            // function is not: `x << get_amount()` stays a violation.
-            "call_expression" => {
-                let Some(callee) = node.child_by_field_name("function") else {
-                    return false;
-                };
-                if callee.kind() != "identifier" {
-                    return false;
-                }
-                let name = ast_utils::get_node_text(&callee, source);
-                if !self.project_function_macro_names.borrow().contains(name)
-                    && !ast_utils::is_defined_macro_name(name, source)
-                {
-                    return false;
-                }
-                node.child_by_field_name("arguments")
-                    .map(|args| {
-                        (0..args.named_child_count())
-                            .filter_map(|i| args.named_child(i))
-                            .all(|a| self.is_compile_time_constant(&a, source))
-                    })
-                    .unwrap_or(false)
-            }
-            "identifier" => self.identifier_is_compile_time_constant(node, source),
-            _ => false,
-        }
+        const_eval::is_compile_time_constant_expr(
+            node,
+            source,
+            &self.current_macros.borrow(),
+            const_eval::ConstantNameSets {
+                object_macros: &self.project_macro_names.borrow(),
+                function_macros: &self.project_function_macro_names.borrow(),
+                constant_returning_functions: &self.constant_returning_functions.borrow(),
+            },
+        )
     }
 
-    /// True if a bare identifier names a compile-time constant rather than a
-    /// run-time value.
-    fn identifier_is_compile_time_constant(&self, ident: &Node, source: &str) -> bool {
-        let name = ast_utils::get_node_text(ident, source);
-
-        // A `#define` or enumerator sqc did fold.
-        if self.current_macros.borrow().contains_key(name) {
-            return true;
+    /// The shift amount is a call to a pre-scanned function whose every
+    /// return path provably lands in `[0, 31]` — safe for any standard
+    /// integer operand, the same bound the VRA and const_eval paths use.
+    ///
+    /// Distinct from the constant case above: there the returns are fixed but
+    /// unfoldable, here they fold to a range that may hold several values.
+    fn shift_amount_bounded_by_callee_return(&self, node: &Node, source: &str) -> bool {
+        let node = if node.kind() == "parenthesized_expression" {
+            match node.named_child(0) {
+                Some(inner) => inner,
+                None => return false,
+            }
+        } else {
+            *node
+        };
+        if node.kind() != "call_expression" {
+            return false;
         }
-        // A `#define` sqc saw but could not fold (its replacement names
-        // something from a header outside the scan).
-        if self.project_macro_names.borrow().contains(name)
-            || ast_utils::is_defined_macro_name(name, source)
-        {
-            return true;
+        let Some(callee) = node.child_by_field_name("function") else {
+            return false;
+        };
+        if callee.kind() != "identifier" {
+            return false;
         }
-        // No binding anywhere sqc looked: not a local, not a parameter, not
-        // a file-scope declaration. C requires every identifier to be
-        // declared before use, so this one is a macro or an enumerator from
-        // a header that wasn't parsed — seL4's `seL4_PageBits` (generated
-        // per architecture) and `ARMSectionBits` (an enumerator in a header
-        // outside the scan root) both land here. It cannot be a local whose
-        // range we simply failed to compute, which is the case that matters.
-        ast_utils::resolve_identifier_binding(ident, name, source).is_none()
+        let name = ast_utils::get_node_text(&callee, source);
+        self.function_summaries
+            .borrow()
+            .get(name)
+            .and_then(|summary| summary.return_range)
+            .is_some_and(|range| range.min >= 0 && range.max < 32)
     }
 
     /// Returns true if the shift amount expression is bounded by a modulo operation
@@ -1128,6 +1133,58 @@ impl Int34C {
     /// Check if target is a descendant of node
     fn is_descendant(node: &Node, target: &Node) -> bool {
         query::find_first_descendant(*node, |n| n.id() == target.id()).is_some()
+    }
+
+    /// True when the shift amount is provably in range once the project's
+    /// function-like macros are expanded and the locals it names are resolved
+    /// to their last assignment.
+    ///
+    /// The two go together on purpose. `field = IDR1_NUMPAGENDXB_VAL(reg &
+    /// IDR1_NUMPAGENDXB); ... 1 << (field + 1)` needs both hops: without the
+    /// expansion the initialiser is an opaque call, and without the local
+    /// resolution the bound the expansion proves never reaches the shift.
+    ///
+    /// Identifiers are seeded rather than resolved inside the evaluator so
+    /// that a name already bounded by an enclosing loop or `if` keeps that
+    /// (tighter, control-flow-aware) bound.
+    fn shift_amount_bounded_after_expansion(
+        &self,
+        shift_node: &Node,
+        amount: &Node,
+        source: &str,
+    ) -> bool {
+        let fmacros = self.current_function_macros.borrow();
+        let macros = self.current_macros.borrow();
+
+        let mut var_ranges = const_eval::extract_loop_var_ranges(shift_node, source, &macros);
+        Self::extract_if_condition_ranges(shift_node, source, &macros, &mut var_ranges);
+
+        let mut names: Vec<String> = query::find_descendants_of_kind(*amount, "identifier")
+            .iter()
+            .map(|id| ast_utils::get_node_text(id, source).to_string())
+            .collect();
+        if amount.kind() == "identifier" {
+            names.push(ast_utils::get_node_text(amount, source).to_string());
+        }
+        let resolved: Vec<(String, const_eval::ValueRange)> = names
+            .into_iter()
+            .filter(|name| !var_ranges.contains_key(name))
+            .filter_map(|name| {
+                let range = const_eval::resolve_local_var_range_expanding(
+                    &name,
+                    shift_node,
+                    source,
+                    &macros,
+                    &var_ranges,
+                    &fmacros,
+                )?;
+                Some((name, range))
+            })
+            .collect();
+        var_ranges.extend(resolved);
+
+        const_eval::try_evaluate_range_expanding(amount, source, &macros, &var_ranges, &fmacros)
+            .is_some_and(|range| range.min >= 0 && (range.min == range.max || range.max < 32))
     }
 
     /// Evaluate the shift amount's range using CFG-based VRA.
