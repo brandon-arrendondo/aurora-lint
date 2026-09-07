@@ -323,39 +323,33 @@ fn generate_rules_all_toml() -> Result<()> {
     Ok(())
 }
 
-/// Rules the benchmark manifest disables while the CLI's default manifest
-/// keeps them enabled. **Empty on purpose, and adding to it needs oracle
-/// evidence.**
-///
-/// This list used to hold 13 rules (the DCL04/DCL06/DCL08, EXP02/EXP10/EXP12/
-/// EXP14/EXP19, INT01/INT02/INT16/INT17, PRE31 block) on the assumption that
-/// they were "too noisy on real codebases to be useful signal". Because one
-/// constant flipped all 13 together, the same block was inherited verbatim by
-/// every per-codebase manifest derived from this file, so the assumption was
-/// never testable: the rules could not fire where the ground-truth oracle
-/// could grade them.
-///
-/// Measured on the two corpora that did keep them enabled, the assumption is
-/// false for half of them: six (DCL04-C, DCL06-C, EXP12-C, EXP14-C, EXP19-C,
-/// INT17-C) score 73 TP / 14 FP on pure-ftpd, the best-precision rule group in
-/// the suite, and the other six score 0 TP / 57 FP there -- unproductive, but
-/// nowhere near enough volume to swamp a measurement. A whole-rule disable
-/// that hides a rule from the oracle is exactly what `conf/realworld/README.md`
-/// forbids, so the block is gone and every one of the 13 now runs on all nine
-/// real-world corpora.
-///
-/// Consequence to know about: this file is also the full-mode Juliet manifest
-/// (`bench/config.py: MANIFEST_ALL`), so emptying the list changes what a
-/// `--full` Juliet run measures, and it makes rules-benchmark.toml identical to
-/// rules-all.toml. Both are tracked as a follow-up.
-const BENCHMARK_NOISE_DISABLED: &[&str] = &[];
-
-/// Regenerate `rules_templates/rules-all.toml` (embedded into the aurora-lint binary
-/// via `include_str!` as its built-in default manifest) and
-/// `rules_templates/rules-benchmark.toml` (used by the real-world benchmark)
-/// from the just-generated `src/rules/cert_c/rules-all.toml`, so both stay
+/// Regenerate `rules_templates/rules-all.toml` from the just-generated
+/// `src/rules/cert_c/rules-all.toml`. It is `include_str!`'d into the
+/// aurora-lint binary as its built-in default manifest (`src/main.rs:
+/// DEFAULT_MANIFEST_TOML`) and is also the full-mode Juliet manifest
+/// (`bench/config.py: MANIFEST_JULIET_FULL`), so generating it here keeps both
 /// current with every rule addition/removal instead of requiring a manual
 /// resync step that's easy to forget.
+///
+/// **There is deliberately only one generated manifest.** A second,
+/// benchmark-only copy used to be written alongside it with a hardcoded
+/// 13-rule block (DCL04/DCL06/DCL08, EXP02/EXP10/EXP12/EXP14/EXP19,
+/// INT01/INT02/INT16/INT17, PRE31) flipped to `enabled = false` on the
+/// assumption that those rules were "too noisy on real codebases to be useful
+/// signal". Because one constant flipped all 13 together, and because every
+/// per-codebase real-world manifest was derived from that copy, the assumption
+/// was never testable: the rules could not fire where the ground-truth oracle
+/// could grade them. Measured on the two corpora that did keep them enabled it
+/// is false for half of them -- six score 73 TP / 14 FP on pure-ftpd, the
+/// best-precision rule group in the suite. A whole-rule disable that hides a
+/// rule from the oracle is exactly what `conf/realworld/README.md` forbids.
+///
+/// So a suite-wide disable is not a thing this file can express any more. A
+/// rule that does not apply to a codebase is disabled in that codebase's own
+/// `conf/realworld/<cb>-rules.toml`, as an explicit `enabled = false` carrying
+/// the reason. Do not reintroduce a curated second manifest here: it served
+/// both the real-world base and the full-mode Juliet manifest, so a real-world
+/// noise judgement silently moved a Juliet number.
 fn sync_rules_templates() -> Result<()> {
     let src_path = PathBuf::from("src/rules/cert_c/rules-all.toml");
     let src_content = fs::read_to_string(&src_path)
@@ -368,33 +362,12 @@ fn sync_rules_templates() -> Result<()> {
 
     const HEADER: &str = "[metadata]\nname = \"CERT C Rules Configuration\"\nversion = \"1.0.0\"\ndescription = \"Configuration for CERT C coding standards compliance checking\"\ncert_version = \"2016\"\n\n";
 
-    // rules_templates/rules-all.toml: verbatim body under the existing header.
     let all_path = PathBuf::from("rules_templates/rules-all.toml");
-    let all_content = format!("{}{}", HEADER, body);
-    fs::write(&all_path, &all_content)
+    fs::write(&all_path, format!("{}{}", HEADER, body))
         .with_context(|| format!("Failed to write {}", all_path.display()))?;
 
-    // rules_templates/rules-benchmark.toml: same body, with the noise-disabled
-    // rules' `enabled = true` flipped to `enabled = false`.
-    let mut bench_content = all_content;
-    for rule_id in BENCHMARK_NOISE_DISABLED {
-        let marker = format!("[rules.cert_c.{}]\nenabled = true", rule_id);
-        let replacement = format!("[rules.cert_c.{}]\nenabled = false", rule_id);
-        if bench_content.contains(&marker) {
-            bench_content = bench_content.replace(&marker, &replacement);
-        } else {
-            eprintln!(
-                "Warning: benchmark-noise rule '{}' not found in generated manifest (renamed/removed?)",
-                rule_id
-            );
-        }
-    }
-    let bench_path = PathBuf::from("rules_templates/rules-benchmark.toml");
-    fs::write(&bench_path, &bench_content)
-        .with_context(|| format!("Failed to write {}", bench_path.display()))?;
-
     println!("cargo:rerun-if-changed={}", src_path.display());
-    println!("Synced rules_templates/rules-all.toml and rules-benchmark.toml");
+    println!("Synced {}", all_path.display());
     Ok(())
 }
 

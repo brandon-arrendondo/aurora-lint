@@ -13,7 +13,15 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 # identifier would fork the namespace and drop every historical row out of
 # comparison; only the path on disk changed.
 SQC_BIN = PROJECT_DIR / "target" / "release" / "aurora-lint"
-MANIFEST_ALL = PROJECT_DIR / "rules_templates" / "rules-benchmark.toml"
+# The FULL-MODE JULIET manifest, and nothing else. It is deliberately its own
+# constant rather than an alias of RULES_ALL_TOML below, even though both name
+# the same file today: these are two different masters (a `-m` argument to a Juliet
+# scan vs. the implemented-rule inventory), and the whole point of retiring the
+# old separate rules-benchmark.toml was that one shared, hand-curatable
+# manifest let a real-world noise judgement silently move a Juliet number.
+# Real-world scans do NOT come through here -- every codebase names its own
+# conf/realworld/<cb>-rules.toml (bench/realworld_runner.py requires one).
+MANIFEST_JULIET_FULL = PROJECT_DIR / "rules_templates" / "rules-all.toml"
 RULES_ALL_TOML = PROJECT_DIR / "rules_templates" / "rules-all.toml"
 MANIFEST_CWE_DIR = PROJECT_DIR / "rules_templates" / "cwe"
 RULE_CWE_MAP = PROJECT_DIR / "data" / "rule_cwe_map.json"
