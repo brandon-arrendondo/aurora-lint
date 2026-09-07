@@ -171,6 +171,18 @@ impl Dcl31C {
                 self.declared_functions.borrow_mut().insert(name);
             }
         }
+        // A declaration tree-sitter could not finish is an `ERROR` node
+        // holding the specifiers and the `function_declarator`, with no
+        // `declaration`/`function_definition` node anywhere inside it, so the
+        // branch above never sees it. sqlite's `columnNullValue` (a
+        // conditional `__attribute__((aligned(8)))` inside its declarator) and
+        // every `__THROW`-decorated glibc prototype have that shape
+        // (tasks 1038, 1040).
+        if node.kind() == "ERROR" {
+            for name in ast_utils::function_names_in_error_declaration(&node, source) {
+                self.declared_functions.borrow_mut().insert(name);
+            }
+        }
         // Track function-like macro names (#define FOO(...) ...)
         // so that macro invocations aren't flagged as undeclared functions.
         if node.kind() == "preproc_function_def" {
@@ -236,6 +248,14 @@ impl Dcl31C {
                 // invocations like SAFE_PRINT(x) or CU_ASSERT_EQUAL(a,b) as function
                 // calls. They are never truly undeclared functions.
                 if is_macro_like_name(func_name) || self.is_known_macro(func_name, source) {
+                    return;
+                }
+
+                // `__attribute__((aligned(8)))` puts a call-shaped
+                // expression in the grammar's attribute argument list, so the
+                // attribute's own argument reads as a call to an undeclared
+                // `aligned`. Nothing inside an attribute is a call (task 1040).
+                if is_inside_attribute(node) {
                     return;
                 }
 
@@ -459,6 +479,26 @@ fn unwrap_to_function_declarator<'a>(node: &Node<'a>) -> Option<Node<'a>> {
             .and_then(|d| unwrap_to_function_declarator(&d)),
         _ => None,
     }
+}
+
+/// Returns true if the node sits inside a GCC/C23 attribute
+/// (`__attribute__((...))`, `[[...]]`). The grammar parses an attribute's
+/// argument list as ordinary expressions, so `aligned(8)` inside
+/// `__attribute__((aligned(8)))` is a `call_expression` to something that was
+/// never declared and never called.
+fn is_inside_attribute(node: &Node) -> bool {
+    let mut current = *node;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "attribute_specifier"
+            | "attribute_declaration"
+            | "attributed_declarator"
+            | "attribute" => return true,
+            _ => {}
+        }
+        current = parent;
+    }
+    false
 }
 
 /// Returns true if the node is nested inside a preprocessor conditional block
