@@ -121,60 +121,192 @@ pub fn collect_function_macro_alternatives(source: &str) -> HashMap<String, Vec<
     out
 }
 
-/// True if `m`'s replacement list mentions `var` as a *free* identifier —
-/// one that is not one of the macro's own parameters, and so binds to
-/// whatever `var` names at the call site.
+/// One occurrence of a free identifier in a macro's replacement list.
+struct FreeIdentOccurrence {
+    name: String,
+    /// The occurrence is the left operand of a *simple* assignment (`=`,
+    /// not `==`/`+=`/`<=`), so it writes the caller's variable without
+    /// reading it.
+    is_write: bool,
+}
+
+/// Every occurrence of a *free* identifier in `m`'s replacement list — one
+/// that is not among the macro's own parameters, and so binds to whatever
+/// that name means at the call site.
 ///
 /// This is C semantics, not a heuristic: a macro is textual substitution, so
 /// a free `c` in the replacement list really does read (or write) the `c` in
 /// scope where the macro is invoked. Identifiers are matched whole-token, so
 /// `c` does not match `cnt` or `pc`.
+///
+/// Two positions are excluded because the token there is not a variable
+/// reference at all and so cannot bind to a same-named local at the call
+/// site (task 966):
+///
+///   - after `.` or `->`, where it names a struct member. curl's
+///     `CONN_IS_PROXIED(x)` → `(x)->bits.proxy` does not touch a caller's
+///     `char *proxy`.
+///   - as the type of a cast. seL4's `pptr_of_cap(cap)` →
+///     `((pptr_t)cap_get_capPtr(cap))` does not touch anything named
+///     `pptr_t`.
+///
+/// Matching either would report a read the macro never performs, which for
+/// MSC13-C means silently suppressing a real finding.
+fn free_identifier_occurrences(m: &FunctionMacro) -> Vec<FreeIdentOccurrence> {
+    let chars: Vec<char> = m.body.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_ident_start(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_ident_char(chars[i]) {
+            i += 1;
+        }
+        let tok: String = chars[start..i].iter().collect();
+        if m.params.contains(&tok) {
+            continue;
+        }
+        if follows_member_access(&chars, start) || is_cast_type_position(&chars, start, i) {
+            continue;
+        }
+        out.push(FreeIdentOccurrence {
+            name: tok,
+            is_write: is_simple_assignment_target(&chars, i),
+        });
+    }
+    out
+}
+
+/// Index of the last non-whitespace character before `at`, if any.
+fn prev_non_space(chars: &[char], at: usize) -> Option<usize> {
+    chars[..at].iter().rposition(|c| !c.is_whitespace())
+}
+
+/// Index of the first non-whitespace character at or after `from`, if any.
+fn next_non_space(chars: &[char], from: usize) -> Option<usize> {
+    chars[from..]
+        .iter()
+        .position(|c| !c.is_whitespace())
+        .map(|off| from + off)
+}
+
+/// True if the token starting at `start` is preceded by `.` or `->`, i.e. it
+/// names a struct member (or a designated initializer's field) rather than a
+/// variable.
+fn follows_member_access(chars: &[char], start: usize) -> bool {
+    let Some(p) = prev_non_space(chars, start) else {
+        return false;
+    };
+    if chars[p] == '>' {
+        return p > 0 && chars[p - 1] == '-';
+    }
+    // A `.` here is member access, not a float: `1.foo` is not C, and a
+    // float's fractional part never begins with an identifier character.
+    chars[p] == '.'
+}
+
+/// True if the token spanning `start..end` is the type in a cast: it is the
+/// entire content of a parenthesised group, and something a cast can apply
+/// to follows the closing paren.
+///
+/// Deliberately tight. Widening it would drop genuine free identifiers,
+/// which is the opposite error — an unseen read reported as a dead store.
+fn is_cast_type_position(chars: &[char], start: usize, end: usize) -> bool {
+    let Some(open) = prev_non_space(chars, start) else {
+        return false;
+    };
+    if chars[open] != '(' {
+        return false;
+    }
+    let Some(close) = next_non_space(chars, end) else {
+        return false;
+    };
+    if chars[close] != ')' {
+        return false;
+    }
+    let Some(after) = next_non_space(chars, close + 1) else {
+        return false;
+    };
+    // `*` and `&` are deliberately absent: `(T)*p` and `(T)&x` are casts,
+    // but `(a) * (b)` and `(a) & (b)` are multiplication and bitwise-and,
+    // and in a macro body the operators are far commoner than the casts.
+    // Treating those as casts would drop a genuine free identifier, so the
+    // ambiguity resolves toward keeping it.
+    let c = chars[after];
+    is_ident_start(c) || c.is_ascii_digit() || matches!(c, '(' | '~' | '!')
+}
+
+/// True if the token ending at `end` is the left operand of a simple
+/// assignment: the next non-whitespace character is `=`, and it is neither
+/// half of a comparison (`==`, `<=`, `>=`, `!=`) nor a compound assignment
+/// (`+=`, `&=`, …), both of which read the old value.
+fn is_simple_assignment_target(chars: &[char], end: usize) -> bool {
+    let Some(eq) = next_non_space(chars, end) else {
+        return false;
+    };
+    if chars[eq] != '=' {
+        return false;
+    }
+    if chars.get(eq + 1) == Some(&'=') {
+        return false;
+    }
+    // A compound-assignment operator's first character sits immediately
+    // before the `=`, with no space (`x += 1`, never `x + = 1`).
+    !matches!(
+        chars.get(eq.wrapping_sub(1)),
+        Some('=')
+            | Some('!')
+            | Some('<')
+            | Some('>')
+            | Some('+')
+            | Some('-')
+            | Some('*')
+            | Some('/')
+            | Some('%')
+            | Some('&')
+            | Some('|')
+            | Some('^')
+    )
+}
+
+/// True if `m`'s replacement list mentions `var` as a *free* identifier —
+/// one that is not one of the macro's own parameters, and so binds to
+/// whatever `var` names at the call site. Write occurrences count: for the
+/// "is this variable used at all" question a write through a macro is still
+/// a use of the caller's variable.
 pub fn macro_references_free_identifier(m: &FunctionMacro, var: &str) -> bool {
     if var.is_empty() || m.params.iter().any(|p| p == var) {
         return false;
     }
-    let chars: Vec<char> = m.body.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if is_ident_start(chars[i]) {
-            let start = i;
-            while i < chars.len() && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            let tok: String = chars[start..i].iter().collect();
-            if tok == var {
-                return true;
-            }
-        } else {
-            i += 1;
-        }
-    }
-    false
+    free_identifier_occurrences(m)
+        .iter()
+        .any(|occ| occ.name == var)
 }
 
-/// Every identifier in `m`'s replacement list that is *free* — not one of
-/// the macro's own parameters — and so binds to whatever that name means at
-/// the call site. The set form of [`macro_references_free_identifier`], for
-/// callers collecting names rather than testing one.
-pub fn macro_free_identifiers(m: &FunctionMacro) -> HashSet<String> {
-    let mut out = HashSet::new();
-    let chars: Vec<char> = m.body.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if is_ident_start(chars[i]) {
-            let start = i;
-            while i < chars.len() && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            let tok: String = chars[start..i].iter().collect();
-            if !m.params.contains(&tok) {
-                out.insert(tok);
-            }
-        } else {
-            i += 1;
-        }
-    }
-    out
+/// The free identifiers in `m`'s replacement list that the macro actually
+/// *reads*: every one except those appearing only as the left operand of a
+/// simple assignment.
+///
+/// The distinction matters for liveness (task 965). Only a read makes a
+/// previously-active definition live, so a macro that assigns to a
+/// caller-scope variable and never reads it must not resurrect a genuinely
+/// dead store — mosquitto's
+/// `#define read_e(f, b, c) if(fread(b,1,c,f) != c){ rc = MOSQ_ERR_UNKNOWN; goto error; }`
+/// only ever writes `rc`, so the caller's `int rc = MOSQ_ERR_UNKNOWN;` really
+/// is dead and counting the macro's `rc` as a read would suppress a true
+/// positive.
+///
+/// The unused-variable question is different and keeps taking the union:
+/// a variable a macro only writes is still *used*.
+pub fn macro_free_identifier_reads(m: &FunctionMacro) -> HashSet<String> {
+    free_identifier_occurrences(m)
+        .into_iter()
+        .filter(|occ| !occ.is_write)
+        .map(|occ| occ.name)
+        .collect()
 }
 
 /// Join a backslash-continued logical line starting at `start`. Returns the
@@ -1611,5 +1743,93 @@ mod tests {
         assert!(!macro_references_free_identifier(bump, "c"));
         assert!(!macro_references_free_identifier(bump, "nt"));
         assert!(!macro_references_free_identifier(bump, ""));
+    }
+
+    fn one(src: &str, name: &str) -> FunctionMacro {
+        collect_function_macro_alternatives(src)
+            .remove(name)
+            .and_then(|mut v| {
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v.remove(0))
+                }
+            })
+            .unwrap_or_else(|| panic!("{name} collected"))
+    }
+
+    #[test]
+    fn free_identifier_scan_skips_struct_members() {
+        // curl lib/urldata.h: `proxy` here is a member of `bits`, not the
+        // caller's `char *proxy = NULL;` in lib/url.c.
+        let m = one(
+            "#define CONN_IS_PROXIED(x) ((x)->bits.proxy)\n",
+            "CONN_IS_PROXIED",
+        );
+        assert!(!macro_references_free_identifier(&m, "proxy"));
+        assert!(!macro_references_free_identifier(&m, "bits"));
+
+        // sqlite src/sqliteInt.h: `eDest` is a member of the parameter.
+        let m = one(
+            "#define IgnorableOrderby(X) ((X->eDest)<=SRT_Fifo)\n",
+            "IgnorableOrderby",
+        );
+        assert!(!macro_references_free_identifier(&m, "eDest"));
+        assert!(macro_references_free_identifier(&m, "SRT_Fifo"));
+    }
+
+    #[test]
+    fn free_identifier_scan_skips_cast_type_names() {
+        // seL4 include/kernel/boot.h: `pptr_t` is the cast's type.
+        let m = one(
+            "#define pptr_of_cap(cap) ((pptr_t)cap_get_capPtr(cap))\n",
+            "pptr_of_cap",
+        );
+        assert!(!macro_references_free_identifier(&m, "pptr_t"));
+        assert!(macro_references_free_identifier(&m, "cap_get_capPtr"));
+
+        // A parenthesised identifier followed by a binary operator stays a
+        // reference -- `(flags) & (f)` is bitwise-and, not a cast to
+        // `flags` of `&(f)`.
+        let m = one("#define IS_SET(f) ((flags) & (f))\n", "IS_SET");
+        assert!(macro_references_free_identifier(&m, "flags"));
+    }
+
+    #[test]
+    fn free_identifier_reads_exclude_write_only_targets() {
+        // mosquitto src/persist.h: read_e only ever WRITES rc, so the
+        // caller's `int rc = MOSQ_ERR_UNKNOWN;` stays dead.
+        let m = one(
+            "#define read_e(f, b, c) if(fread(b,1,c,f) != c){ rc = MOSQ_ERR_UNKNOWN; goto error; }\n",
+            "read_e",
+        );
+        let reads = macro_free_identifier_reads(&m);
+        assert!(
+            !reads.contains("rc"),
+            "write-only target is not a read: {reads:?}"
+        );
+        assert!(reads.contains("fread"));
+        assert!(reads.contains("MOSQ_ERR_UNKNOWN"));
+
+        // But the unused-variable question still counts it: a write through
+        // a macro is a use of the caller's variable.
+        assert!(macro_references_free_identifier(&m, "rc"));
+    }
+
+    #[test]
+    fn free_identifier_reads_keep_compound_and_comparison_operands() {
+        // `+=` and `==` both read the old value; only a bare `=` does not.
+        let m = one("#define BUMP(n) (cnt += (n))\n", "BUMP");
+        assert!(macro_free_identifier_reads(&m).contains("cnt"));
+
+        let m = one("#define AT_END(n) (pos == (n))\n", "AT_END");
+        assert!(macro_free_identifier_reads(&m).contains("pos"));
+
+        // A variable both written once and read once elsewhere is a read.
+        let m = one(
+            "#define SWAP_IN(v) do { tmp = (v); use(tmp); } while (0)\n",
+            "SWAP_IN",
+        );
+        assert!(macro_free_identifier_reads(&m).contains("tmp"));
     }
 }
