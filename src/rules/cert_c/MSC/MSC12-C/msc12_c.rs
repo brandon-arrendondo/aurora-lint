@@ -15,7 +15,8 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
-    find_containing_function, get_node_text, is_defined_macro_name,
+    self, declaration_has_qualifier, find_containing_function, find_identifier_in_declarator,
+    get_node_text, is_defined_macro_name,
 };
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -32,6 +33,15 @@ pub struct Msc12C {
     // pre-scan. An empty definition of one is an interface being satisfied,
     // not dead code -- see `is_declared_interface_stub`.
     header_declared_functions: RefCell<HashSet<String>>,
+    // Names of the `volatile`-qualified objects declared at FILE scope in
+    // the translation unit currently being scanned, recomputed once per
+    // file in `scan`. Needed by `condition_reads_volatile`, whose
+    // per-function half cannot see them: seL4 declares every one of the
+    // objects its busy-waits poll (`node_boot_lock`, `l2cc`) outside any
+    // function. Collected once because a walk to the translation unit per
+    // candidate loop is the shape that cost CON40-C 23 s on deeply nested
+    // input -- see ast_utils::file_scope_descendants_of_kinds.
+    file_scope_volatiles: RefCell<HashSet<String>>,
 }
 
 impl Msc12C {
@@ -39,6 +49,7 @@ impl Msc12C {
         Self {
             cross_file_macro_names: RefCell::new(HashSet::new()),
             header_declared_functions: RefCell::new(HashSet::new()),
+            file_scope_volatiles: RefCell::new(HashSet::new()),
         }
     }
 
@@ -140,7 +151,7 @@ impl Msc12C {
                 // was the dominant MSC12-C FP family on real embedded/kernel
                 // code (UART/timer/IOMMU register polling).
                 if let Some(cond) = self.enclosing_loop_condition_for_empty_body(node) {
-                    if self.condition_indicates_polling(&cond) {
+                    if self.condition_indicates_polling(&cond, source) {
                         return;
                     }
                 }
@@ -877,6 +888,82 @@ impl Msc12C {
             .any(|id| volatile_names.contains(&source[id.start_byte()..id.end_byte()]))
     }
 
+    /// Every `volatile`-qualified object name bound by `decls`, a set of
+    /// `declaration` / `parameter_declaration` nodes.
+    ///
+    /// Unlike [`Self::mentions_volatile_operand`], which harvests every
+    /// identifier under the declaration, this reads only the declarator --
+    /// so `volatile struct l2cc_map *const l2cc = (volatile struct
+    /// l2cc_map *)L2CC_L2C310_PPTR;` contributes `l2cc` and not the
+    /// non-volatile `L2CC_L2C310_PPTR` its initializer names. A
+    /// prototype's own `function_declarator` is skipped: a
+    /// `volatile`-returning declaration binds a function name, not an
+    /// object anyone can poll.
+    fn volatile_declared_names(decls: &[Node], source: &str) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for decl in decls {
+            if !declaration_has_qualifier(decl, "volatile", source) {
+                continue;
+            }
+            let mut cursor = decl.walk();
+            for declarator in decl.children_by_field_name("declarator", &mut cursor) {
+                // `int x = 0;` wraps its declarator in an `init_declarator`,
+                // a kind get_identifier_from_declarator does not descend.
+                let target = if declarator.kind() == "init_declarator" {
+                    declarator
+                        .child_by_field_name("declarator")
+                        .unwrap_or(declarator)
+                } else {
+                    declarator
+                };
+                if target.kind() == "function_declarator" {
+                    continue;
+                }
+                if let Some(name) = find_identifier_in_declarator(&target, source) {
+                    names.insert(name);
+                }
+            }
+        }
+        names
+    }
+
+    /// True if `cond` reads an object declared `volatile`, at file scope or
+    /// in the containing function (a parameter included: `while (!*reg);`
+    /// over a `volatile uint32_t *reg` is the same idiom).
+    ///
+    /// This is the evidence [`Self::condition_indicates_polling`]'s
+    /// bare-dereference exclusion was left open for (task 473). A volatile
+    /// read cannot be hoisted out of the loop, so a condition that reads
+    /// one re-reads it every iteration *by definition* and an empty body is
+    /// the idiom -- seL4's `while (!node_boot_lock);` and `while
+    /// (l2cc->maintenance.clean_inv_way);`. The non-volatile form really is
+    /// a bug: the compiler is free to hoist the read and turn the loop into
+    /// an infinite one, which is why `while (!timer->tistat);` over a plain
+    /// `uint32_t` register field stays flagged. That is a distinct semantic
+    /// signal, not a widening of the dereference predicate.
+    ///
+    /// Only reached once the cheap structural checks have already declined,
+    /// so the containing function is walked only for a loop that was about
+    /// to be reported.
+    fn condition_reads_volatile(&self, cond: &Node, source: &str) -> bool {
+        let reads_any = |names: &HashSet<String>| {
+            !names.is_empty()
+                && query::find_descendants_of_kind(*cond, "identifier")
+                    .iter()
+                    .any(|id| names.contains(&source[id.start_byte()..id.end_byte()]))
+        };
+        if reads_any(&self.file_scope_volatiles.borrow()) {
+            return true;
+        }
+        let Some(func) = find_containing_function(cond) else {
+            return false;
+        };
+        let local: Vec<Node> = query::find_descendants(func, |n| {
+            matches!(n.kind(), "declaration" | "parameter_declaration")
+        });
+        reads_any(&Self::volatile_declared_names(&local, source))
+    }
+
     /// Check for meaningless `continue` at the end of a loop body.
     fn check_meaningless_continue(
         &self,
@@ -1000,7 +1087,7 @@ impl Msc12C {
                         // (cond) { }` with a condition that reads through
                         // indirection or a call is a deliberate spin-wait.
                         if let Some(cond) = node.child_by_field_name("condition") {
-                            if self.condition_indicates_polling(&cond) {
+                            if self.condition_indicates_polling(&cond, source) {
                                 return;
                             }
                         }
@@ -1706,8 +1793,11 @@ impl Msc12C {
     /// (*flag);`, `while (!timer->stat);`) is deliberately NOT covered:
     /// structurally that's indistinguishable from a forgotten loop body
     /// (see tests/fail/testcases_empty_while_body.c), so it still gets
-    /// flagged, same as a bare-variable/literal condition (`while (x);`).
-    fn condition_indicates_polling(&self, cond: &Node) -> bool {
+    /// flagged, same as a bare-variable/literal condition (`while (x);`) —
+    /// *unless* the object read is `volatile`, which is affirmative
+    /// evidence the re-read is the point. See
+    /// [`Self::condition_reads_volatile`].
+    fn condition_indicates_polling(&self, cond: &Node, source: &str) -> bool {
         if query::find_first_descendant(*cond, |n| n.kind() == "call_expression").is_some() {
             return true;
         }
@@ -1748,7 +1838,10 @@ impl Msc12C {
         {
             return true;
         }
-        has_operator && has_indirection
+        if has_operator && has_indirection {
+            return true;
+        }
+        self.condition_reads_volatile(cond, source)
     }
 }
 
@@ -1890,6 +1983,10 @@ impl CertRule for Msc12C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        *self.file_scope_volatiles.borrow_mut() = Self::volatile_declared_names(
+            &ast_utils::file_scope_descendants_of_kinds(*node, &["declaration"]),
+            source,
+        );
         self.check_node(node, source, violations);
     }
 }
