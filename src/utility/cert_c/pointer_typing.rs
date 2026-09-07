@@ -47,6 +47,16 @@ pub struct PointerFacts {
 }
 
 impl PointerFacts {
+    /// Is `name` a pointer (or array) declared at file scope in this
+    /// translation unit?
+    ///
+    /// Name-keyed, like the rest of this struct: a local or parameter of the
+    /// same name shadows the file-scope declaration, and a caller that
+    /// resolves against its own type map first never reaches this.
+    pub fn is_file_scope_pointer(&self, name: &str) -> bool {
+        self.file_scope_pointers.contains(name)
+    }
+
     /// Collect the file-scope pointer facts of one parsed translation unit.
     pub fn collect(root: &Node, source: &str) -> Self {
         let mut facts = Self::default();

@@ -369,7 +369,6 @@ pub fn is_dereference_expression(node: &Node, source: &str) -> bool {
 
 /// True if `node` is a `&p`-style address-of expression. See
 /// [`is_dereference_expression`].
-#[allow(dead_code)]
 pub fn is_address_of_expression(node: &Node, source: &str) -> bool {
     node.kind() == "pointer_expression"
         && node
@@ -640,6 +639,74 @@ pub fn is_signed_type(type_str: &str) -> bool {
             | "ptrdiff_t"
             | "ssize_t"
     )
+}
+
+/// The bit-width of a known integer type name, or `None` when the spelling is
+/// not one this table recognizes (a typedef out of a header, a struct, a
+/// pointer).
+///
+/// Exact-match on the trimmed spelling, and the 64-bit family is tested before
+/// the 32-bit one so `long int` cannot match `int`. Widths are the pinned
+/// x86_64 LP64 model the benchmark corpus is built for.
+///
+/// Callers use this to *suppress*, so an unrecognized spelling answering
+/// `None` keeps whatever the caller would otherwise report.
+pub fn integer_type_width(type_str: &str) -> Option<u32> {
+    let t = type_str.trim();
+
+    if t == "char" || t == "signed char" || t == "unsigned char" || t == "int8_t" || t == "uint8_t"
+    {
+        return Some(8);
+    }
+
+    if t == "short"
+        || t == "signed short"
+        || t == "unsigned short"
+        || t == "short int"
+        || t == "signed short int"
+        || t == "unsigned short int"
+        || t == "int16_t"
+        || t == "uint16_t"
+    {
+        return Some(16);
+    }
+
+    // 64-bit types — check BEFORE 32-bit so "long int" doesn't match "int"
+    if t == "long"
+        || t == "signed long"
+        || t == "unsigned long"
+        || t == "long int"
+        || t == "signed long int"
+        || t == "unsigned long int"
+        || t == "long long"
+        || t == "signed long long"
+        || t == "unsigned long long"
+        || t == "long long int"
+        || t == "signed long long int"
+        || t == "unsigned long long int"
+        || t == "int64_t"
+        || t == "uint64_t"
+        || t == "size_t"
+        || t == "ssize_t"
+        || t == "ptrdiff_t"
+        || t == "intptr_t"
+        || t == "uintptr_t"
+    {
+        return Some(64);
+    }
+
+    if t == "int"
+        || t == "signed"
+        || t == "unsigned"
+        || t == "signed int"
+        || t == "unsigned int"
+        || t == "int32_t"
+        || t == "uint32_t"
+    {
+        return Some(32);
+    }
+
+    None
 }
 
 /// Check if a type string represents an unsigned integer type
