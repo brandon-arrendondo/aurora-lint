@@ -417,6 +417,30 @@ predicate over every translation unit and aggregates the result onto
 through `set_project_context`. The file-local half is what still answers on
 a run with no `-d` (task 936).
 
+### `src/analyze/init_state.rs` (argument-shape subset)
+**Problem solved:** what a CALL ARGUMENT names, for the "did the callee write
+this variable" question. Neighbouring `argument_objects` above, which asks
+WHICH object an argument names as a path string so two arguments can be
+compared; these answer for a single root name and need no frame. Both credit
+funnels (`init_state`'s and `null_state`'s) and EXP33-C's read predicate now
+route through them, because when they disagreed the rule reported a variable
+read-uninitialised at the very call that fills it (task 1028, tools_sqc).
+
+| Function | Signature | Description |
+|---|---|---|
+| `addressed_object_root` | `(lvalue: &Node) -> Option<Node>` | The variable whose OWN storage the address in `&lvalue` points into. `&s.len` roots at `s`, `&a[i]` at `a`, `&(x)` at `x`, `&s.in.v` at `s`; `&p->f` and `&(*p).f` root at nothing. The exact complement of `function_summary::deref_write_root`, which requires a dereference somewhere on the path BEFORE the root counts (a write through `p->f` reaches storage the caller owns); here a dereference must NOT have been crossed, because an address inside `*p` says nothing about whether `p` was written. Same traversal, opposite predicate — read one before changing the other. |
+| `strip_arg_casts` | `(arg: &Node) -> Node` | `(T *)x`, `(x)`, `((T *)x)` → `x`. Casts and redundant parentheses around a call argument, discarded. Distinct from the module-private `unwrap_cast`, which strips casts ONLY because the macro output-param path wants the narrower answer; do not merge them without measuring that path. |
+| `variadic_output_from_index` | `(func_name: &str) -> Option<usize>` | The first argument index from which EVERY remaining argument is an output — the scanf family, whose outputs depend on the format string rather than on a fixed position. `get_output_arg_indices` returns fixed indices and cannot express it, which is why `scanf`/`fscanf`/`sscanf` sit there as an empty list; an empty list alone once meant strictly LESS credit than not being listed at all (task 1029, tools_sqc). Returns `None` for everything else, including the `mbrlen`/`regexec` group, whose non-writing is `is_non_initializing_function`'s call. |
+
+**Wiring pattern:** `addressed_object_root` and `strip_arg_casts` are consumed
+by `init_state::extract_var_from_arg` /
+`init_state::process_unknown_function_call`,
+`null_state::extract_output_arg_var`, `function_summary`'s forwarding
+detection, and EXP33-C's `is_addressed_subobject_root`.
+`variadic_output_from_index` is consumed anywhere
+`get_output_arg_indices` is — the two are always asked together, and an empty
+answer from one is only meaningful alongside the other.
+
 ## Constant folding & value-range analysis
 
 ### `src/analyze/const_eval.rs`
@@ -591,6 +615,7 @@ are private implementation detail behind the small public surface below.
 | `propagate_transitive_frees_param_fields` | `(summaries: &mut ...)` | Same transitive propagation, but for field-level frees (`frees_param_fields`, e.g. `free(x->will)`). |
 | `propagate_transitive_frees_param_pointees` | `(summaries: &mut ...)` | Same transitive propagation, but for pointee-level frees (`frees_param_pointees`, e.g. `free(*p)` reached through a forwarding wrapper). |
 | `propagate_return_taint` | `(summaries: &mut ...)` | Propagates "return value is tainted" through call chains. |
+| `propagate_transitive_modifies` | `(summaries: &mut ...)` | Discharges the output-parameter coverage obligations `modifies_params_pending` parked when a function covers a parameter only by FORWARDING it to a callee — promoting it into `unconditional_modifies_params` (and into `modifies_params`, keeping the subset invariant) once every callee it was forwarded to is a MUST-write itself. Iterated to a fixpoint, because promoting one function's output parameter is what discharges its caller's obligation. Purely additive, so it converges and cannot withdraw a proven write. |
 
 `FunctionSummary`'s fields (all `pub`) are the actual payload most rules
 read: `frees_params`/`unconditional_frees_params` (MAY-free vs. MUST-free,
