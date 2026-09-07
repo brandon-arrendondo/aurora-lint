@@ -1,13 +1,22 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
+use crate::analyze::value_range::RangeAnalysisResult;
+use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{get_node_text, integer_type_width, is_unsigned_type};
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
+use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Int08C;
+#[derive(Default)]
+pub struct Int08C {
+    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+}
 
 impl CertRule for Int08C {
     fn rule_id(&self) -> &'static str {
@@ -28,6 +37,20 @@ impl CertRule for Int08C {
 
     fn cert_id(&self) -> &'static str {
         "INT08-C"
+    }
+
+    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
+        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    }
+
+    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
+        *self.vra_results.borrow_mut() = results.clone();
+    }
+
+    /// The truncating-store channel asks what a variable's value *is* at one
+    /// program point, which only flow-sensitive ranges can answer soundly.
+    fn needs_vra(&self) -> bool {
+        true
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -285,6 +308,9 @@ impl Int08C {
             let Some(width) = integer_type_width(var_type) else {
                 continue;
             };
+            if Self::operand_is_guarded(&value, source) {
+                continue;
+            }
             let Some(range) = self.stored_value_range(&value, source, macros) else {
                 continue;
             };
@@ -357,36 +383,72 @@ impl Int08C {
         stores
     }
 
-    /// The range of a stored expression, with each identifier in it resolved
-    /// from its own preceding initialisation rather than from its type.
+    /// The range of a stored expression, evaluated with the **flow-sensitive**
+    /// ranges VRA has at this exact program point.
     ///
-    /// The type's promoted range is the wrong seed here: it is what proves an
-    /// arithmetic expression *can* leave `int`, whereas this channel has to
-    /// prove a specific value *does* leave the destination, so only a
-    /// resolvable value will do.
+    /// The type's promoted range is the wrong seed here -- that is what proves
+    /// an arithmetic expression *can* leave `int`, whereas this channel has to
+    /// prove a specific value *does* leave the destination. A backward scan for
+    /// the variable's last resolvable assignment is wrong too, and not merely
+    /// imprecise: in
+    ///
+    /// ```c
+    /// char data = ' ';
+    /// if (cond) { data = 2; }        /* the value that reaches the store */
+    /// char result = data * data;
+    /// ```
+    ///
+    /// it walks past the nested assignment and reports 32 * 32 with full
+    /// confidence. That is Juliet's `goodG2B` shape, so the first thing such a
+    /// scan does is flag the *fixed* function. Only a real dataflow answer is
+    /// admissible for a claim this definite; no VRA result means no finding.
     fn stored_value_range(
         &self,
         value: &Node,
         source: &str,
         macros: &MacroConstantMap,
     ) -> Option<ValueRange> {
-        let mut var_ranges: VarRangeMap = HashMap::new();
-        for ident in query::find_descendants_of_kind(*value, "identifier") {
-            let name = get_node_text(&ident, source).to_string();
-            if var_ranges.contains_key(&name) {
-                continue;
-            }
-            if let Some(range) = const_eval::resolve_local_var_range(
-                &name,
-                value,
-                source,
-                macros,
-                &VarRangeMap::new(),
-            ) {
-                var_ranges.insert(name, range);
-            }
-        }
+        let var_ranges = vra_access::var_ranges_replay_at(
+            &self.function_cfgs.borrow(),
+            &self.vra_results.borrow(),
+            value,
+            source,
+            macros,
+        )?;
         const_eval::try_evaluate_range(value, source, macros, &var_ranges)
+    }
+
+    /// Has control flow tested any operand of the stored expression on the way
+    /// here?
+    ///
+    /// If so, the value that reaches the store is whatever the test admits,
+    /// and a definite claim is no longer available. Juliet's CWE-190 good sink
+    /// is exactly this:
+    ///
+    /// ```c
+    /// data = CHAR_MAX;
+    /// if (data < CHAR_MAX) { char result = data + 1; }   /* never runs */
+    /// ```
+    ///
+    /// VRA carries `data` into the branch as `[127, 127]` rather than applying
+    /// the contradictory constraint, so the range engine happily reports 128 in
+    /// a branch that cannot execute. Without this test, 373 of the 578 findings
+    /// on that cohort were the *fixed* function -- measured, not estimated.
+    ///
+    /// Deliberately broad (`ComparisonKind::Any`): the point is not which
+    /// bound the guard establishes but that the operand's value at the store is
+    /// no longer the one the unguarded dataflow computed.
+    fn operand_is_guarded(value: &Node, source: &str) -> bool {
+        query::find_descendants_of_kind(*value, "identifier")
+            .iter()
+            .any(|ident| {
+                guard_dominance::has_dominating_comparison(
+                    get_node_text(ident, source),
+                    value,
+                    source,
+                    guard_dominance::ComparisonKind::Any,
+                )
+            })
     }
 
     /// Does no value in `range` fit a `width`-bit integer of this signedness?
