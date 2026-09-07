@@ -195,6 +195,7 @@ consult it wherever a positional lookup walks backwards.
 | `find_declaration_in_scope_chain` | `(scopes: &[Node], ident_start: usize, name: &str, source: &str) -> Option<Node>` | The body of `find_enclosing_declaration_for_identifier`, over a scope chain (innermost first) the caller already holds. **Use this from any pass that is already descending the tree** — keep enclosing `compound_statement`/`for_statement` nodes on a stack (`is_declaration_scope` tests for one) and resolution costs nothing extra. Rediscovering the chain per identifier does not: see the ancestor-walk warning below. |
 | `is_declaration_scope` | `(node: &Node) -> bool` | True for the node kinds that open a scope the two functions above search (`compound_statement`, `for_statement`). |
 | `file_scope_descendants_of_kinds` | `(root: Node, kinds: &[&str]) -> Vec<Node>` | Descendants matching `kinds` that lie outside every function, found by pruning at `function_definition`. Replaces the "collect everything, then reject what `find_containing_function` answers for" shape. |
+| `ParentMap` | `new(root: Node) -> ParentMap`; `parent_of(node) -> Option<Node>`; `find_ancestor(node, pred) -> Option<Node>` | Per-file parent cache: one O(n) pre-order walk populates a `node.id() -> parent` map so subsequent ancestor walks pay O(1) per step instead of tree-sitter's O(depth) `Node::parent()`. **Use this when none of the first three patterns fits** — most often when the walked predicate involves per-ancestor field/text checks and the caller doesn't already have a scope stack. Build once at the top of `check()` and thread `&ParentMap` through helpers. Applied to STR34-C's `has_unsigned_char_cast` took the deep-nest fixture from 2.93 s → 0.02 s (task 984, this repo). |
 | `get_identifier_from_declarator` | `(declarator: &Node, source: &str) -> String` | Extracts the identifier name from a declarator (simple, pointer, array, function-pointer). Returns `""` on failure (not `Option`). |
 | `find_identifier_in_declarator` | `(declarator: &Node, source: &str) -> Option<String>` | Same job as `get_identifier_from_declarator` but returns `Option` instead of an empty-string sentinel. **Note: these two are NOT interchangeable** — pick based on whether the call site can handle an `Option` (task 387 documents a real regression from picking the wrong one). |
 | `get_function_parameters` | `(function_node: &Node, source: &str) -> Option<Vec<(String, String)>>` | Extracts `(name, full_type)` pairs for a function's parameters, correctly finding the `function_declarator` even when nested inside a `pointer_declarator` (pointer-returning functions). |
@@ -213,7 +214,8 @@ consult it wherever a positional lookup walks backwards.
 > still sit in the 0.3–3 s band on that input for the same reason. Prefer, in
 > order: prune on the way down (`file_scope_descendants_of_kinds`); carry what
 > you need on a stack as you descend (`find_declaration_in_scope_chain`);
-> precompute the answer once per function as byte ranges and test containment.
+> precompute the answer once per function as byte ranges and test containment;
+> build a `ParentMap` once per file and use its O(1)-per-step ancestor walk.
 > A bounded walk (a fixed few levels) is fine.
 
 ### `src/utility/cert_c/declarator_utils.rs`
