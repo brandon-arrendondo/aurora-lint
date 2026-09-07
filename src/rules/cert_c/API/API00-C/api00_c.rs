@@ -50,20 +50,39 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     get_function_parameters, get_node_text, get_sanitized_node_text, is_pointer_type,
 };
+use crate::utility::cert_c::float_typing::StructFieldTypes;
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::overflow_helpers;
+use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
+/// Everything [`pointer_typing`] needs to answer "is this operand a pointer?",
+/// gathered once per file and threaded through the arithmetic-site walk.
+///
+/// The integer half of this rule only ever asks the question to *suppress*
+/// (task 738), which is why a borrowed bundle is enough — no site is created
+/// by a positive answer.
+struct PointerTypes<'a> {
+    type_map: &'a HashMap<String, String>,
+    struct_field_types: &'a StructFieldTypes,
+    facts: &'a PointerFacts,
+}
+
 pub struct Api00C {
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    struct_field_types: RefCell<StructFieldTypes>,
+    pointer_facts: RefCell<PointerFacts>,
 }
 
 impl Api00C {
     pub fn new() -> Self {
         Self {
             function_summaries: RefCell::new(HashMap::new()),
+            struct_field_types: RefCell::new(StructFieldTypes::new()),
+            pointer_facts: RefCell::new(PointerFacts::default()),
         }
     }
 }
@@ -91,12 +110,27 @@ impl CertRule for Api00C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);
+        let type_map = overflow_helpers::collect_variable_types(node, source);
+        let struct_field_types = self.struct_field_types.borrow();
+        let facts = self.pointer_facts.borrow();
+        let pointer_types = PointerTypes {
+            type_map: &type_map,
+            struct_field_types: &struct_field_types,
+            facts: &facts,
+        };
         for func in query::find_descendants_of_kind(*node, "function_definition") {
-            self.check_function_parameter_validation(&func, source, &mut violations);
+            self.check_function_parameter_validation(
+                &func,
+                source,
+                &pointer_types,
+                &mut violations,
+            );
         }
         violations
     }
@@ -107,6 +141,7 @@ impl Api00C {
         &self,
         function_node: &Node,
         source: &str,
+        pointer_types: &PointerTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Skip static functions — API00-C is about public API contracts
@@ -264,6 +299,7 @@ impl Api00C {
                 &body,
                 &integer_params,
                 source,
+                pointer_types,
                 violations,
             );
         }
@@ -276,11 +312,12 @@ impl Api00C {
         body: &Node,
         integer_params: &[String],
         source: &str,
+        pointer_types: &PointerTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for arithmetic operations using integer parameters without overflow checks
         for param_name in integer_params {
-            if self.has_unchecked_arithmetic(body, param_name, source) {
+            if self.has_unchecked_arithmetic(body, param_name, source, pointer_types) {
                 self.report_violation(function_node, param_name, "integer", source, violations);
             }
         }
@@ -310,8 +347,14 @@ impl Api00C {
     /// operator, either operand order, a non-literal bound, an `&&` conjunct,
     /// and an enclosing branch or loop condition as well as a preceding
     /// guard). A violation needs one site with no such comparison.
-    fn has_unchecked_arithmetic(&self, body: &Node, param_name: &str, source: &str) -> bool {
-        let sites = Self::collect_arithmetic_sites(body, param_name, source);
+    fn has_unchecked_arithmetic(
+        &self,
+        body: &Node,
+        param_name: &str,
+        source: &str,
+        pointer_types: &PointerTypes,
+    ) -> bool {
+        let sites = Self::collect_arithmetic_sites(body, param_name, source, pointer_types);
         if sites.is_empty() {
             return false;
         }
@@ -407,9 +450,10 @@ impl Api00C {
         body: &Node<'a>,
         param_name: &str,
         source: &str,
+        pointer_types: &PointerTypes,
     ) -> Vec<Node<'a>> {
         let mut sites = Vec::new();
-        Self::walk_arithmetic_sites(body, param_name, source, &mut sites);
+        Self::walk_arithmetic_sites(body, param_name, source, pointer_types, &mut sites);
         sites
     }
 
@@ -417,6 +461,7 @@ impl Api00C {
         node: &Node<'a>,
         param_name: &str,
         source: &str,
+        pointer_types: &PointerTypes,
         sites: &mut Vec<Node<'a>>,
     ) {
         let operator = node.child_by_field_name("operator").map(|op| op.kind());
@@ -450,13 +495,28 @@ impl Api00C {
             _ => false,
         };
 
+        // `end = ies + ies_len` is pointer arithmetic, not integer
+        // arithmetic: the value that moves is `ies`, and a pointer operand
+        // cannot produce the integer overflow this half of the rule is about
+        // (task 738). The shared engine answers positively-only, so an
+        // operand whose type does not resolve keeps its site and the rule
+        // keeps its recall.
+        let is_site = is_site
+            && !pointer_typing::is_pointer_arithmetic(
+                node,
+                source,
+                pointer_types.type_map,
+                pointer_types.struct_field_types,
+                pointer_types.facts,
+            );
+
         if is_site {
             sites.push(*node);
         }
 
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            Self::walk_arithmetic_sites(&child, param_name, source, sites);
+            Self::walk_arithmetic_sites(&child, param_name, source, pointer_types, sites);
         }
     }
 
