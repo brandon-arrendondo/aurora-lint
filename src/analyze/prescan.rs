@@ -597,6 +597,7 @@ fn prescan_file_list(
         &header_declared_functions,
     );
 
+    function_summary::propagate_transitive_modifies(&mut function_summaries);
     function_summary::propagate_transitive_frees(&mut function_summaries);
     function_summary::propagate_transitive_frees_param_fields(&mut function_summaries);
     function_summary::propagate_transitive_frees_param_pointees(&mut function_summaries);

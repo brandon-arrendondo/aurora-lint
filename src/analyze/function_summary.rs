@@ -6,7 +6,7 @@
 
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::analyze::null_state::NullState;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use tree_sitter::Node;
 
 /// Summary of a function's behavior relevant to CERT C rules.
@@ -32,6 +32,45 @@ pub struct FunctionSummary {
     /// (task 401).
     #[serde(default)]
     pub unconditional_frees_params: HashSet<usize>,
+    /// Subset of `modifies_params` whose write through the parameter is not
+    /// known to be conditional — the MUST-write fact, and the output-param
+    /// counterpart of `unconditional_frees_params`.
+    ///
+    /// A rule that clears an "uninitialised" state because a callee writes
+    /// through an output parameter needs MUST, not MAY. `set_flag(n, &sign)`
+    /// writes `*sign_flag` under `if (n > 0)` and `else if (n < 0)` and writes
+    /// nothing when `n == 0`, so the caller can still read `sign`
+    /// uninitialised — the CERT wiki's own noncompliant example, which
+    /// EXP33-C missed for as long as MAY was all the summary offered
+    /// (task 988, tools_sqc).
+    ///
+    /// Built by DEMOTION rather than by re-derivation: a parameter leaves the
+    /// set only when the AST pass found writes through it and every one of
+    /// them was conditional. A parameter whose writes the pass cannot see —
+    /// through a macro, or a nested helper — stays in, so the narrower AST
+    /// view can only act on positive evidence and never silently withdraws a
+    /// write the text scan did find.
+    #[serde(default)]
+    pub unconditional_modifies_params: HashSet<usize>,
+    /// Parameters the coverage walk could only cover by FORWARDING them to a
+    /// callee, keyed to the `(callee, callee parameter index)` pairs that
+    /// have to be MUST-writes themselves for the coverage to hold.
+    ///
+    /// The obligation cannot be discharged where it is raised: a callee
+    /// defined in another file has no summary yet while this one is being
+    /// built, which is why the free version propagates in prescan rather
+    /// than in `analyze_param_usage` too. `propagate_transitive_modifies`
+    /// settles these once every file's summary exists.
+    ///
+    /// Kept separate from `unconditional_param_passthroughs` because that
+    /// set answers a different question -- whether the forwarding call site
+    /// is unconditionally reached -- and the answer here is routinely no.
+    /// sqlite's `fts5CsrPoslist` forwards `pa` from inside an if/else whose
+    /// other arm writes it directly, so no single call site is
+    /// unconditional and yet no returning path leaves `pa` untouched
+    /// (task 1011, tools_sqc).
+    #[serde(default)]
+    pub modifies_params_pending: HashMap<usize, Vec<(String, usize)>>,
     /// Parameter indices whose **pointee** this function frees — `free(*param)`,
     /// the `void **` "safe free" wrapper idiom:
     ///
@@ -431,7 +470,7 @@ fn collect_function_summaries(
     // holding an `analyze_function` result, so the frame grew with
     // `FunctionSummary` itself: raylib's parse aborted the entire scan the
     // next time the struct gained a field, and would have again on the one
-    // after that. Depth now costs heap.
+    // after that (task 1011, tools_sqc). Depth now costs heap.
     let mut stack = vec![*node];
     while let Some(current) = stack.pop() {
         if current.kind() == "function_definition" && !is_macro_function_definition(&current) {
@@ -1278,6 +1317,281 @@ fn strip_free_argument(arg: Node) -> Option<(Node, bool)> {
 /// `body` whose sole argument is exactly one of `params` by simple
 /// identifier — AST-based rather than the old text-substring scan so
 /// `is_unconditionally_reached` can be checked per call site (task 401).
+/// The parameter-rooted lvalue an assignment writes THROUGH, if any.
+///
+/// `*p`, `p->f`, `p[i]`, `(*p).f` and `*p++` all write to storage the caller
+/// owns; a bare `p = ...` rebinds the local copy of the pointer and writes
+/// nothing the caller can observe, which is why a dereference has to be seen
+/// somewhere on the path before the root identifier counts.
+fn deref_write_root<'a>(lvalue: &Node<'a>, saw_deref: bool) -> Option<Node<'a>> {
+    match lvalue.kind() {
+        "identifier" => saw_deref.then_some(*lvalue),
+        "parenthesized_expression" => deref_write_root(&lvalue.child(1)?, saw_deref),
+        "cast_expression" => deref_write_root(&lvalue.child_by_field_name("value")?, saw_deref),
+        "update_expression" => {
+            deref_write_root(&lvalue.child_by_field_name("argument")?, saw_deref)
+        }
+        "pointer_expression" => {
+            let operator = lvalue.child(0)?;
+            let is_deref = operator.kind() == "*";
+            deref_write_root(
+                &lvalue.child_by_field_name("argument")?,
+                saw_deref || is_deref,
+            )
+        }
+        "subscript_expression" => deref_write_root(&lvalue.child_by_field_name("argument")?, true),
+        "field_expression" => {
+            // `p->f` dereferences p; `s.f` does not, and only reaches a
+            // parameter's storage if something below it did.
+            let arrow = lvalue
+                .child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "->");
+            deref_write_root(&lvalue.child_by_field_name("argument")?, saw_deref || arrow)
+        }
+        _ => None,
+    }
+}
+
+/// The `(callee, callee parameter index)` pairs a coverage answer is
+/// contingent on. Empty means the answer stands on this function's own
+/// writes; see `FunctionSummary::modifies_params_pending`.
+type WriteObligations = BTreeSet<(String, usize)>;
+
+/// Whether every path that falls out of `stmt` writes through `param`, and
+/// what that answer rests on: `None` is not covered, `Some(set)` is covered
+/// provided every pair in `set` is itself a MUST-write, and `Some(empty)` is
+/// covered outright.
+///
+/// The exhaustiveness question AST position cannot answer. sqlite's
+/// `fts5CsrPoslist` sets `*pn` and `*pa` in each arm of an if/else and again
+/// in both arms of a trailing `if (rc == SQLITE_OK) ... else ...`: every
+/// write is nested inside a conditional, and yet no returning path leaves the
+/// outputs untouched. Judging such a function by position alone reports its
+/// callers' variables uninitialised (task 988, tools_sqc).
+///
+/// One arm of that function writes `*pa` only by handing `pa` to
+/// `sqlite3Fts5ExprPoslist`, which a structural walk cannot see through. That
+/// leg returns an obligation rather than a verdict, so the interprocedural
+/// half of the answer is deferred instead of guessed (task 1011, tools_sqc).
+///
+/// Only an if/else with BOTH arms covered counts. A bare `if` without an
+/// `else`, a loop that may run zero times, a `switch` (whose `default` may be
+/// absent) are all left as partial -- which is the honest reading and the one
+/// the fixture depends on: `set_flag`'s `if`/`else if` has no final `else`.
+///
+/// Early `return`s are not modelled, matching the simplification
+/// `is_unconditionally_reached` already makes.
+///
+/// Depth-capped. An `if`/`else if` chain nests one level per arm, so a
+/// machine-generated chain thousands long recurses as deep, and this runs on
+/// prescan worker threads whose stacks are far smaller than the main one --
+/// raylib overflowed and aborted the whole scan. Past the cap the answer is
+/// the conservative one, which is the same thing an uncovered branch returns.
+fn writes_on_all_paths(stmt: &Node, source: &str, param: &str) -> Option<WriteObligations> {
+    writes_on_all_paths_capped(stmt, source, param, 0)
+}
+
+/// Deep enough for any hand-written nesting, far below the stack a prescan
+/// worker gets.
+const WRITE_COVERAGE_MAX_DEPTH: u32 = 96;
+
+fn writes_on_all_paths_capped(
+    stmt: &Node,
+    source: &str,
+    param: &str,
+    depth: u32,
+) -> Option<WriteObligations> {
+    if depth >= WRITE_COVERAGE_MAX_DEPTH {
+        return None;
+    }
+    let writes_on_all_paths = |stmt: &Node, source: &str, param: &str| {
+        writes_on_all_paths_capped(stmt, source, param, depth + 1)
+    };
+    match stmt.kind() {
+        "compound_statement" | "translation_unit" => {
+            // One covering statement is enough, so this is a disjunction --
+            // and the cheapest covering statement is the one to report, since
+            // an obligation a sibling already discharges outright would just
+            // make the whole answer wait on a callee for nothing.
+            let mut cursor = stmt.walk();
+            let children: Vec<Node> = stmt.named_children(&mut cursor).collect();
+            let mut best: Option<WriteObligations> = None;
+            for child in &children {
+                match writes_on_all_paths(child, source, param) {
+                    Some(obligations) if obligations.is_empty() => return Some(obligations),
+                    Some(obligations)
+                        if best.as_ref().is_none_or(|b| obligations.len() < b.len()) =>
+                    {
+                        best = Some(obligations);
+                    }
+                    Some(_) => {}
+                    None => {}
+                }
+            }
+            best
+        }
+        "labeled_statement" => stmt
+            .named_child(stmt.named_child_count().saturating_sub(1))
+            .and_then(|inner| writes_on_all_paths(&inner, source, param)),
+        "else_clause" => stmt
+            .named_child(0)
+            .and_then(|inner| writes_on_all_paths(&inner, source, param)),
+        "if_statement" => {
+            // Both arms, so this is a conjunction: the answer needs every
+            // obligation either arm raised.
+            let (Some(consequence), Some(alternative)) = (
+                stmt.child_by_field_name("consequence"),
+                stmt.child_by_field_name("alternative"),
+            ) else {
+                return None;
+            };
+            let mut obligations = writes_on_all_paths(&consequence, source, param)?;
+            obligations.extend(writes_on_all_paths(&alternative, source, param)?);
+            Some(obligations)
+        }
+        "expression_statement" => {
+            let expr = stmt.named_child(0)?;
+            let lvalue = match expr.kind() {
+                "assignment_expression" => expr.child_by_field_name("left"),
+                "update_expression" => expr.child_by_field_name("argument"),
+                _ => None,
+            };
+            let writes_here = lvalue
+                .and_then(|l| deref_write_root(&l, false))
+                .is_some_and(|root| root.utf8_text(source.as_bytes()).unwrap_or("") == param);
+            if writes_here {
+                return Some(WriteObligations::new());
+            }
+            // `*pn = callee(..., pa)` writes through `pn` here and through
+            // `pa` only inside the callee, so the same statement can be a
+            // direct write for one parameter and a forwarded one for another.
+            let (callee, idx) = forwarded_write_obligation(&expr, source, param)?;
+            Some(WriteObligations::from([(callee, idx)]))
+        }
+        _ => None,
+    }
+}
+
+/// The `(callee, parameter index)` a statement hands `param` to, if any --
+/// the interprocedural leg of the coverage walk.
+///
+/// Argument position is counted exactly as `collect_param_passthroughs`
+/// counts it, since the index is looked up against the callee's own summary
+/// and the two have to agree. Only a bare identifier counts: `&param` and
+/// `param->field` hand the callee something other than the parameter.
+///
+/// The first forwarding call in source order wins. A statement that forwards
+/// `param` to two callees is really a disjunction -- either writing it
+/// suffices -- which a flat obligation set cannot express, so taking one is
+/// an under-approximation. That direction only leaves an existing false
+/// positive standing; the alternative would suppress a real finding.
+fn forwarded_write_obligation(expr: &Node, source: &str, param: &str) -> Option<(String, usize)> {
+    use lang_parsing_substrate::query;
+
+    for call in query::find_descendants_of_kind(*expr, "call_expression") {
+        let Some(func_node) = call.child_by_field_name("function") else {
+            continue;
+        };
+        let callee = func_node.utf8_text(source.as_bytes()).unwrap_or("");
+        // Same exclusion `collect_param_passthroughs` makes: these two are
+        // the free path's business, not an output-parameter write.
+        if callee.is_empty() || callee == "free" || callee == "realloc" {
+            continue;
+        }
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let mut callee_idx = 0usize;
+        for i in 0..arguments.child_count() {
+            let Some(arg) = arguments.child(i) else {
+                continue;
+            };
+            if matches!(arg.kind(), "," | "(" | ")") {
+                continue;
+            }
+            if arg.kind() == "identifier" && arg.utf8_text(source.as_bytes()).unwrap_or("") == param
+            {
+                return Some((callee.to_string(), callee_idx));
+            }
+            callee_idx += 1;
+        }
+    }
+    None
+}
+
+/// Demote parameters whose every AST-visible write through them is
+/// conditional out of the MUST-write set. See
+/// `FunctionSummary::unconditional_modifies_params` for why this subtracts
+/// from `modifies_params` instead of rebuilding it.
+fn credit_modifies_params(
+    body: &Node,
+    source: &str,
+    params: &[String],
+    summary: &mut FunctionSummary,
+) {
+    use lang_parsing_substrate::query;
+
+    // param index -> (any write seen, any unconditional write seen)
+    let mut seen: HashMap<usize, (bool, bool)> = HashMap::new();
+    let mut note = |node: &Node, lvalue: &Node| {
+        let Some(root) = deref_write_root(lvalue, false) else {
+            return;
+        };
+        let name = root.utf8_text(source.as_bytes()).unwrap_or("");
+        let Some(idx) = params.iter().position(|p| !p.is_empty() && p == name) else {
+            return;
+        };
+        let entry = seen.entry(idx).or_insert((false, false));
+        entry.0 = true;
+        // `if (out) *out = v;` is the optional-output-parameter idiom, and
+        // it writes on every path a caller who passes a real pointer can
+        // take -- which every caller that goes on to READ the variable did.
+        // Counting it conditional makes the standard shape
+        // `rc = f(&n, ...); if (rc) return; use(n);` report uninitialised,
+        // and sqlite's fts3 alone writes its outputs that way dozens of
+        // times over (task 988, tools_sqc).
+        entry.1 |= is_unconditionally_reached_modulo_null_guard(node, body, source, name);
+    };
+
+    for node in query::find_descendants_of_kind(*body, "assignment_expression") {
+        if let Some(left) = node.child_by_field_name("left") {
+            note(&node, &left);
+        }
+    }
+    // `(*p)++` and `++*p` write through p just as `*p = *p + 1` does.
+    for node in query::find_descendants_of_kind(*body, "update_expression") {
+        if let Some(argument) = node.child_by_field_name("argument") {
+            note(&node, &argument);
+        }
+    }
+
+    for &idx in &summary.modifies_params {
+        match seen.get(&idx) {
+            // Writes found, all of them conditional by position -- a
+            // MAY-write unless the branches between them are exhaustive.
+            Some((true, false)) => match writes_on_all_paths(body, source, &params[idx]) {
+                Some(obligations) if obligations.is_empty() => {
+                    summary.unconditional_modifies_params.insert(idx);
+                }
+                // Covered only through a callee. Park the obligation for
+                // `propagate_transitive_modifies`, which runs once every
+                // file's summary exists.
+                Some(obligations) => {
+                    summary
+                        .modifies_params_pending
+                        .insert(idx, obligations.into_iter().collect());
+                }
+                None => {}
+            },
+            // Either an unconditional write, or no write this pass could
+            // see -- in which case the text scan's finding stands unrefined.
+            _ => {
+                summary.unconditional_modifies_params.insert(idx);
+            }
+        }
+    }
+}
+
 fn credit_frees_params(
     body: &Node,
     source: &str,
@@ -1392,6 +1706,10 @@ fn analyze_param_usage(
             summary.dereferences_params.insert(idx);
         }
     }
+
+    // Must run after the loop above: it refines `modifies_params` rather
+    // than deriving its own write set.
+    credit_modifies_params(body, source, params, summary);
 
     // Detect param pass-through: when a parameter is forwarded to a callee
     collect_param_passthroughs(body, body, source, params, summary);
@@ -1971,6 +2289,54 @@ pub fn propagate_transitive_frees(summaries: &mut HashMap<String, FunctionSummar
                         }
                     }
                 }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Discharge the coverage obligations `credit_modifies_params` parked in
+/// `modifies_params_pending`, promoting a parameter into the MUST-write set
+/// once every callee it was forwarded to is known to MUST-write the index it
+/// received it at.
+///
+/// Why this runs here and not where the obligation was raised: the callee's
+/// own summary does not exist yet while a file is being analyzed, and for a
+/// cross-file callee it cannot -- the same ordering constraint that puts
+/// `propagate_transitive_frees` in prescan.
+///
+/// Iterated to a fixpoint, because promoting one function's output parameter
+/// is what discharges its own caller's obligation, and the chains are as deep
+/// as the forwarding is (`a -> b -> c`). Purely additive: a pass only ever
+/// inserts, so it converges and cannot withdraw a write already proven.
+pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSummary>) {
+    for _pass in 0..10 {
+        let snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.unconditional_modifies_params.clone()))
+            .collect();
+
+        let mut changed = false;
+        for summary in summaries.values_mut() {
+            let discharged: Vec<usize> = summary
+                .modifies_params_pending
+                .iter()
+                .filter(|(idx, _)| !summary.unconditional_modifies_params.contains(idx))
+                .filter(|(_, obligations)| {
+                    obligations.iter().all(|(callee, callee_idx)| {
+                        snapshot
+                            .get(callee)
+                            .is_some_and(|writes| writes.contains(callee_idx))
+                    })
+                })
+                .map(|(idx, _)| *idx)
+                .collect();
+            for idx in discharged {
+                summary.unconditional_modifies_params.insert(idx);
+                changed = true;
             }
         }
 
