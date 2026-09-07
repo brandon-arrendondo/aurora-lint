@@ -71,15 +71,21 @@ impl Exp33C {
     }
 
     /// Build the cross-file output-param map from prescan summaries: functions
-    /// that write through a pointer param, per `FunctionSummary::modifies_params`.
+    /// that write through a pointer param, per
+    /// `FunctionSummary::unconditional_modifies_params`.
     /// Complements `build_read_only_deref_fns` — where that returns the read-only
     /// complement, this returns the write set directly (task 195/319 follow-on).
+    ///
+    /// The MUST set, not `modifies_params`: this map clears a variable's
+    /// uninitialised state, so a callee that writes the output parameter on
+    /// only some of its paths must not clear it. `set_flag(n, &sign)` leaves
+    /// `sign` untouched when `n == 0` (task 988, tools_sqc).
     fn build_cross_file_output_params(&self) -> HashMap<String, HashSet<usize>> {
         let summaries = self.cross_file_summaries.borrow();
         let mut result = HashMap::new();
         for (name, summary) in summaries.iter() {
-            if !summary.modifies_params.is_empty() {
-                result.insert(name.clone(), summary.modifies_params.clone());
+            if !summary.unconditional_modifies_params.is_empty() {
+                result.insert(name.clone(), summary.unconditional_modifies_params.clone());
             }
         }
         result
@@ -191,7 +197,7 @@ impl CertRule for Exp33C {
                             {
                                 if let Some(summary) = cross_file_summaries.get(&callee) {
                                     let mut mapped: Vec<usize> = summary
-                                        .modifies_params
+                                        .unconditional_modifies_params
                                         .iter()
                                         .filter_map(|&callee_idx| {
                                             param_map.get(callee_idx).copied().flatten()
