@@ -1,13 +1,22 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::cfg::FunctionCfg;
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
+use crate::analyze::value_range::RangeAnalysisResult;
+use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, integer_type_width, is_unsigned_type};
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
+use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-pub struct Int08C;
+#[derive(Default)]
+pub struct Int08C {
+    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+}
 
 impl CertRule for Int08C {
     fn rule_id(&self) -> &'static str {
@@ -28,6 +37,20 @@ impl CertRule for Int08C {
 
     fn cert_id(&self) -> &'static str {
         "INT08-C"
+    }
+
+    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
+        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    }
+
+    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
+        *self.vra_results.borrow_mut() = results.clone();
+    }
+
+    /// The truncating-store channel asks what a variable's value *is* at one
+    /// program point, which only flow-sensitive ranges can answer soundly.
+    fn needs_vra(&self) -> bool {
+        true
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -56,6 +79,7 @@ impl CertRule for Int08C {
                 &macros,
                 &mut violations,
             );
+            self.check_truncating_stores(node, source, &variables, &macros, &mut violations);
         } else {
             for func in functions {
                 let mut variables: HashMap<String, (String, usize)> = HashMap::new();
@@ -69,6 +93,7 @@ impl CertRule for Int08C {
                     &macros,
                     &mut violations,
                 );
+                self.check_truncating_stores(&func, source, &variables, &macros, &mut violations);
             }
         }
 
@@ -236,6 +261,211 @@ impl Int08C {
         for child in node.children(&mut cursor) {
             self.check_arithmetic_expressions(&child, source, variables, types, macros, violations);
         }
+    }
+
+    /// Stores whose value provably does not fit the narrow object they are
+    /// stored into.
+    ///
+    /// ```c
+    /// short a = 32000, b = 1000;
+    /// short result = a + b;      /* 33000 truncates to -32536 */
+    /// ```
+    ///
+    /// The *arithmetic* there is correct and deliberately not flagged: both
+    /// operands promote to `int` and 33000 fits it comfortably (task 755
+    /// moved this shape out of tests/fail for exactly that reason). The
+    /// **store** is the defect, and it is what this rule's own title asks
+    /// about -- verify that all integer values are in range. Nothing else in
+    /// the suite catches it: INT31-C's conversion check compares DECLARED
+    /// widths, so `short = short + short` is width-equal and it stays silent
+    /// (a value-based channel there is its own task), and INT32-C's premise
+    /// is about the arithmetic, which is fine here (task 925).
+    ///
+    /// Both rules firing would be acceptable under
+    /// `docs/design/cross-rule-overlap.md`; INT08-C takes it because the
+    /// promoted-range machinery is already wired here.
+    ///
+    /// Definite only. The stored range has to lie ENTIRELY outside the
+    /// destination's, which in practice means operands the range engine can
+    /// resolve to constants -- a range merely straddling the bound is a
+    /// *possible* truncation and not this rule's claim. That is why the
+    /// expected volume is low: this is recall work, not FP work.
+    fn check_truncating_stores(
+        &self,
+        node: &Node,
+        source: &str,
+        variables: &HashMap<String, (String, usize)>,
+        macros: &MacroConstantMap,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        for (destination, value) in Self::collect_stores(node, source) {
+            let Some((var_type, _)) = variables.get(&destination) else {
+                continue;
+            };
+            if !self.is_narrow_integer_type(var_type) {
+                continue;
+            }
+            let Some(width) = integer_type_width(var_type) else {
+                continue;
+            };
+            if Self::operand_is_guarded(&value, source) {
+                continue;
+            }
+            let Some(range) = self.stored_value_range(&value, source, macros) else {
+                continue;
+            };
+            if !Self::range_is_entirely_outside(&range, width, is_unsigned_type(var_type)) {
+                continue;
+            }
+            violations.push(RuleViolation {
+                rule_id: self.rule_id().to_string(),
+                message: format!(
+                    "Value of '{}' is {} and cannot be represented in '{} {}' -- the store truncates",
+                    get_node_text(&value, source)
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    if range.min == range.max {
+                        range.min.to_string()
+                    } else {
+                        format!("in [{}, {}]", range.min, range.max)
+                    },
+                    var_type,
+                    destination
+                ),
+                severity: self.severity(),
+                line: value.start_position().row + 1,
+                column: value.start_position().column + 1,
+                file_path: String::new(),
+                suggestion: Some(format!(
+                    "Widen '{}' to a type that holds the computed value, or bound the value before storing it",
+                    destination
+                )),
+                requires_manual_review: None,
+            });
+        }
+    }
+
+    /// Every `(destination name, stored expression)` pair under `node`: both
+    /// `short r = a + b;` and a later `r = a + b;`.
+    ///
+    /// Only a bare identifier destination counts. A field, subscript or
+    /// dereference names an object whose declared type this rule's
+    /// `variables` map does not hold, and guessing one is how the inverted
+    /// premise task 755 removed got in.
+    fn collect_stores<'a>(node: &Node<'a>, source: &str) -> Vec<(String, Node<'a>)> {
+        let mut stores = Vec::new();
+        for init in query::find_descendants_of_kind(*node, "init_declarator") {
+            let (Some(declarator), Some(value)) = (
+                init.child_by_field_name("declarator"),
+                init.child_by_field_name("value"),
+            ) else {
+                continue;
+            };
+            if declarator.kind() == "identifier" {
+                stores.push((get_node_text(&declarator, source).to_string(), value));
+            }
+        }
+        for assign in query::find_descendants_of_kind(*node, "assignment_expression") {
+            if assign.child_by_field_name("operator").map(|o| o.kind()) != Some("=") {
+                continue;
+            }
+            let (Some(left), Some(right)) = (
+                assign.child_by_field_name("left"),
+                assign.child_by_field_name("right"),
+            ) else {
+                continue;
+            };
+            if left.kind() == "identifier" {
+                stores.push((get_node_text(&left, source).to_string(), right));
+            }
+        }
+        stores
+    }
+
+    /// The range of a stored expression, evaluated with the **flow-sensitive**
+    /// ranges VRA has at this exact program point.
+    ///
+    /// The type's promoted range is the wrong seed here -- that is what proves
+    /// an arithmetic expression *can* leave `int`, whereas this channel has to
+    /// prove a specific value *does* leave the destination. A backward scan for
+    /// the variable's last resolvable assignment is wrong too, and not merely
+    /// imprecise: in
+    ///
+    /// ```c
+    /// char data = ' ';
+    /// if (cond) { data = 2; }        /* the value that reaches the store */
+    /// char result = data * data;
+    /// ```
+    ///
+    /// it walks past the nested assignment and reports 32 * 32 with full
+    /// confidence. That is Juliet's `goodG2B` shape, so the first thing such a
+    /// scan does is flag the *fixed* function. Only a real dataflow answer is
+    /// admissible for a claim this definite; no VRA result means no finding.
+    fn stored_value_range(
+        &self,
+        value: &Node,
+        source: &str,
+        macros: &MacroConstantMap,
+    ) -> Option<ValueRange> {
+        let var_ranges = vra_access::var_ranges_replay_at(
+            &self.function_cfgs.borrow(),
+            &self.vra_results.borrow(),
+            value,
+            source,
+            macros,
+        )?;
+        const_eval::try_evaluate_range(value, source, macros, &var_ranges)
+    }
+
+    /// Has control flow tested any operand of the stored expression on the way
+    /// here?
+    ///
+    /// If so, the value that reaches the store is whatever the test admits,
+    /// and a definite claim is no longer available. Juliet's CWE-190 good sink
+    /// is exactly this:
+    ///
+    /// ```c
+    /// data = CHAR_MAX;
+    /// if (data < CHAR_MAX) { char result = data + 1; }   /* never runs */
+    /// ```
+    ///
+    /// VRA carries `data` into the branch as `[127, 127]` rather than applying
+    /// the contradictory constraint, so the range engine happily reports 128 in
+    /// a branch that cannot execute. Without this test, 373 of the 578 findings
+    /// on that cohort were the *fixed* function -- measured, not estimated.
+    ///
+    /// Deliberately broad (`ComparisonKind::Any`): the point is not which
+    /// bound the guard establishes but that the operand's value at the store is
+    /// no longer the one the unguarded dataflow computed.
+    fn operand_is_guarded(value: &Node, source: &str) -> bool {
+        query::find_descendants_of_kind(*value, "identifier")
+            .iter()
+            .any(|ident| {
+                guard_dominance::has_dominating_comparison(
+                    get_node_text(ident, source),
+                    value,
+                    source,
+                    guard_dominance::ComparisonKind::Any,
+                )
+            })
+    }
+
+    /// Does no value in `range` fit a `width`-bit integer of this signedness?
+    ///
+    /// Deliberately stronger than `!fits_in_*`, which is true of a range that
+    /// merely straddles the bound -- the same distinction
+    /// `expression_overflows_signed_vra` draws against `expression_fits_*`.
+    fn range_is_entirely_outside(range: &ValueRange, width: u32, unsigned: bool) -> bool {
+        if width == 0 || width >= 64 {
+            return false;
+        }
+        let (type_min, type_max) = if unsigned {
+            (0i64, (1i64 << width) - 1)
+        } else {
+            (-(1i64 << (width - 1)), (1i64 << (width - 1)) - 1)
+        };
+        range.min > type_max || range.max < type_min
     }
 
     /// True only when interval arithmetic over the operands' promoted
