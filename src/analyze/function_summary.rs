@@ -1698,11 +1698,9 @@ fn case_group_breaks(case: &Node) -> bool {
 /// positive standing; the alternative would suppress a real finding.
 /// Every name `body` hands to a callee as a whole argument, casts included.
 ///
-/// Deliberately NOT `param_passthroughs`, whose consumers are the transitive
-/// free-propagation rules: teaching that collector about casts would move
-/// MEM30-C and MEM31-C too, which is a separate change needing its own delta
-/// gate. This asks the same question for the write-coverage path alone (task
-/// 1027, tools_sqc).
+/// Asks the same question as `collect_param_passthroughs`, which strips casts
+/// the same way, but keyed on the name rather than on a parameter index: this
+/// one only has to know whether a name left the function, not where it landed.
 ///
 /// A set for the same reason as `library_written_names`: one walk, however
 /// many parameters ask.
@@ -2523,10 +2521,10 @@ fn body_matches_alias_null_check(body_text: &str, param_name: &str) -> bool {
     false
 }
 
-/// Detect param pass-through patterns: when a function parameter is directly
-/// forwarded as an argument to a callee. Used for transitive free
-/// propagation. `body` is the enclosing function's own compound_statement,
-/// threaded through unchanged across the recursion (distinct from `node`,
+/// Detect param pass-through patterns: when a function parameter is forwarded
+/// as a whole argument to a callee, casts and parentheses stripped. Used for
+/// transitive free propagation. `body` is the enclosing function's own
+/// compound_statement, threaded through unchanged across the recursion (distinct from `node`,
 /// the recursive traversal cursor) so `is_unconditionally_reached` can be
 /// checked against it at each call site (task 401).
 fn collect_param_passthroughs(
@@ -2552,8 +2550,13 @@ fn collect_param_passthroughs(
                             if arg.kind() == "," || arg.kind() == "(" || arg.kind() == ")" {
                                 continue;
                             }
-                            if arg.kind() == "identifier" {
-                                let arg_text = arg.utf8_text(source.as_bytes()).unwrap_or("");
+                            // `backend_free((unsigned char *)p)` forwards
+                            // `p` as surely as a bare `p` would; matching only
+                            // a bare identifier left the transitive-free walk
+                            // with no edge to follow (task 1034, tools_sqc).
+                            let stripped = init_state::strip_arg_casts(&arg);
+                            if stripped.kind() == "identifier" {
+                                let arg_text = stripped.utf8_text(source.as_bytes()).unwrap_or("");
                                 for (param_idx, param_name) in params.iter().enumerate() {
                                     if !param_name.is_empty() && arg_text == param_name {
                                         summary
