@@ -262,14 +262,6 @@ impl Api00C {
                         }
                     }
 
-                    // Suppress relay-only parameters: if the parameter is only
-                    // passed as an argument to other function calls (never
-                    // dereferenced, indexed, or member-accessed locally), the
-                    // function is a relay and validation is the callee's concern.
-                    if self.is_relay_only_parameter(&body, param_name, source) {
-                        continue;
-                    }
-
                     // Suppress `void *` parameters that are never dereferenced
                     // locally and pass through only to null-safe sinks. Typical
                     // generic-container slot parameter (e.g., ArrayList_Append's
@@ -282,8 +274,10 @@ impl Api00C {
                         }
                     }
 
-                    // Check if the parameter is actually used in the function
-                    if self.is_parameter_used(&body, param_name, source) {
+                    // Report only when the parameter is actually read or
+                    // written THROUGH — here, or by a callee that does it
+                    // without checking first.
+                    if self.parameter_is_dereferenced(&body, param_name, source) {
                         self.report_violation(
                             function_node,
                             param_name,
@@ -1084,76 +1078,197 @@ impl Api00C {
         false
     }
 
-    /// Check if a parameter is actually used in the function body
-    /// Check if a parameter is only relayed to callees that validate it.
-    /// Returns true when the parameter is never directly used and every callee
-    /// that receives it either checks for null or itself relays to a checker.
-    fn is_relay_only_parameter(&self, body: &Node, param_name: &str, source: &str) -> bool {
+    /// Is `param_name` actually read or written *through* in this function?
+    ///
+    /// This is the reporting gate for the pointer half, and it replaced a
+    /// pair of predicates that between them answered a different question.
+    /// The old `is_parameter_used` counted any occurrence outside a condition
+    /// as a use, so a pointer parameter was "used" when it was merely stored
+    /// (`ctx->aux = pAux`), returned, compared, or handed to a callee. None of
+    /// those reads through the pointer, so NULL is a perfectly good value for
+    /// them and the finding's premise does not hold: 16 of the 40 false
+    /// positives in task 664's 110-row API00-C pointer sample were exactly
+    /// this — opaque `void *` cookies handed to a callback registrar, function
+    /// pointers stored in a struct and never invoked here,
+    /// `xml_node_get_text`'s `ctx` accepted and ignored outright (task 743).
+    ///
+    /// A forward into a callee is the interesting case, and it is decided by
+    /// what the callee does, never by the shape of the forward. The 59-row
+    /// `param-forwarded-to-dereferencing-callee` **true positive** class and
+    /// the 11-row `validation-in-called-helper` false positive class are
+    /// structurally IDENTICAL thin forwarding wrappers at the flagged
+    /// function; only the callee's body tells them apart, which is what made
+    /// them mislabeled in the first place (task 744). So:
+    ///
+    /// * a callee that never dereferences the argument makes the forward a
+    ///   non-use,
+    /// * a callee that dereferences it but null-checks it *first* has the
+    ///   guard, just not in this frame — `checks_null_params_before_deref`,
+    ///   whose ordering is what keeps a callee that dereferences at
+    ///   `if (conn->client)` and tests for null later from reading as safe,
+    /// * a callee that dereferences it unchecked is the true positive, and
+    /// * an **unknown** callee counts as dereferencing, which is the
+    ///   direction that keeps findings rather than hiding them.
+    ///
+    /// One store does still count, and it is the rule's own canonical
+    /// example: `void setfile(FILE *file) { myFile = file; }`, where the
+    /// pointer escapes into **file-scope** state and outlives the call, so
+    /// this function is the API boundary where validation has to happen —
+    /// `usefile()` has nowhere else to get the guarantee. Storing into a
+    /// caller-owned struct field or handing an opaque cookie to a registrar
+    /// is the opposite: the contract goes back to the caller, and those are
+    /// task 743's false positives.
+    fn parameter_is_dereferenced(&self, body: &Node, param_name: &str, source: &str) -> bool {
         let summaries = self.function_summaries.borrow();
         let mut relay_callees: Vec<(String, usize)> = Vec::new();
-        let mut found_direct_use = false;
+        let mut found_direct_deref = false;
         self.classify_param_uses(
             body,
             param_name,
             source,
             &mut relay_callees,
-            &mut found_direct_use,
+            &mut found_direct_deref,
         );
-        if found_direct_use || relay_callees.is_empty() {
-            return false;
+        if found_direct_deref {
+            return true;
         }
-        // Every callee that receives this parameter must validate it or accept NULL
-        for (callee_name, arg_idx) in &relay_callees {
-            // Standard library functions that accept NULL pointers — no validation needed
+        relay_callees.iter().any(|(callee_name, arg_idx)| {
             if Self::is_null_accepting_stdlib(callee_name, *arg_idx) {
-                continue;
+                return false;
             }
-            if let Some(callee_summary) = summaries.get(callee_name.as_str()) {
-                if !callee_summary.checks_null_params.contains(arg_idx) {
-                    return false; // Callee doesn't validate → not safe to suppress
+            match summaries.get(callee_name.as_str()) {
+                Some(callee) => {
+                    callee.dereferences_params.contains(arg_idx)
+                        && !callee.checks_null_params_before_deref.contains(arg_idx)
                 }
-            } else {
-                return false; // Unknown callee → not safe
+                None => true,
             }
-        }
-        true
+        })
     }
 
+    /// Split every occurrence of `param_name` into the callees it is forwarded
+    /// to and whether any occurrence dereferences it here.
+    ///
+    /// Dereference is tested *positively* — the occurrence has to be the
+    /// object of a `*`, `->`/`.`, `[]`, or the callee of an indirect call —
+    /// rather than by excluding the shapes that are not one. The negative
+    /// form is what produced task 743's false positives: it read "not inside
+    /// an `if` condition" as "dereferenced", which every store, return and
+    /// argument satisfies.
     fn classify_param_uses(
         &self,
         node: &Node,
         param_name: &str,
         source: &str,
         relay_callees: &mut Vec<(String, usize)>,
-        found_direct_use: &mut bool,
+        found_direct_deref: &mut bool,
     ) {
         for ident in query::find_descendants_of_kind(*node, "identifier") {
-            let text = get_node_text(&ident, source);
-            if text != param_name {
+            if get_node_text(&ident, source) != param_name {
                 continue;
             }
-            if let Some(parent) = ident.parent() {
-                // Check: is this inside a call_expression's argument list?
-                if parent.kind() == "argument_list" {
-                    if let Some(call_expr) = parent.parent() {
-                        if call_expr.kind() == "call_expression" {
-                            if let Some(func) = call_expr.child_by_field_name("function") {
-                                let callee = get_node_text(&func, source);
-                                // Determine which positional arg this is
-                                let arg_idx = self.get_arg_index(&ident, &parent);
-                                relay_callees.push((callee.to_string(), arg_idx));
-                                continue;
-                            }
+            // `(void)param` and `UNUSED(param)` explicitly mark the
+            // parameter as intentionally untouched. The macro form is parsed
+            // as a call, so without this it would read as a forward into an
+            // unknown callee — the one shape this function treats as a
+            // dereference.
+            if self.is_in_void_cast(&ident, source) {
+                continue;
+            }
+            // `(struct s *)p->field` reaches the dereference through a cast,
+            // and `(p)[i]` through parentheses; neither changes what is being
+            // read through.
+            let mut occurrence = ident;
+            while let Some(parent) = occurrence.parent() {
+                if !matches!(
+                    parent.kind(),
+                    "cast_expression" | "parenthesized_expression"
+                ) {
+                    break;
+                }
+                occurrence = parent;
+            }
+            let Some(parent) = occurrence.parent() else {
+                continue;
+            };
+            if parent.kind() == "argument_list" {
+                if let Some(call_expr) = parent.parent() {
+                    if call_expr.kind() == "call_expression" {
+                        if let Some(func) = call_expr.child_by_field_name("function") {
+                            let arg_idx = self.get_arg_index(&occurrence, &parent);
+                            relay_callees.push((get_node_text(&func, source).to_string(), arg_idx));
+                            continue;
                         }
                     }
-                    *found_direct_use = true;
-                    continue;
                 }
-                if self.is_in_validation_context(&ident) || self.is_in_void_cast(&ident, source) {
-                    continue;
-                }
+                continue;
             }
-            *found_direct_use = true;
+            if Self::occurrence_is_dereference(&occurrence, &parent, source)
+                || self.escapes_to_file_scope(&occurrence, &parent, source)
+            {
+                *found_direct_deref = true;
+            }
+        }
+    }
+
+    /// Is `occurrence` the value stored into a file-scope pointer?
+    ///
+    /// `myFile = file` inside `setfile` — the pointer outlives the call, and
+    /// every later user of `myFile` is relying on this function having
+    /// checked it. See [`parameter_is_dereferenced`] for why a store into
+    /// caller-owned memory is not the same thing.
+    ///
+    /// The destination has to be positively known to be file-scope, which is
+    /// what [`PointerFacts`] answers; a local of the same name shadows it and
+    /// the fact set never sees the local.
+    ///
+    /// [`parameter_is_dereferenced`]: Self::parameter_is_dereferenced
+    fn escapes_to_file_scope(&self, occurrence: &Node, parent: &Node, source: &str) -> bool {
+        if parent.kind() != "assignment_expression" {
+            return false;
+        }
+        if parent.child_by_field_name("operator").map(|o| o.kind()) != Some("=") {
+            return false;
+        }
+        if parent
+            .child_by_field_name("right")
+            .is_none_or(|right| right.id() != occurrence.id())
+        {
+            return false;
+        }
+        let Some(left) = parent.child_by_field_name("left") else {
+            return false;
+        };
+        left.kind() == "identifier"
+            && self
+                .pointer_facts
+                .borrow()
+                .is_file_scope_pointer(get_node_text(&left, source))
+    }
+
+    /// Does `parent` read or write through `occurrence`?
+    ///
+    /// `&p` is deliberately not one: taking the address of the parameter
+    /// *variable* touches nothing the pointer points at. Neither is `p = q`,
+    /// which rebinds a local copy.
+    fn occurrence_is_dereference(occurrence: &Node, parent: &Node, source: &str) -> bool {
+        let is_target = |field: &str| {
+            parent
+                .child_by_field_name(field)
+                .is_some_and(|n| n.id() == occurrence.id())
+        };
+        match parent.kind() {
+            // `*p`, but not `&p`.
+            "pointer_expression" => parent
+                .child(0)
+                .is_some_and(|op| get_node_text(&op, source) == "*"),
+            // `p->field` / `p.field`, but not `q->p`.
+            "field_expression" => is_target("argument"),
+            // `p[i]`, but not `q[p]`.
+            "subscript_expression" => is_target("argument"),
+            // `p(...)` — calling through a function pointer parameter.
+            "call_expression" => is_target("function"),
+            _ => false,
         }
     }
 
@@ -1229,8 +1344,8 @@ impl Api00C {
             &mut safe,
             &mut saw_any_use,
         );
-        // If the parameter never appears, `is_parameter_used` will return false
-        // anyway; don't claim responsibility for that path.
+        // If the parameter never appears, `parameter_is_dereferenced` will
+        // return false anyway; don't claim responsibility for that path.
         saw_any_use && safe
     }
 
@@ -1329,73 +1444,6 @@ impl Api00C {
         }
         idx
     }
-
-    fn is_parameter_used(&self, body: &Node, param_name: &str, source: &str) -> bool {
-        query::find_first_descendant(*body, |node| {
-            // Check if this node is an identifier matching the parameter name
-            if node.kind() != "identifier" {
-                return false;
-            }
-            let text = get_node_text(&node, source);
-            if text != param_name {
-                return false;
-            }
-            // Skip (void)param / UNUSED(param) patterns — these explicitly mark
-            // a parameter as intentionally unused (e.g., callback signature match)
-            if self.is_in_void_cast(&node, source) {
-                return false;
-            }
-            // Check if it's actually being used (not just in a validation check)
-            if let Some(parent) = node.parent() {
-                // Skip if this is part of a validation check condition
-                if !self.is_in_validation_context(&node) {
-                    return true;
-                }
-                // Still count dereference as usage even in validation context
-                if parent.kind() == "pointer_expression"
-                    || parent.kind() == "field_expression"
-                    || parent.kind() == "subscript_expression"
-                {
-                    return true;
-                }
-            }
-            false
-        })
-        .is_some()
-    }
-
-    /// Check if a node is part of a validation context (if condition checking for NULL)
-    fn is_in_validation_context(&self, node: &Node) -> bool {
-        let mut current = node.parent();
-        let mut depth = 0;
-
-        while let Some(parent) = current {
-            depth += 1;
-            if depth > 10 {
-                break; // Avoid infinite loops
-            }
-
-            // If we're in a parenthesized expression within an if condition
-            if parent.kind() == "if_statement" {
-                return true;
-            }
-
-            // Check for binary expressions that are comparisons to NULL
-            if parent.kind() == "binary_expression" {
-                return true;
-            }
-
-            // Check for unary not operator
-            if parent.kind() == "unary_expression" {
-                return true;
-            }
-
-            current = parent.parent();
-        }
-
-        false
-    }
-
     /// Check if an identifier is inside a (void)param or UNUSED(param) cast.
     /// These patterns explicitly suppress unused-parameter warnings and indicate
     /// the parameter is intentionally not used.
