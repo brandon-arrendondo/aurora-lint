@@ -7,6 +7,7 @@
 //! This is NOT a full CFG-based dataflow — it's syntactic constant folding
 //! plus loop-bound ancestor walks.
 
+use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -88,6 +89,25 @@ impl ValueRange {
         Some(Self {
             min: *corners.iter().min().unwrap(),
             max: *corners.iter().max().unwrap(),
+        })
+    }
+
+    /// The range of `self >> other`, or `None` when the bound would not be
+    /// sound: either operand possibly negative, or a shift amount that can
+    /// reach the width of the value being shifted.
+    ///
+    /// C leaves `>>` of a negative left operand implementation-defined and a
+    /// shift at or past the operand's width undefined, so a range straddling
+    /// either boundary carries no usable bound. Over non-negative operands
+    /// the result is monotone — rising with the value, falling with the
+    /// amount — so the two extremes are the only corners worth taking.
+    pub fn shr(&self, other: &ValueRange) -> Option<Self> {
+        if self.min < 0 || other.min < 0 || other.max > 63 {
+            return None;
+        }
+        Some(Self {
+            min: self.min >> other.max,
+            max: self.max >> other.min,
         })
     }
 
@@ -1258,6 +1278,35 @@ pub fn try_evaluate_range(
     macros: &MacroConstantMap,
     var_ranges: &VarRangeMap,
 ) -> Option<ValueRange> {
+    try_evaluate_range_inner(node, source, macros, var_ranges, None)
+}
+
+/// [`try_evaluate_range`], additionally expanding invocations of the
+/// function-like macros in `function_macros` before giving up on them.
+///
+/// Split from the plain entry point rather than folded into it because the
+/// macro table is a *project* fact (`ProjectContext::function_macros`) that
+/// most callers do not hold, and because expanding costs a re-parse of the
+/// replacement list. A caller that has the table gets `MASK(3)`,
+/// `LINEBITS(s)` and `IDR0_NUMSIDB_VAL(reg & IDR0_NUMSIDB)` bounded like the
+/// expressions they stand for; every other caller is unaffected.
+pub fn try_evaluate_range_expanding(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    var_ranges: &VarRangeMap,
+    function_macros: &HashMap<String, FunctionMacro>,
+) -> Option<ValueRange> {
+    try_evaluate_range_inner(node, source, macros, var_ranges, Some(function_macros))
+}
+
+fn try_evaluate_range_inner(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    var_ranges: &VarRangeMap,
+    fmacros: Option<&HashMap<String, FunctionMacro>>,
+) -> Option<ValueRange> {
     // First try exact evaluation
     if let Some(val) = try_evaluate_expr(node, source, macros) {
         return Some(ValueRange::exact(val));
@@ -1273,7 +1322,7 @@ pub fn try_evaluate_range(
         }
         "parenthesized_expression" => {
             let inner = node.child(1)?;
-            try_evaluate_range(&inner, source, macros, var_ranges)
+            try_evaluate_range_inner(&inner, source, macros, var_ranges, fmacros)
         }
         "binary_expression" => {
             let left = node.child_by_field_name("left")?;
@@ -1298,8 +1347,8 @@ pub fn try_evaluate_range(
             // prove that `(SHA256_WORD_BITS - b) & SHA256_WORD_MASK` ∈ [0, 31]
             // when SHA256_WORD_MASK = 31.
             if op_text == "&" {
-                let lr = try_evaluate_range(&left, source, macros, var_ranges);
-                let rr = try_evaluate_range(&right, source, macros, var_ranges);
+                let lr = try_evaluate_range_inner(&left, source, macros, var_ranges, fmacros);
+                let rr = try_evaluate_range_inner(&right, source, macros, var_ranges, fmacros);
                 return match (lr, rr) {
                     (Some(l), Some(r)) => l.bitand(&r),
                     // One side unknown, other is a known non-negative constant mask.
@@ -1313,8 +1362,8 @@ pub fn try_evaluate_range(
                 };
             }
 
-            let lr = try_evaluate_range(&left, source, macros, var_ranges)?;
-            let rr = try_evaluate_range(&right, source, macros, var_ranges)?;
+            let lr = try_evaluate_range_inner(&left, source, macros, var_ranges, fmacros)?;
+            let rr = try_evaluate_range_inner(&right, source, macros, var_ranges, fmacros)?;
             match op_text {
                 "+" => lr.add(&rr),
                 "-" => lr.sub(&rr),
@@ -1322,6 +1371,7 @@ pub fn try_evaluate_range(
                 "/" => lr.div(&rr),
                 "%" => lr.rem(&rr),
                 "<<" => lr.shl(&rr),
+                ">>" => lr.shr(&rr),
                 _ => None,
             }
         }
@@ -1356,7 +1406,7 @@ pub fn try_evaluate_range(
                 .child_by_field_name("operator")
                 .or_else(|| node.child(0))?;
             let op_text = op.utf8_text(source.as_bytes()).ok()?;
-            let r = try_evaluate_range(&arg, source, macros, var_ranges)?;
+            let r = try_evaluate_range_inner(&arg, source, macros, var_ranges, fmacros)?;
             match op_text {
                 "-" => Some(ValueRange::new(r.max.checked_neg()?, r.min.checked_neg()?)),
                 "+" => Some(r),
@@ -1365,9 +1415,15 @@ pub fn try_evaluate_range(
         }
         "cast_expression" => {
             let value = node.child_by_field_name("value")?;
-            try_evaluate_range(&value, source, macros, var_ranges)
+            try_evaluate_range_inner(&value, source, macros, var_ranges, fmacros)
         }
         "sizeof_expression" => resolve_sizeof_node(node, source).map(ValueRange::exact),
+        // A function-like macro invocation parses as a call. When the caller
+        // supplied the macro table, expand it and bound the replacement list
+        // instead of treating it as an opaque call.
+        "call_expression" => {
+            range_from_macro_invocation(node, source, macros, var_ranges, fmacros?)
+        }
         // Struct member access: obj.field or obj->field.
         // Try to bound by the declared type of the field by searching the source for
         // `uint8_t fieldName` / `uint16_t fieldName` etc. in struct definitions.
@@ -1395,7 +1451,7 @@ pub fn try_evaluate_range(
                 None
             })?;
             let op_text = op.utf8_text(source.as_bytes()).ok()?;
-            let r = try_evaluate_range(&arg, source, macros, var_ranges)?;
+            let r = try_evaluate_range_inner(&arg, source, macros, var_ranges, fmacros)?;
             let one = ValueRange::exact(1);
             match op_text {
                 "++" => r.add(&one),
@@ -1405,6 +1461,68 @@ pub fn try_evaluate_range(
         }
         _ => None,
     }
+}
+
+/// Bound a function-like macro invocation by the expression it expands to.
+///
+/// Macro expansion is textual substitution, so an identifier that survives
+/// into the replacement list still names whatever it named at the invocation
+/// site — which is why `var_ranges` stays the right environment for the
+/// expansion, and why `LINEBITS(s)` bounds exactly as the `((s) & MASK(3)) + 4`
+/// a reader sees when they follow the `#define`.
+///
+/// [`macro_expand::expand_invocation`] rescans its own output, so a nested
+/// `MASK(3)` is already gone by the time the expansion gets here and the
+/// expansion is evaluated with no macro table of its own. That is also what
+/// bounds the work: whatever the expander declined to expand -- a
+/// self-referential macro, an arity mismatch -- stays an opaque call and
+/// simply fails to evaluate, rather than being handed back to the expander
+/// for another round.
+fn range_from_macro_invocation(
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    var_ranges: &VarRangeMap,
+    fmacros: &HashMap<String, FunctionMacro>,
+) -> Option<ValueRange> {
+    let callee = node.child_by_field_name("function")?;
+    if callee.kind() != "identifier" {
+        return None;
+    }
+    let name = callee.utf8_text(source.as_bytes()).ok()?;
+    if !fmacros.contains_key(name) {
+        return None;
+    }
+    let arg_list = node.child_by_field_name("arguments")?;
+    let mut cursor = arg_list.walk();
+    let args: Vec<String> = arg_list
+        .named_children(&mut cursor)
+        .map(|arg| arg.utf8_text(source.as_bytes()).unwrap_or("").to_string())
+        .collect();
+    let expanded = macro_expand::expand_invocation(fmacros, name, &args)?;
+    evaluate_snippet_range(&expanded, macros, var_ranges)
+}
+
+/// Parse `text` as a standalone expression and evaluate its range.
+///
+/// Wrapped in an initializer so tree-sitter parses it as an expression rather
+/// than guessing at a declaration; a replacement list that does not stand
+/// alone as one parses to `ERROR` and simply fails to evaluate.
+fn evaluate_snippet_range(
+    text: &str,
+    macros: &MacroConstantMap,
+    var_ranges: &VarRangeMap,
+) -> Option<ValueRange> {
+    let snippet = format!("int _sqc_macro_expansion_ = ({text});");
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&crate::parser::c_language()).ok()?;
+    let tree = parser.parse(&snippet, None)?;
+    let declarator = tree
+        .root_node()
+        .named_child(0)?
+        .child_by_field_name("declarator")?;
+    let value = declarator.child_by_field_name("value")?;
+    try_evaluate_range_inner(&value, &snippet, macros, var_ranges, None)
 }
 
 /// Search the source for a struct field declaration matching `field_name` and
@@ -1656,7 +1774,30 @@ pub fn resolve_local_var_range(
     macros: &MacroConstantMap,
     loop_ranges: &VarRangeMap,
 ) -> Option<ValueRange> {
-    resolve_local_var_range_depth(var_name, node, source, macros, loop_ranges, 0)
+    resolve_local_var_range_depth(var_name, node, source, macros, loop_ranges, None, 0)
+}
+
+/// [`resolve_local_var_range`], evaluating each candidate RHS with
+/// [`try_evaluate_range_expanding`] so a local initialised from a
+/// function-like macro (`int lbits = LINEBITS(s);`) is bounded by what that
+/// macro expands to.
+pub fn resolve_local_var_range_expanding(
+    var_name: &str,
+    node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    loop_ranges: &VarRangeMap,
+    function_macros: &HashMap<String, FunctionMacro>,
+) -> Option<ValueRange> {
+    resolve_local_var_range_depth(
+        var_name,
+        node,
+        source,
+        macros,
+        loop_ranges,
+        Some(function_macros),
+        0,
+    )
 }
 
 fn resolve_local_var_range_depth(
@@ -1665,6 +1806,7 @@ fn resolve_local_var_range_depth(
     source: &str,
     macros: &MacroConstantMap,
     loop_ranges: &VarRangeMap,
+    fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
     // Find the enclosing compound_statement (function body or block)
@@ -1691,6 +1833,7 @@ fn resolve_local_var_range_depth(
                         source,
                         macros,
                         loop_ranges,
+                        fmacros,
                         depth,
                     ) {
                         last_range = Some(range);
@@ -1728,15 +1871,28 @@ fn check_stmt_for_var_assignment(
     source: &str,
     macros: &MacroConstantMap,
     loop_ranges: &VarRangeMap,
+    fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
     match stmt.kind() {
-        "expression_statement" => {
-            check_assignment_expr_for_var(stmt, var_name, source, macros, loop_ranges, depth)
-        }
-        "declaration" => {
-            check_init_declarator_for_var(stmt, var_name, source, macros, loop_ranges, depth)
-        }
+        "expression_statement" => check_assignment_expr_for_var(
+            stmt,
+            var_name,
+            source,
+            macros,
+            loop_ranges,
+            fmacros,
+            depth,
+        ),
+        "declaration" => check_init_declarator_for_var(
+            stmt,
+            var_name,
+            source,
+            macros,
+            loop_ranges,
+            fmacros,
+            depth,
+        ),
         // Control-flow wrappers: scan the compound body for evaluable assignments.
         // Returns the last evaluable assignment found, or None if the body contains
         // any unevaluable modification (e.g., fscanf(&var)) — which triggers the
@@ -1745,7 +1901,15 @@ fn check_stmt_for_var_assignment(
         // stmt_modifies_var correctly recognizes the modification but the loop body
         // contains only a simple literal assignment.
         "for_statement" | "while_statement" | "do_statement" | "if_statement" => {
-            check_control_flow_body_for_var(stmt, var_name, source, macros, loop_ranges, depth)
+            check_control_flow_body_for_var(
+                stmt,
+                var_name,
+                source,
+                macros,
+                loop_ranges,
+                fmacros,
+                depth,
+            )
         }
         _ => None,
     }
@@ -1760,9 +1924,10 @@ fn resolve_var_rhs(
     source: &str,
     macros: &MacroConstantMap,
     loop_ranges: &VarRangeMap,
+    fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
-    if let Some(r) = try_evaluate_range(rhs, source, macros, loop_ranges) {
+    if let Some(r) = try_evaluate_range_inner(rhs, source, macros, loop_ranges, fmacros) {
         return Some(r);
     }
     if rhs.kind() == "identifier" && depth < 3 {
@@ -1773,6 +1938,7 @@ fn resolve_var_rhs(
             source,
             macros,
             loop_ranges,
+            fmacros,
             depth + 1,
         );
     }
@@ -1781,12 +1947,20 @@ fn resolve_var_rhs(
 
 /// `"expression_statement"` case of [`check_stmt_for_var_assignment`]: find
 /// an `assignment_expression` whose LHS is `var_name` and resolve its RHS.
+///
+/// Only a plain `=` states the variable's new value. A compound assignment
+/// (`msbs -= 8`, `x <<= 1`) says how the value *changes*, so reading its RHS
+/// as the new range is simply wrong -- it would put sqlite's `msbs`, which
+/// counts 48, 40, ... 0 down a loop, at a flat 8. Declining it here hands the
+/// statement to the caller's `stmt_modifies_var` check, which invalidates the
+/// variable rather than letting a stale earlier range stand.
 fn check_assignment_expr_for_var(
     stmt: &Node,
     var_name: &str,
     source: &str,
     macros: &MacroConstantMap,
     loop_ranges: &VarRangeMap,
+    fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
     for i in 0..stmt.child_count() {
@@ -1803,9 +1977,16 @@ fn check_assignment_expr_for_var(
         if left.kind() != "identifier" {
             continue;
         }
+        let plain_assignment = child
+            .child_by_field_name("operator")
+            .and_then(|op| op.utf8_text(source.as_bytes()).ok())
+            .is_some_and(|op| op == "=");
+        if !plain_assignment {
+            continue;
+        }
         let name = left.utf8_text(source.as_bytes()).unwrap_or("");
         if name == var_name {
-            return resolve_var_rhs(&right, stmt, source, macros, loop_ranges, depth);
+            return resolve_var_rhs(&right, stmt, source, macros, loop_ranges, fmacros, depth);
         }
     }
     None
@@ -1819,6 +2000,7 @@ fn check_init_declarator_for_var(
     source: &str,
     macros: &MacroConstantMap,
     loop_ranges: &VarRangeMap,
+    fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
     for i in 0..stmt.child_count() {
@@ -1834,7 +2016,7 @@ fn check_init_declarator_for_var(
         };
         let name = extract_leaf_identifier(&declarator, source);
         if name == var_name {
-            return resolve_var_rhs(&value, stmt, source, macros, loop_ranges, depth);
+            return resolve_var_rhs(&value, stmt, source, macros, loop_ranges, fmacros, depth);
         }
     }
     None
@@ -1850,6 +2032,7 @@ fn check_control_flow_body_for_var(
     source: &str,
     macros: &MacroConstantMap,
     loop_ranges: &VarRangeMap,
+    fmacros: Option<&HashMap<String, FunctionMacro>>,
     depth: u32,
 ) -> Option<ValueRange> {
     for i in 0..stmt.child_count() {
@@ -1865,9 +2048,15 @@ fn check_control_flow_body_for_var(
             let Some(inner) = child.child(j) else {
                 continue;
             };
-            if let Some(r) =
-                check_stmt_for_var_assignment(&inner, var_name, source, macros, loop_ranges, depth)
-            {
+            if let Some(r) = check_stmt_for_var_assignment(
+                &inner,
+                var_name,
+                source,
+                macros,
+                loop_ranges,
+                fmacros,
+                depth,
+            ) {
                 last_range = Some(r);
             } else if stmt_modifies_var(&inner, var_name, source) {
                 return None; // unevaluable modification in body
@@ -2455,6 +2644,60 @@ fn parens_balanced(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shr_range_is_monotone_and_refuses_unsound_operands() {
+        let ten_to_twenty = ValueRange::new(10, 20);
+        assert_eq!(
+            ten_to_twenty.shr(&ValueRange::exact(1)),
+            Some(ValueRange::new(5, 10))
+        );
+        // Rising with the value, falling with the amount.
+        assert_eq!(
+            ValueRange::new(0, 7680).shr(&ValueRange::new(9, 9)),
+            Some(ValueRange::new(0, 15))
+        );
+        assert_eq!(
+            ValueRange::new(64, 256).shr(&ValueRange::new(1, 3)),
+            Some(ValueRange::new(8, 128))
+        );
+        // A negative value makes `>>` implementation-defined, a negative or
+        // over-wide amount makes it undefined: no bound in either case.
+        assert_eq!(ValueRange::new(-1, 8).shr(&ValueRange::exact(1)), None);
+        assert_eq!(ten_to_twenty.shr(&ValueRange::new(-1, 2)), None);
+        assert_eq!(ten_to_twenty.shr(&ValueRange::new(0, 64)), None);
+    }
+
+    #[test]
+    fn a_macro_invocation_is_bounded_by_what_it_expands_to() {
+        let source = "\
+#define MASK(n) ((1ul << (n)) - 1ul)
+#define LINEBITS(s) (((s) & MASK(3)) + 4)
+int f(unsigned long s) { return LINEBITS(s); }
+";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let fmacros = macro_expand::collect_function_macros(&root, source);
+        let macros = collect_macro_constants(&root, source);
+        let var_ranges = VarRangeMap::new();
+
+        let call = lang_parsing_substrate::query::find_descendants_of_kind(root, "call_expression")
+            .into_iter()
+            .find(|n| ast_utils::get_node_text(n, source).starts_with("LINEBITS"))
+            .expect("LINEBITS invocation");
+
+        // Opaque without the table, and `(s & 7) + 4` with it.
+        assert_eq!(
+            try_evaluate_range(&call, source, &macros, &var_ranges),
+            None
+        );
+        assert_eq!(
+            try_evaluate_range_expanding(&call, source, &macros, &var_ranges, &fmacros),
+            Some(ValueRange::new(4, 11))
+        );
+    }
 
     #[test]
     fn test_parse_integer_literal() {
