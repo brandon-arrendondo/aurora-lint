@@ -71,6 +71,15 @@ enum ValidatedCategory {
 }
 
 fn main() {
+    // Every other rerun-if-changed below narrows Cargo's default "rerun if
+    // any package file changed" to just those paths -- which silently stops
+    // covering build.rs's OWN source. A generator-logic change here (e.g.
+    // task 1019/commit 22ea7dcd, which reordered the generated tests' own
+    // prescan/parse sequence) then never regenerates output on a clone with
+    // a pre-existing target/, since none of the narrower paths moved. Watch
+    // build.rs itself first so its own edits always trigger a rerun.
+    println!("cargo:rerun-if-changed=build.rs");
+
     // Only compile resources on Windows
     #[cfg(target_os = "windows")]
     {
