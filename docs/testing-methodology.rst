@@ -700,6 +700,20 @@ pointer is truncated on LP64; C99 removed implicit declarations and C23
 makes them an error — on code this corpus does not contain. Quoting that
 number as a rule-quality measure is a category error.
 
+Do not read "header reachability" as "one more ``-I`` away", though. Bucketing
+that rule's labeled false positives by root cause found the ``mosquitto`` case
+to be the easy end of the range, not the typical one. The bulk of what
+survives is ``raylib``'s platform backends, which include their own headers
+correctly and need an SDK the benchmark node does not have and in the Win32
+case cannot have; adding ``-I /usr/include`` moves them barely at all. The
+rest is a short tail of genuine analyzer defects, each filed as its own task
+— JavaScript inside ``EM_ASM``/``EM_JS`` macro bodies parsed as C, a ``.c``
+file ``#include``\ d by another ``.c`` file not inheriting the includer's
+declarations, glibc prototypes guarded by ``__USE_POSIX`` and friends, and
+three declarator shapes we fail to read. So the figure is uninformative about
+the rule for two different reasons at once, and only the second is ours to
+fix.
+
 The material to close this gap already exists in the repo: **1,975
 must-detect** fixtures (``src/rules/cert_c/*/*/tests/fail/*.c``) and **1,594
 must-not-detect** fixtures (``src/rules/cert_c/*/*/tests/pass/*.c``), labeled
