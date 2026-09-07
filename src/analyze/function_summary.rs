@@ -17,7 +17,10 @@ pub struct FunctionSummary {
     /// (if/switch/loop/ternary), so it does not mean every call reaches it.
     pub frees_params: HashSet<usize>,
     /// Parameter indices that this function UNCONDITIONALLY frees — the free
-    /// is not nested inside any conditional construct, so it executes
+    /// is not nested inside any conditional construct other than a null test
+    /// on the very pointer being freed (`if (p != NULL) free(p);`, whose
+    /// skipped path has nothing to free and so leaves nothing for a caller to
+    /// use — task 988, tools_sqc), so it executes
     /// whenever the function itself is entered (modulo an early return
     /// before it, which the AST-position check already accounts for since
     /// it only asks "is this call inside a conditional", not "could an
@@ -1097,6 +1100,118 @@ fn is_unconditionally_reached(node: &Node, body: &Node) -> bool {
     }
 }
 
+/// Whether `condition` is EXACTLY a null test of `name` and nothing else,
+/// reporting which branch is the one on which `name` is non-null:
+/// `Some(true)` when that is the consequence, `Some(false)` when it is the
+/// `else`.
+///
+/// Deliberately narrower than `null_state`'s condition parser, which unions
+/// the operands of `&&` and `||`. Here a compound condition must yield
+/// `None`: `if (ptr && ready)` guards its body on something this frame knows
+/// nothing about, and treating it as a bare null check is exactly the
+/// over-trust that made MAY-frees unusable (task 401).
+fn null_guard_on(condition: &Node, source: &str, name: &str) -> Option<bool> {
+    let text = |n: &Node| n.utf8_text(source.as_bytes()).unwrap_or("").trim();
+    let is_null_literal = |n: &Node| matches!(text(n), "NULL" | "0" | "nullptr");
+    let is_name = |n: &Node| n.kind() == "identifier" && text(n) == name;
+
+    match condition.kind() {
+        "parenthesized_expression" => null_guard_on(&condition.child(1)?, source, name),
+        "identifier" => is_name(condition).then_some(true),
+        "unary_expression" => {
+            let operator = condition.child(0)?;
+            let argument = condition.child_by_field_name("argument")?;
+            (text(&operator) == "!" && is_name(&argument)).then_some(false)
+        }
+        "binary_expression" => {
+            let left = condition.child_by_field_name("left")?;
+            let right = condition.child_by_field_name("right")?;
+            let operator = condition.child_by_field_name("operator")?;
+            let compares_name = (is_name(&left) && is_null_literal(&right))
+                || (is_null_literal(&left) && is_name(&right));
+            if !compares_name {
+                return None;
+            }
+            match text(&operator) {
+                "!=" => Some(true),
+                "==" => Some(false),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// `is_unconditionally_reached`, except that an `if` guarding only on whether
+/// `guarded` is null is transparent.
+///
+/// A free reached solely under `if (ptr != NULL)` — or in the `else` of
+/// `if (ptr == NULL)` — is effectively a MUST-free: on the branch that skips
+/// it there is nothing to free, so nothing survives the call for the caller
+/// to use. Marking the argument freed therefore cannot invent a
+/// use-after-free, which is the failure the MUST set exists to prevent
+/// (task 988, tools_sqc).
+///
+/// The guard must be on the pointer being freed and on nothing else. Any
+/// other condition — a different variable, a flag, a compound test — is a
+/// real MAY-free and reinstates task 401's answer, because there the skipped
+/// path can leave a live pointer the caller goes on to use.
+fn is_unconditionally_reached_modulo_null_guard(
+    node: &Node,
+    body: &Node,
+    source: &str,
+    guarded: &str,
+) -> bool {
+    let mut current = *node;
+    loop {
+        let Some(parent) = current.parent() else {
+            return true;
+        };
+        if parent.id() == body.id() {
+            return true;
+        }
+        if parent.kind() == "if_statement" {
+            let Some(condition) = parent.child_by_field_name("condition") else {
+                return false;
+            };
+            let Some(non_null_on_true) = null_guard_on(&condition, source, guarded) else {
+                return false;
+            };
+            // Which arm did the walk come up through? `alternative` is the
+            // `else_clause` wrapper, so an identity test against both fields
+            // answers it without assuming either is present.
+            let from = |field: &str| {
+                parent
+                    .child_by_field_name(field)
+                    .is_some_and(|arm| arm.id() == current.id())
+            };
+            let reached_when_non_null = if from("consequence") {
+                non_null_on_true
+            } else if from("alternative") {
+                !non_null_on_true
+            } else {
+                // The condition itself, or some other child: not an arm.
+                return false;
+            };
+            if !reached_when_non_null {
+                return false;
+            }
+        } else if matches!(
+            parent.kind(),
+            "switch_statement"
+                | "case_statement"
+                | "conditional_expression"
+                | "for_statement"
+                | "while_statement"
+                | "do_statement"
+        ) || parent.kind().starts_with("preproc_if")
+        {
+            return false;
+        }
+        current = parent;
+    }
+}
+
 /// Reduce a `free()` argument to the identifier it releases, reporting whether
 /// the release goes through the identifier's pointee.
 ///
@@ -1176,7 +1291,7 @@ fn credit_frees_params(
             continue;
         }
         summary.frees_params.insert(idx);
-        if is_unconditionally_reached(&call, body) {
+        if is_unconditionally_reached_modulo_null_guard(&call, body, source, arg_name) {
             summary.unconditional_frees_params.insert(idx);
         }
     }
