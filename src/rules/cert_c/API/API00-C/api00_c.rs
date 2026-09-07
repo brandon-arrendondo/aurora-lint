@@ -216,6 +216,7 @@ impl Api00C {
             .iter()
             .map(|(name, ty)| (name.as_str(), ty.as_str()))
             .collect();
+        let param_names: HashSet<&str> = params.iter().map(|(name, _)| name.as_str()).collect();
 
         // Filter for integer parameters that could overflow, keeping each
         // one's declared type: the shift check below needs the width and
@@ -277,7 +278,7 @@ impl Api00C {
                     // Report only when the parameter is actually read or
                     // written THROUGH — here, or by a callee that does it
                     // without checking first.
-                    if self.parameter_is_dereferenced(&body, param_name, source) {
+                    if self.parameter_is_dereferenced(&body, param_name, &param_names, source) {
                         self.report_violation(
                             function_node,
                             param_name,
@@ -789,18 +790,13 @@ impl Api00C {
         let Some(condition) = child.child_by_field_name("condition") else {
             return;
         };
-        let condition_text = get_node_text(&condition, source);
-
         // Case 1: early-return / early-exit pattern
         //   if (!ptr)        { return; }
         //   if (ptr == NULL) { return; }
         //   if (isNullOrEmpty(ptr)) { return; }  (helper fn call)
         if self.is_early_return_pattern(child, source) {
-            // Use broad match: any param appearing in the condition
-            // of an early-return guard is considered validated.
-            // This handles both direct null checks and helper fn calls.
             for param in pointer_params {
-                if condition_text.contains(param.as_str()) {
+                if self.early_exit_condition_validates(&condition, param, source) {
                     validated.insert(param.clone());
                 }
             }
@@ -839,6 +835,57 @@ impl Api00C {
                 validated.insert(param.clone());
             }
         }
+    }
+
+    /// Does an early-exit guard's condition actually validate `param`?
+    ///
+    /// Case 1 used to be a substring test on the condition *text* — "any param
+    /// appearing in the condition of an early-return guard is considered
+    /// validated" — which credited `e` for `if (e == e->next) return 1;`
+    /// (a comparison against another pointer that dereferences `e` on the
+    /// way), `base` for `if (*base != 0 && chdir(base)) return -1;` (a test of
+    /// the pointee and a *use*), and, being a substring rather than a word
+    /// match, a parameter named `ie` for any condition containing
+    /// `update_dh_ie` (task 902). That is the same defect task 745 fixed in
+    /// the positive-guard path, and it costs true positives rather than
+    /// producing false ones.
+    ///
+    /// Case 1's breadth was partly deliberate, though: its comment named
+    /// `if (isNullOrEmpty(ptr)) return;` as a shape it meant to accept, and
+    /// [`condition_tests_null`] rejects a predicate call by design. So the
+    /// call form is kept — but resolved rather than assumed. The callee has to
+    /// be one whose own summary says it null-checks the argument it was handed
+    /// at that position, which is what tells `isNullOrEmpty(ptr)` apart from
+    /// `chdir(base)`. A callee outside the scanned tree has no summary and so
+    /// credits nothing, which is the direction that costs findings rather than
+    /// hiding them.
+    fn early_exit_condition_validates(&self, condition: &Node, param: &str, source: &str) -> bool {
+        if condition_tests_null(condition, param, source) {
+            return true;
+        }
+        let summaries = self.function_summaries.borrow();
+        query::find_descendants_of_kind(*condition, "call_expression")
+            .iter()
+            .any(|call| {
+                let Some(func) = call.child_by_field_name("function") else {
+                    return false;
+                };
+                let Some(summary) = summaries.get(get_node_text(&func, source)) else {
+                    return false;
+                };
+                let Some(arg_list) = call.child_by_field_name("arguments") else {
+                    return false;
+                };
+                arg_list
+                    .named_children(&mut arg_list.walk())
+                    .enumerate()
+                    .any(|(idx, arg)| {
+                        guard_dominance::strip_arg_wrappers(&arg).kind() == "identifier"
+                            && get_node_text(&guard_dominance::strip_arg_wrappers(&arg), source)
+                                == param
+                            && summary.checks_null_params.contains(&idx)
+                    })
+            })
     }
 
     /// `return_statement` case of [`check_validation_patterns`]: the null
@@ -1118,13 +1165,20 @@ impl Api00C {
     /// caller-owned struct field or handing an opaque cookie to a registrar
     /// is the opposite: the contract goes back to the caller, and those are
     /// task 743's false positives.
-    fn parameter_is_dereferenced(&self, body: &Node, param_name: &str, source: &str) -> bool {
+    fn parameter_is_dereferenced(
+        &self,
+        body: &Node,
+        param_name: &str,
+        param_names: &HashSet<&str>,
+        source: &str,
+    ) -> bool {
         let summaries = self.function_summaries.borrow();
         let mut relay_callees: Vec<(String, usize)> = Vec::new();
         let mut found_direct_deref = false;
         self.classify_param_uses(
             body,
             param_name,
+            param_names,
             source,
             &mut relay_callees,
             &mut found_direct_deref,
@@ -1159,6 +1213,7 @@ impl Api00C {
         &self,
         node: &Node,
         param_name: &str,
+        param_names: &HashSet<&str>,
         source: &str,
         relay_callees: &mut Vec<(String, usize)>,
         found_direct_deref: &mut bool,
@@ -1195,8 +1250,20 @@ impl Api00C {
                 if let Some(call_expr) = parent.parent() {
                     if call_expr.kind() == "call_expression" {
                         if let Some(func) = call_expr.child_by_field_name("function") {
+                            let callee = get_node_text(&func, source);
+                            // A call through one of THIS function's own
+                            // parameters is caller-supplied code
+                            // (`set_auxdata`'s `xDelete(pAux)`): there is no
+                            // callee body to consult, and the caller chose
+                            // both the function pointer and the value handed
+                            // to it, so the contract is theirs. Without this
+                            // it falls into the unknown-callee arm, which
+                            // counts as a dereference.
+                            if param_names.contains(callee) {
+                                continue;
+                            }
                             let arg_idx = self.get_arg_index(&occurrence, &parent);
-                            relay_callees.push((get_node_text(&func, source).to_string(), arg_idx));
+                            relay_callees.push((callee.to_string(), arg_idx));
                             continue;
                         }
                     }
