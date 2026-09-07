@@ -369,7 +369,6 @@ pub fn is_dereference_expression(node: &Node, source: &str) -> bool {
 
 /// True if `node` is a `&p`-style address-of expression. See
 /// [`is_dereference_expression`].
-#[allow(dead_code)]
 pub fn is_address_of_expression(node: &Node, source: &str) -> bool {
     node.kind() == "pointer_expression"
         && node
