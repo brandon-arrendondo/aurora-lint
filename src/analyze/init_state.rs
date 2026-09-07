@@ -1269,17 +1269,30 @@ fn try_process_macro_output_params(
     let Some(out_indices) = config.macro_output_params.get(func_name) else {
         return false;
     };
+    // Nothing to credit, so claiming the call was handled would suppress every
+    // path below -- including the stdlib table. The same short-circuit
+    // `try_process_known_initializing_function` carried (task 1029, tools_sqc).
+    if out_indices.is_empty() {
+        return false;
+    }
     let args = crate::analyze::macro_semantics::positional_args(node);
     for &idx in out_indices {
         if let Some(arg) = args.get(idx) {
-            // curl's `Curl_rand(data, (unsigned char *)rnd, rnd_size)` casts
-            // the output arg to match the forwarded function's real
-            // parameter type (task 589) -- unwrap it before checking for a
-            // bare identifier, or the cast node shape hides `rnd` entirely.
-            let arg = unwrap_cast(*arg);
-            if arg.kind() == "identifier" {
-                let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-                if let Some(info) = state.get_mut(name) {
+            // `extract_var_from_arg` rather than a bare-identifier test: it
+            // unwraps the cast curl's `Curl_rand(data, (unsigned char *)rnd,
+            // rnd_size)` needs (task 589) AND roots `&st`, `&s.f`, `&a[i]`.
+            //
+            // Crediting only a bare identifier here was harmless only while
+            // this map stayed empty for such macros. pure-ftpd's
+            // `#define stat(A, B) fakestat(A, B)` is a forwarding macro whose
+            // target gained an output parameter once library-call writes
+            // became visible (task 1026), which populated the map, armed the
+            // `true` below, and dropped the credit `stat` -> arg 1 had always
+            // got from the stdlib table -- reporting `st` uninitialised at
+            // five pure-ftpd sites (task 1026 follow-up, tools_sqc).
+            let name = extract_var_from_arg(arg, source);
+            if !name.is_empty() {
+                if let Some(info) = state.get_mut(&name) {
                     info.state = InitState::Initialized;
                     info.allocation_count = None;
                 }
@@ -1287,19 +1300,6 @@ fn try_process_macro_output_params(
         }
     }
     true
-}
-
-/// Unwrap any number of leading `(Type)` casts to the innermost operand,
-/// e.g. `(unsigned char *)rnd` -> `rnd`, `(int)(long)x` -> `x`.
-fn unwrap_cast(node: Node) -> Node {
-    let mut n = node;
-    while n.kind() == "cast_expression" {
-        let Some(inner) = n.child_by_field_name("value") else {
-            break;
-        };
-        n = inner;
-    }
-    n
 }
 
 /// Cross-file (in-repo) functions known from prescan `FunctionSummary::modifies_params`
@@ -1939,7 +1939,7 @@ fn get_text(_parent: &Node, child: &Node, source: &str) -> String {
 
 /// Extract variable name from function argument (handles &var, var).
 fn extract_var_from_arg(arg: &Node, source: &str) -> String {
-    let arg = &unwrap_cast(*arg);
+    let arg = &strip_arg_casts(arg);
     if arg.kind() == "pointer_expression" {
         let text = arg.utf8_text(source.as_bytes()).unwrap_or("");
         if text.starts_with('&') {
@@ -1959,9 +1959,9 @@ fn extract_var_from_arg(arg: &Node, source: &str) -> String {
 /// around a call argument, discarded — they change nothing about what the
 /// callee does with it.
 ///
-/// Distinct from `unwrap_cast`, which strips casts ONLY. Both exist because
-/// the macro output-param path wants the narrower one; do not merge them
-/// without measuring that path.
+/// Replaced a casts-only `unwrap_cast`: the two sat side by side while the
+/// macro output-param path wanted the narrower answer, and that path now goes
+/// through `extract_var_from_arg` like every other credit funnel.
 pub fn strip_arg_casts<'a>(arg: &Node<'a>) -> Node<'a> {
     let mut n = *arg;
     loop {
