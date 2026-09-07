@@ -551,63 +551,13 @@ fn trailing_integer(s: &str) -> Option<i64> {
 }
 
 /// Returns the bit-width of a known integer type, or None for unknown types.
-/// Check 64-bit before 32-bit to prevent "long int" matching "int".
+///
+/// The integer table itself is [`ast_utils::integer_type_width`] (shared since
+/// task 741, which needed the same widths in API00-C); what stays here is the
+/// floating-type branch, which is an INT31-C convention rather than a width.
 fn get_type_width(type_str: &str) -> Option<u32> {
-    let t = type_str.trim();
-
-    // 8-bit types
-    if t == "char" || t == "signed char" || t == "unsigned char" || t == "int8_t" || t == "uint8_t"
-    {
-        return Some(8);
-    }
-
-    // 16-bit types
-    if t == "short"
-        || t == "signed short"
-        || t == "unsigned short"
-        || t == "short int"
-        || t == "signed short int"
-        || t == "unsigned short int"
-        || t == "int16_t"
-        || t == "uint16_t"
-    {
-        return Some(16);
-    }
-
-    // 64-bit types — check BEFORE 32-bit so "long int" doesn't match "int"
-    if t == "long"
-        || t == "signed long"
-        || t == "unsigned long"
-        || t == "long int"
-        || t == "signed long int"
-        || t == "unsigned long int"
-        || t == "long long"
-        || t == "signed long long"
-        || t == "unsigned long long"
-        || t == "long long int"
-        || t == "signed long long int"
-        || t == "unsigned long long int"
-        || t == "int64_t"
-        || t == "uint64_t"
-        || t == "size_t"
-        || t == "ssize_t"
-        || t == "ptrdiff_t"
-        || t == "intptr_t"
-        || t == "uintptr_t"
-    {
-        return Some(64);
-    }
-
-    // 32-bit types
-    if t == "int"
-        || t == "signed"
-        || t == "unsigned"
-        || t == "signed int"
-        || t == "unsigned int"
-        || t == "int32_t"
-        || t == "uint32_t"
-    {
-        return Some(32);
+    if let Some(bits) = ast_utils::integer_type_width(type_str) {
+        return Some(bits);
     }
 
     // Floating types: not an integer bit-width at all, but any conversion to
@@ -620,6 +570,7 @@ fn get_type_width(type_str: &str) -> Option<u32> {
     // narrowing into ANY integer LHS, while still comparing equal against each
     // other so a float<->double<->long double move is left to FLP34-C, which
     // owns floating-to-floating precision loss.
+    let t = type_str.trim();
     if t == "float" || t == "double" || t == "long double" {
         return Some(FLOAT_AS_INTEGER_WIDTH);
     }
