@@ -81,6 +81,64 @@ pub fn get_sanitized_node_text(node: &Node, source: &str) -> String {
 // AST Navigation
 // ============================================================================
 
+/// A per-file cache of every AST node's parent, so an ancestor walk pays
+/// O(1) per step instead of O(depth).
+///
+/// `tree_sitter::Node::parent()` is not a pointer hop -- it recovers a parent
+/// by descending from the tree root, so one call costs O(depth). A rule that
+/// walks up from a node therefore pays O(depth^2), and running that once per
+/// descendant of a file whose node count grows with its nesting depth is
+/// cubic. On the 2,000-level `if`-nesting fixture that cost ~24 s total
+/// across the whole rule set (task 984, this repo); STR34-C alone spent 2.9 s
+/// there re-descending from the root once per identifier.
+///
+/// Build one map per file with `ParentMap::new(root)` (a single pre-order
+/// walk, O(n)), then hand `&ParentMap` to the ancestor helpers below. Any
+/// rule that walks ancestors more than a bounded few levels should use this
+/// -- pattern (3) in `docs/design/internal-capability-catalog.md`, alongside
+/// prune-on-the-way-down and carry-a-stack.
+pub struct ParentMap<'a> {
+    parents: std::collections::HashMap<usize, Node<'a>>,
+}
+
+impl<'a> ParentMap<'a> {
+    /// Build a parent map for every node in `root`'s subtree with a single
+    /// pre-order walk (O(n) nodes, O(1) per step).
+    pub fn new(root: Node<'a>) -> Self {
+        let mut parents = std::collections::HashMap::new();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                parents.insert(child.id(), node);
+                stack.push(child);
+            }
+        }
+        Self { parents }
+    }
+
+    /// The direct parent of `node`, or `None` if `node` is the map's root.
+    pub fn parent_of(&self, node: Node<'a>) -> Option<Node<'a>> {
+        self.parents.get(&node.id()).copied()
+    }
+
+    /// The nearest strict ancestor of `node` satisfying `pred`, or `None`.
+    pub fn find_ancestor(
+        &self,
+        node: Node<'a>,
+        mut pred: impl FnMut(Node<'a>) -> bool,
+    ) -> Option<Node<'a>> {
+        let mut cur = self.parent_of(node);
+        while let Some(n) = cur {
+            if pred(n) {
+                return Some(n);
+            }
+            cur = self.parent_of(n);
+        }
+        None
+    }
+}
+
 /// Find the containing function definition for a given node
 /// Returns the function_definition node that contains the given node
 pub fn find_containing_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
