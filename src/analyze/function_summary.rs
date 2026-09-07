@@ -420,45 +420,51 @@ fn collect_function_summaries(
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
     summaries: &mut HashMap<String, FunctionSummary>,
 ) {
-    if node.kind() == "function_definition" && !is_macro_function_definition(node) {
-        if let Some(name) = extract_function_name(node, source) {
-            let summary = analyze_function(
-                node,
-                source,
-                macros,
-                compute_return_ranges,
-                taint_source_aliases,
-                string_macros,
-                function_macros,
-            );
-            summaries.insert(name, summary);
+    // Iterative pre-order rather than recursion, and the order is the same one
+    // a recursive descent produced (children pushed reversed, popped LIFO), so
+    // which definition wins a duplicate name is unchanged.
+    //
+    // The walk below descends into EVERY child, so its depth is the AST's own
+    // nesting depth -- unbounded, and reached in practice by a file whose
+    // #ifdef braces make tree-sitter nest every remaining function inside the
+    // last good one. As recursion that cost one stack frame per level, each
+    // holding an `analyze_function` result, so the frame grew with
+    // `FunctionSummary` itself: raylib's parse aborted the entire scan the
+    // next time the struct gained a field, and would have again on the one
+    // after that. Depth now costs heap.
+    let mut stack = vec![*node];
+    while let Some(current) = stack.pop() {
+        if current.kind() == "function_definition" && !is_macro_function_definition(&current) {
+            if let Some(name) = extract_function_name(&current, source) {
+                let summary = analyze_function(
+                    &current,
+                    source,
+                    macros,
+                    compute_return_ranges,
+                    taint_source_aliases,
+                    string_macros,
+                    function_macros,
+                );
+                summaries.insert(name, summary);
+            }
         }
-    }
 
-    // Recurse into every child unconditionally, not just preproc wrappers.
-    // A brace that opens and closes in different branches of the same
-    // repeated #ifdef guard makes tree-sitter-c's preprocessor-less parse
-    // swallow every subsequent sibling function_definition as a nested
-    // descendant of the corrupted one (see `is_real_nested_function_definition`
-    // and lang_parsing_substrate::calls, which hit the identical failure
-    // mode for call-graph edges). Stopping at preproc_* children only would
-    // leave every swallowed sibling permanently invisible to this map — a
-    // silent false-negative for every interprocedural rule keyed on
-    // FunctionSummary (MSC04-C, EXP34-C, MEM30/31-C, null-state, taint).
-    // Recursing everywhere instead still finds and summarizes it under its
-    // own name, even though it's nested in the AST.
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_function_summaries(
-                &child,
-                source,
-                macros,
-                compute_return_ranges,
-                taint_source_aliases,
-                string_macros,
-                function_macros,
-                summaries,
-            );
+        // Descend into every child unconditionally, not just preproc wrappers.
+        // A brace that opens and closes in different branches of the same
+        // repeated #ifdef guard makes tree-sitter-c's preprocessor-less parse
+        // swallow every subsequent sibling function_definition as a nested
+        // descendant of the corrupted one (see `is_real_nested_function_definition`
+        // and lang_parsing_substrate::calls, which hit the identical failure
+        // mode for call-graph edges). Stopping at preproc_* children only would
+        // leave every swallowed sibling permanently invisible to this map — a
+        // silent false-negative for every interprocedural rule keyed on
+        // FunctionSummary (MSC04-C, EXP34-C, MEM30/31-C, null-state, taint).
+        // Walking everywhere instead still finds and summarizes it under its
+        // own name, even though it's nested in the AST.
+        for i in (0..current.child_count()).rev() {
+            if let Some(child) = current.child(i) {
+                stack.push(child);
+            }
         }
     }
 }
