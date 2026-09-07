@@ -1,14 +1,15 @@
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::cfg::FunctionCfg;
+use crate::analyze::cfg::{self, FunctionCfg};
 use crate::analyze::const_eval::{self, MacroConstantMap, VarRangeMap};
 use crate::analyze::context::ProjectContext;
-use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::value_range::RangeAnalysisResult;
 use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::rules::cert_c::int_provenance;
 use crate::utility::cert_c::ast_utils::{self, get_node_text, get_sanitized_node_text};
 use crate::utility::cert_c::float_typing;
+use crate::utility::cert_c::guard_dominance;
 use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use crate::utility::cert_c::std_functions;
@@ -29,6 +30,12 @@ pub struct Int30C {
     /// Per-function memo of risky variable names, keyed by function node id;
     /// cleared per file.
     risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
+    /// Reverse call graph: callee name → the functions that call it. Backs the
+    /// parameter arm of the provenance gate (`int_provenance::ParamContext`).
+    callers: RefCell<HashMap<String, HashSet<String>>>,
+    /// Per-function memo of parameter names, keyed by function node id; cleared
+    /// per file alongside `risky_vars_cache`.
+    param_names_cache: RefCell<HashMap<usize, HashSet<String>>>,
     /// File-scope pointer names and pointer-returning functions, for the
     /// pointer-arithmetic gate. Rebuilt per file.
     pointer_facts: RefCell<PointerFacts>,
@@ -45,6 +52,8 @@ impl Int30C {
             function_summaries: RefCell::new(HashMap::new()),
             global_writers: RefCell::new(HashMap::new()),
             risky_vars_cache: RefCell::new(HashMap::new()),
+            callers: RefCell::new(HashMap::new()),
+            param_names_cache: RefCell::new(HashMap::new()),
             pointer_facts: RefCell::new(PointerFacts::default()),
         }
     }
@@ -96,6 +105,37 @@ impl Int30C {
         };
         let global_writers = self.global_writers.borrow();
 
+        // A parameter carries whatever its callers pass, so its provenance is a
+        // property of the call sites and needs the reverse call graph. Without
+        // cross-file context (`summaries` empty — a run without `-d`) there are
+        // no callers to reason from, so the parameter arm stays off and the
+        // gate keeps its older, narrower behaviour rather than firing on every
+        // parameter it cannot bound.
+        {
+            let mut cache = self.param_names_cache.borrow_mut();
+            cache.entry(func_id).or_insert_with(|| {
+                function_summary::collect_param_names(&func, source)
+                    .into_iter()
+                    .filter(|n| !n.is_empty())
+                    .collect()
+            });
+        }
+        let param_names = self.param_names_cache.borrow();
+        let callers = self.callers.borrow();
+        let param_ctx = match (
+            cfg::get_function_name(&func, source),
+            param_names.get(&func_id),
+        ) {
+            (Some(func_name), Some(params)) if !summaries.is_empty() => {
+                Some(int_provenance::ParamContext {
+                    func_name,
+                    params,
+                    callers: &callers,
+                })
+            }
+            _ => None,
+        };
+
         let mut operands = Vec::new();
         if let Some(l) = node.child_by_field_name("left") {
             operands.push(l);
@@ -108,7 +148,14 @@ impl Int30C {
         }
 
         operands.iter().any(|op| {
-            int_provenance::operand_is_risky(op, risky_vars, &summaries, &global_writers, source)
+            int_provenance::operand_is_risky(
+                op,
+                risky_vars,
+                &summaries,
+                &global_writers,
+                param_ctx.as_ref(),
+                source,
+            )
         })
     }
 
@@ -153,6 +200,17 @@ impl CertRule for Int30C {
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.global_writers.borrow_mut() = context.global_writers.clone();
+
+        let mut callers: HashMap<String, HashSet<String>> = HashMap::new();
+        for (caller, callees) in &context.call_graph {
+            for callee in callees {
+                callers
+                    .entry(callee.clone())
+                    .or_default()
+                    .insert(caller.clone());
+            }
+        }
+        *self.callers.borrow_mut() = callers;
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -178,6 +236,7 @@ impl CertRule for Int30C {
         // Risky-var memo is keyed on tree-sitter node ids, unique only within
         // one parse tree — reset per file.
         self.risky_vars_cache.borrow_mut().clear();
+        self.param_names_cache.borrow_mut().clear();
 
         *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);
 
@@ -1775,6 +1834,7 @@ impl Int30C {
             || self.has_postcondition_check(node, source)
             || self.uses_wider_type(node, source)
             || self.is_inside_checked_block(node, source)
+            || guard_dominance::has_dominating_limit_guard(node, node, source)
     }
 
     fn has_overflow_check_subtraction(&self, node: &Node, source: &str) -> bool {
@@ -1793,6 +1853,7 @@ impl Int30C {
             || self.has_preceding_overflow_check(node, source)
             || self.uses_wider_type(node, source)
             || self.is_inside_checked_block(node, source)
+            || guard_dominance::has_dominating_limit_guard(node, node, source)
     }
 
     /// Check if there's an overflow check in the code preceding this node
@@ -1832,6 +1893,7 @@ impl Int30C {
         self.has_function_context_check(node, source, &["if", "UINT_MAX"])
             || self.has_function_context_check(node, source, &["if", "SIZE_MAX"])
             || self.is_inside_checked_block(node, source)
+            || guard_dominance::has_dominating_limit_guard(node, node, source)
     }
 
     fn has_overflow_check_update(&self, node: &Node, source: &str) -> bool {
@@ -2024,25 +2086,45 @@ impl Int30C {
     /// Patterns: `if (var > 0)`, `while (var > expr)`, `for (...; var > expr; ...)`.
     /// For unsigned types, `var > expr` implies `var >= 1`, making `var--` or `var - 1` safe.
     fn is_guarded_by_gt_zero(&self, node: &Node, var_name: &str, source: &str) -> bool {
-        let mut current = *node;
-        while let Some(parent) = current.parent() {
-            if matches!(
-                parent.kind(),
-                "if_statement" | "while_statement" | "for_statement"
-            ) {
-                if let Some(condition) = parent.child_by_field_name("condition") {
-                    let cond_text = get_node_text(&condition, source);
-                    if self.condition_implies_positive(cond_text, var_name) {
-                        return true;
-                    }
-                }
+        // Every condition already evaluated here, not just the ancestor
+        // `if`/`while`/`for` chain this walked before: `&&` conjuncts and
+        // preceding `if`s establish the same fact and were being missed.
+        guard_dominance::dominating_conditions(node)
+            .iter()
+            .any(|cond| {
+                Self::condition_is_truthiness_test(cond, var_name, source)
+                    || self.condition_implies_positive(get_node_text(cond, source), var_name)
+            })
+    }
+
+    /// True when `cond` is a bare truthiness test of `var_name` — `while (n)`,
+    /// `if (len && ...)`. For an unsigned value that is exactly `n != 0`, so a
+    /// `n--` or `n - 1` under it cannot wrap. hostap's
+    /// `while (in_size) { in_size--; ... }` is the recorded example: the text
+    /// patterns below look for a comparison operator and there is none here.
+    fn condition_is_truthiness_test(cond: &Node, var_name: &str, source: &str) -> bool {
+        match cond.kind() {
+            "identifier" => get_node_text(cond, source).trim() == var_name.trim(),
+            "parenthesized_expression" => cond
+                .named_child(0)
+                .is_some_and(|inner| Self::condition_is_truthiness_test(&inner, var_name, source)),
+            "binary_expression" => {
+                let op = cond
+                    .child_by_field_name("operator")
+                    .map(|o| o.kind())
+                    .unwrap_or("");
+                // Both conjuncts hold once the body runs; `||` establishes neither.
+                op == "&&"
+                    && [
+                        cond.child_by_field_name("left"),
+                        cond.child_by_field_name("right"),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|side| Self::condition_is_truthiness_test(&side, var_name, source))
             }
-            if parent.kind() == "function_definition" {
-                break;
-            }
-            current = parent;
+            _ => false,
         }
-        false
     }
 
     /// Check if a condition text implies var_name > 0 (i.e., var is positive).
