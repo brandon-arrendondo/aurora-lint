@@ -46,65 +46,20 @@ use tree_sitter::{Node, Parser, Tree};
 /// source order).
 const MAX_ITERATIONS: u32 = 8;
 
-/// C keywords that must never be blanked even when tree-sitter's error
-/// recovery leaves one wrapped in a generic `identifier` leaf inside an
-/// `ERROR` node. Found via a real regression: `STATIC void f(...) {}`
-/// (`STATIC` a real, non-empty macro for `static`) parsed with `STATIC`
-/// consumed as the declarator's `type_identifier` and `void` itself
-/// stranded as an ERROR-wrapped `identifier` -- blanking "void" as if it
-/// were an unknown macro discarded the function's actual return type,
-/// which then made MSC37-C misjudge it as non-void and demand a return
-/// statement. A keyword being inside an ERROR node is a sign the SURROUNDING
-/// structure misparsed, not that the keyword itself is safely removable.
-const C_KEYWORDS: &[&str] = &[
-    "auto",
-    "break",
-    "case",
-    "char",
-    "const",
-    "continue",
-    "default",
-    "do",
-    "double",
-    "else",
-    "enum",
-    "extern",
-    "float",
-    "for",
-    "goto",
-    "if",
-    "inline",
-    "int",
-    "long",
-    "register",
-    "restrict",
-    "return",
-    "short",
-    "signed",
-    "sizeof",
-    "static",
-    "struct",
-    "switch",
-    "typedef",
-    "union",
-    "unsigned",
-    "void",
-    "volatile",
-    "while",
-    "_Alignas",
-    "_Alignof",
-    "_Atomic",
-    "_Bool",
-    "_Complex",
-    "_Generic",
-    "_Imaginary",
-    "_Noreturn",
-    "_Static_assert",
-    "_Thread_local",
-];
+/// A C keyword must never be blanked even when tree-sitter's error recovery
+/// leaves one wrapped in a generic `identifier` leaf inside an `ERROR` node.
+/// Found via a real regression: `STATIC void f(...) {}` (`STATIC` a real,
+/// non-empty macro for `static`) parsed with `STATIC` consumed as the
+/// declarator's `type_identifier` and `void` itself stranded as an
+/// ERROR-wrapped `identifier` -- blanking "void" as if it were an unknown
+/// macro discarded the function's actual return type, which then made
+/// MSC37-C misjudge it as non-void and demand a return statement. A keyword
+/// being inside an ERROR node is a sign the SURROUNDING structure misparsed,
+/// not that the keyword itself is safely removable.
+use crate::utility::cert_c::ast_utils::is_c_keyword;
 
 fn is_bare_identifier(text: &str) -> bool {
-    if C_KEYWORDS.contains(&text) {
+    if is_c_keyword(text) {
         return false;
     }
     let mut chars = text.chars();

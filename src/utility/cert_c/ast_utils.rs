@@ -1217,6 +1217,176 @@ pub fn collect_defined_macro_names(source: &str, out: &mut std::collections::Has
     }
 }
 
+/// True if `name` is a C keyword.
+///
+/// Single source of truth for the check, shared by
+/// `analyze::unknown_identifier_recovery` (which must never blank a keyword
+/// stranded in an `ERROR` node) and by rules that read a declared name out
+/// of a recovered parse. A keyword appearing where an identifier belongs is
+/// always a parse artifact, never a real name — the C grammar reserves
+/// these, so no declaration can ever bind one.
+pub fn is_c_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "auto"
+            | "break"
+            | "case"
+            | "char"
+            | "const"
+            | "continue"
+            | "default"
+            | "do"
+            | "double"
+            | "else"
+            | "enum"
+            | "extern"
+            | "float"
+            | "for"
+            | "goto"
+            | "if"
+            | "inline"
+            | "int"
+            | "long"
+            | "register"
+            | "restrict"
+            | "return"
+            | "short"
+            | "signed"
+            | "sizeof"
+            | "static"
+            | "struct"
+            | "switch"
+            | "typedef"
+            | "union"
+            | "unsigned"
+            | "void"
+            | "volatile"
+            | "while"
+            | "_Alignas"
+            | "_Alignof"
+            | "_Atomic"
+            | "_Bool"
+            | "_Complex"
+            | "_Generic"
+            | "_Imaginary"
+            | "_Noreturn"
+            | "_Static_assert"
+            | "_Thread_local"
+    )
+}
+
+/// The exact attribute spellings that mean "this may legitimately go
+/// unused" — GCC/clang's `unused` attribute in each of its accepted forms,
+/// and C23/C++'s `maybe_unused`. Matched as whole tokens, which is what
+/// keeps `warn_unused_result` (one token, not `unused`) out.
+const UNUSED_ATTRIBUTE_TOKENS: &[&str] = &[
+    "unused",
+    "__unused",
+    "__unused__",
+    "maybe_unused",
+    "__maybe_unused",
+    "__maybe_unused__",
+];
+
+/// True if `text` contains an unused-attribute token as a whole token.
+fn mentions_unused_attribute_token(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if is_ident_start_char(chars[i]) {
+            let start = i;
+            while i < chars.len() && is_ident_body_char(chars[i]) {
+                i += 1;
+            }
+            let tok: String = chars[start..i].iter().collect();
+            if UNUSED_ATTRIBUTE_TOKENS.contains(&tok.as_str()) {
+                return true;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+fn is_ident_start_char(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_'
+}
+
+fn is_ident_body_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// True if `text` carries an unused-attribute annotation *written out* —
+/// `__attribute__((unused))`, `__attribute__((__unused__))`,
+/// `[[maybe_unused]]`, or the bare `__unused`/`__maybe_unused` spellings.
+///
+/// The attribute-syntax requirement is what makes this safe to run over a
+/// whole declaration: `int unused;` declares a variable that happens to be
+/// *named* `unused` and must still be reported, so a bare `unused` token
+/// only counts inside `__attribute__(...)` or `[[...]]`.
+pub fn has_unused_attribute(text: &str) -> bool {
+    if (text.contains("__attribute__") || text.contains("[["))
+        && mentions_unused_attribute_token(text)
+    {
+        return true;
+    }
+    // Reserved-identifier spellings need no surrounding syntax: `__unused`
+    // cannot be a user's own variable name.
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if is_ident_start_char(chars[i]) {
+            let start = i;
+            while i < chars.len() && is_ident_body_char(chars[i]) {
+                i += 1;
+            }
+            let tok: String = chars[start..i].iter().collect();
+            if tok.starts_with("__") && UNUSED_ATTRIBUTE_TOKENS.contains(&tok.as_str()) {
+                return true;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// Collect every `#define NAME ...` whose replacement text *is* an
+/// unused-attribute annotation (e.g. seL4's `#define UNUSED
+/// __attribute__((unused))`). Plain regex over raw text like
+/// `collect_packed_macro_names`, and deliberately independent of any single
+/// file's declarations so it can be merged project-wide: the `#define`
+/// almost always lives in a header far from the annotated declaration.
+///
+/// Resolving the macro's *body* is what keeps this name-independent — a
+/// project spelling the macro `SEL4_UNUSED`, `MAYBE`, or anything else is
+/// recognized, and a macro merely *named* `UNUSED` that expands to
+/// something else is not.
+pub fn collect_unused_attribute_macro_names(
+    source: &str,
+    out: &mut std::collections::HashSet<String>,
+) {
+    let Ok(re) = regex::Regex::new(r"(?m)^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b([^\n]*)$")
+    else {
+        return;
+    };
+    for cap in re.captures_iter(source) {
+        let body = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        // A function-like macro (`#define UNUSED_PARAM(x) ...`) is not an
+        // attribute annotation, so require the body to not open with `(`
+        // immediately after the name.
+        if body.starts_with('(') {
+            continue;
+        }
+        if mentions_unused_attribute_token(body) {
+            if let Some(name) = cap.get(1) {
+                out.insert(name.as_str().to_string());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
