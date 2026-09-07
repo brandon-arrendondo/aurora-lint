@@ -7,6 +7,7 @@
 use super::cfg::{BasicBlock, BlockId, CfgEdge, FunctionCfg};
 use super::dataflow::find_node_at_range;
 use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::init_state;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tree_sitter::Node;
@@ -621,13 +622,18 @@ fn apply_cross_file_output_params_null(
 
 /// Extract the target variable name from an output-position call argument:
 /// `&var` (address-of) or a bare identifier (array-decay / already-a-pointer).
+///
+/// `&var.field` and `&var[i]` also name storage inside `var`, which
+/// `init_state::addressed_object_root` is what recognises -- and `&var->field`
+/// deliberately does not, because that address lies inside the pointee and so
+/// carries no claim about `var` (task 1028, tools_sqc).
 fn extract_output_arg_var(arg: &Node, source: &str) -> String {
     if arg.kind() == "pointer_expression" {
         let text = get_text(arg, source);
         if text.starts_with('&') {
             if let Some(inner) = arg.child_by_field_name("argument") {
-                if inner.kind() == "identifier" {
-                    return get_text(&inner, source);
+                if let Some(root) = init_state::addressed_object_root(&inner) {
+                    return get_text(&root, source);
                 }
             }
         }

@@ -280,6 +280,12 @@ pub fn get_output_arg_indices(func_name: &str) -> Vec<usize> {
         // as initializing `event` because `rfkill->fd` (index 0) was
         // checked instead.
         "read" | "recv" => vec![1],
+        // The scanf family is variadic: which arguments are outputs
+        // depends on the format string, not on a fixed position, so it
+        // has no answer to give here. `variadic_output_from_index` is
+        // what carries it -- and an empty list on its own used to mean
+        // strictly LESS credit than not being listed at all (task 1029,
+        // tools_sqc). See the note there.
         "scanf" | "fscanf" | "sscanf" => vec![],
         "gettimeofday" => vec![0],
         "getaddrinfo" => vec![3],
@@ -294,6 +300,31 @@ pub fn get_output_arg_indices(func_name: &str) -> Vec<usize> {
         "mbrlen" | "mbrtowc" | "mbsrtowcs" | "wcrtomb" | "wcsrtombs" => vec![],
         "regexec" => vec![],
         _ => vec![0], // Default: first arg is output
+    }
+}
+
+/// The first argument index from which EVERY remaining argument is an output,
+/// for the variadic scanf family.
+///
+/// `get_output_arg_indices` returns fixed positions and cannot express "and
+/// all the rest", so `scanf`/`fscanf`/`sscanf` sit there as an empty list.
+/// That made membership in `INITIALIZING_FUNCTIONS` strictly WORSE than
+/// absence: `try_process_known_initializing_function` returned true anyway,
+/// short-circuiting the `&var` credit `process_unknown_function_call` gives
+/// every unlisted name, so `sscanf(s, "%d", &x)` left `x` uninitialised where
+/// an unlisted `getsockopt(..., &x, ...)` did not (task 1029, tools_sqc).
+///
+/// Modelling the shape rather than falling through keeps argument 0 of
+/// `fscanf`/`sscanf` an INPUT, which the fallback would have credited: an
+/// unwritten `char buf[64]` handed to `sscanf(buf, ...)` is the defect, not a
+/// false positive.
+pub fn variadic_output_from_index(func_name: &str) -> Option<usize> {
+    match func_name {
+        // scanf(fmt, &a, &b, ...)
+        "scanf" => Some(1),
+        // fscanf(stream, fmt, &a, ...) / sscanf(src, fmt, &a, ...)
+        "fscanf" | "sscanf" => Some(2),
+        _ => None,
     }
 }
 
@@ -1321,6 +1352,18 @@ fn try_process_known_initializing_function(
         return false;
     };
     let output_indices = get_output_arg_indices(base_name);
+    let variadic_from = variadic_output_from_index(base_name);
+    // Nothing to credit. Claiming the call was handled anyway suppresses the
+    // caller's fallback -- `process_unknown_function_call` credits `&var` for
+    // any name this table does not know -- so being listed here with no output
+    // index was strictly worse than not being listed (task 1029, tools_sqc).
+    // Same "must be additive, not a short-circuit" rule as
+    // `try_process_cross_file_output_params`. The mbrlen/regexec group that
+    // reaches this line is still denied credit, by
+    // `is_non_initializing_function`, which is where that decision belongs.
+    if output_indices.is_empty() && variadic_from.is_none() {
+        return false;
+    }
     if let Some(args) = node.child_by_field_name("arguments") {
         let mut arg_idx = 0;
         for i in 0..args.child_count() {
@@ -1328,7 +1371,9 @@ fn try_process_known_initializing_function(
             if matches!(arg.kind(), "," | "(" | ")") {
                 continue;
             }
-            if output_indices.contains(&arg_idx) {
+            let is_output = output_indices.contains(&arg_idx)
+                || variadic_from.is_some_and(|first| arg_idx >= first);
+            if is_output {
                 let var_name = extract_var_from_arg(&arg, source);
                 if !var_name.is_empty() {
                     if let Some(info) = state.get_mut(&var_name) {
@@ -1377,6 +1422,13 @@ fn process_unknown_function_call(
         }
         let skip_this_arg = cond_param_indices.is_some_and(|indices| indices.contains(&arg_idx))
             || read_only_indices.is_some_and(|indices| indices.contains(&arg_idx));
+        // A cast or a redundant parenthesis around the argument changes
+        // nothing about what the callee does with it, but the two shape tests
+        // below are on the argument node itself -- so curl's and hostap's
+        // `f((unsigned char *)&s.arr[0], n)` was never even offered to
+        // `extract_var_from_arg`, which unwraps casts perfectly well once it
+        // is reached (task 1028, tools_sqc).
+        let arg = strip_arg_casts(&arg);
         // &var pattern — assume function writes to it (unless this param is conditionally-init)
         if !skip_this_arg && arg.kind() == "pointer_expression" {
             let arg_text = arg.utf8_text(source.as_bytes()).unwrap_or("");
@@ -1892,8 +1944,8 @@ fn extract_var_from_arg(arg: &Node, source: &str) -> String {
         let text = arg.utf8_text(source.as_bytes()).unwrap_or("");
         if text.starts_with('&') {
             if let Some(inner) = arg.child_by_field_name("argument") {
-                if inner.kind() == "identifier" {
-                    return inner.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                if let Some(root) = addressed_object_root(&inner) {
+                    return root.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                 }
             }
         }
@@ -1901,6 +1953,70 @@ fn extract_var_from_arg(arg: &Node, source: &str) -> String {
         return arg.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     }
     String::new()
+}
+
+/// `(T *)x`, `(x)`, `((T *)x)` -> `x`. Any number of casts and parentheses
+/// around a call argument, discarded — they change nothing about what the
+/// callee does with it.
+///
+/// Distinct from `unwrap_cast`, which strips casts ONLY. Both exist because
+/// the macro output-param path wants the narrower one; do not merge them
+/// without measuring that path.
+pub fn strip_arg_casts<'a>(arg: &Node<'a>) -> Node<'a> {
+    let mut n = *arg;
+    loop {
+        let inner = match n.kind() {
+            "cast_expression" => n.child_by_field_name("value"),
+            "parenthesized_expression" => n.child(1),
+            _ => None,
+        };
+        match inner {
+            Some(child) => n = child,
+            None => return n,
+        }
+    }
+}
+
+/// The variable whose own storage the address in `&lvalue` points into, if
+/// any. `&s.len` roots at `s`, `&a[i]` at `a`, `&(x)` at `x`, `&s.in.v` at
+/// `s`; `&p->f` and `&(*p).f` root at nothing.
+///
+/// The exact complement of `function_summary::deref_write_root`, which
+/// requires a dereference somewhere on the path BEFORE the root identifier
+/// counts, because `p->f = v` writes storage the caller owns. Here a
+/// dereference must NOT have been crossed, for the mirror-image reason: an
+/// address inside `*p` is an address inside the pointee, so a callee writing
+/// through it says nothing about whether `p` -- the name a state map is keyed
+/// on -- was ever written. That asymmetry is the whole rule; the traversals
+/// are otherwise the same shape.
+///
+/// `ObjectFrame::object_of_lvalue` (`analyze::argument_objects`) asks the
+/// neighbouring question -- WHICH object an `&lvalue` names, as a path string,
+/// so two arguments can be compared for distinctness -- and needs a frame to
+/// answer it. This needs none: a state-map key is a root name, and only the
+/// root is wanted (task 1028, tools_sqc).
+pub fn addressed_object_root<'a>(lvalue: &Node<'a>) -> Option<Node<'a>> {
+    match lvalue.kind() {
+        "identifier" => Some(*lvalue),
+        "parenthesized_expression" => addressed_object_root(&lvalue.child(1)?),
+        "cast_expression" => addressed_object_root(&lvalue.child_by_field_name("value")?),
+        // `&a[i]` is an address inside `a` -- one element of it, which the
+        // model has no state to say separately. Crediting the whole array
+        // matches what a bare `f(a)` already gets from
+        // `process_unknown_function_call`, so the coarseness is the model's,
+        // not this walk's.
+        "subscript_expression" => addressed_object_root(&lvalue.child_by_field_name("argument")?),
+        "field_expression" => {
+            let arrow = lvalue
+                .child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "->");
+            if arrow {
+                return None;
+            }
+            addressed_object_root(&lvalue.child_by_field_name("argument")?)
+        }
+        _ => None,
+    }
 }
 
 /// Extract the target variable from a dereference: *ptr → "ptr"

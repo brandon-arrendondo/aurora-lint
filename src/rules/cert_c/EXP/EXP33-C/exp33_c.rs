@@ -1261,12 +1261,25 @@ fn is_read_context(
         // Update expression (i++, ++i) — both read and write, but we don't flag these
         "update_expression" => false,
         // Field expression LHS — writing to a field is NOT reading the base
-        "field_expression" => is_read_in_field_expression(&parent),
+        "field_expression" => {
+            // `&s.f` — the address handed to the callee lies inside `s`'s own
+            // storage, so this is the address-of case, not a content read
+            // (task 1028).
+            if is_addressed_subobject_root(node, &parent, source) {
+                return false;
+            }
+            is_read_in_field_expression(&parent)
+        }
         // Subscript base (arr[i]) — the base identifier provides the address,
         // not a value read. Content reads are handled by check_subscript_read.
         "subscript_expression" => false,
         // Parameter declaration — not a read
         "parameter_declaration" => false,
+        // `&(x)` — a redundant parenthesis inside an address-of. The address
+        // still lies in `x`'s own storage, so this is the address-of case and
+        // not a content read; without this arm it fell to the catch-all below
+        // and reported `x` read at the very call that fills it (task 1028).
+        "parenthesized_expression" => !is_addressed_subobject_root(node, &parent, source),
         // Cast expression — reading the value, EXCEPT the `(void)x;`
         // discard idiom (a bare identifier cast straight to `void`): the
         // standard "suppress unused-variable warning" convention, which
@@ -1404,8 +1417,24 @@ fn is_read_in_pointer_expression(parent: &Node, source: &str) -> bool {
     if !text.starts_with('&') {
         return true; // *x — dereference read
     }
-    // Check if &var is inside an argument_list of a non-initializing function
-    let Some(arg_list) = parent.parent() else {
+    is_address_of_read(parent, source)
+}
+
+/// Whether the `&lvalue` at `pointer_expr` is a CONTENT read of the object the
+/// address points into.
+///
+/// It is not, as a rule: handing a callee an address is handing it somewhere to
+/// write. The exception is a callee known to only read through the pointer
+/// (task 457). Anywhere other than a call argument, taking an address reads
+/// nothing at all.
+///
+/// One function because the answer must not depend on the lvalue's shape.
+/// `&var` and `&arr[i]` each carried their own copy of this and `&var.field`
+/// carried none, which is why `recvfrom(..., &from.ss, &fromlen)` reported
+/// `from` read-uninitialised at the very call that fills it (task 1028,
+/// tools_sqc).
+fn is_address_of_read(pointer_expr: &Node, source: &str) -> bool {
+    let Some(arg_list) = pointer_expr.parent() else {
         return false;
     };
     if arg_list.kind() != "argument_list" {
@@ -1422,6 +1451,42 @@ fn is_read_in_pointer_expression(parent: &Node, source: &str) -> bool {
     };
     let func_name = get_node_text(&func, source);
     init_state::is_non_initializing_function(&func_name) // &var read by callee
+}
+
+/// Whether `node` is the root identifier of an `&subobject` expression whose
+/// address therefore lies inside `node`'s own storage — `&s.f`, `&s.a[i].g`,
+/// `&(s.f)` — and is not read by the callee it is handed to.
+///
+/// `&p->f` is deliberately NOT this shape: computing that address reads `p`'s
+/// value, so `p` stays a read. `init_state::addressed_object_root` is what
+/// draws that line, and asking it (rather than re-walking down) keeps the
+/// credit funnel and this read predicate answering from one traversal — they
+/// disagreed before, which is how `recvfrom(..., &from.ss, &fromlen)` reported
+/// `from` uninitialised at the call that fills it (task 1028, tools_sqc).
+fn is_addressed_subobject_root(node: &Node, parent: &Node, source: &str) -> bool {
+    let mut outer = *parent;
+    while let Some(next) = outer.parent() {
+        if !matches!(
+            next.kind(),
+            "field_expression" | "subscript_expression" | "parenthesized_expression"
+        ) {
+            break;
+        }
+        outer = next;
+    }
+    let Some(addr) = outer.parent() else {
+        return false;
+    };
+    if addr.kind() != "pointer_expression" || !get_node_text(&addr, source).starts_with('&') {
+        return false;
+    }
+    let Some(inner) = addr.child_by_field_name("argument") else {
+        return false;
+    };
+    let Some(root) = init_state::addressed_object_root(&inner) else {
+        return false;
+    };
+    root.id() == node.id() && !is_address_of_read(&addr, source)
 }
 
 /// `obj.field` is not a read of `obj` when it is the LHS of an assignment.
@@ -1515,11 +1580,19 @@ fn is_read_in_argument_list(
         return true;
     }
 
-    // Check if this is a known initializing function (exact or suffix match)
+    // Check if this is a known initializing function (exact or suffix match).
+    // `variadic_from` carries the scanf family, whose outputs are "every
+    // argument past the format string" and so have no fixed index to list
+    // (task 1029, tools_sqc) -- without it `sscanf(s, "%s", name)` reads as a
+    // content read of the buffer the call is about to fill.
+    let mut variadic_from: Option<usize> = None;
     let output_indices: HashSet<usize> = match init_state::match_initializing_function(&func_name) {
-        Some(base_name) => init_state::get_output_arg_indices(base_name)
-            .into_iter()
-            .collect(),
+        Some(base_name) => {
+            variadic_from = init_state::variadic_output_from_index(base_name);
+            init_state::get_output_arg_indices(base_name)
+                .into_iter()
+                .collect()
+        }
         None => {
             // Not a built-in-registry initializer. Fall back to whether a
             // (same-file or cross-file) FunctionSummary found this function
@@ -1538,7 +1611,7 @@ fn is_read_in_argument_list(
         }
     };
 
-    if output_indices.is_empty() {
+    if output_indices.is_empty() && variadic_from.is_none() {
         return true; // No output args — this is a read
     }
 
@@ -1550,6 +1623,9 @@ fn is_read_in_argument_list(
             }
             // Check if this argument contains our identifier node
             if contains_node(&child, node) {
+                if variadic_from.is_some_and(|first| arg_idx >= first) {
+                    return false; // scanf-family output argument
+                }
                 return !output_indices.contains(&arg_idx);
             }
             arg_idx += 1;
@@ -1616,23 +1692,7 @@ fn is_subscript_read_context(node: &Node, source: &str) -> bool {
                 if !text.starts_with('&') {
                     return true;
                 }
-                let Some(arg_list) = parent.parent() else {
-                    return false;
-                };
-                if arg_list.kind() != "argument_list" {
-                    return false;
-                }
-                let Some(call) = arg_list.parent() else {
-                    return false;
-                };
-                if call.kind() != "call_expression" {
-                    return false;
-                }
-                let Some(func) = call.child_by_field_name("function") else {
-                    return false;
-                };
-                let func_name = get_node_text(&func, source);
-                return init_state::is_non_initializing_function(&func_name);
+                return is_address_of_read(&parent, source);
             }
             _ => return true,
         }
