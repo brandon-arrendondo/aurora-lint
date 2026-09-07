@@ -154,25 +154,27 @@ impl Msc12C {
                         return;
                     }
                 }
-                // A `;` immediately after an ERROR node that itself
-                // contains a function_declarator is typically the tail of
-                // a malformed declaration tree-sitter couldn't parse (e.g.
-                // an attribute-style macro after a function prototype:
-                // `void f(...) PRINTF_FORMAT(2, 3);` — the declaration +
-                // macro call become an ERROR node and the real `;` is left
-                // as an orphan sibling), not code a human wrote as a
-                // standalone statement. Scoped to function_declarator
-                // specifically (not any ERROR) so a genuinely no-effect
-                // expression that also fails to parse at file scope
-                // (`a == b;` outside a function) still gets flagged via
-                // its own orphaned `;`.
-                if let Some(prev) = node.prev_sibling() {
-                    if prev.kind() == "ERROR"
-                        && query::find_first_descendant(prev, |n| n.kind() == "function_declarator")
-                            .is_some()
-                    {
-                        return;
-                    }
+                // A `;` immediately after an ERROR node is the tail of
+                // something tree-sitter could not parse, left as an orphan
+                // sibling: an attribute-style macro after a function
+                // prototype (`void f(...) PRINTF_FORMAT(2, 3);`), a macro
+                // argument containing a keyword that defeats the call parse
+                // (sqlite's `SimulateIOError( return SQLITE_IOERR; );`), or
+                // JavaScript in an emscripten `EM_ASM` block, whose `});`
+                // reads as C. Not a `;` a human wrote as a statement.
+                //
+                // This used to require the ERROR to contain a
+                // function_declarator, so that a no-effect expression which
+                // also failed to parse at file scope (`a == b;` outside any
+                // function) still got flagged through its orphaned `;`. That
+                // was worth 13 real-world findings of this family and one
+                // wiki fixture, which was itself a file-scope fragment and
+                // is now wrapped in a function -- the same treatment task
+                // 1004 gave fail/wiki_dereference.c, and for the same
+                // reason: C has no file-scope expression statement, so the
+                // fragment form was only ever detected through debris.
+                if node.prev_sibling().is_some_and(|p| p.kind() == "ERROR") {
+                    return;
                 }
                 // The unbraced form of the empty-then-branch-with-an-else
                 // idiom (`if (cond)\n  ;\nelse if (...)`, pervasive in
@@ -188,6 +190,35 @@ impl Msc12C {
                     {
                         return;
                     }
+                }
+                // The braced form of the same idiom (`if(h) { ; } else ...`,
+                // curl's hostip4.c). is_empty_body is false for it -- the
+                // `;` is a child statement, not an empty block -- so it
+                // takes a different path and used to still fire.
+                if self.is_sole_statement_of_empty_then_branch(node, source) {
+                    return;
+                }
+                // A label must be followed by a statement, so `default: ;`
+                // and `case X: /* no-op */;` are the minimal legal way to
+                // say "this case does nothing" -- the same argument
+                // check_empty_switch_case already accepts for MISRA C 2012
+                // Rule 16.4's `default: break;`.
+                if self.is_required_statement_after_label(node) {
+                    return;
+                }
+                // A lone `;` in a block that also carries a comment is a
+                // documented deliberate no-op, the same signal
+                // empty_body_has_comment accepts for `{ /* ... */ }`
+                // (lua's `else if (...) { /* coded as (r1 >> -I) */; }`).
+                if self.is_documented_lone_semicolon(node) {
+                    return;
+                }
+                // A `;` the preprocessor would have joined to its
+                // surroundings -- the terminator of an assignment whose
+                // value came from a #if/#else pair (curl's getinfo.c
+                // `*param_longp =` / `#ifdef` / value / `#endif` / `;`).
+                if self.is_preproc_conditional_fragment(node, None, source) {
+                    return;
                 }
                 violations.push(RuleViolation {
                     rule_id: self.rule_id().to_string(),
@@ -245,7 +276,7 @@ impl Msc12C {
 
         // A statement wrapped in a preprocessor conditional that the
         // preprocessor would have joined to its surroundings.
-        if self.is_preproc_conditional_fragment(node, &expr, source) {
+        if self.is_preproc_conditional_fragment(node, Some(&expr), source) {
             return;
         }
 
@@ -1474,9 +1505,15 @@ impl Msc12C {
     /// is the file's own header guard, hundreds of lines up. Scanning
     /// backwards from the statement is also bounded by how far the nearest
     /// enclosing-scope code line is, not by file size or nesting depth.
-    fn is_preproc_conditional_fragment(&self, node: &Node, expr: &Node, source: &str) -> bool {
-        let ident = (expr.kind() == "identifier")
-            .then(|| get_node_text(expr, source).trim())
+    fn is_preproc_conditional_fragment(
+        &self,
+        node: &Node,
+        expr: Option<&Node>,
+        source: &str,
+    ) -> bool {
+        let ident = expr
+            .filter(|e| e.kind() == "identifier")
+            .map(|e| get_node_text(e, source).trim())
             .filter(|n| !n.is_empty());
 
         let line_start = source[..node.start_byte()].rfind('\n').map_or(0, |i| i + 1);
@@ -1489,11 +1526,7 @@ impl Msc12C {
         for raw in source[..line_start].rsplit('\n') {
             let line = strip_trailing_comment(raw);
             let trimmed = line.trim();
-            if trimmed.is_empty()
-                || trimmed.starts_with("//")
-                || trimmed.starts_with("/*")
-                || trimmed.starts_with('*')
-            {
+            if trimmed.is_empty() || trimmed.starts_with("//") || is_block_comment_line(trimmed) {
                 continue;
             }
             if trimmed.starts_with('#') {
@@ -1504,9 +1537,16 @@ impl Msc12C {
                     }
                     Some(ConditionalDirective::Else) => {
                         crossed_conditional = true;
-                        // A later arm: everything back to the matching `#if`
-                        // is the earlier arm's body, not our context.
-                        depth += 1;
+                        // At depth 0 this is *our* arm's opening boundary:
+                        // everything back to the matching `#if` is the
+                        // earlier arm's body, not our context. Deeper in, we
+                        // are already skipping that whole conditional and
+                        // its internal arm boundaries change nothing --
+                        // counting them would make `#endif`/`#else`/`#if`
+                        // leave depth at 1 and swallow the real predecessor.
+                        if depth == 0 {
+                            depth += 1;
+                        }
                     }
                     Some(ConditionalDirective::If) => {
                         crossed_conditional = true;
@@ -1536,6 +1576,82 @@ impl Msc12C {
     /// Returns true if the node or any descendant is a call_expression.
     fn contains_call(&self, node: &Node) -> bool {
         query::find_first_descendant(*node, |n| n.kind() == "call_expression").is_some()
+    }
+
+    /// True if `node` (a lone `;`) is the only statement of a braced
+    /// then-branch whose `if` has an `else` (`if (h) { ; } else ...`). The
+    /// `;` absorbs its condition so the later arms do not run for it, and
+    /// removing it changes which branch executes -- the same argument the
+    /// unbraced form already rests on, and the one
+    /// check_empty_control_flow uses for `{ }`.
+    fn is_sole_statement_of_empty_then_branch(&self, node: &Node, source: &str) -> bool {
+        let Some(block) = node.parent().filter(|p| p.kind() == "compound_statement") else {
+            return false;
+        };
+        if !self.block_holds_only(&block, node, false) {
+            return false;
+        }
+        block.parent().is_some_and(|iff| {
+            iff.kind() == "if_statement"
+                && iff.child_by_field_name("consequence").map(|c| c.id()) == Some(block.id())
+                && (iff.child_by_field_name("alternative").is_some()
+                    || else_follows_in_source(&block, source))
+        })
+    }
+
+    /// True if `node` (a lone `;`) is the statement a label requires:
+    /// `default: ;`, `case X: /* no-op */;`. C has no "label with no
+    /// statement", so this `;` cannot be removed. Same reasoning
+    /// check_empty_switch_case applies to MISRA C 2012 Rule 16.4's
+    /// `default: break;`.
+    fn is_required_statement_after_label(&self, node: &Node) -> bool {
+        let Some(label) = node
+            .parent()
+            .filter(|p| matches!(p.kind(), "labeled_statement" | "case_statement"))
+        else {
+            return false;
+        };
+        // Only when it is the label's *sole* statement. A `;` sitting among
+        // other statements in the same case is genuinely stray.
+        (0..label.child_count()).all(|i| {
+            label.child(i).is_some_and(|c| {
+                c.id() == node.id()
+                    || matches!(c.kind(), "comment" | ":" | "case" | "default")
+                    || c.kind().ends_with("_literal")
+                    || c.kind() == "identifier"
+                    || c.kind() == "statement_identifier"
+            })
+        })
+    }
+
+    /// True if `node` (a lone `;`) is the only statement in a block that
+    /// also carries a comment — a documented deliberate no-op, the signal
+    /// [`Self::empty_body_has_comment`] already accepts for `{ /* ... */ }`.
+    fn is_documented_lone_semicolon(&self, node: &Node) -> bool {
+        node.parent()
+            .filter(|p| p.kind() == "compound_statement")
+            .is_some_and(|block| self.block_holds_only(&block, node, true))
+    }
+
+    /// True if `block` contains nothing but braces, comments and `node`.
+    /// `require_comment` additionally demands that at least one comment be
+    /// present.
+    fn block_holds_only(&self, block: &Node, node: &Node, require_comment: bool) -> bool {
+        let mut saw_comment = false;
+        for i in 0..block.child_count() {
+            let Some(child) = block.child(i) else {
+                continue;
+            };
+            if child.id() == node.id() {
+                continue;
+            }
+            match child.kind() {
+                "{" | "}" => {}
+                "comment" => saw_comment = true,
+                _ => return false,
+            }
+        }
+        saw_comment || !require_comment
     }
 
     /// Given a stray-`;` `expression_statement`, find the condition of the
@@ -1595,6 +1711,20 @@ impl Msc12C {
         if query::find_first_descendant(*cond, |n| n.kind() == "call_expression").is_some() {
             return true;
         }
+        // A condition that increments or assigns advances state on every
+        // evaluation, so the loop makes progress with nothing in the body
+        // and the empty body is the whole point: hostap's
+        // `while (*s++)\n  ;` walks a string to measure it. This is not a
+        // widening of the bare-dereference exclusion below -- it keys on a
+        // side effect, which is affirmative evidence of progress rather
+        // than an absence of evidence (task 1006).
+        if query::find_first_descendant(*cond, |n| {
+            matches!(n.kind(), "update_expression" | "assignment_expression")
+        })
+        .is_some()
+        {
+            return true;
+        }
         let has_operator =
             query::find_first_descendant(*cond, |n| n.kind() == "binary_expression").is_some();
         let has_indirection = query::find_first_descendant(*cond, |n| {
@@ -1604,6 +1734,20 @@ impl Msc12C {
             )
         })
         .is_some();
+        // A `for` supplies its own progress in the update clause, so the
+        // operator the check below otherwise insists on is not needed: a
+        // condition that merely reads through indirection is scanning a
+        // structure to its sentinel, and the empty body is the point.
+        // `for(n=0; a[n].name; n++){ ; }` measures a table's length
+        // (mosquitto's websockets.c). `for(i=0; i<10; i++){ }` has no
+        // indirection and stays flagged -- it does nothing at all.
+        if has_indirection
+            && cond.parent().is_some_and(|p| {
+                p.kind() == "for_statement" && p.child_by_field_name("update").is_some()
+            })
+        {
+            return true;
+        }
         has_operator && has_indirection
     }
 }
@@ -1612,6 +1756,46 @@ impl Msc12C {
 /// identifier is a boundary, so `defined(NAME)` yields `defined` and `NAME`.
 fn is_not_ident_char(c: char) -> bool {
     !c.is_alphanumeric() && c != '_'
+}
+
+/// True if `trimmed` is a line inside or opening a block comment. A leading
+/// `*` alone is not enough: `*param_longp =`, the left-hand side of an
+/// assignment split across a `#if`, starts with one too. A real continuation
+/// line is `*/` or `* text`, so the following character decides.
+fn is_block_comment_line(trimmed: &str) -> bool {
+    if trimmed.starts_with("/*") {
+        return true;
+    }
+    match trimmed.strip_prefix('*') {
+        Some(rest) => rest.is_empty() || rest.starts_with('/') || rest.starts_with(' '),
+        None => false,
+    }
+}
+
+/// True if the keyword `else` is the next thing in the source after `block`,
+/// skipping whitespace and comments. tree-sitter drops the `alternative`
+/// when a preprocessor directive follows the `else` instead of a statement
+/// (curl's `if(h) { ; }` / `else` / `#elif defined(...)`), so the parse alone
+/// cannot say whether an `else` is there and the source has to.
+fn else_follows_in_source(block: &Node, source: &str) -> bool {
+    let mut rest = &source[block.end_byte().min(source.len())..];
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("/*") {
+            match after.find("*/") {
+                Some(i) => rest = &after[i + 2..],
+                None => return false,
+            }
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix("//") {
+            rest = after.split_once('\n').map_or("", |(_, tail)| tail);
+            continue;
+        }
+        break;
+    }
+    rest.strip_prefix("else")
+        .is_some_and(|after| after.starts_with(|c: char| is_not_ident_char(c)))
 }
 
 /// The three roles a conditional-compilation directive plays when walking
