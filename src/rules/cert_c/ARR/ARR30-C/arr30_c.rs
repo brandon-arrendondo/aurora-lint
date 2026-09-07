@@ -57,7 +57,7 @@ use tree_sitter::Node;
 use crate::utility::cert_c::ast_utils::{
     find_containing_for_loop, find_containing_function, find_containing_if_statement,
     find_enclosing_declaration_for_identifier, find_identifier_in_declarator,
-    get_identifier_from_declarator, get_node_text,
+    get_identifier_from_declarator, get_node_text, is_address_of_expression,
 };
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::guard_dominance::{
@@ -2432,6 +2432,20 @@ impl Arr30C {
         macro_constants: &HashMap<String, i64>,
     ) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+
+        // `&arr[n]` computes the ADDRESS of the n-th element -- a valid,
+        // well-defined pointer value even when n is one past the array's
+        // last element (C99 6.5.6p8). It is not a memory access, so none of
+        // the read/write bounds checks below apply; this function only ever
+        // sees the subscript itself, never a later dereference of the
+        // resulting pointer. `pCx->aOffset = &pCx->aType[nField];` (sqlite
+        // vdbe.c, a real-world FP -- task 1000) is exactly this shape.
+        if node
+            .parent()
+            .is_some_and(|p| is_address_of_expression(&p, source))
+        {
+            return violations;
+        }
 
         // Check if this is a nested subscript expression (e.g., matrix[0][5])
         if let Some(child) = node.child(0) {
