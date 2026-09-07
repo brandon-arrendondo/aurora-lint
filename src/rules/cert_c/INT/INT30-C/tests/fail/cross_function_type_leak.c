@@ -1,15 +1,11 @@
 /*
  * Rule: INT30-C
  * Source: task-403 regression
- * Status: EXPECTED FAIL - Known limitation: the operand here is a function
- * parameter (or a local with no traced taint source), and INT30-C's opt-in
- * provenance gate (has_risky_operand_provenance, backed by int_provenance)
- * treats that as bounded local state, so the unsigned wrap is not
- * reported. That gate is what removes the bounded-counter false positives
- * on real code; flagging every unconstrained parameter is the noise it
- * exists to avoid. Detecting this needs caller-side bounds reasoning, not
- * a louder gate. The fixture is a genuine INT30-C violation and stays as
- * tracked evidence of the trade.
+ * Status: DETECTED. Was expected_fail until the provenance gate learned to
+ * read a parameter's provenance off its callers rather than treating every
+ * parameter as bounded local state. No caller of this function is visible in
+ * the scan set, so its parameters carry unbounded input and the arithmetic is
+ * reported.
  *
  * Guards against a same-named-variable-across-functions type leak: an
  * earlier function declares `x` as float (not an integer type), and a

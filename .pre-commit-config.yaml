@@ -65,6 +65,27 @@ repos:
         files: '(rules_templates/rules-all\.toml|README\.md|docs/.*\.(rst|md)|src/rules/cert_c/integration\.rs)$'
         verbose: true
 
+      - id: check-realworld-manifests
+        name: real-world manifests decide every rule
+        description: >-
+          Assert every conf/realworld/<cb>-rules.toml has a block for every
+          rule in rules_templates/rules-all.toml, and that every
+          `enabled = false` carries a comment naming its reason. Each manifest
+          is standalone (--manifest replaces the base; there is no `extends`)
+          and a scan iterates enabled_rules(), so a rule with no entry never
+          runs on that codebase and nothing reports the gap -- an omission is
+          byte-indistinguishable from an oversight. libcrc shipped as the base
+          minus exactly MSC04-C and MSC07-C, a real decision that left no
+          trace, and an audit first "fixed" it as drift. Adding a rule now
+          fails here until all nine manifests carry a decision for it, which is
+          also how a new rule stops being silently dark on the real-world
+          suite.
+        entry: python3 scripts/check_realworld_manifests.py
+        language: system
+        pass_filenames: false
+        files: '(rules_templates/rules-all\.toml|conf/realworld/.*\.toml|src/rules/cert_c/.*\.toml)$'
+        verbose: true
+
       - id: cargo-fmt
         name: cargo fmt (auto-fix)
         description: Format Rust code with rustfmt

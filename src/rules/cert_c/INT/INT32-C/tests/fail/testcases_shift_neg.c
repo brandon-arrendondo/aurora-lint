@@ -1,17 +1,16 @@
 /*
  * Rule: INT32-C
  * Source: testcases
- * Status: EXPECTED FAIL - Known limitation: left-shifting a negative value is
- * undefined regardless of magnitude, so no value-range channel proves it
- * -- the shift result here is in range. With the operands untainted locals
- * the provenance gate suppresses the report; catching it needs a sign
- * check on the shifted operand rather than an overflow check. A genuine
- * INT32-C violation.
+ * Status: DETECTED. Was expected_fail until the value-based channels gained
+ * interval division/remainder, a compound-assignment arm, a
+ * definitely-negative left shift, and -- for INT31-C -- a definite-truncation
+ * channel of its own. The operands here are compile-time known and the
+ * operation provably misbehaves, so it is reported whatever their provenance.
  */
 
 /*
  * Rule: INT32-C - Ensure that operations on signed integers do not result in overflow
- * Status: EXPECTED FAIL
+ * Status: DETECTED
  * Reason: Left shifting negative values is undefined behavior and can cause overflow
  */
 

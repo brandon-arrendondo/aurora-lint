@@ -229,6 +229,15 @@ the only case where prose is correct — and **carry the urgency in the priority
 number**, which is the only signal the other node actually sees. A blocker
 parked at P5 reads as the least urgent thing in the backlog.
 
+**Route another repo's work to that repo; don't park it here.** If a session
+for it is reachable (`ListAgents`), message it. Otherwise leave a `--gate`
+here carrying a body ready to file there verbatim — a handoff nobody wrote
+down does not survive the session. To decide who owns a task, ask **which
+repo's files change**: the tag lies often enough to be useless on its own
+(`ground-truth-quality` on what is really a new-rule task, `corpus` on what
+is really a `bench/realworld_runner.py` fix, `benchmark` on a
+`docs/tool-comparison.rst` edit — all three belong here).
+
 **Display ids collide across repos and across nodes.** Each DB allocates from
 its own sequence with no reservation, so a bare "task 731" is three-ways
 ambiguous, and two nodes adding tasks the same hour routinely claim the same
@@ -381,7 +390,14 @@ cargo fmt
 - ✅ If a rule has no test cases, implement it WITHOUT tests — that is fine
 
 For each new rule: create `src/rules/cert_c/CATEGORY/RULE_ID/rule_id_c.rs`,
-register in `mod.rs`, enable in the TOML, then build and test.
+register in `mod.rs`, enable in the TOML, then build and test — **and add a
+block for it to all nine `conf/realworld/*-rules.toml`**, which the
+`check-realworld-manifests` hook requires before the commit lands. Those
+manifests are standalone (no `extends`), so a rule with no entry is silently
+dark on the whole real-world suite and can never reach the oracle. Say
+`enabled = true` unless the rule is categorically inapplicable to that
+codebase; every `false` needs a comment naming one of the three reasons in
+`conf/realworld/README.md`.
 
 **Before fixing a macro-related FP/FN**, check whether
 `src/analyze/macro_expand.rs` already solves it — do **not** reach for a
