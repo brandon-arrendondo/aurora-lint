@@ -1,13 +1,15 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::argument_objects::{self, ObjectFrame};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::preproc_arms::PreprocArms;
 use crate::analyze::prescan;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::{ast_utils, overflow_helpers};
 use lang_parsing_substrate::query;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use tree_sitter::Node;
 
 pub struct Arr36C {
@@ -86,6 +88,9 @@ impl Arr36C {
     fn visit_functions(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // First pass: collect file-scope declarations (global arrays, static vars)
         let mut file_scope = PointerAnalyzer::new();
+        // Before any collection: `collect_file_scope` reads bases back through
+        // `at`, so the arm layout has to be in place first.
+        file_scope.variable_arrays.arms = Rc::new(PreprocArms::collect(node));
         file_scope.collect_file_scope(node, source);
 
         // Second pass: per-function analysis with file-scope as base
@@ -102,6 +107,7 @@ impl Arr36C {
                 // member, so the answer has to be in the frame before the
                 // first declaration is read (task 993).
                 analyzer.collect_pointer_members(func, source, &field_types);
+                analyzer.collect_local_types(func, source);
                 analyzer.collect_declarations(func, source);
                 analyzer
             })
@@ -485,6 +491,10 @@ fn parameter_indices(func: &Node, source: &str) -> HashMap<String, usize> {
 struct PointerBases {
     /// `name -> [(byte offset, base)]`, each vector ascending by offset.
     by_name: HashMap<String, Vec<(usize, String)>>,
+    /// The file's preprocessor arm layout, so a record written in a branch
+    /// this position cannot be in is not an answer. Shared by every function's
+    /// clone of the file-scope frame.
+    arms: Rc<PreprocArms>,
 }
 
 impl PointerBases {
@@ -500,11 +510,24 @@ impl PointerBases {
     }
 
     /// The base `name` holds at byte offset `pos`: the last one recorded at
-    /// or before it, or `None` when nothing was recorded above `pos`.
+    /// or before it that `pos` can coexist with, or `None` when there is
+    /// none.
+    ///
+    /// A record from the other arm of an `#ifdef` is SKIPPED rather than
+    /// answered with, and the walk continues past it. aurora-lint does not
+    /// preprocess, so tree-sitter parses both arms and a name declared once
+    /// per arm has a single timeline interleaving two lifetimes that never
+    /// occur together -- hostap's `wpa_driver_ndis_get_names` declares `pos`
+    /// in each arm, and the `#ifdef` arm's allocation was answering the
+    /// `#else` arm's `pos - names` (task 1048).
     fn at(&self, name: &str, pos: usize) -> Option<&String> {
         let entries = self.by_name.get(name)?;
         let above = entries.partition_point(|(offset, _)| *offset <= pos);
-        Some(&entries[above.checked_sub(1)?].1)
+        entries[..above]
+            .iter()
+            .rev()
+            .find(|(offset, _)| !self.arms.exclusive(*offset, pos))
+            .map(|(_, base)| base)
     }
 }
 
@@ -512,6 +535,13 @@ struct PointerAnalyzer {
     // Which array each name is in, at each point in the source: the base a
     // name holds is a function of position, not of the whole function.
     variable_arrays: PointerBases,
+    // `name -> declared type` for one function's parameters and locals,
+    // pointers spelled with a trailing `*`. The one fact `ObjectFrame` cannot
+    // carry: it records only names declared as a POINTER or an ARRAY, so
+    // "absent from it" spans an integer local, a typedef array and a name the
+    // frame never saw at all. Reading the declared type separates the first
+    // from the other two (task 1049).
+    local_types: HashMap<String, String>,
     // Which names in scope denote storage, which merely hold a pointer, and
     // which field paths are pointer-typed. `variable_arrays` answers "which
     // array is this in"; this answers the prior questions, and is shared with
@@ -524,6 +554,7 @@ impl PointerAnalyzer {
     fn new() -> Self {
         Self {
             variable_arrays: PointerBases::default(),
+            local_types: HashMap::new(),
             objects: ObjectFrame::new(),
         }
     }
@@ -531,7 +562,50 @@ impl PointerAnalyzer {
     fn from(base: &PointerAnalyzer) -> Self {
         Self {
             variable_arrays: base.variable_arrays.clone(),
+            local_types: HashMap::new(),
             objects: base.objects.clone(),
+        }
+    }
+
+    /// Read the declared type of every parameter and local of one function.
+    fn collect_local_types(&mut self, func: &Node, source: &str) {
+        self.local_types = overflow_helpers::collect_variable_types(func, source);
+    }
+
+    /// Whether `node` is a name this frame watched being declared with a
+    /// type that is neither a pointer nor an array.
+    ///
+    /// A cast is looked through, because sel4 spells the same thing both ways
+    /// -- `(T *) (behind_tag + 8)` and `(T *) behind_tag + 8` -- and it is the
+    /// cast, not the name, that makes the result a pointer. Only the ARITHMETIC
+    /// operand is read this way; `&count` never reaches here, so the address of
+    /// a non-pointer scalar keeps naming an object (task 962).
+    ///
+    /// Positive-only, and deliberately so: a name with no declaration in this
+    /// frame -- an extern, a global -- answers `false` and keeps the reading it
+    /// had, because absence of a type is not evidence of one. That is the same
+    /// stance `collect_pointer_members` takes for a member whose type does not
+    /// resolve. The one thing it reads wrong is a typedef that hides an array
+    /// (`buf_t b;`), which it calls a scalar and so declines to base -- the
+    /// suppressing direction, which is the one this rule takes everywhere.
+    fn is_declared_scalar(&self, node: &Node, source: &str) -> bool {
+        let mut current = *node;
+        while current.kind() == "cast_expression" {
+            match current.child_by_field_name("value") {
+                Some(value) => current = value,
+                None => return false,
+            }
+        }
+        if current.kind() != "identifier" {
+            return false;
+        }
+        let name = &source[current.start_byte()..current.end_byte()];
+        if self.objects.pointer_vars.contains(name) || self.objects.array_objects.contains(name) {
+            return false;
+        }
+        match self.local_types.get(name) {
+            Some(declared) => !declared.contains('*'),
+            None => false,
         }
     }
 
@@ -755,11 +829,69 @@ impl PointerAnalyzer {
         loop {
             let argument = match current.kind() {
                 "identifier" => {
-                    return self
-                        .variable_arrays
-                        .at(&text(&current), current.start_byte())
-                        .cloned()
+                    let name = text(&current);
+                    if let Some(base) = self.variable_arrays.at(&name, current.start_byte()) {
+                        return Some(base.clone());
+                    }
+                    // An UNTRACKED pointer root still names the object the
+                    // path lives in, because `extract_array_base` hands its
+                    // raw name back as a base (task 962). Leaving the path
+                    // whole here spells one object two ways -- hostap's
+                    // `ml_end = ml + n` records `ml` while
+                    // `pos = common_info->variable` records `ml->variable`,
+                    // and the pair reads as two arrays. A path ROOTED at N
+                    // cannot be a different object from N, whether or not
+                    // this frame ever learned what N points at.
+                    //
+                    // A plain struct variable is deliberately NOT included:
+                    // the frame knows that object and its layout, so
+                    // `o.in1.arr` and `o.in2.arr` stay two arrays (task 993).
+                    if self.objects.pointer_vars.contains(&name)
+                        && !self.objects.array_objects.contains(&name)
+                    {
+                        return Some(name);
+                    }
+                    return None;
                 }
+                "field_expression" => current.child_by_field_name("argument")?,
+                _ => return None,
+            };
+            if argument.kind() == "field_expression"
+                && self.objects.pointer_members.contains(&text(&argument))
+            {
+                return None;
+            }
+            current = argument;
+        }
+    }
+
+    /// The object `&path` names, when the path is rooted at a variable this
+    /// frame never resolved to a base: the ROOT itself.
+    ///
+    /// `field_path_root_base` answers a different question -- "which tracked
+    /// array does this path live inside" -- and deliberately answers nothing
+    /// for a path rooted at a plain struct variable, so that `o.in1.arr` and
+    /// `o.in2.arr` stay two arrays (task 993). Taking an ADDRESS is where the
+    /// containing object is the right answer: `&iwe_buf.u.data.length` and
+    /// `&iwe_buf` are a member and the object holding it, which ARR36-C-EX1
+    /// treats as one object, and which is what the old spelling meant by
+    /// "keep just the struct instance". It stripped ONE member, which says
+    /// `iwe_buf` for `&iwe_buf.member` and `iwe_buf.u.data` for a path one
+    /// level deeper -- so hostap's `dpos - (char *) &iwe_buf` read as two
+    /// arrays purely because the member sits two levels down.
+    ///
+    /// A pointer member anywhere on the path stops the walk for the reason it
+    /// stops `field_path_root_base`'s: what it points at is not inside the
+    /// root, so the root is not the object (task 935).
+    fn field_path_container(&self, node: &Node, source: &str) -> Option<String> {
+        let text = |n: &Node| source[n.start_byte()..n.end_byte()].to_string();
+        if self.objects.pointer_members.contains(&text(node)) {
+            return None;
+        }
+        let mut current = *node;
+        loop {
+            let argument = match current.kind() {
+                "identifier" => return Some(text(&current)),
                 "field_expression" => current.child_by_field_name("argument")?,
                 _ => return None,
             };
@@ -833,10 +965,23 @@ impl PointerAnalyzer {
                             }
                         }
                     }
-                    // Allocation functions create distinct objects
+                    // Allocation functions create distinct objects. The `os_`
+                    // strip above is what puts `os_zalloc` and `os_strdup`
+                    // here; hostap allocates through those almost everywhere,
+                    // and a call that misses this list gets no base at all, so
+                    // a field path rooted at it cannot collapse to it either
+                    // (task 1001, tools_sqc). Keep in step with
+                    // `analyze::argument_objects::allocation_object`.
                     if matches!(
                         canonical,
-                        "malloc" | "calloc" | "realloc" | "aligned_alloc" | "alloca"
+                        "malloc"
+                            | "calloc"
+                            | "realloc"
+                            | "aligned_alloc"
+                            | "alloca"
+                            | "zalloc"
+                            | "strdup"
+                            | "strndup"
                     ) {
                         return format!("alloc@{}", node.start_byte());
                     }
@@ -868,11 +1013,24 @@ impl PointerAnalyzer {
             }
             "binary_expression" => {
                 // Handle pointer arithmetic like arr + size or ptr - offset
-                // The base array is determined by the left operand
-                if let Some(left) = node.child_by_field_name("left") {
-                    self.extract_array_base(&left, source)
-                } else {
-                    String::new()
+                // The base array is determined by the left operand -- unless
+                // the left operand is an INTEGER, in which case there is no
+                // array. sel4 converts an address into a `word_t` and casts it
+                // back, `(multiboot2_memory_t *)(behind_tag + 8)`, and taking
+                // the left name unconditionally records `behind_tag` as a
+                // base; the name is neither a declared pointer nor a declared
+                // array, so it then reads as STORAGE and is reported against a
+                // real object (task 1049).
+                //
+                // Note the narrow test: only a name whose non-pointer
+                // declaration this frame actually read is dropped. Adding
+                // integer names to the untracked-pointer bucket instead would
+                // be wrong -- the address of a non-pointer scalar IS storage,
+                // and `&count` has to keep naming an object (task 962).
+                match node.child_by_field_name("left") {
+                    Some(left) if self.is_declared_scalar(&left, source) => String::new(),
+                    Some(left) => self.extract_array_base(&left, source),
+                    None => String::new(),
                 }
             }
             "pointer_expression" | "unary_expression" => {
@@ -920,13 +1078,10 @@ impl PointerAnalyzer {
             // one struct compare equal (ARR36-C-EX1) -- unless the whole path
             // resolves through its root to an object this frame tracks, which
             // is one level more specific (task 993).
-            "field_expression" => {
-                self.field_path_root_base(&argument, source)
-                    .unwrap_or_else(|| match argument.child_by_field_name("argument") {
-                        Some(base) => self.resolve_base(text(&base), base.start_byte()),
-                        None => text(&argument),
-                    })
-            }
+            "field_expression" => self
+                .field_path_root_base(&argument, source)
+                .or_else(|| self.field_path_container(&argument, source))
+                .unwrap_or_else(|| text(&argument)),
             // &matrix[i][j] is based on "matrix", not "matrix[i]".
             "subscript_expression" => self.extract_deepest_base(&argument, source),
             _ => String::new(),
@@ -1040,12 +1195,20 @@ impl PointerAnalyzer {
                             // spelling for one object (task 770).
                             let rooted = self.field_path_root_base(&argument, source);
                             if is_address_of {
-                                Some(rooted.unwrap_or_else(|| {
-                                    self.variable_arrays
-                                        .at(&field_path, argument.start_byte())
-                                        .cloned()
-                                        .unwrap_or(field_path)
-                                }))
+                                // Same order as
+                                // `extract_base_from_address_or_deref`: the
+                                // tracked base, then the whole path if IT is
+                                // tracked, then the object the path sits in.
+                                Some(
+                                    rooted
+                                        .or_else(|| {
+                                            self.variable_arrays
+                                                .at(&field_path, argument.start_byte())
+                                                .cloned()
+                                        })
+                                        .or_else(|| self.field_path_container(&argument, source))
+                                        .unwrap_or(field_path),
+                                )
                             } else {
                                 rooted.or_else(|| {
                                     self.variable_arrays
