@@ -11,6 +11,10 @@ pub mod float_typing;
 /// Structural "is this variable guarded here?" queries -- the AST relation
 /// that per-rule text searches for a canonical guard spelling stand in for.
 pub mod guard_dominance;
+/// The "consume a length in a loop" idiom (`while (len) { len -= n; }`),
+/// recognized structurally so an overflow rule stops reading a loop-bounded
+/// subtraction as an unguarded one.
+pub mod loop_consumption;
 /// Shared helpers for arithmetic-overflow-detection rules (INT30-C, INT32-C).
 pub mod overflow_helpers;
 /// Positive pointer-type inference, so the integer-hazard rules (INT00-C,
