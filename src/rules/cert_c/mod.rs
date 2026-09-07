@@ -1091,7 +1091,7 @@ impl RuleRegistry {
         registry.register(Box::new(int04_c::Int04C));
         registry.register(Box::new(int05_c::Int05C));
         registry.register(Box::new(int07_c::Int07C));
-        registry.register(Box::new(int08_c::Int08C));
+        registry.register(Box::new(int08_c::Int08C::default()));
         registry.register(Box::new(int09_c::Int09C));
         registry.register(Box::new(int10_c::Int10C::new()));
         registry.register(Box::new(int12_c::Int12C));

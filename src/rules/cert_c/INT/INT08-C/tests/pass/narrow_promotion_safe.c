@@ -55,3 +55,15 @@ void test_short_add_fits(void) {
     short b = 1000;
     short result = a + b;
 }
+
+/* A guard on the operand: whatever `data + 1` computes from the unguarded
+ * dataflow, the value that reaches the store is what the test admits. Juliet's
+ * CWE-190 good sink is this exact shape, and the branch here is in fact dead.
+ * No definite claim is available, so nothing is reported. */
+void test_guarded_operand(void) {
+    char data;
+    data = 127;
+    if (data < 127) {
+        char result = data + 1;
+    }
+}
