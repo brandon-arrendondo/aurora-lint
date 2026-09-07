@@ -965,10 +965,23 @@ impl PointerAnalyzer {
                             }
                         }
                     }
-                    // Allocation functions create distinct objects
+                    // Allocation functions create distinct objects. The `os_`
+                    // strip above is what puts `os_zalloc` and `os_strdup`
+                    // here; hostap allocates through those almost everywhere,
+                    // and a call that misses this list gets no base at all, so
+                    // a field path rooted at it cannot collapse to it either
+                    // (task 1001, tools_sqc). Keep in step with
+                    // `analyze::argument_objects::allocation_object`.
                     if matches!(
                         canonical,
-                        "malloc" | "calloc" | "realloc" | "aligned_alloc" | "alloca"
+                        "malloc"
+                            | "calloc"
+                            | "realloc"
+                            | "aligned_alloc"
+                            | "alloca"
+                            | "zalloc"
+                            | "strdup"
+                            | "strndup"
                     ) {
                         return format!("alloc@{}", node.start_byte());
                     }
