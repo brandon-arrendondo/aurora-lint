@@ -126,6 +126,24 @@ clone `context.defined_macro_names` into it (see DCL40-C, and MSC12-C task
 475) — the field is already collected project-wide during prescan, so a
 rule only needs the two-line wiring, not its own collection pass.
 
+### `src/analyze/embedded_js_blank.rs`
+**Problem solved:** pre-parse pass that neutralizes the embedded-JavaScript
+bodies of emscripten's `EM_ASM`/`EM_JS` macros before the file reaches
+tree-sitter (task 1043). A JS block is close enough to C that tree-sitter
+does *not* isolate it into an `ERROR` node — it parses into an
+ordinary-looking `compound_statement` that every rule then walks, so the JS
+reads as C code (DCL31-C reported each JS call as an undeclared function,
+the JS keyword `function` among them; PRE31-C reported the JS block as an
+unsafe macro argument; DCL01-C shadow-checked C locals against JS `var`s).
+
+| Function | Signature | Description |
+|---|---|---|
+| `blank_embedded_js` | `(source: &str) -> String` | Blanks the JS argument of every `EM_ASM`-family invocation (the first argument; the C arguments after it are kept) and rewrites every `EM_JS`/`EM_ASYNC_JS` invocation into the equivalent C declaration `ret name(params);`, so calls to the JS-defined function stop reading as undeclared. Byte-offset- and newline-preserving; a blanked argument keeps a single `0` so the slot stays a valid C expression. |
+
+**Wiring pattern:** Called once on raw source text *before* parsing and
+before the other pre-parse passes (see `src/parser/mod.rs`), not from within
+a rule.
+
 ### `src/analyze/empty_macro_blank.rs`
 **Problem solved:** pre-parse pass that blanks out empty (`#define NAME`
 with no replacement body) object-like macros throughout a file *before*
@@ -641,10 +659,11 @@ cross-file lookup via `context.get_function_summary(name)`.
 
 ## Parse-error recovery (malformed/macro-decorated declarations)
 
-Already covered above under Macro detection: `empty_macro_blank.rs` (task
-435, local `#define`-to-nothing) and `unknown_identifier_recovery.rs`
+Already covered above under Macro detection: `embedded_js_blank.rs` (task
+1043, emscripten `EM_ASM`/`EM_JS` JavaScript bodies), `empty_macro_blank.rs`
+(task 435, local `#define`-to-nothing) and `unknown_identifier_recovery.rs`
 (task 437, parser-ERROR-signal-driven, for unresolvable external-header
-identifiers). Both operate at parse time, not from within a rule — a rule
+identifiers). All three operate at parse time, not from within a rule — a rule
 encountering *residual* malformed-declaration debris (a `MISSING`/`ERROR`
 node the parse-time passes didn't catch) should check
 `query::find_first_descendant(node, |n| n.is_missing())`/`is_error()`
