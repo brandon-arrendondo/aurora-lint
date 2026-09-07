@@ -340,6 +340,20 @@ fn process_statement_for_ranges(
             // may or may not execute on a given path.
             process_opaque_region(node, source, macros, summaries, state, local_types);
         }
+        // A `for` clause is stored in the CFG as a bare expression node, not
+        // wrapped in an `expression_statement`: `process_for` records the
+        // initializer's and update's own byte ranges as block statements. So
+        // the induction variable's `i = 0` and `i++` arrive here as top-level
+        // `assignment_expression` / `update_expression` nodes, which the
+        // catch-all arm below never applied -- it only inspects *children*,
+        // and neither node has itself as a child. The effect was not mere
+        // imprecision: an induction variable declared in the initializer
+        // stayed pinned at its initial value in every block of the loop, so
+        // `for (int i = 0; i <= 5; i++)` reported `i == [0, 0]` at the
+        // subscript instead of `[0, 5]`.
+        "assignment_expression" | "update_expression" => {
+            process_expression_range(node, source, macros, summaries, state, local_types);
+        }
         _ => {
             // Recurse for nested assignments
             for i in 0..node.child_count() {
@@ -2448,5 +2462,56 @@ void caller(void) {
         // x should fall back to full int range.
         let range = get_range_at_line_with_summaries(code, "x", 5);
         assert_eq!(range, Some(ValueRange::new(-2147483648, 2147483647)));
+    }
+
+    /// The induction variable of a `for` whose initializer *declares* it must
+    /// advance across the back edge. `process_for` records the initializer and
+    /// the update as bare expression nodes, not `expression_statement`s, so
+    /// before the top-level dispatch arm existed neither `i = 0` nor `i++` was
+    /// ever applied and `i` stayed pinned at its initial value in every block
+    /// of the loop -- which reads as "provably in bounds" to a rule.
+    #[test]
+    fn test_for_init_declared_induction_var_advances() {
+        let code = "\
+int f(void) {
+    int a[5];
+    for (int i = 0; i <= 5; i++) {
+a[i] = 0;
+    }
+    return 0;
+}
+";
+        assert_eq!(get_range_at_line(code, "i", 4), Some(ValueRange::new(0, 5)));
+    }
+
+    /// The same loop with a strict bound stops one short, which is what lets a
+    /// rule tell the safe walk from the off-by-one one.
+    #[test]
+    fn test_for_init_declared_induction_var_strict_bound() {
+        let code = "\
+int f(void) {
+    int a[5];
+    for (int i = 0; i < 5; i++) {
+a[i] = 0;
+    }
+    return 0;
+}
+";
+        assert_eq!(get_range_at_line(code, "i", 4), Some(ValueRange::new(0, 4)));
+    }
+
+    /// A decrementing loop guarded by `i >= 0` reaches zero in its body -- the
+    /// range INT33-C reads to know the divisor is not provably non-zero.
+    #[test]
+    fn test_for_decrementing_induction_var_reaches_zero() {
+        let code = "\
+int f(void) {
+    for (int i = 5; i >= 0; i--) {
+int r = 100 / i;
+    }
+    return 0;
+}
+";
+        assert_eq!(get_range_at_line(code, "i", 3), Some(ValueRange::new(0, 5)));
     }
 }
