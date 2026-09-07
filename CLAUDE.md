@@ -229,6 +229,15 @@ the only case where prose is correct — and **carry the urgency in the priority
 number**, which is the only signal the other node actually sees. A blocker
 parked at P5 reads as the least urgent thing in the backlog.
 
+**Route another repo's work to that repo; don't park it here.** If a session
+for it is reachable (`ListAgents`), message it. Otherwise leave a `--gate`
+here carrying a body ready to file there verbatim — a handoff nobody wrote
+down does not survive the session. To decide who owns a task, ask **which
+repo's files change**: the tag lies often enough to be useless on its own
+(`ground-truth-quality` on what is really a new-rule task, `corpus` on what
+is really a `bench/realworld_runner.py` fix, `benchmark` on a
+`docs/tool-comparison.rst` edit — all three belong here).
+
 **Display ids collide across repos and across nodes.** Each DB allocates from
 its own sequence with no reservation, so a bare "task 731" is three-ways
 ambiguous, and two nodes adding tasks the same hour routinely claim the same
