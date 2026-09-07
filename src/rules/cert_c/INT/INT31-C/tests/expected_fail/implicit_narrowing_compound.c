@@ -1,16 +1,11 @@
 /*
  * Rule: INT31-C
  * Source: real-world FN pattern
- * Status: EXPECTED FAIL - Known limitation: the operand here is a function
- * parameter (or a local with no traced taint source), and INT31-C's opt-in
- * provenance gate (converted_value_is_risky, backed by int_provenance)
- * treats that as bounded local state, so the lossy conversion is not
- * reported. That gate is what removes the bounded-counter false positives
- * on real code; flagging every unconstrained parameter is the noise it
- * exists to avoid. Detecting this needs caller-side bounds reasoning, not
- * a louder gate. The fixture is a genuine INT31-C violation and stays as
- * tracked evidence of the trade.
- * Description: Compound assignment with widening cast narrows back to uint8_t
+ * Status: EXPECTED FAIL - a narrowing shape neither the caller-based provenance
+ * work nor the value-based definite-truncation channel reaches: the converted
+ * value's range is not compile-time known here, and the operand is not a
+ * parameter whose callers the gate can judge. Genuine violation; kept as
+ * tracked evidence of the gap.
  */
 
 #include <stdint.h>

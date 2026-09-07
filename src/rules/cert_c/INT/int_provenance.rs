@@ -4,10 +4,11 @@
 //! Implements the *opt-in* taint gate: an arithmetic operation is flagged only
 //! when at least one operand derives from untrusted or unbounded input — a
 //! taint source, a full-range parser, an untrusted-decode accessor, a
-//! tainted-summary callee return, or a tainted global. Bounded local state
-//! (loop counters, register/cursor indices, struct-field counts) is treated as
-//! practically non-overflowing, which is what eliminates the bounded-counter
-//! false positives that dominate hardened codebases.
+//! tainted-summary callee return, a tainted global, or a parameter no caller
+//! bounds. Bounded local state (loop counters, register/cursor indices,
+//! struct-field counts) is treated as practically non-overflowing, which is
+//! what eliminates the bounded-counter false positives that dominate hardened
+//! codebases.
 //!
 //! The rule-specific pieces (which VRA width to check, how to compute a
 //! definite-overflow signal, the per-function memo) stay in each rule; this
@@ -20,6 +21,23 @@ use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
+
+/// Interprocedural context for classifying a bare `identifier` operand that
+/// names a parameter of the enclosing function.
+///
+/// A parameter holds whatever its callers pass, so its provenance is a
+/// property of the call sites and cannot be read off the function body. Pass
+/// `None` where no call-graph context exists (a scan without `-d`, or a
+/// consumer that never built one); that keeps the older policy, under which
+/// every parameter counts as bounded local state.
+pub struct ParamContext<'a> {
+    /// Name of the function whose body the operand sits in.
+    pub func_name: &'a str,
+    /// Parameter names of that function.
+    pub params: &'a HashSet<String>,
+    /// Reverse call graph: callee name → the functions that call it.
+    pub callers: &'a HashMap<String, HashSet<String>>,
+}
 
 /// True when `callee` (any function-reference text) names a source of untrusted
 /// or full-range values: a full-range integer parser (`atoi`/`strtol`/`rand`),
@@ -45,6 +63,34 @@ pub fn callee_is_risky_source(callee: &str, summaries: &HashMap<String, Function
     matches!(summaries.get(ident), Some(s) if s.has_env03_taint_source || s.returns_tainted)
 }
 
+/// True when a parameter of `func_name` must be treated as carrying untrusted
+/// or unbounded input.
+///
+/// Risky whenever the scan cannot see a caller that bounds it:
+///   - no caller of `func_name` is known — an entry point, or public API whose
+///     arguments arrive from outside the scan set; or
+///   - some known caller carries taint, or has no summary to judge by.
+///
+/// Bounded only when every known caller is taint-free. That is an
+/// approximation of "every caller passes bounded values": the prescan
+/// summaries carry per-function taint, not per-argument value ranges, so a
+/// taint-free caller is taken to pass bounded arguments. It is the same
+/// judgement INT31-C's `var_is_taint_free` already makes for its own parameter
+/// case, lifted here so INT30-C and INT32-C share it.
+pub fn parameter_is_risky(
+    func_name: &str,
+    callers: &HashMap<String, HashSet<String>>,
+    summaries: &HashMap<String, FunctionSummary>,
+) -> bool {
+    match callers.get(func_name) {
+        Some(cs) if !cs.is_empty() => cs.iter().any(|c| match summaries.get(c) {
+            Some(s) => s.has_env03_taint_source || s.returns_tainted,
+            None => true,
+        }),
+        _ => true,
+    }
+}
+
 /// Walk `body` ONCE and collect every variable name fed from a risky source:
 ///   - `var = riskyCall(...)` or `T var = riskyCall(...)` (return-value flow), or
 ///   - `riskySource(..., &var, ...)` / `riskySource(..., var, ...)` (fill by
@@ -64,12 +110,15 @@ pub fn collect_risky_vars(
 
 /// Classify a single operand subtree's provenance against the precomputed
 /// risky-variable set. `global_writers` maps a global name to the functions that
-/// write it; a global operand is risky when any writer carries taint.
+/// write it; a global operand is risky when any writer carries taint. `params`,
+/// when present, extends the judgement to parameters via the call graph — see
+/// [`ParamContext`] and [`parameter_is_risky`].
 pub fn operand_is_risky(
     op: &Node,
     risky_vars: &HashSet<String>,
     summaries: &HashMap<String, FunctionSummary>,
     global_writers: &HashMap<String, HashSet<String>>,
+    params: Option<&ParamContext>,
     source: &str,
 ) -> bool {
     match op.kind() {
@@ -79,25 +128,49 @@ pub fn operand_is_risky(
         },
         "identifier" => {
             let name = get_node_text(op, source);
-            risky_vars.contains(name) || global_is_tainted(name, global_writers, summaries)
+            if risky_vars.contains(name) || global_is_tainted(name, global_writers, summaries) {
+                return true;
+            }
+            match params {
+                Some(p) if p.params.contains(name) => {
+                    parameter_is_risky(p.func_name, p.callers, summaries)
+                }
+                _ => false,
+            }
         }
         "parenthesized_expression" => match op.named_child(0) {
-            Some(inner) => operand_is_risky(&inner, risky_vars, summaries, global_writers, source),
+            Some(inner) => operand_is_risky(
+                &inner,
+                risky_vars,
+                summaries,
+                global_writers,
+                params,
+                source,
+            ),
             None => false,
         },
         "cast_expression" => match op.child_by_field_name("value") {
-            Some(value) => operand_is_risky(&value, risky_vars, summaries, global_writers, source),
+            Some(value) => operand_is_risky(
+                &value,
+                risky_vars,
+                summaries,
+                global_writers,
+                params,
+                source,
+            ),
             None => false,
         },
         "binary_expression" => {
             op.child_by_field_name("left").is_some_and(|l| {
-                operand_is_risky(&l, risky_vars, summaries, global_writers, source)
+                operand_is_risky(&l, risky_vars, summaries, global_writers, params, source)
             }) || op.child_by_field_name("right").is_some_and(|r| {
-                operand_is_risky(&r, risky_vars, summaries, global_writers, source)
+                operand_is_risky(&r, risky_vars, summaries, global_writers, params, source)
             })
         }
         "unary_expression" | "update_expression" => match op.child_by_field_name("argument") {
-            Some(arg) => operand_is_risky(&arg, risky_vars, summaries, global_writers, source),
+            Some(arg) => {
+                operand_is_risky(&arg, risky_vars, summaries, global_writers, params, source)
+            }
             None => false,
         },
         // number_literal, field_expression, subscript_expression, etc. are
