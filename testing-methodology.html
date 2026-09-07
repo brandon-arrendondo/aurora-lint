@@ -989,6 +989,19 @@ the return type is misread, no argument checking happens, and a returned
 pointer is truncated on LP64; C99 removed implicit declarations and C23
 makes them an error — on code this corpus does not contain. Quoting that
 number as a rule-quality measure is a category error.</p>
+<p>Do not read “header reachability” as “one more <code class="docutils literal notranslate"><span class="pre">-I</span></code> away”, though. Bucketing
+that rule’s labeled false positives by root cause found the <code class="docutils literal notranslate"><span class="pre">mosquitto</span></code> case
+to be the easy end of the range, not the typical one. The bulk of what
+survives is <code class="docutils literal notranslate"><span class="pre">raylib</span></code>’s platform backends, which include their own headers
+correctly and need an SDK the benchmark node does not have and in the Win32
+case cannot have; adding <code class="docutils literal notranslate"><span class="pre">-I</span> <span class="pre">/usr/include</span></code> moves them barely at all. The
+rest is a short tail of genuine analyzer defects, each filed as its own task
+— JavaScript inside <code class="docutils literal notranslate"><span class="pre">EM_ASM</span></code>/<code class="docutils literal notranslate"><span class="pre">EM_JS</span></code> macro bodies parsed as C, a <code class="docutils literal notranslate"><span class="pre">.c</span></code>
+file <code class="docutils literal notranslate"><span class="pre">#include</span></code>d by another <code class="docutils literal notranslate"><span class="pre">.c</span></code> file not inheriting the includer’s
+declarations, glibc prototypes guarded by <code class="docutils literal notranslate"><span class="pre">__USE_POSIX</span></code> and friends, and
+three declarator shapes we fail to read. So the figure is uninformative about
+the rule for two different reasons at once, and only the second is ours to
+fix.</p>
 <p>The material to close this gap already exists in the repo: <strong>1,975
 must-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/fail/*.c</span></code>) and <strong>1,594
 must-not-detect</strong> fixtures (<code class="docutils literal notranslate"><span class="pre">src/rules/cert_c/*/*/tests/pass/*.c</span></code>), labeled
