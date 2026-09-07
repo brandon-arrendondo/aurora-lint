@@ -1959,7 +1959,7 @@ impl Arr30C {
             return Some(macro_size <= size as i64);
         }
 
-        if self.condition_contains_safe_bounds(condition_text, index_text) {
+        if self.condition_bounds_index(child, source, index_text) {
             return Some(true);
         }
 
@@ -3326,6 +3326,21 @@ impl Arr30C {
         ) {
             return false;
         }
+        // NUL-sentinel walk proof (task 1021): a `for` loop whose own
+        // condition is the terminator test on the very buffer being
+        // subscripted bounds the index by the terminator's offset -- a bound
+        // none of the comparison-based channels below can see, because the
+        // index is never related to the size at all.
+        if self.is_bounded_by_sentinel_walk(
+            var,
+            node,
+            source,
+            buffer_name,
+            effective_size,
+            macro_constants,
+        ) {
+            return false;
+        }
         if self.has_recursive_index_modification(node, var, source, effective_size) {
             return true;
         }
@@ -3413,6 +3428,200 @@ impl Arr30C {
                 .unwrap_or(false);
         });
         found
+    }
+
+    /// True when `var` indexes `buffer_name` inside a `for` loop whose own
+    /// condition is the NUL-terminator test on that same buffer --
+    /// `for (int i = 0; buf[i] != '\0'; i++)`, and the bare-truth-value
+    /// spelling `for (; buf[i]; i++)`.
+    ///
+    /// The walk is bounded by the terminator rather than by a relational test,
+    /// so every comparison-based channel in this rule sees a variable index
+    /// never compared against the size and reports. It is bounded all the
+    /// same: the body only runs for an `i` the condition just read as
+    /// non-NUL, so `i` is at most the terminator's own offset, and
+    /// [`Self::buffer_terminated_within_extent`] is what establishes that
+    /// offset lies inside the array.
+    ///
+    /// Restricted to `for` loops whose body neither reassigns `var` nor stores
+    /// into the buffer at some other index: the argument above is precisely
+    /// "the value the condition tested is the value the body uses, and the
+    /// terminator it found is still there", and either of those breaks it. A
+    /// `while` loop carries its increment in the body, so it is out of scope
+    /// by construction.
+    fn is_bounded_by_sentinel_walk(
+        &self,
+        var: &str,
+        node: &Node,
+        source: &str,
+        buffer_name: &str,
+        effective_size: usize,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        let Some(for_node) = find_containing_for_loop(node) else {
+            return false;
+        };
+        let Some(condition) = for_node.child_by_field_name("condition") else {
+            return false;
+        };
+        if !self.is_sentinel_test_on(condition, source, buffer_name, var) {
+            return false;
+        }
+        if let Some(body) = for_node.child_by_field_name("body") {
+            if subtree_assigns_identifier(body, source, var)
+                || subtree_writes_buffer_at_other_index(body, source, buffer_name, var)
+            {
+                return false;
+            }
+        }
+        self.buffer_terminated_within_extent(
+            buffer_name,
+            effective_size,
+            &for_node,
+            source,
+            macro_constants,
+        )
+    }
+
+    /// True when `condition` tests `buffer_name[index]` against the null
+    /// terminator: `buf[i] != '\0'`, `'\0' != buf[i]`, or `buf[i]` used
+    /// directly as a truth value. Recurses through `&&`/`||` so a compound
+    /// condition counts on either operand.
+    fn is_sentinel_test_on(
+        &self,
+        condition: Node,
+        source: &str,
+        buffer_name: &str,
+        index: &str,
+    ) -> bool {
+        let condition = strip_parens_and_casts(condition);
+        if condition.kind() == "binary_expression" {
+            let op = binary_operator_text(&condition, source).unwrap_or("");
+            let (Some(left), Some(right)) = (
+                condition.child_by_field_name("left"),
+                condition.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            if matches!(op, "&&" | "||") {
+                return self.is_sentinel_test_on(left, source, buffer_name, index)
+                    || self.is_sentinel_test_on(right, source, buffer_name, index);
+            }
+            if op != "!=" {
+                return false;
+            }
+            let sentinel_macros = self.null_sentinel_macros.borrow();
+            return (is_subscript_of(left, source, buffer_name, index)
+                && is_null_sentinel(right, source, &sentinel_macros))
+                || (is_subscript_of(right, source, buffer_name, index)
+                    && is_null_sentinel(left, source, &sentinel_macros));
+        }
+        is_subscript_of(condition, source, buffer_name, index)
+    }
+
+    /// True when the fixed-size local array `buffer_name` provably holds a NUL
+    /// inside its own `effective_size` bytes by the time `loop_node` runs.
+    ///
+    /// Two ways to establish it, both purely local:
+    ///
+    /// - the declaration zero-fills the array (`char b[256] = { 0 };`), and
+    ///   every write before the loop is bounded short of the last byte, which
+    ///   therefore stays NUL; or
+    /// - every write before the loop is a call that places a terminator inside
+    ///   the length it is given, and that length fits the array.
+    ///
+    /// Anything else fails: an unbounded `strcpy`/`sprintf`/`strcat`, a
+    /// bounded call whose length is not a compile-time constant, a direct
+    /// subscript store (which can consume the byte the initialiser reserved),
+    /// or the buffer handed in the destination position to a function this
+    /// does not recognise. None of those keeps a terminator inside the array.
+    fn buffer_terminated_within_extent(
+        &self,
+        buffer_name: &str,
+        effective_size: usize,
+        loop_node: &Node,
+        source: &str,
+        macro_constants: &HashMap<String, i64>,
+    ) -> bool {
+        if effective_size == 0 {
+            return false;
+        }
+        let Some(func_node) = find_containing_function(loop_node) else {
+            return false;
+        };
+        let zero_initialized =
+            local_array_is_zero_initialized(&func_node, source, buffer_name, effective_size);
+
+        let mut ok = true;
+        let mut any_write = false;
+        let mut all_writes_terminate = true;
+        Self::for_each_descendant(&func_node, &mut |n| {
+            if !ok || n.start_byte() >= loop_node.start_byte() {
+                return;
+            }
+            if n.kind() == "assignment_expression" {
+                if let Some(left) = n.child_by_field_name("left") {
+                    let left = strip_parens_and_casts(left);
+                    if left.kind() == "subscript_expression"
+                        && subscript_base(left, source) == Some(buffer_name)
+                    {
+                        ok = false;
+                    }
+                }
+                return;
+            }
+            if n.kind() != "call_expression" {
+                return;
+            }
+            let (Some(function_node), Some(arguments)) = (
+                n.child_by_field_name("function"),
+                n.child_by_field_name("arguments"),
+            ) else {
+                return;
+            };
+            let mut cursor = arguments.walk();
+            let args: Vec<Node> = arguments.named_children(&mut cursor).collect();
+            // Only the destination position is treated as a write; the buffer
+            // anywhere else is a source operand and cannot remove its own
+            // terminator.
+            let Some(dest) = args.first() else {
+                return;
+            };
+            if source[dest.start_byte()..dest.end_byte()].trim() != buffer_name {
+                return;
+            }
+            any_write = true;
+            let name = source[function_node.start_byte()..function_node.end_byte()].trim();
+            let bounded_by = |len_index: usize, limit: usize| {
+                args.get(len_index)
+                    .and_then(|len_arg| {
+                        write_length_value(
+                            len_arg,
+                            source,
+                            buffer_name,
+                            effective_size,
+                            macro_constants,
+                        )
+                    })
+                    .is_some_and(|len| len >= 0 && (len as usize) <= limit)
+            };
+            if let Some(&(_, len_index)) = TERMINATING_BOUNDED_WRITES
+                .iter()
+                .find(|(func, _)| *func == name)
+            {
+                ok = bounded_by(len_index, effective_size);
+            } else if let Some(&(_, len_index)) = UNTERMINATING_BOUNDED_WRITES
+                .iter()
+                .find(|(func, _)| *func == name)
+            {
+                all_writes_terminate = false;
+                ok = bounded_by(len_index, effective_size - 1);
+            } else {
+                ok = false;
+            }
+        });
+
+        ok && (zero_initialized || (any_write && all_writes_terminate))
     }
 
     /// VLA-with-symbolic-size bounds check: only catches provably
@@ -7076,57 +7285,69 @@ impl Arr30C {
         None
     }
 
-    /// Check if condition contains safe bounds (< operator, not <=)
-    fn condition_contains_safe_bounds(&self, condition_text: &str, index_text: &str) -> bool {
-        let trimmed_index = index_text.trim();
+    /// True when `condition` bounds `index_text` from above with `<` (safe)
+    /// rather than `<=` (which admits `index == size`, one past the end). An
+    /// empty `index_text` means "any operand": the caller could not identify
+    /// the loop's index variable.
+    ///
+    /// Matched on each comparison's operator and operand NODES. The earlier
+    /// text form (`condition_text.contains("i <")`) made the verdict depend on
+    /// the project's spacing style rather than on the code -- `i < n` was read
+    /// as bounded and `i<n` was not -- so every fixed-array loop in a codebase
+    /// written without spaces around operators reported.
+    fn condition_bounds_index(&self, condition: &Node, source: &str, index_text: &str) -> bool {
+        let index = index_text.trim();
+        let comparisons = query::find_descendants_of_kinds(
+            *condition,
+            &["binary_expression", "comparison_expression"],
+        );
+        let bound_against = |op: &str, side: &str| {
+            comparisons.iter().any(|cmp| {
+                binary_operator_text(cmp, source) == Some(op)
+                    && (index.is_empty() || operand_text(cmp, side, source) == index)
+            })
+        };
 
-        // Check for unsafe <= operator first - this is ALWAYS unsafe for array bounds
-        // because it allows accessing the element at index == size, which is out of bounds
-        if condition_text.contains(&format!("{} <=", trimmed_index)) {
-            return false; // <= is ALWAYS unsafe for array bounds
+        // `<=` against the index is unsafe outright, and wins over any `<`
+        // elsewhere in a compound condition -- as the text form did.
+        if bound_against("<=", "left") {
+            return false;
         }
-
-        // Check for safe < operator
-        if condition_text.contains(&format!("{} <", trimmed_index)) {
+        if bound_against("<", "left") {
             return true;
         }
-
-        // Check for reverse condition: size > index (safe)
-        if condition_text.contains(&format!("> {}", trimmed_index)) {
-            // Make sure it's not >= (which would be unsafe)
-            return !condition_text.contains(&format!(">= {}", trimmed_index));
-        }
-
-        false
+        // Reverse spelling: `size > index` is the same bound written
+        // backwards, `size >= index` the same off-by-one as `<=`.
+        !bound_against(">=", "right") && bound_against(">", "right")
     }
 
-    /// Generic loop bounds check (when index variable is unknown)
+    /// Generic loop bounds check (when the index variable is unknown): a `<`
+    /// comparison in the loop condition with no `<=` alongside it. Matched on
+    /// operator nodes rather than on `" < "` in the condition text, for the
+    /// reason given on [`Self::condition_bounds_index`].
     fn check_for_loop_bounds_generic(&self, for_node: &Node, source: &str) -> bool {
         for i in 0..for_node.child_count() {
             if let Some(child) = for_node.child(i) {
-                if child.kind() == "binary_expression" || child.kind() == "comparison_expression" {
-                    let condition_text = &source[child.start_byte()..child.end_byte()];
-                    // Look for any < operator (safe bounds check)
-                    if condition_text.contains(" < ") && !condition_text.contains(" <= ") {
-                        return true;
-                    }
+                if (child.kind() == "binary_expression" || child.kind() == "comparison_expression")
+                    && subtree_has_strict_less_bound(child, source)
+                {
+                    return true;
                 }
             }
         }
         false
     }
 
-    /// Generic if bounds check (when index variable is unknown)
+    /// Generic if bounds check (when the index variable is unknown). See
+    /// [`Self::check_for_loop_bounds_generic`].
     fn check_if_bounds_generic(&self, if_node: &Node, source: &str) -> bool {
         for i in 0..if_node.child_count() {
             if let Some(child) = if_node.child(i) {
-                if child.kind() == "parenthesized_expression" || child.kind() == "binary_expression"
+                if (child.kind() == "parenthesized_expression"
+                    || child.kind() == "binary_expression")
+                    && subtree_has_strict_less_bound(child, source)
                 {
-                    let condition_text = &source[child.start_byte()..child.end_byte()];
-                    // Look for any < operator (safe bounds check)
-                    if condition_text.contains(" < ") && !condition_text.contains(" <= ") {
-                        return true;
-                    }
+                    return true;
                 }
             }
         }
@@ -7205,6 +7426,200 @@ fn collect_null_sentinel_macros(root: &Node, source: &str) -> HashSet<String> {
                 .then(|| source[name.start_byte()..name.end_byte()].to_string())
         })
         .collect()
+}
+
+/// The operator text of a `binary_expression`/`comparison_expression`, taken
+/// from the operator NODE. Every bounds verdict in this rule keys off this
+/// rather than off a substring of the condition, so that `i<n` and `i < n`
+/// are the same code to the analysis.
+fn binary_operator_text<'s>(node: &Node, source: &'s str) -> Option<&'s str> {
+    if node.kind() != "binary_expression" && node.kind() != "comparison_expression" {
+        return None;
+    }
+    let op = node.child_by_field_name("operator")?;
+    Some(source[op.start_byte()..op.end_byte()].trim())
+}
+
+/// Text of `node`'s `field` operand with parentheses and casts peeled, or `""`
+/// when there is no such operand.
+fn operand_text<'s>(node: &Node, field: &str, source: &'s str) -> &'s str {
+    match node.child_by_field_name(field) {
+        Some(operand) => {
+            let operand = strip_parens_and_casts(operand);
+            source[operand.start_byte()..operand.end_byte()].trim()
+        }
+        None => "",
+    }
+}
+
+/// True when `root`'s subtree holds a `<` comparison and no `<=` -- the
+/// index-agnostic form of a safe upper bound, for the generic checks that run
+/// when the loop's index variable could not be identified.
+fn subtree_has_strict_less_bound(root: Node, source: &str) -> bool {
+    let comparisons =
+        query::find_descendants_of_kinds(root, &["binary_expression", "comparison_expression"]);
+    !comparisons
+        .iter()
+        .any(|cmp| binary_operator_text(cmp, source) == Some("<="))
+        && comparisons
+            .iter()
+            .any(|cmp| binary_operator_text(cmp, source) == Some("<"))
+}
+
+/// The array operand of a `subscript_expression`, as written.
+fn subscript_base<'s>(node: Node, source: &'s str) -> Option<&'s str> {
+    let base = node.child_by_field_name("argument")?;
+    Some(source[base.start_byte()..base.end_byte()].trim())
+}
+
+/// The index operand of a `subscript_expression`, as written.
+fn subscript_index_text<'s>(node: Node, source: &'s str) -> Option<&'s str> {
+    let index = node.child_by_field_name("index")?;
+    Some(source[index.start_byte()..index.end_byte()].trim())
+}
+
+/// True when `node` is exactly `buffer_name[index]` -- the read a sentinel
+/// test has to be guarding for the walk to be terminator-bounded.
+fn is_subscript_of(node: Node, source: &str, buffer_name: &str, index: &str) -> bool {
+    let node = strip_parens_and_casts(node);
+    node.kind() == "subscript_expression"
+        && subscript_base(node, source) == Some(buffer_name)
+        && subscript_index_text(node, source) == Some(index)
+}
+
+/// True when `root`'s subtree assigns to, increments or decrements `name`.
+fn subtree_assigns_identifier(root: Node, source: &str, name: &str) -> bool {
+    query::find_first_descendant(root, |n| {
+        let field = match n.kind() {
+            "assignment_expression" => "left",
+            "update_expression" => "argument",
+            _ => return false,
+        };
+        operand_text(&n, field, source) == name
+    })
+    .is_some()
+}
+
+/// True when `root`'s subtree stores into `buffer_name` at any index other
+/// than `index`.
+fn subtree_writes_buffer_at_other_index(
+    root: Node,
+    source: &str,
+    buffer_name: &str,
+    index: &str,
+) -> bool {
+    query::find_first_descendant(root, |n| {
+        if n.kind() != "assignment_expression" {
+            return false;
+        }
+        let Some(left) = n.child_by_field_name("left") else {
+            return false;
+        };
+        let left = strip_parens_and_casts(left);
+        left.kind() == "subscript_expression"
+            && subscript_base(left, source) == Some(buffer_name)
+            && subscript_index_text(left, source) != Some(index)
+    })
+    .is_some()
+}
+
+/// Bounded writes that place a terminator inside the length they are given:
+/// safe for a length up to the whole array. Paired with the argument index
+/// holding that length.
+const TERMINATING_BOUNDED_WRITES: &[(&str, usize)] =
+    &[("snprintf", 1), ("vsnprintf", 1), ("strlcpy", 2)];
+
+/// Bounded writes that fill up to `n` bytes without promising a terminator:
+/// safe only for `n <= size - 1`, which leaves the zero-initialised last byte
+/// of the array intact. `strncat`/`strlcat` are deliberately absent -- their
+/// length counts bytes appended *past* the existing contents, so it says
+/// nothing about the total extent written.
+const UNTERMINATING_BOUNDED_WRITES: &[(&str, usize)] =
+    &[("strncpy", 2), ("memcpy", 2), ("memmove", 2), ("memset", 2)];
+
+/// Evaluate a bounded write's length argument.
+///
+/// `sizeof(buf)` and `sizeof(buf) - N` are read against `effective_size`
+/// first, because the general constant folder has no notion of this buffer's
+/// declared size and falls back to `sizeof(x) >= 1` for an unknown operand --
+/// a length of 1 would read as trivially safe and suppress a real finding.
+fn write_length_value(
+    len_arg: &Node,
+    source: &str,
+    buffer_name: &str,
+    effective_size: usize,
+    macro_constants: &HashMap<String, i64>,
+) -> Option<i64> {
+    let text: String = source[len_arg.start_byte()..len_arg.end_byte()]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let sizeof_rest = text
+        .strip_prefix(&format!("sizeof({})", buffer_name))
+        .or_else(|| text.strip_prefix(&format!("sizeof{}", buffer_name)));
+    if let Some(rest) = sizeof_rest {
+        if rest.is_empty() {
+            return Some(effective_size as i64);
+        }
+        let offset: i64 = rest.strip_prefix('-')?.parse().ok()?;
+        return Some(effective_size as i64 - offset);
+    }
+    const_eval::try_evaluate_expr(len_arg, source, macro_constants)
+}
+
+/// True when `value` initialises an array so that its last byte is NUL:
+/// `= { 0 }`, `= {}`, or a string literal that fits inside `size` (a literal
+/// exactly filling the array is legal C and carries no terminator, which is
+/// why the length is compared rather than assumed).
+fn is_zero_fill_initializer(value: Node, source: &str, size: usize) -> bool {
+    match value.kind() {
+        "initializer_list" => {
+            let mut cursor = value.walk();
+            let all_zero = value
+                .named_children(&mut cursor)
+                .all(|c| source[c.start_byte()..c.end_byte()].trim() == "0");
+            all_zero
+        }
+        "string_literal" => {
+            // Escapes make this an over-count of the initialised bytes, which
+            // errs toward rejecting -- the safe direction here.
+            source[value.start_byte()..value.end_byte()]
+                .trim()
+                .len()
+                .saturating_sub(2)
+                < size
+        }
+        _ => false,
+    }
+}
+
+/// True when `name` is declared inside `func_node` as an array of `size`
+/// elements whose initialiser leaves a NUL in the last one.
+fn local_array_is_zero_initialized(
+    func_node: &Node,
+    source: &str,
+    name: &str,
+    size: usize,
+) -> bool {
+    query::find_descendants_of_kind(*func_node, "init_declarator")
+        .iter()
+        .any(|decl| {
+            let Some(declarator) = decl.child_by_field_name("declarator") else {
+                return false;
+            };
+            if declarator.kind() != "array_declarator" {
+                return false;
+            }
+            if declarator
+                .child_by_field_name("declarator")
+                .map(|inner| source[inner.start_byte()..inner.end_byte()].trim())
+                != Some(name)
+            {
+                return false;
+            }
+            decl.child_by_field_name("value")
+                .is_some_and(|value| is_zero_fill_initializer(value, source, size))
+        })
 }
 
 /// `node` with parentheses and casts peeled off, so `((void *)0)` and `0` are
