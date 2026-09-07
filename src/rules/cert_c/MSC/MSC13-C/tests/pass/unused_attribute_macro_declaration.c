@@ -23,6 +23,7 @@
 #define UNUSED __attribute__((unused))
 
 typedef unsigned long pptr_t;
+typedef unsigned long word_t;
 typedef int exception_t;
 
 extern exception_t cteDelete(int slot, int exposed);
@@ -36,6 +37,15 @@ void before_declarator(void) {
 void between_type_and_declarator(void) {
     pptr_t UNUSED pteS2;
     unsigned int UNUSED i;
+}
+
+/* Attribute macro AFTER the declarator, the trailing-attribute form
+ * (seL4 src/object/objecttype.c:602, task 1019). Here the parser strands the
+ * macro rather than the variable, so the parse-repair pass blanks the macro
+ * itself and the annotation would be gone before this rule ever runs -- it
+ * survives only as the marker the pass leaves in its place. */
+void after_declarator(void) {
+    word_t totalObjectSize UNUSED;
 }
 
 /* The attribute written out, with no macro in the way. */

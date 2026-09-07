@@ -30,6 +30,7 @@ use crate::analyze::macro_expand::{
     collect_function_macro_alternatives, macro_free_identifier_reads,
     macro_references_free_identifier, FunctionMacro,
 };
+use crate::analyze::unknown_identifier_recovery::UNUSED_ATTRIBUTE_MARKER;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     self, collect_unused_attribute_macro_names, find_enclosing_declaration_for_identifier,
@@ -269,6 +270,7 @@ impl Msc13C {
             if has_unused_attribute(text)
                 || (!unused_attr_macros.is_empty()
                     && Self::mentions_any_identifier(text, unused_attr_macros))
+                || Self::has_recovered_unused_marker(node, source)
             {
                 out.insert(node.start_byte());
             }
@@ -281,6 +283,24 @@ impl Msc13C {
                 }
             }
         }
+    }
+
+    /// True if the parse-repair pass replaced an unused-attribute macro in
+    /// this declaration with its marker (task 1019). The macro sits either
+    /// inside the declaration's span (`word_t totalObjectSize UNUSED;`) or
+    /// immediately before its first token (`UNUSED pptr_t vaddr = ...;`,
+    /// where the macro precedes the type and so falls outside the recovered
+    /// `declaration` node), so both positions are checked. Without this the
+    /// annotation is gone by the time any rule runs: the pass blanks the
+    /// macro to recover the parse, and `mentions_any_identifier` above then
+    /// has nothing left to match.
+    fn has_recovered_unused_marker(node: &Node, source: &str) -> bool {
+        if get_node_text(node, source).contains(UNUSED_ATTRIBUTE_MARKER) {
+            return true;
+        }
+        source[..node.start_byte().min(source.len())]
+            .trim_end()
+            .ends_with(UNUSED_ATTRIBUTE_MARKER)
     }
 
     /// True if `text` contains, as a whole token, any name in `names`.
