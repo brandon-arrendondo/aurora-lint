@@ -98,6 +98,18 @@ impl CParser {
         // unconditionally like the pass above.
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
 
+        // Task 1044: blank a #if/#ifdef/#ifndef + matching #endif pair that
+        // opens inside an unclosed parenthesized expression (a build-time-
+        // optional operand of a condition, or entry in a parameter or
+        // argument list). tree-sitter-c has no production for a
+        // preprocessor conditional between two operands, and which repair
+        // GLR error recovery picks depends on tokens far away -- on
+        // pure-ftpd's ls.c a one-statement edit at the end of the file
+        // flipped `listfile` between a normal function_definition and a
+        // single ERROR node spanning everything from it to EOF, hiding the
+        // definition from every rule while leaving its calls visible.
+        let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
+
         // Task 437: if a parse error remains (e.g. an externally-defined
         // attribute macro with no local #define for the pass above to
         // find), iteratively blank single-token unknown-identifier ERROR
@@ -128,6 +140,7 @@ impl CParser {
         let source = crate::analyze::empty_macro_blank::blank_empty_object_macros(&source);
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
+        let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
         let (tree, source) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
             &mut self.parser,
             source,

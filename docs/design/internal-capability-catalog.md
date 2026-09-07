@@ -663,7 +663,15 @@ Already covered above under Macro detection: `embedded_js_blank.rs` (task
 1043, emscripten `EM_ASM`/`EM_JS` JavaScript bodies), `empty_macro_blank.rs`
 (task 435, local `#define`-to-nothing) and `unknown_identifier_recovery.rs`
 (task 437, parser-ERROR-signal-driven, for unresolvable external-header
-identifiers). All three operate at parse time, not from within a rule — a rule
+identifiers). A third family sits alongside them, driven by text shape
+rather than by a macro name or a parser signal, for the preprocessor
+constructs `tree-sitter-c`'s grammar has no production for at all:
+`preproc_dangling_else.rs` (task 441, an if/else chain split across a
+guard), `label_preproc_guard.rs` (task 647, a guard opening right after a
+goto label) and `paren_preproc_guard.rs` (task 1044, a guard opening inside
+an unclosed parenthesized expression). Each blanks the offending directive
+lines, length-preserving, so the guarded code rejoins the construct it
+belongs to. All of them operate at parse time, not from within a rule — a rule
 encountering *residual* malformed-declaration debris (a `MISSING`/`ERROR`
 node the parse-time passes didn't catch) should check
 `query::find_first_descendant(node, |n| n.is_missing())`/`is_error()`
