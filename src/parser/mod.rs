@@ -1,6 +1,10 @@
 use anyhow::{Context, Result};
 use std::fs;
+use std::sync::Arc;
 use tree_sitter::{Language, Parser, Tree};
+
+use crate::analyze::context::ProjectContext;
+use crate::analyze::unknown_identifier_recovery::RepairMacros;
 
 /// The tree-sitter C grammar, sourced from the shared lang-parsing-substrate.
 /// Single point of truth for the grammar so rules don't depend on
@@ -13,6 +17,12 @@ pub fn c_language() -> Language {
 /// into `parse_file`/`parse_source`.
 pub struct CParser {
     parser: Parser,
+    /// Project-wide macro knowledge for the parse-repair pass. Empty until
+    /// [`Self::set_repair_macros`] is called, which is what the prescan (and
+    /// any single-file caller) relies on -- it is itself the pass that
+    /// collects these. `Arc` because the analysis driver builds one parser
+    /// per file.
+    repair_macros: Arc<RepairMacros>,
 }
 
 impl CParser {
@@ -23,7 +33,27 @@ impl CParser {
             .set_language(&c_language())
             .context("Failed to set C language for parser")?;
 
-        Ok(Self { parser })
+        Ok(Self {
+            parser,
+            repair_macros: Arc::new(RepairMacros::default()),
+        })
+    }
+
+    /// Hand the parse-repair pass the prescan's macro table, so it can blank
+    /// the macro rather than the real type or declarator tree-sitter
+    /// stranded next to it (task 1019). Call once per parser, after the
+    /// prescan has run; without it the pass falls back to blanking the
+    /// stranded token.
+    pub fn set_repair_macros(&mut self, macros: Arc<RepairMacros>) {
+        self.repair_macros = macros;
+    }
+
+    /// [`Self::set_repair_macros`] straight from a [`ProjectContext`], for
+    /// callers that hold one rather than a shared table. Used by the
+    /// generated fixture tests, hence dead in the binary build.
+    #[allow(dead_code)]
+    pub fn set_repair_macros_from_context(&mut self, context: &ProjectContext) {
+        self.repair_macros = Arc::new(RepairMacros::from_context(context));
     }
 
     /// Read and parse `file_path`, applying the source-repair passes
@@ -68,6 +98,7 @@ impl CParser {
         let (tree, source) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
             &mut self.parser,
             source,
+            &self.repair_macros,
         )
         .with_context(|| format!("Failed to parse file: {}", file_path))?;
 
@@ -91,6 +122,7 @@ impl CParser {
         let (tree, source) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
             &mut self.parser,
             source,
+            &self.repair_macros,
         )
         .context("Failed to parse source code")?;
         Ok((tree, source))
