@@ -109,7 +109,9 @@ fn preproc_directive_line_ranges(source: &str) -> Vec<(usize, usize)> {
 }
 
 /// Replace every whole-word occurrence of any name in `names` with spaces of
-/// the same byte length, except on a preprocessor directive line.
+/// the same byte length, except on a preprocessor directive line. A blanked
+/// name that stood alone as a statement takes its terminating `;` with it --
+/// see [`terminating_semicolon_to_blank`].
 fn blank_occurrences(source: &str, names: &HashSet<String>) -> String {
     if names.is_empty() {
         return source.to_string();
@@ -129,12 +131,109 @@ fn blank_occurrences(source: &str, names: &HashSet<String>) -> String {
             for b in out.iter_mut().take(end).skip(start) {
                 *b = b' ';
             }
+            if let Some(semi) = terminating_semicolon_to_blank(source, start, end, &directive_lines)
+            {
+                out[semi] = b' ';
+            }
         }
     }
     // Safe: we only ever replaced ASCII identifier-boundary bytes with
     // ASCII spaces, so any multi-byte UTF-8 sequences elsewhere are
     // untouched and the buffer remains valid UTF-8.
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
+}
+
+/// Byte offset of the `;` that terminates a bare `NAME;` statement whose
+/// `NAME` (spanning `start..end`) has just been blanked to nothing, or None
+/// if that `;` must stay.
+///
+/// The name expands to nothing, so post-preprocessor the statement *is*
+/// nothing, and leaving the `;` behind hands every downstream rule a null
+/// statement the programmer never wrote. MSC12-C reported exactly that as
+/// "Stray semicolon has no effect" on sqlite's `wsdStatInit;`,
+/// `wsdAutoextInit;`, `wsdHooksInit;` and `deliberate_fall_through;` --
+/// advice to delete a line that does not exist (task 1006).
+///
+/// Two things have to hold. The macro must be the first token on its line,
+/// which is what separates a statement of its own from a trailing decorator
+/// on the construct above it: curl's `} PACK;` closes a `struct` and its `;`
+/// is mandatory, whereas sqlite's `wsdStatInit;` and
+/// `deliberate_fall_through;` each occupy a line. And the preceding
+/// significant character must be `;`, `{` or `}`, so the macro began a fresh
+/// statement in a statement list where a null statement is optional. After
+/// anything else the `;` may be the *required* body of an `if`, `else`,
+/// `while` or `for`, or the statement a label must be followed by
+/// (`if (x) EMPTY;`, `label: EMPTY;`), and blanking it would turn a clean
+/// parse into an error -- the opposite of what this pass exists for. So a
+/// preceding `)` or `:` keeps it.
+///
+/// Preprocessor directive lines are skipped on the way back rather than
+/// treated as code: sqlite's `wsdAutoextInit;` sits directly under an
+/// `#endif`, and it is the real code above that decides whether a null
+/// statement is optional there. `if (x)` followed by an `#ifdef` and then
+/// the macro still reads as `)`, so it keeps its `;`.
+fn terminating_semicolon_to_blank(
+    source: &str,
+    start: usize,
+    end: usize,
+    directive_lines: &[(usize, usize)],
+) -> Option<usize> {
+    let bytes = source.as_bytes();
+
+    // The macro must open its own line -- a decorator sharing a line with
+    // the construct it decorates (`} PACK;`) owns no statement, and its `;`
+    // belongs to that construct.
+    if source[..start]
+        .rsplit('\n')
+        .next()
+        .is_some_and(|head| !head.trim().is_empty())
+    {
+        return None;
+    }
+
+    // Forward: only whitespace may sit between the name and its `;`.
+    let mut i = end;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b';') {
+        return None;
+    }
+
+    // Backward to the last significant character, skipping whitespace and
+    // whole block comments.
+    let mut j = start;
+    loop {
+        while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+            j -= 1;
+        }
+        if j >= 2 && &source[j - 2..j] == "*/" {
+            match source[..j - 2].rfind("/*") {
+                Some(open) => {
+                    j = open;
+                    continue;
+                }
+                None => return None,
+            }
+        }
+        if let Some(&(ls, _)) = directive_lines
+            .iter()
+            .find(|&&(ls, le)| j > ls && j - 1 < le)
+        {
+            if ls == 0 {
+                return Some(i);
+            }
+            j = ls;
+            continue;
+        }
+        break;
+    }
+    // Start of file: a bare macro statement there is not inside any control
+    // structure, so the `;` is optional.
+    let Some(&prev) = bytes.get(j.wrapping_sub(1)).filter(|_| j > 0) else {
+        return Some(i);
+    };
+    matches!(prev, b';' | b'{' | b'}').then_some(i)
 }
 
 /// Fallthrough-annotation macro names that are safe to blank even when this
@@ -190,6 +289,74 @@ mod tests {
         assert!(out.contains("     void f(void);"));
         // The #define line itself is left untouched.
         assert!(out.contains("#define RLAPI"));
+    }
+
+    #[test]
+    fn blanks_the_semicolon_of_a_bare_macro_statement() {
+        // `wsdStatInit;` expands to nothing, so leaving the `;` behind hands
+        // every rule a null statement the programmer never wrote (task 1006).
+        let src = "#define wsdStatInit\nint f(void){\n  wsdStatInit;\n  return 1;\n}\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("\n              \n"), "got {:?}", out);
+    }
+
+    #[test]
+    fn blanks_the_semicolon_across_an_intervening_directive_line() {
+        // sqlite's `wsdAutoextInit;` sits directly under an `#endif`; the
+        // real code above it is what decides whether the `;` is optional.
+        let src = "#define wsdAutoextInit\nint f(void){\n#endif\n  wsdAutoextInit;\n}\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("\n                 \n"), "got {:?}", out);
+    }
+
+    #[test]
+    fn keeps_the_semicolon_of_a_trailing_decorator_macro() {
+        // curl's `} PACK;` closes a struct: that `;` is mandatory, and
+        // blanking it broke smb.c's parse badly enough to add 62 findings in
+        // other rules (task 1006).
+        let src = "#define PACK\nstruct s {\n  int x;\n} PACK;\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("}     ;"), "got {:?}", out);
+    }
+
+    #[test]
+    fn keeps_the_semicolon_when_it_is_a_required_statement() {
+        // `if (x) EMPTY;` needs the null statement -- blanking it turns a
+        // clean parse into an error.
+        let src = "#define EMPTY\nvoid f(int x){\n  if (x) EMPTY;\n}\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("if (x)      ;"), "got {:?}", out);
+    }
+
+    #[test]
+    fn keeps_the_semicolon_of_a_line_starting_required_statement() {
+        // Line-start is satisfied here, so the preceding `)` is what has to
+        // keep the `;`: it is the `if`'s body.
+        let src = "#define EMPTY\nvoid f(int x){\n  if (x)\n    EMPTY;\n}\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("\n         ;\n"), "got {:?}", out);
+    }
+
+    #[test]
+    fn keeps_the_semicolon_after_a_label() {
+        let src = "#define EMPTY\nvoid f(void){\n  done: EMPTY;\n}\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("done:      ;"), "got {:?}", out);
+    }
+
+    #[test]
+    fn leaves_a_macro_used_as_a_value_and_its_semicolon_alone() {
+        // Not a bare statement: the `;` terminates a real assignment.
+        let src = "#define EMPTY\nvoid f(int *p){\n  *p = 1 EMPTY;\n}\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("*p = 1      ;"), "got {:?}", out);
     }
 
     #[test]

@@ -48,22 +48,43 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::null_state::{condition_tests_null, NullState};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
-    get_function_parameters, get_node_text, get_sanitized_node_text, is_pointer_type,
+    get_function_parameters, get_node_text, get_sanitized_node_text, integer_type_width,
+    is_pointer_type, is_unsigned_type,
 };
+use crate::utility::cert_c::float_typing::StructFieldTypes;
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::loop_consumption;
+use crate::utility::cert_c::overflow_helpers;
+use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
+/// Everything [`pointer_typing`] needs to answer "is this operand a pointer?",
+/// gathered once per file and threaded through the arithmetic-site walk.
+///
+/// The integer half of this rule only ever asks the question to *suppress*
+/// (task 738), which is why a borrowed bundle is enough — no site is created
+/// by a positive answer.
+struct PointerTypes<'a> {
+    type_map: &'a HashMap<String, String>,
+    struct_field_types: &'a StructFieldTypes,
+    facts: &'a PointerFacts,
+}
+
 pub struct Api00C {
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    struct_field_types: RefCell<StructFieldTypes>,
+    pointer_facts: RefCell<PointerFacts>,
 }
 
 impl Api00C {
     pub fn new() -> Self {
         Self {
             function_summaries: RefCell::new(HashMap::new()),
+            struct_field_types: RefCell::new(StructFieldTypes::new()),
+            pointer_facts: RefCell::new(PointerFacts::default()),
         }
     }
 }
@@ -91,12 +112,27 @@ impl CertRule for Api00C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
+        *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);
+        let type_map = overflow_helpers::collect_variable_types(node, source);
+        let struct_field_types = self.struct_field_types.borrow();
+        let facts = self.pointer_facts.borrow();
+        let pointer_types = PointerTypes {
+            type_map: &type_map,
+            struct_field_types: &struct_field_types,
+            facts: &facts,
+        };
         for func in query::find_descendants_of_kind(*node, "function_definition") {
-            self.check_function_parameter_validation(&func, source, &mut violations);
+            self.check_function_parameter_validation(
+                &func,
+                source,
+                &pointer_types,
+                &mut violations,
+            );
         }
         violations
     }
@@ -107,6 +143,7 @@ impl Api00C {
         &self,
         function_node: &Node,
         source: &str,
+        pointer_types: &PointerTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Skip static functions — API00-C is about public API contracts
@@ -179,12 +216,15 @@ impl Api00C {
             .iter()
             .map(|(name, ty)| (name.as_str(), ty.as_str()))
             .collect();
+        let param_names: HashSet<&str> = params.iter().map(|(name, _)| name.as_str()).collect();
 
-        // Filter for integer parameters that could overflow
-        let integer_params: Vec<String> = params
+        // Filter for integer parameters that could overflow, keeping each
+        // one's declared type: the shift check below needs the width and
+        // signedness it names.
+        let integer_params: Vec<(String, String)> = params
             .iter()
             .filter(|(_, param_type)| self.is_integer_type(param_type))
-            .map(|(name, _)| name.clone())
+            .map(|(name, ty)| (name.clone(), ty.clone()))
             .collect();
 
         // Get function body
@@ -223,14 +263,6 @@ impl Api00C {
                         }
                     }
 
-                    // Suppress relay-only parameters: if the parameter is only
-                    // passed as an argument to other function calls (never
-                    // dereferenced, indexed, or member-accessed locally), the
-                    // function is a relay and validation is the callee's concern.
-                    if self.is_relay_only_parameter(&body, param_name, source) {
-                        continue;
-                    }
-
                     // Suppress `void *` parameters that are never dereferenced
                     // locally and pass through only to null-safe sinks. Typical
                     // generic-container slot parameter (e.g., ArrayList_Append's
@@ -243,8 +275,10 @@ impl Api00C {
                         }
                     }
 
-                    // Check if the parameter is actually used in the function
-                    if self.is_parameter_used(&body, param_name, source) {
+                    // Report only when the parameter is actually read or
+                    // written THROUGH — here, or by a callee that does it
+                    // without checking first.
+                    if self.parameter_is_dereferenced(&body, param_name, &param_names, source) {
                         self.report_violation(
                             function_node,
                             param_name,
@@ -264,6 +298,7 @@ impl Api00C {
                 &body,
                 &integer_params,
                 source,
+                pointer_types,
                 violations,
             );
         }
@@ -274,13 +309,14 @@ impl Api00C {
         &self,
         function_node: &Node,
         body: &Node,
-        integer_params: &[String],
+        integer_params: &[(String, String)],
         source: &str,
+        pointer_types: &PointerTypes,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Look for arithmetic operations using integer parameters without overflow checks
-        for param_name in integer_params {
-            if self.has_unchecked_arithmetic(body, param_name, source) {
+        for (param_name, param_type) in integer_params {
+            if self.has_unchecked_arithmetic(body, param_name, param_type, source, pointer_types) {
                 self.report_violation(function_node, param_name, "integer", source, violations);
             }
         }
@@ -310,8 +346,16 @@ impl Api00C {
     /// operator, either operand order, a non-literal bound, an `&&` conjunct,
     /// and an enclosing branch or loop condition as well as a preceding
     /// guard). A violation needs one site with no such comparison.
-    fn has_unchecked_arithmetic(&self, body: &Node, param_name: &str, source: &str) -> bool {
-        let sites = Self::collect_arithmetic_sites(body, param_name, source);
+    fn has_unchecked_arithmetic(
+        &self,
+        body: &Node,
+        param_name: &str,
+        param_type: &str,
+        source: &str,
+        pointer_types: &PointerTypes,
+    ) -> bool {
+        let sites =
+            Self::collect_arithmetic_sites(body, param_name, param_type, source, pointer_types);
         if sites.is_empty() {
             return false;
         }
@@ -393,7 +437,7 @@ impl Api00C {
                 site,
                 source,
                 guard_dominance::ComparisonKind::OrderingOrExtremeEquality,
-            )
+            ) && !loop_consumption::is_guarded_loop_consumption(param_name, site, source)
         })
     }
 
@@ -406,17 +450,28 @@ impl Api00C {
     fn collect_arithmetic_sites<'a>(
         body: &Node<'a>,
         param_name: &str,
+        param_type: &str,
         source: &str,
+        pointer_types: &PointerTypes,
     ) -> Vec<Node<'a>> {
         let mut sites = Vec::new();
-        Self::walk_arithmetic_sites(body, param_name, source, &mut sites);
+        Self::walk_arithmetic_sites(
+            body,
+            param_name,
+            param_type,
+            source,
+            pointer_types,
+            &mut sites,
+        );
         sites
     }
 
     fn walk_arithmetic_sites<'a>(
         node: &Node<'a>,
         param_name: &str,
+        param_type: &str,
         source: &str,
+        pointer_types: &PointerTypes,
         sites: &mut Vec<Node<'a>>,
     ) {
         let operator = node.child_by_field_name("operator").map(|op| op.kind());
@@ -450,14 +505,137 @@ impl Api00C {
             _ => false,
         };
 
+        // `end = ies + ies_len` is pointer arithmetic, not integer
+        // arithmetic: the value that moves is `ies`, and a pointer operand
+        // cannot produce the integer overflow this half of the rule is about
+        // (task 738). The shared engine answers positively-only, so an
+        // operand whose type does not resolve keeps its site and the rule
+        // keeps its recall.
+        let is_site = is_site
+            && !pointer_typing::is_pointer_arithmetic(
+                node,
+                source,
+                pointer_types.type_map,
+                pointer_types.struct_field_types,
+                pointer_types.facts,
+            )
+            && !Self::is_defined_unsigned_shift(node, param_name, param_type, source)
+            && !Self::is_inside_assert(node, source);
+
         if is_site {
             sites.push(*node);
         }
 
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            Self::walk_arithmetic_sites(&child, param_name, source, sites);
+            Self::walk_arithmetic_sites(
+                &child,
+                param_name,
+                param_type,
+                source,
+                pointer_types,
+                sites,
+            );
         }
+    }
+
+    /// `crc << 8` on a `uint64_t` is not an overflow hazard: unsigned
+    /// wraparound is *defined* behaviour (C11 6.2.5p9), and in a CRC it is the
+    /// algorithm (libcrc's `update_crc_64`). The only undefined shift of an
+    /// unsigned value is one whose count reaches the operand's width, so a
+    /// literal count below that width settles it outright (task 741).
+    ///
+    /// Deliberately narrow. The parameter must be the *shifted value*, not the
+    /// count -- `x << n` for a parameter `n` is exactly the unbounded-count
+    /// case this leaves alone -- and the count must be a literal, since a
+    /// variable count is what the rule is there to ask about. An unrecognized
+    /// type spelling answers `None` and keeps the site.
+    fn is_defined_unsigned_shift(
+        node: &Node,
+        param_name: &str,
+        param_type: &str,
+        source: &str,
+    ) -> bool {
+        let operator = node.child_by_field_name("operator").map(|op| op.kind());
+        let (value, count) = match node.kind() {
+            "binary_expression" if operator == Some("<<") => (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ),
+            "assignment_expression" if operator == Some("<<=") => (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ),
+            _ => return false,
+        };
+        let (Some(value), Some(count)) = (value, count) else {
+            return false;
+        };
+        if !Self::is_param_operand(&value, param_name, source) {
+            return false;
+        }
+        let declared = Self::param_base_type(param_type, param_name);
+        if !is_unsigned_type(declared) {
+            return false;
+        }
+        let Some(width) = integer_type_width(declared) else {
+            return false;
+        };
+        if count.kind() != "number_literal" {
+            return false;
+        }
+        get_node_text(&count, source)
+            .trim()
+            .trim_end_matches(['u', 'U', 'l', 'L'])
+            .parse::<u32>()
+            .is_ok_and(|shift| shift < width)
+    }
+
+    /// The type half of a parameter declaration.
+    ///
+    /// `get_function_parameters` hands back the whole `parameter_declaration`
+    /// text as the "type" (`"unsigned long long crc"`), which every `contains`
+    /// test in this rule tolerates but an exact-match width table does not.
+    /// Dropping the trailing declarator name is enough for the simple
+    /// declarators this is asked about; anything else falls through to the
+    /// untrimmed text and the width table answers `None`, keeping the site.
+    fn param_base_type<'a>(param_type: &'a str, param_name: &str) -> &'a str {
+        param_type
+            .trim()
+            .strip_suffix(param_name)
+            .map_or(param_type, str::trim)
+    }
+
+    /// True when `node` sits inside an `assert`-shaped call.
+    ///
+    /// An assert compiles out under `NDEBUG`, so arithmetic that happens only
+    /// there is not a production computation and the rule has nothing to ask
+    /// about it (task 741). This is the same direction as
+    /// [`guard_dominance`], which deliberately refuses to credit an assert as
+    /// *validation*: an assert neither validates nor counts as a use.
+    ///
+    /// Name-shape matched rather than a fixed list, because every project
+    /// spells it its own way (`assert`, curl's `DEBUGASSERT`, hostap's
+    /// `WPA_ASSERT`) -- the same match ARR38-C uses.
+    fn is_inside_assert(node: &Node, source: &str) -> bool {
+        let mut current = node.parent();
+        while let Some(ancestor) = current {
+            if ancestor.kind() == "call_expression" {
+                if let Some(func) = ancestor.child_by_field_name("function") {
+                    if get_node_text(&func, source)
+                        .to_ascii_lowercase()
+                        .contains("assert")
+                    {
+                        return true;
+                    }
+                }
+            }
+            if ancestor.kind() == "function_definition" {
+                break;
+            }
+            current = ancestor.parent();
+        }
+        false
     }
 
     /// True when `operand` is the parameter itself, looking through redundant
@@ -612,18 +790,13 @@ impl Api00C {
         let Some(condition) = child.child_by_field_name("condition") else {
             return;
         };
-        let condition_text = get_node_text(&condition, source);
-
         // Case 1: early-return / early-exit pattern
         //   if (!ptr)        { return; }
         //   if (ptr == NULL) { return; }
         //   if (isNullOrEmpty(ptr)) { return; }  (helper fn call)
         if self.is_early_return_pattern(child, source) {
-            // Use broad match: any param appearing in the condition
-            // of an early-return guard is considered validated.
-            // This handles both direct null checks and helper fn calls.
             for param in pointer_params {
-                if condition_text.contains(param.as_str()) {
+                if self.early_exit_condition_validates(&condition, param, source) {
                     validated.insert(param.clone());
                 }
             }
@@ -662,6 +835,57 @@ impl Api00C {
                 validated.insert(param.clone());
             }
         }
+    }
+
+    /// Does an early-exit guard's condition actually validate `param`?
+    ///
+    /// Case 1 used to be a substring test on the condition *text* — "any param
+    /// appearing in the condition of an early-return guard is considered
+    /// validated" — which credited `e` for `if (e == e->next) return 1;`
+    /// (a comparison against another pointer that dereferences `e` on the
+    /// way), `base` for `if (*base != 0 && chdir(base)) return -1;` (a test of
+    /// the pointee and a *use*), and, being a substring rather than a word
+    /// match, a parameter named `ie` for any condition containing
+    /// `update_dh_ie` (task 902). That is the same defect task 745 fixed in
+    /// the positive-guard path, and it costs true positives rather than
+    /// producing false ones.
+    ///
+    /// Case 1's breadth was partly deliberate, though: its comment named
+    /// `if (isNullOrEmpty(ptr)) return;` as a shape it meant to accept, and
+    /// [`condition_tests_null`] rejects a predicate call by design. So the
+    /// call form is kept — but resolved rather than assumed. The callee has to
+    /// be one whose own summary says it null-checks the argument it was handed
+    /// at that position, which is what tells `isNullOrEmpty(ptr)` apart from
+    /// `chdir(base)`. A callee outside the scanned tree has no summary and so
+    /// credits nothing, which is the direction that costs findings rather than
+    /// hiding them.
+    fn early_exit_condition_validates(&self, condition: &Node, param: &str, source: &str) -> bool {
+        if condition_tests_null(condition, param, source) {
+            return true;
+        }
+        let summaries = self.function_summaries.borrow();
+        query::find_descendants_of_kind(*condition, "call_expression")
+            .iter()
+            .any(|call| {
+                let Some(func) = call.child_by_field_name("function") else {
+                    return false;
+                };
+                let Some(summary) = summaries.get(get_node_text(&func, source)) else {
+                    return false;
+                };
+                let Some(arg_list) = call.child_by_field_name("arguments") else {
+                    return false;
+                };
+                arg_list
+                    .named_children(&mut arg_list.walk())
+                    .enumerate()
+                    .any(|(idx, arg)| {
+                        guard_dominance::strip_arg_wrappers(&arg).kind() == "identifier"
+                            && get_node_text(&guard_dominance::strip_arg_wrappers(&arg), source)
+                                == param
+                            && summary.checks_null_params.contains(&idx)
+                    })
+            })
     }
 
     /// `return_statement` case of [`check_validation_patterns`]: the null
@@ -901,76 +1125,217 @@ impl Api00C {
         false
     }
 
-    /// Check if a parameter is actually used in the function body
-    /// Check if a parameter is only relayed to callees that validate it.
-    /// Returns true when the parameter is never directly used and every callee
-    /// that receives it either checks for null or itself relays to a checker.
-    fn is_relay_only_parameter(&self, body: &Node, param_name: &str, source: &str) -> bool {
+    /// Is `param_name` actually read or written *through* in this function?
+    ///
+    /// This is the reporting gate for the pointer half, and it replaced a
+    /// pair of predicates that between them answered a different question.
+    /// The old `is_parameter_used` counted any occurrence outside a condition
+    /// as a use, so a pointer parameter was "used" when it was merely stored
+    /// (`ctx->aux = pAux`), returned, compared, or handed to a callee. None of
+    /// those reads through the pointer, so NULL is a perfectly good value for
+    /// them and the finding's premise does not hold: 16 of the 40 false
+    /// positives in task 664's 110-row API00-C pointer sample were exactly
+    /// this — opaque `void *` cookies handed to a callback registrar, function
+    /// pointers stored in a struct and never invoked here,
+    /// `xml_node_get_text`'s `ctx` accepted and ignored outright (task 743).
+    ///
+    /// A forward into a callee is the interesting case, and it is decided by
+    /// what the callee does, never by the shape of the forward. The 59-row
+    /// `param-forwarded-to-dereferencing-callee` **true positive** class and
+    /// the 11-row `validation-in-called-helper` false positive class are
+    /// structurally IDENTICAL thin forwarding wrappers at the flagged
+    /// function; only the callee's body tells them apart, which is what made
+    /// them mislabeled in the first place (task 744). So:
+    ///
+    /// * a callee that never dereferences the argument makes the forward a
+    ///   non-use,
+    /// * a callee that dereferences it but null-checks it *first* has the
+    ///   guard, just not in this frame — `checks_null_params_before_deref`,
+    ///   whose ordering is what keeps a callee that dereferences at
+    ///   `if (conn->client)` and tests for null later from reading as safe,
+    /// * a callee that dereferences it unchecked is the true positive, and
+    /// * an **unknown** callee counts as dereferencing, which is the
+    ///   direction that keeps findings rather than hiding them.
+    ///
+    /// One store does still count, and it is the rule's own canonical
+    /// example: `void setfile(FILE *file) { myFile = file; }`, where the
+    /// pointer escapes into **file-scope** state and outlives the call, so
+    /// this function is the API boundary where validation has to happen —
+    /// `usefile()` has nowhere else to get the guarantee. Storing into a
+    /// caller-owned struct field or handing an opaque cookie to a registrar
+    /// is the opposite: the contract goes back to the caller, and those are
+    /// task 743's false positives.
+    fn parameter_is_dereferenced(
+        &self,
+        body: &Node,
+        param_name: &str,
+        param_names: &HashSet<&str>,
+        source: &str,
+    ) -> bool {
         let summaries = self.function_summaries.borrow();
         let mut relay_callees: Vec<(String, usize)> = Vec::new();
-        let mut found_direct_use = false;
+        let mut found_direct_deref = false;
         self.classify_param_uses(
             body,
             param_name,
+            param_names,
             source,
             &mut relay_callees,
-            &mut found_direct_use,
+            &mut found_direct_deref,
         );
-        if found_direct_use || relay_callees.is_empty() {
-            return false;
+        if found_direct_deref {
+            return true;
         }
-        // Every callee that receives this parameter must validate it or accept NULL
-        for (callee_name, arg_idx) in &relay_callees {
-            // Standard library functions that accept NULL pointers — no validation needed
+        relay_callees.iter().any(|(callee_name, arg_idx)| {
             if Self::is_null_accepting_stdlib(callee_name, *arg_idx) {
-                continue;
+                return false;
             }
-            if let Some(callee_summary) = summaries.get(callee_name.as_str()) {
-                if !callee_summary.checks_null_params.contains(arg_idx) {
-                    return false; // Callee doesn't validate → not safe to suppress
+            match summaries.get(callee_name.as_str()) {
+                Some(callee) => {
+                    callee.dereferences_params.contains(arg_idx)
+                        && !callee.checks_null_params_before_deref.contains(arg_idx)
                 }
-            } else {
-                return false; // Unknown callee → not safe
+                None => true,
             }
-        }
-        true
+        })
     }
 
+    /// Split every occurrence of `param_name` into the callees it is forwarded
+    /// to and whether any occurrence dereferences it here.
+    ///
+    /// Dereference is tested *positively* — the occurrence has to be the
+    /// object of a `*`, `->`/`.`, `[]`, or the callee of an indirect call —
+    /// rather than by excluding the shapes that are not one. The negative
+    /// form is what produced task 743's false positives: it read "not inside
+    /// an `if` condition" as "dereferenced", which every store, return and
+    /// argument satisfies.
     fn classify_param_uses(
         &self,
         node: &Node,
         param_name: &str,
+        param_names: &HashSet<&str>,
         source: &str,
         relay_callees: &mut Vec<(String, usize)>,
-        found_direct_use: &mut bool,
+        found_direct_deref: &mut bool,
     ) {
         for ident in query::find_descendants_of_kind(*node, "identifier") {
-            let text = get_node_text(&ident, source);
-            if text != param_name {
+            if get_node_text(&ident, source) != param_name {
                 continue;
             }
-            if let Some(parent) = ident.parent() {
-                // Check: is this inside a call_expression's argument list?
-                if parent.kind() == "argument_list" {
-                    if let Some(call_expr) = parent.parent() {
-                        if call_expr.kind() == "call_expression" {
-                            if let Some(func) = call_expr.child_by_field_name("function") {
-                                let callee = get_node_text(&func, source);
-                                // Determine which positional arg this is
-                                let arg_idx = self.get_arg_index(&ident, &parent);
-                                relay_callees.push((callee.to_string(), arg_idx));
+            // `(void)param` and `UNUSED(param)` explicitly mark the
+            // parameter as intentionally untouched. The macro form is parsed
+            // as a call, so without this it would read as a forward into an
+            // unknown callee — the one shape this function treats as a
+            // dereference.
+            if self.is_in_void_cast(&ident, source) {
+                continue;
+            }
+            // `(struct s *)p->field` reaches the dereference through a cast,
+            // and `(p)[i]` through parentheses; neither changes what is being
+            // read through.
+            let mut occurrence = ident;
+            while let Some(parent) = occurrence.parent() {
+                if !matches!(
+                    parent.kind(),
+                    "cast_expression" | "parenthesized_expression"
+                ) {
+                    break;
+                }
+                occurrence = parent;
+            }
+            let Some(parent) = occurrence.parent() else {
+                continue;
+            };
+            if parent.kind() == "argument_list" {
+                if let Some(call_expr) = parent.parent() {
+                    if call_expr.kind() == "call_expression" {
+                        if let Some(func) = call_expr.child_by_field_name("function") {
+                            let callee = get_node_text(&func, source);
+                            // A call through one of THIS function's own
+                            // parameters is caller-supplied code
+                            // (`set_auxdata`'s `xDelete(pAux)`): there is no
+                            // callee body to consult, and the caller chose
+                            // both the function pointer and the value handed
+                            // to it, so the contract is theirs. Without this
+                            // it falls into the unknown-callee arm, which
+                            // counts as a dereference.
+                            if param_names.contains(callee) {
                                 continue;
                             }
+                            let arg_idx = self.get_arg_index(&occurrence, &parent);
+                            relay_callees.push((callee.to_string(), arg_idx));
+                            continue;
                         }
                     }
-                    *found_direct_use = true;
-                    continue;
                 }
-                if self.is_in_validation_context(&ident) || self.is_in_void_cast(&ident, source) {
-                    continue;
-                }
+                continue;
             }
-            *found_direct_use = true;
+            if Self::occurrence_is_dereference(&occurrence, &parent, source)
+                || self.escapes_to_file_scope(&occurrence, &parent, source)
+            {
+                *found_direct_deref = true;
+            }
+        }
+    }
+
+    /// Is `occurrence` the value stored into a file-scope pointer?
+    ///
+    /// `myFile = file` inside `setfile` — the pointer outlives the call, and
+    /// every later user of `myFile` is relying on this function having
+    /// checked it. See [`parameter_is_dereferenced`] for why a store into
+    /// caller-owned memory is not the same thing.
+    ///
+    /// The destination has to be positively known to be file-scope, which is
+    /// what [`PointerFacts`] answers; a local of the same name shadows it and
+    /// the fact set never sees the local.
+    ///
+    /// [`parameter_is_dereferenced`]: Self::parameter_is_dereferenced
+    fn escapes_to_file_scope(&self, occurrence: &Node, parent: &Node, source: &str) -> bool {
+        if parent.kind() != "assignment_expression" {
+            return false;
+        }
+        if parent.child_by_field_name("operator").map(|o| o.kind()) != Some("=") {
+            return false;
+        }
+        if parent
+            .child_by_field_name("right")
+            .is_none_or(|right| right.id() != occurrence.id())
+        {
+            return false;
+        }
+        let Some(left) = parent.child_by_field_name("left") else {
+            return false;
+        };
+        left.kind() == "identifier"
+            && self
+                .pointer_facts
+                .borrow()
+                .is_file_scope_pointer(get_node_text(&left, source))
+    }
+
+    /// Does `parent` read or write through `occurrence`?
+    ///
+    /// `&p` is deliberately not one: taking the address of the parameter
+    /// *variable* touches nothing the pointer points at. Neither is `p = q`,
+    /// which rebinds a local copy.
+    fn occurrence_is_dereference(occurrence: &Node, parent: &Node, source: &str) -> bool {
+        let is_target = |field: &str| {
+            parent
+                .child_by_field_name(field)
+                .is_some_and(|n| n.id() == occurrence.id())
+        };
+        match parent.kind() {
+            // `*p`, but not `&p`.
+            "pointer_expression" => parent
+                .child(0)
+                .is_some_and(|op| get_node_text(&op, source) == "*"),
+            // `p->field` / `p.field`, but not `q->p`.
+            "field_expression" => is_target("argument"),
+            // `p[i]`, but not `q[p]`.
+            "subscript_expression" => is_target("argument"),
+            // `p(...)` — calling through a function pointer parameter.
+            "call_expression" => is_target("function"),
+            _ => false,
         }
     }
 
@@ -1046,8 +1411,8 @@ impl Api00C {
             &mut safe,
             &mut saw_any_use,
         );
-        // If the parameter never appears, `is_parameter_used` will return false
-        // anyway; don't claim responsibility for that path.
+        // If the parameter never appears, `parameter_is_dereferenced` will
+        // return false anyway; don't claim responsibility for that path.
         saw_any_use && safe
     }
 
@@ -1146,73 +1511,6 @@ impl Api00C {
         }
         idx
     }
-
-    fn is_parameter_used(&self, body: &Node, param_name: &str, source: &str) -> bool {
-        query::find_first_descendant(*body, |node| {
-            // Check if this node is an identifier matching the parameter name
-            if node.kind() != "identifier" {
-                return false;
-            }
-            let text = get_node_text(&node, source);
-            if text != param_name {
-                return false;
-            }
-            // Skip (void)param / UNUSED(param) patterns — these explicitly mark
-            // a parameter as intentionally unused (e.g., callback signature match)
-            if self.is_in_void_cast(&node, source) {
-                return false;
-            }
-            // Check if it's actually being used (not just in a validation check)
-            if let Some(parent) = node.parent() {
-                // Skip if this is part of a validation check condition
-                if !self.is_in_validation_context(&node) {
-                    return true;
-                }
-                // Still count dereference as usage even in validation context
-                if parent.kind() == "pointer_expression"
-                    || parent.kind() == "field_expression"
-                    || parent.kind() == "subscript_expression"
-                {
-                    return true;
-                }
-            }
-            false
-        })
-        .is_some()
-    }
-
-    /// Check if a node is part of a validation context (if condition checking for NULL)
-    fn is_in_validation_context(&self, node: &Node) -> bool {
-        let mut current = node.parent();
-        let mut depth = 0;
-
-        while let Some(parent) = current {
-            depth += 1;
-            if depth > 10 {
-                break; // Avoid infinite loops
-            }
-
-            // If we're in a parenthesized expression within an if condition
-            if parent.kind() == "if_statement" {
-                return true;
-            }
-
-            // Check for binary expressions that are comparisons to NULL
-            if parent.kind() == "binary_expression" {
-                return true;
-            }
-
-            // Check for unary not operator
-            if parent.kind() == "unary_expression" {
-                return true;
-            }
-
-            current = parent.parent();
-        }
-
-        false
-    }
-
     /// Check if an identifier is inside a (void)param or UNUSED(param) cast.
     /// These patterns explicitly suppress unused-parameter warnings and indicate
     /// the parameter is intentionally not used.
