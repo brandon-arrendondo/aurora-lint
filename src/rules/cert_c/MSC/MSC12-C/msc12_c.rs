@@ -198,8 +198,61 @@ impl Msc12C {
             }
         };
 
-        // Skip macro invocations — they may have side effects we can't see
-        if expr.kind() == "call_expression" {
+        // ── Misparse guards (task 1004) ───────────────────────────────────
+        // tree-sitter has no preprocessor and no type table, so several
+        // non-expressions reach this point parsed as expression statements.
+        // Every guard below rests on the same argument: what the parser
+        // handed us is not what the programmer wrote, so "this statement has
+        // no effect" is a claim about the parse, not about the code.
+
+        // An expression statement is not valid C at file scope — a bare
+        // `x;` outside any function does not compile. Reaching here means
+        // error recovery split a declaration the parser could not resolve
+        // and left its tail behind (`} sqlite3Prng;` after an
+        // unexpandable `SQLITE_WSD` decorator, `LUA_API lua_State
+        // *(lua_newthread)(...)` after an unknown-identifier blank).
+        if node
+            .parent()
+            .is_some_and(|p| p.kind() == "translation_unit")
+        {
+            return;
+        }
+
+        // Residual parse debris inside the statement itself: an ERROR node
+        // (a declaration decorated by an unexpandable attribute macro,
+        // `BtShared *SQLITE_WSD list = 0;`) or a MISSING `;` (a condition
+        // split across a #if/#else pair, so the parser synthesized a
+        // terminator the source does not have). Same primitive the BOOT_BSS
+        // and object-macro guards above use, applied to the statement's own
+        // subtree rather than its predecessor.
+        if query::find_first_descendant(*node, |n| n.is_error() || n.is_missing()).is_some() {
+            return;
+        }
+
+        // An ERROR node immediately before the statement means the parser
+        // lost the statement boundary and this "statement" starts mid-
+        // construct: an inline-asm operand list (`: "memory"` after the
+        // clobber colon) or JavaScript inside an emscripten `EM_ASM` block,
+        // where the trailing `, 100);` of a JS call reads as C.
+        if node.prev_sibling().is_some_and(|p| p.kind() == "ERROR") {
+            return;
+        }
+
+        // A statement wrapped in a preprocessor conditional that the
+        // preprocessor would have joined to its surroundings.
+        if self.is_preproc_conditional_fragment(node, &expr, source) {
+            return;
+        }
+
+        // Anything invoking a function may have side effects, so the
+        // statement is not no-effect — whether the call is the whole
+        // statement or one operand of it. This also covers the
+        // declaration-vs-multiplication misparse, where a macro type
+        // specifier reads as the left operand of a `*`
+        // (`STACK_OF(X509) *sk;` → `STACK_OF(X509) * sk`): either it is a
+        // declaration, or it is a real multiplication whose left operand
+        // calls a function. Both mean "do not report".
+        if self.contains_call(&expr) {
             return;
         }
 
@@ -475,6 +528,17 @@ impl Msc12C {
             return;
         }
 
+        // Parse debris, same argument as in check_no_effect_expression: a
+        // `#if` line has no C parse, so tree-sitter recovers what it can and
+        // the operands are whatever fell out. sqlite's
+        // `#if defined(HAVE_POSIX_FALLOCATE) && HAVE_POSIX_FALLOCATE` leaves
+        // the `)` as an ERROR sibling and both operands reading
+        // `HAVE_POSIX_FALLOCATE` — identical only because the `defined(`
+        // wrapper was dropped (task 1004).
+        if query::find_first_descendant(*node, |n| n.is_error() || n.is_missing()).is_some() {
+            return;
+        }
+
         let left = match node.child_by_field_name("left") {
             Some(l) => l,
             None => return,
@@ -490,6 +554,19 @@ impl Msc12C {
         if left_text.trim() == right_text.trim() {
             // Skip if the expression contains function calls (side effects)
             if self.contains_call(&left) {
+                return;
+            }
+
+            // Textually identical is not the same as redundant: an operand
+            // that increments or assigns evaluates to something different
+            // each time, so the second occurrence is doing real work.
+            // sqlite's varint decoder chains seven copies of
+            // `(*pIter++)&0x80` precisely to walk the buffer (task 1004).
+            if query::find_first_descendant(left, |n| {
+                matches!(n.kind(), "update_expression" | "assignment_expression")
+            })
+            .is_some()
+            {
                 return;
             }
 
@@ -1299,6 +1376,102 @@ impl Msc12C {
         })
     }
 
+    /// True if `node` (an `expression_statement` with expression `expr`) is a
+    /// fragment of a construct the preprocessor would have assembled, rather
+    /// than a statement in its own right. Scans back from the statement to
+    /// the nearest real code line *outside* the conditional structure that
+    /// encloses it; something in between must be a conditional directive, or
+    /// this is an ordinary statement and neither shape applies.
+    ///
+    /// 1. A bare identifier that the guarding directive itself names
+    ///    (`#if defined(SQLITE_MEMORY_BARRIER)` around
+    ///    `SQLITE_MEMORY_BARRIER;`). The guard is the codebase asserting the
+    ///    name is a macro — the same fact [`Self::is_known_macro`] looks for
+    ///    when the `#define` is reachable, which it is not when the macro
+    ///    comes from a compiler flag or an external header.
+    ///
+    /// 2. That code line does not end a statement, so the guarded lines
+    ///    continue it instead of starting a new one:
+    ///    `identity->Flags = (unsigned long)`, then `#ifdef UNICODE`, then
+    ///    `SEC_WINNT_AUTH_IDENTITY_UNICODE;`. The same shape splits `if(`
+    ///    conditions across build configurations (pure-ftpd's
+    ///    `# ifdef NON_ROOT_FTP` uid tests) and string-literal
+    ///    concatenations (`"Bg:"` / `#ifndef` / `"h"` / `#endif` /
+    ///    `"p:r:s:u:";`).
+    ///
+    /// The `depth` counter is what makes shape 2 work in an `#else` arm: the
+    /// lines immediately above such a statement are the *sibling* arm, not
+    /// its predecessor, so they have to be skipped along with anything in a
+    /// nested conditional. Stopping at the first line seen would read the
+    /// `#if` arm's last statement as the context and conclude, wrongly, that
+    /// the `#else` arm starts fresh.
+    ///
+    /// Textual rather than structural because tree-sitter models a
+    /// conditional inconsistently here: the `#else` that splits curl's
+    /// ternary is a bare `preproc_call` sibling, while the one that splits
+    /// pure-ftpd's option string is nothing at all — the statement's parent
+    /// is the file's own header guard, hundreds of lines up. Scanning
+    /// backwards from the statement is also bounded by how far the nearest
+    /// enclosing-scope code line is, not by file size or nesting depth.
+    fn is_preproc_conditional_fragment(&self, node: &Node, expr: &Node, source: &str) -> bool {
+        let ident = (expr.kind() == "identifier")
+            .then(|| get_node_text(expr, source).trim())
+            .filter(|n| !n.is_empty());
+
+        let line_start = source[..node.start_byte()].rfind('\n').map_or(0, |i| i + 1);
+        let mut crossed_conditional = false;
+        // Conditional blocks entered while walking up whose contents are a
+        // sibling arm or a nested guard, and so are not this statement's
+        // context.
+        let mut depth = 0usize;
+
+        for raw in source[..line_start].rsplit('\n') {
+            let line = strip_trailing_comment(raw);
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with("//")
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with('*')
+            {
+                continue;
+            }
+            if trimmed.starts_with('#') {
+                match conditional_directive_kind(trimmed) {
+                    Some(ConditionalDirective::Endif) => {
+                        crossed_conditional = true;
+                        depth += 1;
+                    }
+                    Some(ConditionalDirective::Else) => {
+                        crossed_conditional = true;
+                        // A later arm: everything back to the matching `#if`
+                        // is the earlier arm's body, not our context.
+                        depth += 1;
+                    }
+                    Some(ConditionalDirective::If) => {
+                        crossed_conditional = true;
+                        if depth > 0 {
+                            depth -= 1;
+                        } else if let Some(name) = ident {
+                            // Shape 1, against the guard that decides
+                            // whether this statement is compiled at all.
+                            if trimmed.split(is_not_ident_char).any(|tok| tok == name) {
+                                return true;
+                            }
+                        }
+                    }
+                    None => {}
+                }
+                continue;
+            }
+            if depth > 0 {
+                continue;
+            }
+            // Shape 2: the first real code line in our own scope settles it.
+            return crossed_conditional && !ends_a_statement(line);
+        }
+        false
+    }
+
     /// Returns true if the node or any descendant is a call_expression.
     fn contains_call(&self, node: &Node) -> bool {
         query::find_first_descendant(*node, |n| n.kind() == "call_expression").is_some()
@@ -1371,6 +1544,77 @@ impl Msc12C {
         })
         .is_some();
         has_operator && has_indirection
+    }
+}
+
+/// Splitter for identifier tokens: anything that cannot appear inside a C
+/// identifier is a boundary, so `defined(NAME)` yields `defined` and `NAME`.
+fn is_not_ident_char(c: char) -> bool {
+    !c.is_alphanumeric() && c != '_'
+}
+
+/// The three roles a conditional-compilation directive plays when walking
+/// *backwards* out of a block: `#endif` and `#else`/`#elif` mean a block was
+/// entered, `#if`/`#ifdef`/`#ifndef` mean one was left.
+enum ConditionalDirective {
+    If,
+    Else,
+    Endif,
+}
+
+/// Classifies `line` (already trimmed, known to start with `#`), or None for
+/// a directive that is not a build-configuration boundary — `#define`,
+/// `#include`, `#pragma`.
+fn conditional_directive_kind(line: &str) -> Option<ConditionalDirective> {
+    let rest = line.trim_start_matches('#').trim_start();
+    let word = rest
+        .split(|c: char| is_not_ident_char(c))
+        .next()
+        .unwrap_or("");
+    match word {
+        "if" | "ifdef" | "ifndef" => Some(ConditionalDirective::If),
+        "else" | "elif" => Some(ConditionalDirective::Else),
+        "endif" => Some(ConditionalDirective::Endif),
+        _ => None,
+    }
+}
+
+/// Drop a trailing `// ...` or `/* ... */` comment so the terminator test
+/// below looks at the code, not at what a comment happens to end with.
+fn strip_trailing_comment(line: &str) -> &str {
+    let line = match line.find("//") {
+        Some(i) => &line[..i],
+        None => line,
+    };
+    match (line.rfind("/*"), line.rfind("*/")) {
+        (Some(open), Some(close)) if close > open && line[close + 2..].trim().is_empty() => {
+            &line[..open]
+        }
+        _ => line,
+    }
+}
+
+/// True if `line` ends a statement or opens/closes a block, i.e. whatever
+/// follows it starts fresh. A line ending in anything else (`=`, `|`, `(`,
+/// `,`, `?`, a string literal) is mid-expression or mid-list, and code
+/// guarded by a conditional right after it continues that expression.
+///
+/// `case X:` and `default:` end a statement position. A bare identifier plus
+/// `:` reads as a goto label but is far more often the middle arm of a `?:`
+/// spread over lines (`CURLSSLSET_OK :`), and a label immediately followed
+/// by a conditional guarding a no-effect statement is not a shape real code
+/// takes — so it is treated as a continuation.
+fn ends_a_statement(line: &str) -> bool {
+    let t = line.trim_end();
+    if t.ends_with(';') || t.ends_with('{') || t.ends_with('}') {
+        return true;
+    }
+    match t.strip_suffix(':') {
+        Some(head) => {
+            let head = head.trim();
+            head.starts_with("case ") || head == "default"
+        }
+        None => false,
     }
 }
 
