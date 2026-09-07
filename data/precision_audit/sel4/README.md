@@ -252,3 +252,67 @@ FPs of this family eliminated."
 
 **Still open**: task 476 (seL4's AUXUPD/GHOSTUPD Isabelle proof-annotation
 comments misread as empty if/else branches).
+
+## Update: tools_sqc task 1016 — a bare-dereference busy-wait on a `volatile` object
+
+The bare-dereference exclusion pinned down by the task 473 section above
+(`while (*flag);`, `while (!timer->tistat);` stay flagged, because
+structurally they are indistinguishable from a forgotten loop body) is now
+lifted for one specific case, on the evidence that section asked for:
+`volatile`.
+
+A volatile read cannot be hoisted out of the loop, so a condition that reads
+a volatile object re-reads it every iteration *by definition* and the empty
+body is the idiom. The non-volatile form really is a bug — the compiler is
+free to hoist the read and turn the loop into an infinite one. That is a
+distinct semantic signal, not a widening of the dereference predicate, so
+`condition_indicates_polling` gained a `volatile` disjunct rather than a
+looser structural one. It needs no operator and no indirection at all:
+`while (!node_boot_lock);` reads a bare identifier.
+
+The obstacle was scope. `mentions_volatile_operand` (which
+`check_subsumed_guard` already used, and which is left untouched) only scans
+declarations *inside* the containing function, and seL4 declares every object
+its busy-waits poll at file scope. `Msc12C` now carries a per-file set of
+file-scope `volatile` names, collected once per translation unit in `scan`
+via `ast_utils::file_scope_descendants_of_kinds` — deliberately not an
+ancestor walk to the translation unit per candidate loop, which is the shape
+that cost CON40-C 23 s on deeply nested input (task 952). The per-function
+half is still consulted, from a stricter collector that reads only the
+declarator, so `volatile struct l2cc_map *const l2cc = (volatile struct
+l2cc_map *)L2CC_L2C310_PPTR;` contributes `l2cc` and not the non-volatile
+`L2CC_L2C310_PPTR` its initializer names. It runs only after the cheap
+structural checks have declined, i.e. only for a loop that was about to be
+reported.
+
+**Real-world impact** (local probe scans of this checkout against baseline
+`117d1624`, runner-equivalent invocation — `src/` scan,
+`conf/realworld/sel4-rules.toml`, the same `-d`/`-I` pairs
+`bench/realworld_runner.py` passes): seL4 MSC12-C findings 17 → 14 (3
+removed, zero added), with all-rule totals 5514 → 5511, an exact match — the
+change is fully contained inside MSC12-C's polling predicate. The three:
+
+| file:line | condition | declaration |
+|---|---|---|
+| `src/arch/arm/kernel/boot.c:272` | `while (!node_boot_lock);` | `BOOT_BSS static volatile _Atomic int`, file scope |
+| `src/arch/riscv/kernel/boot.c:156` | `while (!node_boot_lock);` | `BOOT_BSS static volatile _Atomic word_t`, file scope |
+| `src/arch/arm/machine/l2c_310.c:381` | `while (l2cc->maintenance.clean_inv_way);` | `volatile struct l2cc_map *const l2cc`, file scope |
+
+A whole-repo `--rules MSC12-C` sweep of all nine pinned checkouts with both
+binaries moved nothing outside seL4 (curl 50, hostap 151, libcrc 0, lua 2,
+mosquitto 41, pureftpd 5, raylib 64, sqlite 94 — byte-identical both sides).
+No measurable runtime change on seL4, sqlite or raylib. Full suite: 4093
+passed, 0 failed, including the two new fixtures
+`tests/pass/testcases_volatile_busy_wait.c` and
+`tests/fail/testcases_nonvolatile_busy_wait.c`.
+
+**These are probe-scan numbers from one checkout, not a project measurement**
+— nothing here went through `benchmarking_db`'s queue, so none of it is
+citable as a project figure, and no precision/recall claim is made. What it
+does establish is the raw delta and the absence of collateral.
+
+**Deliberately still flagged**: `src/drivers/timer/omap3430-timer.c:40,63`,
+`while (!timer->tistat);`. `timer` is a plain `timer_t *` and `tistat` a
+plain `uint32_t` in `include/drivers/timer/omap3430.h` — a memory-mapped
+register the header never marks volatile. Under the rule above these stay,
+which is the conservative answer and arguably the right one.
