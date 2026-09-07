@@ -53,6 +53,7 @@ use crate::utility::cert_c::ast_utils::{
 };
 use crate::utility::cert_c::float_typing::StructFieldTypes;
 use crate::utility::cert_c::guard_dominance;
+use crate::utility::cert_c::loop_consumption;
 use crate::utility::cert_c::overflow_helpers;
 use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use lang_parsing_substrate::query;
@@ -441,7 +442,7 @@ impl Api00C {
                 site,
                 source,
                 guard_dominance::ComparisonKind::OrderingOrExtremeEquality,
-            )
+            ) && !loop_consumption::is_guarded_loop_consumption(param_name, site, source)
         })
     }
 
