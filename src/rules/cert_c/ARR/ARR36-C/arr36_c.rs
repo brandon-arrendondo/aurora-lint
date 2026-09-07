@@ -459,9 +459,59 @@ fn parameter_indices(func: &Node, source: &str) -> HashMap<String, usize> {
     indices
 }
 
+/// Every base each name in a frame has held, in source order.
+///
+/// One base per name for a whole function is what this replaces, and the
+/// defect was that the AST walk overwrote it as it went: the LAST assignment
+/// decided what every operand meant, including operands written textually
+/// ABOVE it. `pos = rbuf;` at the bottom of a function re-based the
+/// `pos - peer->rsnie_i` fifty lines higher, so one object read as two
+/// (task 1010).
+///
+/// So a base is recorded WITH the byte offset of the declaration or
+/// assignment that established it, and a query at byte offset P answers with
+/// the last one recorded at or before P. A name with nothing recorded above P
+/// has no base THERE -- the honest answer, since the frame has not learned
+/// anything about it yet, and the one every reporting path already reads as
+/// "say nothing".
+///
+/// Textual position, not control flow. A use inside a loop body above the
+/// assignment that feeds the next iteration reads the earlier base, and an
+/// `if`/`else` pair collapses to whichever branch is written last. That is
+/// the same approximation the single-base map made, narrowed: it can now be
+/// wrong only about a name reached by a backward edge, where before it was
+/// wrong about every name reassigned anywhere in the function.
+#[derive(Clone, Default)]
+struct PointerBases {
+    /// `name -> [(byte offset, base)]`, each vector ascending by offset.
+    by_name: HashMap<String, Vec<(usize, String)>>,
+}
+
+impl PointerBases {
+    /// Record that `name` holds `base` from byte offset `at` onward. A second
+    /// record at the same offset replaces the first: one declarator
+    /// establishes one base.
+    fn record(&mut self, name: String, at: usize, base: String) {
+        let entries = self.by_name.entry(name).or_default();
+        match entries.binary_search_by_key(&at, |(offset, _)| *offset) {
+            Ok(existing) => entries[existing].1 = base,
+            Err(insert) => entries.insert(insert, (at, base)),
+        }
+    }
+
+    /// The base `name` holds at byte offset `pos`: the last one recorded at
+    /// or before it, or `None` when nothing was recorded above `pos`.
+    fn at(&self, name: &str, pos: usize) -> Option<&String> {
+        let entries = self.by_name.get(name)?;
+        let above = entries.partition_point(|(offset, _)| *offset <= pos);
+        Some(&entries[above.checked_sub(1)?].1)
+    }
+}
+
 struct PointerAnalyzer {
-    // Maps variable names to their array base (for tracking which array they belong to)
-    variable_arrays: HashMap<String, String>,
+    // Which array each name is in, at each point in the source: the base a
+    // name holds is a function of position, not of the whole function.
+    variable_arrays: PointerBases,
     // Which names in scope denote storage, which merely hold a pointer, and
     // which field paths are pointer-typed. `variable_arrays` answers "which
     // array is this in"; this answers the prior questions, and is shared with
@@ -473,7 +523,7 @@ struct PointerAnalyzer {
 impl PointerAnalyzer {
     fn new() -> Self {
         Self {
-            variable_arrays: HashMap::new(),
+            variable_arrays: PointerBases::default(),
             objects: ObjectFrame::new(),
         }
     }
@@ -564,8 +614,11 @@ impl PointerAnalyzer {
             self.objects.note_declared(&declared);
             // Array declarations create their own storage — the variable IS its own base.
             if declared.is_array {
-                self.variable_arrays
-                    .insert(declared.name.clone(), declared.name);
+                self.variable_arrays.record(
+                    declared.name.clone(),
+                    node.start_byte(),
+                    declared.name,
+                );
                 continue;
             }
             // Pointer with initializer: track which array it aliases.
@@ -579,7 +632,8 @@ impl PointerAnalyzer {
             };
             let array_base = self.extract_array_base(&value, source);
             if !array_base.is_empty() {
-                self.variable_arrays.insert(declared.name, array_base);
+                self.variable_arrays
+                    .record(declared.name, node.start_byte(), array_base);
             }
         }
     }
@@ -593,8 +647,11 @@ impl PointerAnalyzer {
         };
         // Use the parameter name itself as the "array base" to make it unique
         // This ensures parameters are only equal to themselves
-        self.variable_arrays
-            .insert(param_name.clone(), format!("param:{}", param_name));
+        self.variable_arrays.record(
+            param_name.clone(),
+            node.start_byte(),
+            format!("param:{}", param_name),
+        );
     }
 
     /// Process simple assignment expressions like `slashPtr = strchr(string1, '/')`.
@@ -643,7 +700,11 @@ impl PointerAnalyzer {
                         }
                         let array_base = self.extract_array_base(&right, source);
                         if !array_base.is_empty() {
-                            self.variable_arrays.insert(var_name, array_base);
+                            // The assignment site, so the base takes effect
+                            // below this statement and no operand above it
+                            // is re-based (task 1010).
+                            self.variable_arrays
+                                .record(var_name, left.start_byte(), array_base);
                         }
                     }
                 }
@@ -693,7 +754,12 @@ impl PointerAnalyzer {
         let mut current = *node;
         loop {
             let argument = match current.kind() {
-                "identifier" => return self.variable_arrays.get(&text(&current)).cloned(),
+                "identifier" => {
+                    return self
+                        .variable_arrays
+                        .at(&text(&current), current.start_byte())
+                        .cloned()
+                }
                 "field_expression" => current.child_by_field_name("argument")?,
                 _ => return None,
             };
@@ -714,7 +780,7 @@ impl PointerAnalyzer {
                 // This ensures `pos = buf` gives pos the same base as buf (e.g., "param:buf").
                 // Untracked identifiers return the raw name — they may be typedef arrays
                 // or extern variables that weren't collected.
-                if let Some(base) = self.variable_arrays.get(&name) {
+                if let Some(base) = self.variable_arrays.at(&name, node.start_byte()) {
                     base.clone()
                 } else {
                     name
@@ -841,11 +907,13 @@ impl PointerAnalyzer {
 
         match argument.kind() {
             // &var: the variable itself IS the array (single-element).
-            "identifier" if is_address_of => self.resolve_base(text(&argument)),
+            "identifier" if is_address_of => {
+                self.resolve_base(text(&argument), argument.start_byte())
+            }
             // *ptr: the result points into whatever the pointer points to.
             "identifier" => self
                 .variable_arrays
-                .get(&text(&argument))
+                .at(&text(&argument), argument.start_byte())
                 .cloned()
                 .unwrap_or_default(),
             // &struct.member: keep just the struct instance, so two members of
@@ -855,7 +923,7 @@ impl PointerAnalyzer {
             "field_expression" => {
                 self.field_path_root_base(&argument, source)
                     .unwrap_or_else(|| match argument.child_by_field_name("argument") {
-                        Some(base) => self.resolve_base(text(&base)),
+                        Some(base) => self.resolve_base(text(&base), base.start_byte()),
                         None => text(&argument),
                     })
             }
@@ -877,9 +945,10 @@ impl PointerAnalyzer {
                     String::new()
                 }
             }
-            "identifier" => {
-                self.resolve_base(source[node.start_byte()..node.end_byte()].to_string())
-            }
+            "identifier" => self.resolve_base(
+                source[node.start_byte()..node.end_byte()].to_string(),
+                node.start_byte(),
+            ),
             _ => String::new(),
         }
     }
@@ -894,8 +963,8 @@ impl PointerAnalyzer {
     /// &work[N]` recorded `work` where the parameter had recorded
     /// `param:work`, and `pEnd = &aData[n]` recorded `aData` where the
     /// declaration had recorded `pPg->aData` (task 770).
-    fn resolve_base(&self, name: String) -> String {
-        match self.variable_arrays.get(&name) {
+    fn resolve_base(&self, name: String, pos: usize) -> String {
+        match self.variable_arrays.at(&name, pos) {
             Some(base) => base.clone(),
             None => name,
         }
@@ -924,7 +993,9 @@ impl PointerAnalyzer {
         match node.kind() {
             "identifier" => {
                 let var_name = source[node.start_byte()..node.end_byte()].to_string();
-                self.variable_arrays.get(&var_name).cloned()
+                self.variable_arrays
+                    .at(&var_name, node.start_byte())
+                    .cloned()
             }
             "cast_expression" => {
                 // Handle cast expressions like (int *)ptr - unwrap to get the underlying value
@@ -948,13 +1019,15 @@ impl PointerAnalyzer {
                                 // &var: use tracked base or the variable name itself
                                 Some(
                                     self.variable_arrays
-                                        .get(&var_name)
+                                        .at(&var_name, argument.start_byte())
                                         .cloned()
                                         .unwrap_or(var_name),
                                 )
                             } else if self.dereference_yields_pointer(&var_name) {
                                 // *ptr: follow alias chain
-                                self.variable_arrays.get(&var_name).cloned()
+                                self.variable_arrays
+                                    .at(&var_name, argument.start_byte())
+                                    .cloned()
                             } else {
                                 None
                             }
@@ -969,12 +1042,16 @@ impl PointerAnalyzer {
                             if is_address_of {
                                 Some(rooted.unwrap_or_else(|| {
                                     self.variable_arrays
-                                        .get(&field_path)
+                                        .at(&field_path, argument.start_byte())
                                         .cloned()
                                         .unwrap_or(field_path)
                                 }))
                             } else {
-                                rooted.or_else(|| self.variable_arrays.get(&field_path).cloned())
+                                rooted.or_else(|| {
+                                    self.variable_arrays
+                                        .at(&field_path, argument.start_byte())
+                                        .cloned()
+                                })
                             }
                         }
                         _ => None,
@@ -989,7 +1066,9 @@ impl PointerAnalyzer {
                 // expressions are pointers. Untracked fields (integers, etc.)
                 // should return None to avoid flagging scalar comparisons.
                 let var_name = source[node.start_byte()..node.end_byte()].to_string();
-                self.variable_arrays.get(&var_name).cloned()
+                self.variable_arrays
+                    .at(&var_name, node.start_byte())
+                    .cloned()
             }
             _ => None,
         }
