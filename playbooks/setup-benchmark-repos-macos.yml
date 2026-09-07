@@ -1,0 +1,168 @@
+---
+# Ansible playbook: clone and pin every real-world benchmark codebase (macOS)
+#
+# macOS counterpart to setup-benchmark-repos.yml. Same behaviour, same
+# source-of-truth (data/benchmark_repos.json); the only reason it's a separate
+# file is the header-install step, which is apt-based over there and brew-based
+# here. Clone/pin/verify and the Juliet-suite detection are platform-neutral
+# and mirror the Ubuntu playbook line for line -- keep them in sync when either
+# side changes.
+#
+# Provisions BENCH_ROOT (default ~/toolchain, override with -e bench_root=...
+# or by exporting SQC_BENCH_ROOT before running) with the 9 codebases in
+# mcp_servers/realworld_server.py's CODEBASES registry, each checked out at
+# the exact commit its ground-truth oracle was adjudicated against. Keep
+# bench_root in sync with SQC_BENCH_ROOT in your .env -- they must point at
+# the same directory.
+#
+# Prerequisites (fail fast if missing):
+#   - Xcode Command Line Tools (`xcode-select --install`) -- git and cc.
+#   - Homebrew (https://brew.sh) -- the header install uses brew, and the
+#     `community.general.homebrew` Ansible module.
+#
+# Does NOT fetch the Juliet test suite: NIST SARD (https://samate.nist.gov/
+# SARD/test-suites/112) is a click-through portal with no stable direct
+# download URL, so that step stays manual (see docs/benchmark-setup.rst).
+# This playbook only creates the expected juliet-test-suite-c/ parent dir
+# and reports whether the suite is already in place.
+#
+# Usage:
+#   ansible-playbook playbooks/setup-benchmark-repos-macos.yml -i "localhost," -c local
+#   ansible-playbook playbooks/setup-benchmark-repos-macos.yml -i "localhost," -c local \
+#     -e bench_root=/Users/you/toolchain
+#
+# After running:
+#   git -C ~/toolchain/libcrc rev-parse HEAD   # etc., verify pinned SHAs
+
+- name: Clone and pin real-world benchmark codebases (macOS)
+  hosts: all
+  vars:
+    bench_root: "{{ lookup('env', 'SQC_BENCH_ROOT') | default(ansible_env.HOME + '/toolchain', true) }}"
+    # Pins live in data/benchmark_repos.json -- the single source of truth,
+    # shared with `python -m bench corpus-check`, which verifies the
+    # checkouts this playbook creates are still sitting on them. Do not
+    # inline the SHAs here again (task 619).
+    repos: "{{ (lookup('file', playbook_dir + '/../data/benchmark_repos.json') | from_json)['repos'] }}"
+
+  tasks:
+    - name: Fail early if Homebrew is missing
+      command: brew --version
+      register: brew_check
+      changed_when: false
+      failed_when: brew_check.rc != 0
+      tags: [always]
+
+    - name: Create bench_root directory
+      file:
+        path: "{{ bench_root }}"
+        state: directory
+        mode: "0755"
+
+    - name: Clone and checkout each codebase at its pinned commit
+      git:
+        repo: "{{ item.repo }}"
+        dest: "{{ bench_root }}/{{ item.name }}"
+        version: "{{ item.version }}"
+        force: false
+      loop: "{{ repos }}"
+      loop_control:
+        label: "{{ item.name }}@{{ item.version[:12] }}"
+
+    - name: Verify each checkout landed on its pinned commit
+      command: git -C "{{ bench_root }}/{{ item.name }}" rev-parse HEAD
+      register: checkout_heads
+      changed_when: false
+      loop: "{{ repos }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Fail if any checkout drifted from its pinned commit
+      fail:
+        msg: >-
+          {{ item.item.name }} is at {{ item.stdout }}, expected
+          {{ item.item.version }}
+      when: item.stdout != item.item.version
+      loop: "{{ checkout_heads.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # Third-party library headers (resolves -I include paths; see
+    # docs/benchmark-setup.rst). The Ubuntu playbook installs the same set via
+    # apt; here they come from Homebrew. The Debian package name -> Homebrew
+    # formula mapping is:
+    #   libssl-dev       -> openssl@3       libmbedtls-dev  -> mbedtls
+    #   libcjson-dev     -> cjson           libgnutls28-dev -> gnutls
+    #   zlib1g-dev       -> zlib            tcl-dev         -> tcl-tk
+    #   libcunit1-dev    -> cunit           libdbus-1-dev   -> dbus
+    #   libsqlite3-dev   -> sqlite          libgcrypt20-dev -> libgcrypt
+    #   libpcap-dev      -> libpcap         libwolfssl-dev  -> wolfssl
+    #
+    # libnl (libnl-3-dev / libnl-genl-3-dev) has no macOS counterpart: netlink
+    # is a Linux kernel interface, so the userspace library is Linux-only.
+    # Consequence for aurora-lint: hostap's -I include paths won't fully
+    # resolve on macOS, and headers that transitively pull in <netlink/*.h>
+    # will be missing during any preprocessed-mode scan. Static analysis of
+    # hostap still runs (aurora-lint tolerates unresolved includes), but any
+    # rule that depends on knowing the shape of a netlink type will see less
+    # than it does on a Linux node.
+    # Header install is split into "figure out what's missing" + "install
+    # only that", instead of `community.general.homebrew` with a list of
+    # names. Two reasons:
+    #   - `brew update` walks every installed tap; a broken third-party tap
+    #     in a user's environment (partial checkout, dead remote, untrusted
+    #     under brew 6+ tap-trust) aborts the whole task before any formula
+    #     install is attempted. The Ubuntu peer's `apt update` doesn't
+    #     have this failure mode because apt indexes come from a fixed
+    #     distro mirror. Users who want fresh formulae can run
+    #     `brew update && brew upgrade` themselves before this playbook.
+    #   - `community.general.homebrew` (as of 7.5.2, shipped with recent
+    #     ansible-core) misclassifies brew 6.x's "already installed and
+    #     up-to-date" warning as a task failure, so a plain re-run against
+    #     a partially-provisioned host aborts on the first hit.
+    - name: Compute which header packages are not yet installed
+      shell: |
+        set -o pipefail
+        want="openssl@3 cjson zlib cunit sqlite mbedtls gnutls tcl-tk dbus libgcrypt libpcap wolfssl"
+        missing=""
+        for f in $want; do
+          brew list --formula "$f" >/dev/null 2>&1 || missing="$missing $f"
+        done
+        echo "$missing" | xargs
+      args:
+        executable: /bin/bash
+      register: missing_headers
+      changed_when: false
+      tags: [headers]
+
+    - name: Third-party library headers (resolves -I include paths; see docs/benchmark-setup.rst)
+      command: brew install {{ missing_headers.stdout }}
+      when: missing_headers.stdout | length > 0
+      tags: [headers]
+
+    - name: Check whether the Juliet test suite is already in place
+      stat:
+        path: "{{ bench_root }}/benchmarks/juliet-test-suite-c/testcases"
+      register: juliet_testcases
+
+    - name: Create benchmarks/ parent directory for the (manually downloaded) Juliet suite
+      file:
+        path: "{{ bench_root }}/benchmarks"
+        state: directory
+        mode: "0755"
+      when: not juliet_testcases.stat.exists
+
+    - name: Juliet test suite still needs manual placement
+      debug:
+        msg: >-
+          Juliet Test Suite v1.3 not found at
+          {{ bench_root }}/benchmarks/juliet-test-suite-c/testcases -- download
+          it from https://samate.nist.gov/SARD/test-suites/112 (NIST portal,
+          no stable direct-download URL) and extract it so that
+          testcases/CWE*/ (118 dirs) and testcasesupport/ land under
+          {{ bench_root }}/benchmarks/juliet-test-suite-c/.
+      when: not juliet_testcases.stat.exists
+
+    - name: Juliet test suite already present
+      debug:
+        msg: "Found at {{ bench_root }}/benchmarks/juliet-test-suite-c/testcases"
+      when: juliet_testcases.stat.exists

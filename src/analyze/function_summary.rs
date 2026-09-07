@@ -5,6 +5,7 @@
 //! without re-analyzing the callee's body.
 
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
+use crate::analyze::init_state;
 use crate::analyze::null_state::NullState;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use tree_sitter::Node;
@@ -1367,6 +1368,94 @@ fn deref_write_root<'a>(lvalue: &Node<'a>, saw_deref: bool) -> Option<Node<'a>> 
     }
 }
 
+/// The parameter-rooted objects a call writes through by virtue of being a
+/// known initializing library function: `memset(e, 0, sizeof(*e))` writes
+/// `e`, `os_memcpy(e->buf, src, n)` writes `e`.
+///
+/// `modifies_params`' three existing detectors (`body_has_deref_write`,
+/// `line_has_arrow_or_subscript_write`, `is_fd_set_macro_write`) all require
+/// an ASSIGNMENT OPERATOR rooted at the parameter, so a callee whose entire
+/// initialisation of its output is a memory-writing library call never entered
+/// the map -- and `credit_modifies_params`, the MUST/MAY refinement and the
+/// forwarded-write obligations are every one of them reached only from there.
+/// hostap's `ieee802_11_parse_elems`, whose body is `os_memset(elems, 0, ...)`
+/// and a forward, had 65 callers reported uninitialised on that account (task
+/// 1026, tools_sqc).
+///
+/// Name-independent by construction: resolution is
+/// `init_state::match_initializing_function`, whose suffix matcher is what
+/// turns `os_memset` into `memset`, over that module's own output-index
+/// tables. Nothing here carries a second list to disagree with them.
+fn library_written_roots<'a>(call: &Node<'a>, source: &str) -> Vec<Node<'a>> {
+    let mut roots = Vec::new();
+    let Some(func) = call.child_by_field_name("function") else {
+        return roots;
+    };
+    let func_name = func.utf8_text(source.as_bytes()).unwrap_or("");
+    let Some(base) = init_state::match_initializing_function(func_name) else {
+        return roots;
+    };
+    // `regexec`/`mbrlen` and friends are listed as initializers but read
+    // through their pointer arguments; that judgement lives in one place.
+    if init_state::is_non_initializing_function(base) {
+        return roots;
+    }
+    let indices = init_state::get_output_arg_indices(base);
+    let variadic_from = init_state::variadic_output_from_index(base);
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return roots;
+    };
+    let mut arg_idx = 0usize;
+    for i in 0..args.child_count() {
+        let Some(arg) = args.child(i) else { continue };
+        if matches!(arg.kind(), "," | "(" | ")") {
+            continue;
+        }
+        let is_output =
+            indices.contains(&arg_idx) || variadic_from.is_some_and(|first| arg_idx >= first);
+        if is_output {
+            if let Some(root) = written_arg_root(&arg) {
+                roots.push(root);
+            }
+        }
+        arg_idx += 1;
+    }
+    roots
+}
+
+/// The object an output argument writes through, when it reaches storage the
+/// CALLER owns.
+///
+/// A bare `e` counts: handing the pointer over is itself the dereference.
+/// Below that, `deref_write_root` decides, so this draws exactly the line an
+/// assignment already does and cannot drift from it -- `e->buf` and `e[i]`
+/// count, `&e.f` does not.
+fn written_arg_root<'a>(arg: &Node<'a>) -> Option<Node<'a>> {
+    match arg.kind() {
+        "identifier" => Some(*arg),
+        "parenthesized_expression" => written_arg_root(&arg.child(1)?),
+        "cast_expression" => written_arg_root(&arg.child_by_field_name("value")?),
+        _ => deref_write_root(arg, false),
+    }
+}
+
+/// Every name an initializing library call in `body` writes through. The
+/// MAY-write half of `library_written_roots`; the MUST/MAY refinement is
+/// `credit_modifies_params`' business, as it is for an assignment.
+///
+/// Returned as a set rather than answered per parameter, because the walk
+/// costs the same whether one name or eight are being asked about and this
+/// file has been the source of superlinear scan behaviour before.
+fn library_written_names(body: &Node, source: &str) -> HashSet<String> {
+    use lang_parsing_substrate::query;
+
+    query::find_descendants_of_kind(*body, "call_expression")
+        .into_iter()
+        .flat_map(|call| library_written_roots(&call, source))
+        .filter_map(|root| root.utf8_text(source.as_bytes()).ok().map(str::to_string))
+        .collect()
+}
+
 /// The `(callee, callee parameter index)` pairs a coverage answer is
 /// contingent on. Empty means the answer stands on this function's own
 /// writes; see `FunctionSummary::modifies_params_pending`.
@@ -1390,9 +1479,11 @@ type WriteObligations = BTreeSet<(String, usize)>;
 /// half of the answer is deferred instead of guessed (task 1011, tools_sqc).
 ///
 /// Only an if/else with BOTH arms covered counts. A bare `if` without an
-/// `else`, a loop that may run zero times, a `switch` (whose `default` may be
-/// absent) are all left as partial -- which is the honest reading and the one
-/// the fixture depends on: `set_flag`'s `if`/`else if` has no final `else`.
+/// `else` and a loop that may run zero times are left as partial -- which is
+/// the honest reading and the one the fixture depends on: `set_flag`'s
+/// `if`/`else if` has no final `else`. A `switch` is partial too UNLESS it
+/// carries a `default`, which makes it exhaustive by construction; see
+/// `switch_writes_on_all_paths` (task 1025, tools_sqc).
 ///
 /// Early `return`s are not modelled, matching the simplification
 /// `is_unconditionally_reached` already makes.
@@ -1474,7 +1565,12 @@ fn writes_on_all_paths_capped(
             let writes_here = lvalue
                 .and_then(|l| deref_write_root(&l, false))
                 .is_some_and(|root| root.utf8_text(source.as_bytes()).unwrap_or("") == param);
-            if writes_here {
+            // `os_memset(out, 0, n);` is a write on this path with no
+            // assignment operator to find (task 1026, tools_sqc). Asked here
+            // rather than credited outright so a call under an `if` stays a
+            // MAY-write, exactly as an assignment under one does.
+            let library_writes_here = library_written_names(&expr, source).contains(param);
+            if writes_here || library_writes_here {
                 return Some(WriteObligations::new());
             }
             // `*pn = callee(..., pa)` writes through `pn` here and through
@@ -1483,8 +1579,108 @@ fn writes_on_all_paths_capped(
             let (callee, idx) = forwarded_write_obligation(&expr, source, param)?;
             Some(WriteObligations::from([(callee, idx)]))
         }
+        "switch_statement" => switch_writes_on_all_paths(stmt, source, param, depth),
         _ => None,
     }
+}
+
+/// A `switch` covers every path leaving it when it has a `default` label and
+/// every case group writes through `param`.
+///
+/// The reason a switch was left partial was "whose `default` may be absent",
+/// and that reason expires when the default is present: such a switch is
+/// exhaustive by construction, so if every arm writes then so does every path
+/// out of the statement. curl's `cw_get_writefunc` assigns all four of its
+/// output parameters in each of its three arms and every caller was still
+/// reported uninitialised (task 1025, tools_sqc).
+///
+/// A conjunction over the groups, so the obligations are the union — the same
+/// shape the `if`/`else` arm has, one level wider.
+fn switch_writes_on_all_paths(
+    stmt: &Node,
+    source: &str,
+    param: &str,
+    depth: u32,
+) -> Option<WriteObligations> {
+    let body = stmt.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    let cases: Vec<Node> = body
+        .named_children(&mut cursor)
+        .filter(|c| c.kind() == "case_statement")
+        .collect();
+    if cases.is_empty() {
+        return None;
+    }
+    // Without a `default`, some value of the controlling expression leaves the
+    // switch having executed none of it.
+    if !cases
+        .iter()
+        .any(|c| c.child_by_field_name("value").is_none())
+    {
+        return None;
+    }
+
+    let mut obligations = WriteObligations::new();
+    // Walked in reverse because fall-through runs the other way: a group that
+    // does not break continues into the next one, and is covered by whatever
+    // covers that. `None` here means the group after this one is not covered.
+    let mut next_covered: Option<WriteObligations> = None;
+    for case in cases.iter().rev() {
+        let covered = match case_group_writes(case, source, param, depth) {
+            Some(own) => own,
+            None if !case_group_breaks(case) => next_covered.clone()?,
+            None => return None,
+        };
+        obligations.extend(covered.iter().cloned());
+        next_covered = Some(covered);
+    }
+    Some(obligations)
+}
+
+/// Coverage of one case group's own statements: a disjunction, since one
+/// covering statement in the group is enough — the same rule
+/// `compound_statement` applies, over children that share their parent with a
+/// `value` label rather than sitting in a block of their own.
+fn case_group_writes(
+    case: &Node,
+    source: &str,
+    param: &str,
+    depth: u32,
+) -> Option<WriteObligations> {
+    let value_id = case.child_by_field_name("value").map(|v| v.id());
+    let mut cursor = case.walk();
+    let mut best: Option<WriteObligations> = None;
+    for child in case.named_children(&mut cursor) {
+        if Some(child.id()) == value_id {
+            continue;
+        }
+        match writes_on_all_paths_capped(&child, source, param, depth + 1) {
+            Some(o) if o.is_empty() => return Some(o),
+            Some(o) if best.as_ref().is_none_or(|b| o.len() < b.len()) => best = Some(o),
+            Some(_) | None => {}
+        }
+    }
+    best
+}
+
+/// Whether a case group ends in a statement that leaves the switch, so it does
+/// NOT fall into the group below it. A group with no statements of its own —
+/// stacked labels, `case A: case B:` — never breaks, which is what makes it
+/// inherit the next group's coverage rather than fail for having written
+/// nothing.
+fn case_group_breaks(case: &Node) -> bool {
+    let value_id = case.child_by_field_name("value").map(|v| v.id());
+    let mut cursor = case.walk();
+    let statements: Vec<Node> = case
+        .named_children(&mut cursor)
+        .filter(|c| Some(c.id()) != value_id && c.kind() != "comment")
+        .collect();
+    statements.last().is_some_and(|last| {
+        matches!(
+            last.kind(),
+            "break_statement" | "return_statement" | "goto_statement" | "continue_statement"
+        )
+    })
 }
 
 /// The `(callee, parameter index)` a statement hands `param` to, if any --
@@ -1500,6 +1696,48 @@ fn writes_on_all_paths_capped(
 /// suffices -- which a flat obligation set cannot express, so taking one is
 /// an under-approximation. That direction only leaves an existing false
 /// positive standing; the alternative would suppress a real finding.
+/// Every name `body` hands to a callee as a whole argument, casts included.
+///
+/// Deliberately NOT `param_passthroughs`, whose consumers are the transitive
+/// free-propagation rules: teaching that collector about casts would move
+/// MEM30-C and MEM31-C too, which is a separate change needing its own delta
+/// gate. This asks the same question for the write-coverage path alone (task
+/// 1027, tools_sqc).
+///
+/// A set for the same reason as `library_written_names`: one walk, however
+/// many parameters ask.
+fn forwarded_argument_names(body: &Node, source: &str) -> HashSet<String> {
+    use lang_parsing_substrate::query;
+
+    let mut names = HashSet::new();
+    for call in query::find_descendants_of_kind(*body, "call_expression") {
+        let callee = call
+            .child_by_field_name("function")
+            .and_then(|f| f.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("");
+        // The same exclusion `forwarded_write_obligation` makes: these two are
+        // the free path's business, not an output-parameter write.
+        if callee.is_empty() || callee == "free" || callee == "realloc" {
+            continue;
+        }
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        for i in 0..arguments.child_count() {
+            let Some(arg) = arguments.child(i) else {
+                continue;
+            };
+            let stripped = init_state::strip_arg_casts(&arg);
+            if stripped.kind() == "identifier" {
+                if let Ok(name) = stripped.utf8_text(source.as_bytes()) {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
 fn forwarded_write_obligation(expr: &Node, source: &str, param: &str) -> Option<(String, usize)> {
     use lang_parsing_substrate::query;
 
@@ -1524,7 +1762,12 @@ fn forwarded_write_obligation(expr: &Node, source: &str, param: &str) -> Option<
             if matches!(arg.kind(), "," | "(" | ")") {
                 continue;
             }
-            if arg.kind() == "identifier" && arg.utf8_text(source.as_bytes()).unwrap_or("") == param
+            // `Curl_ssl_random(data, (unsigned char *)rnd, sizeof(*rnd))`
+            // forwards `rnd` as surely as a bare `rnd` would; matching only a
+            // bare identifier is what hid it (task 1027, tools_sqc).
+            let stripped = init_state::strip_arg_casts(&arg);
+            if stripped.kind() == "identifier"
+                && stripped.utf8_text(source.as_bytes()).unwrap_or("") == param
             {
                 return Some((callee.to_string(), callee_idx));
             }
@@ -1546,15 +1789,45 @@ fn credit_modifies_params(
 ) {
     use lang_parsing_substrate::query;
 
+    // Every write through a parameter this pass can see, as (the node whose
+    // position decides conditionality, the parameter-rooted identifier).
+    let mut writes: Vec<(Node, Node)> = Vec::new();
+    for node in query::find_descendants_of_kind(*body, "assignment_expression") {
+        if let Some(root) = node
+            .child_by_field_name("left")
+            .and_then(|left| deref_write_root(&left, false))
+        {
+            writes.push((node, root));
+        }
+    }
+    // `(*p)++` and `++*p` write through p just as `*p = *p + 1` does.
+    for node in query::find_descendants_of_kind(*body, "update_expression") {
+        if let Some(root) = node
+            .child_by_field_name("argument")
+            .and_then(|argument| deref_write_root(&argument, false))
+        {
+            writes.push((node, root));
+        }
+    }
+    // A library call that writes its output argument is a write at its own
+    // position, so it belongs in this list as well as in the MAY set --
+    // otherwise `if (x) os_memset(out, 0, n);` reaches the "no write this pass
+    // could see" arm below and is promoted to a MUST-write for having been
+    // invisible (task 1026, tools_sqc). `library_written_roots` already
+    // returns the root, so no `deref_write_root` here: a bare `out` handed to
+    // the call is the dereference, and asking again would reject it.
+    for call in query::find_descendants_of_kind(*body, "call_expression") {
+        for root in library_written_roots(&call, source) {
+            writes.push((call, root));
+        }
+    }
+
     // param index -> (any write seen, any unconditional write seen)
     let mut seen: HashMap<usize, (bool, bool)> = HashMap::new();
-    let mut note = |node: &Node, lvalue: &Node| {
-        let Some(root) = deref_write_root(lvalue, false) else {
-            return;
-        };
+    for (node, root) in &writes {
         let name = root.utf8_text(source.as_bytes()).unwrap_or("");
         let Some(idx) = params.iter().position(|p| !p.is_empty() && p == name) else {
-            return;
+            continue;
         };
         let entry = seen.entry(idx).or_insert((false, false));
         entry.0 = true;
@@ -1566,18 +1839,6 @@ fn credit_modifies_params(
         // and sqlite's fts3 alone writes its outputs that way dozens of
         // times over (task 988, tools_sqc).
         entry.1 |= is_unconditionally_reached_modulo_null_guard(node, body, source, name);
-    };
-
-    for node in query::find_descendants_of_kind(*body, "assignment_expression") {
-        if let Some(left) = node.child_by_field_name("left") {
-            note(&node, &left);
-        }
-    }
-    // `(*p)++` and `++*p` write through p just as `*p = *p + 1` does.
-    for node in query::find_descendants_of_kind(*body, "update_expression") {
-        if let Some(argument) = node.child_by_field_name("argument") {
-            note(&node, &argument);
-        }
     }
 
     for &idx in &summary.modifies_params {
@@ -1603,6 +1864,50 @@ fn credit_modifies_params(
             _ => {
                 summary.unconditional_modifies_params.insert(idx);
             }
+        }
+    }
+
+    // A callee that performs NO direct write through the parameter never
+    // entered `modifies_params`, so the loop above never iterated it and the
+    // whole forwarded-write mechanism was unreachable for precisely the class
+    // it was built for: curl's `my_md5_init(void *ctx) { md5_init(ctx); }`
+    // stayed flagged at every call site. That is why the obligation lattice
+    // measured -2 across nine corpora while the class it aimed at was still
+    // standing (task 1027, tools_sqc).
+    //
+    // Gated on `forwarded_argument_names` so the coverage walk is asked only
+    // about parameters the body actually hands to a callee. Without a gate
+    // this runs the walk -- whose `expression_statement` leg searches each
+    // statement's subtree -- over every parameter of every function, which is
+    // the superlinear shape this file has been bitten by before.
+    let forwarded = forwarded_argument_names(body, source);
+    let candidates: Vec<usize> = (0..params.len())
+        .filter(|idx| !params[*idx].is_empty())
+        .filter(|idx| !summary.modifies_params.contains(idx))
+        .filter(|idx| forwarded.contains(&params[*idx]))
+        .collect();
+    for idx in candidates {
+        let Some(obligations) = writes_on_all_paths(body, source, &params[idx]) else {
+            continue;
+        };
+        if obligations.is_empty() {
+            // The walk proved a direct write on every path that the text
+            // detectors could not see.
+            summary.modifies_params.insert(idx);
+            summary.unconditional_modifies_params.insert(idx);
+        } else {
+            // Nothing is claimed yet, and nothing may be: an obligation is a
+            // QUESTION about a callee, not a MAY-write. Entering the parameter
+            // into `modifies_params` here would answer it in the affirmative
+            // for every consumer that reads the MAY set -- including
+            // `build_read_only_deref_fns`, which subtracts it, so a callee
+            // whose forwarding is never discharged would stop suppressing the
+            // conservative `&var` fallback and be credited anyway.
+            // `propagate_transitive_modifies` inserts into both sets when it
+            // discharges, which is the point at which something IS known.
+            summary
+                .modifies_params_pending
+                .insert(idx, obligations.into_iter().collect());
         }
     }
 }
@@ -1666,6 +1971,9 @@ fn analyze_param_usage(
         credit_frees_params(body, source, params, summary);
     }
 
+    // One walk for the whole body, not one per parameter.
+    let library_written = library_written_names(body, source);
+
     for (idx, param_name) in params.iter().enumerate() {
         if param_name.is_empty() {
             continue;
@@ -1719,6 +2027,9 @@ fn analyze_param_usage(
         if body_has_deref_write(body_text, param_name)
             || line_has_arrow_or_subscript_write(body_text, param_name)
             || is_fd_set_macro_write(body, source, param_name)
+            // `os_memset(elems, 0, sizeof(*elems))` writes the output with no
+            // assignment operator anywhere (task 1026, tools_sqc).
+            || library_written.contains(param_name)
         {
             summary.modifies_params.insert(idx);
         }
@@ -2385,6 +2696,11 @@ pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSum
                 .collect();
             for idx in discharged {
                 summary.unconditional_modifies_params.insert(idx);
+                // Keeps `unconditional_modifies_params` a subset of the MAY
+                // set for a parameter that reached here through a forward and
+                // never had a direct write to put it there (task 1027,
+                // tools_sqc).
+                summary.modifies_params.insert(idx);
                 changed = true;
             }
         }
