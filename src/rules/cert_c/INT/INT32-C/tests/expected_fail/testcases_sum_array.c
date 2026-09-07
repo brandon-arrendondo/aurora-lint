@@ -1,11 +1,12 @@
 /*
  * Rule: INT32-C
  * Source: testcases
- * Status: EXPECTED FAIL - Known limitation: the overflow is definite only across
- * loop iterations, and VRA's per-node ranges do not carry an accumulator's
- * value from one iteration to the next. With no proof of definite overflow
- * and no taint on any operand, INT32-C's provenance gate suppresses the
- * report. A genuine INT32-C violation.
+ * Status: EXPECTED FAIL, by measurement rather than oversight. The overflow is
+ * definite only across loop iterations -- the accumulator exceeds the band
+ * after many passes, not at any single evaluation. VRA carries per-node
+ * ranges, which cannot express that, so no definite-overflow check can prove
+ * it and a possible-overflow check would flag every accumulator loop.
+ * Genuine violation; kept as evidence.
  */
 
 /*
