@@ -27,8 +27,8 @@ use crate::analyze::dataflow::{
     DefinitionKind,
 };
 use crate::analyze::macro_expand::{
-    collect_function_macro_alternatives, macro_free_identifiers, macro_references_free_identifier,
-    FunctionMacro,
+    collect_function_macro_alternatives, macro_free_identifier_reads,
+    macro_references_free_identifier, FunctionMacro,
 };
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
@@ -962,12 +962,19 @@ impl Msc13C {
         // have THIS store's only read hidden inside a macro, which reads as
         // a dead store. Every preprocessor alternative contributes, and
         // names that match no definition are simply never looked up.
+        //
+        // Reads only, not the union (task 965). Liveness turns on reads: a
+        // macro that assigns to a caller-scope variable and never reads it
+        // leaves the previously-active definition just as dead as before,
+        // so counting its write here would resurrect a genuine dead store
+        // and lose the finding. `macro_hides_use`, answering the different
+        // question of whether the variable is used at all, keeps the union.
         if node.kind() == "call_expression" {
             if let Some(f) = node.child_by_field_name("function") {
                 if f.kind() == "identifier" {
                     if let Some(alts) = macros.get(get_node_text(&f, source)) {
                         for m in alts {
-                            out.extend(macro_free_identifiers(m));
+                            out.extend(macro_free_identifier_reads(m));
                         }
                     }
                 }
