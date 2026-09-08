@@ -13,6 +13,10 @@ pub mod const_eval;
 /// Cross-file project context ([`context::ProjectContext`]) gathered by the
 /// pre-scan phase and injected into rules that need whole-project data.
 pub mod context;
+/// Pre-parse repair for a preprocessor guard that falls between a control-flow
+/// header (`if`/`while`/`for`) and the body it governs -- `tree-sitter-c`
+/// synthesizes an empty consequence, which reads as an unbraced body.
+pub mod control_header_preproc_guard;
 pub mod dataflow;
 pub mod embedded_js_blank;
 pub mod empty_macro_blank;
