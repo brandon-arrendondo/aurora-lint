@@ -84,10 +84,23 @@ pub struct NullAnalysisResult {
 struct ConditionInfo {
     /// Variable being checked.
     var_name: String,
-    /// State on the true-branch edge.
-    true_state: NullState,
-    /// State on the false-branch edge.
-    false_state: NullState,
+    /// State on the true-branch edge, or `None` when this edge licenses no
+    /// per-variable conclusion.
+    true_state: Option<NullState>,
+    /// State on the false-branch edge, or `None` when this edge licenses no
+    /// per-variable conclusion.
+    false_state: Option<NullState>,
+}
+
+impl ConditionInfo {
+    /// A leaf null test, where both edges are exact.
+    fn exact(var_name: String, true_state: NullState, false_state: NullState) -> Self {
+        ConditionInfo {
+            var_name,
+            true_state: Some(true_state),
+            false_state: Some(false_state),
+        }
+    }
 }
 
 /// Parse a condition AST node and collect ALL null-check conditions.
@@ -118,38 +131,59 @@ fn parse_all_null_conditions(node: &Node, source: &str) -> Vec<ConditionInfo> {
                     // ptr == NULL  => true: DefinitelyNull, false: NotNull
                     // NULL == ptr  => same
                     if let Some(var) = extract_null_check_var(&left, &right, source) {
-                        return vec![ConditionInfo {
-                            var_name: var,
-                            true_state: NullState::DefinitelyNull,
-                            false_state: NullState::NotNull,
-                        }];
+                        return vec![ConditionInfo::exact(
+                            var,
+                            NullState::DefinitelyNull,
+                            NullState::NotNull,
+                        )];
                     }
                     Vec::new()
                 }
                 "!=" => {
                     // ptr != NULL  => true: NotNull, false: DefinitelyNull
                     if let Some(var) = extract_null_check_var(&left, &right, source) {
-                        return vec![ConditionInfo {
-                            var_name: var,
-                            true_state: NullState::NotNull,
-                            false_state: NullState::DefinitelyNull,
-                        }];
+                        return vec![ConditionInfo::exact(
+                            var,
+                            NullState::NotNull,
+                            NullState::DefinitelyNull,
+                        )];
                     }
                     Vec::new()
                 }
                 "||" => {
-                    // Collect all null checks from both sides.
-                    // On the FALSE branch, ALL conditions are false → all vars NotNull.
-                    // On the TRUE branch, at least one is true → conservative (don't refine).
+                    // `A || B` false => BOTH are false, so each operand's own
+                    // false_state holds exactly.
+                    //
+                    // `A || B` TRUE says only that at least one held: from
+                    // `!p || !q` being true, `p` may be null or not. The old
+                    // comment here already said "conservative (don't refine)",
+                    // but nothing expressed that -- the infos were returned
+                    // verbatim and the caller applied `true_state` on the true
+                    // edge regardless, marking BOTH `p` and `q` DefinitelyNull.
+                    // `None` is how the edge says it licenses no conclusion
+                    // (task 1067).
                     let mut all = parse_all_null_conditions(&left, source);
                     all.extend(parse_all_null_conditions(&right, source));
+                    for info in &mut all {
+                        info.true_state = None;
+                    }
                     all
                 }
                 "&&" => {
-                    // Collect all null checks from both sides.
-                    // On the TRUE branch, ALL conditions are true → all vars have true_state.
+                    // `A && B` true => BOTH are true, so each operand's own
+                    // true_state holds exactly.
+                    //
+                    // `A && B` FALSE is `!A || !B` and says nothing about
+                    // either conjunct on its own. Applying `false_state` there
+                    // read `!(sta && f(...))` as `!sta` and marked `sta`
+                    // DefinitelyNull, which joined back to PossiblyNull and
+                    // reported a null dereference 65 lines later in hostap's
+                    // ieee802_1x_encapsulate_radius (tasks 1058, 1067).
                     let mut all = parse_all_null_conditions(&left, source);
                     all.extend(parse_all_null_conditions(&right, source));
+                    for info in &mut all {
+                        info.false_state = None;
+                    }
                     all
                 }
                 _ => Vec::new(),
@@ -165,22 +199,22 @@ fn parse_all_null_conditions(node: &Node, source: &str) -> Vec<ConditionInfo> {
                     return Vec::new();
                 };
                 if arg.kind() == "identifier" {
-                    return vec![ConditionInfo {
-                        var_name: get_text(&arg, source),
-                        true_state: NullState::DefinitelyNull,
-                        false_state: NullState::NotNull,
-                    }];
+                    return vec![ConditionInfo::exact(
+                        get_text(&arg, source),
+                        NullState::DefinitelyNull,
+                        NullState::NotNull,
+                    )];
                 }
             }
             Vec::new()
         }
         "identifier" => {
             // if (ptr) => true: NotNull, false: DefinitelyNull
-            vec![ConditionInfo {
-                var_name: get_text(node, source),
-                true_state: NullState::NotNull,
-                false_state: NullState::DefinitelyNull,
-            }]
+            vec![ConditionInfo::exact(
+                get_text(node, source),
+                NullState::NotNull,
+                NullState::DefinitelyNull,
+            )]
         }
         _ => Vec::new(),
     }
@@ -1491,9 +1525,50 @@ fn apply_edge_refinement(
             info.false_state
         };
         // Only refine if the variable is tracked
-        if state.contains_key(&info.var_name) {
-            state.insert(info.var_name, refined_state);
+        let Some(current) = state.get(&info.var_name).copied() else {
+            continue;
+        };
+
+        let new_state = match refined_state {
+            // An exact edge: the operand's own polarity settles it.
+            Some(exact) => exact,
+            // A disjunctive edge (`&&` false, `||` true). The variable may be
+            // in the state this operand implies, or the OTHER operand may be
+            // what made the compound condition go this way and this one is
+            // untouched. Joining those is PossiblyNull.
+            //
+            // Not "leave it alone": for a parameter with no caller evidence
+            // the incoming state is NotNull, so leaving it would silently
+            // assert non-null and lose the genuine finding in
+            // `f(p) { if (p && g(p)) return; p->x; }` -- reached ONLY along
+            // this edge.
+            None => NullState::PossiblyNull,
+        };
+
+        // ...unless the code has already dereferenced the variable before this
+        // condition. Then it is non-null on every path that reaches the test --
+        // otherwise the program faulted at that earlier dereference -- so the
+        // null disjunct is impossible and the pointer keeps the state it had.
+        // This is what separates hostap's dead-defensive `if (sta && ...)`,
+        // 36 lines after `sta->eapol_sm`, from a real guard on an
+        // unconstrained parameter. The join alone cannot tell them apart:
+        // join(NotNull, DefinitelyNull) is PossiblyNull either way.
+        let introduces_null = matches!(
+            new_state,
+            NullState::DefinitelyNull | NullState::PossiblyNull
+        );
+        if introduces_null
+            && current != NullState::DefinitelyNull
+            && crate::utility::cert_c::guard_dominance::has_dominating_dereference(
+                &info.var_name,
+                &cond_node,
+                source,
+            )
+        {
+            continue;
         }
+
+        state.insert(info.var_name, new_state);
     }
 
     state

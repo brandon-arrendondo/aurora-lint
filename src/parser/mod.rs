@@ -60,8 +60,7 @@ impl CParser {
     /// documented inline below, and returning the (possibly repaired)
     /// source alongside the parse tree.
     pub fn parse_file(&mut self, file_path: &str) -> Result<(Tree, String)> {
-        let source = fs::read_to_string(file_path)
-            .with_context(|| format!("Failed to read file: {}", file_path))?;
+        let source = read_source_or_transcode(file_path)?;
         // Task 1043: neutralize emscripten EM_ASM/EM_JS embedded-JavaScript
         // macro bodies. A JS block parses as ordinary-looking C rather than
         // an ERROR node, so without this every rule walks it -- DCL31-C
@@ -154,5 +153,68 @@ impl CParser {
 impl Default for CParser {
     fn default() -> Self {
         Self::new().expect("Failed to create C parser")
+    }
+}
+
+/// Read `file_path` as text, falling back to an ISO-8859-1 transcode if
+/// the bytes are not valid UTF-8. The prior `fs::read_to_string`-only
+/// path failed silently on any non-UTF-8 file, so pure-ftpd's 16
+/// ISO-8859-encoded `messages_*.h` translation headers have never been
+/// analysed by any rule despite being in scope per the corpus's README
+/// predicate (task 1061). No other pinned corpus contains a non-UTF-8
+/// `.c`/`.h` file.
+///
+/// ISO-8859-1 is a single-byte encoding whose codepoints 0x00-0xFF map
+/// one-to-one onto Unicode U+0000-U+00FF, so `b as char` for each byte
+/// is a lossless transcode: any byte sequence becomes a valid `String`.
+/// Byte offsets in the returned string are not the same as offsets in
+/// the file (high bytes expand to two UTF-8 bytes), but every downstream
+/// pass -- tree-sitter parsing, `get_node_text`, position reporting --
+/// works from the returned string, so consistency is what matters, not
+/// exact file-offset correspondence.
+fn read_source_or_transcode(file_path: &str) -> Result<String> {
+    let bytes =
+        fs::read(file_path).with_context(|| format!("Failed to read file: {}", file_path))?;
+    match String::from_utf8(bytes) {
+        Ok(s) => Ok(s),
+        Err(e) => Ok(e.into_bytes().iter().map(|&b| b as char).collect()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_source_transcodes_iso_8859_bytes_to_valid_utf8() {
+        // High byte 0xE9 is `é` in ISO-8859-1 (Unicode U+00E9). Preceded
+        // by ASCII, so the file as a whole is not valid UTF-8 (a lone
+        // 0xE9 starts a 3-byte UTF-8 sequence that never arrives).
+        let dir = std::env::temp_dir().join("aurora-lint-parser-iso8859-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("messages_iso.h");
+        std::fs::write(&path, b"const char MSG[] = \"caf\xE9\";\n").unwrap();
+
+        let s = read_source_or_transcode(path.to_str().unwrap()).unwrap();
+
+        // Fast path via read_to_string would have errored on this input.
+        assert!(s.contains("caf\u{00E9}"), "got {:?}", s);
+        // Result is a valid Rust String, so downstream passes can slice
+        // and re-parse it as UTF-8 unconditionally.
+        assert!(s.is_char_boundary(s.len()));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn read_source_fast_path_returns_utf8_bytes_unchanged() {
+        let dir = std::env::temp_dir().join("aurora-lint-parser-utf8-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("plain.c");
+        let contents = "int f(void) { return 0; }\n";
+        std::fs::write(&path, contents).unwrap();
+
+        let s = read_source_or_transcode(path.to_str().unwrap()).unwrap();
+        assert_eq!(s, contents);
+        std::fs::remove_file(&path).ok();
     }
 }

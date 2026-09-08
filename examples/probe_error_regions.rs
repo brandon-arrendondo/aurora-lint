@@ -28,7 +28,6 @@ use tree_sitter::Node;
 use aurora_lint::analyze::prescan;
 use aurora_lint::analyze::unknown_identifier_recovery::RepairMacros;
 use aurora_lint::parser::CParser;
-use aurora_lint::utility::cert_c::ast_utils;
 
 /// Per-file counts. Field names are the JSON keys the aggregator reads.
 struct FileProbe {
@@ -47,14 +46,20 @@ struct FileProbe {
     /// `ast_utils::function_names_in_error_declaration` reads names out of,
     /// and the one whose parameters and return type are still lost.
     stranded_declarators: usize,
-    /// Of `fn_inside`, how many yield parameters to
-    /// `ast_utils::get_function_parameters`. Most rule walkers recurse into
-    /// `ERROR` rather than stopping at it, so a definition recovery managed
-    /// to build there is only *lost* if its declarator is unreadable -- this
-    /// separates "hidden by the region" from "structurally intact inside it".
-    fn_inside_params_ok: usize,
+    /// Of `fn_inside`, how many have an INTACT declarator: a `declarator`
+    /// field reachable through any `pointer_declarator` wrapping, carrying a
+    /// `parameter_list`.
+    ///
+    /// This is deliberately NOT `get_function_parameters(..).is_some()`.
+    /// That returns `None` both when the declarator is unreadable AND when
+    /// the function simply takes no arguments, so using it as a structural
+    /// predicate counts every `f(void)` as damage -- which is what an
+    /// earlier version of this probe did, reporting sel4's `schedule(void)`
+    /// and raylib's `UpdateGestures(void)` as losses when their declarators
+    /// are perfect.
+    fn_inside_declarator_ok: usize,
     /// The same check outside every `ERROR`, as a control.
-    fn_outside_params_ok: usize,
+    fn_outside_declarator_ok: usize,
     /// Well-formed `declaration` nodes under a top-level `ERROR` -- visible
     /// to the ordinary declaration walk despite their ancestor.
     decls_inside: usize,
@@ -113,7 +118,7 @@ fn main() {
     for probe in &probes {
         writeln!(
             out,
-            r#"{{"path":{},"bytes":{},"top_error_count":{},"top_error_bytes":{},"fn_inside":{},"fn_outside":{},"stranded_declarators":{},"fn_inside_params_ok":{},"fn_outside_params_ok":{},"decls_inside":{}}}"#,
+            r#"{{"path":{},"bytes":{},"top_error_count":{},"top_error_bytes":{},"fn_inside":{},"fn_outside":{},"stranded_declarators":{},"fn_inside_declarator_ok":{},"fn_outside_declarator_ok":{},"decls_inside":{}}}"#,
             json_string(&probe.path),
             probe.bytes,
             probe.top_error_count,
@@ -121,8 +126,8 @@ fn main() {
             probe.fn_inside,
             probe.fn_outside,
             probe.stranded_declarators,
-            probe.fn_inside_params_ok,
-            probe.fn_outside_params_ok,
+            probe.fn_inside_declarator_ok,
+            probe.fn_outside_declarator_ok,
             probe.decls_inside,
         )
         .expect("write probe line");
@@ -143,8 +148,8 @@ fn probe_file(path: &str, repair_macros: &std::sync::Arc<RepairMacros>) -> Optio
         fn_inside: 0,
         fn_outside: 0,
         stranded_declarators: 0,
-        fn_inside_params_ok: 0,
-        fn_outside_params_ok: 0,
+        fn_inside_declarator_ok: 0,
+        fn_outside_declarator_ok: 0,
         decls_inside: 0,
     };
 
@@ -154,9 +159,9 @@ fn probe_file(path: &str, repair_macros: &std::sync::Arc<RepairMacros>) -> Optio
             probe.top_error_count += 1;
             let span = child.end_byte().saturating_sub(child.start_byte());
             probe.top_error_bytes = probe.top_error_bytes.max(span);
-            count_inside_error(&child, &source, &mut probe);
+            count_inside_error(&child, &mut probe);
         } else {
-            count_outside_error(&child, &source, &mut probe);
+            count_outside_error(&child, &mut probe);
         }
     }
 
@@ -165,11 +170,11 @@ fn probe_file(path: &str, repair_macros: &std::sync::Arc<RepairMacros>) -> Optio
 
 /// Walk a top-level `ERROR` subtree, counting the definitions recovery did
 /// manage to build and the bare declarators it did not.
-fn count_inside_error(node: &Node, source: &str, probe: &mut FileProbe) {
+fn count_inside_error(node: &Node, probe: &mut FileProbe) {
     if node.kind() == "function_definition" {
         probe.fn_inside += 1;
-        if ast_utils::get_function_parameters(node, source).is_some() {
-            probe.fn_inside_params_ok += 1;
+        if declarator_is_intact(node) {
+            probe.fn_inside_declarator_ok += 1;
         }
         // Its own declarator is attached to a real definition, so it is not
         // stranded; the body below it holds nothing this probe counts.
@@ -183,26 +188,45 @@ fn count_inside_error(node: &Node, source: &str, probe: &mut FileProbe) {
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            count_inside_error(&child, source, probe);
+            count_inside_error(&child, probe);
         }
     }
 }
 
 /// Definitions outside every top-level `ERROR` node -- what the analyzer
 /// actually sees today.
-fn count_outside_error(node: &Node, source: &str, probe: &mut FileProbe) {
+fn count_outside_error(node: &Node, probe: &mut FileProbe) {
     if node.kind() == "function_definition" {
         probe.fn_outside += 1;
-        if ast_utils::get_function_parameters(node, source).is_some() {
-            probe.fn_outside_params_ok += 1;
+        if declarator_is_intact(node) {
+            probe.fn_outside_declarator_ok += 1;
         }
         return;
     }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            count_outside_error(&child, source, probe);
+            count_outside_error(&child, probe);
         }
     }
+}
+
+/// Does this `function_definition` still carry a readable declarator --
+/// i.e. a `function_declarator` with a `parameter_list`, reached through any
+/// `pointer_declarator` layers? A `(void)` function passes; a definition
+/// whose declarator recovery mangled does not.
+fn declarator_is_intact(node: &Node) -> bool {
+    fn has_parameter_list(n: &Node) -> bool {
+        if n.kind() == "function_declarator" {
+            for i in 0..n.child_count() {
+                if n.child(i).is_some_and(|c| c.kind() == "parameter_list") {
+                    return true;
+                }
+            }
+        }
+        (0..n.child_count()).any(|i| n.child(i).is_some_and(|c| has_parameter_list(&c)))
+    }
+    node.child_by_field_name("declarator")
+        .is_some_and(|d| has_parameter_list(&d))
 }
 
 fn json_string(value: &str) -> String {
