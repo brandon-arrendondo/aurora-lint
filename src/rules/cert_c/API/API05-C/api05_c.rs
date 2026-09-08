@@ -161,9 +161,18 @@ impl Api05C {
 
         let all_param_names: HashSet<&String> = param_names.iter().collect();
 
+        // Recognise the stdio callback signature
+        // `(char* buf, size_t, size_t, void* userdata)` -- fread/fwrite and
+        // libcurl CURLOPT_{READ,WRITE,HEADER}FUNCTION callbacks. The byte
+        // length there is the product of the two size_t params, and C99
+        // conformant-array syntax can't name a product bound, so `buf[size]`
+        // would be wrong. Skip the plain-pointer branch for the buffer param.
+        let stdio_cb_buf = Self::stdio_callback_buffer_name(params_node, source);
+
         // Check each parameter for conformant array issues
         for (idx, param_node) in param_nodes.iter().enumerate() {
             let declared_names: HashSet<_> = param_names[..idx].iter().cloned().collect();
+            let skip_plain_pointer = stdio_cb_buf.as_deref() == Some(param_names[idx].as_str());
             self.check_parameter_conformance(
                 param_node,
                 &param_names[idx],
@@ -172,9 +181,77 @@ impl Api05C {
                 &all_param_names,
                 &size_t_param_names,
                 body,
+                skip_plain_pointer,
                 violations,
             );
         }
+    }
+
+    /// If `params_node` is the four-parameter stdio callback signature
+    /// `(T* buf, size_t, size_t, void* userdata)`, return the buffer
+    /// parameter's name. `T` is restricted to `char` (allowing `signed`/
+    /// `unsigned` qualifiers) -- the shape observed in the wild for
+    /// fread/fwrite and libcurl read/write/header callbacks (task 1007,
+    /// tools_sqc; curl's mime_file_read, tool_header_cb, tool_write_cb,
+    /// tool_mime_stdin_read).
+    fn stdio_callback_buffer_name(params_node: &Node, source: &str) -> Option<String> {
+        let mut params: Vec<Node> = Vec::new();
+        for i in 0..params_node.child_count() {
+            if let Some(child) = params_node.child(i) {
+                if child.kind() == "parameter_declaration" {
+                    params.push(child);
+                }
+            }
+        }
+        if params.len() != 4 {
+            return None;
+        }
+        let buf_name = Self::single_char_pointer_param_name(&params[0], source)?;
+        for p in &params[1..=2] {
+            let type_node = p.child_by_field_name("type")?;
+            if !get_node_text(&type_node, source).contains("size_t") {
+                return None;
+            }
+        }
+        if !Self::is_single_void_pointer_param(&params[3], source) {
+            return None;
+        }
+        Some(buf_name)
+    }
+
+    fn single_char_pointer_param_name(param: &Node, source: &str) -> Option<String> {
+        let declarator = param.child_by_field_name("declarator")?;
+        if declarator.kind() != "pointer_declarator" {
+            return None;
+        }
+        let inner = declarator.named_child(0)?;
+        if inner.kind() != "identifier" {
+            return None;
+        }
+        let type_node = param.child_by_field_name("type")?;
+        if !get_node_text(&type_node, source).contains("char") {
+            return None;
+        }
+        Some(get_node_text(&inner, source).to_string())
+    }
+
+    fn is_single_void_pointer_param(param: &Node, source: &str) -> bool {
+        let Some(declarator) = param.child_by_field_name("declarator") else {
+            return false;
+        };
+        if declarator.kind() != "pointer_declarator" {
+            return false;
+        }
+        let Some(inner) = declarator.named_child(0) else {
+            return false;
+        };
+        if inner.kind() != "identifier" {
+            return false;
+        }
+        let Some(type_node) = param.child_by_field_name("type") else {
+            return false;
+        };
+        get_node_text(&type_node, source).trim() == "void"
     }
 
     fn get_parameter_name(&self, param: &Node, source: &str) -> Option<String> {
@@ -214,6 +291,7 @@ impl Api05C {
         all_param_names: &HashSet<&String>,
         size_t_param_names: &[String],
         body: Option<&Node>,
+        skip_plain_pointer: bool,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(declarator) = param.child_by_field_name("declarator") {
@@ -223,28 +301,30 @@ impl Api05C {
             // elsewhere in the signature that's unrelated to this pointer (e.g.
             // an unrelated timeout/flags param) is not evidence of a missed
             // conformant array (task 190).
-            if let Some(body) = body {
-                if self.is_plain_pointer_param(param, &declarator, source) {
-                    if let Some(size_name) = size_t_param_names.iter().find(|n| {
-                        Self::body_associates_pointer_with_size(body, source, param_name, n)
-                    }) {
-                        violations.push(RuleViolation {
-                            rule_id: self.rule_id().to_string(),
-                            severity: self.severity(),
-                            message: format!(
-                                "Pointer parameter '{}' should use conformant array syntax bounded by '{}'",
-                                param_name, size_name
-                            ),
-                            file_path: String::new(),
-                            line: declarator.start_position().row + 1,
-                            column: declarator.start_position().column + 1,
-                            suggestion: Some(format!(
-                                "Use conformant array parameter syntax (e.g., '{}[{}]') \
-                                with the size parameter declared before the array",
-                                param_name, size_name
-                            )),
-                            ..Default::default()
-                        });
+            if !skip_plain_pointer {
+                if let Some(body) = body {
+                    if self.is_plain_pointer_param(param, &declarator, source) {
+                        if let Some(size_name) = size_t_param_names.iter().find(|n| {
+                            Self::body_associates_pointer_with_size(body, source, param_name, n)
+                        }) {
+                            violations.push(RuleViolation {
+                                rule_id: self.rule_id().to_string(),
+                                severity: self.severity(),
+                                message: format!(
+                                    "Pointer parameter '{}' should use conformant array syntax bounded by '{}'",
+                                    param_name, size_name
+                                ),
+                                file_path: String::new(),
+                                line: declarator.start_position().row + 1,
+                                column: declarator.start_position().column + 1,
+                                suggestion: Some(format!(
+                                    "Use conformant array parameter syntax (e.g., '{}[{}]') \
+                                    with the size parameter declared before the array",
+                                    param_name, size_name
+                                )),
+                                ..Default::default()
+                            });
+                        }
                     }
                 }
             }
