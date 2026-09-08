@@ -6,6 +6,7 @@ use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::null_state::{self, NullAnalysisResult, NullState, StateMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -974,6 +975,17 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
     //   if (ptr == NULL) { /* Handle error */ }
     //   use(ptr);  // programmer assumes error was handled
     if is_dominated_by_null_check(var_name, node, source) {
+        return true;
+    }
+
+    // An earlier exit-guard whose OTHER conjuncts are facts here:
+    //   if (isIndex && (!pSchema || ...)) return 1;
+    //   ...
+    //   if (isIndex) { ... pSchema->idxHash ... }
+    // Reaching past the guard says nothing about `pSchema` on its own, which is
+    // why the sound join in task 1067 leaves it PossiblyNull. Where `isIndex`
+    // is known true the negation collapses and proves it non-null (task 1074).
+    if guard_dominance::is_nonnull_by_correlated_exit_guard(var_name, node, source) {
         return true;
     }
 
