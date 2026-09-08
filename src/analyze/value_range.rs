@@ -872,27 +872,27 @@ fn apply_range_edge_refinement(
     body: &Node,
     source: &str,
     macros: &MacroConstantMap,
-) -> RangeMap {
+) -> Option<RangeMap> {
     let mut state = pred_exit.clone();
 
     let is_true = matches!(edge_kind, CfgEdge::TrueBranch);
     let is_false = matches!(edge_kind, CfgEdge::FalseBranch);
     if !is_true && !is_false {
-        return state;
+        return Some(state);
     }
 
     let pred_block = match cfg.get_block(pred_id) {
         Some(b) => b,
-        None => return state,
+        None => return Some(state),
     };
     let (cond_start, cond_end) = match pred_block.condition_range {
         Some(r) => r,
-        None => return state,
+        None => return Some(state),
     };
 
     let cond_node = match find_node_at_range(body, cond_start, cond_end) {
         Some(n) => n,
-        None => return state,
+        None => return Some(state),
     };
 
     let infos = parse_range_conditions(&cond_node, source, macros, &state);
@@ -906,18 +906,25 @@ fn apply_range_edge_refinement(
 
         if let Some(ref_range) = refinement {
             if let Some(existing) = state.get(&info.var_name) {
-                if let Some(narrowed) = intersect_range(&existing.range, ref_range) {
-                    let mut updated = existing.clone();
-                    updated.range = narrowed;
-                    state.insert(info.var_name.clone(), updated);
+                match intersect_range(&existing.range, ref_range) {
+                    Some(narrowed) => {
+                        let mut updated = existing.clone();
+                        updated.range = narrowed;
+                        state.insert(info.var_name.clone(), updated);
+                    }
+                    // No value satisfies both the incoming range and this
+                    // edge's condition, so the edge cannot be taken. Carrying
+                    // the incoming range in would be worse than knowing
+                    // nothing: it hands a definite value to a program point
+                    // that never executes, and a definite-claim channel then
+                    // asserts instead of abstaining (task 1014).
+                    None => return None,
                 }
-                // If intersection is empty, keep the existing range (shouldn't
-                // happen in well-formed code, but be conservative).
             }
         }
     }
 
-    state
+    Some(state)
 }
 
 /// Parse a condition AST node and extract range refinement info for all
@@ -1185,51 +1192,95 @@ fn make_comparison_info(
     }
 }
 
-/// Merge compound conditions (A && B or A || B).
-/// For &&: true = intersect per-var true ranges; false = join per-var false ranges
-/// For ||: true = join per-var true ranges; false = intersect per-var false ranges
+/// Merge compound conditions (`A && B` or `A || B`).
+///
+/// Each edge direction is *conjunctive* for one operator and *disjunctive*
+/// for the other: `A && B` is conjunctive when true, and its negation
+/// `!A || !B` is disjunctive when false; `A || B` is the mirror.
+///
+/// The two behave differently for a variable only ONE side constrains, and
+/// getting that wrong is not merely imprecise once an empty range prunes an
+/// edge (task 1014):
+///
+/// * conjunctive -- every operand holds, so a lone constraint still holds
+///   and is kept.
+/// * disjunctive -- the other operand alone can satisfy the condition, so a
+///   lone constraint proves nothing and the variable must be left
+///   unconstrained. Keeping it would claim `data < 127` on the true edge of
+///   `data < 127 || flag`, which is reachable with `data == 127`.
 fn merge_compound_conditions(
     left: &[RangeConditionInfo],
     right: &[RangeConditionInfo],
     is_and: bool,
 ) -> Vec<RangeConditionInfo> {
-    let mut by_var: HashMap<String, (Option<ValueRange>, Option<ValueRange>)> = HashMap::new();
+    /// Combine one side's constraint for a variable the other side does not
+    /// mention, or both sides' when they do.
+    fn combine(
+        a: Option<ValueRange>,
+        b: Option<ValueRange>,
+        seen_both: bool,
+        conjunctive: bool,
+    ) -> Option<ValueRange> {
+        match (a, b) {
+            (Some(a), Some(b)) => {
+                if conjunctive {
+                    intersect_range(&a, &b)
+                } else {
+                    Some(join_range(&a, &b))
+                }
+            }
+            // Only one side constrains this variable.
+            (Some(only), None) | (None, Some(only)) => {
+                if conjunctive || !seen_both {
+                    Some(only)
+                } else {
+                    None
+                }
+            }
+            (None, None) => None,
+        }
+    }
 
-    // Collect all from left
+    let mut by_var: HashMap<String, (Option<ValueRange>, Option<ValueRange>)> = HashMap::new();
+    let mut sides: HashMap<String, (bool, bool)> = HashMap::new();
+
     for info in left {
         let entry = by_var.entry(info.var_name.clone()).or_insert((None, None));
         entry.0 = info.true_range;
         entry.1 = info.false_range;
+        sides
+            .entry(info.var_name.clone())
+            .or_insert((false, false))
+            .0 = true;
+    }
+    for info in right {
+        sides
+            .entry(info.var_name.clone())
+            .or_insert((false, false))
+            .1 = true;
     }
 
-    // Merge with right
     for info in right {
         let entry = by_var.entry(info.var_name.clone()).or_insert((None, None));
+        let (in_left, _) = sides[&info.var_name];
+        // `seen_both` decides only the one-sided case, so it asks whether the
+        // OTHER side mentioned the variable at all -- not whether that side
+        // produced a range for this particular edge direction.
+        entry.0 = combine(entry.0, info.true_range, in_left, is_and);
+        entry.1 = combine(entry.1, info.false_range, in_left, !is_and);
+    }
 
-        if is_and {
-            // &&: true = intersect, false = join
-            entry.0 = match (entry.0, info.true_range) {
-                (Some(a), Some(b)) => intersect_range(&a, &b),
-                (Some(a), None) => Some(a),
-                (None, b) => b,
-            };
-            entry.1 = match (entry.1, info.false_range) {
-                (Some(a), Some(b)) => Some(join_range(&a, &b)),
-                (Some(a), None) => Some(a),
-                (None, b) => b,
-            };
-        } else {
-            // ||: true = join, false = intersect
-            entry.0 = match (entry.0, info.true_range) {
-                (Some(a), Some(b)) => Some(join_range(&a, &b)),
-                (Some(a), None) => Some(a),
-                (None, b) => b,
-            };
-            entry.1 = match (entry.1, info.false_range) {
-                (Some(a), Some(b)) => intersect_range(&a, &b),
-                (Some(a), None) => Some(a),
-                (None, b) => b,
-            };
+    // A variable only the left side mentioned never reaches the loop above.
+    for (var_name, (in_left, in_right)) in &sides {
+        if *in_left && !*in_right {
+            if let Some(entry) = by_var.get_mut(var_name) {
+                if !is_and {
+                    entry.0 = None; // `A || B` true: B alone may have satisfied it.
+                }
+                if is_and {
+                    entry.1 = None; // `!(A && B)`: !B alone may have satisfied it.
+                }
+            }
         }
     }
 
@@ -1332,7 +1383,20 @@ pub fn analyze_value_ranges(
         let Some(mut new_entry) =
             join_predecessor_entry(block_id, cfg, &body, source, macros, &exit_ranges)
         else {
-            // No predecessors (unreachable block)
+            // Unreachable. A block can become unreachable only after a
+            // predecessor's ranges sharpen, so drop anything recorded on an
+            // earlier iteration -- leaving it would keep serving exactly the
+            // stale range this is meant to withdraw -- and revisit the
+            // successors that consumed it (task 1014).
+            let had_entry = entry_ranges.remove(&block_id).is_some();
+            let had_exit = exit_ranges.remove(&block_id).is_some();
+            if had_entry || had_exit {
+                for (succ, _) in cfg.successors(block_id) {
+                    if in_worklist.insert(succ) {
+                        worklist.push_back(succ);
+                    }
+                }
+            }
             continue;
         };
 
@@ -1470,8 +1534,14 @@ fn join_predecessor_entry(
 
         let pred_exit = exit_ranges.get(pred_id).cloned().unwrap_or_default();
 
-        let refined =
-            apply_range_edge_refinement(&pred_exit, *pred_id, edge_kind, cfg, body, source, macros);
+        // `None` means the edge's condition contradicts the incoming ranges,
+        // so this predecessor cannot reach the block -- same treatment as a
+        // constant-false branch above (task 1014).
+        let Some(refined) =
+            apply_range_edge_refinement(&pred_exit, *pred_id, edge_kind, cfg, body, source, macros)
+        else {
+            continue;
+        };
 
         if first {
             new_entry = refined;
@@ -1482,7 +1552,7 @@ fn join_predecessor_entry(
     }
 
     if first {
-        // No predecessors (unreachable block)
+        // Every incoming edge is dead (or there are none): unreachable.
         return None;
     }
     Some(new_entry)
@@ -2513,5 +2583,107 @@ int r = 100 / i;
 }
 ";
         assert_eq!(get_range_at_line(code, "i", 3), Some(ValueRange::new(0, 5)));
+    }
+
+    /// Query the ranges a *consumer* sees at an expression, via the same
+    /// `get_all_var_ranges_at` path `vra_access::var_ranges_replay_at` uses.
+    /// Deliberately not `get_range_at_line`: a line-start offset can fall
+    /// between statements and read as "no range" for reasons unrelated to
+    /// the branch being tested (task 1014).
+    fn range_at_expr(code: &str, var: &str, needle: &str) -> Option<ValueRange> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let tree = parser.parse(code, None).unwrap();
+        let source = code.to_string();
+        let root = tree.root_node();
+        let macros = const_eval::collect_macro_constants(&root, &source);
+        let func_node = find_first_function(&root)?;
+        let function_cfg = cfg::build_function_cfg(&func_node, &source)?;
+        let body = func_node.child_by_field_name("body")?;
+        let empty = HashMap::new();
+        let result = analyze_value_ranges(&function_cfg, &func_node, &source, &macros, &empty);
+        let offset = source.find(needle)?;
+        get_all_var_ranges_at(&result, &function_cfg, &body, &source, &macros, offset)?
+            .get(var)
+            .copied()
+    }
+
+    /// A branch whose condition contradicts the incoming range cannot execute,
+    /// so VRA must abstain there rather than hand out the incoming value.
+    /// This is Juliet's standard CWE-190 good-sink shape, so a stale range
+    /// makes every value-based rule assert on a point that never runs
+    /// (task 1014).
+    #[test]
+    fn contradicted_branch_reports_no_range() {
+        let code = "
+void f(void) {
+    char data;
+    data = 127;
+    if (data < 127) {
+        char result = data + 1;
+    }
+}
+";
+        assert_eq!(range_at_expr(code, "data", "data + 1"), None);
+    }
+
+    /// ...but the branch stays live when a second disjunct can reach it.
+    /// Only the first disjunct is contradicted; pruning the edge here would
+    /// cost a real finding (task 1014).
+    #[test]
+    fn disjunct_keeps_a_contradicted_branch_live() {
+        let code = "
+void f(int flag) {
+    char data;
+    data = 127;
+    if (data < 127 || flag) {
+        char result = data + 1;
+    }
+}
+";
+        assert_eq!(
+            range_at_expr(code, "data", "data + 1"),
+            Some(ValueRange::new(127, 127))
+        );
+    }
+
+    /// The `&&` mirror: negating `a && b` only requires ONE conjunct to fail,
+    /// so the false edge must not carry `!a`'s constraint for a variable the
+    /// other conjunct never mentions (task 1014).
+    #[test]
+    fn conjunct_keeps_a_contradicted_false_edge_live() {
+        let code = "
+void f(int flag) {
+    char data;
+    data = 127;
+    if (data >= 127 && flag) {
+    } else {
+        char result = data + 1;
+    }
+}
+";
+        assert_eq!(
+            range_at_expr(code, "data", "data + 1"),
+            Some(ValueRange::new(127, 127))
+        );
+    }
+
+    /// A satisfiable branch keeps narrowing normally -- the dead-edge rule
+    /// must not disturb the ordinary case (task 1014).
+    #[test]
+    fn satisfiable_branch_still_narrows() {
+        let code = "
+void f(void) {
+    char data;
+    data = 100;
+    if (data < 127) {
+        char result = data + 1;
+    }
+}
+";
+        assert_eq!(
+            range_at_expr(code, "data", "data + 1"),
+            Some(ValueRange::new(100, 100))
+        );
     }
 }
