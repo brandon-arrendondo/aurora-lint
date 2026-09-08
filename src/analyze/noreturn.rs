@@ -39,6 +39,13 @@ use tree_sitter::Node;
 /// C standard library functions that never return to their caller.
 const STDLIB_NORETURN_FUNCTIONS: &[&str] = &["abort", "exit", "_Exit", "quick_exit", "longjmp"];
 
+/// Noreturn functions that do **not** end the process: control resumes
+/// elsewhere in the same program, so anything still allocated when they are
+/// called really is leaked. Callers reasoning about *process termination*
+/// (rather than merely "does not return to my caller") must exclude these --
+/// see [`is_process_terminating_name`].
+const NON_TERMINATING_NORETURN_FUNCTIONS: &[&str] = &["longjmp", "siglongjmp"];
+
 /// Bare-identifier attribute-macro spellings recognized as marking a
 /// function noreturn when their `#define` isn't visible to this parse.
 /// Kept short and explicit -- unlike `_Noreturn`/`__attribute__((noreturn))`
@@ -192,6 +199,20 @@ pub fn is_noreturn_call_statement(
     noreturn_names.contains(name)
 }
 
+/// True if calling `name` ends the process, so memory still held at that
+/// point is reclaimed by the OS rather than leaked.
+///
+/// This is deliberately *narrower* than membership in `noreturn_names`.
+/// "Noreturn" only promises control never comes back to the caller, which
+/// `longjmp` satisfies while the program keeps running -- an allocation live
+/// across it is a genuine leak. Treating the two as the same thing would
+/// silently drop real MEM31-C findings, so the non-terminating spellings are
+/// subtracted explicitly.
+pub fn is_process_terminating_name(name: &str, noreturn_names: &HashSet<String>) -> bool {
+    let name = name.trim();
+    noreturn_names.contains(name) && !NON_TERMINATING_NORETURN_FUNCTIONS.contains(&name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +267,27 @@ mod tests {
         let (tree, source) = parse(src);
         let names = collect_noreturn_function_names(&tree.root_node(), &source);
         assert!(!names.contains("foo"));
+    }
+
+    #[test]
+    fn longjmp_is_noreturn_but_not_process_terminating() {
+        let names: HashSet<String> = ["longjmp", "siglongjmp", "exit", "abort", "die_mem"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // Ends the process: memory still held is reclaimed by the OS.
+        assert!(is_process_terminating_name("exit", &names));
+        assert!(is_process_terminating_name("abort", &names));
+        assert!(is_process_terminating_name("die_mem", &names));
+
+        // Noreturn, but the program keeps running -- a live allocation
+        // across one of these really is leaked, so it must not suppress.
+        assert!(!is_process_terminating_name("longjmp", &names));
+        assert!(!is_process_terminating_name("siglongjmp", &names));
+
+        // Not noreturn at all.
+        assert!(!is_process_terminating_name("tls_extcert_exit", &names));
     }
 
     #[test]
