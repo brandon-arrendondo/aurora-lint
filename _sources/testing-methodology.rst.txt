@@ -73,6 +73,52 @@ Tests are auto-generated into Rust test functions from ``.c`` files — no embed
     # Tests for a category
     cargo test --package aurora-lint --lib -- rules::cert_c::mem
 
+The Benchmark Harness (Python)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``bench/`` has its own tests, under ``bench/tests/``, run with the standard
+library's ``unittest``:
+
+::
+
+    # All bench tests
+    python3 -m unittest discover -s . -t .
+
+    # One module
+    python3 -m unittest bench.tests.test_project_relpath -v
+
+    # Strict: fail on a leaked file handle (what CI runs)
+    python3 -W error::ResourceWarning -m unittest discover -s . -t .
+
+**No test dependency, deliberately.** Every module under ``bench/`` imports
+only the standard library, so the benchmark harness runs on a bare Python.
+Adding ``pytest`` would make it the repo's first Python dependency and put
+``pip install`` in front of running the tests, which is the same fresh-clone
+promise ``bench/`` exists to keep. The cost is ``unittest``'s ergonomics: no
+bare ``assert`` and no ``parametrize`` decorator, so table-driven cases use a
+``CASES`` list with ``subTest``.
+
+What is covered is the subset a stranger needs in order to trust
+``python -m bench`` against their own codebase — the pure, silent-by-
+construction pieces where running the tool proves nothing:
+
+- ``BenchDB.project_relpath`` — absolute scan path to the portable form
+  ``ground_truth`` is keyed on. Its defect was invisible to every metric,
+  because findings and labels normalize through the same function.
+- ``corpus.in_scope`` and its glob translation — ``*`` must not cross ``/``
+  and ``**`` must. This predicate has a second copy in ``benchmarking_db``
+  that the two must agree on, and the shared one had a real denominator bug
+  from inheriting ``fnmatch``.
+- ``render_docs.replace_between`` — the marker-bounded rewrite that edits
+  ``README.md`` in place. The boundary is the contract.
+- ``ingest_realworld_run``'s project scoping — that a run records only the
+  projects its invocation scanned, and not a leftover export from an earlier
+  one at the same commit.
+
+``benchmarking_db`` has a much larger suite over some of the same shapes. It
+is the right model but is not importable from here and must not become a
+dependency.
+
 Test cases are derived from patterns documented in the
 `SEI CERT C Coding Standard <https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard>`_
 (formerly hosted on a Confluence wiki at wiki.sei.cmu.edu; the standard
