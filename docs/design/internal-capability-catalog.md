@@ -316,6 +316,8 @@ closed as task 490.
 | `get_update_operator` | `(node: &Node, source: &str) -> String` | `"++"`/`"--"`/`"unknown"`. |
 | `enclosing_function_definition` | `(node: &Node) -> Option<Node>` | Strict-ancestor-only walk to the nearest `function_definition` — distinct from `ast_utils::find_containing_function`, which also matches `node` itself. |
 | `is_short_unsigned_typedef` | `(s: &str) -> bool` | `u8`/`u16`/`u32`/`u64`/`u128` (Rust-style short aliases, not the C11 `uintN_t` family). |
+| `resolve_typedef_chain` | `(type_name: &str, typedef_types: &HashMap<String, String>) -> String` | The **shared** typedef-chain walker (task 736): follow `ProjectContext::typedef_types` (one-level alias map, cross-file) recursively until a builtin, an unresolved leaf, or a cycle. Returns the terminal name. Every rule that asks a **per-type question** (`is unsigned?` INT10-C/INT32-C via `typedef_chain_is_unsigned` below; `alignment?` EXP36-C; `width?` INT31-C/API00-C when added) now walks the same chain rather than exact-matching a rule-local table. Consumers apply their own question to the resolved terminal — do NOT bake alignment/width/signedness into the resolver itself. |
+| `typedef_chain_is_unsigned` | `(type_name: &str, typedef_types: &HashMap<String, String>) -> bool` | The `is unsigned?` consumer of `resolve_typedef_chain`. Short-circuits on any already-unsigned intermediate; returns `false` on a chain that bottoms out in a struct, opaque alias, or non-unsigned builtin. |
 
 **Deliberately NOT folded in here** (confirmed by a dedicated read-through,
 not assumed from matching names): the `has_overflow_check_*` family and
