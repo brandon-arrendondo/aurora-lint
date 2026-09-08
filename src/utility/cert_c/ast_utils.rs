@@ -565,6 +565,14 @@ pub struct ErrorDeclaration {
     /// `(name, type)` per parameter, as [`get_function_parameters`] returns
     /// them for a real `declaration`. Empty when the declarator carries no
     /// `parameter_list` the extractor could read.
+    ///
+    /// CAVEAT for any future consumer: when a parameter list is split by an
+    /// `#if`, recovery can merge BOTH arms into one list. hostap's
+    /// `wpa_supplicant_ctrl_iface_detach` comes back carrying the
+    /// `CONFIG_CTRL_IFACE_UDP_IPV6` token and two different `from`
+    /// parameters. The names and types are individually real, but the arity
+    /// is not, so this is safe to read a parameter's TYPE from and unsafe to
+    /// count.
     pub parameters: Vec<(String, String)>,
 }
 
@@ -625,9 +633,15 @@ fn collect_error_declarations(node: &Node, source: &str, out: &mut Vec<ErrorDecl
                 if crate::utility::cert_c::declarator_utils::is_function_declarator(&child) {
                     let name = get_identifier_from_declarator(&child, source);
                     if !name.is_empty() {
+                        let stars = pointer_depth(&child);
+                        let mut return_type = specifiers.join(" ");
+                        if stars > 0 {
+                            return_type.push(' ');
+                            return_type.extend(std::iter::repeat_n('*', stars));
+                        }
                         out.push(ErrorDeclaration {
                             name,
-                            return_type: specifiers.join(" "),
+                            return_type,
                             parameters: parameters_of_declarator(&child, source),
                         });
                     }
@@ -646,6 +660,27 @@ fn collect_error_declarations(node: &Node, source: &str, out: &mut Vec<ErrorDecl
         specifiers.clear();
         collect_error_declarations(&child, source, out);
     }
+}
+
+/// How many `pointer_declarator` layers wrap the `function_declarator`, i.e.
+/// the pointer depth of the function's RETURN type.
+///
+/// The specifier run alone is not the return type. `struct wpa_authenticator *
+/// wpa_init(...)` (hostap) puts `struct wpa_authenticator` in the specifiers
+/// and the `*` in a `pointer_declarator` around the `function_declarator`, so
+/// joining specifiers reports it as returning a struct BY VALUE -- wrong in
+/// the one direction that matters, since a consumer would conclude the result
+/// cannot be NULL.
+fn pointer_depth(declarator: &Node) -> usize {
+    if declarator.kind() != "pointer_declarator" {
+        return 0;
+    }
+    let nested = (0..declarator.child_count())
+        .filter_map(|i| declarator.child(i))
+        .map(|c| pointer_depth(&c))
+        .max()
+        .unwrap_or(0);
+    1 + nested
 }
 
 /// The parameters of a `function_declarator`, whether it is the declarator
