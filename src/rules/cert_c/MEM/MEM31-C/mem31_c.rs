@@ -5,6 +5,7 @@ use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
 use crate::utility::cert_c::declarator_utils;
+use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -51,6 +52,9 @@ fn strip_call_argument(arg: Node) -> Option<(Node, bool)> {
 pub struct Mem31C {
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
     value_only_globals: RefCell<HashSet<String>>,
+    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
+    struct_typedef_aliases: RefCell<HashMap<String, String>>,
+    known_functions: RefCell<HashSet<String>>,
     /// Cross-file noreturn function names from the prescan, unioned in
     /// `check` with the ones this file declares for itself (task 1076).
     noreturn_functions: RefCell<HashSet<String>>,
@@ -61,6 +65,9 @@ impl Mem31C {
         Self {
             function_summaries: RefCell::new(HashMap::new()),
             value_only_globals: RefCell::new(HashSet::new()),
+            struct_field_types: RefCell::new(HashMap::new()),
+            struct_typedef_aliases: RefCell::new(HashMap::new()),
+            known_functions: RefCell::new(HashSet::new()),
             noreturn_functions: RefCell::new(HashSet::new()),
         }
     }
@@ -90,6 +97,9 @@ impl CertRule for Mem31C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.value_only_globals.borrow_mut() = context.value_only_globals.clone();
+        *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
+        *self.struct_typedef_aliases.borrow_mut() = context.struct_typedef_aliases.clone();
+        *self.known_functions.borrow_mut() = context.known_functions.clone();
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
     }
 
@@ -97,6 +107,9 @@ impl CertRule for Mem31C {
         let mut violations = Vec::new();
         let summaries = self.function_summaries.borrow();
         let value_only_globals = self.value_only_globals.borrow();
+        let struct_field_types = self.struct_field_types.borrow();
+        let struct_typedef_aliases = self.struct_typedef_aliases.borrow();
+        let known_functions = self.known_functions.borrow();
 
         // A call that never returns ends its branch exactly as `return` does.
         // The prescan set carries declarations from headers this parse never
@@ -108,8 +121,14 @@ impl CertRule for Mem31C {
 
         // Analyze each function independently for memory leaks
         for func in query::find_descendants_of_kind(*node, "function_definition") {
-            let mut analyzer =
-                MemoryLeakAnalyzer::new(&summaries, &value_only_globals, &noreturn_names);
+            let mut analyzer = MemoryLeakAnalyzer::new(
+                &summaries,
+                &value_only_globals,
+                &struct_field_types,
+                &struct_typedef_aliases,
+                &known_functions,
+                &noreturn_names,
+            );
             analyzer.analyze_function(&func, source, &mut violations);
         }
 
@@ -176,6 +195,36 @@ struct MemoryLeakAnalyzer<'a> {
     // seL4's `current_lookup_fault = lookup_fault_new(...)`, assigned from
     // several translation units, declared only via `extern` in a header).
     value_only_globals: &'a HashSet<String>,
+    // Struct-field assignment targets whose DECLARED FIELD TYPE is positively
+    // a non-pointer (task: MEM31-C `*_new` return-type FP). The third target
+    // shape `value_only_locals`/`value_only_globals` do not reach: the guard
+    // those two apply is about the ROOT variable's declared shape, and for
+    // `callerSlot->cap = cap_null_cap_new()` the root is a perfectly real
+    // `cte_t *`, so neither set ever matches and the name-shape guess stands
+    // unchallenged. What settles it is the field's own type -- `struct cte`
+    // declares `cap_t cap;`, a struct held by value, so nothing stored there
+    // can be heap memory to begin with.
+    value_only_fields: HashSet<String>,
+    // Project-wide `struct_name -> field_name -> type_text`, used to resolve
+    // the above. Cross-file by necessity: seL4 declares `struct cte` in
+    // `include/object/structures.h` and assigns its field in
+    // `src/fastpath/fastpath.c`.
+    struct_field_types: &'a HashMap<String, HashMap<String, String>>,
+    // `Alias -> Tag` for every `typedef struct Tag Alias;`
+    // (`ProjectContext::struct_typedef_aliases`, task 963). Required, not
+    // optional: seL4 spells all three of the structs this guard needs as a
+    // BODYLESS typedef sitting apart from its body -- `struct cte { cap_t
+    // cap; };` on one line and `typedef struct cte cte_t;` four lines later.
+    // `struct_field_types` files the fields under the TAG, so a variable
+    // declared `cte_t *` resolves to a struct name nothing in that map holds
+    // and the field type comes back unresolved. Without this hop the guard
+    // never fires on the very findings it exists for.
+    struct_typedef_aliases: &'a HashMap<String, String>,
+    // Every function name the prescan saw DECLARED or DEFINED anywhere in the
+    // project (`ProjectContext::known_functions`). The field guard fires only
+    // when the callee is absent from this set -- see
+    // `track_allocation_guarded`.
+    known_functions: &'a HashSet<String>,
     // Names of functions that never return to their caller, from the prescan
     // (headers included) unioned with this file's own declarations. A call to
     // one ends a branch the way `return` does (task 1076).
@@ -273,6 +322,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     fn new(
         function_summaries: &'a HashMap<String, FunctionSummary>,
         value_only_globals: &'a HashSet<String>,
+        struct_field_types: &'a HashMap<String, HashMap<String, String>>,
+        struct_typedef_aliases: &'a HashMap<String, String>,
+        known_functions: &'a HashSet<String>,
         noreturn_names: &'a HashSet<String>,
     ) -> Self {
         Self {
@@ -294,6 +346,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             static_variables: HashSet::new(),
             value_only_locals: HashSet::new(),
             value_only_globals,
+            value_only_fields: HashSet::new(),
+            struct_field_types,
+            struct_typedef_aliases,
+            known_functions,
             noreturn_names,
         }
     }
@@ -311,6 +367,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 .collect();
             self.static_variables = Self::collect_static_variable_names(&body, source);
             self.value_only_locals = Self::collect_value_only_locals(&body, source);
+            self.value_only_fields = Self::collect_value_only_fields(
+                func_node,
+                &body,
+                source,
+                self.struct_field_types,
+                self.struct_typedef_aliases,
+            );
 
             // Pre-analysis: collect what variables are freed at each label
             self.collect_label_frees(&body, source);
@@ -531,6 +594,115 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         candidates
     }
 
+    /// Collect the struct-field assignment targets that provably cannot hold
+    /// heap memory: the field's DECLARED TYPE is positively a non-pointer,
+    /// and the field is never used through a pointer-shaped operation
+    /// anywhere in the body.
+    ///
+    /// The field-target counterpart of [`collect_value_only_locals`], and it
+    /// exists because the guard those sets apply is keyed on the ROOT
+    /// variable's declared shape. For `callerSlot->cap = cap_null_cap_new()`
+    /// the root is a genuine `cte_t *`, so `value_only_locals` and
+    /// `value_only_globals` both correctly decline to match and the
+    /// `*_new` name-shape guess about an unseen callee stands unchallenged.
+    /// The evidence that settles it is one level in: `struct cte` declares
+    /// `cap_t cap;`, a struct held BY VALUE, so the call's result is a
+    /// register/stack value and "not freed" is not a leak.
+    ///
+    /// Keying on the field type rather than on the callee's return type is
+    /// deliberate. The callee's return type is the more direct evidence and
+    /// is simply not available here: seL4's bitfield value constructors
+    /// (`cap_null_cap_new`, `seL4_Fault_NullFault_new`, `call_stack_new`) are
+    /// declared only in `<object/structures_gen.h>`, emitted at build time by
+    /// `tools/bitfield_gen.py` and never on disk -- the case
+    /// `ProjectContext::unresolved_project_headers` already records. No
+    /// declaration means no return type to read, whereas the struct that
+    /// receives the value is ordinary source we do parse.
+    ///
+    /// A pointer TYPEDEF spelled without a `*` (`typedef struct foo *foo_t;`)
+    /// is why the type test alone is not the whole predicate: the field type
+    /// resolves to a bare name that looks like a value. The body scan is what
+    /// covers it -- a field that really holds heap memory gets dereferenced,
+    /// indexed, or NULL-checked somewhere, and any one of those uses takes it
+    /// back out of this set. Same one-directional bargain the locals version
+    /// makes: positive evidence of non-pointer-ness suppresses, absence of
+    /// evidence never does.
+    fn collect_value_only_fields(
+        func_node: &Node,
+        body: &Node,
+        source: &str,
+        struct_field_types: &HashMap<String, HashMap<String, String>>,
+        struct_typedef_aliases: &HashMap<String, String>,
+    ) -> HashSet<String> {
+        if struct_field_types.is_empty() {
+            return HashSet::new();
+        }
+        let mut type_map = overflow_helpers::collect_variable_types(func_node, source);
+        if type_map.is_empty() {
+            return HashSet::new();
+        }
+        // Rewrite each declared type's struct name to the TAG its fields are
+        // actually filed under, so `cte_t *` looks up as `cte *`. Done here
+        // rather than by merging the alias into `struct_field_types` because
+        // that map is shared with four other rules, and filing aliases in it
+        // would move their finding sets as a side effect of this fix (see
+        // `ProjectContext::struct_typedef_aliases`).
+        if !struct_typedef_aliases.is_empty() {
+            for declared in type_map.values_mut() {
+                let Some(struct_name) = ast_utils::extract_struct_name_from_type(declared) else {
+                    continue;
+                };
+                if let Some(tag) = struct_typedef_aliases.get(struct_name) {
+                    *declared = declared.replacen(struct_name, tag, 1);
+                }
+            }
+        }
+
+        let mut candidates = HashSet::new();
+        for assign in query::find_descendants_of_kind(*body, "assignment_expression") {
+            let Some(left) = assign.child_by_field_name("left") else {
+                continue;
+            };
+            if left.kind() != "field_expression" {
+                continue;
+            }
+            let Some(field_type) = ast_utils::resolve_field_expression_type(
+                &left,
+                source,
+                &type_map,
+                struct_field_types,
+            ) else {
+                continue;
+            };
+            if ast_utils::is_pointer_type(&field_type)
+                || ast_utils::is_array_parameter_type(&field_type)
+            {
+                continue;
+            }
+            candidates.insert(ast_utils::get_node_text_owned(&left, source));
+        }
+
+        if candidates.is_empty() {
+            return candidates;
+        }
+
+        for node in query::find_descendants(*body, |n| {
+            matches!(
+                n.kind(),
+                "field_expression"
+                    | "pointer_expression"
+                    | "subscript_expression"
+                    | "binary_expression"
+            )
+        }) {
+            for used in pointer_shaped_field_texts(&node, source) {
+                candidates.remove(&used);
+            }
+        }
+
+        candidates
+    }
+
     /// True if `alloc_type` (the callee name recorded in `AllocInfo`) was
     /// recognized as an allocator *only* by `is_allocation_call`'s name-shape
     /// heuristic — neither a standard allocator nor a callee whose computed
@@ -567,10 +739,33 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         guard_name: String,
         info: AllocInfo,
     ) -> bool {
-        if (self.value_only_locals.contains(&guard_name)
-            || self.value_only_globals.contains(&guard_name))
-            && self.is_name_heuristic_allocator(&info.alloc_type)
-        {
+        // The field guard carries one extra condition the other two do not:
+        // the callee must be absent from `known_functions`, i.e. the project
+        // declares it nowhere at all.
+        //
+        // The name-shape heuristic is, in this rule's own words, "a guess
+        // about an unseen callee". Where the callee IS seen, that guess is not
+        // what is speaking -- the real inter-procedural analysis is -- and a
+        // type guess about the DESTINATION must not overrule it. curl's
+        // `addr_ctx->thread_hnd = Curl_thread_create(...)` is the case that
+        // settles it: `curl_thread_t` is a POINTER typedef spelled without a
+        // `*`, so the field looks like a value, and the body scan misses it
+        // too because the null test is written against curl's own
+        // `curl_thread_t_null` sentinel rather than `NULL`. Suppressing there
+        // would discard a genuine allocation -- `Curl_thread_create` really
+        // does `curlx_malloc(sizeof(pthread_t))`. Its prototype is right there
+        // in `lib/curl_threads.h`, which is what this condition reads.
+        //
+        // seL4's value constructors are the opposite shape and the reason the
+        // guard exists: `cap_null_cap_new` and friends are declared ONLY in
+        // the build-time-generated `<object/structures_gen.h>`, so the project
+        // knows the name from call sites alone. Nothing but the destination's
+        // type is available to judge them by.
+        let value_only_target = self.value_only_locals.contains(&guard_name)
+            || self.value_only_globals.contains(&guard_name)
+            || (self.value_only_fields.contains(&var_name)
+                && !self.known_functions.contains(&info.alloc_type));
+        if value_only_target && self.is_name_heuristic_allocator(&info.alloc_type) {
             return false;
         }
         self.allocated_memory.insert(var_name, info);
@@ -2146,6 +2341,73 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 ///
 /// `&p` is deliberately not evidence: taking the address of a plain value
 /// local is ordinary C and says nothing about `p`'s own type.
+/// The field-expression texts `node` uses in a pointer-shaped way: base of
+/// `->`, base of a subscript, operand of a unary `*`, or either side of a
+/// `==`/`!=` against `NULL`.
+///
+/// The field-target counterpart of [`pointer_shaped_operand_names`], which
+/// yields bare identifiers only. Kept separate rather than widened, because
+/// that function also feeds `collect_value_only_locals` -- whose candidate set
+/// holds nothing but declared identifiers, so adding field texts there would
+/// only cost a scan.
+///
+/// A `.` base is deliberately not evidence: `a.b` says nothing about whether
+/// `a` is a pointer, and by the same token it says nothing about `b`.
+fn pointer_shaped_field_texts(node: &Node, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut push_field = |n: Option<Node>| {
+        if let Some(n) = n {
+            if n.kind() == "field_expression" {
+                names.push(ast_utils::get_node_text_owned(&n, source));
+            }
+        }
+    };
+
+    match node.kind() {
+        "field_expression" => {
+            let is_arrow = node
+                .child_by_field_name("operator")
+                .map(|op| ast_utils::get_node_text(&op, source) == "->")
+                .unwrap_or(false);
+            if is_arrow {
+                push_field(node.child_by_field_name("argument"));
+            }
+        }
+        "pointer_expression" => {
+            let is_deref = node
+                .child_by_field_name("operator")
+                .map(|op| ast_utils::get_node_text(&op, source) == "*")
+                .unwrap_or(false);
+            if is_deref {
+                push_field(node.child_by_field_name("argument"));
+            }
+        }
+        "subscript_expression" => {
+            push_field(node.child_by_field_name("argument"));
+        }
+        "binary_expression" => {
+            let op = node
+                .child_by_field_name("operator")
+                .map(|o| ast_utils::get_node_text_owned(&o, source))
+                .unwrap_or_default();
+            if op == "==" || op == "!=" {
+                let left = node.child_by_field_name("left");
+                let right = node.child_by_field_name("right");
+                for (field, other) in [(left, right), (right, left)] {
+                    let (Some(field), Some(other)) = (field, other) else {
+                        continue;
+                    };
+                    if ast_utils::get_node_text(&other, source) == "NULL" {
+                        push_field(Some(field));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    names
+}
+
 fn pointer_shaped_operand_names(node: &Node, source: &str) -> Vec<String> {
     let mut names = Vec::new();
     match node.kind() {

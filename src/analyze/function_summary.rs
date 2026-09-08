@@ -1911,7 +1911,28 @@ fn clean_paths(stmt: &Node, source: &str, param: &str, depth: u32) -> (bool, boo
                 return (false, false);
             };
             if guard_dominance::mentions_var(&condition, param, source) {
-                return (false, false);
+                // `if (NULL == sign_flag) return;` mentions the parameter
+                // without writing or forwarding it, and the arm it guards is
+                // one no caller that goes on to READ the variable ever takes.
+                // Counting that arm's `return` as an unwritten returning path
+                // would make every optional-output function conditional on
+                // the strength of a branch its callers cannot reach -- the
+                // same discount `is_unconditionally_reached_modulo_null_guard`
+                // makes for the MUST set.
+                let Some(non_null_on_true) = null_guard_on(&condition, source, param) else {
+                    return (false, false);
+                };
+                let reached = if non_null_on_true {
+                    stmt.child_by_field_name("consequence")
+                        .map(|c| clean_paths(&c, source, param, depth + 1))
+                        .unwrap_or((true, false))
+                } else {
+                    match stmt.child_by_field_name("alternative") {
+                        Some(alternative) => clean_paths(&alternative, source, param, depth + 1),
+                        None => (true, false),
+                    }
+                };
+                return reached;
             }
             let (then_passes, then_returns) = stmt
                 .child_by_field_name("consequence")
@@ -1967,9 +1988,35 @@ fn clean_paths(stmt: &Node, source: &str, param: &str, depth: u32) -> (bool, boo
                 .map(|b| clean_paths(&b, source, param, depth + 1))
                 .unwrap_or((false, false))
         }
+        "switch_statement" => {
+            // Mirrors `switch_writes_on_all_paths` from the other side: a
+            // `switch` with no `default` is not exhaustive, so a controlling
+            // value matching no case leaves it having executed nothing. With
+            // a `default` nothing is claimed -- proving a clean path through
+            // one arm would have to reason about fall-through.
+            let Some(condition) = stmt.child_by_field_name("condition") else {
+                return (false, false);
+            };
+            if guard_dominance::mentions_var(&condition, param, source) {
+                return (false, false);
+            }
+            let Some(body) = stmt.child_by_field_name("body") else {
+                return (true, false);
+            };
+            let mut cursor = body.walk();
+            let has_default = body
+                .named_children(&mut cursor)
+                .filter(|c| c.kind() == "case_statement")
+                .any(|c| c.child_by_field_name("value").is_none());
+            if has_default {
+                (false, false)
+            } else {
+                (true, false)
+            }
+        }
         // Everything else that mentions the parameter -- an assignment, a
-        // declaration, a call, a `switch` whose arms touch it, a `goto` -- is
-        // refused rather than reasoned about.
+        // declaration, a call, a `goto` -- is refused rather than reasoned
+        // about.
         _ => (false, false),
     }
 }
@@ -2902,8 +2949,40 @@ pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSum
             .map(|(n, s)| (n.clone(), s.unconditional_modifies_params.clone()))
             .collect();
 
+        // The conditional half of the same fixpoint: a parameter whose
+        // coverage rests on a forwarded callee is UNWRITTEN on some path
+        // exactly when that callee leaves it unwritten on some path.
+        // `classify(number, out)` writes `*out` directly on one arm and hands
+        // `out` to `set_flag` on the other, and `set_flag` writes nothing when
+        // `number == 0` -- so `classify` can return without writing too, and a
+        // structural walk of its body alone can never see that (task 1078,
+        // tools_sqc).
+        let conditional_snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.conditional_modifies_params.clone()))
+            .collect();
+
         let mut changed = false;
         for summary in summaries.values_mut() {
+            let conditional: Vec<usize> = summary
+                .modifies_params_pending
+                .iter()
+                .filter(|(idx, _)| !summary.unconditional_modifies_params.contains(idx))
+                .filter(|(idx, _)| !summary.conditional_modifies_params.contains(idx))
+                .filter(|(_, obligations)| {
+                    obligations.iter().any(|(callee, callee_idx)| {
+                        conditional_snapshot
+                            .get(callee)
+                            .is_some_and(|unwritten| unwritten.contains(callee_idx))
+                    })
+                })
+                .map(|(idx, _)| *idx)
+                .collect();
+            for idx in conditional {
+                summary.conditional_modifies_params.insert(idx);
+                changed = true;
+            }
+
             let discharged: Vec<usize> = summary
                 .modifies_params_pending
                 .iter()

@@ -204,7 +204,10 @@ impl CertRule for Exp33C {
 
                 // Pre-scan for functions that conditionally initialize pointer params
                 let mut cond_init = HashMap::new();
-                scan_conditionally_init_functions(node, source, &mut cond_init);
+                {
+                    let summaries = self.cross_file_summaries.borrow();
+                    scan_conditionally_init_functions(node, source, &summaries, &mut cond_init);
+                }
                 *self.conditionally_init_fns.borrow_mut() = cond_init;
 
                 // Precompute output-parameter indices for the function-like macros
@@ -2021,20 +2024,44 @@ fn scan_realloc_wrappers(node: &Node, source: &str, wrappers: &mut HashSet<Strin
 /// Scan for functions that only conditionally initialize pointer params.
 /// e.g., void set_flag(int n, int *flag) { if (n > 0) *flag = 1; }
 /// — doesn't init *flag on all paths.
+/// Pre-scan the file for functions that only conditionally initialise a
+/// pointer parameter, for callees prescan produced no summary for.
+///
+/// Skips any function that HAS a summary, because this heuristic is the
+/// cruder of the two answers and used to win by running second. It accepts a
+/// parameter as unconditionally written only on a `*p = …` at the body's top
+/// level, so a function that fills its outputs on every path through an
+/// `if`/`else`, a `switch` with a `default`, or a call it cannot see through
+/// is classed conditional and every caller is reported. Prescan's
+/// `conditional_modifies_params` asks for a proven unwritten returning path
+/// instead, and `build_read_only_deref_fns` covers the parameter prescan saw
+/// no write through at all (task 1078, tools_sqc).
+///
+/// The fallback still matters: a scan with no `-d` and no prescan of its own
+/// targets summarises almost nothing, and there the local read is the only
+/// answer available.
 fn scan_conditionally_init_functions(
     node: &Node,
     source: &str,
+    summarised: &HashMap<String, FunctionSummary>,
     result: &mut HashMap<String, HashSet<usize>>,
 ) {
     for func_def in query::find_descendants_of_kind(*node, "function_definition") {
+        let Some(declarator) = func_def.child_by_field_name("declarator") else {
+            continue;
+        };
+        let name = get_func_name(&declarator, source);
+        if name.is_empty() {
+            continue;
+        }
+        // Prescan already answered this question about this function, and
+        // answered it better -- see the doc comment above.
+        if summarised.contains_key(&name) {
+            continue;
+        }
         let cond_indices = get_conditional_init_param_indices(&func_def, source);
         if !cond_indices.is_empty() {
-            if let Some(declarator) = func_def.child_by_field_name("declarator") {
-                let name = get_func_name(&declarator, source);
-                if !name.is_empty() {
-                    result.insert(name, cond_indices);
-                }
-            }
+            result.insert(name, cond_indices);
         }
     }
 }
