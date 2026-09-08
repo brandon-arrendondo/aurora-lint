@@ -30,6 +30,10 @@ pub mod paren_preproc_guard;
 /// Points-to/alias analysis: resolving an lvalue expression to the set of
 /// storage locations it may refer to.
 pub mod points_to;
+/// Which byte offsets a preprocessor conditional puts in mutually exclusive
+/// arms, so a positional lookup does not answer with a record from a branch
+/// this position cannot coexist with.
+pub mod preproc_arms;
 pub mod preproc_dangling_else;
 /// The pre-scan phase: a first pass over the project (and sibling headers)
 /// that builds the [`context::ProjectContext`] later rule passes consume.

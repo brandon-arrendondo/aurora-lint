@@ -855,9 +855,20 @@ fn collect_function_names(node: &Node, source: &str, names: &mut HashSet<String>
                     }
                     collect_function_names(&child, source, names);
                 }
+                "ERROR" => {
+                    // An `ERROR` node can *be* a declaration tree-sitter could
+                    // not finish -- a prototype with a trailing `__THROW`, or a
+                    // definition whose declarator is split by an `#if`. Read the
+                    // name back out before recursing, since the subtree holds no
+                    // `declaration`/`function_definition` node to find (task 1038).
+                    for name in ast_utils::function_names_in_error_declaration(&child, source) {
+                        names.insert(name);
+                    }
+                    collect_function_names(&child, source, names);
+                }
                 _ => {
                     // Recurse into all other nodes (preproc_*, linkage_specification,
-                    // ERROR, compound_statement, etc.) to find buried definitions.
+                    // compound_statement, etc.) to find buried definitions.
                     collect_function_names(&child, source, names);
                 }
             }
@@ -987,6 +998,62 @@ fn extract_func_name_from_nested_declarator(node: &Node, source: &str) -> Option
     None
 }
 
+/// Name of the function declared by the macro-prefixed *parenthesized*
+/// declarator idiom, `LUA_API lua_Unsigned (lua_rawlen) (lua_State *L);`.
+///
+/// lua wraps every public name in parentheses to keep it out of macro
+/// expansion. With the return type spelled as two identifiers -- an export
+/// macro plus the real type -- tree-sitter cannot tell that parenthesized
+/// declarator from a parameter list, so it reads the *type* as the declared
+/// name and the real name as that "function"'s only parameter:
+///
+/// ```text
+/// function_declarator                    <- the real parameter list
+///   function_declarator
+///     identifier 'lua_Unsigned'          <- actually the return type
+///     parameter_list ( 'lua_rawlen' )    <- actually the declarator
+/// ```
+///
+/// The tell is that inner parameter list: exactly one `parameter_declaration`
+/// that is a lone type name with no declarator of its own. No valid C
+/// prototype declares a function *returning a function*, so nothing else
+/// produces two directly-nested `function_declarator`s (task 1040).
+fn macro_wrapped_declarator_name(node: &Node, source: &str) -> Option<String> {
+    let inner = node.child_by_field_name("declarator")?;
+    if inner.kind() != "function_declarator" {
+        return None;
+    }
+    let params = inner.child_by_field_name("parameters")?;
+    let mut only: Option<Node> = None;
+    for i in 0..params.named_child_count() {
+        let child = params.named_child(i)?;
+        if child.kind() != "parameter_declaration" {
+            return None;
+        }
+        if only.is_some() {
+            return None;
+        }
+        only = Some(child);
+    }
+    let param = only?;
+    if param.named_child_count() != 1 {
+        return None;
+    }
+    let name_node = param.named_child(0)?;
+    if name_node.kind() != "type_identifier" {
+        return None;
+    }
+    let name = name_node
+        .utf8_text(source.as_bytes())
+        .unwrap_or("")
+        .to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 /// Drill into a declarator tree to find the leaf `identifier`.
 fn extract_identifier_from_declarator(node: &Node, source: &str) -> Option<String> {
     match node.kind() {
@@ -999,6 +1066,11 @@ fn extract_identifier_from_declarator(node: &Node, source: &str) -> Option<Strin
             }
         }
         "function_declarator" | "pointer_declarator" => {
+            if node.kind() == "function_declarator" {
+                if let Some(name) = macro_wrapped_declarator_name(node, source) {
+                    return Some(name);
+                }
+            }
             let inner = node.child_by_field_name("declarator")?;
             extract_identifier_from_declarator(&inner, source)
         }

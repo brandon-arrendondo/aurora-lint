@@ -175,6 +175,34 @@ uses the parser's own failure signal.
 **Wiring pattern:** Called from the parsing entry point as a recovery
 step, not from within a rule.
 
+## Preprocessor branch structure
+
+### `src/analyze/preproc_arms.rs`
+**Problem solved:** which byte offsets a conditional puts in MUTUALLY
+EXCLUSIVE arms. aurora-lint does not preprocess, so tree-sitter parses BOTH
+arms of an `#ifdef`/`#else`; a name declared once per arm becomes one name
+whose recorded history interleaves two lifetimes that never occur together.
+Any analysis answering "what did this name hold at byte P" by reading
+backwards through the file will otherwise answer from the branch P is not
+in — which is how ARR36-C gave hostap's `#else`-arm `pos` the allocation its
+`#ifdef`-arm namesake held (task 1048).
+
+| Item | Signature | Description |
+|---|---|---|
+| `PreprocArms::collect` | `(root: &Node) -> PreprocArms` | Reads every `#if`/`#ifdef` chain under `root` as the byte ranges of its arms, following the `alternative` field through `#elif`/`#elifdef`/`#else`. A chain nested inside an arm is its own entry, so the answer composes at any depth. A chain with no alternative is dropped: it separates nothing. |
+| `PreprocArms::exclusive` | `(&self, a: usize, b: usize) -> bool` | Whether some chain puts the two offsets in DIFFERENT arms. Positive-only: an offset above the `#if` or below the `#endif` is in no arm and coexists with all of them, so it answers `false`. |
+
+This is the OPPOSITE stance to
+`ast_utils::collect_declarations_transparent_to_preproc`, and deliberately
+so: a declaration in EITHER arm is a declaration, so a *search* for one
+should look through the fork. The fact here is narrower and positive — these
+two offsets cannot both be compiled — so use it to reject a pairing, never
+to conclude a name is undeclared.
+
+**Wiring pattern:** collect once per translation unit and share it (ARR36-C
+holds it behind an `Rc` on the file-scope frame every function clones), then
+consult it wherever a positional lookup walks backwards.
+
 ## Declaration / type / declarator resolution
 
 ### `src/utility/cert_c/ast_utils.rs` (declaration/declarator subset)
@@ -185,8 +213,10 @@ step, not from within a rule.
 | `find_declaration_in_scope_chain` | `(scopes: &[Node], ident_start: usize, name: &str, source: &str) -> Option<Node>` | The body of `find_enclosing_declaration_for_identifier`, over a scope chain (innermost first) the caller already holds. **Use this from any pass that is already descending the tree** — keep enclosing `compound_statement`/`for_statement` nodes on a stack (`is_declaration_scope` tests for one) and resolution costs nothing extra. Rediscovering the chain per identifier does not: see the ancestor-walk warning below. |
 | `is_declaration_scope` | `(node: &Node) -> bool` | True for the node kinds that open a scope the two functions above search (`compound_statement`, `for_statement`). |
 | `file_scope_descendants_of_kinds` | `(root: Node, kinds: &[&str]) -> Vec<Node>` | Descendants matching `kinds` that lie outside every function, found by pruning at `function_definition`. Replaces the "collect everything, then reject what `find_containing_function` answers for" shape. |
+| `ParentMap` | `new(root: Node) -> ParentMap`; `parent_of(node) -> Option<Node>`; `find_ancestor(node, pred) -> Option<Node>` | Per-file parent cache: one O(n) pre-order walk populates a `node.id() -> parent` map so subsequent ancestor walks pay O(1) per step instead of tree-sitter's O(depth) `Node::parent()`. **Use this when none of the first three patterns fits** — most often when the walked predicate involves per-ancestor field/text checks and the caller doesn't already have a scope stack. Build once at the top of `check()` and thread `&ParentMap` through helpers. Applied to STR34-C's `has_unsigned_char_cast` took the deep-nest fixture from 2.93 s → 0.02 s (task 984, this repo). |
 | `get_identifier_from_declarator` | `(declarator: &Node, source: &str) -> String` | Extracts the identifier name from a declarator (simple, pointer, array, function-pointer). Returns `""` on failure (not `Option`). |
 | `find_identifier_in_declarator` | `(declarator: &Node, source: &str) -> Option<String>` | Same job as `get_identifier_from_declarator` but returns `Option` instead of an empty-string sentinel. **Note: these two are NOT interchangeable** — pick based on whether the call site can handle an `Option` (task 387 documents a real regression from picking the wrong one). |
+| `function_names_in_error_declaration` | `(node: &Node, source: &str) -> Vec<String>` | The functions declared by an `ERROR` node that **is** one or more declarations tree-sitter could not finish — a prototype carrying a trailing attribute macro (`extern int sigaction(...) __THROW;`, how glibc writes most of POSIX), or a definition whose declarator is split by an `#if` (sqlite's `columnNullValue`). Such a node contains no `declaration`/`function_definition` anywhere inside it, so a walk over those kinds sees nothing; the specifiers and the `function_declarator` are right there as its children. Returns every match, not the first: recovery in a macro-heavy file can collapse a whole translation unit into one `ERROR` whose children are its top-level items (pure-ftpd's `src/ftpd.c`). Recognizes only a run of specifiers immediately followed by a function declarator, so a misparsed *call* recovered inside an `ERROR` is not read back as a declaration. Pointer-returning prototypes are unaffected (they still parse as a `declaration`), so this **supplements** the normal walk rather than replacing it — call it from the `ERROR` arm, then keep recursing. Used by the prescan collector and DCL31-C (tasks 1038, 1040, 1044). |
 | `get_function_parameters` | `(function_node: &Node, source: &str) -> Option<Vec<(String, String)>>` | Extracts `(name, full_type)` pairs for a function's parameters, correctly finding the `function_declarator` even when nested inside a `pointer_declarator` (pointer-returning functions). |
 | `is_function_parameter` | `(function_node: &Node, var_name: &str, source: &str) -> bool` | True if `var_name` appears (word-boundary-matched) in the function's parameter list text. |
 | `is_array_parameter_type` / `is_pointer_type` / `is_signed_type` / `is_unsigned_type` | `(type_str: &str) -> bool` | Type-string classifiers over a type's textual representation (not the AST node) — array/pointer/signed-integer/unsigned-integer. |
@@ -203,7 +233,8 @@ step, not from within a rule.
 > still sit in the 0.3–3 s band on that input for the same reason. Prefer, in
 > order: prune on the way down (`file_scope_descendants_of_kinds`); carry what
 > you need on a stack as you descend (`find_declaration_in_scope_chain`);
-> precompute the answer once per function as byte ranges and test containment.
+> precompute the answer once per function as byte ranges and test containment;
+> build a `ParentMap` once per file and use its O(1)-per-step ancestor walk.
 > A bounded walk (a fixed few levels) is fine.
 
 ### `src/utility/cert_c/declarator_utils.rs`

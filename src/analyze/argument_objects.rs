@@ -349,14 +349,25 @@ pub fn is_pointer_or_array_parameter(param_node: &Node) -> bool {
 }
 
 /// A fresh allocation is its own object, so two allocation calls are two
-/// objects. Mirrors the allocation arm of ARR36-C's `extract_array_base`.
+/// objects. Mirrors the allocation arm of ARR36-C's `extract_array_base`, and
+/// the two lists have to stay identical: this one gives a call site its object
+/// identity for the prescan, that one gives the same call its base inside a
+/// function, and a name in only one of them makes the same allocation two
+/// different things depending on which frame is asking.
 fn allocation_object(node: &Node, source: &str) -> Option<String> {
     let func_node = node.child_by_field_name("function")?;
     let func_name = ast_utils::get_node_text(&func_node, source);
     let canonical = func_name.strip_prefix("os_").unwrap_or(func_name);
     matches!(
         canonical,
-        "malloc" | "calloc" | "realloc" | "aligned_alloc" | "alloca"
+        "malloc"
+            | "calloc"
+            | "realloc"
+            | "aligned_alloc"
+            | "alloca"
+            | "zalloc"
+            | "strdup"
+            | "strndup"
     )
     .then(|| format!("alloc@{}", node.start_byte()))
 }

@@ -1,6 +1,6 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, ParentMap};
 use lang_parsing_substrate::query;
 use std::collections::HashMap;
 use tree_sitter::Node;
@@ -30,27 +30,26 @@ impl CertRule for Str34C {
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
-
-        // Process each function independently to scope char_vars per function
-        self.check_translation_unit(node, source, &mut violations);
-
+        let parents = ParentMap::new(*node);
+        self.check_translation_unit(node, source, &parents, &mut violations);
         violations
     }
 }
 
 impl Str34C {
     /// Process each function definition with its own scoped char_vars
-    fn check_translation_unit(
+    fn check_translation_unit<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
+        parents: &ParentMap<'a>,
         violations: &mut Vec<RuleViolation>,
     ) {
         if node.kind() == "function_definition" {
             // Collect char variables scoped to this function
             let mut char_vars: HashMap<String, (usize, bool, usize)> = HashMap::new();
             self.collect_char_variables(node, source, &mut char_vars);
-            self.check_node(node, source, &char_vars, violations);
+            self.check_node(node, source, parents, &char_vars, violations);
             return; // Don't recurse further into this function
         }
 
@@ -68,14 +67,14 @@ impl Str34C {
             }
             // Check file-scope code with file-scope vars
             if !file_char_vars.is_empty() {
-                self.check_node(node, source, &file_char_vars, violations);
+                self.check_node(node, source, parents, &file_char_vars, violations);
             }
         }
 
         // Recurse to find function_definitions
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                self.check_translation_unit(&child, source, violations);
+                self.check_translation_unit(&child, source, parents, violations);
             }
         }
     }
@@ -236,17 +235,18 @@ impl Str34C {
     }
 
     /// Check node and its children for violations
-    fn check_node(
+    fn check_node<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
+        parents: &ParentMap<'a>,
         char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
         for n in query::find_descendants(*node, |_| true) {
             // Check for direct assignment to larger integer types
             if n.kind() == "init_declarator" {
-                self.check_init_declarator(&n, source, char_vars, violations);
+                self.check_init_declarator(&n, source, parents, char_vars, violations);
             }
 
             // Check for assignment expressions
@@ -256,33 +256,34 @@ impl Str34C {
 
             // Check for subscript expressions (array indexing)
             if n.kind() == "subscript_expression" {
-                self.check_subscript_expression(&n, source, char_vars, violations);
+                self.check_subscript_expression(&n, source, parents, char_vars, violations);
             }
 
             // Check for pointer dereferences assigned to larger types
             if n.kind() == "pointer_expression" {
-                self.check_pointer_expression(&n, source, char_vars, violations);
+                self.check_pointer_expression(&n, source, parents, char_vars, violations);
             }
 
             // Check for cast expressions that cast char to larger types
             if n.kind() == "cast_expression" {
-                self.check_cast_expression(&n, source, char_vars, violations);
+                self.check_cast_expression(&n, source, parents, char_vars, violations);
             }
         }
     }
 
     /// Check init_declarator for problematic assignments
-    fn check_init_declarator(
+    fn check_init_declarator<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
+        parents: &ParentMap<'a>,
         char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
         if let Some(_declarator) = node.child_by_field_name("declarator") {
             if let Some(value) = node.child_by_field_name("value") {
                 // Check if the declarator is a larger integer type
-                if let Some(parent) = node.parent() {
+                if let Some(parent) = parents.parent_of(*node) {
                     if parent.kind() == "declaration" {
                         if let Some(type_node) = parent.child_by_field_name("type") {
                             let type_text = get_node_text(&type_node, source);
@@ -290,7 +291,7 @@ impl Str34C {
                             if self.is_larger_integer_type(&type_text) {
                                 // Check if value involves a char variable without proper cast
                                 self.check_char_usage_in_expression(
-                                    &value, source, char_vars, violations,
+                                    &value, source, parents, char_vars, violations,
                                 );
                             }
                         }
@@ -365,10 +366,11 @@ impl Str34C {
     }
 
     /// Check subscript expressions (array indexing)
-    fn check_subscript_expression(
+    fn check_subscript_expression<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
+        parents: &ParentMap<'a>,
         char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -377,7 +379,7 @@ impl Str34C {
             if let Some(identifier) = self.extract_identifier(&index, source) {
                 if char_vars.contains_key(&identifier) {
                     // Check if there's a cast to unsigned char
-                    if !self.has_unsigned_char_cast(&index, source) {
+                    if !self.has_unsigned_char_cast(&index, source, parents) {
                         violations.push(RuleViolation {
                             rule_id: self.rule_id().to_string(),
                             severity: Severity::Medium,
@@ -398,10 +400,11 @@ impl Str34C {
     }
 
     /// Check pointer expressions
-    fn check_pointer_expression(
+    fn check_pointer_expression<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
+        parents: &ParentMap<'a>,
         char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -414,7 +417,7 @@ impl Str34C {
                 // Look for char pointer types
                 if self.is_single_indirection_char(char_vars, &base_name) {
                     // Check if this dereference is being assigned to a larger type
-                    if let Some(parent) = node.parent() {
+                    if let Some(parent) = parents.parent_of(*node) {
                         // For `*ptr = value`, this pointer_expression is the
                         // assignment's write *target* -- the char byte is being
                         // written, not read and widened, so STR34-C's
@@ -429,7 +432,7 @@ impl Str34C {
                             && !is_assignment_write_target
                         {
                             // Check if there's a cast to unsigned char
-                            if !self.has_unsigned_char_cast(node, source) {
+                            if !self.has_unsigned_char_cast(node, source, parents) {
                                 violations.push(RuleViolation {
                                     rule_id: self.rule_id().to_string(),
                                     severity: Severity::Medium,
@@ -452,10 +455,11 @@ impl Str34C {
     }
 
     /// Check cast expressions for improper casting
-    fn check_cast_expression(
+    fn check_cast_expression<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
+        _parents: &ParentMap<'a>,
         char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
@@ -530,17 +534,20 @@ impl Str34C {
     }
 
     /// Check if an expression involves char variables without proper casting
-    fn check_char_usage_in_expression(
+    fn check_char_usage_in_expression<'a>(
         &self,
-        node: &Node,
+        node: &Node<'a>,
         source: &str,
+        parents: &ParentMap<'a>,
         char_vars: &HashMap<String, (usize, bool, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Once a node is inside an unsigned-char cast, all its descendants are
         // too (ancestors only accumulate going down), so filtering each
         // visited node this way matches the original short-circuit exactly.
-        for n in query::find_descendants(*node, |c| !self.has_unsigned_char_cast(&c, source)) {
+        for n in
+            query::find_descendants(*node, |c| !self.has_unsigned_char_cast(&c, source, parents))
+        {
             // Check for identifiers that are char variables
             if n.kind() == "identifier" {
                 let var_name = get_node_text(&n, source);
@@ -596,33 +603,27 @@ impl Str34C {
         }
     }
 
-    /// Check if a node has a cast to unsigned char in its ancestor chain
-    fn has_unsigned_char_cast(&self, node: &Node, source: &str) -> bool {
-        // Check if this node is a cast expression
-        if node.kind() == "cast_expression" {
-            if let Some(type_node) = node.child_by_field_name("type") {
-                let type_text = get_node_text(&type_node, source);
-                if type_text.contains("unsigned") && type_text.contains("char") {
-                    return true;
-                }
-            }
-        }
-
-        // Check ancestors up the tree
-        let mut current = node.parent();
-        while let Some(ancestor) = current {
-            if ancestor.kind() == "cast_expression" {
-                if let Some(type_node) = ancestor.child_by_field_name("type") {
-                    let type_text = get_node_text(&type_node, source);
-                    if type_text.contains("unsigned") && type_text.contains("char") {
-                        return true;
-                    }
-                }
-            }
-            current = ancestor.parent();
-        }
-
-        false
+    /// Check if a node has a cast to unsigned char in its ancestor chain.
+    ///
+    /// Walks ancestors via the per-file parent map (O(1) per step) instead of
+    /// `Node::parent()` (O(depth)), which turned this predicate cubic on
+    /// deep-nested fixtures -- see task 984.
+    fn has_unsigned_char_cast<'a>(
+        &self,
+        node: &Node<'a>,
+        source: &str,
+        parents: &ParentMap<'a>,
+    ) -> bool {
+        let is_uchar_cast = |n: Node<'a>| -> bool {
+            n.kind() == "cast_expression"
+                && n.child_by_field_name("type")
+                    .map(|t| {
+                        let text = get_node_text(&t, source);
+                        text.contains("unsigned") && text.contains("char")
+                    })
+                    .unwrap_or(false)
+        };
+        is_uchar_cast(*node) || parents.find_ancestor(*node, is_uchar_cast).is_some()
     }
 
     /// Check if a type is a larger integer type (int, long, size_t, etc.)

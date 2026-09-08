@@ -81,6 +81,64 @@ pub fn get_sanitized_node_text(node: &Node, source: &str) -> String {
 // AST Navigation
 // ============================================================================
 
+/// A per-file cache of every AST node's parent, so an ancestor walk pays
+/// O(1) per step instead of O(depth).
+///
+/// `tree_sitter::Node::parent()` is not a pointer hop -- it recovers a parent
+/// by descending from the tree root, so one call costs O(depth). A rule that
+/// walks up from a node therefore pays O(depth^2), and running that once per
+/// descendant of a file whose node count grows with its nesting depth is
+/// cubic. On the 2,000-level `if`-nesting fixture that cost ~24 s total
+/// across the whole rule set (task 984, this repo); STR34-C alone spent 2.9 s
+/// there re-descending from the root once per identifier.
+///
+/// Build one map per file with `ParentMap::new(root)` (a single pre-order
+/// walk, O(n)), then hand `&ParentMap` to the ancestor helpers below. Any
+/// rule that walks ancestors more than a bounded few levels should use this
+/// -- pattern (3) in `docs/design/internal-capability-catalog.md`, alongside
+/// prune-on-the-way-down and carry-a-stack.
+pub struct ParentMap<'a> {
+    parents: std::collections::HashMap<usize, Node<'a>>,
+}
+
+impl<'a> ParentMap<'a> {
+    /// Build a parent map for every node in `root`'s subtree with a single
+    /// pre-order walk (O(n) nodes, O(1) per step).
+    pub fn new(root: Node<'a>) -> Self {
+        let mut parents = std::collections::HashMap::new();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                parents.insert(child.id(), node);
+                stack.push(child);
+            }
+        }
+        Self { parents }
+    }
+
+    /// The direct parent of `node`, or `None` if `node` is the map's root.
+    pub fn parent_of(&self, node: Node<'a>) -> Option<Node<'a>> {
+        self.parents.get(&node.id()).copied()
+    }
+
+    /// The nearest strict ancestor of `node` satisfying `pred`, or `None`.
+    pub fn find_ancestor(
+        &self,
+        node: Node<'a>,
+        mut pred: impl FnMut(Node<'a>) -> bool,
+    ) -> Option<Node<'a>> {
+        let mut cur = self.parent_of(node);
+        while let Some(n) = cur {
+            if pred(n) {
+                return Some(n);
+            }
+            cur = self.parent_of(n);
+        }
+        None
+    }
+}
+
 /// Find the containing function definition for a given node
 /// Returns the function_definition node that contains the given node
 pub fn find_containing_function<'a>(node: &Node<'a>) -> Option<Node<'a>> {
@@ -447,6 +505,71 @@ pub fn get_identifier_from_declarator(declarator: &Node, source: &str) -> String
         }
         _ => String::new(), // Return empty string for consistency with original implementations
     }
+}
+
+/// Names of the functions declared by an `ERROR` node wrapping declarations
+/// tree-sitter could not finish.
+///
+/// A prototype or definition decorated with a trailing attribute macro
+/// (`__THROW`, `__wur`, `__nonnull ((1))`), or interrupted by a preprocessor
+/// conditional inside its own declarator, does not parse as a `declaration`
+/// or a `function_definition` at all: tree-sitter emits an `ERROR` node whose
+/// children are the specifiers, the `function_declarator`, and the undigested
+/// tokens. glibc writes most of POSIX that way — every `sigaction`,
+/// `sigprocmask` and `setuid` prototype has this shape — so a walk that only
+/// visits `declaration`/`function_definition` nodes reads the whole POSIX
+/// surface as undeclared (task 1038). sqlite's `columnNullValue`, whose
+/// definition carries a conditional `__attribute__((aligned(8)))`, is the
+/// same node shape reached from the other cause.
+///
+/// Returns *every* such declaration, because one `ERROR` is not always one
+/// declaration: recovery in a heavily macro-decorated file can collapse the
+/// whole translation unit into a single `ERROR` whose children are its
+/// top-level items (pure-ftpd's `src/ftpd.c` does this), and there stopping at
+/// the first match would recover one name out of hundreds.
+///
+/// What is recognized is a run of type/storage specifiers immediately followed
+/// by a function declarator — the shape of a declaration and nothing else. Any
+/// other child ends the run, so a misparsed *call* recovered inside an `ERROR`,
+/// which never has specifiers in front of it, is not read back as a
+/// declaration.
+///
+/// A pointer-returning prototype (`char *strdup(...) __THROW`) is *not*
+/// affected — it still parses as a `declaration` — so this is a supplement to
+/// the normal declaration walk, never a replacement for it: call it on the
+/// `ERROR`, then keep recursing.
+pub fn function_names_in_error_declaration(node: &Node, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    if node.kind() != "ERROR" {
+        return names;
+    }
+    let mut saw_specifier = false;
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        match child.kind() {
+            "storage_class_specifier"
+            | "type_qualifier"
+            | "primitive_type"
+            | "sized_type_specifier"
+            | "type_identifier"
+            | "struct_specifier"
+            | "union_specifier"
+            | "enum_specifier" => saw_specifier = true,
+            "function_declarator" | "pointer_declarator" if saw_specifier => {
+                saw_specifier = false;
+                if crate::utility::cert_c::declarator_utils::is_function_declarator(&child) {
+                    let name = get_identifier_from_declarator(&child, source);
+                    if !name.is_empty() {
+                        names.push(name);
+                    }
+                }
+            }
+            _ => saw_specifier = false,
+        }
+    }
+    names
 }
 
 /// Find identifier in a declarator node, returns Option instead of "unknown" string.
