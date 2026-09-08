@@ -3407,31 +3407,56 @@ fn guarded_nonnull_after(stmt: &Node, var: &str, source: &str) -> bool {
     }
     guard
         .child_by_field_name("consequence")
-        .is_some_and(|c| always_diverges(&c))
+        .is_some_and(|c| guard_dominance::always_diverges(&c))
 }
 
-/// True when control cannot fall out of the bottom of `stmt`: it is itself a
-/// `goto`/`return`/`break`/`continue`, or a block whose last non-comment
-/// statement is one. A block that cannot fall off its end cannot be left
-/// except by a jump either, so accepting it is exact rather than optimistic;
-/// every other shape is rejected.
-fn always_diverges(stmt: &Node) -> bool {
-    match stmt.kind() {
-        "goto_statement" | "return_statement" | "break_statement" | "continue_statement" => true,
-        "compound_statement" => {
-            let mut last = None;
-            for i in 0..stmt.child_count() {
-                if let Some(child) = stmt.child(i) {
-                    if matches!(child.kind(), "comment" | "{" | "}") {
-                        continue;
-                    }
-                    last = Some(child);
-                }
-            }
-            last.is_some_and(|l| always_diverges(&l))
+/// True when `condition` evaluating TRUE implies `var` is non-null: a bare
+/// truthiness test (`p`) or an explicit `p != NULL` / `p != 0`, at any depth
+/// through `&&` (every conjunct must hold for the whole to be true).
+///
+/// The mirror of `extract_null_checked_vars`, which answers the same question
+/// for the FALSE branch and splits on `||` for that reason.
+fn condition_true_implies_nonnull(condition: &Node, var: &str, source: &str) -> bool {
+    let text = condition.utf8_text(source.as_bytes()).unwrap_or("").trim();
+    let text = text
+        .strip_prefix('(')
+        .and_then(|t| t.strip_suffix(')'))
+        .unwrap_or(text);
+    text.split("&&").any(|part| {
+        let part = part.trim();
+        if part == var {
+            return true;
         }
-        _ => false,
-    }
+        match part.find("!=") {
+            Some(pos) => {
+                let (left, right) = (part[..pos].trim(), part[pos + 2..].trim());
+                (left == var && (right == "NULL" || right == "0"))
+                    || (right == var && (left == "NULL" || left == "0"))
+            }
+            None => false,
+        }
+    })
+}
+
+/// True when a null guard already evaluated at `site` implies `var` is
+/// non-null there.
+///
+/// This is the per-site question `guarded_nonnull_after` answers only for the
+/// immediately-adjacent case. The flow-insensitive `local_states` table holds
+/// one state per variable for a whole function, so it cannot express "guarded
+/// here, not there"; asking at the argument's own node can.
+fn guarded_nonnull_at(site: &Node, var: &str, source: &str) -> bool {
+    guard_dominance::dominating_conditions(site)
+        .iter()
+        .any(
+            |cond| match guard_dominance::dominating_condition_branch(cond, site) {
+                Some(true) => condition_true_implies_nonnull(cond, var, source),
+                Some(false) => extract_null_checked_vars(cond, source)
+                    .iter()
+                    .any(|v| v == var),
+                None => false,
+            },
+        )
 }
 
 fn collect_assignments_recursive(
@@ -3805,10 +3830,18 @@ fn infer_call_arg_state(
     }
     if arg.kind() == "identifier" {
         let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-        return local_states
+        let tabled = local_states
             .get(name)
             .copied()
             .unwrap_or(NullState::Unknown);
+        // `local_states` holds one state per variable for the whole function,
+        // so it cannot distinguish a guarded read from an unguarded one. Ask
+        // at this argument's own position before letting a maybe-null table
+        // entry vote.
+        if tabled != NullState::NotNull && guarded_nonnull_at(arg, name, source) {
+            return NullState::NotNull;
+        }
+        return tabled;
     }
     NullState::Unknown
 }
@@ -6621,6 +6654,85 @@ void caller(void) {
     if (!other)
         return;
     sink(data);
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::DefinitelyNull);
+    }
+
+    #[test]
+    fn test_nested_non_adjacent_guard_votes_not_null() {
+        // The shape neither earlier mechanism can reach: the guard is NESTED
+        // (so collect_early_return_null_guards, which walks only direct
+        // children of the body, misses it) and NOT adjacent to the assignment
+        // (so guarded_nonnull_after's next_sibling check misses it too). Only
+        // the per-site dominance query finds it.
+        let code = r#"
+void caller(int flag) {
+    char *data = 0;
+    if (flag) {
+        data = get_buf();
+        log_it("got it");
+        if (!data)
+            return;
+        sink(data);
+    }
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::NotNull);
+    }
+
+    #[test]
+    fn test_short_circuit_or_left_disjunct_votes_not_null() {
+        // hostap wpa_supplicant/interworking.c:1457 --
+        // `if (selected == NULL || is_excluded || cred_prio_cmp(selected, cred) < 0)`.
+        // Reaching the later disjunct means the null test was false.
+        let code = r#"
+void caller(char *cred) {
+    char *selected = 0;
+    if (selected == NULL || sink(selected) < 0)
+        selected = cred;
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::NotNull);
+    }
+
+    #[test]
+    fn test_short_circuit_and_left_conjunct_votes_not_null() {
+        // hostap wpa_supplicant/interworking.c:1798 --
+        // `if (cred_rc && (cred == NULL || cred_prio_cmp(cred_rc, cred) >= 0))`.
+        let code = r#"
+void caller(void) {
+    char *cred_rc = 0;
+    if (cred_rc && sink(cred_rc) >= 0)
+        return;
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::NotNull);
+    }
+
+    #[test]
+    fn test_enclosing_null_branch_does_not_vote_not_null() {
+        // Inside the TRUE branch of `!data` the pointer IS null. Crediting the
+        // mere presence of a dominating null test would invert the answer.
+        let code = r#"
+void caller(void) {
+    char *data = 0;
+    if (!data) {
+        sink(data);
+    }
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::DefinitelyNull);
+    }
+
+    #[test]
+    fn test_disjunct_on_other_variable_does_not_vote_not_null() {
+        // The dominating condition tests a neighbouring pointer, not this one.
+        let code = r#"
+void caller(char *other) {
+    char *data = 0;
+    if (other == NULL || sink(data) < 0)
+        return;
 }
 "#;
         assert_eq!(sink_arg0_state(code), NullState::DefinitelyNull);

@@ -495,6 +495,108 @@ fn spans(outer: &Node, inner: &Node) -> bool {
     outer.start_byte() <= inner.start_byte() && inner.end_byte() <= outer.end_byte()
 }
 
+/// True when control cannot fall out of the bottom of `stmt`: it is itself a
+/// `goto`/`return`/`break`/`continue`, or a block whose last non-comment
+/// statement is one.
+///
+/// A block that cannot fall off its end cannot be left except by a jump
+/// either, so accepting it is exact rather than optimistic. Every other shape
+/// is rejected — including a block ending in a preprocessor wrapper, where
+/// what runs depends on a `-D` this analyzer does not resolve.
+pub fn always_diverges(stmt: &Node) -> bool {
+    match stmt.kind() {
+        "goto_statement" | "return_statement" | "break_statement" | "continue_statement" => true,
+        "compound_statement" => {
+            let mut last = None;
+            for i in 0..stmt.child_count() {
+                if let Some(child) = stmt.child(i) {
+                    if matches!(child.kind(), "comment" | "{" | "}") {
+                        continue;
+                    }
+                    last = Some(child);
+                }
+            }
+            last.is_some_and(|l| always_diverges(&l))
+        }
+        _ => false,
+    }
+}
+
+/// Which way a condition from [`dominating_conditions`] had to evaluate for
+/// control to reach `site`: `Some(true)`, `Some(false)`, or `None` when the
+/// relation does not pin it down.
+///
+/// [`dominating_conditions`] answers "was this condition evaluated before
+/// `site`?" and returns bare nodes, which is all a bounds question needs — a
+/// comparison that has been evaluated bounds the variable whichever way it
+/// went. A *null* question additionally needs the branch, because
+/// `if (!p) { site }` and `if (!p) return; site` say opposite things about the
+/// very same condition. This is that missing half.
+///
+/// Deliberately `None` rather than a guess in three places:
+///
+/// - **An `else if` chain reaching past itself.** Control can arrive after
+///   `if (a) X else if (!p) Y` without ever evaluating `!p` (when `a` held and
+///   `X` fell through), so a site following the chain learns nothing. Only a
+///   lone `if` whose consequence [`always_diverges`] pins its condition false
+///   for a following site.
+/// - **After a loop.** The condition is false on exit, but the body may have
+///   reassigned the variable, so only the body counts.
+/// - **A `switch`.** The governing relation is the case label, not the
+///   condition's truthiness.
+pub fn dominating_condition_branch(cond: &Node, site: &Node) -> Option<bool> {
+    let parent = cond.parent()?;
+    match parent.kind() {
+        "if_statement" | "conditional_expression" => {
+            if parent
+                .child_by_field_name("consequence")
+                .is_some_and(|c| spans(&c, site))
+            {
+                return Some(true);
+            }
+            if parent
+                .child_by_field_name("alternative")
+                .is_some_and(|a| spans(&a, site))
+            {
+                return Some(false);
+            }
+            // An `else if` is an `if_statement` under an `else_clause`. Such a
+            // tail looks exactly like a lone exiting `if` from here, but a
+            // site following the chain may have arrived through an earlier
+            // branch that fell through, never evaluating this condition at
+            // all — so the chain, not this link, is what would have to exit.
+            let is_chain_tail = parent
+                .parent()
+                .is_some_and(|g| matches!(g.kind(), "else_clause" | "if_statement"));
+            let lone_if_that_exits = parent.kind() == "if_statement"
+                && !is_chain_tail
+                && parent.child_by_field_name("alternative").is_none()
+                && parent
+                    .child_by_field_name("consequence")
+                    .is_some_and(|c| always_diverges(&c));
+            lone_if_that_exits.then_some(false)
+        }
+        "while_statement" | "for_statement" => parent
+            .child_by_field_name("body")
+            .and_then(|b| spans(&b, site).then_some(true)),
+        // Short-circuit: the right operand runs only when the left was true
+        // (`&&`) or false (`||`).
+        "binary_expression" => {
+            let operator = parent.child_by_field_name("operator")?;
+            let right = parent.child_by_field_name("right")?;
+            if !spans(&right, site) {
+                return None;
+            }
+            match operator.kind() {
+                "&&" => Some(true),
+                "||" => Some(false),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,6 +626,92 @@ mod tests {
 
     fn guarded(src: &str, var: &str) -> bool {
         guarded_at_arithmetic(src, var, ComparisonKind::OrderingOrExtremeEquality)
+    }
+
+    /// The branch a dominating condition took at the call marked by `sink(`.
+    /// Fixtures below hold exactly one such call.
+    fn branch_at_sink(src: &str) -> Vec<Option<bool>> {
+        let tree = parse_c_code(src);
+        let site = query::find_descendants_of_kind(tree.root_node(), "call_expression")
+            .into_iter()
+            .find(|n| {
+                n.child_by_field_name("function")
+                    .is_some_and(|f| get_node_text(&f, src) == "sink")
+            })
+            .expect("fixture has a sink() call");
+        dominating_conditions(&site)
+            .iter()
+            .map(|c| dominating_condition_branch(c, &site))
+            .collect()
+    }
+
+    #[test]
+    fn test_branch_enclosing_consequence_is_true() {
+        let out = branch_at_sink("void f(char *p) { if (p) { sink(p); } }");
+        assert_eq!(out, vec![Some(true)]);
+    }
+
+    #[test]
+    fn test_branch_enclosing_alternative_is_false() {
+        let out = branch_at_sink("void f(char *p) { if (!p) { g(); } else { sink(p); } }");
+        assert_eq!(out, vec![Some(false)]);
+    }
+
+    #[test]
+    fn test_branch_lone_diverging_if_pins_following_site_false() {
+        let out = branch_at_sink("void f(char *p) { if (!p) return; sink(p); }");
+        assert_eq!(out, vec![Some(false)]);
+    }
+
+    #[test]
+    fn test_branch_else_if_chain_reaching_past_itself_is_none() {
+        // Control reaches sink() with `!p` never evaluated, when `a` held and
+        // the first branch fell through. Neither condition may be credited.
+        let out = branch_at_sink(
+            "void f(int a, char *p) { if (a) { g(); } else if (!p) { return; } sink(p); }",
+        );
+        assert!(out.iter().all(|b| b.is_none()), "got {:?}", out);
+    }
+
+    #[test]
+    fn test_branch_non_diverging_if_is_none() {
+        let out = branch_at_sink("void f(char *p) { if (!p) { g(); } sink(p); }");
+        assert!(out.iter().all(|b| b.is_none()), "got {:?}", out);
+    }
+
+    #[test]
+    fn test_branch_logical_and_right_is_true() {
+        let out = branch_at_sink("int f(char *p) { return p && sink(p); }");
+        assert_eq!(out, vec![Some(true)]);
+    }
+
+    #[test]
+    fn test_branch_logical_or_right_is_false() {
+        // hostap's interworking.c:1457 shape: reaching the right operand means
+        // the left disjunct was false.
+        let out = branch_at_sink("int f(char *p) { return p == 0 || sink(p); }");
+        assert_eq!(out, vec![Some(false)]);
+    }
+
+    #[test]
+    fn test_branch_after_loop_is_none() {
+        let out = branch_at_sink("void f(char *p) { while (p) { g(); } sink(p); }");
+        assert!(out.iter().all(|b| b.is_none()), "got {:?}", out);
+    }
+
+    #[test]
+    fn test_always_diverges_shapes() {
+        let tree = parse_c_code(
+            "void f(void) { { return; } { g(); } { g(); goto e; } { if (x) return; } }",
+        );
+        let blocks: Vec<_> =
+            query::find_descendants_of_kind(tree.root_node(), "compound_statement")
+                .into_iter()
+                .filter(|b| b.parent().is_some_and(|p| p.kind() == "compound_statement"))
+                .collect();
+        let got: Vec<bool> = blocks.iter().map(always_diverges).collect();
+        // return; / falls through / goto at the end / conditional return only
+        assert_eq!(got, vec![true, false, true, false]);
     }
 
     #[test]
