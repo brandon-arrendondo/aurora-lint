@@ -701,8 +701,18 @@ rather than by a macro name or a parser signal, for the preprocessor
 constructs `tree-sitter-c`'s grammar has no production for at all:
 `preproc_dangling_else.rs` (task 441, an if/else chain split across a
 guard), `label_preproc_guard.rs` (task 647, a guard opening right after a
-goto label) and `paren_preproc_guard.rs` (task 1044, a guard opening inside
-an unclosed parenthesized expression). Each blanks the offending directive
+goto label), `paren_preproc_guard.rs` (task 1044, a guard opening inside
+an unclosed parenthesized expression) and
+`control_header_preproc_guard.rs` (task 1066, a guard closing between an
+`if`/`while`/`for` header and the body it governs, which leaves the header
+with a synthesized `(expression_statement (MISSING ";"))` consequence that
+reads as an unbraced body). All four are restricted to a conditional with NO
+`#else`/`#elif`: blanking a wrapper that has alternative arms would splice
+mutually exclusive text into one statement stream. A multi-arm chain whose
+arms each end in an incomplete fragment -- curl's `hostip4.c` mixes a bare
+`else` tail and an `if` header in one `#elif` chain -- is therefore
+unhandled by all of them, and wants a single multi-arm-aware pass rather
+than a fifth module. Each blanks the offending directive
 lines, length-preserving, so the guarded code rejoins the construct it
 belongs to. All of them operate at parse time, not from within a rule — a rule
 encountering *residual* malformed-declaration debris (a `MISSING`/`ERROR`
