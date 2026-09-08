@@ -1,5 +1,7 @@
 //! Pre-parse pass: blank out empty (`#define NAME` with no body) object-like
-//! macros throughout a file before it's fed to tree-sitter (task 435).
+//! macros throughout a file before it's fed to tree-sitter (task 435), and
+//! substitute qualifier-alias macros (`#define CONST const`) with the
+//! keyword they expand to (task 758).
 //!
 //! tree-sitter-c's grammar doesn't recognize an unknown bare identifier
 //! immediately preceding a declaration's type -- the WINAPI/RLAPI/APIENTRY
@@ -23,10 +25,28 @@
 //! every byte offset in the file exactly, so all downstream line/column
 //! positions stay correct, and no rule's logic depends on the semantic
 //! content of a macro name that expands to nothing by definition.
+//!
+//! A qualifier-alias macro is the same class of hazard from the other side:
+//! Tcl's `#define CONST const` (sqlite's `src/tclsqlite.h:37`) means the
+//! standard Tcl callback signature is written `Tcl_Obj *CONST objv[]`.
+//! Without a preprocessor tree-sitter-c cannot know `CONST` is a qualifier;
+//! it reads it as the DECLARATOR NAME, so every declarator-reading rule
+//! (DCL13-C's `is_const`, DCL31-C's function-name extraction, ...) sees a
+//! phantom parameter named `CONST` and misses the real one. Substituting
+//! the name with the keyword text, padded with trailing spaces to preserve
+//! byte length, feeds tree-sitter a token stream it parses correctly and
+//! whose `type_qualifier` node reads back as the literal keyword every rule
+//! already checks for.
 
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
+
+/// Type qualifiers we substitute a matching macro alias with. Only keywords
+/// tree-sitter-c parses as `type_qualifier`; storage-class specifiers
+/// (`static`, `inline`) and attribute prefixes (`__attribute__`) are a
+/// different parser hazard and not covered here.
+const QUALIFIER_KEYWORDS: &[&str] = &["const", "volatile", "restrict", "_Atomic"];
 
 fn define_line_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -266,13 +286,84 @@ const KNOWN_CROSS_FILE_EMPTY_MACROS: &[&str] = &["deliberate_fall_through"];
 /// Blank every empty object-like macro's usages throughout `source`. See
 /// module docs for why. Returns `source` unchanged if none are found.
 pub fn blank_empty_object_macros(source: &str) -> String {
-    let mut names = find_empty_object_macros(source);
+    let aliased = substitute_qualifier_alias_macros(source);
+    let mut names = find_empty_object_macros(&aliased);
     for &name in KNOWN_CROSS_FILE_EMPTY_MACROS {
-        if source.contains(name) {
+        if aliased.contains(name) {
             names.insert(name.to_string());
         }
     }
-    blank_occurrences(source, &names)
+    blank_occurrences(&aliased, &names)
+}
+
+/// Scan `source` for `#define NAME <qualifier>` directives where the body
+/// is a single type-qualifier keyword. Returns the mapping from macro name
+/// to the keyword it expands to, restricted to names at least as long as
+/// the keyword (so the substitution can preserve byte length by trailing
+/// with spaces). Names shorter than their keyword are silently skipped --
+/// the byte-length invariant is more important than covering that
+/// (uncommon) case.
+fn find_qualifier_alias_macros(source: &str) -> HashMap<String, &'static str> {
+    let mut aliases = HashMap::new();
+    for m in define_line_re().captures_iter(source) {
+        let name = &m[1];
+        let body = m[2].trim();
+        // Strip a trailing line-comment: `#define CONST const  // Tcl compat`.
+        let body = body.split("//").next().unwrap_or(body).trim();
+        // Strip a single-line block-comment tail: `... /* compat */`.
+        let body = if let Some(idx) = body.rfind("/*") {
+            if body[idx..].ends_with("*/") {
+                body[..idx].trim()
+            } else {
+                body
+            }
+        } else {
+            body
+        };
+        for kw in QUALIFIER_KEYWORDS {
+            if body == *kw && name.len() >= kw.len() {
+                aliases.insert(name.to_string(), *kw);
+                break;
+            }
+        }
+    }
+    aliases
+}
+
+/// Replace every whole-word occurrence of a qualifier-alias macro NAME
+/// (outside a preprocessor directive line) with `keyword` followed by
+/// enough trailing spaces to preserve the NAME's byte length. This makes
+/// tree-sitter-c parse the qualifier as if it had been spelled literally,
+/// so declarator-reading rules see the real parameter name and the
+/// keyword as a `type_qualifier` node (task 758).
+fn substitute_qualifier_alias_macros(source: &str) -> String {
+    let aliases = find_qualifier_alias_macros(source);
+    if aliases.is_empty() {
+        return source.to_string();
+    }
+    let directive_lines = preproc_directive_line_ranges(source);
+    let mut out: Vec<u8> = source.as_bytes().to_vec();
+    for (name, keyword) in &aliases {
+        let re = Regex::new(&format!(r"\b{}\b", regex::escape(name))).unwrap();
+        for m in re.find_iter(source) {
+            let (start, end) = (m.start(), m.end());
+            let on_directive_line = directive_lines
+                .iter()
+                .any(|&(ls, le)| start >= ls && end <= le);
+            if on_directive_line {
+                continue;
+            }
+            let kw_bytes = keyword.as_bytes();
+            for (i, b) in out.iter_mut().enumerate().take(end).skip(start) {
+                *b = if i - start < kw_bytes.len() {
+                    kw_bytes[i - start]
+                } else {
+                    b' '
+                };
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| source.to_string())
 }
 
 #[cfg(test)]
@@ -418,6 +509,78 @@ mod tests {
     #[test]
     fn leaves_source_alone_when_cross_file_marker_absent() {
         let src = "int x = 1;\nint y = 2;\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn substitutes_qualifier_alias_macro_at_declarator_position() {
+        // Tcl's `#define CONST const` (sqlite src/tclsqlite.h:37). Every
+        // declarator-reading rule reads `Tcl_Obj *CONST objv[]` as a
+        // parameter literally named CONST, since tree-sitter-c cannot know
+        // CONST is a qualifier without a preprocessor (task 758).
+        let src = "#define CONST const\nint f(int *CONST p);\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("int f(int *const p);"), "got {:?}", out);
+        // The #define line itself is left untouched.
+        assert!(out.contains("#define CONST const\n"));
+    }
+
+    #[test]
+    fn pads_longer_qualifier_alias_name_with_trailing_spaces() {
+        // `_CONST` (6 chars) -> `const ` (keyword + one trailing space),
+        // preserving byte length.
+        let src = "#define _CONST const\nint f(int *_CONST p);\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("int f(int *const  p);"), "got {:?}", out);
+    }
+
+    #[test]
+    fn handles_multiple_qualifier_aliases() {
+        let src = "#define CONST const\n#define VOLATILE volatile\nint f(int *CONST p, int *VOLATILE q);\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(
+            out.contains("int f(int *const p, int *volatile q);"),
+            "got {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn qualifier_alias_shorter_than_keyword_not_substituted() {
+        // `_A` is 2 chars, `const` is 5 -- cannot preserve byte length,
+        // skip.
+        let src = "#define _A const\nint f(int *_A p);\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn qualifier_alias_left_alone_on_directive_lines() {
+        // The name may appear on `#ifdef CONST` / `#undef CONST` etc. --
+        // must not be substituted there, or the directive syntax breaks.
+        let src = "#define CONST const\n#ifdef CONST\nint x;\n#endif\nint f(int *CONST p);\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("#ifdef CONST\n"), "got {:?}", out);
+        assert!(out.contains("int f(int *const p);"), "got {:?}", out);
+    }
+
+    #[test]
+    fn substitution_ignores_trailing_comment_on_define() {
+        let src = "#define CONST const  /* Tcl compat */\nint f(int *CONST p);\n";
+        let out = blank_empty_object_macros(src);
+        assert_eq!(out.len(), src.len());
+        assert!(out.contains("int f(int *const p);"), "got {:?}", out);
+    }
+
+    #[test]
+    fn non_qualifier_body_not_substituted() {
+        // Body isn't one of the recognised qualifier keywords.
+        let src = "#define MAX 100\nint arr[MAX];\n";
         let out = blank_empty_object_macros(src);
         assert_eq!(out, src);
     }

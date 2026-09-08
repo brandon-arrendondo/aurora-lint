@@ -3,6 +3,7 @@ use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{collect_function_macros, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use regex::Regex;
 use std::cell::RefCell;
@@ -15,12 +16,21 @@ pub struct Exp36C {
     /// prescan (task 395). Needed because the struct's *definition* usually
     /// lives in a header, not the file containing the cast being checked.
     packed_structs: RefCell<HashSet<String>>,
+    /// Cross-file typedef alias map. Reached through the shared
+    /// [`resolve_typedef_chain`] to answer alignment for a typedef'd
+    /// integer type (task 736 -- previously sqlite's `i64` -> `sqlite_int64`
+    /// -> `long long int` fell through to the "unknown pointer -> assume
+    /// 4-byte" default and every `(u64 *)&<i64 var>` cast fabricated an
+    /// alignment mismatch. 15 labeled sqlite FPs across two adjudication
+    /// passes).
+    typedef_types: RefCell<HashMap<String, String>>,
 }
 
 impl Exp36C {
     pub fn new() -> Self {
         Self {
             packed_structs: RefCell::new(HashSet::new()),
+            typedef_types: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -54,6 +64,7 @@ impl CertRule for Exp36C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.packed_structs.borrow_mut() = context.packed_structs.clone();
+        *self.typedef_types.borrow_mut() = context.typedef_types.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -734,6 +745,35 @@ impl Exp36C {
             return 4; // Conservative estimate for struct alignment
         }
 
+        // Resolve a typedef chain to its terminal builtin before assuming
+        // the default. A pointer type `i64 *` normalized to itself is not
+        // in the map -- but sqlite's `typedef sqlite_int64 i64;` /
+        // `typedef long long int sqlite_int64;` chain resolves the base to
+        // `long long int` (alignment 8), which is the same width as `u64 *`
+        // and defeats the fabricated 4->8 alignment jump this default
+        // would otherwise produce (task 736).
+        let is_pointer = normalized.ends_with('*');
+        let base = if is_pointer {
+            normalized.trim_end_matches('*').trim().to_string()
+        } else {
+            normalized.clone()
+        };
+        let typedefs = self.typedef_types.borrow();
+        if typedefs.contains_key(&base) {
+            let resolved = resolve_typedef_chain(&base, &typedefs);
+            if let Some(align) = builtin_int_alignment(&resolved) {
+                return align;
+            }
+            let resolved_lookup = if is_pointer {
+                format!("{} *", resolved)
+            } else {
+                resolved.clone()
+            };
+            if let Some(&alignment) = alignments.get(resolved_lookup.as_str()) {
+                return alignment;
+            }
+        }
+
         // For pointer types not in map, assume 4-byte alignment
         if normalized.ends_with("*") {
             return 4;
@@ -741,5 +781,30 @@ impl Exp36C {
 
         // Unknown types - return 0 to avoid false positives
         0
+    }
+}
+
+/// C-standard integer type spellings (with optional `signed`/`unsigned` and
+/// the optional trailing `int` token) mapped to their alignment. A typedef
+/// chain often resolves to a spelling like `long long int` that the
+/// alignment table's `long long` key would miss on an exact-string match,
+/// so this canonicalises the token set (drops `signed`/`unsigned`/`int`,
+/// which do not affect alignment) and looks up the size specifier alone.
+///
+/// Returns `None` for anything that is not a fundamental integer spelling
+/// (leave floats, structs, opaque aliases, or resolved-to-nothing chains
+/// to the caller's other lookups).
+fn builtin_int_alignment(s: &str) -> Option<usize> {
+    let words: Vec<&str> = s
+        .split_whitespace()
+        .filter(|w| !matches!(*w, "signed" | "unsigned" | "int"))
+        .collect();
+    match words.as_slice() {
+        [] => Some(4),
+        ["char"] => Some(1),
+        ["short"] => Some(2),
+        ["long"] => Some(4),
+        ["long", "long"] => Some(8),
+        _ => None,
     }
 }
