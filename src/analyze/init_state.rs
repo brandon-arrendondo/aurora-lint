@@ -409,6 +409,25 @@ pub struct InitAnalysisConfig {
     /// same effect as `macro_output_params`, but sourced from an actual
     /// function body rather than a macro expansion.
     pub cross_file_output_params: HashMap<String, HashSet<usize>>,
+    /// Cross-file functions that write through a pointer param on only SOME of
+    /// their paths — the prescan's MAY-write set minus its MUST-write set. The
+    /// cross-file counterpart of `conditionally_init_fns`, which
+    /// `scan_conditionally_init_functions` can only populate for callees
+    /// defined in the file under analysis.
+    ///
+    /// Without this, such a callee fell through to
+    /// `process_unknown_function_call`, whose "assume `&var` initializes"
+    /// default credited the conditional write as a full one: curl's
+    /// `Curl_sasl_decode_mech(ptr, maxlen, &llen)` writes `*len` only when a
+    /// mechanism name matches its table, and `openldap.c`'s caller reads
+    /// `llen` on the no-match path (task 1065 bug #3, tools_sqc).
+    ///
+    /// Kept disjoint from `cross_file_output_params` by construction, and
+    /// deliberately excludes parameters carrying an undischarged
+    /// `modifies_params_pending` obligation: those are UNKNOWN coverage, not
+    /// known-conditional coverage, and demoting them would act on the absence
+    /// of an answer.
+    pub cross_file_conditional_output_params: HashMap<String, HashSet<usize>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,6 +1185,15 @@ fn process_call_expression(
     // to other params on the same call that the summary missed.
     try_process_cross_file_output_params(&func_name, node, source, state, config);
 
+    // The same summary's MAY-minus-MUST half: a callee that writes the output
+    // parameter on only some of its paths. Runs alongside the MUST marking
+    // above (the two maps are disjoint by construction) and before the
+    // `&var`-initializes fallback below, which
+    // `process_unknown_function_call` now skips for these parameters -- it
+    // would otherwise overwrite MaybeUninitialized with Initialized and
+    // restore the very over-credit this models away.
+    try_process_cross_file_conditional_output_params(&func_name, node, source, state, config);
+
     // Non-initializing functions: skip (they read, not write)
     if is_non_initializing_function(&func_name) {
         return;
@@ -1300,6 +1328,69 @@ fn try_process_macro_output_params(
         }
     }
     true
+}
+
+/// Cross-file functions whose write through an output parameter is only
+/// conditional (`InitAnalysisConfig::cross_file_conditional_output_params`):
+/// raise an `&var` argument from Uninitialized to MaybeUninitialized.
+///
+/// Not `Initialized`, because the callee may return without writing, and not
+/// left Uninitialized either, because on the paths where it does write the
+/// variable genuinely holds a value — MaybeUninitialized is the state the
+/// lattice already has for "written on some paths", and it is what makes the
+/// read report say "may be used uninitialized" rather than overclaiming.
+///
+/// Only ever raises: a variable already Initialized before the call (`x = 0;
+/// f(&x);`) stays that way, since a callee that may write it cannot make it
+/// less initialized. Restricted to the `&var` shape on purpose — a bare
+/// pointer argument names the pointer, not the pointee, so demoting its state
+/// would be a claim about the wrong variable.
+fn try_process_cross_file_conditional_output_params(
+    func_name: &str,
+    node: &Node,
+    source: &str,
+    state: &mut InitStateMap,
+    config: &InitAnalysisConfig,
+) -> bool {
+    let Some(cond_indices) = config.cross_file_conditional_output_params.get(func_name) else {
+        return false;
+    };
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut arg_idx = 0;
+    let mut matched = false;
+    for i in 0..args.child_count() {
+        let Some(arg) = args.child(i) else { continue };
+        if matches!(arg.kind(), "," | "(" | ")") {
+            continue;
+        }
+        let this_idx = arg_idx;
+        arg_idx += 1;
+        if !cond_indices.contains(&this_idx) {
+            continue;
+        }
+        let arg = strip_arg_casts(&arg);
+        if arg.kind() != "pointer_expression"
+            || !arg
+                .utf8_text(source.as_bytes())
+                .unwrap_or("")
+                .starts_with('&')
+        {
+            continue;
+        }
+        let var_name = extract_var_from_arg(&arg, source);
+        if var_name.is_empty() {
+            continue;
+        }
+        if let Some(info) = state.get_mut(&var_name) {
+            if matches!(info.state, InitState::Uninitialized) {
+                info.state = InitState::MaybeUninitialized;
+                matched = true;
+            }
+        }
+    }
+    matched
 }
 
 /// Cross-file (in-repo) functions known from prescan `FunctionSummary::modifies_params`
@@ -1447,6 +1538,10 @@ fn process_unknown_function_call(
 ) {
     let cond_param_indices = config.conditionally_init_fns.get(func_name);
     let read_only_indices = config.read_only_deref_fns.get(func_name);
+    // Same suppression, sourced from the prescan summary rather than from the
+    // file-local scan: `conditionally_init_fns` only ever holds callees
+    // defined in the file being analysed (task 1065 bug #3, tools_sqc).
+    let cross_file_cond_indices = config.cross_file_conditional_output_params.get(func_name);
 
     let Some(args) = node.child_by_field_name("arguments") else {
         return;
@@ -1459,6 +1554,16 @@ fn process_unknown_function_call(
         }
         let skip_this_arg = cond_param_indices.is_some_and(|indices| indices.contains(&arg_idx))
             || read_only_indices.is_some_and(|indices| indices.contains(&arg_idx));
+        // Scoped to the `&var` branch below, not to the array-by-name one.
+        // A conditional write through an array parameter is the normal case
+        // -- `mqtt_encode_len(buf, len)` fills `buf[0..i]` and returns `i`,
+        // and every caller reads only what it was told was written -- so the
+        // whole-array granularity of this model turns "may not have written
+        // all of it" into a report about code that is fine. The scalar
+        // output parameter is where the distinction is real (task 1065
+        // bug #3, tools_sqc).
+        let skip_addr_of_arg = skip_this_arg
+            || cross_file_cond_indices.is_some_and(|indices| indices.contains(&arg_idx));
         // A cast or a redundant parenthesis around the argument changes
         // nothing about what the callee does with it, but the two shape tests
         // below are on the argument node itself -- so curl's and hostap's
@@ -1467,7 +1572,7 @@ fn process_unknown_function_call(
         // is reached (task 1028, tools_sqc).
         let arg = strip_arg_casts(&arg);
         // &var pattern — assume function writes to it (unless this param is conditionally-init)
-        if !skip_this_arg && arg.kind() == "pointer_expression" {
+        if !skip_addr_of_arg && arg.kind() == "pointer_expression" {
             let arg_text = arg.utf8_text(source.as_bytes()).unwrap_or("");
             if arg_text.starts_with('&') {
                 let var_name = extract_var_from_arg(&arg, source);

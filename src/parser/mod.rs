@@ -109,6 +109,16 @@ impl CParser {
         // definition from every rule while leaving its calls visible.
         let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
 
+        // Task 1066: a guard that falls between a control-flow header and the
+        // body it governs (`#if ...` / `if (cond)` / `#endif` / `{ ... }`).
+        // `preproc_if` is a block item, so the brace block parses as a
+        // SIBLING of the `if` and GLR recovery gives the `if` a synthesized
+        // empty consequence -- which EXP19-C reads as an unbraced body.
+        let source =
+            crate::analyze::control_header_preproc_guard::blank_control_header_guarded_preproc(
+                &source,
+            );
+
         // Task 437: if a parse error remains (e.g. an externally-defined
         // attribute macro with no local #define for the pass above to
         // find), iteratively blank single-token unknown-identifier ERROR
@@ -140,6 +150,10 @@ impl CParser {
         let source = crate::analyze::preproc_dangling_else::blank_dangling_else_preproc(&source);
         let source = crate::analyze::label_preproc_guard::blank_label_guarded_preproc(&source);
         let source = crate::analyze::paren_preproc_guard::blank_paren_guarded_preproc(&source);
+        let source =
+            crate::analyze::control_header_preproc_guard::blank_control_header_guarded_preproc(
+                &source,
+            );
         let (tree, source) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
             &mut self.parser,
             source,

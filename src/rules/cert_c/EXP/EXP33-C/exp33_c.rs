@@ -11,6 +11,7 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::init_state::{self, InitAnalysisResult, InitState, InitStateMap};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{get_identifier_from_declarator, get_node_text};
+use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -84,8 +85,45 @@ impl Exp33C {
         let summaries = self.cross_file_summaries.borrow();
         let mut result = HashMap::new();
         for (name, summary) in summaries.iter() {
-            if !summary.unconditional_modifies_params.is_empty() {
-                result.insert(name.clone(), summary.unconditional_modifies_params.clone());
+            // Subtracted rather than assumed disjoint: prescan unions both
+            // sets across every definition linked under one name, so a project
+            // shipping two variants -- one writing on every path, one able to
+            // return without writing -- can put the same index in both. The
+            // variant that can skip the write is the one a caller has to be
+            // prepared for.
+            let must: HashSet<usize> = summary
+                .unconditional_modifies_params
+                .difference(&summary.conditional_modifies_params)
+                .copied()
+                .collect();
+            if !must.is_empty() {
+                result.insert(name.clone(), must);
+            }
+        }
+        result
+    }
+
+    /// The cross-file counterpart of `scan_conditionally_init_functions`,
+    /// which only ever sees callees defined in the file being analysed. A
+    /// conditional writer defined elsewhere reached
+    /// `process_unknown_function_call`'s "assume `&var` initializes" default
+    /// instead, and had its conditional write credited as a full one: curl's
+    /// `Curl_sasl_decode_mech` writes `*len` only on a table match, and
+    /// `openldap.c:730` compares `llen` on the no-match path (task 1065
+    /// bug #3, tools_sqc).
+    ///
+    /// Sourced from `FunctionSummary::conditional_modifies_params`, which is
+    /// PROOF of an unwritten returning path, not the MAY-minus-MUST
+    /// difference. The MUST set's incompleteness is not evidence of anything:
+    /// `Curl_conn_get_current_host` fills both outputs on every path, one of
+    /// them through a function pointer, and withholding credit from its
+    /// callers on "absent from MUST" alone reports every one of them.
+    fn build_cross_file_conditional_output_params(&self) -> HashMap<String, HashSet<usize>> {
+        let summaries = self.cross_file_summaries.borrow();
+        let mut result = HashMap::new();
+        for (name, summary) in summaries.iter() {
+            if !summary.conditional_modifies_params.is_empty() {
+                result.insert(name.clone(), summary.conditional_modifies_params.clone());
             }
         }
         result
@@ -166,7 +204,10 @@ impl CertRule for Exp33C {
 
                 // Pre-scan for functions that conditionally initialize pointer params
                 let mut cond_init = HashMap::new();
-                scan_conditionally_init_functions(node, source, &mut cond_init);
+                {
+                    let summaries = self.cross_file_summaries.borrow();
+                    scan_conditionally_init_functions(node, source, &summaries, &mut cond_init);
+                }
                 *self.conditionally_init_fns.borrow_mut() = cond_init;
 
                 // Precompute output-parameter indices for the function-like macros
@@ -236,6 +277,8 @@ impl CertRule for Exp33C {
                     let realloc_fns = self.realloc_wrapper_fns.borrow();
                     let read_only_fns = self.build_read_only_deref_fns();
                     let cross_file_output_params = self.build_cross_file_output_params();
+                    let cross_file_conditional_output_params =
+                        self.build_cross_file_conditional_output_params();
                     let file_constants = self.file_scope_constants.borrow();
                     let macro_out = self.macro_output_params.borrow();
                     let config = init_state::InitAnalysisConfig {
@@ -245,6 +288,7 @@ impl CertRule for Exp33C {
                         file_scope_constants: file_constants.clone(),
                         macro_output_params: macro_out.clone(),
                         cross_file_output_params,
+                        cross_file_conditional_output_params,
                     };
                     let analysis = init_state::analyze_init_states_with_statics(
                         cfg, node, source, &statics, &config,
@@ -890,6 +934,15 @@ fn check_identifier_read(
         if has_macro_shadow_definition(body, &var_name, source) {
             return;
         }
+        if conditional_output_is_return_guarded(
+            &var_name,
+            node,
+            body,
+            source,
+            &config.cross_file_conditional_output_params,
+        ) {
+            return;
+        }
     }
 
     reported.insert(var_name.clone());
@@ -921,6 +974,146 @@ fn check_identifier_read(
         )),
         ..Default::default()
     });
+}
+
+/// Whether the callee that left `var_name` possibly-unwritten also told the
+/// caller so, and the caller listened.
+///
+/// `Curl_sasl_decode_mech` writes `*len` exactly when it returns a nonzero
+/// mechanism bit, so pop3, smtp, imap and `curl_sasl.c` itself all read the
+/// length safely:
+///
+/// ```c
+/// mechbit = Curl_sasl_decode_mech(line, wordlen, &llen);
+/// if(mechbit && llen == wordlen)      /* llen is written wherever this runs */
+/// ```
+///
+/// `openldap.c` is the same call with the test dropped -- it compares `llen`
+/// having only stored the returned bit for later -- which is the whole
+/// difference between the four safe call sites and the defect (task 1065
+/// bug #3, tools_sqc).
+///
+/// The correlation itself is not proven here, and cannot be by this rule: that
+/// the write and the nonzero return happen together is a fact about the
+/// callee's body. What is checked is the caller-side half -- that the result
+/// was consulted on the way to this read -- and the credit is given on the
+/// same reasoning `is_unconditionally_reached_modulo_null_guard` already
+/// applies to the optional-output idiom: a caller who tests the result before
+/// reading the output is the caller the conditional write was written for.
+///
+/// Neither the polarity of the test nor whether its arm diverges is examined,
+/// deliberately. `if(mechbit && llen == wordlen)` trusts a true result and
+/// `if(!Curl_cf_socket_peek(cf, data, NULL, NULL, &ip)) failf(…, ip.remote_ip)`
+/// trusts a zero one, both correctly, because which value means "wrote it" is
+/// the callee's business; deciding it here from the caller's spelling would be
+/// guessing. The signal taken is only that the caller consulted the result --
+/// the same policy `call_return_is_consumed` applies to the scanf family.
+///
+/// So both spellings of consulting it count: the result stored in a variable a
+/// later condition tests, and the call sitting in that condition itself.
+fn conditional_output_is_return_guarded(
+    var_name: &str,
+    site: &Node,
+    body: &Node,
+    source: &str,
+    cond_fns: &HashMap<String, HashSet<usize>>,
+) -> bool {
+    if cond_fns.is_empty() {
+        return false;
+    }
+    // `dominating_conditions`, not `conditions_known_true_at`: the bail-out
+    // spelling puts the test in a PRECEDING `if` rather than an enclosing one
+    // (`result = Curl_get_line(&buf, f, &eof); if(result) break; … while(!eof);`),
+    // and that caller consulted the result just as much as the one who wrapped
+    // the read in it.
+    let guards = guard_dominance::dominating_conditions(site);
+    if guards.is_empty() {
+        return false;
+    }
+    for call in query::find_descendants_of_kind(*body, "call_expression") {
+        if call.start_byte() > site.start_byte() {
+            continue;
+        }
+        let Some(func) = call.child_by_field_name("function") else {
+            continue;
+        };
+        let Some(indices) = cond_fns.get(get_node_text(&func, source)) else {
+            continue;
+        };
+        if !call_passes_addr_of(&call, source, var_name, indices) {
+            continue;
+        }
+        let result = call_result_variable(&call, source);
+        let consulted = guards.iter().any(|cond| {
+            contains_node(cond, &call)
+                || result
+                    .as_deref()
+                    .is_some_and(|name| guard_dominance::mentions_var(cond, name, source))
+        });
+        if consulted {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `call` hands `&var_name` to one of `indices`.
+fn call_passes_addr_of(
+    call: &Node,
+    source: &str,
+    var_name: &str,
+    indices: &HashSet<usize>,
+) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut arg_idx = 0;
+    for i in 0..args.child_count() {
+        let Some(arg) = args.child(i) else { continue };
+        if matches!(arg.kind(), "," | "(" | ")") {
+            continue;
+        }
+        let this_idx = arg_idx;
+        arg_idx += 1;
+        if indices.contains(&this_idx) && extract_addr_of_var(&arg, source) == var_name {
+            return true;
+        }
+    }
+    false
+}
+
+/// The variable a call's return value is stored into: `x = f(…)` or
+/// `T x = f(…)`. `None` when the result is discarded or consumed in place --
+/// there is then no name a later condition could be testing.
+fn call_result_variable(call: &Node, source: &str) -> Option<String> {
+    let mut current = *call;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "parenthesized_expression" | "cast_expression" => current = parent,
+            "assignment_expression" => {
+                let right = parent.child_by_field_name("right")?;
+                if right.id() != current.id() {
+                    return None;
+                }
+                let left = parent.child_by_field_name("left")?;
+                if left.kind() != "identifier" {
+                    return None;
+                }
+                return Some(get_node_text(&left, source).to_string());
+            }
+            "init_declarator" => {
+                let value = parent.child_by_field_name("value")?;
+                if value.id() != current.id() {
+                    return None;
+                }
+                let declarator = parent.child_by_field_name("declarator")?;
+                let name = get_identifier_from_declarator(&declarator, source);
+                return if name.is_empty() { None } else { Some(name) };
+            }
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Check if a dereference (*ptr) reads uninitialized content.
@@ -1831,20 +2024,44 @@ fn scan_realloc_wrappers(node: &Node, source: &str, wrappers: &mut HashSet<Strin
 /// Scan for functions that only conditionally initialize pointer params.
 /// e.g., void set_flag(int n, int *flag) { if (n > 0) *flag = 1; }
 /// — doesn't init *flag on all paths.
+/// Pre-scan the file for functions that only conditionally initialise a
+/// pointer parameter, for callees prescan produced no summary for.
+///
+/// Skips any function that HAS a summary, because this heuristic is the
+/// cruder of the two answers and used to win by running second. It accepts a
+/// parameter as unconditionally written only on a `*p = …` at the body's top
+/// level, so a function that fills its outputs on every path through an
+/// `if`/`else`, a `switch` with a `default`, or a call it cannot see through
+/// is classed conditional and every caller is reported. Prescan's
+/// `conditional_modifies_params` asks for a proven unwritten returning path
+/// instead, and `build_read_only_deref_fns` covers the parameter prescan saw
+/// no write through at all (task 1078, tools_sqc).
+///
+/// The fallback still matters: a scan with no `-d` and no prescan of its own
+/// targets summarises almost nothing, and there the local read is the only
+/// answer available.
 fn scan_conditionally_init_functions(
     node: &Node,
     source: &str,
+    summarised: &HashMap<String, FunctionSummary>,
     result: &mut HashMap<String, HashSet<usize>>,
 ) {
     for func_def in query::find_descendants_of_kind(*node, "function_definition") {
+        let Some(declarator) = func_def.child_by_field_name("declarator") else {
+            continue;
+        };
+        let name = get_func_name(&declarator, source);
+        if name.is_empty() {
+            continue;
+        }
+        // Prescan already answered this question about this function, and
+        // answered it better -- see the doc comment above.
+        if summarised.contains_key(&name) {
+            continue;
+        }
         let cond_indices = get_conditional_init_param_indices(&func_def, source);
         if !cond_indices.is_empty() {
-            if let Some(declarator) = func_def.child_by_field_name("declarator") {
-                let name = get_func_name(&declarator, source);
-                if !name.is_empty() {
-                    result.insert(name, cond_indices);
-                }
-            }
+            result.insert(name, cond_indices);
         }
     }
 }

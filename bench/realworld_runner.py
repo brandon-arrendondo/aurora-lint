@@ -1485,8 +1485,29 @@ def _ingest(results: list[dict], summary: dict) -> None:
         durations = {r["codebase"]: r["duration_s"] for r in sqc_results}
         metrics = {r["codebase"]: dict(zip(("c_files", "loc"), _count_c_source(CODEBASES[r["codebase"]])))
                    for r in sqc_results}
+        # Ingest only what THIS invocation scanned. The export directory is
+        # keyed on (tool, version, sha) and so is shared by every codebase at
+        # one commit, while the pre-run cleanup in `run_one` unlinks only the
+        # current run_id's own files -- so any narrowed re-run at a commit that
+        # has been scanned before (`--codebase hostap` after a full sweep, or
+        # after an interrupted one) would otherwise sweep the other projects'
+        # older exports in through `ingest_realworld_run`'s `*.json` glob. They
+        # arrive with no duration and no metrics, and — because the scan-time
+        # sidecar is the only source of codebase_commit — a NULL commit, which
+        # silently drops those findings out of the ground_truth denominator
+        # rather than erroring.
+        #
+        # Deliberately NOT fixed by clearing the directory or by an mtime
+        # cutoff: both break re-ingest, which two things here rely on. The
+        # ingest-failure path below promises "the scans themselves completed
+        # and their JSON exports are intact", i.e. that a failed ingest can be
+        # repeated from disk; and `ingest_realworld_run`'s `run_id` +
+        # `only_projects` merge exists so a later sweep can fill in projects a
+        # partial earlier ingest missed, which reads older exports on purpose.
+        # Naming the projects is what this invocation actually knows.
         run_id = db.ingest_realworld_run(sqc_dir.name, str(sqc_dir), machine=machine,
-                                         durations=durations, metrics=metrics)
+                                         durations=durations, metrics=metrics,
+                                         only_projects={r["codebase"] for r in sqc_results})
         summary["run_id"] = run_id
 
         for r in results:
