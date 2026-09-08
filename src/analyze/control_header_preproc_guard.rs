@@ -65,7 +65,7 @@
 /// The directive keyword on `line`, if it is one -- `"ifndef"` for both
 /// `#ifndef X` and `# ifndef X`. The space after `#` is not cosmetic:
 /// pure-ftpd indents nested conditionals exactly that way.
-fn directive_keyword(line: &str) -> Option<&str> {
+pub(crate) fn directive_keyword(line: &str) -> Option<&str> {
     let rest = line.trim_start().strip_prefix('#')?;
     Some(
         rest.trim_start()
@@ -75,26 +75,26 @@ fn directive_keyword(line: &str) -> Option<&str> {
     )
 }
 
-fn is_directive_start(line: &str) -> bool {
+pub(crate) fn is_directive_start(line: &str) -> bool {
     matches!(directive_keyword(line), Some("if" | "ifdef" | "ifndef"))
 }
 
-fn is_endif(line: &str) -> bool {
+pub(crate) fn is_endif(line: &str) -> bool {
     directive_keyword(line) == Some("endif")
 }
 
-fn is_branch_directive(line: &str) -> bool {
+pub(crate) fn is_branch_directive(line: &str) -> bool {
     matches!(directive_keyword(line), Some("else" | "elif"))
 }
 
-fn is_directive(line: &str) -> bool {
+pub(crate) fn is_directive(line: &str) -> bool {
     line.trim_start().starts_with('#')
 }
 
 /// Strip `//` and `/* ... */` comments so a trailing comment cannot hide the
 /// `)` that ends a control header -- sqlite and mosquitto both write one
 /// there.
-fn strip_comments(s: &str) -> String {
+pub(crate) fn strip_comments(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0usize;
@@ -123,7 +123,7 @@ fn strip_comments(s: &str) -> String {
 
 /// Whether `content` ends with a control-flow header whose body must follow
 /// it. See the module docs for the two shapes deliberately excluded.
-fn ends_with_control_header(content: &str) -> bool {
+pub(crate) fn ends_with_control_header(content: &str) -> bool {
     let stripped = strip_comments(content);
     let t = stripped.trim_end();
     if !t.ends_with(')') {
@@ -260,7 +260,7 @@ pub fn blank_control_header_guarded_preproc(source: &str) -> String {
 
 /// Replace every non-newline byte of `line` (located at `line_start` in
 /// `out`) with a space.
-fn blank_line(out: &mut [u8], line_start: usize, line_len: usize) {
+pub(crate) fn blank_line(out: &mut [u8], line_start: usize, line_len: usize) {
     for b in out.iter_mut().skip(line_start).take(line_len) {
         if *b != b'\n' && *b != b'\r' {
             *b = b' ';

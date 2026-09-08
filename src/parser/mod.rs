@@ -119,6 +119,13 @@ impl CParser {
                 &source,
             );
 
+        // Task 1070: the same split across a MULTI-ARM chain. The pass above
+        // refuses those on purpose -- blanking a chain's directive lines
+        // splices every arm into one statement stream, so the outer `if` gets
+        // a non-compound consequence and EXP19-C fires MORE, not less. This
+        // pass keeps one arm and blanks the other arms' dangling fragments.
+        let source = crate::analyze::preproc_split_chain::blank_split_chain_preproc(&source);
+
         // Task 437: if a parse error remains (e.g. an externally-defined
         // attribute macro with no local #define for the pass above to
         // find), iteratively blank single-token unknown-identifier ERROR
@@ -154,6 +161,7 @@ impl CParser {
             crate::analyze::control_header_preproc_guard::blank_control_header_guarded_preproc(
                 &source,
             );
+        let source = crate::analyze::preproc_split_chain::blank_split_chain_preproc(&source);
         let (tree, source) = crate::analyze::unknown_identifier_recovery::parse_with_recovery(
             &mut self.parser,
             source,
