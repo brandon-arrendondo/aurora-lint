@@ -33,13 +33,24 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::cfg::FunctionCfg;
+use crate::analyze::const_eval::MacroConstantMap;
+use crate::analyze::value_range::RangeAnalysisResult;
+use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
-pub struct Int16C;
+#[derive(Default)]
+pub struct Int16C {
+    /// Per-function CFGs for the file being checked, injected by the driver.
+    function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
+    /// Per-function value ranges for the same file, injected alongside them.
+    vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
+}
 
 impl CertRule for Int16C {
     fn rule_id(&self) -> &'static str {
@@ -60,6 +71,18 @@ impl CertRule for Int16C {
 
     fn cert_id(&self) -> &'static str {
         "INT16-C"
+    }
+
+    fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
+        *self.function_cfgs.borrow_mut() = cfgs.clone();
+    }
+
+    fn set_vra_results(&self, results: &HashMap<usize, RangeAnalysisResult>) {
+        *self.vra_results.borrow_mut() = results.clone();
+    }
+
+    fn needs_vra(&self) -> bool {
+        true
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -474,10 +497,29 @@ impl Int16C {
         signed_int_vars: &HashMap<String, (usize, usize)>,
         violations: &mut Vec<RuleViolation>,
     ) {
+        // Compound assignments (`+=`, `-=`, `/=`) are not the shape this check
+        // reports or the shape its suggestion fixes: `pos += ret` over a `char *`
+        // is pointer arithmetic, and `len -= n` is accumulation whose whole point
+        // is the operand's sign. Only a plain copy converts a signed value into an
+        // unsigned object the way the message describes. (`&=`/`|=`/`^=` are
+        // already the bitwise check's business, not this one's.)
+        match assign_node.child_by_field_name("operator") {
+            Some(op) if get_node_text(&op, source) == "=" => {}
+            _ => return,
+        }
+
         if let Some(right) = assign_node.child_by_field_name("right") {
             if right.kind() == "identifier" {
                 let right_name = get_node_text(&right, source).to_string();
                 if !signed_int_vars.contains_key(&right_name) {
+                    return;
+                }
+
+                // `signed_int_vars` is a file-wide name map with no scoping, so
+                // membership only means *some* declaration of this name is signed.
+                // Require the value itself to be negative-capable here before
+                // reporting a lost sign -- see the module note on `has_negative_value_evidence`.
+                if !self.right_operand_may_be_negative(&right, source, &right_name) {
                     return;
                 }
 
@@ -539,5 +581,24 @@ impl Int16C {
             current = ancestor.parent();
         }
         false
+    }
+
+    /// Positive VRA evidence that the assigned-from variable can actually hold
+    /// a negative value at this assignment.
+    ///
+    /// Without it this check fired on every `struct_field = some_int`, because
+    /// "the name was declared signed somewhere in the file" says nothing about
+    /// whether a sign is there to be lost. A length, a count, an enumerator and
+    /// a return value already checked for `< 0` all reach here looking exactly
+    /// like a value that could be negative.
+    fn right_operand_may_be_negative(&self, right: &Node, source: &str, name: &str) -> bool {
+        vra_access::has_negative_value_evidence(
+            &self.function_cfgs.borrow(),
+            &self.vra_results.borrow(),
+            right,
+            source,
+            &MacroConstantMap::new(),
+            name,
+        )
     }
 }

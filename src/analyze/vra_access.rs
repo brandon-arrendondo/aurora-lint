@@ -85,3 +85,45 @@ pub fn var_ranges_entry_at(
         Some(var_ranges)
     }
 }
+
+/// Whether VRA carries positive evidence that `var_name` can hold a negative
+/// value where `expr_node` sits.
+///
+/// Three situations collapse to `false`: VRA has no range for the variable,
+/// the range it does have is entirely non-negative, and the range is exactly
+/// the representable band of a signed type. The last is the one worth
+/// spelling out -- an unconstrained `int` parameter is indistinguishable from
+/// one VRA learned nothing about, so reading its full band as "could be
+/// negative" turns every signed-to-unsigned assignment into a finding. That is
+/// what INT16-C's assignment cluster did, at 0 true positives in 279 labeled
+/// instances.
+///
+/// This is deliberately the opposite default from a soundness-first check:
+/// absent information suppresses rather than reports.
+pub fn has_negative_value_evidence(
+    function_cfgs: &HashMap<usize, FunctionCfg>,
+    vra_results: &HashMap<usize, RangeAnalysisResult>,
+    expr_node: &Node,
+    source: &str,
+    macros: &MacroConstantMap,
+    var_name: &str,
+) -> bool {
+    let Some(ranges) = var_ranges_replay_at(function_cfgs, vra_results, expr_node, source, macros)
+    else {
+        return false;
+    };
+    let Some(range) = ranges.get(var_name) else {
+        return false;
+    };
+    range.min < 0 && !is_full_signed_band(range)
+}
+
+/// True when `range` is exactly the band some signed integer type can hold --
+/// i.e. VRA converged on "anything of this type" and so proved nothing about
+/// the value.
+fn is_full_signed_band(range: &crate::analyze::const_eval::ValueRange) -> bool {
+    matches!(
+        (range.min, range.max),
+        (-128, 127) | (-32768, 32767) | (-2147483648, 2147483647) | (i64::MIN, i64::MAX)
+    )
+}
