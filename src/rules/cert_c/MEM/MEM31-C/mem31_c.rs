@@ -465,6 +465,22 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         let func_name = ast_utils::get_node_text_owned(&function, source);
                         let upper_name = func_name.to_uppercase();
 
+                        // A call that ends the process is not an early
+                        // return out of a function that leaks -- the OS
+                        // reclaims everything still held. Reporting it named
+                        // every live allocation at each `exit()`/`abort()`/
+                        // noreturn-helper call site, which is exactly the
+                        // shape of the ftpd.c `fortunes_file` findings this
+                        // heuristic produced (task 1089). Checked before the
+                        // name test because the terminating callee usually
+                        // matches it too.
+                        if crate::analyze::noreturn::is_process_terminating_name(
+                            &func_name,
+                            self.noreturn_names,
+                        ) {
+                            continue;
+                        }
+
                         // Heuristic: macro names containing RETURN, EXIT, or similar might hide early returns
                         if upper_name.contains("RETURN")
                             || upper_name.contains("EXIT")

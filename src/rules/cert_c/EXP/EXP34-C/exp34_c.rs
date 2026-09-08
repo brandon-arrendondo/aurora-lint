@@ -989,6 +989,26 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
         return true;
     }
 
+    // The same negation, discharged by a loop bound instead of a flag:
+    //   if (!key || (!items && num_items != 0) || ...) return FALSE;
+    //   for (i = 0; i < num_items; i++) ... items[i] ...
+    // `i < num_items` with `i` non-negative gives `num_items != 0`, which
+    // collapses the surviving disjunct and proves `items` non-null (task 1074).
+    if guard_dominance::is_nonnull_by_loop_bounded_exit_guard(var_name, node, source) {
+        return true;
+    }
+
+    // A run of bail-out guards that between them exhaust every nullness
+    // combination but the all-non-null one:
+    //   if (!a && b) return -1;
+    //   if (a && !b) return 1;
+    //   if (!a && !b) return 0;
+    //   ... a->num_attr < b->num_attr ...
+    // No single guard settles anything; together they do (task 1074).
+    if guard_dominance::is_nonnull_by_exhaustive_case_guards(var_name, node, source) {
+        return true;
+    }
+
     false
 }
 
