@@ -781,6 +781,20 @@ fn collect_header_declarations(node: &Node, source: &str, names: &mut HashSet<St
                             names.insert(name);
                         }
                     }
+                // An `ERROR` node here is not a dead end. Recovery keeps
+                // real `declaration` nodes inside it -- raylib's
+                // `rgestures.h` holds ten prototypes under a
+                // `linkage_specification` nested in one -- and this walk
+                // stopped at the `ERROR` and never saw them, so every
+                // prototype in the file read as undeclared. Read the loose
+                // specifier-run declarations back out, then recurse for the
+                // structured ones (task 1060).
+                "ERROR" => {
+                    for decl in ast_utils::error_declarations(&child, source) {
+                        names.insert(decl.name);
+                    }
+                    collect_header_declarations(&child, source, names);
+                }
                 kind if kind.starts_with("preproc_")
                     || kind == "linkage_specification"
                     || kind == "declaration_list" =>
@@ -871,8 +885,8 @@ fn collect_function_names(node: &Node, source: &str, names: &mut HashSet<String>
                     // definition whose declarator is split by an `#if`. Read the
                     // name back out before recursing, since the subtree holds no
                     // `declaration`/`function_definition` node to find (task 1038).
-                    for name in ast_utils::function_names_in_error_declaration(&child, source) {
-                        names.insert(name);
+                    for decl in ast_utils::error_declarations(&child, source) {
+                        names.insert(decl.name);
                     }
                     collect_function_names(&child, source, names);
                 }
