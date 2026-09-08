@@ -12,20 +12,37 @@ re-verification of survivors, esp. section 1) and 3 (draft actual upstream
 disclosure) are NOT done — see the open follow-up task filed alongside this
 file.
 
+**2026-09-08 UPDATE:** steps 2-3 happened (see `data/precision_audit/hostap/`
+disclosure package, todo-sqlite-cli tasks 587/588). 8 of section 1's items
+(1, 4, 5, 6, 7, 9, 14, 16) were disclosed privately to Jouni Malinen on
+2026-08-25 and he applied all 8 patches to upstream main on 2026-09-08 (git
+am, author preserved as the discloser, committer Jouni Malinen). No separate
+security advisory was published — maintainer judged impact too small,
+doubting practical reachability of items 1, 14 and 16 specifically, but
+applied the fixes anyway as defense-in-depth. Their "STILL PRESENT" rows
+below are stale as of 2026-09-08; see the Section 1 table for per-item fixing
+commits.
+
 ## Totals
 
 | Outcome | Count |
 |---|---|
-| STILL PRESENT (verbatim) | 96 |
+| STILL PRESENT (verbatim) | 87 (96 as of the 2026-08-25 snapshot; 8 fixed 2026-09-08 via our disclosure, 1 (#15) found already fixed pre-filing) |
 | Still present, but described location/detail changed (code moved/partially refactored — underlying defect unchanged) | 3 (#45, #65, #75) |
-| ALREADY FIXED upstream | 8 (#2, #3, #8, #10, #11, #22, #54, #56) |
+| ALREADY FIXED upstream | 17 (#2, #3, #8, #10, #11, #22, #54, #56 pre-existing; #15 fixed pre-filing per w1.fi advisory 2026-3, mislabeled STILL PRESENT below; #1, #4, #5, #6, #7, #9, #14, #16 via our 2026-08-25 disclosure, fixed 2026-09-08) |
 | Indeterminate — original notes too thin to relocate | 2 (#95, #109) |
 | **Total** | **109** |
 
-Section 1 (attacker-reachable wire-data bugs, the highest-priority class) is
-the standout: **11 of 16 still unfixed**, several High-confidence. Notably
-item #10 was fixed *today* (commit `3b573f29e`, same date as the clone's
-HEAD) — upstream is actively touching this exact code area right now.
+Section 1 (attacker-reachable wire-data bugs, the highest-priority class) as
+of the original 2026-08-25 snapshot: **11 of 16 still unfixed**. As of
+**2026-09-08, only 2 of 16 remain unfixed** (#12, #13 — both confirmed prior
+sqc TPs; task 587 judged both not reachable, so neither was ever filed). #15
+is stale as STILL PRESENT below — task 698's advisory cross-check found it
+was already fixed *before* our 2026-08-25 filing (w1.fi advisory 2026-3,
+commit `f12d55ff652ab2e367425c1392510d10d8b9f638`), which is why it wasn't
+included in the disclosure package either. Item #10 was fixed the same day
+as the clone's HEAD (commit `3b573f29e`); items #1/#4/#5/#6/#7/#9/#14/#16
+were fixed via our disclosure on 2026-09-08 (see per-item commits below).
 
 ## Already-fixed items (do not include in any future disclosure)
 
@@ -44,22 +61,22 @@ HEAD) — upstream is actively touching this exact code area right now.
 
 | # | Status | Current location | Notes |
 |---|---|---|---|
-| 1 | STILL PRESENT | `src/ap/wpa_auth_ft.c:2419-2430` `wpa_ft_process_rdie` | Check is `end - pos < sizeof(*rdie)` but write is 2 header bytes + `sizeof(*rdie)`; off-by-2 unchanged. |
+| 1 | FIXED (our disclosure) | `src/ap/wpa_auth_ft.c:2419-2430` `wpa_ft_process_rdie` | `fcae90b60` 2026-09-08. Was: check `end - pos < sizeof(*rdie)` but write 2 header bytes + `sizeof(*rdie)`; off-by-2. Maintainer doubts practical reachability (extra buffer room in frame construction) but applied fix anyway. |
 | 2 | FIXED | — | `e6ab650d6` 2026-07-13 |
 | 3 | FIXED | — | `41c86a2eb` 2026-03-31 |
-| 4 | STILL PRESENT | `src/common/ieee802_11_common.c:3845-3898` `get_max_nss_capability` | Reads `optional[0..7]` when `bw==160/80P80` even if elem is only `HE_CAPABILITIES_ELEM_MIN_LEN`(21) bytes; no length check added. |
-| 5 | STILL PRESENT | `src/ap/ieee802_11_eht.c:2310-2311` `hostapd_parse_link_reconf_req_sta_profile` | `sta_info==end` boundary still dereferences before the bound check; 1-byte OOB read. |
-| 6 | STILL PRESENT | `src/ap/ieee802_11_he.c:472-480` `copy_sta_he_capab` | `check_valid_he_mcs()` still called before the IE-length validation (via `||` short-circuit order). |
-| 7 | STILL PRESENT | `src/ap/drv_callbacks.c:1841-1857` `hostapd_action_rx` (CONFIG_NAN_USD) | Still checks only `plen>=5`, needs `>=6`; sibling CONFIG_DPP branch correct. |
+| 4 | FIXED (our disclosure) | `src/common/ieee802_11_common.c:3845-3898` `get_max_nss_capability` | `895fd5881` 2026-09-08. Was: reads `optional[0..7]` when `bw==160/80P80` even if elem is only `HE_CAPABILITIES_ELEM_MIN_LEN`(21) bytes. |
+| 5 | FIXED (our disclosure) | `src/ap/ieee802_11_eht.c:2310-2311` `hostapd_parse_link_reconf_req_sta_profile` | `652a34915` 2026-09-08. Was: `sta_info==end` boundary dereferenced before the bound check; 1-byte OOB read. |
+| 6 | FIXED (our disclosure) | `src/ap/ieee802_11_he.c:472-480` `copy_sta_he_capab` | `6cf41afd5` 2026-09-08. Was: `check_valid_he_mcs()` called before the IE-length validation (via `||` short-circuit order). |
+| 7 | FIXED (our disclosure) | `src/ap/drv_callbacks.c:1841-1857` `hostapd_action_rx` (CONFIG_NAN_USD) | `7ce112433` 2026-09-08. Was: checked only `plen>=5`, needed `>=6`. |
 | 8 | FIXED | — | `1d86c3172` 2026-05-05 |
-| 9 | STILL PRESENT | `src/eap_server/eap_server_peap.c:834-903` (SoH vendor-TLV) | Still checks `tlv_len<4` but reads a 4-byte header needing `tlv_len>=8`. |
+| 9 | FIXED (our disclosure) | `src/eap_server/eap_server_peap.c:834-903` (SoH vendor-TLV) | `4b5965e61` 2026-09-08. Was: checked `tlv_len<4` but read a 4-byte header needing `tlv_len>=8`. |
 | 10 | FIXED | — | `3b573f29e` 2026-08-24 (fixed the same day as our mainline clone's HEAD) |
 | 11 | FIXED | — | `aa02cfa56` 2026-08-14 |
 | 12 | STILL PRESENT (confirmed prior sqc TP) | `src/eap_server/eap_server.c:596-621` | `len -= sizeof(*nak)` underflow, no preceding bound check. |
 | 13 | STILL PRESENT (confirmed prior sqc TP) | `src/common/nan_de.c:1850-1867` `nan_check_bloom_filter` | `crc %= bf_len*8` unguarded against `bf_len==0`. |
-| 14 | STILL PRESENT | `src/common/nan_de.c:2686-2707` + `:961` | Only rejects `n_max<n_min`, not equality; mod-by-zero when equal. |
-| 15 | STILL PRESENT (confirmed prior sqc TP) | `src/common/sae.c:1902-1914` `sae_parse_token_container` | Structurally unchanged, no NULL guard. |
-| 16 | STILL PRESENT | `src/eap_server/eap_server_ttls.c:1212-1249` | Off-by-one length check; writer still always emits >=2 bytes so practically unreachable, as originally noted. |
+| 14 | FIXED (our disclosure) | `src/common/nan_de.c:2686-2707` + `:961` | `ec339318a` 2026-09-08. Was: only rejected `n_max<n_min`, not equality; mod-by-zero when equal. Maintainer: input is internally-generated, doubts practical reachability. |
+| 15 | FIXED (stale here — see task 698) | `src/common/sae.c:1902-1914` `sae_parse_token_container` | This row's STILL PRESENT was wrong even at 2026-08-25 triage time: task 698's advisory cross-check found the NULL guard was already added via w1.fi advisory 2026-3, commit `f12d55ff652ab2e367425c1392510d10d8b9f638`, before this triage ran. Not included in our disclosure package for that reason. |
+| 16 | FIXED (our disclosure) | `src/eap_server/eap_server_ttls.c:1212-1249` | `95e57025f` 2026-09-08. Was: off-by-one length check; writer still always emits >=2 bytes so practically unreachable, as originally noted -- maintainer agrees, applied as defense-in-depth, and also added a check on the following id_len-bounded memcpy (same reasoning: unreachable but cheap to harden). |
 
 ## Section 2 — other reachable memory-safety/crypto bugs (11 items, 10 still present)
 
