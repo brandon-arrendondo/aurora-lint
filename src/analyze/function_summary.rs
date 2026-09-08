@@ -523,7 +523,24 @@ fn collect_function_summaries(
                     string_macros,
                     function_macros,
                 );
-                summaries.insert(name, summary);
+                // Two definitions of one name in a single translation unit --
+                // the `#ifdef FEATURE` real implementation beside the `#else`
+                // stub, which aurora-lint sees both of because it does not
+                // preprocess. Folded exactly as two definitions in different
+                // files are: `merge_summary_variant` is the one place that
+                // decides what callers of a multiply-defined name are told
+                // (task 1083, tools_sqc).
+                //
+                // The overwrite this replaces was LAST-one-wins, which is
+                // worse than arbitrary here: the `#else` stub is textually
+                // last, so the do-nothing variant systematically won and its
+                // empty write sets governed every caller.
+                match summaries.get_mut(&name) {
+                    Some(existing) => merge_summary_variant(existing, summary),
+                    None => {
+                        summaries.insert(name, summary);
+                    }
+                }
             }
         }
 
@@ -2021,6 +2038,120 @@ fn clean_paths(stmt: &Node, source: &str, param: &str, depth: u32) -> (bool, boo
     }
 }
 
+/// Parse `all_files` in parallel and fold the per-file results into one
+/// project-wide context. `unit_count` is only what the progress reporter is
+/// told it is starting on.
+///
+/// Fold one definition's summary into the accumulated summary for that
+/// function name.
+///
+/// A project can ship several definitions of one name -- an `#ifdef`ed
+/// platform variant, a test stub beside the real thing -- and aurora-lint has
+/// no preprocessor, so it scans all of them and this decides what callers
+/// are told. "First one inserted wins" is never the answer: which definition
+/// a parallel walk reaches first is arbitrary, so it silently picks one at
+/// random (task 401 for `frees_params`, task 1065 #2 for `can_return_null`,
+/// task 1079 for the output-parameter sets).
+///
+/// Each field is folded in the direction its own meaning demands. A MAY fact
+/// unions -- if any definition might do the thing, callers must be prepared
+/// for it. A MUST fact intersects -- a guarantee holds only if every
+/// definition offers it. Read each field's own comment below.
+pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSummary) {
+    existing.has_env03_taint_source |= summary.has_env03_taint_source;
+    existing.returns_tainted |= summary.returns_tainted;
+    existing.has_relative_command_write |= summary.has_relative_command_write;
+    // Union `can_return_null` across variants: a project that
+    // ships multiple definitions of the same function name
+    // (e.g. hostap's real `src/eap_peer/eap.c` eap_get_config
+    // beside the `tests/fuzzing/*/*-peer.c` stubs that always
+    // `return &static_config;`) must classify callers by the
+    // safe direction. Without this union the first-scanned
+    // variant won: whichever variant's `can_return_null` was
+    // set at insertion silently overwrote every later one, so
+    // the real function's nullable return was masked by the
+    // stub's non-null return and callers dereferenced its
+    // result without a check (hostap eap_teap.c:1387 recall
+    // regression, task 1065 #2).
+    existing.can_return_null |= summary.can_return_null;
+    existing
+        .returns_from_callees
+        .extend(summary.returns_from_callees);
+    existing.frees_params.extend(summary.frees_params);
+    existing
+        .unconditional_frees_params
+        .extend(summary.unconditional_frees_params);
+    // Union, for the same reason `can_return_null` is unioned:
+    // if ANY definition linked under this name can return
+    // having left the output parameter unwritten, a caller
+    // that reads it is reading something possibly
+    // uninitialised.
+    existing
+        .conditional_modifies_params
+        .extend(summary.conditional_modifies_params);
+    // The three output-parameter sets, each merged in the
+    // direction its own meaning demands (task 1079,
+    // tools_sqc). Before this they were not merged at all:
+    // whichever definition the parallel walk reached first
+    // was inserted whole and every later one was dropped, so
+    // a project shipping two definitions of a name got an
+    // arbitrary pick -- the same silent failure
+    // `can_return_null` had.
+    //
+    // MUST is INTERSECTED, not unioned. It is a guarantee a
+    // caller is credited with: `unconditional_modifies_params`
+    // is what clears an "uninitialised" state, so it may hold
+    // an index only if EVERY definition linked under this name
+    // writes it on every path. Unioning it would credit the
+    // caller of a conditional writer because some other
+    // variant happened to be unconditional -- the overclaim
+    // direction that produced the 1065 recall regressions.
+    // Intersection keeps MUST a subset of the unioned MAY, and
+    // disjoint from `conditional_modifies_params`: an index in
+    // every variant's MUST is in no variant's conditional set.
+    existing
+        .unconditional_modifies_params
+        .retain(|idx| summary.unconditional_modifies_params.contains(idx));
+    // MAY is unioned: if any definition may write through the
+    // parameter, callers cannot be told it is read-only.
+    existing.modifies_params.extend(summary.modifies_params);
+    // Pending obligations are a CONJUNCTION -- coverage holds
+    // only if every pair in the set is itself a MUST-write --
+    // so unioning them across variants hardens the question
+    // rather than answering it, which is the conservative
+    // direction here too.
+    for (idx, obligations) in summary.modifies_params_pending {
+        let entry = existing.modifies_params_pending.entry(idx).or_default();
+        for obligation in obligations {
+            if !entry.contains(&obligation) {
+                entry.push(obligation);
+            }
+        }
+    }
+    existing.closes_params.extend(summary.closes_params);
+    for (idx, fields) in summary.frees_param_fields {
+        existing
+            .frees_param_fields
+            .entry(idx)
+            .or_default()
+            .extend(fields);
+    }
+    for (idx, callees) in summary.param_passthroughs {
+        existing
+            .param_passthroughs
+            .entry(idx)
+            .or_default()
+            .extend(callees);
+    }
+    for (idx, callees) in summary.unconditional_param_passthroughs {
+        existing
+            .unconditional_param_passthroughs
+            .entry(idx)
+            .or_default()
+            .extend(callees);
+    }
+}
+
 /// Demote parameters whose every AST-visible write through them is
 /// conditional out of the MUST-write set. See
 /// `FunctionSummary::unconditional_modifies_params` for why this subtracts
@@ -3498,6 +3629,46 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         )
+    }
+
+    #[test]
+    fn ifdef_variants_in_one_file_merge_rather_than_last_one_winning() {
+        // aurora-lint does not preprocess, so both arms of an `#ifdef` are
+        // parsed and both produce a summary for the same name. The `#else`
+        // stub is textually last, so a plain insert let the do-nothing variant
+        // govern every caller -- `fill` looked like it writes nothing at all
+        // (task 1083, tools_sqc).
+        //
+        // Mirrored the way the cross-file test is, so neither arm alone gives
+        // this answer: the real arm alone puts index 1 in MUST, the stub arm
+        // alone leaves MAY empty. Only the merge yields both.
+        let code = r#"
+        #ifdef HAVE_FEATURE
+        void fill(int flag, int *out) {
+            *out = 1;
+        }
+        #else
+        void fill(int flag, int *out) {
+            (void)flag;
+            (void)out;
+        }
+        #endif
+        "#;
+        let summaries = parse_and_summarize(code);
+        let fill = summaries.get("fill").expect("fill summary");
+
+        assert!(
+            fill.modifies_params.contains(&1),
+            "MAY is unioned: the real arm writes through the parameter, and the \
+             stub arm being textually last must not erase that -- got {:?}",
+            fill.modifies_params
+        );
+        assert!(
+            !fill.unconditional_modifies_params.contains(&1),
+            "MUST is intersected: the stub arm offers no guarantee, so neither \
+             does the merged summary -- got {:?}",
+            fill.unconditional_modifies_params
+        );
     }
 
     #[test]

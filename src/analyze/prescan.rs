@@ -304,120 +304,6 @@ pub fn prescan_single_file(path: &Path, needs_vra: bool) -> Result<ProjectContex
     prescan_file_list(vec![(path.to_path_buf(), is_header)], 1, None, needs_vra)
 }
 
-/// Parse `all_files` in parallel and fold the per-file results into one
-/// project-wide context. `unit_count` is only what the progress reporter is
-/// told it is starting on.
-///
-/// Fold one definition's summary into the accumulated summary for that
-/// function name.
-///
-/// A project can ship several definitions of one name -- an `#ifdef`ed
-/// platform variant, a test stub beside the real thing -- and aurora-lint has
-/// no preprocessor, so it scans all of them and this decides what callers
-/// are told. "First one inserted wins" is never the answer: which definition
-/// a parallel walk reaches first is arbitrary, so it silently picks one at
-/// random (task 401 for `frees_params`, task 1065 #2 for `can_return_null`,
-/// task 1079 for the output-parameter sets).
-///
-/// Each field is folded in the direction its own meaning demands. A MAY fact
-/// unions -- if any definition might do the thing, callers must be prepared
-/// for it. A MUST fact intersects -- a guarantee holds only if every
-/// definition offers it. Read each field's own comment below.
-fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSummary) {
-    existing.has_env03_taint_source |= summary.has_env03_taint_source;
-    existing.returns_tainted |= summary.returns_tainted;
-    existing.has_relative_command_write |= summary.has_relative_command_write;
-    // Union `can_return_null` across variants: a project that
-    // ships multiple definitions of the same function name
-    // (e.g. hostap's real `src/eap_peer/eap.c` eap_get_config
-    // beside the `tests/fuzzing/*/*-peer.c` stubs that always
-    // `return &static_config;`) must classify callers by the
-    // safe direction. Without this union the first-scanned
-    // variant won: whichever variant's `can_return_null` was
-    // set at insertion silently overwrote every later one, so
-    // the real function's nullable return was masked by the
-    // stub's non-null return and callers dereferenced its
-    // result without a check (hostap eap_teap.c:1387 recall
-    // regression, task 1065 #2).
-    existing.can_return_null |= summary.can_return_null;
-    existing
-        .returns_from_callees
-        .extend(summary.returns_from_callees);
-    existing.frees_params.extend(summary.frees_params);
-    existing
-        .unconditional_frees_params
-        .extend(summary.unconditional_frees_params);
-    // Union, for the same reason `can_return_null` is unioned:
-    // if ANY definition linked under this name can return
-    // having left the output parameter unwritten, a caller
-    // that reads it is reading something possibly
-    // uninitialised.
-    existing
-        .conditional_modifies_params
-        .extend(summary.conditional_modifies_params);
-    // The three output-parameter sets, each merged in the
-    // direction its own meaning demands (task 1079,
-    // tools_sqc). Before this they were not merged at all:
-    // whichever definition the parallel walk reached first
-    // was inserted whole and every later one was dropped, so
-    // a project shipping two definitions of a name got an
-    // arbitrary pick -- the same silent failure
-    // `can_return_null` had.
-    //
-    // MUST is INTERSECTED, not unioned. It is a guarantee a
-    // caller is credited with: `unconditional_modifies_params`
-    // is what clears an "uninitialised" state, so it may hold
-    // an index only if EVERY definition linked under this name
-    // writes it on every path. Unioning it would credit the
-    // caller of a conditional writer because some other
-    // variant happened to be unconditional -- the overclaim
-    // direction that produced the 1065 recall regressions.
-    // Intersection keeps MUST a subset of the unioned MAY, and
-    // disjoint from `conditional_modifies_params`: an index in
-    // every variant's MUST is in no variant's conditional set.
-    existing
-        .unconditional_modifies_params
-        .retain(|idx| summary.unconditional_modifies_params.contains(idx));
-    // MAY is unioned: if any definition may write through the
-    // parameter, callers cannot be told it is read-only.
-    existing.modifies_params.extend(summary.modifies_params);
-    // Pending obligations are a CONJUNCTION -- coverage holds
-    // only if every pair in the set is itself a MUST-write --
-    // so unioning them across variants hardens the question
-    // rather than answering it, which is the conservative
-    // direction here too.
-    for (idx, obligations) in summary.modifies_params_pending {
-        let entry = existing.modifies_params_pending.entry(idx).or_default();
-        for obligation in obligations {
-            if !entry.contains(&obligation) {
-                entry.push(obligation);
-            }
-        }
-    }
-    existing.closes_params.extend(summary.closes_params);
-    for (idx, fields) in summary.frees_param_fields {
-        existing
-            .frees_param_fields
-            .entry(idx)
-            .or_default()
-            .extend(fields);
-    }
-    for (idx, callees) in summary.param_passthroughs {
-        existing
-            .param_passthroughs
-            .entry(idx)
-            .or_default()
-            .extend(callees);
-    }
-    for (idx, callees) in summary.unconditional_param_passthroughs {
-        existing
-            .unconditional_param_passthroughs
-            .entry(idx)
-            .or_default()
-            .extend(callees);
-    }
-}
-
 /// Shared by [`prescan_directories`] and [`prescan_single_file`] so that a
 /// single-file context can never drift from a directory one.
 fn prescan_file_list(
@@ -503,7 +389,7 @@ fn prescan_file_list(
         // regression than the false positive the union avoids (task 401).
         for (name, summary) in r.function_summaries {
             match function_summaries.get_mut(&name) {
-                Some(existing) => merge_summary_variant(existing, summary),
+                Some(existing) => function_summary::merge_summary_variant(existing, summary),
                 None => {
                     function_summaries.insert(name, summary);
                 }

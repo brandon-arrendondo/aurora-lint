@@ -1,6 +1,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::{self, FunctionSummary};
+use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
 use crate::utility::cert_c::call_roles;
@@ -55,6 +56,7 @@ pub struct Mem31C {
     struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
     struct_typedef_aliases: RefCell<HashMap<String, String>>,
     known_functions: RefCell<HashSet<String>>,
+    function_macros: RefCell<HashMap<String, FunctionMacro>>,
     /// Cross-file noreturn function names from the prescan, unioned in
     /// `check` with the ones this file declares for itself (task 1076).
     noreturn_functions: RefCell<HashSet<String>>,
@@ -68,6 +70,7 @@ impl Mem31C {
             struct_field_types: RefCell::new(HashMap::new()),
             struct_typedef_aliases: RefCell::new(HashMap::new()),
             known_functions: RefCell::new(HashSet::new()),
+            function_macros: RefCell::new(HashMap::new()),
             noreturn_functions: RefCell::new(HashSet::new()),
         }
     }
@@ -100,6 +103,7 @@ impl CertRule for Mem31C {
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.struct_typedef_aliases.borrow_mut() = context.struct_typedef_aliases.clone();
         *self.known_functions.borrow_mut() = context.known_functions.clone();
+        *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
     }
 
@@ -110,6 +114,7 @@ impl CertRule for Mem31C {
         let struct_field_types = self.struct_field_types.borrow();
         let struct_typedef_aliases = self.struct_typedef_aliases.borrow();
         let known_functions = self.known_functions.borrow();
+        let function_macros = self.function_macros.borrow();
 
         // A call that never returns ends its branch exactly as `return` does.
         // The prescan set carries declarations from headers this parse never
@@ -127,6 +132,7 @@ impl CertRule for Mem31C {
                 &struct_field_types,
                 &struct_typedef_aliases,
                 &known_functions,
+                &function_macros,
                 &noreturn_names,
             );
             analyzer.analyze_function(&func, source, &mut violations);
@@ -225,6 +231,11 @@ struct MemoryLeakAnalyzer<'a> {
     // when the callee is absent from this set -- see
     // `track_allocation_guarded`.
     known_functions: &'a HashSet<String>,
+    // Every function-like macro the prescan collected project-wide
+    // (`ProjectContext::function_macros`). Needed only to resolve a field
+    // access whose base is a cast macro rather than a variable -- see
+    // `macro_cast_pointer_type`.
+    function_macros: &'a HashMap<String, FunctionMacro>,
     // Names of functions that never return to their caller, from the prescan
     // (headers included) unioned with this file's own declarations. A call to
     // one ends a branch the way `return` does (task 1076).
@@ -325,6 +336,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         struct_field_types: &'a HashMap<String, HashMap<String, String>>,
         struct_typedef_aliases: &'a HashMap<String, String>,
         known_functions: &'a HashSet<String>,
+        function_macros: &'a HashMap<String, FunctionMacro>,
         noreturn_names: &'a HashSet<String>,
     ) -> Self {
         Self {
@@ -350,6 +362,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             struct_field_types,
             struct_typedef_aliases,
             known_functions,
+            function_macros,
             noreturn_names,
         }
     }
@@ -373,6 +386,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 source,
                 self.struct_field_types,
                 self.struct_typedef_aliases,
+                self.function_macros,
             );
 
             // Pre-analysis: collect what variables are freed at each label
@@ -633,12 +647,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         source: &str,
         struct_field_types: &HashMap<String, HashMap<String, String>>,
         struct_typedef_aliases: &HashMap<String, String>,
+        function_macros: &HashMap<String, FunctionMacro>,
     ) -> HashSet<String> {
         if struct_field_types.is_empty() {
             return HashSet::new();
         }
         let mut type_map = overflow_helpers::collect_variable_types(func_node, source);
-        if type_map.is_empty() {
+        // A macro-wrapped base carries its own type in the cast, so the
+        // macro path stays available in a function that declares nothing.
+        if type_map.is_empty() && function_macros.is_empty() {
             return HashSet::new();
         }
         // Rewrite each declared type's struct name to the TAG its fields are
@@ -666,12 +683,22 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if left.kind() != "field_expression" {
                 continue;
             }
-            let Some(field_type) = ast_utils::resolve_field_expression_type(
+            let resolved = ast_utils::resolve_field_expression_type(
                 &left,
                 source,
                 &type_map,
                 struct_field_types,
-            ) else {
+            )
+            .or_else(|| {
+                resolve_macro_based_field_type(
+                    &left,
+                    source,
+                    struct_field_types,
+                    struct_typedef_aliases,
+                    function_macros,
+                )
+            });
+            let Some(field_type) = resolved else {
                 continue;
             };
             if ast_utils::is_pointer_type(&field_type)
@@ -2331,6 +2358,117 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         })
         .is_some()
     }
+}
+
+/// Resolve the declared type of `left`'s field when `left`'s base is a cast
+/// macro rather than a variable.
+///
+/// seL4 writes `REPLY_PTR(next_ptr)->replyPrev = call_stack_new(0, false)`,
+/// where `#define REPLY_PTR(r) ((reply_t *) (r))`.
+/// `resolve_field_expression_type` resolves a base through the declared-type
+/// map, which is keyed on variable names, so a `call_expression` base has
+/// nothing to look up. The field is the same value-typed `call_stack_t` the
+/// guard already suppresses two lines further down on `reply->replyPrev`; only
+/// how the base is spelled differs.
+///
+/// Expanding the invocation against the project's own macro table is the
+/// name-independent route CLAUDE.md requires over a spelling heuristic: the
+/// cast in the expansion is the type declaration the code actually gives for
+/// that expression, and it comes from the project's `#define`, not from
+/// anything this rule assumes about the name.
+fn resolve_macro_based_field_type(
+    left: &Node,
+    source: &str,
+    struct_field_types: &HashMap<String, HashMap<String, String>>,
+    struct_typedef_aliases: &HashMap<String, String>,
+    function_macros: &HashMap<String, FunctionMacro>,
+) -> Option<String> {
+    let field_node = left.child_by_field_name("field")?;
+    let field_name = ast_utils::get_node_text_owned(&field_node, source);
+    let argument = left.child_by_field_name("argument")?;
+    let cast_type = macro_cast_pointer_type(&argument, source, function_macros)?;
+    let struct_name = ast_utils::extract_struct_name_from_type(&cast_type)?;
+    // Same tag hop as the declared-variable path: fields file under the TAG.
+    let tag = struct_typedef_aliases
+        .get(struct_name)
+        .map(String::as_str)
+        .unwrap_or(struct_name);
+    struct_field_types.get(tag)?.get(&field_name).cloned()
+}
+
+/// The pointer type a macro invocation casts to, or `None` if `base` is not a
+/// call of a known function-like macro that expands to a leading pointer cast.
+fn macro_cast_pointer_type(
+    base: &Node,
+    source: &str,
+    function_macros: &HashMap<String, FunctionMacro>,
+) -> Option<String> {
+    if base.kind() != "call_expression" || function_macros.is_empty() {
+        return None;
+    }
+    let function = base.child_by_field_name("function")?;
+    if function.kind() != "identifier" {
+        return None;
+    }
+    let name = ast_utils::get_node_text_owned(&function, source);
+    let arguments = base.child_by_field_name("arguments")?;
+    let args: Vec<String> = (0..arguments.named_child_count())
+        .filter_map(|i| arguments.named_child(i))
+        .map(|a| ast_utils::get_node_text_owned(&a, source))
+        .collect();
+    let expanded = macro_expand::expand_invocation(function_macros, &name, &args)?;
+    leading_pointer_cast_type(&expanded)
+}
+
+/// The type of a leading pointer cast in `text`, after peeling redundant outer
+/// parentheses: `((reply_t *) (r))` yields `reply_t *`.
+///
+/// Only a POINTER cast counts, and only one that has something after it to
+/// apply to. `MACRO(x)->field` can only be a field access if the expansion
+/// produced something dereferenceable, so a bare `(reply_t *)` with nothing
+/// following it, or a non-pointer cast, means the expansion is not the base
+/// this is trying to type and guessing further would be worse than declining.
+fn leading_pointer_cast_type(text: &str) -> Option<String> {
+    let mut s = text.trim();
+    while let Some(inner) = strip_redundant_parens(s) {
+        s = inner;
+    }
+    let close = matching_paren(s)?;
+    let cast = s[1..close].trim();
+    if s[close + 1..].trim().is_empty() || !cast.ends_with('*') {
+        return None;
+    }
+    Some(cast.to_string())
+}
+
+/// `s` with one wrapping parenthesis pair removed, if `s` is entirely
+/// parenthesised (`(a)(b)` is not, and is returned as `None`).
+fn strip_redundant_parens(s: &str) -> Option<&str> {
+    if matching_paren(s)? + 1 != s.len() {
+        return None;
+    }
+    Some(s[1..s.len() - 1].trim())
+}
+
+/// Byte offset of the `)` matching the `(` that `s` must start with.
+fn matching_paren(s: &str) -> Option<usize> {
+    if !s.starts_with('(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, b) in s.bytes().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Names used through a pointer-shaped operation in `node`: `p->f`, `*p`,
