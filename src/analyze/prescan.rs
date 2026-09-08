@@ -412,6 +412,14 @@ fn prescan_file_list(
                     existing
                         .unconditional_frees_params
                         .extend(summary.unconditional_frees_params);
+                    // Union, for the same reason `can_return_null` is unioned:
+                    // if ANY definition linked under this name can return
+                    // having left the output parameter unwritten, a caller
+                    // that reads it is reading something possibly
+                    // uninitialised.
+                    existing
+                        .conditional_modifies_params
+                        .extend(summary.conditional_modifies_params);
                     existing.closes_params.extend(summary.closes_params);
                     for (idx, fields) in summary.frees_param_fields {
                         existing
