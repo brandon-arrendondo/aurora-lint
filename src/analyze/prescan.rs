@@ -37,6 +37,7 @@ struct FilePrescanResult {
     typedef_types: HashMap<String, String>,
     function_pointer_typedef_names: HashSet<String>,
     packed_structs: HashSet<String>,
+    noreturn_functions: HashSet<String>,
     packed_struct_candidates: Vec<(String, String)>,
     packed_macro_names: HashSet<String>,
     defined_macro_names: HashSet<String>,
@@ -86,6 +87,7 @@ impl FilePrescanResult {
             typedef_types: HashMap::new(),
             function_pointer_typedef_names: HashSet::new(),
             packed_structs: HashSet::new(),
+            noreturn_functions: HashSet::new(),
             packed_struct_candidates: Vec::new(),
             packed_macro_names: HashSet::new(),
             defined_macro_names: HashSet::new(),
@@ -184,6 +186,8 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             &mut result.packed_structs,
             &mut result.packed_struct_candidates,
         );
+        result.noreturn_functions =
+            crate::analyze::noreturn::collect_noreturn_function_names(&root, &source);
         crate::utility::cert_c::ast_utils::collect_packed_macro_names(
             &source,
             &mut result.packed_macro_names,
@@ -338,6 +342,7 @@ fn prescan_file_list(
     let mut typedef_types: HashMap<String, String> = HashMap::new();
     let mut function_pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut packed_structs: HashSet<String> = HashSet::new();
+    let mut noreturn_functions: HashSet<String> = HashSet::new();
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
     let mut packed_macro_names: HashSet<String> = HashSet::new();
     let mut defined_macro_names: HashSet<String> = HashSet::new();
@@ -472,6 +477,7 @@ fn prescan_file_list(
         typedef_types.extend(r.typedef_types);
         function_pointer_typedef_names.extend(r.function_pointer_typedef_names);
         packed_structs.extend(r.packed_structs);
+        noreturn_functions.extend(r.noreturn_functions);
         packed_struct_candidates.extend(r.packed_struct_candidates);
         packed_macro_names.extend(r.packed_macro_names);
         defined_macro_names.extend(r.defined_macro_names);
@@ -703,6 +709,7 @@ fn prescan_file_list(
         typedef_types,
         function_pointer_typedef_names,
         packed_structs,
+        noreturn_functions,
         defined_macro_names,
         unused_attribute_macros,
         global_constants,

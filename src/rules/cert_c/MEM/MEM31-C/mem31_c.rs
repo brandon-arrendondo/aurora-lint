@@ -51,6 +51,9 @@ fn strip_call_argument(arg: Node) -> Option<(Node, bool)> {
 pub struct Mem31C {
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
     value_only_globals: RefCell<HashSet<String>>,
+    /// Cross-file noreturn function names from the prescan, unioned in
+    /// `check` with the ones this file declares for itself (task 1076).
+    noreturn_functions: RefCell<HashSet<String>>,
 }
 
 impl Mem31C {
@@ -58,6 +61,7 @@ impl Mem31C {
         Self {
             function_summaries: RefCell::new(HashMap::new()),
             value_only_globals: RefCell::new(HashSet::new()),
+            noreturn_functions: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -86,6 +90,7 @@ impl CertRule for Mem31C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.value_only_globals.borrow_mut() = context.value_only_globals.clone();
+        *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -93,9 +98,18 @@ impl CertRule for Mem31C {
         let summaries = self.function_summaries.borrow();
         let value_only_globals = self.value_only_globals.borrow();
 
+        // A call that never returns ends its branch exactly as `return` does.
+        // The prescan set carries declarations from headers this parse never
+        // sees; the per-file pass catches a helper declared only here.
+        let mut noreturn_names = self.noreturn_functions.borrow().clone();
+        noreturn_names.extend(crate::analyze::noreturn::collect_noreturn_function_names(
+            node, source,
+        ));
+
         // Analyze each function independently for memory leaks
         for func in query::find_descendants_of_kind(*node, "function_definition") {
-            let mut analyzer = MemoryLeakAnalyzer::new(&summaries, &value_only_globals);
+            let mut analyzer =
+                MemoryLeakAnalyzer::new(&summaries, &value_only_globals, &noreturn_names);
             analyzer.analyze_function(&func, source, &mut violations);
         }
 
@@ -162,6 +176,10 @@ struct MemoryLeakAnalyzer<'a> {
     // seL4's `current_lookup_fault = lookup_fault_new(...)`, assigned from
     // several translation units, declared only via `extern` in a header).
     value_only_globals: &'a HashSet<String>,
+    // Names of functions that never return to their caller, from the prescan
+    // (headers included) unioned with this file's own declarations. A call to
+    // one ends a branch the way `return` does (task 1076).
+    noreturn_names: &'a HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +273,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     fn new(
         function_summaries: &'a HashMap<String, FunctionSummary>,
         value_only_globals: &'a HashSet<String>,
+        noreturn_names: &'a HashSet<String>,
     ) -> Self {
         Self {
             allocated_memory: HashMap::new(),
@@ -275,6 +294,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             static_variables: HashSet::new(),
             value_only_locals: HashSet::new(),
             value_only_globals,
+            noreturn_names,
         }
     }
 
@@ -769,11 +789,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         let true_has_return = true_branch
             .as_ref()
-            .map(|b| self.block_has_return(b))
+            .map(|b| self.block_has_return(b, source))
             .unwrap_or(false);
         let else_has_return = else_clause
             .as_ref()
-            .map(|e| self.block_has_return(e))
+            .map(|e| self.block_has_return(e, source))
             .unwrap_or(false);
 
         if let Some(ref var_name) = null_check_var {
@@ -2097,9 +2117,24 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
-    /// Check if a node contains a return statement
-    fn block_has_return(&self, node: &Node) -> bool {
-        query::find_first_descendant(*node, |n| n.kind() == "return_statement").is_some()
+    /// True if `node` contains a statement that ends the enclosing branch.
+    ///
+    /// A `return` is the obvious one. A call to a function that never returns
+    /// -- `exit()`, `abort()`, a `_Noreturn`/`__attribute__((noreturn))`
+    /// error handler -- ends the branch just as firmly, so a `free()` before
+    /// it cannot reach code textually after the `if`. Missing that reported a
+    /// double free on four pure-ftpd sites whose early-error branch calls a
+    /// process-terminating helper before the shared cleanup runs (task 1076).
+    fn block_has_return(&self, node: &Node, source: &str) -> bool {
+        query::find_first_descendant(*node, |n| {
+            n.kind() == "return_statement"
+                || crate::analyze::noreturn::is_noreturn_call_statement(
+                    &n,
+                    source,
+                    self.noreturn_names,
+                )
+        })
+        .is_some()
     }
 }
 

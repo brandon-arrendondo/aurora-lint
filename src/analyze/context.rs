@@ -48,6 +48,18 @@ pub struct ProjectContext {
     /// EXP36-C must not treat a cast into it as alignment-increasing.
     #[serde(default)]
     pub packed_structs: HashSet<String>,
+    /// Names of functions known never to return to their caller, collected
+    /// across all scanned files (incl. headers) by
+    /// [`crate::analyze::noreturn::collect_noreturn_function_names`]: the
+    /// fixed C standard library set, `_Noreturn` qualifiers,
+    /// `__attribute__((noreturn))`, and the recovered bare-identifier
+    /// attribute macros. Cross-file because the declaration carrying the
+    /// attribute is routinely in a header the single-file parse never sees
+    /// -- pure-ftpd marks its `no_mem()` allocation-failure helper
+    /// `__attribute__((noreturn))` in `ftpd.h` while every call site is in
+    /// a `.c` file (task 1076).
+    #[serde(default)]
+    pub noreturn_functions: HashSet<String>,
     /// Global constants: `[const] TYPE NAME = VALUE;` from across all scanned files.
     /// Used by init-state analysis for dead-branch elimination.
     #[serde(default)]
