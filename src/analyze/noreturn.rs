@@ -110,6 +110,29 @@ fn has_noreturn_qualifier_or_attribute(decl_or_def: &Node, source: &str) -> bool
     result
 }
 
+/// True if an `__attribute__((noreturn))` sits on the *declarator* rather
+/// than on the declaration itself -- the trailing spelling,
+/// `void no_mem(void) __attribute__((noreturn));`.
+///
+/// tree-sitter-c hangs a trailing attribute off an `attributed_declarator`
+/// inside the declaration's `declarator`, not off the declaration node, so
+/// [`has_noreturn_qualifier_or_attribute`]'s direct-children scan sees only
+/// the leading spellings. pure-ftpd declares its `no_mem()` helper this way
+/// in `ftpd.h`, which is the form task 1076 was filed against.
+///
+/// Attributes inside the parameter list are excluded: an attribute on a
+/// parameter says nothing about whether the function returns.
+fn has_declarator_noreturn_attribute(decl: &Node, func_declarator: &Node, source: &str) -> bool {
+    let params = func_declarator.child_by_field_name("parameters");
+    query::find_descendants_of_kinds(*decl, &["attribute_specifier"])
+        .into_iter()
+        .filter(|a| match params {
+            Some(p) => a.start_byte() < p.start_byte() || a.start_byte() >= p.end_byte(),
+            None => true,
+        })
+        .any(|a| get_node_text(&a, source).contains("noreturn"))
+}
+
 /// Collect the names of every function in `root` recognized as noreturn by
 /// any of the four signals documented at module level.
 pub fn collect_noreturn_function_names(root: &Node, source: &str) -> HashSet<String> {
@@ -135,7 +158,10 @@ pub fn collect_noreturn_function_names(root: &Node, source: &str) -> HashSet<Str
         }
 
         let marked = has_marker(&source[node.start_byte()..func_declarator.start_byte()]);
-        if marked || has_noreturn_qualifier_or_attribute(&node, source) {
+        if marked
+            || has_noreturn_qualifier_or_attribute(&node, source)
+            || has_declarator_noreturn_attribute(&node, &func_declarator, source)
+        {
             names.insert(name);
         }
     }
