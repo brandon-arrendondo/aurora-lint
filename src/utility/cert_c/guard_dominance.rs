@@ -246,6 +246,114 @@ fn enclosing_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
     conditions
 }
 
+/// True when `var` has been *dereferenced* by the time `site` executes — so
+/// the program either already faulted or `var` is non-null here.
+///
+/// The dual of [`has_dominating_comparison`]: that one asks whether the code
+/// checked a variable, this one asks whether the code already committed to it
+/// being valid. A null test on a pointer with a dominating dereference is
+/// dead-defensive code, and treating it as evidence of nullability is what let
+/// hostap's `ieee802_1x_encapsulate_radius` — `sta->eapol_sm` in its first
+/// statement, `if (sta && …)` 36 lines later — report a null dereference of
+/// `sta` further down (task 1058, tools_sqc).
+///
+/// Counted as dominating: a dereference inside a condition that encloses
+/// `site` (it was evaluated to get here), and one in a preceding block-level
+/// `declaration` or `expression_statement`, or in the condition of a preceding
+/// `if` chain. Deliberately NOT counted: a dereference in a preceding loop or
+/// `if` *body*, or nested in a preceding `switch` — those may not have run.
+/// Same AST approximation, and same caveats, as the rest of this module.
+pub fn has_dominating_dereference(var: &str, site: &Node, source: &str) -> bool {
+    if enclosing_conditions(site)
+        .iter()
+        .any(|cond| subtree_dereferences_var(cond, var, source))
+    {
+        return true;
+    }
+
+    let mut current = *site;
+    while let Some(parent) = current.parent() {
+        if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
+            let mut cursor = parent.walk();
+            for stmt in parent.named_children(&mut cursor) {
+                if stmt.start_byte() >= current.start_byte() {
+                    break;
+                }
+                if preceding_statement_dereferences_var(&stmt, var, source) {
+                    return true;
+                }
+            }
+        }
+        if parent.kind() == "function_definition" {
+            break;
+        }
+        current = parent;
+    }
+    false
+}
+
+/// One preceding block-level statement: does it dereference `var` on every
+/// path through it? Looks through preprocessor wrappers the same way
+/// `collect_block_level_if_conditions` does.
+fn preceding_statement_dereferences_var(stmt: &Node, var: &str, source: &str) -> bool {
+    if BLOCK_LIKE_KINDS.contains(&stmt.kind()) && stmt.kind() != "compound_statement" {
+        let mut cursor = stmt.walk();
+        return stmt
+            .named_children(&mut cursor)
+            .any(|inner| preceding_statement_dereferences_var(&inner, var, source));
+    }
+    match stmt.kind() {
+        // Straight-line code: whatever it dereferences, it dereferenced.
+        "declaration" | "expression_statement" | "return_statement" => {
+            subtree_dereferences_var(stmt, var, source)
+        }
+        // Only the conditions run unconditionally; the branch bodies do not.
+        "if_statement" => {
+            let mut conditions = Vec::new();
+            collect_if_chain_conditions(stmt, &mut conditions);
+            conditions
+                .iter()
+                .any(|cond| subtree_dereferences_var(cond, var, source))
+        }
+        _ => false,
+    }
+}
+
+/// Whether `node`'s subtree contains a dereference of `var` — `var->f`, `*var`
+/// or `var[i]`. `var.f` is not one: it needs no valid pointer.
+fn subtree_dereferences_var(node: &Node, var: &str, source: &str) -> bool {
+    query::find_descendants_of_kinds(
+        *node,
+        &[
+            "field_expression",
+            "pointer_expression",
+            "subscript_expression",
+        ],
+    )
+    .iter()
+    .any(|n| {
+        let base = match n.kind() {
+            "field_expression" => {
+                let arrow = n
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, source) == "->");
+                if !arrow {
+                    return false;
+                }
+                n.child_by_field_name("argument")
+            }
+            "pointer_expression" => {
+                if n.child(0).map(|c| get_node_text(&c, source)) != Some("*") {
+                    return false;
+                }
+                n.child_by_field_name("argument")
+            }
+            _ => n.child_by_field_name("argument"),
+        };
+        base.is_some_and(|b| b.kind() == "identifier" && get_node_text(&b, source) == var)
+    })
+}
+
 /// Node kinds whose children are statements at the enclosing block's level.
 ///
 /// The preprocessor wrappers are here because aurora-lint does not preprocess: a
