@@ -1390,7 +1390,8 @@ class BenchDB:
             if only_projects is not None and project not in only_projects:
                 continue
 
-            violations = json.load(open(json_file))
+            with open(json_file) as fh:
+                violations = json.load(fh)
             violation_count = len(violations)
 
             # Count per-rule
@@ -1430,8 +1431,8 @@ class BenchDB:
             meta_file = json_file.with_name(json_file.stem + ".meta.json")
             if meta_file.exists():
                 try:
-                    codebase_commit = json.load(
-                        open(meta_file)).get("codebase_commit")
+                    with open(meta_file) as fh:
+                        codebase_commit = json.load(fh).get("codebase_commit")
                 except (OSError, json.JSONDecodeError):
                     pass
 

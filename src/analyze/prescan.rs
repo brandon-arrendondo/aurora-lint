@@ -392,6 +392,19 @@ fn prescan_file_list(
                     existing.has_env03_taint_source |= summary.has_env03_taint_source;
                     existing.returns_tainted |= summary.returns_tainted;
                     existing.has_relative_command_write |= summary.has_relative_command_write;
+                    // Union `can_return_null` across variants: a project that
+                    // ships multiple definitions of the same function name
+                    // (e.g. hostap's real `src/eap_peer/eap.c` eap_get_config
+                    // beside the `tests/fuzzing/*/*-peer.c` stubs that always
+                    // `return &static_config;`) must classify callers by the
+                    // safe direction. Without this union the first-scanned
+                    // variant won: whichever variant's `can_return_null` was
+                    // set at insertion silently overwrote every later one, so
+                    // the real function's nullable return was masked by the
+                    // stub's non-null return and callers dereferenced its
+                    // result without a check (hostap eap_teap.c:1387 recall
+                    // regression, task 1065 #2).
+                    existing.can_return_null |= summary.can_return_null;
                     existing
                         .returns_from_callees
                         .extend(summary.returns_from_callees);
@@ -781,6 +794,20 @@ fn collect_header_declarations(node: &Node, source: &str, names: &mut HashSet<St
                             names.insert(name);
                         }
                     }
+                // An `ERROR` node here is not a dead end. Recovery keeps
+                // real `declaration` nodes inside it -- raylib's
+                // `rgestures.h` holds ten prototypes under a
+                // `linkage_specification` nested in one -- and this walk
+                // stopped at the `ERROR` and never saw them, so every
+                // prototype in the file read as undeclared. Read the loose
+                // specifier-run declarations back out, then recurse for the
+                // structured ones (task 1060).
+                "ERROR" => {
+                    for decl in ast_utils::error_declarations(&child, source) {
+                        names.insert(decl.name);
+                    }
+                    collect_header_declarations(&child, source, names);
+                }
                 kind if kind.starts_with("preproc_")
                     || kind == "linkage_specification"
                     || kind == "declaration_list" =>
@@ -871,8 +898,8 @@ fn collect_function_names(node: &Node, source: &str, names: &mut HashSet<String>
                     // definition whose declarator is split by an `#if`. Read the
                     // name back out before recursing, since the subtree holds no
                     // `declaration`/`function_definition` node to find (task 1038).
-                    for name in ast_utils::function_names_in_error_declaration(&child, source) {
-                        names.insert(name);
+                    for decl in ast_utils::error_declarations(&child, source) {
+                        names.insert(decl.name);
                     }
                     collect_function_names(&child, source, names);
                 }
@@ -3407,31 +3434,56 @@ fn guarded_nonnull_after(stmt: &Node, var: &str, source: &str) -> bool {
     }
     guard
         .child_by_field_name("consequence")
-        .is_some_and(|c| always_diverges(&c))
+        .is_some_and(|c| guard_dominance::always_diverges(&c))
 }
 
-/// True when control cannot fall out of the bottom of `stmt`: it is itself a
-/// `goto`/`return`/`break`/`continue`, or a block whose last non-comment
-/// statement is one. A block that cannot fall off its end cannot be left
-/// except by a jump either, so accepting it is exact rather than optimistic;
-/// every other shape is rejected.
-fn always_diverges(stmt: &Node) -> bool {
-    match stmt.kind() {
-        "goto_statement" | "return_statement" | "break_statement" | "continue_statement" => true,
-        "compound_statement" => {
-            let mut last = None;
-            for i in 0..stmt.child_count() {
-                if let Some(child) = stmt.child(i) {
-                    if matches!(child.kind(), "comment" | "{" | "}") {
-                        continue;
-                    }
-                    last = Some(child);
-                }
-            }
-            last.is_some_and(|l| always_diverges(&l))
+/// True when `condition` evaluating TRUE implies `var` is non-null: a bare
+/// truthiness test (`p`) or an explicit `p != NULL` / `p != 0`, at any depth
+/// through `&&` (every conjunct must hold for the whole to be true).
+///
+/// The mirror of `extract_null_checked_vars`, which answers the same question
+/// for the FALSE branch and splits on `||` for that reason.
+fn condition_true_implies_nonnull(condition: &Node, var: &str, source: &str) -> bool {
+    let text = condition.utf8_text(source.as_bytes()).unwrap_or("").trim();
+    let text = text
+        .strip_prefix('(')
+        .and_then(|t| t.strip_suffix(')'))
+        .unwrap_or(text);
+    text.split("&&").any(|part| {
+        let part = part.trim();
+        if part == var {
+            return true;
         }
-        _ => false,
-    }
+        match part.find("!=") {
+            Some(pos) => {
+                let (left, right) = (part[..pos].trim(), part[pos + 2..].trim());
+                (left == var && (right == "NULL" || right == "0"))
+                    || (right == var && (left == "NULL" || left == "0"))
+            }
+            None => false,
+        }
+    })
+}
+
+/// True when a null guard already evaluated at `site` implies `var` is
+/// non-null there.
+///
+/// This is the per-site question `guarded_nonnull_after` answers only for the
+/// immediately-adjacent case. The flow-insensitive `local_states` table holds
+/// one state per variable for a whole function, so it cannot express "guarded
+/// here, not there"; asking at the argument's own node can.
+fn guarded_nonnull_at(site: &Node, var: &str, source: &str) -> bool {
+    guard_dominance::dominating_conditions(site)
+        .iter()
+        .any(
+            |cond| match guard_dominance::dominating_condition_branch(cond, site) {
+                Some(true) => condition_true_implies_nonnull(cond, var, source),
+                Some(false) => extract_null_checked_vars(cond, source)
+                    .iter()
+                    .any(|v| v == var),
+                None => false,
+            },
+        )
 }
 
 fn collect_assignments_recursive(
@@ -3805,10 +3857,18 @@ fn infer_call_arg_state(
     }
     if arg.kind() == "identifier" {
         let name = arg.utf8_text(source.as_bytes()).unwrap_or("");
-        return local_states
+        let tabled = local_states
             .get(name)
             .copied()
             .unwrap_or(NullState::Unknown);
+        // `local_states` holds one state per variable for the whole function,
+        // so it cannot distinguish a guarded read from an unguarded one. Ask
+        // at this argument's own position before letting a maybe-null table
+        // entry vote.
+        if tabled != NullState::NotNull && guarded_nonnull_at(arg, name, source) {
+            return NullState::NotNull;
+        }
+        return tabled;
     }
     NullState::Unknown
 }
@@ -5467,6 +5527,51 @@ mod tests {
         (tree, code.to_string())
     }
 
+    // -- function summary merging across variants --
+
+    #[test]
+    fn function_summaries_union_can_return_null_across_variants() {
+        // Two definitions of the same function name across two files: one
+        // whose body returns an indirect call (so can_return_null is
+        // conservatively true) and one whose body returns `&static_var`
+        // (so `check_all_returns_nonnull` clears can_return_null). Without
+        // the merge, whichever file the prescan processes first wins --
+        // when the &-variant wins first, callers of the real nullable
+        // variant dereference its return without a null check (hostap
+        // eap_teap.c:1387 recall regression, task 1065 #2).
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-variants-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a_real.c"),
+            "struct sm { struct { struct cfg *(*g)(void *); } *cb; void *ctx; };\n\
+             struct cfg *get_thing(struct sm *sm) {\n\
+                 return sm->cb->g(sm->ctx);\n\
+             }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b_stub.c"),
+            "struct sm; struct cfg;\n\
+             static struct cfg static_cfg;\n\
+             struct cfg *get_thing(struct sm *sm) {\n\
+                 (void)sm;\n\
+                 return &static_cfg;\n\
+             }\n",
+        )
+        .unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let summary = ctx
+            .function_summaries
+            .get("get_thing")
+            .expect("get_thing summary should exist");
+        assert!(
+            summary.can_return_null,
+            "can_return_null must be true when ANY variant of the function may return null"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // -- callsite buffer-size collection / aggregation --
 
     #[test]
@@ -6621,6 +6726,85 @@ void caller(void) {
     if (!other)
         return;
     sink(data);
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::DefinitelyNull);
+    }
+
+    #[test]
+    fn test_nested_non_adjacent_guard_votes_not_null() {
+        // The shape neither earlier mechanism can reach: the guard is NESTED
+        // (so collect_early_return_null_guards, which walks only direct
+        // children of the body, misses it) and NOT adjacent to the assignment
+        // (so guarded_nonnull_after's next_sibling check misses it too). Only
+        // the per-site dominance query finds it.
+        let code = r#"
+void caller(int flag) {
+    char *data = 0;
+    if (flag) {
+        data = get_buf();
+        log_it("got it");
+        if (!data)
+            return;
+        sink(data);
+    }
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::NotNull);
+    }
+
+    #[test]
+    fn test_short_circuit_or_left_disjunct_votes_not_null() {
+        // hostap wpa_supplicant/interworking.c:1457 --
+        // `if (selected == NULL || is_excluded || cred_prio_cmp(selected, cred) < 0)`.
+        // Reaching the later disjunct means the null test was false.
+        let code = r#"
+void caller(char *cred) {
+    char *selected = 0;
+    if (selected == NULL || sink(selected) < 0)
+        selected = cred;
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::NotNull);
+    }
+
+    #[test]
+    fn test_short_circuit_and_left_conjunct_votes_not_null() {
+        // hostap wpa_supplicant/interworking.c:1798 --
+        // `if (cred_rc && (cred == NULL || cred_prio_cmp(cred_rc, cred) >= 0))`.
+        let code = r#"
+void caller(void) {
+    char *cred_rc = 0;
+    if (cred_rc && sink(cred_rc) >= 0)
+        return;
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::NotNull);
+    }
+
+    #[test]
+    fn test_enclosing_null_branch_does_not_vote_not_null() {
+        // Inside the TRUE branch of `!data` the pointer IS null. Crediting the
+        // mere presence of a dominating null test would invert the answer.
+        let code = r#"
+void caller(void) {
+    char *data = 0;
+    if (!data) {
+        sink(data);
+    }
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::DefinitelyNull);
+    }
+
+    #[test]
+    fn test_disjunct_on_other_variable_does_not_vote_not_null() {
+        // The dominating condition tests a neighbouring pointer, not this one.
+        let code = r#"
+void caller(char *other) {
+    char *data = 0;
+    if (other == NULL || sink(data) < 0)
+        return;
 }
 "#;
         assert_eq!(sink_arg0_state(code), NullState::DefinitelyNull);
