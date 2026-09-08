@@ -1068,7 +1068,7 @@ fn check_subscript_read(
     }
 
     // Skip non-read contexts
-    if !is_subscript_read_context(node, source) {
+    if !is_subscript_read_context(node, source, &config.cross_file_output_params) {
         return;
     }
 
@@ -1268,6 +1268,12 @@ fn is_read_context(
             if is_addressed_subobject_root(node, &parent, source) {
                 return false;
             }
+            // `memset(u.tmpSpace, 0, sizeof(u.tmpSpace))` — the field access is
+            // the whole argument, and it sits at an output position, so the
+            // call fills that storage rather than reading it (task 1037).
+            if let Some(verdict) = output_arg_read_verdict(node, source, cross_file_output_params) {
+                return verdict;
+            }
             is_read_in_field_expression(&parent)
         }
         // Subscript base (arr[i]) — the base identifier provides the address,
@@ -1279,7 +1285,14 @@ fn is_read_context(
         // still lies in `x`'s own storage, so this is the address-of case and
         // not a content read; without this arm it fell to the catch-all below
         // and reported `x` read at the very call that fills it (task 1028).
-        "parenthesized_expression" => !is_addressed_subobject_root(node, &parent, source),
+        "parenthesized_expression" => {
+            if is_addressed_subobject_root(node, &parent, source) {
+                return false;
+            }
+            // `memset((buf), 0, n)` — a redundant parenthesis must not hide the
+            // output position from the argument-list check either (task 1037).
+            output_arg_read_verdict(node, source, cross_file_output_params).unwrap_or(true)
+        }
         // Cast expression — reading the value, EXCEPT the `(void)x;`
         // discard idiom (a bare identifier cast straight to `void`): the
         // standard "suppress unused-variable warning" convention, which
@@ -1489,6 +1502,66 @@ fn is_addressed_subobject_root(node: &Node, parent: &Node, source: &str) -> bool
     root.id() == node.id() && !is_address_of_read(&addr, source)
 }
 
+/// The outermost lvalue containing `node`, reached by walking up through the
+/// wrapping layers that keep the whole expression a single call argument —
+/// `obj.f`, `arr[i]`, `(x)` and any chain of them.
+///
+/// Only the *base* side of a field or subscript is followed, so the `i` in
+/// `f(arr[i])` and a field name are never mistaken for the object being passed:
+/// they are their own outermost lvalue and keep whatever verdict they had.
+fn outermost_lvalue<'a>(node: &Node<'a>) -> Node<'a> {
+    let mut outer = *node;
+    while let Some(next) = outer.parent() {
+        let follows_base = match next.kind() {
+            "field_expression" | "subscript_expression" => {
+                next.child_by_field_name("argument").map(|a| a.id()) == Some(outer.id())
+            }
+            "parenthesized_expression" => true,
+            _ => false,
+        };
+        if !follows_base {
+            break;
+        }
+        outer = next;
+    }
+    outer
+}
+
+/// The argument-list read verdict for `node` when the whole lvalue containing
+/// it — `u.buf`, `s.a[i].buf`, `(buf)` — is itself a call argument; `None` when
+/// it is not, leaving the caller's own answer in place.
+///
+/// `is_read_in_context` dispatches on the identifier's DIRECT parent, so its
+/// `argument_list` arm — the only one that knows about output positions — fired
+/// only when the argument was a BARE identifier. With a `field_expression` in
+/// between, `memset`'s own destination read as a use of the object it clears
+/// (sqlite's `memset(uFts.tmpSpace, 0, sizeof(uFts.tmpSpace))`). Same principle
+/// as task 1028: the read predicate and the credit funnel have to agree about
+/// argument shapes, so consult the outermost lvalue rather than the identifier.
+fn output_arg_read_verdict(
+    node: &Node,
+    source: &str,
+    cross_file_output_params: &HashMap<String, HashSet<usize>>,
+) -> Option<bool> {
+    let outer = outermost_lvalue(node);
+    if outer.id() == node.id() {
+        return None; // bare identifier — `is_read_in_context`'s own arm has it
+    }
+    let arg_list = outer.parent()?;
+    if arg_list.kind() != "argument_list" {
+        return None;
+    }
+    if is_misparsed_asm_output_operand(&arg_list, source) {
+        return Some(false);
+    }
+    Some(is_read_in_argument_list(
+        node,
+        &arg_list,
+        source,
+        cross_file_output_params,
+    ))
+}
+
 /// `obj.field` is not a read of `obj` when it is the LHS of an assignment.
 /// Walks up through chained field expressions (`a.b.c = val` — `a`'s
 /// immediate parent is `a.b`, not `a.b.c`) to find the outermost field
@@ -1660,7 +1733,11 @@ fn is_deref_read_context(node: &Node) -> bool {
 }
 
 /// Check if a subscript access (arr[i]) is in a read context.
-fn is_subscript_read_context(node: &Node, source: &str) -> bool {
+fn is_subscript_read_context(
+    node: &Node,
+    source: &str,
+    cross_file_output_params: &HashMap<String, HashSet<usize>>,
+) -> bool {
     // Walk up ancestors to find if this subscript is ultimately on the LHS of an assignment
     let mut current = *node;
     for _ in 0..5 {
@@ -1693,6 +1770,23 @@ fn is_subscript_read_context(node: &Node, source: &str) -> bool {
                     return true;
                 }
                 return is_address_of_read(&parent, source);
+            }
+            // `memset(arr[i], 0, n)` / `memset(s.a[i].buf, 0, n)` — the element
+            // (or the field reached through it) is the whole argument and sits
+            // at an output position, so the call fills it rather than reading
+            // it. Without this arm the walk fell to the catch-all below and the
+            // element read as a use of its own uninitialized content, the same
+            // dispatch gap the identifier path had (task 1037).
+            "argument_list" => {
+                if is_misparsed_asm_output_operand(&parent, source) {
+                    return false;
+                }
+                return is_read_in_argument_list(
+                    &current,
+                    &parent,
+                    source,
+                    cross_file_output_params,
+                );
             }
             _ => return true,
         }
