@@ -34,4 +34,5 @@ enabled = true
 
 [references]
 wiki = "https://wiki.sei.cmu.edu/confluence/display/c/INT08-C.+Verify+that+all+integer+values+are+in+range"
+cwe = ["CWE-190", "CWE-191", "CWE-197"]
 related = ["INT32-C"]

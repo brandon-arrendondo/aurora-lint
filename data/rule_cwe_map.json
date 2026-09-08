@@ -333,6 +333,11 @@
     "INT07-C": [
       "CWE-682"
     ],
+    "INT08-C": [
+      "CWE-190",
+      "CWE-191",
+      "CWE-197"
+    ],
     "INT10-C": [
       "CWE-682",
       "CWE-129"
@@ -748,6 +753,7 @@
       "EXP39-C"
     ],
     "CWE-190": [
+      "INT08-C",
       "INT18-C",
       "INT30-C",
       "INT32-C",
@@ -756,6 +762,7 @@
       "MSC11-C"
     ],
     "CWE-191": [
+      "INT08-C",
       "INT30-C",
       "INT32-C"
     ],
@@ -781,6 +788,7 @@
       "FLP34-C",
       "INT02-C",
       "INT05-C",
+      "INT08-C",
       "INT31-C",
       "MSC24-C"
     ],
@@ -1345,7 +1353,7 @@
   },
   "stats": {
     "toml_count": 312,
-    "rules_with_cwe": 137,
+    "rules_with_cwe": 138,
     "unique_cwes": 165
   }
 }
