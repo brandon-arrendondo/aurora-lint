@@ -1215,6 +1215,205 @@ fn asserts_positive(term: &Node, positive: &[String], source: &str) -> bool {
     }
 }
 
+/// Ceiling on variables in a case split. Four gives sixteen rows, covers every
+/// shape seen in the corpus, and keeps a pathological function from turning
+/// this into an exponential walk.
+const MAX_CASE_VARS: usize = 4;
+
+/// True when a run of preceding bail-out guards forms a case split that leaves
+/// only assignments in which `var` is non-null.
+///
+/// The shape, hostap's `x509_name_compare`:
+///
+/// ```c
+/// if (!a && b)  return -1;
+/// if (a && !b)  return 1;
+/// if (!a && !b) return 0;
+/// if (a->num_attr < b->num_attr)   /* a and b are both non-null */
+/// ```
+///
+/// No single guard proves anything here — each one negated leaves two of the
+/// four nullness combinations open, which is why the sound join reports
+/// PossiblyNull. Together they exhaust every combination but `(non-null,
+/// non-null)`, and reaching the dereference means none of them fired.
+///
+/// So rather than pattern-match "three guards", this reads each guard as a
+/// conjunction of zero/non-zero literals, enumerates the assignments, drops
+/// the ones some guard would have caught, and asks whether `var` is non-null
+/// in every survivor. Exact for the shapes it models, and it covers two- and
+/// four-guard splits without further cases. A guard it cannot read as such a
+/// conjunction is ignored rather than approximated — ignoring one can only
+/// leave more survivors, so the answer stays conservative.
+pub fn is_nonnull_by_exhaustive_case_guards(var: &str, site: &Node, source: &str) -> bool {
+    let mut clauses: Vec<Vec<(String, bool)>> = Vec::new();
+    let site_start = site.start_byte();
+    let mut current = *site;
+    let mut function = None;
+
+    while let Some(parent) = current.parent() {
+        if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
+            let mut cursor = parent.walk();
+            for stmt in parent.named_children(&mut cursor) {
+                if stmt.start_byte() >= current.start_byte() {
+                    break;
+                }
+                collect_case_guard(&stmt, site_start, source, &mut clauses);
+            }
+        }
+        if parent.kind() == "function_definition" {
+            function = Some(parent);
+            break;
+        }
+        current = parent;
+    }
+
+    if clauses.is_empty() {
+        return false;
+    }
+
+    let mut vars: Vec<String> = Vec::new();
+    for clause in &clauses {
+        for (name, _) in clause {
+            if !vars.iter().any(|v| v == name) {
+                vars.push(name.clone());
+            }
+        }
+    }
+    let Some(target) = vars.iter().position(|v| v == var) else {
+        return false;
+    };
+    if vars.len() > MAX_CASE_VARS {
+        return false;
+    }
+
+    // Every variable in the split must still hold the value the guards tested.
+    // Scanning the whole function for writes is coarser than the region
+    // between the first guard and the site, but it only ever *withholds* the
+    // veto, which is the safe direction for a check that suppresses findings.
+    let Some(func) = function else {
+        return false;
+    };
+    if vars.iter().any(|v| var_written_within(&func, v, source)) {
+        return false;
+    }
+
+    let mut any_survivor = false;
+    for assignment in 0u32..(1u32 << vars.len()) {
+        let is_nonnull = |i: usize| assignment & (1 << i) != 0;
+        let caught = clauses.iter().any(|clause| {
+            clause.iter().all(|(name, expects_null)| {
+                let i = vars
+                    .iter()
+                    .position(|v| v == name)
+                    .expect("collected above");
+                // The literal holds when the variable's zero-ness matches what
+                // the literal asserts.
+                is_nonnull(i) != *expects_null
+            })
+        });
+        if caught {
+            continue;
+        }
+        any_survivor = true;
+        if !is_nonnull(target) {
+            return false;
+        }
+    }
+
+    // No survivor at all means the guards contradict each other, which means
+    // the model is wrong rather than the site unreachable. Claim nothing.
+    any_survivor
+}
+
+/// Read one preceding statement as a bail-out guard whose condition is a pure
+/// conjunction of zero/non-zero literals, appending it to `out`.
+fn collect_case_guard(
+    stmt: &Node,
+    site_start: usize,
+    source: &str,
+    out: &mut Vec<Vec<(String, bool)>>,
+) {
+    if BLOCK_LIKE_KINDS.contains(&stmt.kind()) && stmt.kind() != "compound_statement" {
+        let mut cursor = stmt.walk();
+        let inner: Vec<Node> = stmt.named_children(&mut cursor).collect();
+        for child in inner {
+            collect_case_guard(&child, site_start, source, out);
+        }
+        return;
+    }
+    if stmt.kind() != "if_statement" || stmt.end_byte() > site_start {
+        return;
+    }
+    if stmt.child_by_field_name("alternative").is_some() {
+        return;
+    }
+    let Some(consequence) = stmt.child_by_field_name("consequence") else {
+        return;
+    };
+    if !always_leaves(&consequence) {
+        return;
+    }
+    let Some(condition) = stmt.child_by_field_name("condition") else {
+        return;
+    };
+
+    let mut clause = Vec::new();
+    for part in conjuncts(&condition) {
+        match nullness_literal(&part, source) {
+            Some(literal) => clause.push(literal),
+            // Not a pure case-split guard. Dropping it is what keeps the
+            // enumeration conservative.
+            None => return,
+        }
+    }
+    if !clause.is_empty() {
+        out.push(clause);
+    }
+}
+
+/// `(name, asserts_zero)` for `!v`, `v`, `v == NULL`, `v != NULL`, `v == 0`,
+/// `v != 0` and the reversed operand orders.
+fn nullness_literal(term: &Node, source: &str) -> Option<(String, bool)> {
+    let t = unwrap_parens(term);
+
+    if t.kind() == "identifier" {
+        return Some((get_node_text(&t, source).to_string(), false));
+    }
+
+    if t.kind() == "unary_expression" {
+        if t.child(0).map(|c| get_node_text(&c, source)) != Some("!") {
+            return None;
+        }
+        let argument = unwrap_parens(&t.child_by_field_name("argument")?);
+        if argument.kind() != "identifier" {
+            return None;
+        }
+        return Some((get_node_text(&argument, source).to_string(), true));
+    }
+
+    if t.kind() == "binary_expression" {
+        let asserts_zero = match t.child_by_field_name("operator")?.kind() {
+            "==" => true,
+            "!=" => false,
+            _ => return None,
+        };
+        let left = unwrap_parens(&t.child_by_field_name("left")?);
+        let right = unwrap_parens(&t.child_by_field_name("right")?);
+        let left_text = get_node_text(&left, source);
+        let right_text = get_node_text(&right, source);
+        let is_zero = |s: &str| s == "NULL" || s == "0" || s == "nullptr";
+
+        if left.kind() == "identifier" && is_zero(right_text) {
+            return Some((left_text.to_string(), asserts_zero));
+        }
+        if right.kind() == "identifier" && is_zero(left_text) {
+            return Some((right_text.to_string(), asserts_zero));
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1599,6 +1798,107 @@ mod tests {
                  return 1;
              }",
             "items"
+        ));
+    }
+    /// Ask whether the case-split enumeration proves `var` non-null at the
+    /// last member access in `src`.
+    fn nonnull_by_case_split(src: &str, var: &str) -> bool {
+        let tree = parse_c_code(src);
+        let site = query::find_descendants_of_kind(tree.root_node(), "field_expression")
+            .into_iter()
+            .last()
+            .expect("fixture has a member access");
+        is_nonnull_by_exhaustive_case_guards(var, &site, src)
+    }
+
+    #[test]
+    fn test_case_split_three_guards_prove_both_operands() {
+        // hostap x509_name_compare, reduced. The reported dereference is `b`,
+        // and the same split proves `a`.
+        let src = "int f(struct n *a, struct n *b) {
+                       if (!a && b)  return -1;
+                       if (a && !b)  return 1;
+                       if (!a && !b) return 0;
+                       return a->num < b->num;
+                   }";
+        assert!(nonnull_by_case_split(src, "b"));
+        assert!(nonnull_by_case_split(src, "a"));
+    }
+
+    #[test]
+    fn test_case_split_incomplete_split_proves_nothing() {
+        // Drop the (!a && !b) case: both null survives, so `a` may be null.
+        assert!(!nonnull_by_case_split(
+            "int f(struct n *a, struct n *b) {
+                 if (!a && b) return -1;
+                 if (a && !b) return 1;
+                 return a->num;
+             }",
+            "a"
+        ));
+    }
+
+    #[test]
+    fn test_case_split_accepts_explicit_null_comparisons() {
+        let src = "int f(struct n *a, struct n *b) {
+                       if (a == NULL && b != NULL) return -1;
+                       if (a != NULL && b == NULL) return 1;
+                       if (a == NULL && b == NULL) return 0;
+                       return a->num < b->num;
+                   }";
+        assert!(nonnull_by_case_split(src, "b"));
+    }
+
+    #[test]
+    fn test_case_split_rejects_when_a_variable_is_reassigned() {
+        // `b` is written after the split, so the guards no longer describe it.
+        assert!(!nonnull_by_case_split(
+            "int f(struct n *a, struct n *b, struct n *c) {
+                 if (!a && b)  return -1;
+                 if (a && !b)  return 1;
+                 if (!a && !b) return 0;
+                 b = c;
+                 return a->num < b->num;
+             }",
+            "b"
+        ));
+    }
+
+    #[test]
+    fn test_case_split_rejects_non_bailout_guard() {
+        // The third guard falls through instead of returning, so reaching the
+        // dereference does not mean it failed.
+        assert!(!nonnull_by_case_split(
+            "int f(struct n *a, struct n *b) {
+                 if (!a && b)  return -1;
+                 if (a && !b)  return 1;
+                 if (!a && !b) log();
+                 return a->num < b->num;
+             }",
+            "a"
+        ));
+    }
+
+    #[test]
+    fn test_case_split_ignores_unmodellable_guard_conservatively() {
+        // `strcmp(...)` is not a nullness literal, so that guard is dropped --
+        // which leaves the split incomplete rather than over-claiming.
+        assert!(!nonnull_by_case_split(
+            "int f(struct n *a, struct n *b) {
+                 if (!a && b) return -1;
+                 if (a && !b) return 1;
+                 if (strcmp(x, y)) return 0;
+                 return a->num < b->num;
+             }",
+            "a"
+        ));
+    }
+
+    #[test]
+    fn test_case_split_single_null_guard_still_proves_nonnull() {
+        assert!(nonnull_by_case_split(
+            "int f(struct n *a) { if (!a) return 0; return a->num; }",
+            "a"
         ));
     }
 }
