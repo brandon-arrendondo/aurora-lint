@@ -18,6 +18,14 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
+/// Width every integer operation is performed in at minimum: C's usual
+/// arithmetic conversions promote anything narrower than `int` before the
+/// operation runs.
+const PROMOTED_ARITH_BITS: u32 = 32;
+
+/// Depth cap for walking into an operand looking for its type.
+const OPERAND_TYPE_MAX_DEPTH: u32 = 8;
+
 pub struct Int30C {
     project_macros: RefCell<MacroConstantMap>,
     current_macros: RefCell<MacroConstantMap>,
@@ -68,14 +76,16 @@ impl Int30C {
     /// still resolve by name, project-local summaries do not), so a run without
     /// `-d` reports a subset of what one with `-d` reports rather than a
     /// different, louder rule.
-    fn has_risky_operand_provenance(&self, node: &Node, source: &str) -> bool {
-        // VRA definite-wrap channel (UINT_MAX + 1 / 0u - 1). Unsigned wrap in
-        // SQLite uses 32-bit width uniformly, matching the fits-checks.
+    fn has_risky_operand_provenance(&self, node: &Node, source: &str, bits: u32) -> bool {
+        // VRA definite-wrap channel (UINT_MAX + 1 / 0u - 1), asked at the same
+        // width the caller's fits-check used. Asking at 32 while the operation
+        // runs in 64 calls a 64-bit product that merely exceeds UINT_MAX a
+        // definite wrap, which it is not.
         if const_eval::expression_overflows_unsigned_vra(
             node,
             source,
             &self.current_macros.borrow(),
-            32,
+            bits,
             self.vra_var_ranges_at(node, source).as_ref(),
         ) {
             return true;
@@ -531,7 +541,7 @@ impl Int30C {
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
+                    self.arith_width_bits(node, source, type_map),
                     self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
@@ -551,7 +561,11 @@ impl Int30C {
                 // operand derives from untrusted/unbounded input or the
                 // expression definitely wraps. Bounded unsigned counters wrap
                 // by intent, not by bug.
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(
+                    node,
+                    source,
+                    self.arith_width_bits(node, source, type_map),
+                ) {
                     return;
                 }
 
@@ -653,14 +667,18 @@ impl Int30C {
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
+                    self.arith_width_bits(node, source, type_map),
                     self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(
+                    node,
+                    source,
+                    self.arith_width_bits(node, source, type_map),
+                ) {
                     return;
                 }
 
@@ -748,14 +766,18 @@ impl Int30C {
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
+                    self.arith_width_bits(node, source, type_map),
                     self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(
+                    node,
+                    source,
+                    self.arith_width_bits(node, source, type_map),
+                ) {
                     return;
                 }
 
@@ -807,14 +829,18 @@ impl Int30C {
                     node,
                     source,
                     &self.current_macros.borrow(),
-                    32,
+                    self.arith_width_bits(node, source, type_map),
                     self.vra_var_ranges_at(node, source).as_ref(),
                 ) {
                     return;
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(
+                    node,
+                    source,
+                    self.arith_width_bits(node, source, type_map),
+                ) {
                     return;
                 }
 
@@ -877,7 +903,11 @@ impl Int30C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(
+                    node,
+                    source,
+                    self.arith_width_bits(node, source, type_map),
+                ) {
                     return;
                 }
 
@@ -949,7 +979,11 @@ impl Int30C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(
+                    node,
+                    source,
+                    self.arith_width_bits(node, source, type_map),
+                ) {
                     return;
                 }
 
@@ -995,7 +1029,11 @@ impl Int30C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(
+                    node,
+                    source,
+                    self.arith_width_bits(node, source, type_map),
+                ) {
                     return;
                 }
 
@@ -1037,7 +1075,11 @@ impl Int30C {
                 }
 
                 // Opt-in provenance gate (see check_addition).
-                if !self.has_risky_operand_provenance(node, source) {
+                if !self.has_risky_operand_provenance(
+                    node,
+                    source,
+                    self.arith_width_bits(node, source, type_map),
+                ) {
                     return;
                 }
 
@@ -1122,14 +1164,18 @@ impl Int30C {
                         node,
                         source,
                         &self.current_macros.borrow(),
-                        32,
+                        self.arith_width_bits(node, source, type_map),
                         self.vra_var_ranges_at(node, source).as_ref(),
                     ) {
                         return;
                     }
                     // Opt-in provenance gate (see check_addition): a bounded
                     // unsigned counter cannot reach the wrap boundary.
-                    if !self.has_risky_operand_provenance(node, source) {
+                    if !self.has_risky_operand_provenance(
+                        node,
+                        source,
+                        self.arith_width_bits(node, source, type_map),
+                    ) {
                         return;
                     }
 
@@ -1780,6 +1826,124 @@ impl Int30C {
             false
         };
         check(left, right) || check(right, left)
+    }
+
+    /// Width in bits the usual arithmetic conversions actually perform this
+    /// operation in.
+    ///
+    /// **Not where the result is stored.** Unsigned wrap happens *during* the
+    /// computation, so `size_t n = a * b` over two `unsigned int`s still
+    /// multiplies in 32 bits and wraps before the store widens anything. The
+    /// operands' common type is what bounds it.
+    ///
+    /// Everything narrower than `int` promotes, so [`PROMOTED_ARITH_BITS`] is
+    /// the floor and the only lift is to 64. Asking the fits-check at a flat 32
+    /// was the whole of this rule's word-width blindness: `count *
+    /// sizeof(struct s)` is computed in `size_t`, cannot wrap on a 64-bit
+    /// build, and was reported anyway because it does not fit in 32 bits.
+    fn arith_width_bits(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+    ) -> u32 {
+        let wide = |n: Option<Node>| {
+            n.is_some_and(|n| self.operand_is_wide_unsigned(&n, source, type_map, 0))
+        };
+        let operand_wide = match node.kind() {
+            // A shift is performed in the promoted type of its LEFT operand
+            // alone; the count on the right says nothing about the width.
+            "binary_expression"
+                if node
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| matches!(get_node_text(&op, source), "<<" | ">>")) =>
+            {
+                wide(node.child_by_field_name("left"))
+            }
+            "binary_expression" => {
+                wide(node.child_by_field_name("left")) || wide(node.child_by_field_name("right"))
+            }
+            // A compound assignment converts back into its destination, so the
+            // destination is what the stored value has to fit.
+            "assignment_expression" => wide(node.child_by_field_name("left")),
+            // `++`/`--` likewise write back into their own operand.
+            _ => wide(node.child_by_field_name("argument")),
+        };
+        if operand_wide {
+            64
+        } else {
+            PROMOTED_ARITH_BITS
+        }
+    }
+
+    /// Whether this operand's type is 64-bit unsigned on every data model the
+    /// pinned corpora build for.
+    ///
+    /// Recurses through the shapes that carry a type without changing it
+    /// (parentheses, a nested arithmetic subexpression), depth-capped because
+    /// the operand of a real expression can nest arbitrarily.
+    fn operand_is_wide_unsigned(
+        &self,
+        node: &Node,
+        source: &str,
+        type_map: &HashMap<String, String>,
+        depth: u32,
+    ) -> bool {
+        if depth > OPERAND_TYPE_MAX_DEPTH {
+            return false;
+        }
+        let recurse = |n: Option<Node>| {
+            n.is_some_and(|n| self.operand_is_wide_unsigned(&n, source, type_map, depth + 1))
+        };
+        match node.kind() {
+            "parenthesized_expression" => recurse(node.named_child(0)),
+            // `sizeof` yields `size_t` by definition -- the operand that makes
+            // an allocation size computation 64-bit in the first place.
+            "sizeof_expression" => true,
+            "cast_expression" => node
+                .child_by_field_name("type")
+                .is_some_and(|t| Self::is_portable_64bit_unsigned(get_node_text(&t, source))),
+            // A subexpression is at least as wide as its own widest operand.
+            "binary_expression" => {
+                recurse(node.child_by_field_name("left"))
+                    || recurse(node.child_by_field_name("right"))
+            }
+            "identifier" => type_map
+                .get(get_node_text(node, source))
+                .is_some_and(|t| Self::is_portable_64bit_unsigned(t)),
+            "field_expression" => {
+                let sft = self.struct_field_types.borrow();
+                crate::utility::cert_c::ast_utils::resolve_field_expression_type(
+                    node, source, type_map, &sft,
+                )
+                .is_some_and(|t| Self::is_portable_64bit_unsigned(&t))
+            }
+            _ => false,
+        }
+    }
+
+    /// Unsigned types that are 64-bit under *both* LP64 and LLP64.
+    ///
+    /// `unsigned long` is deliberately absent: 64-bit on LP64, 32-bit on LLP64,
+    /// and curl builds for both. Widening on it would suppress a wrap that is
+    /// real on Windows, which is not a trade this rule gets to make silently.
+    fn is_portable_64bit_unsigned(type_str: &str) -> bool {
+        let base = Self::strip_type_qualifiers(type_str);
+        let base = base.trim();
+        if base.contains('*') {
+            return false;
+        }
+        matches!(
+            base,
+            "size_t"
+                | "uint64_t"
+                | "uint_least64_t"
+                | "uint_fast64_t"
+                | "uintmax_t"
+                | "uintptr_t"
+                | "unsigned long long"
+                | "unsigned long long int"
+        )
     }
 
     fn is_64bit_unsigned_declared(&self, type_str: &str) -> bool {
