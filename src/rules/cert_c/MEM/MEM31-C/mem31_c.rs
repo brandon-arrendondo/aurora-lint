@@ -845,6 +845,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// never be lexically nested inside a `return` expression in valid C, so
     /// walking the full (unbounded) ancestor chain from each call cannot
     /// cross above `node` and pick up an unrelated `return_statement`.
+    ///
+    /// A custom deallocator counts here for the same reason it counts in the
+    /// main walk (`process_custom_deallocator`): hostap's cleanup labels free
+    /// through `EVP_PKEY_free`/`EC_POINT_new`-style wrappers, never through
+    /// bare `free`, so a prescan that recognized only `free` claimed those
+    /// labels cleaned up nothing and every `goto` into one looked like a
+    /// leaked allocation. Reading the same predicate keeps the prescan and
+    /// the walk from disagreeing about what a free is.
     fn collect_frees_in_label(&self, node: &Node, source: &str, freed_vars: &mut HashSet<String>) {
         for call in query::find_descendants_of_kind(*node, "call_expression") {
             if query::find_ancestor(call, |a| a.kind() == "return_statement").is_some() {
@@ -852,15 +860,24 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             if let Some(function) = call.child_by_field_name("function") {
                 let func_name = ast_utils::get_node_text_owned(&function, source);
-                if func_name == "free" {
+                if func_name == "free" || self.is_deallocation_call(&func_name) {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
                         for i in 0..arguments.child_count() {
                             if let Some(arg) = arguments.child(i) {
+                                // `&var` reaches a deallocator that nulls its
+                                // out-parameter -- same spelling the walk
+                                // accepts.
+                                let inner = if arg.kind() == "pointer_expression" {
+                                    arg.child_by_field_name("argument")
+                                } else {
+                                    Some(arg)
+                                };
+                                let Some(inner) = inner else { continue };
                                 if matches!(
-                                    arg.kind(),
+                                    inner.kind(),
                                     "identifier" | "field_expression" | "subscript_expression"
                                 ) {
-                                    let var_name = ast_utils::get_node_text_owned(&arg, source);
+                                    let var_name = ast_utils::get_node_text_owned(&inner, source);
                                     freed_vars.insert(var_name);
                                 }
                             }
