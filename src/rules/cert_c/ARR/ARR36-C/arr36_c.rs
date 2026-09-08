@@ -933,6 +933,19 @@ impl PointerAnalyzer {
                     String::new()
                 }
             }
+            "parenthesized_expression" => {
+                // Parentheses are not an object. `(hdr + 1)` has to give the
+                // base a bare `hdr + 1` gives, or a cursor set from a
+                // parenthesized expression records NOTHING and every
+                // subtraction below it goes unmeasured rather than measured
+                // wrong -- hostap's `pos = (u8 *) (hdr + 1)`.
+                // Recursing rather than unwrapping in a loop handles `((a))`
+                // for free.
+                match node.named_child(0) {
+                    Some(inner) => self.extract_array_base(&inner, source),
+                    None => String::new(),
+                }
+            }
             "call_expression" => {
                 // Check if this is a string-search function (strchr, strrchr, wcschr, wcsrchr)
                 // whose return value points into the first argument
