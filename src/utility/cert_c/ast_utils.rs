@@ -539,11 +539,72 @@ pub fn get_identifier_from_declarator(declarator: &Node, source: &str) -> String
 /// the normal declaration walk, never a replacement for it: call it on the
 /// `ERROR`, then keep recursing.
 pub fn function_names_in_error_declaration(node: &Node, source: &str) -> Vec<String> {
-    let mut names = Vec::new();
+    error_declarations(node, source)
+        .into_iter()
+        .map(|decl| decl.name)
+        .collect()
+}
+
+/// One declaration recovered from inside an `ERROR` node: everything the
+/// normal `declaration` walk would have given a rule, had tree-sitter managed
+/// to build the node.
+/// `return_type` and `parameters` have no in-tree consumer yet: nothing
+/// stores a *prototype's* parameter types project-wide today
+/// (`FunctionSummary` carries parameter indices, not types), so wiring them
+/// into a rule needs a `ProjectContext` field that task 1060 did not scope.
+/// They are read by the real-world probe and are the point of the promotion.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ErrorDeclaration {
+    /// The declared function's name.
+    pub name: String,
+    /// The specifier run in front of the declarator, joined with single
+    /// spaces (`"static const char *"` loses no token but is not
+    /// whitespace-faithful to the source).
+    pub return_type: String,
+    /// `(name, type)` per parameter, as [`get_function_parameters`] returns
+    /// them for a real `declaration`. Empty when the declarator carries no
+    /// `parameter_list` the extractor could read.
+    pub parameters: Vec<(String, String)>,
+}
+
+/// Read every declaration back out of an `ERROR` node -- name, return type
+/// and parameter list, where [`function_names_in_error_declaration`] returns
+/// only the name (task 1060).
+///
+/// RECOGNITION is unchanged in kind: a run of type/storage specifiers
+/// immediately followed by a function declarator, and any other sibling ends
+/// the run. That guard is what keeps a misparsed *call* out -- recovery
+/// reports hostap's `else if (os_strcmp(buf, "rsne_override") == 0)` chain as
+/// 34 `function_declarator`s under `parenthesized_declarator`s, and a call
+/// never has specifiers in front of it. Two subtrees are skipped outright for
+/// the same reason, and because the ordinary walk already covers them:
+///
+///   * `declaration` -- recovery often keeps a real `declaration` node inside
+///     the `ERROR` (raylib's `rgestures.h` holds ten under a
+///     `linkage_specification`). Those are not damaged; a walker that
+///     recurses through `ERROR` sees them with no help from here.
+///   * `parenthesized_declarator` -- the call shape above.
+///   * `function_definition` -- it has its own body and declarator, and
+///     `get_function_parameters` reads it directly.
+///
+/// UNLIKE the name-only reader this replaces, the scan RECURSES. The
+/// specifier-run shape is not always a direct child of the `ERROR`:
+/// measured across the nine pinned real-world checkouts, 37 such declarators
+/// sit at depth 1 and 15 deeper, so a direct-children-only scan silently
+/// dropped the latter (and the four whose run this now joins across a
+/// recovered sibling).
+pub fn error_declarations(node: &Node, source: &str) -> Vec<ErrorDeclaration> {
+    let mut declarations = Vec::new();
     if node.kind() != "ERROR" {
-        return names;
+        return declarations;
     }
-    let mut saw_specifier = false;
+    collect_error_declarations(node, source, &mut declarations);
+    declarations
+}
+
+fn collect_error_declarations(node: &Node, source: &str, out: &mut Vec<ErrorDeclaration>) {
+    let mut specifiers: Vec<String> = Vec::new();
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else {
             continue;
@@ -556,20 +617,53 @@ pub fn function_names_in_error_declaration(node: &Node, source: &str) -> Vec<Str
             | "type_identifier"
             | "struct_specifier"
             | "union_specifier"
-            | "enum_specifier" => saw_specifier = true,
-            "function_declarator" | "pointer_declarator" if saw_specifier => {
-                saw_specifier = false;
+            | "enum_specifier" => {
+                specifiers.push(get_node_text(&child, source).trim().to_string());
+                continue;
+            }
+            "function_declarator" | "pointer_declarator" if !specifiers.is_empty() => {
                 if crate::utility::cert_c::declarator_utils::is_function_declarator(&child) {
                     let name = get_identifier_from_declarator(&child, source);
                     if !name.is_empty() {
-                        names.push(name);
+                        out.push(ErrorDeclaration {
+                            name,
+                            return_type: specifiers.join(" "),
+                            parameters: parameters_of_declarator(&child, source),
+                        });
                     }
                 }
+                specifiers.clear();
+                continue;
             }
-            _ => saw_specifier = false,
+            // Already-structured, or provably not a declaration -- see the
+            // doc comment on `error_declarations`.
+            "declaration" | "parenthesized_declarator" | "function_definition" => {
+                specifiers.clear();
+                continue;
+            }
+            _ => {}
+        }
+        specifiers.clear();
+        collect_error_declarations(&child, source, out);
+    }
+}
+
+/// The parameters of a `function_declarator`, whether it is the declarator
+/// itself or wrapped in a `pointer_declarator` for a pointer-returning
+/// function.
+fn parameters_of_declarator(declarator: &Node, source: &str) -> Vec<(String, String)> {
+    if declarator.kind() == "function_declarator" {
+        return extract_parameters(declarator, source).unwrap_or_default();
+    }
+    for i in 0..declarator.child_count() {
+        if let Some(child) = declarator.child(i) {
+            let nested = parameters_of_declarator(&child, source);
+            if !nested.is_empty() {
+                return nested;
+            }
         }
     }
-    names
+    Vec::new()
 }
 
 /// Find identifier in a declarator node, returns Option instead of "unknown" string.
