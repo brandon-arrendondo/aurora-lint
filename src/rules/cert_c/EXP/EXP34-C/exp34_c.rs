@@ -998,6 +998,17 @@ fn is_in_expression_guard(var_name: &str, node: &Node, source: &str) -> bool {
         return true;
     }
 
+    // A run of bail-out guards that between them exhaust every nullness
+    // combination but the all-non-null one:
+    //   if (!a && b) return -1;
+    //   if (a && !b) return 1;
+    //   if (!a && !b) return 0;
+    //   ... a->num_attr < b->num_attr ...
+    // No single guard settles anything; together they do (task 1074).
+    if guard_dominance::is_nonnull_by_exhaustive_case_guards(var_name, node, source) {
+        return true;
+    }
+
     false
 }
 
