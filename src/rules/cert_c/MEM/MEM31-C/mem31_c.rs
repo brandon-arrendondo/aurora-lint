@@ -161,6 +161,14 @@ struct MemoryLeakAnalyzer<'a> {
     loop_depth: usize,
     // Track what variables are freed at each label (for goto analysis)
     label_frees: HashMap<String, HashSet<String>>,
+    // The freed-pointer state each goto-reachable label is actually entered
+    // with: `freed_memory` snapshotted at every visited `goto L`, intersected
+    // across all of them. See `visit_labeled_statement`.
+    goto_freed_states: HashMap<String, HashMap<String, (usize, usize)>>,
+    // Frees dropped from `freed_memory` on entry to a goto-only label,
+    // re-credited by the end-of-function leak sweep. See
+    // `visit_labeled_statement`.
+    discarded_label_frees: HashMap<String, (usize, usize)>,
     // Track realloc relationships: result_var -> old_ptr
     realloc_relations: HashMap<String, String>,
     // Track if signal() has been called in this function
@@ -349,6 +357,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             in_loop: false,
             loop_depth: 0,
             label_frees: HashMap::new(),
+            goto_freed_states: HashMap::new(),
+            discarded_label_frees: HashMap::new(),
             realloc_relations: HashMap::new(),
             signal_registered: false,
             loop_array_patterns: HashMap::new(),
@@ -390,6 +400,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             );
 
             // Pre-analysis: collect what variables are freed at each label
+            self.goto_freed_states.clear();
+            self.discarded_label_frees.clear();
             self.collect_label_frees(&body, source);
 
             // Main pass: collect all memory operations and detect double-frees
@@ -401,7 +413,17 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // Add leak violations found at early returns
             violations.append(&mut self.leak_violations);
 
-            // Final pass: check for leaks at end of function
+            // Final pass: check for leaks at end of function. The state the
+            // walk ends on is whatever the last statement left, which after a
+            // goto-only label is that label's entry state -- so re-credit the
+            // frees dropped there. They happened on a real path (the one that
+            // returns before the label); dropping them is right for judging a
+            // double free inside the label block and wrong for judging a leak
+            // at the end of the function.
+            let discarded = std::mem::take(&mut self.discarded_label_frees);
+            for (var, pos) in discarded {
+                self.freed_memory.entry(var).or_insert(pos);
+            }
             self.detect_leaks(violations);
         }
     }
@@ -839,6 +861,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// never be lexically nested inside a `return` expression in valid C, so
     /// walking the full (unbounded) ancestor chain from each call cannot
     /// cross above `node` and pick up an unrelated `return_statement`.
+    ///
+    /// A custom deallocator counts here for the same reason it counts in the
+    /// main walk (`process_custom_deallocator`): hostap's cleanup labels free
+    /// through `EVP_PKEY_free`/`EC_POINT_new`-style wrappers, never through
+    /// bare `free`, so a prescan that recognized only `free` claimed those
+    /// labels cleaned up nothing and every `goto` into one looked like a
+    /// leaked allocation. Reading the same predicate keeps the prescan and
+    /// the walk from disagreeing about what a free is.
     fn collect_frees_in_label(&self, node: &Node, source: &str, freed_vars: &mut HashSet<String>) {
         for call in query::find_descendants_of_kind(*node, "call_expression") {
             if query::find_ancestor(call, |a| a.kind() == "return_statement").is_some() {
@@ -846,15 +876,24 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             if let Some(function) = call.child_by_field_name("function") {
                 let func_name = ast_utils::get_node_text_owned(&function, source);
-                if func_name == "free" {
+                if func_name == "free" || self.is_deallocation_call(&func_name) {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
                         for i in 0..arguments.child_count() {
                             if let Some(arg) = arguments.child(i) {
+                                // `&var` reaches a deallocator that nulls its
+                                // out-parameter -- same spelling the walk
+                                // accepts.
+                                let inner = if arg.kind() == "pointer_expression" {
+                                    arg.child_by_field_name("argument")
+                                } else {
+                                    Some(arg)
+                                };
+                                let Some(inner) = inner else { continue };
                                 if matches!(
-                                    arg.kind(),
+                                    inner.kind(),
                                     "identifier" | "field_expression" | "subscript_expression"
                                 ) {
-                                    let var_name = ast_utils::get_node_text_owned(&arg, source);
+                                    let var_name = ast_utils::get_node_text_owned(&inner, source);
                                     freed_vars.insert(var_name);
                                 }
                             }
@@ -947,6 +986,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             "call_expression" => self.process_call(&n, source),
             "return_statement" => self.process_return(&n, source),
             "goto_statement" => self.analyze_goto(&n, source),
+            "labeled_statement" => self.visit_labeled_statement(n, source, stack),
             "for_statement" => self.visit_for_statement(n, source, stack),
             "while_statement" | "do_statement" => self.visit_while_do_statement(stack, n),
             "if_statement" => self.visit_if_statement(n, source, stack),
@@ -980,6 +1020,99 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         for child in pending.into_iter().rev() {
             stack.push(Frame::Visit(child));
         }
+    }
+
+    /// A label reached only by `goto` is not entered with the state of the
+    /// code textually above it, so the linear walk must not carry that state
+    /// in.
+    ///
+    /// pure-ftpd's `pure-pw.c` writes the ordinary cleanup-label shape:
+    /// `free(file2); return PW_ERROR_UNEXPECTED_ERROR;` and then a `bye:`
+    /// label whose own block frees `file2` again. Walking straight through
+    /// left `file2` in `freed_memory` across the label, so the label's free
+    /// read as a double free -- of a pointer that, on every path that can
+    /// actually reach the label, had never been freed at all. The `return`
+    /// ends that path first (task 1088).
+    ///
+    /// The entry state is recovered from the gotos themselves rather than
+    /// discarded: `record_goto_entry_state` intersects `freed_memory` across
+    /// every `goto` to this label, so a pointer counts as freed here only if
+    /// every incoming jump had freed it. Intersecting rather than clearing
+    /// matters for leaks -- a pointer freed before *all* of the gotos is
+    /// still freed at the label and must not resurface as a leak at its
+    /// return.
+    ///
+    /// Deliberately narrow: the state is left exactly as it is whenever the
+    /// fall-through can reach the label, and whenever no `goto` to it has
+    /// been visited yet (a forward jump, whose state this linear walk has
+    /// not seen). Both keep today's behaviour instead of guessing.
+    ///
+    /// What is dropped here is kept in `discarded_label_frees` and given
+    /// back to the end-of-function leak sweep. hostap's OpenSSL wrappers
+    /// write the cleanup label *before* the error label -- `done:` frees
+    /// everything and returns, then `fail:` nulls the result and jumps back
+    /// to `done:` -- so the linear walk ends the function on `fail:`'s entry
+    /// state. Without re-crediting, every pointer `done:` had freed read as
+    /// a leak (22 of them across hostap alone).
+    fn visit_labeled_statement<'n>(
+        &mut self,
+        n: Node<'n>,
+        source: &str,
+        stack: &mut Vec<Frame<'n>>,
+    ) {
+        if let Some(label) = n.child(0).filter(|c| c.kind() == "statement_identifier") {
+            let name = ast_utils::get_node_text_owned(&label, source);
+            if !self.fall_through_reaches(&n, source) {
+                if let Some(entry_state) = self.goto_freed_states.get(&name).cloned() {
+                    for (var, pos) in std::mem::replace(&mut self.freed_memory, entry_state) {
+                        self.discarded_label_frees.entry(var).or_insert(pos);
+                    }
+                }
+            }
+        }
+        push_children(stack, &n);
+    }
+
+    /// Fold the current `freed_memory` into the recorded entry state for
+    /// `target_label`, keeping only what every `goto` to it agrees is freed.
+    fn record_goto_entry_state(&mut self, target_label: &str) {
+        match self.goto_freed_states.get_mut(target_label) {
+            Some(state) => state.retain(|var, _| self.freed_memory.contains_key(var)),
+            None => {
+                self.goto_freed_states
+                    .insert(target_label.to_string(), self.freed_memory.clone());
+            }
+        }
+    }
+
+    /// True if control can fall out of the statement textually preceding
+    /// `label` into it. A `return`, `goto`, `break`, `continue` or a call to
+    /// a function that never returns ends that path; anything else --
+    /// including no preceding statement at all -- is treated as reaching,
+    /// which is the conservative answer here.
+    fn fall_through_reaches(&self, label: &Node, source: &str) -> bool {
+        let mut prev = label.prev_named_sibling();
+        while let Some(n) = prev {
+            if n.kind() != "comment" {
+                return self.statement_falls_through(&n, source);
+            }
+            prev = n.prev_named_sibling();
+        }
+        true
+    }
+
+    /// True if control can continue past `stmt` to the next statement in its
+    /// block -- false for `return`/`goto`/`break`/`continue` and for a call
+    /// to a function that never returns.
+    fn statement_falls_through(&self, stmt: &Node, source: &str) -> bool {
+        !matches!(
+            stmt.kind(),
+            "return_statement" | "goto_statement" | "break_statement" | "continue_statement"
+        ) && !crate::analyze::noreturn::is_noreturn_call_statement(
+            stmt,
+            source,
+            self.noreturn_names,
+        )
     }
 
     fn visit_for_statement<'n>(&mut self, n: Node<'n>, source: &str, stack: &mut Vec<Frame<'n>>) {
@@ -1287,6 +1420,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 }
             }
         }
+
+        self.record_goto_entry_state(&target_label);
 
         // Get what variables are freed at the target label
         let label_freed_vars = self.label_frees.get(&target_label).cloned();
