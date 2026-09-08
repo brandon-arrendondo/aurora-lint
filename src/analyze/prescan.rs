@@ -392,6 +392,19 @@ fn prescan_file_list(
                     existing.has_env03_taint_source |= summary.has_env03_taint_source;
                     existing.returns_tainted |= summary.returns_tainted;
                     existing.has_relative_command_write |= summary.has_relative_command_write;
+                    // Union `can_return_null` across variants: a project that
+                    // ships multiple definitions of the same function name
+                    // (e.g. hostap's real `src/eap_peer/eap.c` eap_get_config
+                    // beside the `tests/fuzzing/*/*-peer.c` stubs that always
+                    // `return &static_config;`) must classify callers by the
+                    // safe direction. Without this union the first-scanned
+                    // variant won: whichever variant's `can_return_null` was
+                    // set at insertion silently overwrote every later one, so
+                    // the real function's nullable return was masked by the
+                    // stub's non-null return and callers dereferenced its
+                    // result without a check (hostap eap_teap.c:1387 recall
+                    // regression, task 1065 #2).
+                    existing.can_return_null |= summary.can_return_null;
                     existing
                         .returns_from_callees
                         .extend(summary.returns_from_callees);
@@ -781,6 +794,20 @@ fn collect_header_declarations(node: &Node, source: &str, names: &mut HashSet<St
                             names.insert(name);
                         }
                     }
+                // An `ERROR` node here is not a dead end. Recovery keeps
+                // real `declaration` nodes inside it -- raylib's
+                // `rgestures.h` holds ten prototypes under a
+                // `linkage_specification` nested in one -- and this walk
+                // stopped at the `ERROR` and never saw them, so every
+                // prototype in the file read as undeclared. Read the loose
+                // specifier-run declarations back out, then recurse for the
+                // structured ones (task 1060).
+                "ERROR" => {
+                    for decl in ast_utils::error_declarations(&child, source) {
+                        names.insert(decl.name);
+                    }
+                    collect_header_declarations(&child, source, names);
+                }
                 kind if kind.starts_with("preproc_")
                     || kind == "linkage_specification"
                     || kind == "declaration_list" =>
@@ -871,8 +898,8 @@ fn collect_function_names(node: &Node, source: &str, names: &mut HashSet<String>
                     // definition whose declarator is split by an `#if`. Read the
                     // name back out before recursing, since the subtree holds no
                     // `declaration`/`function_definition` node to find (task 1038).
-                    for name in ast_utils::function_names_in_error_declaration(&child, source) {
-                        names.insert(name);
+                    for decl in ast_utils::error_declarations(&child, source) {
+                        names.insert(decl.name);
                     }
                     collect_function_names(&child, source, names);
                 }
@@ -5498,6 +5525,51 @@ mod tests {
         parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    // -- function summary merging across variants --
+
+    #[test]
+    fn function_summaries_union_can_return_null_across_variants() {
+        // Two definitions of the same function name across two files: one
+        // whose body returns an indirect call (so can_return_null is
+        // conservatively true) and one whose body returns `&static_var`
+        // (so `check_all_returns_nonnull` clears can_return_null). Without
+        // the merge, whichever file the prescan processes first wins --
+        // when the &-variant wins first, callers of the real nullable
+        // variant dereference its return without a null check (hostap
+        // eap_teap.c:1387 recall regression, task 1065 #2).
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-variants-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a_real.c"),
+            "struct sm { struct { struct cfg *(*g)(void *); } *cb; void *ctx; };\n\
+             struct cfg *get_thing(struct sm *sm) {\n\
+                 return sm->cb->g(sm->ctx);\n\
+             }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b_stub.c"),
+            "struct sm; struct cfg;\n\
+             static struct cfg static_cfg;\n\
+             struct cfg *get_thing(struct sm *sm) {\n\
+                 (void)sm;\n\
+                 return &static_cfg;\n\
+             }\n",
+        )
+        .unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        let summary = ctx
+            .function_summaries
+            .get("get_thing")
+            .expect("get_thing summary should exist");
+        assert!(
+            summary.can_return_null,
+            "can_return_null must be true when ANY variant of the function may return null"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -- callsite buffer-size collection / aggregation --

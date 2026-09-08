@@ -42,6 +42,14 @@ pub struct Int31C {
     /// Per-function memo of parameter names, keyed by function node id; cleared
     /// per file alongside `risky_vars_cache`.
     param_names_cache: RefCell<HashMap<usize, HashSet<String>>>,
+    /// Cross-file typedef alias map, reached through the shared
+    /// [`overflow_helpers::resolve_typedef_chain`] before every
+    /// `get_type_width` lookup so a `typedef double real_t;` (task 665
+    /// left this uncovered) or a `sqlite3_int64` chain to
+    /// `long long int` (task 664 sample) resolves to a known width
+    /// instead of falling through as `None` (task 1057, third consumer
+    /// of task 736's shared resolver).
+    typedef_types: RefCell<HashMap<String, String>>,
 }
 
 impl Int31C {
@@ -56,7 +64,30 @@ impl Int31C {
             global_writers: RefCell::new(HashMap::new()),
             risky_vars_cache: RefCell::new(HashMap::new()),
             param_names_cache: RefCell::new(HashMap::new()),
+            typedef_types: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// [`get_type_width`] with a typedef-chain pre-resolve. Tries the
+    /// direct spelling first (fast path, no map lookup), and on a miss
+    /// walks the cross-file typedef chain to a terminal builtin and
+    /// tries again -- so `typedef double real_t;` or a
+    /// `sqlite3_int64 -> long long int` chain lands on the same width
+    /// row an unaliased spelling would (task 1057).
+    fn get_type_width_resolved(&self, type_str: &str) -> Option<u32> {
+        if let Some(w) = get_type_width(type_str) {
+            return Some(w);
+        }
+        let typedefs = self.typedef_types.borrow();
+        if typedefs.is_empty() {
+            return None;
+        }
+        let resolved =
+            crate::utility::cert_c::overflow_helpers::resolve_typedef_chain(type_str, &typedefs);
+        if resolved == type_str {
+            return None;
+        }
+        get_type_width(&resolved)
     }
 
     /// Opt-in provenance gate for lossy conversions: returns true when the
@@ -701,6 +732,7 @@ impl CertRule for Int31C {
         *self.project_macros.borrow_mut() = context.macro_constants.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.global_writers.borrow_mut() = context.global_writers.clone();
+        *self.typedef_types.borrow_mut() = context.typedef_types.clone();
 
         let mut callers: HashMap<String, HashSet<String>> = HashMap::new();
         for (caller, callees) in &context.call_graph {
@@ -1597,7 +1629,7 @@ impl Int31C {
             return;
         }
 
-        let target_width = get_type_width(&target_clean);
+        let target_width = self.get_type_width_resolved(&target_clean);
         let target_signed = self.is_signed_type(&target_clean);
         let operand_node = self.get_cast_operand_node(node);
 
@@ -1946,7 +1978,7 @@ impl Int31C {
             None => return,
         };
 
-        let lhs_width = match get_type_width(&lhs_type) {
+        let lhs_width = match self.get_type_width_resolved(&lhs_type) {
             Some(w) => w,
             None => return,
         };
@@ -1963,7 +1995,7 @@ impl Int31C {
 
         // Suppression: RHS has a narrowing cast whose target width <= LHS width
         // (check_cast_conversion already flags this)
-        if Self::rhs_has_narrowing_cast_to(&rhs_node, source, lhs_width) {
+        if self.rhs_has_narrowing_cast_to(&rhs_node, source, lhs_width) {
             return;
         }
 
@@ -2045,7 +2077,7 @@ impl Int31C {
                                 .replace(")", "")
                                 .trim()
                                 .to_string();
-                            return get_type_width(&type_text);
+                            return self.get_type_width_resolved(&type_text);
                         }
                     }
                 }
@@ -2053,7 +2085,9 @@ impl Int31C {
             }
             "identifier" => {
                 let name = get_node_text(node, source).to_string();
-                var_types.get(&name).and_then(|t| get_type_width(t))
+                var_types
+                    .get(&name)
+                    .and_then(|t| self.get_type_width_resolved(t))
             }
             "parenthesized_expression" => {
                 // Unwrap parens and recurse
@@ -2073,7 +2107,7 @@ impl Int31C {
 
     /// Check if RHS is a cast_expression whose target width <= LHS width.
     /// If so, check_cast_conversion() already handles it — don't double-flag.
-    fn rhs_has_narrowing_cast_to(node: &Node, source: &str, lhs_width: u32) -> bool {
+    fn rhs_has_narrowing_cast_to(&self, node: &Node, source: &str, lhs_width: u32) -> bool {
         let check = node;
         if check.kind() == "cast_expression" {
             for i in 0..check.child_count() {
@@ -2084,7 +2118,7 @@ impl Int31C {
                             .replace(")", "")
                             .trim()
                             .to_string();
-                        if let Some(cast_width) = get_type_width(&type_text) {
+                        if let Some(cast_width) = self.get_type_width_resolved(&type_text) {
                             return cast_width <= lhs_width;
                         }
                     }
@@ -2096,7 +2130,7 @@ impl Int31C {
             for i in 0..check.child_count() {
                 if let Some(child) = check.child(i) {
                     if child.kind() != "(" && child.kind() != ")" {
-                        return Self::rhs_has_narrowing_cast_to(&child, source, lhs_width);
+                        return self.rhs_has_narrowing_cast_to(&child, source, lhs_width);
                     }
                 }
             }

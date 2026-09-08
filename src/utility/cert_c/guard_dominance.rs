@@ -246,6 +246,342 @@ fn enclosing_conditions<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
     conditions
 }
 
+/// Conditions that are known **true** where `site` executes — the `if`/`while`/
+/// `for`/`switch` bodies and `?:` branches it sits in, and the left operand of
+/// any `&&`/`||` whose right operand holds it.
+///
+/// Strictly narrower than [`dominating_conditions`], which also returns the
+/// conditions of *preceding* `if` statements: those were evaluated, but nothing
+/// says which way they went. Only the enclosing ones are facts here.
+pub fn conditions_known_true_at<'a>(site: &Node<'a>) -> Vec<Node<'a>> {
+    enclosing_conditions(site)
+}
+
+/// True when an earlier exit-guard proves `var` non-null at `site`, given the
+/// conditions known true there.
+///
+/// The shape, which `null_state`'s per-variable lattice cannot express:
+///
+/// ```c
+/// if (isIndex && (!pSchema || (pSchema->schemaFlags & LOADED) == 0))
+///         return 1;                  /* guard exits */
+/// ...
+/// if (isIndex) {
+///         ... sqliteHashFirst(&pSchema->idxHash) ...   /* pSchema is non-null */
+/// }
+/// ```
+///
+/// Reaching past the guard means `!(isIndex && (…))`. That alone says nothing
+/// about `pSchema` — which is exactly why the sound join in task 1067 reports
+/// PossiblyNull here. But at a site where `isIndex` is *known true*, the
+/// negation collapses to `!(!pSchema || …)`, i.e. `pSchema` non-null.
+///
+/// So: every conjunct of the guard except one must be known true at `site`, and
+/// that remaining conjunct must be a disjunction one of whose terms asserts
+/// `var` is null (`!var`, `var == NULL`, `0 == var`). Then `!guard` implies
+/// `var != NULL` with no approximation. Anything less exact returns false.
+///
+/// Does NOT cover two shapes from the same cohort (task 1074): a loop bound
+/// discharging the other disjunct (`for (i = 0; i < n; i++)` proving `n != 0`
+/// against a `(!items && n != 0)` guard), which needs integer reasoning; and
+/// multi-guard case analysis (`!a && b`, `a && !b`, `!a && !b` in sequence),
+/// which needs several guard negations conjoined.
+pub fn is_nonnull_by_correlated_exit_guard(var: &str, site: &Node, source: &str) -> bool {
+    // Unwrap parentheses on both sides before comparing: tree-sitter gives an
+    // `if` statement's condition as the parenthesized_expression `( isIndex )`,
+    // while the guard's own conjunct is the bare `isIndex`. `conjuncts` already
+    // unwraps; this is the other half of the same normalization.
+    // Every conjunct of a condition known true is itself known true, so
+    // `if (f && g)` supplies both `f` and `g` -- otherwise a two-flag guard
+    // matches nothing.
+    let known_true: Vec<String> = conditions_known_true_at(site)
+        .iter()
+        .flat_map(|c| conjuncts(c))
+        .map(|c| normalized_text(&c, source))
+        .collect();
+    if known_true.is_empty() {
+        return false;
+    }
+
+    let site_start = site.start_byte();
+    let mut current = *site;
+    while let Some(parent) = current.parent() {
+        if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
+            let mut cursor = parent.walk();
+            for stmt in parent.named_children(&mut cursor) {
+                if stmt.start_byte() >= current.start_byte() {
+                    break;
+                }
+                if exit_guard_proves_nonnull(&stmt, var, &known_true, site_start, source) {
+                    return true;
+                }
+            }
+        }
+        if parent.kind() == "function_definition" {
+            break;
+        }
+        current = parent;
+    }
+    false
+}
+
+/// One preceding block-level statement, looking through preprocessor wrappers:
+/// is it an `if` whose body always leaves, and whose negated condition proves
+/// `var` non-null given `known_true`?
+fn exit_guard_proves_nonnull(
+    stmt: &Node,
+    var: &str,
+    known_true: &[String],
+    site_start: usize,
+    source: &str,
+) -> bool {
+    if BLOCK_LIKE_KINDS.contains(&stmt.kind()) && stmt.kind() != "compound_statement" {
+        let mut cursor = stmt.walk();
+        return stmt
+            .named_children(&mut cursor)
+            .any(|inner| exit_guard_proves_nonnull(&inner, var, known_true, site_start, source));
+    }
+    if stmt.kind() != "if_statement" || stmt.end_byte() > site_start {
+        return false;
+    }
+    // An `else` means the guard is a branch, not a bail-out: falling past it
+    // does not establish the negation on its own.
+    if stmt.child_by_field_name("alternative").is_some() {
+        return false;
+    }
+    let Some(consequence) = stmt.child_by_field_name("consequence") else {
+        return false;
+    };
+    if !always_leaves(&consequence) {
+        return false;
+    }
+    let Some(condition) = stmt.child_by_field_name("condition") else {
+        return false;
+    };
+
+    let parts = conjuncts(&condition);
+    if parts.len() < 2 {
+        return false;
+    }
+    // Exactly one conjunct may be the null test; every other one must be a
+    // fact at the site, or the negation does not distribute.
+    parts.iter().enumerate().any(|(i, candidate)| {
+        let others_all_known = parts
+            .iter()
+            .enumerate()
+            .all(|(j, other)| i == j || known_true.contains(&normalized_text(other, source)));
+        others_all_known && disjunct_asserts_null(candidate, var, source)
+    })
+}
+
+/// Whether control leaving `node` normally is impossible — the statement, or
+/// the last statement of the block, transfers control away.
+fn always_leaves(node: &Node) -> bool {
+    match node.kind() {
+        "return_statement" | "goto_statement" | "break_statement" | "continue_statement" => true,
+        "compound_statement" => {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor)
+                .last()
+                .is_some_and(|last| always_leaves(&last))
+        }
+        _ => false,
+    }
+}
+
+/// Split an expression on `&&`, descending through parentheses.
+fn conjuncts<'a>(node: &Node<'a>) -> Vec<Node<'a>> {
+    split_logical(node, "&&")
+}
+
+/// Split an expression on `||`, descending through parentheses.
+fn disjuncts<'a>(node: &Node<'a>) -> Vec<Node<'a>> {
+    split_logical(node, "||")
+}
+
+fn split_logical<'a>(node: &Node<'a>, op: &str) -> Vec<Node<'a>> {
+    let inner = unwrap_parens(node);
+    if inner.kind() == "binary_expression"
+        && inner
+            .child_by_field_name("operator")
+            .is_some_and(|o| o.kind() == op)
+    {
+        if let (Some(l), Some(r)) = (
+            inner.child_by_field_name("left"),
+            inner.child_by_field_name("right"),
+        ) {
+            let mut out = split_logical(&l, op);
+            out.extend(split_logical(&r, op));
+            return out;
+        }
+    }
+    vec![inner]
+}
+
+fn unwrap_parens<'a>(node: &Node<'a>) -> Node<'a> {
+    let mut n = *node;
+    while n.kind() == "parenthesized_expression" {
+        match n.named_child(0) {
+            Some(inner) => n = inner,
+            None => break,
+        }
+    }
+    n
+}
+
+/// True when `expr` is a disjunction with at least one term asserting that
+/// `var` IS null, so negating the whole thing yields `var != NULL`.
+fn disjunct_asserts_null(expr: &Node, var: &str, source: &str) -> bool {
+    disjuncts(expr)
+        .iter()
+        .any(|term| term_asserts_null(term, var, source))
+}
+
+/// `!var`, `var == NULL`, `var == 0`, and the reversed operand orders.
+fn term_asserts_null(term: &Node, var: &str, source: &str) -> bool {
+    let t = unwrap_parens(term);
+    if t.kind() == "unary_expression" {
+        let bang = t.child(0).map(|c| get_node_text(&c, source)) == Some("!");
+        return bang
+            && t.child_by_field_name("argument")
+                .is_some_and(|a| a.kind() == "identifier" && get_node_text(&a, source) == var);
+    }
+    if t.kind() == "binary_expression" {
+        let is_eq = t
+            .child_by_field_name("operator")
+            .is_some_and(|o| o.kind() == "==");
+        if !is_eq {
+            return false;
+        }
+        if let (Some(l), Some(r)) = (
+            t.child_by_field_name("left"),
+            t.child_by_field_name("right"),
+        ) {
+            let (lt, rt) = (get_node_text(&l, source), get_node_text(&r, source));
+            let is_null = |s: &str| s == "NULL" || s == "0" || s == "nullptr";
+            return (lt == var && is_null(rt)) || (rt == var && is_null(lt));
+        }
+    }
+    false
+}
+
+/// Condition text with runs of whitespace collapsed, so two spellings of the
+/// same condition compare equal across line breaks and indentation.
+fn normalized_text(node: &Node, source: &str) -> String {
+    get_node_text(node, source)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// True when `var` has been *dereferenced* by the time `site` executes — so
+/// the program either already faulted or `var` is non-null here.
+///
+/// The dual of [`has_dominating_comparison`]: that one asks whether the code
+/// checked a variable, this one asks whether the code already committed to it
+/// being valid. A null test on a pointer with a dominating dereference is
+/// dead-defensive code, and treating it as evidence of nullability is what let
+/// hostap's `ieee802_1x_encapsulate_radius` — `sta->eapol_sm` in its first
+/// statement, `if (sta && …)` 36 lines later — report a null dereference of
+/// `sta` further down (task 1058, tools_sqc).
+///
+/// Counted as dominating: a dereference inside a condition that encloses
+/// `site` (it was evaluated to get here), and one in a preceding block-level
+/// `declaration` or `expression_statement`, or in the condition of a preceding
+/// `if` chain. Deliberately NOT counted: a dereference in a preceding loop or
+/// `if` *body*, or nested in a preceding `switch` — those may not have run.
+/// Same AST approximation, and same caveats, as the rest of this module.
+pub fn has_dominating_dereference(var: &str, site: &Node, source: &str) -> bool {
+    if enclosing_conditions(site)
+        .iter()
+        .any(|cond| subtree_dereferences_var(cond, var, source))
+    {
+        return true;
+    }
+
+    let mut current = *site;
+    while let Some(parent) = current.parent() {
+        if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
+            let mut cursor = parent.walk();
+            for stmt in parent.named_children(&mut cursor) {
+                if stmt.start_byte() >= current.start_byte() {
+                    break;
+                }
+                if preceding_statement_dereferences_var(&stmt, var, source) {
+                    return true;
+                }
+            }
+        }
+        if parent.kind() == "function_definition" {
+            break;
+        }
+        current = parent;
+    }
+    false
+}
+
+/// One preceding block-level statement: does it dereference `var` on every
+/// path through it? Looks through preprocessor wrappers the same way
+/// `collect_block_level_if_conditions` does.
+fn preceding_statement_dereferences_var(stmt: &Node, var: &str, source: &str) -> bool {
+    if BLOCK_LIKE_KINDS.contains(&stmt.kind()) && stmt.kind() != "compound_statement" {
+        let mut cursor = stmt.walk();
+        return stmt
+            .named_children(&mut cursor)
+            .any(|inner| preceding_statement_dereferences_var(&inner, var, source));
+    }
+    match stmt.kind() {
+        // Straight-line code: whatever it dereferences, it dereferenced.
+        "declaration" | "expression_statement" | "return_statement" => {
+            subtree_dereferences_var(stmt, var, source)
+        }
+        // Only the conditions run unconditionally; the branch bodies do not.
+        "if_statement" => {
+            let mut conditions = Vec::new();
+            collect_if_chain_conditions(stmt, &mut conditions);
+            conditions
+                .iter()
+                .any(|cond| subtree_dereferences_var(cond, var, source))
+        }
+        _ => false,
+    }
+}
+
+/// Whether `node`'s subtree contains a dereference of `var` — `var->f`, `*var`
+/// or `var[i]`. `var.f` is not one: it needs no valid pointer.
+fn subtree_dereferences_var(node: &Node, var: &str, source: &str) -> bool {
+    query::find_descendants_of_kinds(
+        *node,
+        &[
+            "field_expression",
+            "pointer_expression",
+            "subscript_expression",
+        ],
+    )
+    .iter()
+    .any(|n| {
+        let base = match n.kind() {
+            "field_expression" => {
+                let arrow = n
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| get_node_text(&op, source) == "->");
+                if !arrow {
+                    return false;
+                }
+                n.child_by_field_name("argument")
+            }
+            "pointer_expression" => {
+                if n.child(0).map(|c| get_node_text(&c, source)) != Some("*") {
+                    return false;
+                }
+                n.child_by_field_name("argument")
+            }
+            _ => n.child_by_field_name("argument"),
+        };
+        base.is_some_and(|b| b.kind() == "identifier" && get_node_text(&b, source) == var)
+    })
+}
+
 /// Node kinds whose children are statements at the enclosing block's level.
 ///
 /// The preprocessor wrappers are here because aurora-lint does not preprocess: a
