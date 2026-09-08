@@ -20,7 +20,12 @@
 //!    parses cleanly).
 //! 3. `__attribute__((noreturn))` / `__attribute__((__noreturn__))` (a real
 //!    GNU extension, also parses cleanly).
-//! 4. seL4-style bare-identifier attribute macros (`void NORETURN foo(...)`)
+//! 4. A definition whose body unconditionally terminates the process, even
+//!    with nothing declaring it noreturn -- pure-ftpd's `pure-pw.c` defines
+//!    its own `static void no_mem(void) { fprintf(...); exit(...); }` with
+//!    no attribute anywhere. Inferred to a fixpoint, so a wrapper around a
+//!    wrapper is recognized too.
+//! 5. seL4-style bare-identifier attribute macros (`void NORETURN foo(...)`)
 //!    whose `#define` lives in a header this single-file parse never sees.
 //!    tree-sitter-c's grammar has no production for an unresolvable
 //!    identifier between a return type and a declarator, so
@@ -173,7 +178,97 @@ pub fn collect_noreturn_function_names(root: &Node, source: &str) -> HashSet<Str
         }
     }
 
+    infer_terminating_definitions(root, source, &mut names);
     names
+}
+
+/// Maximum fixpoint rounds for [`infer_terminating_definitions`]. A wrapper
+/// chain deeper than this is vanishingly rare, and a cap keeps a pathological
+/// file from paying for repeated whole-tree walks.
+const INFERENCE_MAX_ROUNDS: usize = 4;
+
+/// Add every function *defined* in `root` whose body unconditionally ends the
+/// process, iterating until nothing new is found so a wrapper calling a
+/// wrapper is caught too.
+///
+/// Only process-*terminating* callees seed this. A local wrapper around
+/// `longjmp` is genuinely noreturn, but adding it to this set would also make
+/// [`is_process_terminating_name`] answer true for it -- that function
+/// subtracts a fixed list of spellings, which cannot know about a
+/// project-local name. Inferring it would silently convert every allocation
+/// live across that wrapper from a real leak into a suppressed one, so the
+/// wrapper is deliberately left unrecognized: a miss, not a wrong answer.
+fn infer_terminating_definitions(root: &Node, source: &str, names: &mut HashSet<String>) {
+    for _ in 0..INFERENCE_MAX_ROUNDS {
+        let mut added = false;
+        for def in query::find_descendants_of_kind(*root, "function_definition") {
+            let Some(name) = definition_name(&def, source) else {
+                continue;
+            };
+            if names.contains(&name) {
+                continue;
+            }
+            if body_unconditionally_terminates(&def, source, names) {
+                names.insert(name);
+                added = true;
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+}
+
+/// The declared name of a `function_definition`, or `None` when its
+/// declarator does not resolve to one.
+fn definition_name(def: &Node, source: &str) -> Option<String> {
+    let declarator = def.child_by_field_name("declarator")?;
+    let func_declarator = find_function_declarator(&declarator)?;
+    let name_node = func_declarator.child_by_field_name("declarator")?;
+    let name = get_node_text(&name_node, source).trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Whether every call of `def` ends the process.
+///
+/// Deliberately narrow: the body must contain no `return` and no `goto`
+/// anywhere, and one of its *top-level* statements must be a call to a
+/// process-terminating function. With no `return` and no `goto`, a top-level
+/// statement is reached on every path that does not already diverge earlier,
+/// so reaching it is enough -- and both weaker shapes this refuses to reason
+/// about (an early `return` above the call, a `goto` jumping over it) are ones
+/// where the function really can come back.
+fn body_unconditionally_terminates(def: &Node, source: &str, names: &HashSet<String>) -> bool {
+    let Some(body) = def.child_by_field_name("body") else {
+        return false;
+    };
+    if !query::find_descendants_of_kinds(body, &["return_statement", "goto_statement"]).is_empty() {
+        return false;
+    }
+    let mut cursor = body.walk();
+    let terminates = body.children(&mut cursor).any(|stmt| {
+        terminating_call_name(&stmt, source)
+            .is_some_and(|callee| is_process_terminating_name(&callee, names))
+    });
+    terminates
+}
+
+/// The callee name of `stmt` when it is an `expression_statement` wrapping a
+/// direct call, else `None`.
+fn terminating_call_name(stmt: &Node, source: &str) -> Option<String> {
+    if stmt.kind() != "expression_statement" {
+        return None;
+    }
+    let call = stmt.child(0).filter(|c| c.kind() == "call_expression")?;
+    let function = call.child_by_field_name("function")?;
+    if function.kind() != "identifier" {
+        return None;
+    }
+    Some(get_node_text(&function, source).trim().to_string())
 }
 
 /// True if `node` is an `expression_statement` wrapping a direct call to a
@@ -244,6 +339,50 @@ mod tests {
         let (tree, source) = parse("__attribute__((noreturn)) void die(void) { for (;;) {} }\n");
         let names = collect_noreturn_function_names(&tree.root_node(), &source);
         assert!(names.contains("die"));
+    }
+
+    #[test]
+    fn infers_noreturn_from_a_definition_that_only_exits() {
+        let (tree, source) =
+            parse("static void no_mem(void) { fprintf(stderr, \"oom\"); exit(1); }\n");
+        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        assert!(names.contains("no_mem"));
+    }
+
+    #[test]
+    fn infers_through_a_chain_of_wrappers() {
+        let (tree, source) = parse(
+            "static void die(void) { exit(1); }\n\
+             static void bail(void) { die(); }\n",
+        );
+        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        assert!(names.contains("die"));
+        assert!(names.contains("bail"));
+    }
+
+    #[test]
+    fn does_not_infer_when_an_earlier_return_can_escape() {
+        let (tree, source) = parse("static void maybe(int x) { if (x) return; exit(1); }\n");
+        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        assert!(!names.contains("maybe"));
+    }
+
+    #[test]
+    fn does_not_infer_when_the_exit_is_conditional() {
+        let (tree, source) = parse("static void maybe(int x) { if (x) { exit(1); } }\n");
+        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        assert!(!names.contains("maybe"));
+    }
+
+    #[test]
+    fn does_not_infer_a_longjmp_wrapper() {
+        // Genuinely noreturn, but not process-terminating: inferring it would
+        // make `is_process_terminating_name` answer true and turn every
+        // allocation live across it into a suppressed leak.
+        let (tree, source) = parse("static void unwind(void) { longjmp(env, 1); }\n");
+        let names = collect_noreturn_function_names(&tree.root_node(), &source);
+        assert!(!names.contains("unwind"));
+        assert!(!is_process_terminating_name("unwind", &names));
     }
 
     #[test]
