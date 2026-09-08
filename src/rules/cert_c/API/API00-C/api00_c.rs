@@ -71,12 +71,27 @@ struct PointerTypes<'a> {
     type_map: &'a HashMap<String, String>,
     struct_field_types: &'a StructFieldTypes,
     facts: &'a PointerFacts,
+    /// Cross-file typedef alias map, threaded through so
+    /// `is_defined_unsigned_shift` can resolve a typedef'd unsigned type
+    /// (`sqlite3_uint64`, `os_time_t`, ...) to a builtin whose width
+    /// `integer_type_width` knows -- otherwise a shift on such a
+    /// parameter fails the width gate and the site is kept as
+    /// unchecked arithmetic (task 1057).
+    typedef_types: &'a HashMap<String, String>,
 }
 
 pub struct Api00C {
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
     struct_field_types: RefCell<StructFieldTypes>,
     pointer_facts: RefCell<PointerFacts>,
+    /// Cross-file typedef alias map, reached through the shared
+    /// [`overflow_helpers::resolve_typedef_chain`] before the shift-
+    /// safety width lookup so a `sqlite3_uint64`-typed parameter or an
+    /// `os_time_t` chain (task 664 sample) resolves to a known width
+    /// instead of failing the "shift by literal < width" gate and
+    /// leaving the shift as unchecked (task 1057, third consumer of
+    /// task 736's shared resolver).
+    typedef_types: RefCell<HashMap<String, String>>,
 }
 
 impl Api00C {
@@ -85,6 +100,7 @@ impl Api00C {
             function_summaries: RefCell::new(HashMap::new()),
             struct_field_types: RefCell::new(StructFieldTypes::new()),
             pointer_facts: RefCell::new(PointerFacts::default()),
+            typedef_types: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -113,6 +129,7 @@ impl CertRule for Api00C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
+        *self.typedef_types.borrow_mut() = context.typedef_types.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -121,10 +138,12 @@ impl CertRule for Api00C {
         let type_map = overflow_helpers::collect_variable_types(node, source);
         let struct_field_types = self.struct_field_types.borrow();
         let facts = self.pointer_facts.borrow();
+        let typedef_types = self.typedef_types.borrow();
         let pointer_types = PointerTypes {
             type_map: &type_map,
             struct_field_types: &struct_field_types,
             facts: &facts,
+            typedef_types: &typedef_types,
         };
         for func in query::find_descendants_of_kind(*node, "function_definition") {
             self.check_function_parameter_validation(
@@ -519,7 +538,13 @@ impl Api00C {
                 pointer_types.struct_field_types,
                 pointer_types.facts,
             )
-            && !Self::is_defined_unsigned_shift(node, param_name, param_type, source)
+            && !Self::is_defined_unsigned_shift(
+                node,
+                param_name,
+                param_type,
+                source,
+                pointer_types.typedef_types,
+            )
             && !Self::is_inside_assert(node, source);
 
         if is_site {
@@ -555,6 +580,7 @@ impl Api00C {
         param_name: &str,
         param_type: &str,
         source: &str,
+        typedef_types: &HashMap<String, String>,
     ) -> bool {
         let operator = node.child_by_field_name("operator").map(|op| op.kind());
         let (value, count) = match node.kind() {
@@ -574,7 +600,13 @@ impl Api00C {
         if !Self::is_param_operand(&value, param_name, source) {
             return false;
         }
-        let declared = Self::param_base_type(param_type, param_name);
+        // Resolve a typedef spelling to its terminal builtin before asking
+        // either "unsigned?" or "how wide?", so a `sqlite3_uint64` or
+        // `os_time_t` chain lands on the same row a bare `unsigned long
+        // long` would (task 1057, third consumer of task 736's resolver).
+        let declared_raw = Self::param_base_type(param_type, param_name);
+        let resolved = overflow_helpers::resolve_typedef_chain(declared_raw, typedef_types);
+        let declared = resolved.as_str();
         if !is_unsigned_type(declared) {
             return false;
         }
