@@ -7,6 +7,7 @@
 use crate::analyze::const_eval::{self, MacroConstantMap, ValueRange, VarRangeMap};
 use crate::analyze::init_state;
 use crate::analyze::null_state::NullState;
+use crate::utility::cert_c::guard_dominance;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -72,6 +73,28 @@ pub struct FunctionSummary {
     /// (task 1011, tools_sqc).
     #[serde(default)]
     pub modifies_params_pending: HashMap<usize, Vec<(String, usize)>>,
+    /// Parameters PROVEN to have a returning path that writes nothing through
+    /// them — the positive-evidence half of what `modifies_params` minus
+    /// `unconditional_modifies_params` only hints at.
+    ///
+    /// The difference matters because the MUST set is deliberately
+    /// incomplete: it is built by demotion from a text scan and cannot see
+    /// through an indirect call, so a genuine write-on-every-path function
+    /// routinely fails to reach it. curl's `Curl_conn_get_current_host` fills
+    /// both its outputs on every path, one of them via
+    /// `cf_proxy->cft->query(...)` through a function pointer — absent from
+    /// MUST, and yet crediting its callers is correct. Withholding the
+    /// `&var`-initializes default on "not in MUST" alone therefore reports
+    /// every such caller (task 1065 bug #3, tools_sqc).
+    ///
+    /// So this set answers the other question outright: is there a path that
+    /// reaches a `return` (or the end of a void body) having neither written
+    /// through the parameter nor handed it to anything that might?
+    /// `Curl_sasl_decode_mech`'s trailing `return 0` is exactly that path —
+    /// every write to `*len` sits inside the table-match `if`, and a caller
+    /// reading the length on the no-match path reads it uninitialised.
+    #[serde(default)]
+    pub conditional_modifies_params: HashSet<usize>,
     /// Parameter indices whose **pointee** this function frees — `free(*param)`,
     /// the `void **` "safe free" wrapper idiom:
     ///
@@ -1775,6 +1798,182 @@ fn forwarded_write_obligation(expr: &Node, source: &str, param: &str) -> Option<
     None
 }
 
+/// Whether a `while`/`for` head is one that cannot be skipped: no condition at
+/// all (`for(;;)`), or a non-zero integer literal (`while(1)`).
+///
+/// Anything needing evaluation is treated as skippable, which is the
+/// conservative reading everywhere else in `clean_paths`.
+fn loop_always_enters(stmt: &Node, source: &str) -> bool {
+    match stmt.child_by_field_name("condition") {
+        None => true,
+        Some(condition) => {
+            // A `while` head is a `parenthesized_expression`; a `for` head is
+            // the expression itself.
+            let mut inner = condition;
+            while inner.kind() == "parenthesized_expression" {
+                match inner.named_child(0) {
+                    Some(child) => inner = child,
+                    None => return false,
+                }
+            }
+            let text = inner.utf8_text(source.as_bytes()).unwrap_or("").trim();
+            inner.kind() == "number_literal" && text.parse::<i64>().is_ok_and(|v| v != 0)
+        }
+    }
+}
+
+/// Whether some path through this function reaches a `return` — or the end of
+/// a void body — without the parameter having been written or handed to
+/// anything that could write it.
+///
+/// The dual of `writes_on_all_paths`, and deliberately not its negation:
+/// that walk answers "is coverage proven?", where a `None` covers both "there
+/// is a path with no write" and "this pass cannot tell". Only the first is a
+/// reason to withhold a caller's initialisation credit, so this asks for the
+/// path directly. See `FunctionSummary::conditional_modifies_params`.
+///
+/// "Touched" is any mention of the parameter's identifier, not just a write.
+/// A statement that merely reads it is still refused as a clean path, because
+/// the mention may be a forward: `query(cf, data, kind, pport, phost)` writes
+/// through both pointers and looks like nothing but two identifiers here.
+/// Erring this way costs detections, never adds reports.
+fn may_return_without_writing(body: &Node, source: &str, param: &str) -> bool {
+    let (passes, returns) = clean_paths(body, source, param, 0);
+    passes || returns
+}
+
+/// Same reasoning and the same cap as `writes_on_all_paths`: this walks a
+/// prescan worker's stack, and an unbounded `if`/`else if` chain nests one
+/// level per arm.
+const CLEAN_PATH_MAX_DEPTH: u32 = 96;
+
+/// `(a path leaves this statement untouched, a path returns from inside it
+/// untouched)`.
+///
+/// Past the depth cap both answers are `false`, which claims nothing — the
+/// same direction every other unhandled shape takes.
+fn clean_paths(stmt: &Node, source: &str, param: &str, depth: u32) -> (bool, bool) {
+    use lang_parsing_substrate::query;
+
+    if depth >= CLEAN_PATH_MAX_DEPTH {
+        return (false, false);
+    }
+
+    // Asked before the untouched-subtree shortcut below, which would otherwise
+    // report a bare `return;` as merely passing through.
+    if stmt.kind() == "return_statement" {
+        return if guard_dominance::mentions_var(stmt, param, source) {
+            (false, false)
+        } else {
+            (false, true)
+        };
+    }
+
+    let mentions = guard_dominance::mentions_var(stmt, param, source);
+    let returns_somewhere =
+        || !query::find_descendants_of_kind(*stmt, "return_statement").is_empty();
+    if !mentions && !returns_somewhere() {
+        // Nothing in here touches the parameter and nothing in here leaves the
+        // function, so every path through it is clean and none of them return.
+        return (true, false);
+    }
+
+    match stmt.kind() {
+        "compound_statement" => {
+            let mut cursor = stmt.walk();
+            let children: Vec<Node> = stmt.named_children(&mut cursor).collect();
+            let mut passes = true;
+            let mut returns = false;
+            for child in &children {
+                if child.kind() == "comment" {
+                    continue;
+                }
+                let (child_passes, child_returns) = clean_paths(child, source, param, depth + 1);
+                // Only reachable-while-still-clean returns count.
+                returns |= child_returns;
+                if !child_passes {
+                    passes = false;
+                    break;
+                }
+            }
+            (passes, returns)
+        }
+        "labeled_statement" => stmt
+            .named_child(stmt.named_child_count().saturating_sub(1))
+            .map(|inner| clean_paths(&inner, source, param, depth + 1))
+            .unwrap_or((false, false)),
+        "else_clause" => stmt
+            .named_child(0)
+            .map(|inner| clean_paths(&inner, source, param, depth + 1))
+            .unwrap_or((true, false)),
+        "if_statement" => {
+            let Some(condition) = stmt.child_by_field_name("condition") else {
+                return (false, false);
+            };
+            if guard_dominance::mentions_var(&condition, param, source) {
+                return (false, false);
+            }
+            let (then_passes, then_returns) = stmt
+                .child_by_field_name("consequence")
+                .map(|c| clean_paths(&c, source, param, depth + 1))
+                .unwrap_or((true, false));
+            // No `else` is an empty, untouched false branch -- which is
+            // precisely why a bare `if` around every write leaves the
+            // parameter unwritten.
+            let (else_passes, else_returns) = match stmt.child_by_field_name("alternative") {
+                Some(alternative) => clean_paths(&alternative, source, param, depth + 1),
+                None => (true, false),
+            };
+            (then_passes || else_passes, then_returns || else_returns)
+        }
+        "while_statement" | "for_statement" => {
+            // Zero iterations is a path through the loop, provided nothing
+            // evaluated on the way in touches the parameter -- but only if
+            // the loop can decline to run at all. `while(1)` and `for(;;)`
+            // always enter, so their bodies write on every path that reaches
+            // them: curl's `Curl_get_line` sets `*eof` at the top of a
+            // `while(1)`, and reading a zero-iteration path into it reports
+            // every caller.
+            if loop_always_enters(stmt, source) {
+                return stmt
+                    .child_by_field_name("body")
+                    .map(|b| clean_paths(&b, source, param, depth + 1))
+                    .unwrap_or((false, false));
+            }
+            let body = stmt.child_by_field_name("body");
+            let mut cursor = stmt.walk();
+            let header_touches = stmt
+                .named_children(&mut cursor)
+                .filter(|c| body.is_none_or(|b| c.id() != b.id()))
+                .any(|c| guard_dominance::mentions_var(&c, param, source));
+            if header_touches {
+                return (false, false);
+            }
+            let returns = body
+                .map(|b| clean_paths(&b, source, param, depth + 1).1)
+                .unwrap_or(false);
+            (true, returns)
+        }
+        "do_statement" => {
+            // The body runs before the condition is ever evaluated, so there
+            // is no zero-iteration path to fall back on.
+            if stmt
+                .child_by_field_name("condition")
+                .is_some_and(|c| guard_dominance::mentions_var(&c, param, source))
+            {
+                return (false, false);
+            }
+            stmt.child_by_field_name("body")
+                .map(|b| clean_paths(&b, source, param, depth + 1))
+                .unwrap_or((false, false))
+        }
+        // Everything else that mentions the parameter -- an assignment, a
+        // declaration, a call, a `switch` whose arms touch it, a `goto` -- is
+        // refused rather than reasoned about.
+        _ => (false, false),
+    }
+}
+
 /// Demote parameters whose every AST-visible write through them is
 /// conditional out of the MUST-write set. See
 /// `FunctionSummary::unconditional_modifies_params` for why this subtracts
@@ -1906,6 +2105,27 @@ fn credit_modifies_params(
             summary
                 .modifies_params_pending
                 .insert(idx, obligations.into_iter().collect());
+        }
+    }
+
+    // Positive evidence of a conditional write, for the parameters where the
+    // MUST verdict came out "not proven": the coverage walk failing is not
+    // itself a finding, so ask the dual question and record only a proven
+    // answer. Pending parameters are skipped -- their coverage rests on a
+    // callee `propagate_transitive_modifies` has yet to settle, and a
+    // clean-path proof over this body alone would be answering a question
+    // that is still open.
+    let conditional: Vec<usize> = summary
+        .modifies_params
+        .iter()
+        .filter(|idx| !summary.unconditional_modifies_params.contains(idx))
+        .filter(|idx| !summary.modifies_params_pending.contains_key(idx))
+        .filter(|idx| params.get(**idx).is_some_and(|p| !p.is_empty()))
+        .copied()
+        .collect();
+    for idx in conditional {
+        if may_return_without_writing(body, source, &params[idx]) {
+            summary.conditional_modifies_params.insert(idx);
         }
     }
 }
@@ -2699,6 +2919,10 @@ pub fn propagate_transitive_modifies(summaries: &mut HashMap<String, FunctionSum
                 .collect();
             for idx in discharged {
                 summary.unconditional_modifies_params.insert(idx);
+                // Pending parameters never entered the conditional set, but
+                // keep the two disjoint by construction rather than by
+                // argument -- both are read as a pair.
+                summary.conditional_modifies_params.remove(&idx);
                 // Keeps `unconditional_modifies_params` a subset of the MAY
                 // set for a parameter that reached here through a forward and
                 // never had a direct write to put it there (task 1027,
