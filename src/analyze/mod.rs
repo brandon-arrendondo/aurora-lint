@@ -39,6 +39,7 @@ pub mod points_to;
 /// this position cannot coexist with.
 pub mod preproc_arms;
 pub mod preproc_dangling_else;
+pub mod preproc_split_chain;
 /// The pre-scan phase: a first pass over the project (and sibling headers)
 /// that builds the [`context::ProjectContext`] later rule passes consume.
 pub mod prescan;

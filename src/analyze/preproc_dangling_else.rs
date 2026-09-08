@@ -102,7 +102,7 @@ fn starts_with_bare_else(line: &str) -> bool {
 
 /// True if `line`, once trimmed and stripped of a trailing `//` comment, is
 /// exactly the bare keyword `else` with nothing else on the line.
-fn is_bare_else_line(line: &str) -> bool {
+pub(crate) fn is_bare_else_line(line: &str) -> bool {
     strip_trailing_line_comment(line.trim()) == "else"
 }
 
