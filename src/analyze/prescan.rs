@@ -35,6 +35,7 @@ struct FilePrescanResult {
     struct_field_types: HashMap<String, HashMap<String, String>>,
     struct_typedef_aliases: HashMap<String, String>,
     typedef_types: HashMap<String, String>,
+    function_pointer_typedef_names: HashSet<String>,
     packed_structs: HashSet<String>,
     packed_struct_candidates: Vec<(String, String)>,
     packed_macro_names: HashSet<String>,
@@ -83,6 +84,7 @@ impl FilePrescanResult {
             struct_field_types: HashMap::new(),
             struct_typedef_aliases: HashMap::new(),
             typedef_types: HashMap::new(),
+            function_pointer_typedef_names: HashSet::new(),
             packed_structs: HashSet::new(),
             packed_struct_candidates: Vec::new(),
             packed_macro_names: HashSet::new(),
@@ -171,6 +173,11 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
         collect_struct_definitions(&root, &source, &mut result.struct_field_types);
         collect_struct_typedef_aliases(&root, &source, &mut result.struct_typedef_aliases);
         collect_typedef_aliases(&root, &source, &mut result.typedef_types);
+        collect_function_pointer_typedef_names(
+            &root,
+            &source,
+            &mut result.function_pointer_typedef_names,
+        );
         collect_packed_structs(
             &root,
             &source,
@@ -329,6 +336,7 @@ fn prescan_file_list(
     let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
+    let mut function_pointer_typedef_names: HashSet<String> = HashSet::new();
     let mut packed_structs: HashSet<String> = HashSet::new();
     let mut packed_struct_candidates: Vec<(String, String)> = Vec::new();
     let mut packed_macro_names: HashSet<String> = HashSet::new();
@@ -441,6 +449,7 @@ fn prescan_file_list(
         struct_field_types.extend(r.struct_field_types);
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
+        function_pointer_typedef_names.extend(r.function_pointer_typedef_names);
         packed_structs.extend(r.packed_structs);
         packed_struct_candidates.extend(r.packed_struct_candidates);
         packed_macro_names.extend(r.packed_macro_names);
@@ -671,6 +680,7 @@ fn prescan_file_list(
         struct_field_types,
         struct_typedef_aliases,
         typedef_types,
+        function_pointer_typedef_names,
         packed_structs,
         defined_macro_names,
         unused_attribute_macros,
@@ -4700,6 +4710,68 @@ fn collect_typedef_aliases(node: &Node, source: &str, typedef_types: &mut HashMa
             }
         }
     }
+}
+
+/// Names of typedefs whose declarator carries a `function_declarator`, i.e.
+/// function-pointer typedefs (sqlite's `typedef int (*RecordCompare)(void
+/// *, int);` in `sqliteInt.h` and every callback-type alias like it).
+/// Sibling collector to `collect_typedef_aliases`; the alias-map collector
+/// deliberately skips these (they don't participate in a scalar
+/// signedness chain), so DCL31-C's "is this parameter a callable
+/// function pointer?" question cannot be answered from `typedef_types`
+/// alone (task 1054).
+fn collect_function_pointer_typedef_names(node: &Node, source: &str, names: &mut HashSet<String>) {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            match child.kind() {
+                "type_definition" => {
+                    if let Some(declarator) = child.child_by_field_name("declarator") {
+                        if crate::utility::cert_c::declarator_utils::is_function_declarator(
+                            &declarator,
+                        ) {
+                            // In a typedef, the being-declared name is a
+                            // `type_identifier` (tree-sitter-c's C scanner
+                            // installs it as such because the surrounding
+                            // `typedef` keyword marks it as introducing a
+                            // type name), not a plain `identifier` -- so a
+                            // walker keyed only on `identifier` misses it.
+                            if let Some(name) =
+                                find_type_or_ident_in_declarator(&declarator, source)
+                            {
+                                names.insert(name);
+                            }
+                        }
+                    }
+                }
+                "preproc_ifdef"
+                | "preproc_if"
+                | "preproc_else"
+                | "preproc_elif"
+                | "linkage_specification" => {
+                    collect_function_pointer_typedef_names(&child, source, names);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Recursively look for the innermost declared name in a declarator
+/// subtree, accepting either `identifier` (the ordinary case) or
+/// `type_identifier` (the typedef case, where tree-sitter-c's scanner
+/// marks the being-declared name).
+fn find_type_or_ident_in_declarator(node: &Node, source: &str) -> Option<String> {
+    if matches!(node.kind(), "identifier" | "type_identifier") {
+        return Some(get_node_text(node, source).to_string());
+    }
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if let Some(name) = find_type_or_ident_in_declarator(&child, source) {
+                return Some(name);
+            }
+        }
+    }
+    None
 }
 
 /// A `type_definition` whose right-hand type is a bare primitive/sized/named
