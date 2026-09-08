@@ -406,15 +406,44 @@ pub fn is_short_unsigned_typedef(s: &str) -> bool {
     matches!(s, "u8" | "u16" | "u32" | "u64" | "u128")
 }
 
+/// Walk a (possibly multi-level) typedef chain -- e.g. `paddr_t` ->
+/// `word_t` -> `unsigned long` -- to its terminal name. `typedef_types` is
+/// a one-level alias map (`ProjectContext::typedef_types`, merged from
+/// cross-file prescan data with the current file's own typedefs).
+///
+/// Returns the last name reached: a builtin spelling if the chain
+/// terminates in one, otherwise the last unresolved alias (so callers can
+/// still inspect it -- e.g. treat an opaque `handle_t` as its own leaf).
+/// Cycle-guarded (returns the name where the cycle was detected) and
+/// depth-capped at 16, which is far beyond any real typedef chain and
+/// guards against a malformed self-referential map.
+///
+/// The single shared primitive backing every rule's typedef question:
+/// `is unsigned?` for INT10-C/INT32-C, `alignment/width?` for
+/// EXP36-C/INT31-C/API00-C (task 736 -- previously each rule kept its own
+/// per-question exact-match table with no chain resolution and its own
+/// per-file FP class).
+pub fn resolve_typedef_chain(type_name: &str, typedef_types: &HashMap<String, String>) -> String {
+    let mut current = type_name.trim().to_string();
+    let mut seen = HashSet::new();
+    for _ in 0..16 {
+        if !seen.insert(current.clone()) {
+            return current;
+        }
+        match typedef_types.get(&current) {
+            Some(next) => current = next.trim().to_string(),
+            None => return current,
+        }
+    }
+    current
+}
+
 /// Recursively resolve a (possibly multi-level) typedef chain -- e.g.
 /// `paddr_t` -> `word_t` -> `unsigned long` -- to decide whether the type it
-/// ultimately names is unsigned. `typedef_types` is a one-level alias map
-/// (`ProjectContext::typedef_types`, merged from cross-file prescan data with
-/// the current file's own typedefs); this walks it until it hits a type
-/// `is_unsigned_type`/`is_short_unsigned_typedef` already recognizes, a name
-/// with no further mapping (opaque/unresolved -- not proven unsigned), or a
-/// cycle. Depth-capped at 16, which is far beyond any real typedef chain, as
-/// a second guard against a malformed or self-referential alias map.
+/// ultimately names is unsigned. See [`resolve_typedef_chain`] for the
+/// shared walker; this asks the "is unsigned?" question of every name on
+/// the chain (an intermediate that already reads as unsigned short-circuits
+/// without needing the walk to reach a builtin).
 ///
 /// Conservative on unknown, matching every other signedness check here: a
 /// chain that bottoms out in something other than a recognized unsigned type
@@ -486,6 +515,53 @@ mod tests {
         typedefs.insert("a_t".to_string(), "b_t".to_string());
         typedefs.insert("b_t".to_string(), "a_t".to_string());
         assert!(!typedef_chain_is_unsigned("a_t", &typedefs));
+    }
+
+    #[test]
+    fn resolve_typedef_chain_walks_to_terminal_builtin() {
+        // sqlite's actual shape: i64 -> sqlite_int64 -> long long int.
+        let mut typedefs = HashMap::new();
+        typedefs.insert("i64".to_string(), "sqlite_int64".to_string());
+        typedefs.insert("sqlite_int64".to_string(), "long long int".to_string());
+        assert_eq!(resolve_typedef_chain("i64", &typedefs), "long long int");
+        assert_eq!(
+            resolve_typedef_chain("sqlite_int64", &typedefs),
+            "long long int"
+        );
+        assert_eq!(
+            resolve_typedef_chain("long long int", &typedefs),
+            "long long int"
+        );
+    }
+
+    #[test]
+    fn resolve_typedef_chain_returns_leaf_for_opaque_alias() {
+        let mut typedefs = HashMap::new();
+        typedefs.insert("handle_t".to_string(), "opaque_t".to_string());
+        // `opaque_t` is not in the map -- return it as the leaf, do not
+        // pretend it resolves to anything else.
+        assert_eq!(resolve_typedef_chain("handle_t", &typedefs), "opaque_t");
+    }
+
+    #[test]
+    fn resolve_typedef_chain_returns_a_cycle_name() {
+        let mut typedefs = HashMap::new();
+        typedefs.insert("a_t".to_string(), "b_t".to_string());
+        typedefs.insert("b_t".to_string(), "a_t".to_string());
+        // Cycle detected -- return the name where we cycled, don't loop
+        // forever and don't panic.
+        let leaf = resolve_typedef_chain("a_t", &typedefs);
+        assert!(leaf == "a_t" || leaf == "b_t");
+    }
+
+    #[test]
+    fn resolve_typedef_chain_is_identity_on_unaliased_input() {
+        let typedefs = HashMap::new();
+        assert_eq!(resolve_typedef_chain("int", &typedefs), "int");
+        assert_eq!(
+            resolve_typedef_chain("unsigned long", &typedefs),
+            "unsigned long"
+        );
     }
 
     #[test]
