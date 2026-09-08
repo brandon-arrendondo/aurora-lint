@@ -193,6 +193,17 @@ pub struct ProjectContext {
     /// project-wide (task 657).
     #[serde(default)]
     pub typedef_types: HashMap<String, String>,
+    /// Names of typedefs whose declared type is a function pointer -- e.g.
+    /// sqlite's `typedef int (*RecordCompare)(void *, int);` in
+    /// `sqliteInt.h`. `collect_from_simple_typedef` filed under
+    /// `typedef_types` only stores primitive/sized/named RHSs, so a
+    /// function-pointer typedef leaves that map with no entry for its
+    /// alias name; DCL31-C needs the *category* (function-pointer
+    /// typedef?), not the RHS text, to decide whether a parameter of
+    /// that type is directly callable (task 1054, second consumer of
+    /// task 736's shared typedef-chain resolver).
+    #[serde(default)]
+    pub function_pointer_typedef_names: HashSet<String>,
 }
 
 impl ProjectContext {
