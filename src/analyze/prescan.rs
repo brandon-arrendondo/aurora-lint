@@ -3349,6 +3349,81 @@ fn stmt_diverges_after(stmt: &Node) -> bool {
     false
 }
 
+/// True when `stmt` is immediately followed (skipping comments) by an `if`
+/// that null-checks `var` and whose consequence always diverges — the checked
+/// allocation, written the way hostap writes it:
+///
+/// ```c
+///     sta = ap_sta_add(hapd, sa);
+///     if (!sta) {
+///         wpa_printf(MSG_DEBUG, "ap_sta_add() failed");
+///         goto fail;
+///     }
+/// ```
+///
+/// Control cannot reach the guard's successor with `var` null, so the
+/// flow-insensitive last-write must record NotNull rather than the
+/// allocator's PossiblyNull. Recording PossiblyNull instead makes the call
+/// site cast a PossiblyNull vote, `aggregate_callsite_null_states` turns that
+/// into a PossiblyNull *parameter* for every callee `var` is passed to, and
+/// each callee's first dereference of that parameter is then reported — a
+/// parameter deref the no-callsite-data path deliberately treats as the
+/// caller's responsibility.
+///
+/// Block-local and straight-line on purpose: it never reasons about
+/// dominance, so a guard sitting in some other branch cannot mark `var`
+/// non-null here. `p = malloc(n); sink(p);` has no guard and is untouched, so
+/// the unguarded-malloc null-deref FN is preserved. Polarity matters, which is
+/// why this uses `extract_null_checked_vars` rather than the deliberately
+/// polarity-agnostic `null_state::condition_tests_null`: `if (p) return;`
+/// leaves `p` null and must not credit anything.
+fn guarded_nonnull_after(stmt: &Node, var: &str, source: &str) -> bool {
+    let mut sib = stmt.next_sibling();
+    let guard = loop {
+        match sib {
+            Some(n) if n.kind() == "comment" => sib = n.next_sibling(),
+            Some(n) if n.kind() == "if_statement" => break n,
+            _ => return false,
+        }
+    };
+    let Some(condition) = guard.child_by_field_name("condition") else {
+        return false;
+    };
+    if !extract_null_checked_vars(&condition, source)
+        .iter()
+        .any(|v| v == var)
+    {
+        return false;
+    }
+    guard
+        .child_by_field_name("consequence")
+        .is_some_and(|c| always_diverges(&c))
+}
+
+/// True when control cannot fall out of the bottom of `stmt`: it is itself a
+/// `goto`/`return`/`break`/`continue`, or a block whose last non-comment
+/// statement is one. A block that cannot fall off its end cannot be left
+/// except by a jump either, so accepting it is exact rather than optimistic;
+/// every other shape is rejected.
+fn always_diverges(stmt: &Node) -> bool {
+    match stmt.kind() {
+        "goto_statement" | "return_statement" | "break_statement" | "continue_statement" => true,
+        "compound_statement" => {
+            let mut last = None;
+            for i in 0..stmt.child_count() {
+                if let Some(child) = stmt.child(i) {
+                    if matches!(child.kind(), "comment" | "{" | "}") {
+                        continue;
+                    }
+                    last = Some(child);
+                }
+            }
+            last.is_some_and(|l| always_diverges(&l))
+        }
+        _ => false,
+    }
+}
+
 fn collect_assignments_recursive(
     node: &Node,
     source: &str,
@@ -3407,6 +3482,14 @@ fn assign_identifier_state(
         return;
     }
     let state = infer_rhs_null_state(right, source);
+    // A checked allocation (`p = f(); if (!p) goto err;`) is non-null on every
+    // path that reaches the guard's successor, whatever the RHS says — record
+    // that even when the RHS was Unknown, since a NotNull vote is what keeps
+    // one PossiblyNull caller from deciding the parameter for all the others.
+    if guarded_nonnull_after(stmt, &var_name, source) {
+        states.insert(var_name, NullState::NotNull);
+        return;
+    }
     // An error/cleanup assignment to NULL whose statement is immediately
     // followed by a divergent jump (`x = 0; goto err;`) never falls through
     // to subsequent call sites. Recording it would let the flow-insensitive
@@ -3499,13 +3582,13 @@ fn insert_state_or_relay(
 fn collect_declaration_states(node: &Node, source: &str, states: &mut HashMap<String, NullState>) {
     // Handle `type *var = expr;` init declarations
     if let Some(decl) = node.child_by_field_name("declarator") {
-        extract_init_state(&decl, source, states);
+        extract_init_state(&decl, node, source, states);
     }
     // Also check for multiple declarators and array declarations
     for i in 0..node.child_count() {
         let Some(child) = node.child(i) else { continue };
         if child.kind() == "init_declarator" {
-            extract_init_state(&child, source, states);
+            extract_init_state(&child, node, source, states);
         }
         // Stack arrays can never be null — mark as NotNull
         if child.kind() == "array_declarator" {
@@ -3518,12 +3601,24 @@ fn collect_declaration_states(node: &Node, source: &str, states: &mut HashMap<St
 }
 
 /// Extract null state from an init_declarator: `*var = expr` or `var = expr`.
-fn extract_init_state(decl: &Node, source: &str, states: &mut HashMap<String, NullState>) {
+/// `stmt` is the enclosing `declaration`, needed to see a guard following it.
+fn extract_init_state(
+    decl: &Node,
+    stmt: &Node,
+    source: &str,
+    states: &mut HashMap<String, NullState>,
+) {
     if let Some(value) = decl.child_by_field_name("value") {
         // Find the variable name in the declarator
         let name_node = decl.child_by_field_name("declarator").unwrap_or(*decl);
         let var_name = extract_leaf_id(&name_node, source);
         if !var_name.is_empty() {
+            // Same checked-allocation guard as the assignment path, for
+            // `T *p = f(); if (!p) goto err;`.
+            if guarded_nonnull_after(stmt, &var_name, source) {
+                states.insert(var_name, NullState::NotNull);
+                return;
+            }
             let state = infer_rhs_null_state(&value, source);
             if state != NullState::Unknown {
                 states.insert(var_name, state);
@@ -6338,6 +6433,125 @@ no_mem:
             &mut pointee_args,
         );
         assert_eq!(args.get("sink").unwrap()[0][0], NullState::NotNull);
+    }
+
+    /// Helper: the null state one call site of `sink` records for param 0.
+    fn sink_arg0_state(code: &str) -> NullState {
+        let (tree, source) = parse_c(code);
+        let mut args = HashMap::new();
+        let mut field_args = HashMap::new();
+        let mut pointee_args = HashMap::new();
+        collect_callsite_args_from_tree(
+            &tree.root_node(),
+            &source,
+            &mut args,
+            &mut field_args,
+            &mut pointee_args,
+        );
+        args.get("sink").unwrap()[0][0]
+    }
+
+    #[test]
+    fn test_checked_alloc_nested_guard_votes_not_null() {
+        // hostap's house style: the guard is NESTED (inside `if (flag)`) and
+        // diverges by `goto`, so collect_early_return_null_guards -- which
+        // only walks direct children of the body and needs the var to still be
+        // in scope at top level -- cannot see it. Without the assignment-local
+        // check the last write is the allocator's PossiblyNull, which votes a
+        // maybe-null parameter onto every callee `data` reaches.
+        let code = r#"
+void caller(int flag) {
+    char *data = 0;
+    if (flag) {
+        data = get_buf();
+        if (!data)
+            goto fail;
+        sink(data);
+    }
+fail:
+    return;
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::NotNull);
+    }
+
+    #[test]
+    fn test_checked_alloc_braced_guard_votes_not_null() {
+        // Same shape, nested so the top-level walk cannot reach it, with a
+        // braced consequence whose LAST statement is what diverges.
+        let code = r#"
+void caller(int flag) {
+    char *data = 0;
+    if (flag) {
+        data = get_buf();
+        if (data == NULL) {
+            log_it("failed");
+            return;
+        }
+        sink(data);
+    }
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::NotNull);
+    }
+
+    #[test]
+    fn test_inverted_guard_does_not_vote_not_null() {
+        // `if (data) return;` leaves `data` NULL afterwards. Crediting it would
+        // mask a real dereference, which is why this path needs a
+        // polarity-aware condition test rather than condition_tests_null.
+        let code = r#"
+void caller(void) {
+    char *data = 0;
+    if (data)
+        return;
+    sink(data);
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::DefinitelyNull);
+    }
+
+    #[test]
+    fn test_non_diverging_guard_does_not_vote_not_null() {
+        // The guard body falls through, so `data` really can be NULL at `sink`.
+        let code = r#"
+void caller(void) {
+    char *data = 0;
+    if (!data) {
+        log_it("null");
+    }
+    sink(data);
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::DefinitelyNull);
+    }
+
+    #[test]
+    fn test_unguarded_alloc_still_votes_maybe_null() {
+        // The unguarded-malloc FN this whole area must not mask: no guard
+        // follows the assignment, so the allocator's state is recorded as-is.
+        let code = r#"
+void caller(void) {
+    char *data = malloc(10);
+    sink(data);
+}
+"#;
+        assert_ne!(sink_arg0_state(code), NullState::NotNull);
+    }
+
+    #[test]
+    fn test_guard_on_other_variable_does_not_vote_not_null() {
+        // A guard on a neighbouring pointer is never credited to this one.
+        let code = r#"
+void caller(void) {
+    char *data = 0;
+    char *other = get_buf();
+    if (!other)
+        return;
+    sink(data);
+}
+"#;
+        assert_eq!(sink_arg0_state(code), NullState::DefinitelyNull);
     }
 
     // -- prescan_directories integration --
