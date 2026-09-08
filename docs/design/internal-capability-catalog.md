@@ -723,11 +723,22 @@ an unclosed parenthesized expression) and
 with a synthesized `(expression_statement (MISSING ";"))` consequence that
 reads as an unbraced body). All four are restricted to a conditional with NO
 `#else`/`#elif`: blanking a wrapper that has alternative arms would splice
-mutually exclusive text into one statement stream. A multi-arm chain whose
-arms each end in an incomplete fragment -- curl's `hostip4.c` mixes a bare
-`else` tail and an `if` header in one `#elif` chain -- is therefore
-unhandled by all of them, and wants a single multi-arm-aware pass rather
-than a fifth module. Each blanks the offending directive
+mutually exclusive text into one statement stream.
+
+`preproc_split_chain.rs` (task 1070) takes the multi-arm case those four
+refuse, for the chain shape where every arm ends in an incomplete fragment
+and they share one brace block after the `#endif`. It reads BOTH arm-ending
+shapes -- curl's `hostip4.c` mixes a bare `else` tail and an `if` header in
+one `#elif` chain, so a control-header-only repair would leave half of that
+one chain broken -- importing the predicates from the two passes that own
+them, so each has a single definition. It is a separate module rather than a
+relaxation of their `!has_branch` guard so that the ~470 single-arm chains
+in the corpus cannot regress: the repair here is a different one, keeping
+the last arm that ends incomplete and blanking the other arms' fragments,
+which discards code and is only worth it where the alternative is a spliced
+statement stream.
+
+Each blanks the offending directive
 lines, length-preserving, so the guarded code rejoins the construct it
 belongs to. All of them operate at parse time, not from within a rule — a rule
 encountering *residual* malformed-declaration debris (a `MISSING`/`ERROR`
