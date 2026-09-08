@@ -933,6 +933,487 @@ pub fn dominating_condition_branch(cond: &Node, site: &Node) -> Option<bool> {
     }
 }
 
+/// True when an earlier exit-guard, with its other conjunct discharged by an
+/// enclosing loop bound, proves `var` non-null at `site`.
+///
+/// The shape, hostap's `wpa_dbus_dict_append_string_array`:
+///
+/// ```c
+/// if (!key || (!items && num_items != 0) || !begin_array(...))
+///         return FALSE;
+/// ...
+/// for (i = 0; i < num_items; i++)
+///         ... items[i] ...          /* items is non-null */
+/// ```
+///
+/// Two steps neither the null-state join nor
+/// [`is_nonnull_by_correlated_exit_guard`] can take. First, the guard is a
+/// *disjunction*: falling past it makes every top-level disjunct false
+/// independently, so `!(!items && num_items != 0)` holds with nothing else
+/// needing to be known — where the correlated-exit-guard shape needs the
+/// guard's *other conjuncts* to be facts. Second, discharging the surviving
+/// `num_items != 0` is integer reasoning, not flag correlation: the loop
+/// condition `i < num_items` with `i` non-negative gives `num_items > 0`.
+///
+/// Only `<` qualifies. `i <= n` leaves `n == 0` reachable when `i` is 0, and
+/// crediting it would turn this into exactly the unsound refinement task 1067
+/// replaced.
+pub fn is_nonnull_by_loop_bounded_exit_guard(var: &str, site: &Node, source: &str) -> bool {
+    let positive = loop_bounded_positive_vars(site, source);
+    if positive.is_empty() {
+        return false;
+    }
+
+    let site_start = site.start_byte();
+    let mut current = *site;
+    while let Some(parent) = current.parent() {
+        if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
+            let mut cursor = parent.walk();
+            for stmt in parent.named_children(&mut cursor) {
+                if stmt.start_byte() >= current.start_byte() {
+                    break;
+                }
+                if loop_bounded_guard_proves_nonnull(&stmt, var, &positive, site_start, source) {
+                    return true;
+                }
+            }
+        }
+        if parent.kind() == "function_definition" {
+            break;
+        }
+        current = parent;
+    }
+    false
+}
+
+/// One preceding block-level statement: is it a bail-out `if` one of whose
+/// disjuncts is `(!var && <positive>)`, so falling past it proves `var`
+/// non-null?
+fn loop_bounded_guard_proves_nonnull(
+    stmt: &Node,
+    var: &str,
+    positive: &[String],
+    site_start: usize,
+    source: &str,
+) -> bool {
+    if BLOCK_LIKE_KINDS.contains(&stmt.kind()) && stmt.kind() != "compound_statement" {
+        let mut cursor = stmt.walk();
+        return stmt.named_children(&mut cursor).any(|inner| {
+            loop_bounded_guard_proves_nonnull(&inner, var, positive, site_start, source)
+        });
+    }
+    if stmt.kind() != "if_statement" || stmt.end_byte() > site_start {
+        return false;
+    }
+    // Same reasoning as `exit_guard_proves_nonnull`: an `else` makes this a
+    // branch rather than a bail-out, and falling past establishes nothing.
+    if stmt.child_by_field_name("alternative").is_some() {
+        return false;
+    }
+    let Some(consequence) = stmt.child_by_field_name("consequence") else {
+        return false;
+    };
+    if !always_leaves(&consequence) {
+        return false;
+    }
+    let Some(condition) = stmt.child_by_field_name("condition") else {
+        return false;
+    };
+
+    // The guard did not fire, so the condition is false, so *every* top-level
+    // disjunct is false. Each one can be examined on its own.
+    disjuncts(&condition).iter().any(|disjunct| {
+        let parts = conjuncts(disjunct);
+        if parts.len() < 2 {
+            return false;
+        }
+        // `!(a && b)` pins nothing unless every conjunct but the null test is
+        // known true here; then the null test must be the false one.
+        parts.iter().enumerate().any(|(i, candidate)| {
+            term_asserts_null(candidate, var, source)
+                && parts
+                    .iter()
+                    .enumerate()
+                    .all(|(j, other)| i == j || asserts_positive(other, positive, source))
+        })
+    })
+}
+
+/// Variables an enclosing loop bound proves strictly positive at `site`.
+///
+/// Only counts a loop whose *body* contains `site` — a bound in the condition
+/// says nothing at the site if the site is the condition itself.
+fn loop_bounded_positive_vars(site: &Node, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = *site;
+    while let Some(parent) = current.parent() {
+        if matches!(parent.kind(), "for_statement" | "while_statement") {
+            let in_body = parent
+                .child_by_field_name("body")
+                .is_some_and(|body| node_spans(&body, site));
+            if in_body {
+                if let Some(bound) = strict_upper_bound_var(&parent, source) {
+                    out.push(bound);
+                }
+            }
+        }
+        if parent.kind() == "function_definition" {
+            break;
+        }
+        current = parent;
+    }
+    out
+}
+
+/// `outer` encloses `inner` by byte range.
+fn node_spans(outer: &Node, inner: &Node) -> bool {
+    outer.start_byte() <= inner.start_byte() && inner.end_byte() <= outer.end_byte()
+}
+
+/// The `n` of a `for (i = 0; i < n; i++)`, when the index is provably
+/// non-negative throughout the body — so `n > i >= 0` inside it.
+fn strict_upper_bound_var(loop_node: &Node, source: &str) -> Option<String> {
+    let condition = loop_node.child_by_field_name("condition")?;
+    let cond = unwrap_parens(&condition);
+    if cond.kind() != "binary_expression" {
+        return None;
+    }
+    if cond.child_by_field_name("operator")?.kind() != "<" {
+        return None;
+    }
+    let index = unwrap_parens(&cond.child_by_field_name("left")?);
+    let bound = unwrap_parens(&cond.child_by_field_name("right")?);
+    if index.kind() != "identifier" || bound.kind() != "identifier" {
+        return None;
+    }
+    let index_name = get_node_text(&index, source);
+    if !index_nonnegative_throughout(loop_node, index_name, source) {
+        return None;
+    }
+    Some(get_node_text(&bound, source).to_string())
+}
+
+/// The index starts at a non-negative literal and the body never writes it, so
+/// the only writer is the loop's own update.
+///
+/// Without the body check a `for (i = 0; i < n; i++) { i = -1; ... }` would be
+/// credited: `i < n` with a negative `i` is satisfiable at `n == 0`, which is
+/// precisely the case the caller is trying to exclude. Contrived in isolation,
+/// but the same shape appears for real as a decrement in an inner retry loop.
+fn index_nonnegative_throughout(loop_node: &Node, index: &str, source: &str) -> bool {
+    if loop_node.kind() != "for_statement" {
+        return false;
+    }
+    let Some(initializer) = loop_node.child_by_field_name("initializer") else {
+        return false;
+    };
+    if !init_sets_nonnegative_literal(&initializer, index, source) {
+        return false;
+    }
+    match loop_node.child_by_field_name("body") {
+        Some(body) => !var_written_within(&body, index, source),
+        None => false,
+    }
+}
+
+/// `i = 0` or `int i = 0` — the two spellings of a `for` initializer.
+fn init_sets_nonnegative_literal(init: &Node, index: &str, source: &str) -> bool {
+    match init.kind() {
+        "assignment_expression" => {
+            let (Some(left), Some(right)) = (
+                init.child_by_field_name("left"),
+                init.child_by_field_name("right"),
+            ) else {
+                return false;
+            };
+            left.kind() == "identifier"
+                && get_node_text(&left, source) == index
+                && is_nonnegative_literal(&right, source)
+        }
+        "declaration" => {
+            let mut cursor = init.walk();
+            let found = init.named_children(&mut cursor).any(|child| {
+                child.kind() == "init_declarator"
+                    && child.child_by_field_name("declarator").is_some_and(|d| {
+                        d.kind() == "identifier" && get_node_text(&d, source) == index
+                    })
+                    && child
+                        .child_by_field_name("value")
+                        .is_some_and(|v| is_nonnegative_literal(&v, source))
+            });
+            found
+        }
+        _ => false,
+    }
+}
+
+fn is_nonnegative_literal(node: &Node, source: &str) -> bool {
+    let n = unwrap_parens(node);
+    n.kind() == "number_literal" && !get_node_text(&n, source).starts_with('-')
+}
+
+/// Any write to `var` inside `node`: assignment, `++`/`--`, or an address-of
+/// that hands the variable to something that could write it.
+fn var_written_within(node: &Node, var: &str, source: &str) -> bool {
+    for assign in query::find_descendants_of_kind(*node, "assignment_expression") {
+        if assign
+            .child_by_field_name("left")
+            .is_some_and(|l| l.kind() == "identifier" && get_node_text(&l, source) == var)
+        {
+            return true;
+        }
+    }
+    for update in query::find_descendants_of_kind(*node, "update_expression") {
+        if update
+            .child_by_field_name("argument")
+            .is_some_and(|a| a.kind() == "identifier" && get_node_text(&a, source) == var)
+        {
+            return true;
+        }
+    }
+    for unary in query::find_descendants_of_kind(*node, "pointer_expression") {
+        let takes_address = unary.child(0).map(|c| get_node_text(&c, source)) == Some("&");
+        if takes_address
+            && unary
+                .child_by_field_name("argument")
+                .is_some_and(|a| a.kind() == "identifier" && get_node_text(&a, source) == var)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `term` asserts that one of `positive` is non-zero: `n`, `n != 0`,
+/// `n > 0`, and the reversed operand orders.
+fn asserts_positive(term: &Node, positive: &[String], source: &str) -> bool {
+    let t = unwrap_parens(term);
+    let is_bounded = |s: &str| positive.iter().any(|p| p == s);
+
+    if t.kind() == "identifier" {
+        return is_bounded(get_node_text(&t, source));
+    }
+    if t.kind() != "binary_expression" {
+        return false;
+    }
+    let (Some(operator), Some(left), Some(right)) = (
+        t.child_by_field_name("operator"),
+        t.child_by_field_name("left"),
+        t.child_by_field_name("right"),
+    ) else {
+        return false;
+    };
+    let lt = get_node_text(&unwrap_parens(&left), source);
+    let rt = get_node_text(&unwrap_parens(&right), source);
+    let is_zero = |s: &str| s == "0";
+
+    match operator.kind() {
+        "!=" => (is_bounded(lt) && is_zero(rt)) || (is_bounded(rt) && is_zero(lt)),
+        ">" => is_bounded(lt) && is_zero(rt),
+        "<" => is_zero(lt) && is_bounded(rt),
+        _ => false,
+    }
+}
+
+/// Ceiling on variables in a case split. Four gives sixteen rows, covers every
+/// shape seen in the corpus, and keeps a pathological function from turning
+/// this into an exponential walk.
+const MAX_CASE_VARS: usize = 4;
+
+/// True when a run of preceding bail-out guards forms a case split that leaves
+/// only assignments in which `var` is non-null.
+///
+/// The shape, hostap's `x509_name_compare`:
+///
+/// ```c
+/// if (!a && b)  return -1;
+/// if (a && !b)  return 1;
+/// if (!a && !b) return 0;
+/// if (a->num_attr < b->num_attr)   /* a and b are both non-null */
+/// ```
+///
+/// No single guard proves anything here — each one negated leaves two of the
+/// four nullness combinations open, which is why the sound join reports
+/// PossiblyNull. Together they exhaust every combination but `(non-null,
+/// non-null)`, and reaching the dereference means none of them fired.
+///
+/// So rather than pattern-match "three guards", this reads each guard as a
+/// conjunction of zero/non-zero literals, enumerates the assignments, drops
+/// the ones some guard would have caught, and asks whether `var` is non-null
+/// in every survivor. Exact for the shapes it models, and it covers two- and
+/// four-guard splits without further cases. A guard it cannot read as such a
+/// conjunction is ignored rather than approximated — ignoring one can only
+/// leave more survivors, so the answer stays conservative.
+pub fn is_nonnull_by_exhaustive_case_guards(var: &str, site: &Node, source: &str) -> bool {
+    let mut clauses: Vec<Vec<(String, bool)>> = Vec::new();
+    let site_start = site.start_byte();
+    let mut current = *site;
+    let mut function = None;
+
+    while let Some(parent) = current.parent() {
+        if BLOCK_LIKE_KINDS.contains(&parent.kind()) {
+            let mut cursor = parent.walk();
+            for stmt in parent.named_children(&mut cursor) {
+                if stmt.start_byte() >= current.start_byte() {
+                    break;
+                }
+                collect_case_guard(&stmt, site_start, source, &mut clauses);
+            }
+        }
+        if parent.kind() == "function_definition" {
+            function = Some(parent);
+            break;
+        }
+        current = parent;
+    }
+
+    if clauses.is_empty() {
+        return false;
+    }
+
+    let mut vars: Vec<String> = Vec::new();
+    for clause in &clauses {
+        for (name, _) in clause {
+            if !vars.iter().any(|v| v == name) {
+                vars.push(name.clone());
+            }
+        }
+    }
+    let Some(target) = vars.iter().position(|v| v == var) else {
+        return false;
+    };
+    if vars.len() > MAX_CASE_VARS {
+        return false;
+    }
+
+    // Every variable in the split must still hold the value the guards tested.
+    // Scanning the whole function for writes is coarser than the region
+    // between the first guard and the site, but it only ever *withholds* the
+    // veto, which is the safe direction for a check that suppresses findings.
+    let Some(func) = function else {
+        return false;
+    };
+    if vars.iter().any(|v| var_written_within(&func, v, source)) {
+        return false;
+    }
+
+    let mut any_survivor = false;
+    for assignment in 0u32..(1u32 << vars.len()) {
+        let is_nonnull = |i: usize| assignment & (1 << i) != 0;
+        let caught = clauses.iter().any(|clause| {
+            clause.iter().all(|(name, expects_null)| {
+                let i = vars
+                    .iter()
+                    .position(|v| v == name)
+                    .expect("collected above");
+                // The literal holds when the variable's zero-ness matches what
+                // the literal asserts.
+                is_nonnull(i) != *expects_null
+            })
+        });
+        if caught {
+            continue;
+        }
+        any_survivor = true;
+        if !is_nonnull(target) {
+            return false;
+        }
+    }
+
+    // No survivor at all means the guards contradict each other, which means
+    // the model is wrong rather than the site unreachable. Claim nothing.
+    any_survivor
+}
+
+/// Read one preceding statement as a bail-out guard whose condition is a pure
+/// conjunction of zero/non-zero literals, appending it to `out`.
+fn collect_case_guard(
+    stmt: &Node,
+    site_start: usize,
+    source: &str,
+    out: &mut Vec<Vec<(String, bool)>>,
+) {
+    if BLOCK_LIKE_KINDS.contains(&stmt.kind()) && stmt.kind() != "compound_statement" {
+        let mut cursor = stmt.walk();
+        let inner: Vec<Node> = stmt.named_children(&mut cursor).collect();
+        for child in inner {
+            collect_case_guard(&child, site_start, source, out);
+        }
+        return;
+    }
+    if stmt.kind() != "if_statement" || stmt.end_byte() > site_start {
+        return;
+    }
+    if stmt.child_by_field_name("alternative").is_some() {
+        return;
+    }
+    let Some(consequence) = stmt.child_by_field_name("consequence") else {
+        return;
+    };
+    if !always_leaves(&consequence) {
+        return;
+    }
+    let Some(condition) = stmt.child_by_field_name("condition") else {
+        return;
+    };
+
+    let mut clause = Vec::new();
+    for part in conjuncts(&condition) {
+        match nullness_literal(&part, source) {
+            Some(literal) => clause.push(literal),
+            // Not a pure case-split guard. Dropping it is what keeps the
+            // enumeration conservative.
+            None => return,
+        }
+    }
+    if !clause.is_empty() {
+        out.push(clause);
+    }
+}
+
+/// `(name, asserts_zero)` for `!v`, `v`, `v == NULL`, `v != NULL`, `v == 0`,
+/// `v != 0` and the reversed operand orders.
+fn nullness_literal(term: &Node, source: &str) -> Option<(String, bool)> {
+    let t = unwrap_parens(term);
+
+    if t.kind() == "identifier" {
+        return Some((get_node_text(&t, source).to_string(), false));
+    }
+
+    if t.kind() == "unary_expression" {
+        if t.child(0).map(|c| get_node_text(&c, source)) != Some("!") {
+            return None;
+        }
+        let argument = unwrap_parens(&t.child_by_field_name("argument")?);
+        if argument.kind() != "identifier" {
+            return None;
+        }
+        return Some((get_node_text(&argument, source).to_string(), true));
+    }
+
+    if t.kind() == "binary_expression" {
+        let asserts_zero = match t.child_by_field_name("operator")?.kind() {
+            "==" => true,
+            "!=" => false,
+            _ => return None,
+        };
+        let left = unwrap_parens(&t.child_by_field_name("left")?);
+        let right = unwrap_parens(&t.child_by_field_name("right")?);
+        let left_text = get_node_text(&left, source);
+        let right_text = get_node_text(&right, source);
+        let is_zero = |s: &str| s == "NULL" || s == "0" || s == "nullptr";
+
+        if left.kind() == "identifier" && is_zero(right_text) {
+            return Some((left_text.to_string(), asserts_zero));
+        }
+        if right.kind() == "identifier" && is_zero(left_text) {
+            return Some((right_text.to_string(), asserts_zero));
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,6 +1676,229 @@ mod tests {
         assert!(!guarded(
             "int f(int n){ int t=0; do { t = n+1; } while(n>0); return t; }",
             "n"
+        ));
+    }
+    /// Ask whether the loop-bound discharge proves `var` non-null at the last
+    /// `var[...]` subscript in `src`.
+    fn nonnull_by_loop_bound(src: &str, var: &str) -> bool {
+        let tree = parse_c_code(src);
+        let site = query::find_descendants_of_kind(tree.root_node(), "subscript_expression")
+            .into_iter()
+            .last()
+            .expect("fixture has a subscript expression");
+        is_nonnull_by_loop_bounded_exit_guard(var, &site, src)
+    }
+
+    #[test]
+    fn test_loop_bound_discharges_disjunct_guard() {
+        // hostap wpa_dbus_dict_append_string_array, reduced.
+        assert!(nonnull_by_loop_bound(
+            "int f(const char *key, const char **items, unsigned n) {
+                 unsigned i;
+                 if (!key || (!items && n != 0) || !begin(key))
+                         return 0;
+                 for (i = 0; i < n; i++)
+                         use(items[i]);
+                 return 1;
+             }",
+            "items"
+        ));
+    }
+
+    #[test]
+    fn test_loop_bound_accepts_positive_spelling_of_the_other_conjunct() {
+        assert!(nonnull_by_loop_bound(
+            "int f(const char **items, unsigned n) {
+                 unsigned i;
+                 if (!items && n > 0)
+                         return 0;
+                 for (i = 0; i < n; i++)
+                         use(items[i]);
+                 return 1;
+             }",
+            "items"
+        ));
+    }
+
+    #[test]
+    fn test_loop_bound_rejects_non_strict_bound() {
+        // `i <= n` with i == 0 leaves n == 0 reachable, so the guard's other
+        // conjunct is not discharged and `items` may still be null.
+        assert!(!nonnull_by_loop_bound(
+            "int f(const char **items, unsigned n) {
+                 unsigned i;
+                 if (!items && n != 0)
+                         return 0;
+                 for (i = 0; i <= n; i++)
+                         use(items[i]);
+                 return 1;
+             }",
+            "items"
+        ));
+    }
+
+    #[test]
+    fn test_loop_bound_rejects_index_written_in_body() {
+        assert!(!nonnull_by_loop_bound(
+            "int f(const char **items, int n) {
+                 int i;
+                 if (!items && n != 0)
+                         return 0;
+                 for (i = 0; i < n; i++) {
+                         i = -1;
+                         use(items[i]);
+                 }
+                 return 1;
+             }",
+            "items"
+        ));
+    }
+
+    #[test]
+    fn test_loop_bound_rejects_guard_with_else() {
+        // An `else` makes the guard a branch, not a bail-out.
+        assert!(!nonnull_by_loop_bound(
+            "int f(const char **items, unsigned n) {
+                 unsigned i;
+                 if (!items && n != 0)
+                         log();
+                 else
+                         other();
+                 for (i = 0; i < n; i++)
+                         use(items[i]);
+                 return 1;
+             }",
+            "items"
+        ));
+    }
+
+    #[test]
+    fn test_loop_bound_rejects_without_a_loop() {
+        assert!(!nonnull_by_loop_bound(
+            "int f(const char **items, unsigned n) {
+                 if (!items && n != 0)
+                         return 0;
+                 use(items[0]);
+                 return 1;
+             }",
+            "items"
+        ));
+    }
+
+    #[test]
+    fn test_loop_bound_rejects_when_guard_conjunct_is_unrelated() {
+        // `other != 0` is not the loop bound, so nothing discharges it.
+        assert!(!nonnull_by_loop_bound(
+            "int f(const char **items, unsigned n, unsigned other) {
+                 unsigned i;
+                 if (!items && other != 0)
+                         return 0;
+                 for (i = 0; i < n; i++)
+                         use(items[i]);
+                 return 1;
+             }",
+            "items"
+        ));
+    }
+    /// Ask whether the case-split enumeration proves `var` non-null at the
+    /// last member access in `src`.
+    fn nonnull_by_case_split(src: &str, var: &str) -> bool {
+        let tree = parse_c_code(src);
+        let site = query::find_descendants_of_kind(tree.root_node(), "field_expression")
+            .into_iter()
+            .last()
+            .expect("fixture has a member access");
+        is_nonnull_by_exhaustive_case_guards(var, &site, src)
+    }
+
+    #[test]
+    fn test_case_split_three_guards_prove_both_operands() {
+        // hostap x509_name_compare, reduced. The reported dereference is `b`,
+        // and the same split proves `a`.
+        let src = "int f(struct n *a, struct n *b) {
+                       if (!a && b)  return -1;
+                       if (a && !b)  return 1;
+                       if (!a && !b) return 0;
+                       return a->num < b->num;
+                   }";
+        assert!(nonnull_by_case_split(src, "b"));
+        assert!(nonnull_by_case_split(src, "a"));
+    }
+
+    #[test]
+    fn test_case_split_incomplete_split_proves_nothing() {
+        // Drop the (!a && !b) case: both null survives, so `a` may be null.
+        assert!(!nonnull_by_case_split(
+            "int f(struct n *a, struct n *b) {
+                 if (!a && b) return -1;
+                 if (a && !b) return 1;
+                 return a->num;
+             }",
+            "a"
+        ));
+    }
+
+    #[test]
+    fn test_case_split_accepts_explicit_null_comparisons() {
+        let src = "int f(struct n *a, struct n *b) {
+                       if (a == NULL && b != NULL) return -1;
+                       if (a != NULL && b == NULL) return 1;
+                       if (a == NULL && b == NULL) return 0;
+                       return a->num < b->num;
+                   }";
+        assert!(nonnull_by_case_split(src, "b"));
+    }
+
+    #[test]
+    fn test_case_split_rejects_when_a_variable_is_reassigned() {
+        // `b` is written after the split, so the guards no longer describe it.
+        assert!(!nonnull_by_case_split(
+            "int f(struct n *a, struct n *b, struct n *c) {
+                 if (!a && b)  return -1;
+                 if (a && !b)  return 1;
+                 if (!a && !b) return 0;
+                 b = c;
+                 return a->num < b->num;
+             }",
+            "b"
+        ));
+    }
+
+    #[test]
+    fn test_case_split_rejects_non_bailout_guard() {
+        // The third guard falls through instead of returning, so reaching the
+        // dereference does not mean it failed.
+        assert!(!nonnull_by_case_split(
+            "int f(struct n *a, struct n *b) {
+                 if (!a && b)  return -1;
+                 if (a && !b)  return 1;
+                 if (!a && !b) log();
+                 return a->num < b->num;
+             }",
+            "a"
+        ));
+    }
+
+    #[test]
+    fn test_case_split_ignores_unmodellable_guard_conservatively() {
+        // `strcmp(...)` is not a nullness literal, so that guard is dropped --
+        // which leaves the split incomplete rather than over-claiming.
+        assert!(!nonnull_by_case_split(
+            "int f(struct n *a, struct n *b) {
+                 if (!a && b) return -1;
+                 if (a && !b) return 1;
+                 if (strcmp(x, y)) return 0;
+                 return a->num < b->num;
+             }",
+            "a"
+        ));
+    }
+
+    #[test]
+    fn test_case_split_single_null_guard_still_proves_nonnull() {
+        assert!(nonnull_by_case_split(
+            "int f(struct n *a) { if (!a) return 0; return a->num; }",
+            "a"
         ));
     }
 }
