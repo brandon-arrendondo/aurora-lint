@@ -79,6 +79,22 @@ jobs:
       - name: cargo test (tui feature)
         run: cargo test --features tui
 
+  # bench/ is pure stdlib -- every module under it imports only the standard
+  # library -- so this job installs nothing and needs no cache. Kept separate
+  # from `test` so a Python failure is not reported as a Rust one.
+  #
+  # -W error::ResourceWarning is deliberate: the first run of this suite
+  # surfaced two unclosed file handles in bench/db.py's ingest loop, which
+  # nothing else would ever have failed on.
+  bench-tests:
+    name: Test (bench, python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: python3 -m unittest (bench/)
+        run: python3 -W error::ResourceWarning -m unittest discover -s . -t . -v
+
   # macos-latest resolves to an Apple Silicon (arm64) runner. Task 1030
   # validated a clean build + full test suite on macOS with only Xcode CLT
   # (preinstalled on GitHub-hosted runners), so no extra system-dep step.
