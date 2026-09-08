@@ -1341,6 +1341,25 @@ fn try_process_cross_file_output_params(
     matched
 }
 
+/// Is the return value of `call_node` (a `call_expression`) consumed by
+/// its immediate context? Used to decide whether the scanf family's
+/// variadic outputs may be credited as initialized -- an unchecked
+/// partial-match sscanf leaves some outputs untouched (task 1065).
+///
+/// Consumed: comparison, assignment RHS, `if`/`while`/`for` condition,
+/// return statement, function-call argument, initializer of a
+/// declaration, etc. -- anything that is not a bare
+/// `expression_statement` wrapping the call.
+///
+/// The `(void)sscanf(...)` cast-to-void discard is uncommon and
+/// deliberately treated as consumed (the cast node is between the call
+/// and the expression_statement, so this check reads it as consumed).
+/// If it becomes an FP class, a specific `cast_expression`-to-`void`
+/// check can join here.
+fn call_return_is_consumed(call_node: &Node) -> bool {
+    call_node.parent().map(|p| p.kind()) != Some("expression_statement")
+}
+
 /// Known initializing functions (exact or suffix match): mark output args as initialized.
 fn try_process_known_initializing_function(
     func_name: &str,
@@ -1352,7 +1371,25 @@ fn try_process_known_initializing_function(
         return false;
     };
     let output_indices = get_output_arg_indices(base_name);
-    let variadic_from = variadic_output_from_index(base_name);
+    let mut variadic_from = variadic_output_from_index(base_name);
+
+    // scanf-family credit is CONDITIONAL on the call's return value being
+    // consumed. `scanf` returns the count of successfully matched fields --
+    // an unchecked partial match (e.g. `sscanf(s, "%d.%d.%d.%d", &a[0..3])`
+    // when `s` only parses 2 fields) leaves some outputs uninitialized. The
+    // previous blanket credit missed exactly that bug at hostap
+    // wpa_supplicant/eapol_test.c:1042 (task 1065). Withhold the credit but
+    // still short-circuit the caller: falling through would re-credit each
+    // `&arg` via `process_unknown_function_call`'s permissive fallback --
+    // the very hazard that task 1029's note above already warns about.
+    let is_scanf_family = variadic_from.is_some();
+    if is_scanf_family && !call_return_is_consumed(node) {
+        variadic_from = None;
+        if output_indices.is_empty() {
+            return true;
+        }
+    }
+
     // Nothing to credit. Claiming the call was handled anyway suppresses the
     // caller's fallback -- `process_unknown_function_call` credits `&var` for
     // any name this table does not know -- so being listed here with no output
