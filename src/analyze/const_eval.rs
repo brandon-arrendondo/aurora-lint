@@ -2390,13 +2390,27 @@ pub fn expression_overflows_unsigned_vra(
     bits: u32,
     vra_var_ranges: Option<&VarRangeMap>,
 ) -> bool {
-    if bits == 0 || bits > 63 {
+    if bits == 0 {
         return false;
     }
     if let Some(var_ranges) = vra_var_ranges {
         if let Some(range) = try_evaluate_range(node, source, macros, var_ranges) {
+            // A range entirely below zero wraps whatever the width is: `0u - 1`
+            // is as much a wrap in `size_t` as in `unsigned`. Answering this
+            // half only for widths under 64 made a caller that correctly
+            // reported a 64-bit operation's width lose the definite-underflow
+            // channel entirely, which reads as "proven safe".
+            if range.max < 0 {
+                return true;
+            }
+            // The other half is only expressible below 63 bits: an `i64` range
+            // can never sit entirely above `2^63 - 1`, and forming the bound
+            // there would overflow the shift that computes it.
+            if bits >= 63 {
+                return false;
+            }
             let unsigned_max = (1i64 << bits) - 1;
-            return range.min > unsigned_max || range.max < 0;
+            return range.min > unsigned_max;
         }
     }
     false

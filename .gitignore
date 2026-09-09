@@ -68,6 +68,14 @@ docs/_build/
 # Local MCP server configuration (contains org-specific paths and credentials)
 .mcp.json
 
+# todo-sqlite-cli native MQTT sync: node-local connection config and
+# mailbox/replica state, not shared via git (see COORDINATOR_HANDOFF.md)
+.todo-mqtt-*.json
+*.mqtt-*.json
+todo-sqlite-cli-replica.db
+todo-sqlite-cli-replica.db-wal
+todo-sqlite-cli-replica.db-shm
+
 # Personal-network / local machine setup notes (not aurora-lint tooling)
 BENCHMARK_PULLING.md
 PARALLEL_NODES_ISSUES.md
