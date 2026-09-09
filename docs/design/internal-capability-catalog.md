@@ -542,6 +542,26 @@ through `const_eval.rs`'s `expression_fits_in_signed_vra`/
 `value_range.rs` directly — those wrapper functions already handle the
 CFG-lookup-with-syntactic-fallback pattern.
 
+### `src/analyze/vra_access.rs`
+**Problem solved:** "what does VRA know about this variable *here*?" — the
+per-rule bookkeeping (find the containing function, look up its CFG and VRA
+result by start byte, pick the right block) that INT30/31/32/34-C, ARR30-C and
+INT16-C had each copy-pasted. This is the consolidation point for FP-reduction
+work layered on top of VRA; add the next such check here rather than inside a
+rule.
+
+| Function | Signature | Description |
+|---|---|---|
+| `var_ranges_replay_at` | `(function_cfgs, vra_results, expr_node, source, macros) -> Option<VarRangeMap>` | Ranges at `expr_node`, replaying the containing block from its entry up to the expression (intra-block precision). The default choice. |
+| `var_ranges_entry_at` | `(function_cfgs, vra_results, expr_node) -> Option<VarRangeMap>` | Ranges read straight from the containing block's entry state — no intra-block replay, no macro resolution. |
+| `has_negative_value_evidence` | `(function_cfgs, vra_results, expr_node, source, macros, var_name) -> bool` | Positive evidence that `var_name` can be negative at `expr_node`. **Absent information answers `false`**, deliberately: no range, an all-non-negative range, *and a range that is exactly a signed type's full band* all mean "nothing was proved". That third case is the one to remember — an unconstrained `int` parameter is indistinguishable from a variable VRA learned nothing about, so reading its full band as "could be negative" makes a check fire on every occurrence of its shape. |
+
+**Wiring pattern:** a rule stores `function_cfgs`/`vra_results` in `RefCell`s,
+overrides `set_function_cfgs`/`set_vra_results`/`needs_vra`, and calls these
+with the borrowed maps. VRA is computed per file for *all* functions as soon as
+any enabled rule returns `needs_vra() == true`, so opting in costs nothing extra
+alongside the rules that already do.
+
 ## Control-flow (CFG) analysis
 
 ### `src/analyze/cfg.rs`
