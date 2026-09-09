@@ -33,6 +33,11 @@ rules_templates/cwe/
 data/benchmarks.db
 data/benchmarks.db-wal
 data/benchmarks.db-shm
+# Task tracking moved to a coordinator-owned, non-git-tracked db spanning
+# all three project repos (see ~/BECOME_COORDINATOR.md / ~/BECOME_WORKER.md,
+# 2026-09-09) -- a stranger cloning this repo who wants their own local task
+# list still gets one via `todo-sqlite-cli init`, same as data/benchmarks.db.
+todo-sqlite-cli.db
 todo-sqlite-cli.db-wal
 todo-sqlite-cli.db-shm
 todo-sqlite-cli.local.db
