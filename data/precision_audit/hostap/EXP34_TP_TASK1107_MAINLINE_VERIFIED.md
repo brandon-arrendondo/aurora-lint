@@ -4,12 +4,22 @@
 **Source:** delta-adjudication of EXP34-C findings attributable to tools_sqc commit
 `d0802e08` ("1099", proven-nonnull widening), bmdb task 1107, 2026-09-10. 2047
 findings adjudicated, 39 confirmed TP (1 EXP33-C, 38 EXP34-C).
-**Mainline recheck:** 2026-09-10, r720, against `~/data-enterprise/hostap-main`
-(live tracking mirror, `183ee836daa672db2c632c06f68e9cc0ad164a60`, 2026-08-25 —
-~6 months after the pinned commit), per the discipline documented in
-`docs/upstream-disclosures.rst`: "re-verified against current upstream mainline
-— not just cited at the audit's original pinned commit — to avoid disclosing
-something already fixed."
+**Mainline recheck:** 2026-09-10, r720, against `~/data-enterprise/hostap-main`,
+per the discipline documented in `docs/upstream-disclosures.rst`: "re-verified
+against current upstream mainline — not just cited at the audit's original
+pinned commit — to avoid disclosing something already fixed." First pass used
+the mirror's then-local HEAD (`183ee836daa672db2c632c06f68e9cc0ad164a60`,
+2026-08-25) without fetching first — caught and corrected same-day: fetching
+`origin` showed the local checkout was 125 commits behind, with origin/main's
+tip dated 2026-09-10 (today). The local checkout also carries one commit
+(`183ee836d`, a NAN mod-by-zero fix) and an untracked `tests/fuzzing/nan-de-poc/`
+directory not present on origin — evidently someone else's local work, left
+untouched rather than merged/discarded. Re-verified all 6 findings in the 6
+files that changed between the stale local HEAD and true `origin/main`
+(`9c4c3b076`, 2026-09-10) directly against `origin/main`'s content; all 6 hold
+unchanged (see per-item notes below). The other 33 findings' files were
+unaffected by the additional 125 commits, so the original check against local
+HEAD stands for those without re-verification needed.
 
 **Result: all 39 are STILL PRESENT on current trunk. None have been fixed
 upstream.** This is the opposite outcome from the same recheck done on 2
@@ -98,3 +108,40 @@ No PoC/GDB reproduction was built for these (unlike the sqlite pair, which
 warranted it specifically because the initial surprise was "already fixed" —
 these needed only confirmation of currently-live status, not independent
 crash proof beyond the original source reading).
+
+## Re-verification against true `origin/main` (items 2, 4, 9, 20, 22, 23)
+
+These 6 findings sit in the 6 files that changed further between the stale
+local HEAD and the actual current trunk. Each was re-read directly from
+`origin/main`'s content (`git show origin/main:<file>`), not just diff hunks
+(a hunk's `@@` context line can name an unrelated nearby function and miss a
+change deep inside a long one):
+
+- **#2** (`hostapd_reconfig_wpa`) — unaffected; the file's diff activity was
+  elsewhere. `hostapd_reconfig_wpa(hapd);` call site unchanged.
+- **#4** (`wpa_auth_sta_deinit`) — unaffected; `wpa_get_primary_auth(wpa_auth)`
+  still called unguarded at the same logical site (now line ~1244).
+- **#9** (`eap_peap_build_phase2_term`) — the file's diff touched
+  `eap_peap_process_phase2_soh` (the already-known/fixed SoH bug), not this
+  function. Read in full on `origin/main`: `encr_req` still never NULL-checked
+  before `wpabuf_resize(..., wpabuf_len(encr_req))` and `wpabuf_put_buf`.
+- **#20** (`p2p_ctrl_connect`) — read in full: `if (pos) { *pos++ = '\0'; ... }`
+  guards only the mutation, not the subsequent unconditional
+  `os_strstr(pos, "bstrapmethod=")` — `pos` can still reach it NULL.
+- **#22** (`wpas_group_formation_completed`) — unaffected; call site at line
+  1652 on `origin/main` is unchanged.
+- **#23** (`wnm_scan_process`) — most substantively re-checked: current trunk's
+  control flow differs in shape from what was first read (a `#ifndef
+  CONFIG_NO_ROAMING` roaming-rules block now sits between the `pre_scan_check`
+  branch and a *second* `if (!bss)` guard). Traced it in full: the roaming-rules
+  block's `wpa_supplicant_need_to_roam_within_ess(wpa_s, current_bss, bss, true)`
+  call is reached with `bss` still possibly NULL (the second `if (!bss)` guard
+  comes *after* it), and that function's body (`wpa_supplicant/events.c`)
+  unconditionally does `wpa_bss_ie_ptr(selected)` / `selected->ie_len` as its
+  first real statements, `selected` being the possibly-NULL `bss`. Still a live
+  NULL deref, same defect, confirmed against `origin/main` line-by-line rather
+  than assumed unchanged from the stale-HEAD reading.
+
+All 6 confirmed still present. No conclusion in this document changed as a
+result of the fetch/re-verify pass — recorded here for the record, not because
+anything was wrong.

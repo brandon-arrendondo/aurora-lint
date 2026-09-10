@@ -69,8 +69,16 @@ Both crash exactly where predicted, on the first dereference inside the loop.
 
 ## Already fixed upstream
 
-Checked against `~/data-enterprise/sqlite-main` (tracks trunk, currently `b1df30c735`,
-2026-08-25 — postdates the pinned oracle commit by ~6 months). Trunk's `deltaGetInt()`/
+Checked against `~/data-enterprise/sqlite-main` (tracks trunk). First pass used the
+mirror's then-local HEAD `b1df30c735` (2026-08-25) without fetching — caught and
+corrected same-day: `git fetch && git merge --ff-only` brought it to true current
+trunk `6013371a43` (2026-09-10, same day as this writeup). The 58 additional commits
+include one further touch to `ext/misc/fossildelta.c` (`220b580fc7`, fixing an
+unrelated bug in the debug-only `delta_parse()` table-valued function's cursor —
+confirmed by reading the diff that it does not touch `deltaGetInt()`,
+`delta_output_size()`, or `deltaOutputSizeFunc()`); `ext/rbu/sqlite3rbu.c` had no
+further changes. Conclusion below is unchanged, now verified against the actual
+current trunk rather than a stale local mirror. Trunk's `deltaGetInt()`/
 `rbuDeltaGetInt()` both now bound the walk against `*pLen`:
 
     unsigned char *zEnd = z + (*pLen);
