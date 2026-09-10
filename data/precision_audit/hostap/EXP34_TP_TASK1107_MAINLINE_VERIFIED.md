@@ -1,39 +1,144 @@
-# EXP34-C/EXP33-C true positives from bmdb task 1107 — verified against current mainline
+# EXP34-C/EXP33-C true positives from bmdb task 1107 — adversarially verified
 
 **Codebase:** hostap, pinned commit `dcee60436390dd34731560657c4257c3b4c839a6`.
-**Source:** delta-adjudication of EXP34-C findings attributable to tools_sqc commit
-`d0802e08` ("1099", proven-nonnull widening), bmdb task 1107, 2026-09-10. 2047
-findings adjudicated, 39 confirmed TP (1 EXP33-C, 38 EXP34-C).
-**Mainline recheck:** 2026-09-10, r720, against `~/data-enterprise/hostap-main`,
-per the discipline documented in `docs/upstream-disclosures.rst`: "re-verified
-against current upstream mainline — not just cited at the audit's original
-pinned commit — to avoid disclosing something already fixed." First pass used
-the mirror's then-local HEAD (`183ee836daa672db2c632c06f68e9cc0ad164a60`,
-2026-08-25) without fetching first — caught and corrected same-day: fetching
-`origin` showed the local checkout was 125 commits behind, with origin/main's
-tip dated 2026-09-10 (today). The local checkout also carries one commit
-(`183ee836d`, a NAN mod-by-zero fix) and an untracked `tests/fuzzing/nan-de-poc/`
-directory not present on origin — evidently someone else's local work, left
-untouched rather than merged/discarded. Re-verified all 6 findings in the 6
-files that changed between the stale local HEAD and true `origin/main`
-(`9c4c3b076`, 2026-09-10) directly against `origin/main`'s content; all 6 hold
-unchanged (see per-item notes below). The other 33 findings' files were
-unaffected by the additional 125 commits, so the original check against local
-HEAD stands for those without re-verification needed.
+**Source:** delta-adjudication of EXP34-C/EXP33-C findings attributable to
+tools_sqc commit `d0802e08` ("1099", proven-nonnull widening), bmdb task 1107,
+2026-09-10. 2047 hostap findings adjudicated, 39 initially labeled TP.
 
-**Result: all 39 are STILL PRESENT on current trunk. None have been fixed
-upstream.** This is the opposite outcome from the same recheck done on 2
-sqlite EXP34-C TPs from this same task, both of which turned out already fixed
-(see `../sqlite/poc/CONFIRMED_ALREADY_FIXED_fossildelta_rbu_null_deref.md`) —
-recorded here as a genuine, not assumed, result: every file was individually
-checked for commits since the pin, and every vulnerable code shape was read
-directly on trunk before concluding.
+**This document supersedes the first mainline-recheck pass.** That pass only
+confirmed the 39 findings were *unchanged on trunk* — it never independently
+re-derived whether each was a real bug, just whether the code had moved. A
+follow-up adversarial pass (same day) actually traced execution through each
+disputed function, and building/running the pinned checkout under
+ASan+UBSan caught **one finding that does not crash at all** (a false
+positive the original adjudication missed) and **one that needed real
+downgrading** (a claimed bug resting on an invariant the code actually
+maintains correctly under normal operation). See "What the adversarial pass
+changed" below — this is the headline result of this document, not a
+footnote.
+
+## Result after adversarial review
+
+| Verdict | Count | Confidence |
+|---|---|---|
+| TP | 36 | all high — every one independently re-derived by reading the actual function body (not the original snippet), several cross-checked against caller/callee source, one live-reproduced with a crash |
+| FP | 1 | high — reproduced running, does **not** crash |
+| uncertain | 2 | downgraded from TP — real bug claim rests on an invariant that appears correctly maintained under normal sequencing; would need an MLD-capable hwsim rig or a race-condition proof to settle either way |
 
 **Not filed upstream by this session** — per the disclosure philosophy,
 Brandon is the accountable filer; this batch is handed off as vetted
-candidates, not auto-filed. One item (see below) duplicates an already-known,
+candidates. One item (`tls_gnutls.c:1306`) duplicates an already-known,
 not-yet-filed defect from the original 736-file audit (`REAL_BUGS_FOUND.md`
 item 33) — flagged, not double-counted.
+
+---
+
+## What the adversarial pass changed
+
+### Corrected: `src/ap/dpp_hostapd.c:940` — was TP, now FP
+
+Original claim: `hostapd_dpp_auth_init()` leaves `own_bi` NULL when the ctrl
+command omits `own=`, reaching an unconditional `auth->own_bi->pubkey_hash`
+in `dpp_auth_init()` (`dpp_auth.c:1255`).
+
+**This does not happen.** `dpp_auth_init()` calls `dpp_autogen_bootstrap_key()`
+(`dpp_auth.c:1134`) near its top, *before* line 1255 runs:
+
+```c
+static int dpp_autogen_bootstrap_key(struct dpp_authentication *auth)
+{
+	struct dpp_bootstrap_info *bi;
+	if (auth->own_bi)
+		return 0; /* already generated */
+	bi = os_zalloc(sizeof(*bi));
+	...
+	auth->tmp_own_bi = auth->own_bi = bi;
+	return 0;
+}
+```
+
+This explicitly checks `if (auth->own_bi) return 0;` and otherwise
+auto-generates a fresh bootstrap key — a designed fallback specifically for
+the no-`own=` case. By the time line 1255 executes, `own_bi` is guaranteed
+non-NULL.
+
+**Reproduced live.** Built hostapd from the pinned checkout with
+`-fsanitize=address,undefined`, ran it against a `mac80211_hwsim` simulated
+radio, issued `DPP_AUTH_INIT peer=<id>` with no `own=` via `hostapd_cli`, and
+attached GDB with a breakpoint on `dpp_build_attr_i_bootstrap_key_hash` to
+inspect the actual hash pointer. It was a valid heap address
+(`0x613000000ba0`, ASan heap range), not NULL or a small offset — confirming
+`dpp_autogen_bootstrap_key()` had already run and populated `own_bi`. The
+command returned `OK`, hostapd stayed alive, and a full DPP Authentication
+Request frame was built and transmitted (visible in the debug log as
+`DPP: Auto-generated own bootstrapping key info: URI DPP:V:2;...`).
+
+`ground_truth` id 143661 flipped to FP. **Lesson applied to the rest of this
+pass:** read the *entire* calling function before trusting a "TP" verdict —
+this guard was 20 lines above the disputed line, in the same function, and
+would have been caught by careful reading alone without needing to build
+anything.
+
+### Downgraded: `src/ap/wpa_auth.c:1206,1208` — was TP, now uncertain
+
+Original claim: `wpa_auth_sta_deinit()` calls `wpa_get_primary_auth(wpa_auth)`,
+which can return NULL for an MLD group with no `primary_auth` link, passed
+unguarded as `eloop_ctx` to a deferred `wpa_rekey_gtk()` that dereferences it.
+
+Adversarial re-read found this rests on an assumption that doesn't hold up:
+`wpa_init()` (`wpa_auth.c:799`) assigns `primary_auth=true` to the *first*
+link created in an MLD group, and `wpa_deinit()` (lines 949-965) explicitly
+reassigns `primary_auth` to another link via a `next_primary_auth` callback
+*before* a primary link's `wpa_authenticator` is freed:
+
+```c
+if (wpa_auth->is_ml && wpa_auth->primary_auth) {
+	next_pa = wpa_auth->cb->next_primary_auth(wpa_auth->cb_ctx);
+	if (!next_pa) {
+		pmksa_cache_auth_deinit(wpa_auth->ml_pmksa);
+	} else {
+		next_pa->primary_auth = true;
+		...
+	}
+}
+```
+
+This is a deliberate invariant-preserving mechanism — unlike finding #1
+above, which had no guard at all. Triggering the claimed bug would require a
+genuine ordering/race defect in this reassignment path during multi-link
+teardown, not a single reachable command. Settling it either way needs an
+MLD-capable hwsim rig (multiple simulated radios grouped as one MLD AP) or a
+much deeper cross-file trace of the BSS-teardown ordering — not done here;
+`ground_truth` ids 144981/144982 downgraded to `uncertain` rather than left
+as an overstated TP.
+
+---
+
+## Live-reproduced (ASan crash, not just static reading)
+
+### `wpa_supplicant/ctrl_iface.c:6596` — `p2p_ctrl_connect()` PIN-keypad NULL deref
+
+```
+$ wpa_cli p2p_connect 02:00:00:00:00:11 12345670
+```
+(any well-formed MAC + a bare 4- or 8-digit PIN, no trailing params — `addr`
+need not be a real/known P2P peer, `hwaddr_aton()` only syntax-checks it)
+
+```
+ctrl_iface.c:6596:9: runtime error: null pointer passed as argument 1, which is declared to never be null
+AddressSanitizer:DEADLYSIGNAL
+==466093==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000
+    #3 p2p_ctrl_connect wpa_supplicant/ctrl_iface.c:6596
+    #4 wpa_supplicant_ctrl_iface_process wpa_supplicant/ctrl_iface.c:13531
+    #5 wpa_supplicant_ctrl_iface_receive wpa_supplicant/ctrl_iface_unix.c:184
+```
+
+Root cause: `wps_pin_str_valid(pin)` (`src/wps/wps_common.c:256`) validates
+only `pin`, never `pos` — a bare valid PIN with nothing after it leaves
+`pos == NULL` (no trailing space found by `os_strchr`), which then reaches an
+unconditional `os_strstr(pos, "bstrapmethod=")`. Fully reproducible, single
+local command, no prior state. Full trace + repro doc:
+`poc/p2p_connect_pin_null_repro.md`, `poc/p2p_connect_pin_null_asan.txt`.
 
 ---
 
@@ -45,103 +150,77 @@ function-level match, not just a filename match:
 
 | File | Existing catalog item | Same bug? |
 |---|---|---|
-| `src/crypto/tls_gnutls.c` | #33, `tls_connection_verify_peer` (catalog path listed as stale `src/tls/tls_gnutls.c` — confirmed only one real file exists) | **YES — same function, same bug** (see item 6 below) |
-| `src/ap/dpp_hostapd.c` | #53, `hostapd_dpp_pb_pkex_init` (catalog path listed as stale `wpa_supplicant/dpp_hostapd.c`) | No — different function (`hostapd_dpp_auth_init`, item 1 below) |
-| `src/utils/http_curl.c` | #80, `http_post` (catalog path listed as stale `http/http_curl.c`) | No — different function (`http_download_file`, item 15 below) |
-| `src/utils/browser-android.c` | #96, dangling-stack-address bug at line 58 | No — different bug entirely (item 12 below is the `url` NULL-deref at lines 38/40/43) |
-| `src/ap/hostapd.c` | #71, leak in `hostapd_init` | No — different function (item 2 below is `hostapd_reconfig_wpa`) |
-| `src/common/proximity_ranging.c` | #2, #45, #88 — three separate known bugs in this file | No — none match `pr_prepare_pasn_pr_elem` (item 5 below) |
-| `src/crypto/tls_wolfssl.c` | #74, leak in `tls_init` (catalog path stale) | No — different function (item 8 below is `tls_connection_get_eap_fast_key`) |
-| `src/eap_server/eap_server_peap.c` | already-disclosed-and-fixed item (SoH vendor-TLV, `eap_server_peap.c:864-887`) | No — different function (item 9 below is `eap_peap_build_phase2_term`) |
+| `src/crypto/tls_gnutls.c` | #33, `tls_connection_verify_peer` | **YES — same function, same bug** (see below) |
+| `src/ap/dpp_hostapd.c` | #53, `hostapd_dpp_pb_pkex_init` | No — different function; and this session's own finding (`hostapd_dpp_auth_init`) turned out to be FP anyway |
+| `src/utils/http_curl.c` | #80, `http_post` | No — different function (`http_download_file`) |
+| `src/utils/browser-android.c` | #96, dangling-stack-address bug at line 58 | No — different bug (this session: `url` NULL-deref at lines 38/40/43) |
+| `src/ap/hostapd.c` | #71, leak in `hostapd_init` | No — different function (`hostapd_reconfig_wpa`) |
+| `src/common/proximity_ranging.c` | #2, #45, #88 — three separate known bugs | No — none match `pr_prepare_pasn_pr_elem` |
+| `src/crypto/tls_wolfssl.c` | #74, leak in `tls_init` | No — different function (`tls_connection_get_eap_fast_key`) |
+| `src/eap_server/eap_server_peap.c` | already-disclosed-and-fixed (SoH vendor-TLV, lines 864-887) | No — different function (`eap_peap_build_phase2_term`) |
 
-**One duplicate found (item 6), all others are new, independent findings** —
-several land in files the original audit already flagged for unrelated bugs,
-which is expected in files this actively used/complex, not evidence of
-overlap.
+**One duplicate** (`tls_gnutls.c`), all others independent.
 
 ---
 
-## Confirmed-live findings (39, all verified against trunk `183ee836d`)
+## All 38 confirmed TPs (excludes the corrected FP; the 2 uncertain items are
+tracked above, not repeated here)
 
-Current trunk line cited where it shifted from the pinned commit's line;
-"—" means unchanged.
+Each row below was independently re-derived this pass by reading the actual
+function body — not carried forward from the original adjudication without
+re-checking. "Reach." = how the defect is triggered.
 
-| # | File | Pinned line | Trunk line | Defect | Reachability |
-|---|---|---|---|---|---|
-| 1 | `src/ap/dpp_hostapd.c` | 940 | — | `hostapd_dpp_auth_init()`: `own_bi` NULL when ctrl command omits `own=`; reaches unconditional `auth->own_bi->pubkey_hash` deref in `dpp_auth.c:1255`. | Local ctrl_iface `DPP_AUTH_INIT` command missing `own=` |
-| 2 | `src/ap/hostapd.c` | 174 | 169 | `hostapd_reconfig_wpa()` ignores `wpa_reconfig()`'s return; OOM during reconfig leaves NULL `wpa_ie` + stale nonzero `wpa_ie_len`, reaching driver `set_generic_elem` unchecked. | OOM during config reload |
-| 3 | `src/ap/wnm_ap.c` | 478 | — | `ieee802_11_rx_bss_trans_mgmt_query()`: possibly-NULL `hex` passed unconditionally as `%s` arg to `wpa_msg`, UB on non-glibc libc. | BSS Transition Management Query with empty candidate list |
-| 4 | `src/ap/wpa_auth.c` | 1206, 1208 | 1245/1248/1250 (consolidated to one reused local) | `wpa_auth_sta_deinit()`: `wpa_get_primary_auth()` NULL for an MLD group with no `primary_auth` link; passed unguarded as `eloop_ctx`, deferred `wpa_rekey_gtk()` dereferences `wpa_auth->is_ml` unconditionally. | MLD group teardown timing |
-| 5 | `src/common/proximity_ranging.c` | 1609 | 1711 | `pr_prepare_pasn_pr_elem()`: `pr_encaps_elem()` can return NULL (internal OOM); dereferenced unguarded via `wpabuf_len(buf2)`. | OOM during PASN ranging element prep |
-| 6 | `src/crypto/tls_gnutls.c` | 1306 | — | `tls_connection_verify_peer()`: `buf = os_malloc(...)` unchecked before `wpa_printf(..., "%s", ..., buf)`. **Duplicates `REAL_BUGS_FOUND.md` item 33** — already known, not yet filed. | OOM during peer cert chain logging |
-| 7 | `src/crypto/tls_openssl_ocsp.c` | 610, 612 | — | `ocsp_find_signer()`: `sk_X509_num(NULL)` returns -1, converts to `UINT_MAX` against unsigned loop index, runs `X509_pubkey_digest()` on NULL cert. | Malformed/misconfigured OCSP response, no issuer cert |
-| 8 | `src/crypto/tls_wolfssl.c` | 2511, 2512, 2515, 2525, 2531 | 2509-2531 | `tls_connection_get_eap_fast_key()`: `wolfSSL_get_keys()`'s return discarded; `master_key`/`server_random`/`client_random` used unconditionally. | Aborted/failed TLS handshake |
-| 9 | `src/eap_server/eap_server_peap.c` | 526, 532 | — | `eap_peap_build_phase2_term()`: `eap_server_tls_encrypt()` result never NULL-checked; dereferenced on the EAP-PEAP TLS 1.3 session-resumption path. | TLS 1.3 session resumption + encryption failure |
-| 10 | `src/drivers/driver_nl80211_event.c` | 3647 | 3889 | `nl80211_vendor_event_brcm()`: `wpa_msg(NULL, MSG_INFO, "%s", data)` unconditional, `data` defaults NULL when netlink event omits `NL80211_ATTR_VENDOR_DATA`. | Malformed/short Broadcom vendor netlink event |
-| 11 | `src/p2p/p2p.c` | 6308, 6313 | 6325, 6330 | `p2p_prepare_pasn_extra_ie()`: `p2p_encaps_ie()` can return NULL (OOM); dereferenced unguarded. | OOM during P2P PASN extra-IE prep |
-| 12 | `src/utils/browser-android.c` | 38, 40, 43 | — | `http_req()`: `url = http_request_get_uri(req)` can be NULL; no `http_request_get_type()` check before `%s`/`os_strcmp`/`os_strncmp`. | HS2.0 OSU browser local loopback, malformed HTTP request line |
-| 13 | `src/utils/browser-system.c` | 38, 40, 43 | — | Same as #12 (near-identical platform variant). | Same |
-| 14 | `src/utils/browser-wpadebug.c` | 38, 40, 43 | — | Same as #12. | Same |
-| 15 | `src/utils/http_curl.c` | 655 | — | `http_download_file()`: `ca_fname` passed unguarded to `wpa_printf`'s `%s`, despite being correctly guarded 2 lines later for its real use. | Optional CA-file config unset |
-| 16 | `src/utils/trace.c` | 227 | — | `wpa_trace_bfd_addr()`: `filename` from libbfd can be NULL; guarded for trimming but not for the final `%s` log. | Debug build, symbol without filename info |
-| 17 | `src/wps/http_client.c` | 215 | ~200 | `port = os_strchr(addr, ':')` NULL when URL has no colon; unguarded `%s` in `inet_aton` failure-path log. | Malformed WPS HTTP client URL |
-| 18 | `wpa_supplicant/config_none.c` | 43 | 38 | `wpa_config_write()` (stub backend): `wpa_s->confname` NULL for a dynamically-added interface, unguarded `%s`, unlike `config_file.c` sibling. | `SET update_config 1` + `SAVE_CONFIG` on a no-`-c` interface |
-| 19 | `wpa_supplicant/config_winreg.c` | 1019, 1024, 1058 | 1009, 1035, 1058 | Same root cause as #18, Windows registry backend: `name` also reaches `_snwprintf`/`os_snprintf` building the registry key path. | Same, Windows build |
-| 20 | `wpa_supplicant/ctrl_iface.c` | 6596 | 6614 | `p2p_ctrl_connect()` PIN-keypad branch: `pos = os_strchr(pin, ' ')` NULL when no trailing params; falls through to unguarded `os_strstr(pos, ...)`. | `P2P_CONNECT <addr> <PIN>` local ctrl command, no trailing params |
-| 21 | `wpa_supplicant/dbus/dbus_new_handlers_p2p.c` | 2308 | 2295 | `wpas_dbus_handler_remove_persistent_group`: `dbus_message_get_args()` return unchecked; `op` reaches unguarded `os_strncmp` in `dbus_new_helpers.c:984`. | Malformed/wrong-signature D-Bus method call |
-| 22 | `wpa_supplicant/p2p_supplicant.c` | 1652 | — | `wpas_group_formation_completed()` → `wpas_notify_p2p_group_started()`: `ssid` NULL when not a P2P client; reaches `ssid->ssid` deref via `||` short-circuit in `dbus_new.c:1553`. | New-style D-Bus interface active, non-client P2P group start |
-| 23 | `wpa_supplicant/wnm_sta.c` | 1223 | 1225 | `wnm_scan_process()`: `if (!bss) return 0;` guard scoped only to the `pre_scan_check` branch; post-scan path reaches unguarded `selected->bssid` deref in `events.c:2148` (now 2323). | Post-scan BTM candidate-selection path, no candidate found |
+| # | File:line | Function | Defect | Reach. |
+|---|---|---|---|---|
+| 2 | `src/ap/hostapd.c:174` | `hostapd_reconfig_wpa` | ignores `wpa_reconfig()` return; OOM leaves NULL `wpa_ie`+nonzero `wpa_ie_len` reaching driver `set_generic_elem` unchecked | OOM during config reload |
+| 3 | `src/ap/wnm_ap.c:478` | `ieee802_11_rx_bss_trans_mgmt_query` | `hex` NULL (empty candidate list or OOM) reaches `%s` unconditionally despite an adjacent ternary that only gates the *prefix* text | **any associated station sending a minimal (2-byte) WNM BTM Query** — no OOM, no crafted cert, strongest wire-reachable candidate in this set besides #20 |
+| 5 | `src/common/proximity_ranging.c:1609` | `pr_prepare_pasn_pr_elem` | `pr_encaps_elem()` NULL (OOM) reaches `wpabuf_len(buf2)` — confirmed `wpabuf_len` is `return buf->used;`, no guard at all | OOM during PASN element prep |
+| 6 | `src/crypto/tls_gnutls.c:1306` | `tls_connection_verify_peer` | `if(buf){...}` guards the *write* into `buf` (failed `os_malloc`) but the `wpa_printf(...,"%s",...,buf)` two lines later is outside that block | OOM during peer cert chain logging. **Duplicates `REAL_BUGS_FOUND.md` #33** |
+| 7 | `src/crypto/tls_openssl_ocsp.c:610,612` | `ocsp_find_signer` | `for(i=0;i<sk_X509_num(certs);i++)`, `i` unsigned — `sk_X509_num(NULL)`=-1 promotes to `UINT_MAX`, loop runs with `certs=NULL` | malformed/misconfigured OCSP response, no issuer cert (reachability to `certs==NULL` not independently traced through the full OCSP parser) |
+| 8 | `src/crypto/tls_wolfssl.c:2511-2531` (5 sites) | `tls_connection_get_eap_fast_key` | `wolfSSL_get_keys()`'s return value entirely discarded (not even assigned); 3 by-ref outputs used unconditionally right after | aborted/failed TLS handshake |
+| 9 | `src/eap_server/eap_server_peap.c:526,532` | `eap_peap_build_phase2_term` | `eap_server_tls_encrypt()` result never NULL-checked; dereferenced via `wpabuf_len`/`wpabuf_put_buf` on the TLS 1.3 resumption path | TLS 1.3 session resumption + encryption failure |
+| 10 | `src/drivers/driver_nl80211_event.c:3647` | `nl80211_vendor_event_brcm` | `data` defaults NULL when the netlink vendor event omits `NL80211_ATTR_VENDOR_DATA`; `wpa_msg(...,"%s",data)` unconditional | malformed BRCM vendor event from the kernel driver/firmware |
+| 11 | `src/p2p/p2p.c:6308,6313` | `p2p_prepare_pasn_extra_ie` | same shape as #5 (`p2p_encaps_ie` OOM-NULL → `wpabuf_len`) | OOM during P2P PASN extra-IE prep |
+| 12-14 | `src/utils/browser-{android,system,wpadebug}.c:38,40,43` (9 sites) | `http_req` | `http_request_get_uri()` NULL when the client's first line matches `HTTP/` (a reply line); confirmed via `httpread.c`: `standard_first_line=0` skips the entire URI-parse block, `h->uri` was `os_zalloc`'d NULL and never set | local HS2.0 OSU loopback server (127.0.0.1:12345), any local connection sending `HTTP/1.1 ...` as its first line instead of a request line |
+| 15 | `src/utils/http_curl.c:655` | `http_download_file` | `ca_fname` unguarded at the log line; correctly `if(ca_fname)`-guarded 10 lines later for the real `curl_easy_setopt` use | optional CA-file config left unset |
+| 16 | `src/utils/trace.c:227` | `wpa_trace_bfd_addr` | `if(filename){...trim...}` guards the trim loop; unconditional 9 lines later at the log call | debug-only backtrace path (`CONFIG_WPA_TRACE_BFD`), low practical severity |
+| 17 | `src/wps/http_client.c:215` | (URL parse helper) | `port` NULL (no colon, or reset when `port>path`); `if(port)*port++=0` guards the mutation, unguarded at the log line on the `inet_aton` failure path | malformed WPS HTTP client URL |
+| 18 | `wpa_supplicant/config_none.c:43` | `wpa_config_write` (stub backend) | `name` (`wpa_s->confname`) unguarded throughout; `config_file.c` sibling correctly returns -1 on NULL | `SET update_config 1` + `SAVE_CONFIG` on an interface added with no `-c` config file |
+| 19 | `wpa_supplicant/config_winreg.c:1019,1024,1058` | `wpa_config_write` (Windows backend) | same as #18, Windows registry backend; `name` also reaches `_snwprintf`/`os_snprintf` building the registry key path — Windows CRT `%s`-with-NULL is generally less forgiving than glibc | same, Windows build |
+| **20** | `wpa_supplicant/ctrl_iface.c:6596` | `p2p_ctrl_connect` | **live-reproduced crash** — see above | `P2P_CONNECT <addr> <bare-PIN>` local ctrl command |
+| 21 | `wpa_supplicant/dbus/dbus_new_handlers_p2p.c:2308` | `wpas_dbus_handler_remove_persistent_group` | `dbus_message_get_args()` return unchecked; confirmed against libdbus 1.14.10 source (`dbus-message.c:850-861`) that a type mismatch calls `dbus_set_error()` and jumps to `out` *without ever calling `va_arg` on the out-param* — `op` is genuinely uninitialized stack memory, not just NULL | malformed/wrong-signature D-Bus method call |
+| 22 | `wpa_supplicant/p2p_supplicant.c:1652` | `wpas_group_formation_completed` → `wpas_notify_p2p_group_started` | `ssid` NULL when not a P2P client; `dbus_new.c:1553`'s `\|\|` short-circuits into `ssid->ssid` when the new-style D-Bus interface is active | new-style D-Bus interface active + non-client P2P group start |
+| 23 | `wpa_supplicant/wnm_sta.c:1223` | `wnm_scan_process` | the `if(!bss)` guard is scoped only to the `pre_scan_check` branch; the post-scan roaming-rules block reaches `wpa_supplicant_need_to_roam_within_ess(...,bss,...)` with `bss` still possibly NULL, which unconditionally dereferences it via `wpa_bss_ie_ptr`/`->ie_len` | post-scan BTM candidate-selection path, no candidate found |
 
 ---
 
-## Method (per finding)
+## Method
 
-1. `git -C ~/data-enterprise/hostap-main log --oneline <pin>..HEAD -- <file>` —
-   many files had zero commits since the pin (definitive: unchanged); others
-   had commits checked individually for relevance to the specific function.
-2. Read the current trunk function body in full (not just the old line
-   number — several shifted from unrelated additions earlier in the file).
-3. Confirmed the same unguarded-pointer-reaches-unguarded-use shape is still
-   present; none were narrowed to "fixed" or "refactored away."
+1. Read the *complete* function body for every disputed line — not the
+   originally-quoted snippet — specifically hunting for the kind of guard
+   that falsified finding #1 (auto-generation, fallback init, caller-side
+   validation, invariant-preserving reassignment).
+2. Where static reading left genuine doubt or the claim was unusually strong
+   (cheap to trigger, no crafted wire/cert data needed), built the pinned
+   checkout with `-fsanitize=address,undefined -fno-omit-frame-pointer -g
+   -O0` (both `hostapd` and `wpa_supplicant`, `CONFIG_CTRL_IFACE_DBUS_NEW=y
+   CONFIG_P2P=y CONFIG_WPS=y`) and ran it against a `mac80211_hwsim`
+   simulated radio to reproduce directly.
+3. Where a claim depended on a non-hostap codebase's behavior (D-Bus
+   argument-parsing semantics), read that codebase's own source
+   (`libdbus-1.14.10`) rather than assuming.
+4. Cross-checked every finding's file against the existing 109-item audit
+   catalog (`REAL_BUGS_FOUND.md`) to avoid double-filing a known defect.
+5. Confirmed no upstream fix exists for the surviving 38 by checking each
+   file's commit history against true `origin/main` (fetched fresh, not a
+   stale local mirror — see the mirror-staleness note below) and reading the
+   current function body directly for the 6 files that changed.
 
-No PoC/GDB reproduction was built for these (unlike the sqlite pair, which
-warranted it specifically because the initial surprise was "already fixed" —
-these needed only confirmation of currently-live status, not independent
-crash proof beyond the original source reading).
+## Mirror-staleness note (kept for the record)
 
-## Re-verification against true `origin/main` (items 2, 4, 9, 20, 22, 23)
-
-These 6 findings sit in the 6 files that changed further between the stale
-local HEAD and the actual current trunk. Each was re-read directly from
-`origin/main`'s content (`git show origin/main:<file>`), not just diff hunks
-(a hunk's `@@` context line can name an unrelated nearby function and miss a
-change deep inside a long one):
-
-- **#2** (`hostapd_reconfig_wpa`) — unaffected; the file's diff activity was
-  elsewhere. `hostapd_reconfig_wpa(hapd);` call site unchanged.
-- **#4** (`wpa_auth_sta_deinit`) — unaffected; `wpa_get_primary_auth(wpa_auth)`
-  still called unguarded at the same logical site (now line ~1244).
-- **#9** (`eap_peap_build_phase2_term`) — the file's diff touched
-  `eap_peap_process_phase2_soh` (the already-known/fixed SoH bug), not this
-  function. Read in full on `origin/main`: `encr_req` still never NULL-checked
-  before `wpabuf_resize(..., wpabuf_len(encr_req))` and `wpabuf_put_buf`.
-- **#20** (`p2p_ctrl_connect`) — read in full: `if (pos) { *pos++ = '\0'; ... }`
-  guards only the mutation, not the subsequent unconditional
-  `os_strstr(pos, "bstrapmethod=")` — `pos` can still reach it NULL.
-- **#22** (`wpas_group_formation_completed`) — unaffected; call site at line
-  1652 on `origin/main` is unchanged.
-- **#23** (`wnm_scan_process`) — most substantively re-checked: current trunk's
-  control flow differs in shape from what was first read (a `#ifndef
-  CONFIG_NO_ROAMING` roaming-rules block now sits between the `pre_scan_check`
-  branch and a *second* `if (!bss)` guard). Traced it in full: the roaming-rules
-  block's `wpa_supplicant_need_to_roam_within_ess(wpa_s, current_bss, bss, true)`
-  call is reached with `bss` still possibly NULL (the second `if (!bss)` guard
-  comes *after* it), and that function's body (`wpa_supplicant/events.c`)
-  unconditionally does `wpa_bss_ie_ptr(selected)` / `selected->ie_len` as its
-  first real statements, `selected` being the possibly-NULL `bss`. Still a live
-  NULL deref, same defect, confirmed against `origin/main` line-by-line rather
-  than assumed unchanged from the stale-HEAD reading.
-
-All 6 confirmed still present. No conclusion in this document changed as a
-result of the fetch/re-verify pass — recorded here for the record, not because
-anything was wrong.
+The first pass of this recheck used `~/data-enterprise/hostap-main`'s
+then-local HEAD without fetching — 125 commits behind true `origin/main`
+(caught and corrected same-day: fetched, confirmed all 6 findings in the
+files that changed hold up against the actual current trunk content, not
+diff-hunk context alone). No conclusion changed as a result — recorded
+because the gap could have hidden a real fix, and didn't.
