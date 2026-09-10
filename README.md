@@ -1,5 +1,9 @@
 # aurora-lint
 
+[![CI](https://github.com/brandon-arrendondo/aurora-lint/actions/workflows/ci.yml/badge.svg)](https://github.com/brandon-arrendondo/aurora-lint/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/brandon-arrendondo/aurora-lint)](https://github.com/brandon-arrendondo/aurora-lint/releases/latest)
+[![License](https://img.shields.io/github/license/brandon-arrendondo/aurora-lint)](LICENSE)
+
 A static analysis tool for C code compliance with [SEI CERT C Coding Standards](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard). aurora-lint tracks 311 CERT C rules across 17 categories (307 implemented and enabled by default), with a CI/CD-ready command-line interface and an optional interactive terminal UI.
 
 ## Does It Find Real Bugs?
