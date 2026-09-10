@@ -1325,6 +1325,19 @@ fn aggregate_callsite_null_states(
                         .callsite_param_null_states
                         .insert(param_idx, aggregated);
                 }
+
+                // The proof, as opposed to the vote above. Every call site that
+                // supplies this argument must have proved it non-null: an
+                // `Unknown` caller is an unanswered question, not an abstention,
+                // so `sites_supplying` counts it and it breaks the proof. A
+                // parameter no call site supplies at all proves nothing either.
+                let sites_supplying = arg_vectors
+                    .iter()
+                    .filter(|args| args.get(param_idx).is_some())
+                    .count();
+                if sites_supplying > 0 && not_null_count == sites_supplying {
+                    summary.callsite_param_proven_nonnull.insert(param_idx);
+                }
             }
         }
     }
@@ -3027,6 +3040,10 @@ fn propagate_param_null_states(
 
         for summary in summaries.values_mut() {
             summary.callsite_param_null_states.clear();
+            // Cleared with its sibling: this set is insert-only per pass, so a
+            // parameter proven non-null in an earlier pass would survive a
+            // later pass that no longer proves it.
+            summary.callsite_param_proven_nonnull.clear();
         }
         aggregate_callsite_null_states(callsite_args, summaries, header_declared);
 
@@ -3429,7 +3446,12 @@ fn condition_true_implies_nonnull(condition: &Node, var: &str, source: &str) -> 
 /// immediately-adjacent case. The flow-insensitive `local_states` table holds
 /// one state per variable for a whole function, so it cannot express "guarded
 /// here, not there"; asking at the argument's own node can.
-fn guarded_nonnull_at(site: &Node, var: &str, source: &str) -> bool {
+///
+/// Public because EXP34-C's call-site check needs the identical question once
+/// it reports a merely-possibly-null argument: the prescan and the rule must
+/// agree on what counts as guarded, or the rule re-reports what the prescan
+/// already discounted.
+pub fn guarded_nonnull_at(site: &Node, var: &str, source: &str) -> bool {
     guard_dominance::dominating_conditions(site)
         .iter()
         .any(
