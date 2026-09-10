@@ -646,6 +646,21 @@ dominance (it returns true if the text contains `"if"` anywhere and one of
 eight spacing-sensitive comparison substrings). It is still ARR00-C's, in three
 places. Anything new should use this module.
 
+### `src/analyze/prescan.rs` (per-call-site null guard)
+**Problem solved:** "is this pointer already guarded non-null *at this call
+site*?" — the per-site half of the question `local_states` cannot answer,
+because that table holds one state per variable for a whole function and so
+cannot say "guarded here, not there".
+
+| Function | Signature | Description |
+|---|---|---|
+| `guarded_nonnull_at` | `(site: &Node, var: &str, source: &str) -> bool` | A null guard already evaluated at `site` implies `var` is non-null there. Built on `guard_dominance`'s `dominating_conditions` + `dominating_condition_branch`, and splits the two complementary operators the sound way: `condition_true_implies_nonnull` on the true branch (`&&`), `extract_null_checked_vars` on the false branch (`\|\|`). Covers the short-circuit shape where the guard is *inside the condition holding the call* — `if (p == NULL \|\| sink(p) < 0)` reaches `sink` only where the null test failed. |
+
+Use it anywhere a maybe-null argument is about to be reported: the prescan
+already discounts these, so a rule that does not ask re-reports what the
+prescan deliberately let through. EXP34-C's call-site check is the reference
+caller.
+
 ### `src/analyze/null_state.rs` (condition predicate)
 **Problem solved:** "does this condition test this pointer for NULL?" — the
 null-flavoured sibling of `guard_dominance`'s comparison question, and the same
@@ -691,6 +706,8 @@ are private implementation detail behind the small public surface below.
 
 | Function | Signature | Description |
 |---|---|---|
+| *(field)* `callsite_param_proven_nonnull` | `HashSet<usize>` | Parameter indices EVERY visible call site proves non-null. Strictly stronger than a `NotNull` in the sibling `callsite_param_null_states`, which is a majority **vote**: there an `Unknown` caller contributes nothing and a `PossiblyNull` one can be outvoted, so it answers "what do callers mostly do?". Only this set may license discarding a null disjunct, and only together with `has_internal_linkage`. |
+| *(field)* `has_internal_linkage` | `bool` | `static` at file scope, so the prescanned call sites are provably all of them. Without it, "every call site we found" is not "every call site" and the set above proves nothing. |
 | `compute_summaries` | `(root, source, ..., compute_return_ranges: bool) -> HashMap<String, FunctionSummary>` | Computes summaries for every function definition in the AST. `compute_return_ranges` gates the (expensive) VRA-based return-range computation — pass `false` during prescan when no VRA-consuming rules are enabled. |
 | `collect_param_names` | `(func_node: &Node, source: &str) -> Vec<String>` | Collects parameter names from a function declaration. |
 | `extract_function_name` | `(func_node: &Node, source: &str) -> Option<String>` | Extracts a function's name from its definition node. |

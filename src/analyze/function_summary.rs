@@ -159,6 +159,24 @@ pub struct FunctionSummary {
     /// Aggregated null states of arguments at all call sites (populated by prescan second pass).
     /// Maps parameter index → joined NullState from all callers.
     pub callsite_param_null_states: HashMap<usize, NullState>,
+    /// Parameter indices every visible call site passes a provably non-null
+    /// argument at. Strictly stronger than a `NotNull` in
+    /// `callsite_param_null_states`, which is a majority VOTE:
+    /// `Unknown` callers there contribute nothing and a `PossiblyNull` caller
+    /// can be outvoted, so that map answers "what do callers mostly do?" and
+    /// this set answers "did every one of them prove it?". Only the latter can
+    /// license discarding a null disjunct.
+    ///
+    /// Sound as a proof of the parameter's entry state ONLY together with
+    /// [`Self::has_internal_linkage`]: for a non-static function, callers can
+    /// live in a translation unit the prescan never saw, so "every call site
+    /// we found" is not "every call site".
+    #[serde(default)]
+    pub callsite_param_proven_nonnull: HashSet<usize>,
+    /// `static` at file scope — every caller is in this translation unit, so
+    /// the prescanned call sites are provably all of them.
+    #[serde(default)]
+    pub has_internal_linkage: bool,
     /// Argument-position pairs `(lower, higher)` at which SOME call site
     /// anywhere in the pre-scanned project hands this function two named,
     /// DIFFERENT storage objects.
@@ -700,7 +718,21 @@ fn analyze_function(
     string_macros: &HashMap<String, String>,
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
 ) -> FunctionSummary {
-    let mut summary = FunctionSummary::default();
+    // Internal linkage: `static` storage class at file scope. Read off the
+    // definition's own storage_class_specifier children rather than the node
+    // text, so a `static` appearing in the body or in a parameter type cannot
+    // be mistaken for the function's own.
+    let has_internal_linkage = (0..func_node.child_count())
+        .filter_map(|i| func_node.child(i))
+        .any(|c| {
+            c.kind() == "storage_class_specifier"
+                && c.utf8_text(source.as_bytes()).unwrap_or("").trim() == "static"
+        });
+
+    let mut summary = FunctionSummary {
+        has_internal_linkage,
+        ..Default::default()
+    };
 
     // Collect parameter names
     let params = collect_param_names(func_node, source);
