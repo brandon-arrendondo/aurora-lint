@@ -1270,9 +1270,14 @@ fn merge_compound_conditions(
         entry.1 = combine(entry.1, info.false_range, in_left, !is_and);
     }
 
-    // A variable only the left side mentioned never reaches the loop above.
+    // A variable only ONE side mentioned carries a lone constraint that the
+    // other side may have satisfied on its own. `combine` cannot drop it --
+    // its `seen_both` argument is the other side's membership, which is
+    // false for exactly these variables, so the one-sided arm always keeps
+    // the range. The correction has to be symmetric: a right-only variable
+    // is the mirror of a left-only one, not a different case (task 1014).
     for (var_name, (in_left, in_right)) in &sides {
-        if *in_left && !*in_right {
+        if *in_left != *in_right {
             if let Some(entry) = by_var.get_mut(var_name) {
                 if !is_and {
                     entry.0 = None; // `A || B` true: B alone may have satisfied it.
@@ -2657,6 +2662,48 @@ void f(int flag) {
     char data;
     data = 127;
     if (data >= 127 && flag) {
+    } else {
+        char result = data + 1;
+    }
+}
+";
+        assert_eq!(
+            range_at_expr(code, "data", "data + 1"),
+            Some(ValueRange::new(127, 127))
+        );
+    }
+
+    /// Operand order must not matter. The same disjunction with the
+    /// constrained variable on the RIGHT is the mirror of
+    /// `disjunct_keeps_a_contradicted_branch_live`, and regressed once
+    /// because the one-sided correction only ran for left-only variables
+    /// (task 1014).
+    #[test]
+    fn disjunct_keeps_a_contradicted_branch_live_right_operand() {
+        let code = "
+void f(int flag) {
+    char data;
+    data = 127;
+    if (flag || data < 127) {
+        char result = data + 1;
+    }
+}
+";
+        assert_eq!(
+            range_at_expr(code, "data", "data + 1"),
+            Some(ValueRange::new(127, 127))
+        );
+    }
+
+    /// The `&&` false-edge mirror, for the same reason: `!(a && b)` needs only
+    /// one conjunct to fail, whichever side names the variable (task 1014).
+    #[test]
+    fn conjunct_keeps_a_contradicted_false_edge_live_right_operand() {
+        let code = "
+void f(int flag) {
+    char data;
+    data = 127;
+    if (flag && data >= 127) {
     } else {
         char result = data + 1;
     }
