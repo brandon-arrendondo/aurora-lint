@@ -359,6 +359,7 @@ fn process_statement_for_null_state(
     // process_expression_null's assignment-only dispatch does.
     for call in query::find_descendants_of_kind(*node, "call_expression") {
         apply_cross_file_output_params_null(&call, source, state, summaries);
+        apply_cross_file_nulls_params_null(&call, source, state, summaries);
     }
 
     match node.kind() {
@@ -648,6 +649,55 @@ fn apply_cross_file_output_params_null(
             let var_name = extract_output_arg_var(&arg, source);
             if !var_name.is_empty() && state.contains_key(&var_name) {
                 state.insert(var_name, NullState::NotNull);
+            }
+        }
+        arg_idx += 1;
+    }
+}
+
+/// Mirror of `apply_cross_file_output_params_null` for the opposite fact:
+/// a call whose summary says it unconditionally nulls an argument
+/// (`FunctionSummary::nulls_params` — real functions never set this; it is
+/// synthesized per-file for "safe free" macros like `mosquitto_FREE`/
+/// `Curl_safefree`/`SAFE_FREE` via `macro_expand::macro_nulls_param_indices`,
+/// see EXP34-C's `set_project_context`/`check`) marks that argument
+/// `DefinitelyNull` going forward. Without this, a bare
+/// `mosquitto_FREE(auth_method);` statement is just an opaque call_expression
+/// to the dataflow — no `= NULL` assignment is visible in the unexpanded AST
+/// — so a null-pointer-dereference/misuse of `auth_method` right after the
+/// free (e.g. passed to a `%s` logging call) was never detected.
+fn apply_cross_file_nulls_params_null(
+    call: &Node,
+    source: &str,
+    state: &mut StateMap,
+    summaries: &HashMap<String, FunctionSummary>,
+) {
+    let Some(func) = call.child_by_field_name("function") else {
+        return;
+    };
+    if func.kind() != "identifier" {
+        return;
+    }
+    let func_name = get_text(&func, source);
+    let Some(summary) = summaries.get(&func_name) else {
+        return;
+    };
+    if summary.nulls_params.is_empty() {
+        return;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut arg_idx: usize = 0;
+    for i in 0..args.child_count() {
+        let Some(arg) = args.child(i) else { continue };
+        if matches!(arg.kind(), "," | "(" | ")") {
+            continue;
+        }
+        if summary.nulls_params.contains(&arg_idx) {
+            let var_name = extract_output_arg_var(&arg, source);
+            if !var_name.is_empty() && state.contains_key(&var_name) {
+                state.insert(var_name, NullState::DefinitelyNull);
             }
         }
         arg_idx += 1;

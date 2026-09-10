@@ -118,6 +118,24 @@ pub struct FunctionSummary {
     pub checks_null_params: HashSet<usize>,
     /// Parameter indices that this function writes through (modifies via pointer).
     pub modifies_params: HashSet<usize>,
+    /// Parameter indices that this call unconditionally sets to NULL.
+    ///
+    /// Real functions never populate this (no AST pass derives it from a
+    /// function body) — it exists so a "safe free" function-like macro
+    /// invocation (`mosquitto_FREE(p)`, `Curl_safefree(p)`, `SAFE_FREE(p)`,
+    /// detected structurally by `macro_expand::macro_nulls_param_indices`,
+    /// not by name) can be synthesized into a one-off `FunctionSummary` entry
+    /// keyed by the macro's name, exactly as `modifies_params` already is for
+    /// write-through macros (see EXP34-C's `macro_write_params`/MEM30-C's
+    /// `macro_null_params`). `null_state.rs`'s
+    /// `apply_cross_file_nulls_params_null` reads it the same way
+    /// `apply_cross_file_output_params_null` reads `modifies_params`, so a
+    /// bare `mosquitto_FREE(auth_method);` statement (a plain call_expression
+    /// with no `= NULL` assignment visible to the parser) marks `auth_method`
+    /// `DefinitelyNull` for the rest of the CFG, the same as if the caller had
+    /// written `free(auth_method); auth_method = NULL;` by hand.
+    #[serde(default)]
+    pub nulls_params: HashSet<usize>,
     /// Parameter indices that this function dereferences in any way (read or write).
     /// Superset of modifies_params — includes `*param`, `param[i]`, `param->field`.
     pub dereferences_params: HashSet<usize>,
