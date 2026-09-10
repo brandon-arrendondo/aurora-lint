@@ -718,16 +718,14 @@ fn analyze_function(
     string_macros: &HashMap<String, String>,
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
 ) -> FunctionSummary {
-    // Internal linkage: `static` storage class at file scope. Read off the
-    // definition's own storage_class_specifier children rather than the node
-    // text, so a `static` appearing in the body or in a parameter type cannot
-    // be mistaken for the function's own.
-    let has_internal_linkage = (0..func_node.child_count())
-        .filter_map(|i| func_node.child(i))
-        .any(|c| {
-            c.kind() == "storage_class_specifier"
-                && c.utf8_text(source.as_bytes()).unwrap_or("").trim() == "static"
-        });
+    // Internal linkage: `static` storage class at file scope. A direct-child
+    // scan, not a text one, so a `static` in the body or in a parameter type
+    // cannot be mistaken for the function's own -- a `function_definition`
+    // carries the specifier in the same child position a `declaration` does,
+    // which is why the declaration-shaped helper is the right one here.
+    let has_internal_linkage = crate::utility::cert_c::ast_utils::declaration_has_storage_class(
+        func_node, "static", source,
+    );
 
     let mut summary = FunctionSummary {
         has_internal_linkage,
