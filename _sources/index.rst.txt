@@ -22,6 +22,7 @@ testing methodology, project internals, and contributing.
    cicd-integration
    interactive-ui
    testing-methodology
+   upstream-disclosures
    tool-comparison
    juliet-history
    architecture

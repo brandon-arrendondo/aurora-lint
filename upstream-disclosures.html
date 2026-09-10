@@ -1,0 +1,364 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upstream Disclosures &mdash; aurora-lint  documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5929fcd5"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Comparison To Other Tools" href="tool-comparison.html" />
+    <link rel="prev" title="Testing Methodology" href="testing-methodology.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            aurora-lint
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="cli-usage.html">Advanced CLI Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="suppression.html">Suppression System</a></li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cicd-integration.html">CI/CD Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="interactive-ui.html">Interactive Console UI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing-methodology.html">Testing Methodology</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Upstream Disclosures</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#methodology">Methodology</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#sqlite">SQLite</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#hostap-hostapd-wpa-supplicant">hostap (hostapd / wpa_supplicant)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#combined-total">Combined total</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="tool-comparison.html">Comparison To Other Tools</a></li>
+<li class="toctree-l1"><a class="reference internal" href="juliet-history.html">Juliet Benchmark History</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Analysis Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-setup.html">Benchmark Setup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmark-running.html">Running Benchmarks (MCP Server)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="project-structure.html">Project Structure</a></li>
+<li class="toctree-l1"><a class="reference internal" href="future-rulesets.html">Future Rulesets Beyond CERT C</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="licensing.html">Licensing and content provenance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bibliography.html">Bibliography</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">aurora-lint</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Upstream Disclosures</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/upstream-disclosures.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="upstream-disclosures">
+<h1>Upstream Disclosures<a class="headerlink" href="#upstream-disclosures" title="Link to this heading"></a></h1>
+<p>Both of aurora-lint’s real-world benchmark projects that have gone through a
+full file-at-a-time adjudication audit (see
+<a class="reference internal" href="testing-methodology.html"><span class="doc">Testing Methodology</span></a>) have produced genuine defects, reported to each
+project’s maintainers. As of 2026-09-08, <strong>17 of 17 disclosed defects across
+the two audits have been confirmed and fixed upstream</strong> — nine in SQLite,
+eight in hostapd/wpa_supplicant.</p>
+<p>A finding being disclosed here does not always mean aurora-lint detected it.
+Adjudicating a run means a reviewer reads every flagged site against source
+to label it TP/FP; that close reading regularly surfaces genuine defects the
+tool’s rule set missed entirely. Those are false negatives for aurora-lint,
+not detections, and each table below marks its source honestly rather than
+crediting the tool for what a human reviewer found.</p>
+<section id="methodology">
+<h2>Methodology<a class="headerlink" href="#methodology" title="Link to this heading"></a></h2>
+<p>Every defect below came out of the same process described in full in
+<a class="reference internal" href="testing-methodology.html"><span class="doc">Testing Methodology</span></a>: a file-at-a-time real-world audit, not a
+sampled spot-check. A reviewer works through every file in scope for the
+codebase, adjudicates every aurora-lint finding in that file TP/FP against
+source, and — because that means reading the surrounding function rather
+than just the flagged line — logs any genuine defect noticed along the way,
+whether or not a rule flagged it. That is why most of the disclosed items
+below are audit read-throughs rather than tool detections: the read-through
+is a structural side effect of doing adjudication file-at-a-time instead of
+finding-at-a-time.</p>
+<p>Two things this audit discipline is not:</p>
+<ul class="simple">
+<li><p><strong>Not a Juliet-style synthetic benchmark.</strong> These are production
+codebases with no injected ground truth; every TP/FP label and every
+audit-found defect is a human judgment call against real source, recorded
+in the project’s own <code class="docutils literal notranslate"><span class="pre">data/precision_audit/&lt;project&gt;/</span></code> directory.</p></li>
+<li><p><strong>Not the sole source of official precision/recall figures.</strong> Those come
+from the persistent <code class="docutils literal notranslate"><span class="pre">ground_truth</span></code> oracle keyed on
+<code class="docutils literal notranslate"><span class="pre">(project,</span> <span class="pre">commit,</span> <span class="pre">file,</span> <span class="pre">line,</span> <span class="pre">rule)</span></code> — see <a class="reference internal" href="testing-methodology.html"><span class="doc">Testing Methodology</span></a>
+and, for how a rule change is re-adjudicated before its precision is
+cited, the project’s benchmark-workflow documentation. Disclosure status
+here and precision/recall status there are tracked separately and can
+move independently: a defect can be disclosed and fixed long before (or
+after) the finding that surfaced it is folded into an official precision
+number.</p></li>
+</ul>
+<p>Before any item below was filed to a maintainer, it was re-verified against
+current upstream mainline — not just cited at the audit’s original pinned
+commit — to avoid disclosing something already fixed. hostap’s audit found
+and excluded one such case (item 15 below) this way.</p>
+</section>
+<section id="sqlite">
+<h2>SQLite<a class="headerlink" href="#sqlite" title="Link to this heading"></a></h2>
+<p>Nine defects found while auditing SQLite (220 files at a pinned commit) were
+reported upstream. <strong>The SQLite team confirmed and fixed all nine, most the
+same day they were filed.</strong></p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 22.0%" />
+<col style="width: 45.0%" />
+<col style="width: 15.0%" />
+<col style="width: 18.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Site</p></th>
+<th class="head"><p>Defect</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Report</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/os_kv.c</span></code> — <code class="docutils literal notranslate"><span class="pre">kvvfsDecode()</span></code></p></td>
+<td><p>Heap buffer overflow: the hex-pair decode branch writes without the
+bounds check its sibling branch has (check-in <code class="docutils literal notranslate"><span class="pre">732c8f81b5</span></code>)</p></td>
+<td><p>Audit read-through (false negative — aurora-lint does not flag this site)</p></td>
+<td><p><a class="reference external" href="https://sqlite.org/bugs/forumpost/afbc56be7b">afbc56be7b</a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ext/fts5/fts5_index.c</span></code> — <code class="docutils literal notranslate"><span class="pre">fts5SegmentSize()</span></code></p></td>
+<td><p>Signed integer overflow on page numbers decoded from an on-disk
+record with no upper bound validated (check-in <code class="docutils literal notranslate"><span class="pre">c97a940ceb</span></code>)</p></td>
+<td><p>aurora-lint finding (INT32-C)</p></td>
+<td><p><a class="reference external" href="https://sqlite.org/bugs/info/2026-08-17T20:07:33Z">2026-08-17</a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ext/fts5/fts5_index.c</span></code> — <code class="docutils literal notranslate"><span class="pre">fts5TestUtf8()</span></code></p></td>
+<td><p>UTF-8 validator advances 3 bytes through a 4-byte sequence, so every
+valid astral-plane character is rejected (check-in <code class="docutils literal notranslate"><span class="pre">ac094ec69b</span></code>)</p></td>
+<td><p>aurora-lint finding (MSC12-C)</p></td>
+<td><p><a class="reference external" href="https://sqlite.org/bugs/forumpost/b02657db71">b02657db71</a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ext/session/changeset.c</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sqlite3_mprintf()</span></code> result passed to libc <code class="docutils literal notranslate"><span class="pre">printf</span></code>’s <code class="docutils literal notranslate"><span class="pre">%s</span></code>,
+bypassing SQLite’s own NULL-safe <code class="docutils literal notranslate"><span class="pre">mprintf</span></code> — NULL dereference
+under allocation failure</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p><a class="reference external" href="https://sqlite.org/bugs/forumpost/f20ea456ac">f20ea456ac</a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">expert.c</span></code></p></td>
+<td><p>Same defect</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p><a class="reference external" href="https://sqlite.org/bugs/forumpost/c06a3c0d3f">c06a3c0d3f</a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">amatch.c</span></code></p></td>
+<td><p>Same defect</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p><a class="reference external" href="https://sqlite.org/bugs/forumpost/20d89d613b">20d89d613b</a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sqlite3_stdio.c</span></code></p></td>
+<td><p>Same defect</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p><a class="reference external" href="https://sqlite.org/bugs/forumpost/ba00fdddda">ba00fdddda</a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fts3.c</span></code></p></td>
+<td><p>Same defect</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p><a class="reference external" href="https://sqlite.org/bugs/forumpost/9b4276628a">9b4276628a</a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">qrf.c</span></code></p></td>
+<td><p>Same defect</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p><a class="reference external" href="https://sqlite.org/bugs/forumpost/18338dc19d">18338dc19d</a></p></td>
+</tr>
+</tbody>
+</table>
+<p>Eight of the nine started as an aurora-lint finding — an EXP34-C, INT32-C or
+MSC12-C violation that hand-adjudication then confirmed against the source.
+The <code class="docutils literal notranslate"><span class="pre">kvvfsDecode()</span></code> overflow did not: it was found by the close reading
+that reviewing aurora-lint’s findings prompted, which makes it a false
+negative for the tool. It is listed because it is an honest account of what
+the audit produced, not a detection to claim.</p>
+<p>All nine came out of the same file-at-a-time audit behind the real-world
+precision figures in <a class="reference internal" href="testing-methodology.html"><span class="doc">Testing Methodology</span></a>.</p>
+</section>
+<section id="hostap-hostapd-wpa-supplicant">
+<h2>hostap (hostapd / wpa_supplicant)<a class="headerlink" href="#hostap-hostapd-wpa-supplicant" title="Link to this heading"></a></h2>
+<p>The hostap ground-truth audit (736 files, commit <code class="docutils literal notranslate"><span class="pre">dcee60436</span></code>) surfaced 109
+genuine defects the audit log tracked outside of TP/FP labeling — the large
+majority found by full file read-throughs during adjudication, not by
+aurora-lint’s rule set. Of those, the 16 judged attacker-reachable via wire
+data (the highest-priority class) were re-verified against current mainline
+before any filing. Eight were disclosed privately to Jouni Malinen on
+2026-08-25; <strong>he applied all eight patches to hostap mainline on
+2026-09-08.</strong> No separate security advisory was published — impact was
+judged too small for one, though three of the eight (items 1, 14 and 16
+below) were still fixed as defense-in-depth over the maintainer’s own doubts
+about practical reachability.</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 22.0%" />
+<col style="width: 42.0%" />
+<col style="width: 12.0%" />
+<col style="width: 12.0%" />
+<col style="width: 12.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Site</p></th>
+<th class="head"><p>Defect</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Fixed</p></th>
+<th class="head"><p>Commit</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ap/wpa_auth_ft.c</span></code> — <code class="docutils literal notranslate"><span class="pre">wpa_ft_process_rdie()</span></code></p></td>
+<td><p>Bounds-checks <code class="docutils literal notranslate"><span class="pre">sizeof(*rdie)</span></code> but then writes 2 extra header bytes
+beyond that check (802.11r FT RIC subelement, off-by-2 OOB write)</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p>2026-09-08</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fcae90b60</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/common/ieee802_11_common.c</span></code> — <code class="docutils literal notranslate"><span class="pre">get_max_nss_capability()</span></code></p></td>
+<td><p>Reads <code class="docutils literal notranslate"><span class="pre">optional[0..7]</span></code> of a peer’s HE Capabilities element without
+validating the element is long enough to contain those bytes</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p>2026-09-08</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">895fd5881</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ap/ieee802_11_eht.c</span></code> — <code class="docutils literal notranslate"><span class="pre">hostapd_parse_link_reconf_req_sta_profile()</span></code></p></td>
+<td><p>OOB read when <code class="docutils literal notranslate"><span class="pre">sta_info</span> <span class="pre">==</span> <span class="pre">end</span></code>, a valid boundary case the
+preceding length check does not exclude</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p>2026-09-08</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">652a34915</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/common/ieee802_11_he.c</span></code> — <code class="docutils literal notranslate"><span class="pre">copy_sta_he_capab()</span></code></p></td>
+<td><p>Calls <code class="docutils literal notranslate"><span class="pre">check_valid_he_mcs()</span></code>, which reads unconditionally, before
+the IE-length validation that should gate it</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p>2026-09-08</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">6cf41afd5</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ap/drv_callbacks.c</span></code> — <code class="docutils literal notranslate"><span class="pre">hostapd_action_rx()</span></code> (NAN USD)</p></td>
+<td><p>Checks only <code class="docutils literal notranslate"><span class="pre">plen</span> <span class="pre">&gt;=</span> <span class="pre">5</span></code> before reading byte offset 5; needs
+<code class="docutils literal notranslate"><span class="pre">&gt;=</span> <span class="pre">6</span></code>. Sibling DPP branch in the same function does this correctly</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p>2026-09-08</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">7ce112433</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/eap_server/eap_server_peap.c</span></code> (SoH vendor-TLV)</p></td>
+<td><p>Checks <code class="docutils literal notranslate"><span class="pre">tlv_len</span> <span class="pre">&lt;</span> <span class="pre">4</span></code> but reads a 4-byte header that requires
+<code class="docutils literal notranslate"><span class="pre">tlv_len</span> <span class="pre">&gt;=</span> <span class="pre">8</span></code></p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p>2026-09-08</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">4b5965e61</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/common/nan_de.c</span></code> — <code class="docutils literal notranslate"><span class="pre">nan_de_config()</span></code> / <code class="docutils literal notranslate"><span class="pre">nan_de_start_new_publish_state()</span></code></p></td>
+<td><p>Rejects <code class="docutils literal notranslate"><span class="pre">n_max</span> <span class="pre">&lt;</span> <span class="pre">n_min</span></code> but not <code class="docutils literal notranslate"><span class="pre">n_max</span> <span class="pre">==</span> <span class="pre">n_min</span></code>; equal values
+later cause a mod-by-zero</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p>2026-09-08</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ec339318a</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/eap_server/eap_server_ttls.c</span></code> (resumption path)</p></td>
+<td><p>Off-by-one length check (<code class="docutils literal notranslate"><span class="pre">len</span> <span class="pre">&lt;</span> <span class="pre">1</span></code> where the code reads a second
+byte); currently unreachable since the writer always emits ≥2 bytes,
+fixed as defense-in-depth</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p>2026-09-08</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">95e57025f</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>All eight of the disclosed-and-fixed items were audit-discovered false
+negatives, not aurora-lint detections — the same honesty distinction drawn
+for SQLite’s <code class="docutils literal notranslate"><span class="pre">kvvfsDecode()</span></code> above. Two further wire-reachable items from
+the same audit (<code class="docutils literal notranslate"><span class="pre">src/eap_server/eap_server.c</span></code>’s EAP-Response/Nak length
+underflow and <code class="docutils literal notranslate"><span class="pre">src/common/nan_de.c</span></code>’s bloom-filter mod-by-zero) <strong>were</strong>
+genuine aurora-lint (EXP34-C) true positives, are still present upstream,
+and remain open: judged not reachable, so never filed. A sixteenth item
+(<code class="docutils literal notranslate"><span class="pre">src/common/sae.c</span></code>’s missing NULL guard, also a confirmed EXP34-C true
+positive) turned out to already be fixed upstream before the 2026-08-25
+filing, per w1.fi advisory 2026-3.</p>
+</section>
+<section id="combined-total">
+<h2>Combined total<a class="headerlink" href="#combined-total" title="Link to this heading"></a></h2>
+<p>17 defects disclosed across the two audits, 17 fixed upstream — SQLite’s
+nine the same day (most of them) or within days, hostap/wpa_supplicant’s
+eight within two weeks by the project’s original author and lead
+maintainer.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="testing-methodology.html" class="btn btn-neutral float-left" title="Testing Methodology" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="tool-comparison.html" class="btn btn-neutral float-right" title="Comparison To Other Tools" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025-2026, BISSELL Homecare, Inc. Licensed under CC BY 4.0.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
