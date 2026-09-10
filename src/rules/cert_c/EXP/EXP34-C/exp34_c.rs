@@ -566,8 +566,32 @@ fn check_callsite_null_args(
                     summaries,
                 );
 
-                // Only flag DefinitelyNull — PossiblyNull is too noisy for call sites
-                if state == null_state::NullState::DefinitelyNull {
+                // PossiblyNull was excluded here as "too noisy for call sites",
+                // which left this path asymmetric with the libc-allowlist one
+                // (that reports a potentially-null argument happily) and blind
+                // to every genuine maybe-null flow into a project function.
+                //
+                // What made it noisy was upstream: a parameter reached a
+                // disjunctive edge as PossiblyNull even when every visible
+                // caller proved it non-null, because the seed could not tell a
+                // PROVEN non-null parameter from an ASSUMED one. Now that
+                // `callsite_param_proven_nonnull` keeps the proven ones out of
+                // this state entirely, a PossiblyNull that survives to a call
+                // site is evidence rather than noise.
+                // A merely-possibly-null argument that a guard already
+                // evaluated at THIS call site proves non-null is not a
+                // finding: `if (p == NULL || sink(p) < 0)` reaches `sink`
+                // only on the branch where the null test failed. Same
+                // predicate the prescan uses for the same question, so the
+                // two cannot disagree about what counts as guarded.
+                if state == null_state::NullState::PossiblyNull
+                    && crate::analyze::prescan::guarded_nonnull_at(&arg, &var_name, source)
+                {
+                    param_idx += 1;
+                    continue;
+                }
+
+                if state.is_unsafe() {
                     // If no summary, assume callee handles null (conservative for unknowns)
                     let callee_checks_null = callee_summary
                         .map(|s| s.checks_null_params.contains(&param_idx))
@@ -584,8 +608,14 @@ fn check_callsite_null_args(
                             rule_id: "EXP34-C".to_string(),
                             severity: Severity::High,
                             message: format!(
-                                "Passing null pointer '{}' to '{}' which does not check for NULL",
-                                var_name, callee_name
+                                "Passing {} '{}' to '{}' which does not check for NULL",
+                                if state == null_state::NullState::DefinitelyNull {
+                                    "null pointer"
+                                } else {
+                                    "potentially null pointer"
+                                },
+                                var_name,
+                                callee_name
                             ),
                             file_path: String::new(),
                             line: start_point.row + 1,
