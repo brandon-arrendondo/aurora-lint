@@ -1266,6 +1266,9 @@ pub fn analyze_null_states_with_globals(
     let (initial_state, mut declared_pointers) =
         seed_initial_null_state(func_node, source, summaries, global_states, func_name);
 
+    let proven_nonnull_params =
+        collect_proven_nonnull_params(func_node, source, summaries, func_name);
+
     let mut entry_states: HashMap<BlockId, StateMap> = HashMap::new();
     let mut exit_states: HashMap<BlockId, StateMap> = HashMap::new();
 
@@ -1295,6 +1298,7 @@ pub fn analyze_null_states_with_globals(
         &mut declared_pointers,
         &mut entry_states,
         &mut exit_states,
+        &proven_nonnull_params,
     );
 
     NullAnalysisResult {
@@ -1410,6 +1414,7 @@ fn run_null_state_worklist(
     declared_pointers: &mut HashSet<String>,
     entry_states: &mut HashMap<BlockId, StateMap>,
     exit_states: &mut HashMap<BlockId, StateMap>,
+    proven_nonnull_params: &HashSet<String>,
 ) {
     // Worklist — companion set for O(1) membership test instead of O(N) VecDeque::contains.
     let mut worklist: VecDeque<BlockId> = VecDeque::new();
@@ -1438,7 +1443,15 @@ fn run_null_state_worklist(
             let pred_exit = exit_states.get(pred_id).cloned().unwrap_or_default();
 
             // Apply edge refinement from condition
-            let refined = apply_edge_refinement(&pred_exit, *pred_id, edge_kind, cfg, body, source);
+            let refined = apply_edge_refinement(
+                &pred_exit,
+                *pred_id,
+                edge_kind,
+                cfg,
+                body,
+                source,
+                proven_nonnull_params,
+            );
 
             if first {
                 new_entry = refined;
@@ -1482,6 +1495,42 @@ fn run_null_state_worklist(
     }
 }
 
+/// Names of this function's parameters that every visible call site proves
+/// non-null.
+///
+/// Gated on internal linkage: for an externally-visible function a caller can
+/// live in a translation unit the prescan never saw, so "every call site we
+/// found" is not "every call site". (`aggregate_callsite_null_states` already
+/// pushes an implicit `Unknown` vector for header-declared functions, which
+/// breaks the proof independently; this gate also covers a non-static function
+/// that simply has no header declaration among the scanned files.)
+///
+/// Empty whenever anything is missing — no `func_name`, no summary, external
+/// linkage — so the caller keeps its existing conservative behaviour.
+fn collect_proven_nonnull_params(
+    func_node: &Node,
+    source: &str,
+    summaries: &HashMap<String, FunctionSummary>,
+    func_name: Option<&str>,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Some(summary) = func_name.and_then(|n| summaries.get(n)) else {
+        return out;
+    };
+    if !summary.has_internal_linkage || summary.callsite_param_proven_nonnull.is_empty() {
+        return out;
+    }
+    let params = crate::analyze::function_summary::collect_param_names(func_node, source);
+    for &idx in &summary.callsite_param_proven_nonnull {
+        if let Some(name) = params.get(idx) {
+            if !name.is_empty() {
+                out.insert(name.clone());
+            }
+        }
+    }
+    out
+}
+
 /// Apply edge refinement: given a predecessor's exit state and the edge type,
 /// refine the state based on the predecessor's condition.
 fn apply_edge_refinement(
@@ -1491,6 +1540,7 @@ fn apply_edge_refinement(
     cfg: &FunctionCfg,
     body: &Node,
     source: &str,
+    proven_nonnull_params: &HashSet<String>,
 ) -> StateMap {
     let mut state = pred_exit.clone();
 
@@ -1557,13 +1607,25 @@ fn apply_edge_refinement(
             new_state,
             NullState::DefinitelyNull | NullState::PossiblyNull
         );
+        //
+        // A parameter every visible call site proves non-null is the same
+        // argument one level out: the null disjunct cannot be what made the
+        // condition go this way, because no caller supplies a null. This is
+        // strictly the PROOF (`callsite_param_proven_nonnull`), never the
+        // majority vote in `callsite_param_null_states` -- the vote lets an
+        // `Unknown` caller abstain and can outvote a `PossiblyNull` one, so it
+        // cannot license discarding a disjunct. Without it, mosquitto's
+        // `if(!prefix || strlen(prefix) != 0)` joins to PossiblyNull even
+        // though `bridge__create_prefix` is static and both call sites are
+        // guarded by `if(local_prefix)` / `if(remote_prefix)`.
         if introduces_null
             && current != NullState::DefinitelyNull
-            && crate::utility::cert_c::guard_dominance::has_dominating_dereference(
-                &info.var_name,
-                &cond_node,
-                source,
-            )
+            && (proven_nonnull_params.contains(&info.var_name)
+                || crate::utility::cert_c::guard_dominance::has_dominating_dereference(
+                    &info.var_name,
+                    &cond_node,
+                    source,
+                ))
         {
             continue;
         }
