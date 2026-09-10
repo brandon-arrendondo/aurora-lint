@@ -28,6 +28,15 @@ pub struct Exp34C {
     /// for the function-like macros actually invoked in the current file. Task
     /// 195 Part A: the macro analog of `FunctionSummary::modifies_params`.
     macro_write_params: RefCell<HashMap<String, Vec<usize>>>,
+    /// "Safe free" null-parameter indices (per
+    /// `macro_expand::macro_nulls_param_indices`) for the function-like macros
+    /// actually invoked in the current file — the macro analog of
+    /// `FunctionSummary::nulls_params`, mirroring MEM30-C's `macro_null_params`.
+    /// A bare `mosquitto_FREE(auth_method);` call has no `= NULL` an unexpanded
+    /// AST can see; this lets `null_state.rs`'s
+    /// `apply_cross_file_nulls_params_null` mark `auth_method` `DefinitelyNull`
+    /// afterward the same way real `free(p); p = NULL;` already is.
+    macro_null_params: RefCell<HashMap<String, Vec<usize>>>,
 }
 
 impl Exp34C {
@@ -39,6 +48,7 @@ impl Exp34C {
             prescan_global_var_states: RefCell::new(HashMap::new()),
             function_macros: RefCell::new(HashMap::new()),
             macro_write_params: RefCell::new(HashMap::new()),
+            macro_null_params: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -105,13 +115,23 @@ impl CertRule for Exp34C {
                     let mut invoked = HashSet::new();
                     collect_invoked_macro_names(node, source, &all_macros, &mut invoked);
                     let mut write_params = HashMap::new();
+                    let mut null_params = HashMap::new();
                     for name in invoked {
                         let idx = macro_expand::macro_writes_param_indices(&all_macros, &name);
                         if !idx.is_empty() {
-                            write_params.insert(name, idx);
+                            write_params.insert(name.clone(), idx);
+                        }
+                        // "Safe free" macros (mosquitto_FREE, Curl_safefree,
+                        // SAFE_FREE): a bare invocation has no visible
+                        // `= NULL` for the dataflow to see, so synthesize the
+                        // fact the same way as the write-through case above.
+                        let null_idx = macro_expand::macro_nulls_param_indices(&all_macros, &name);
+                        if !null_idx.is_empty() {
+                            null_params.insert(name, null_idx);
                         }
                     }
                     *self.macro_write_params.borrow_mut() = write_params;
+                    *self.macro_null_params.borrow_mut() = null_params;
                 }
             }
 
@@ -134,26 +154,49 @@ impl CertRule for Exp34C {
                         .child_by_field_name("declarator")
                         .and_then(|d| extract_function_name(&d, source));
 
-                    // Merge macro write-through params (task 195 Part A) into the
-                    // cross-file summaries map: any macro invoked in this file that
-                    // writes through a param gets a synthesized FunctionSummary
-                    // entry, so null_state.rs's existing `apply_cross_file_output_params_null`
-                    // (which only ever looks up by callee name) picks it up with
-                    // zero changes to null_state.rs itself. Real function summaries
-                    // always win on name collision.
+                    // Merge macro write-through params (task 195 Part A) and
+                    // "safe free" null params into the cross-file summaries
+                    // map: any macro invoked in this file that writes through
+                    // a param, or unconditionally nulls one, gets a
+                    // synthesized FunctionSummary entry, so null_state.rs's
+                    // existing `apply_cross_file_output_params_null` /
+                    // `apply_cross_file_nulls_params_null` (which only ever
+                    // look up by callee name) pick it up with zero changes to
+                    // their own dispatch. Real function summaries always win
+                    // on name collision (a macro name is never also a real
+                    // function name, but if it were, `.entry().or_insert_with`
+                    // below leaves the real summary alone either way since
+                    // both loops key off the same synthesized entry).
                     let macro_write_params = self.macro_write_params.borrow();
+                    let macro_null_params = self.macro_null_params.borrow();
                     let effective_summaries: Cow<HashMap<String, FunctionSummary>> =
-                        if macro_write_params.is_empty() {
+                        if macro_write_params.is_empty() && macro_null_params.is_empty() {
                             Cow::Borrowed(&summaries)
                         } else {
                             let mut merged = summaries.clone();
                             for (name, idx) in macro_write_params.iter() {
+                                // Skip a name that is already a real function
+                                // summary (checked against the pre-merge map,
+                                // not `merged`, so it also isn't clobbered by
+                                // the null_params loop below inserting first).
+                                if summaries.contains_key(name) {
+                                    continue;
+                                }
                                 merged
                                     .entry(name.clone())
-                                    .or_insert_with(|| FunctionSummary {
-                                        modifies_params: idx.iter().copied().collect(),
-                                        ..Default::default()
-                                    });
+                                    .or_default()
+                                    .modifies_params
+                                    .extend(idx.iter().copied());
+                            }
+                            for (name, idx) in macro_null_params.iter() {
+                                if summaries.contains_key(name) {
+                                    continue;
+                                }
+                                merged
+                                    .entry(name.clone())
+                                    .or_default()
+                                    .nulls_params
+                                    .extend(idx.iter().copied());
                             }
                             Cow::Owned(merged)
                         };
@@ -623,6 +666,21 @@ fn is_null_safe_callee(name: &str, macros: &HashMap<String, FunctionMacro>) -> b
     is_null_safe_function(name)
         || macro_expand::macro_forwarding_target(macros, name)
             .is_some_and(|(target, _)| is_null_safe_function(&target))
+        || is_safe_free_macro(name, macros)
+}
+
+/// True when `name` is a "safe free" function-like macro
+/// (`macro_expand::macro_nulls_param_indices` finds at least one parameter it
+/// unconditionally nulls — `mosquitto_FREE`, `Curl_safefree`, `SAFE_FREE`).
+/// Such a macro is exactly as null-tolerant as `free()` itself: its body
+/// calls a free function on the argument (a no-op on NULL, like `free`) and
+/// then reassigns it to NULL (a no-op if it already was). Without this,
+/// wiring `FunctionSummary::nulls_params` into the interprocedural call-site
+/// check (so a *later* use of the freed variable is caught) made passing an
+/// already-null/possibly-null pointer to the free macro itself look like an
+/// unchecked-NULL-argument violation — which it structurally cannot be.
+fn is_safe_free_macro(name: &str, macros: &HashMap<String, FunctionMacro>) -> bool {
+    !macro_expand::macro_nulls_param_indices(macros, name).is_empty()
 }
 
 /// Functions that safely handle NULL arguments (no dereference concern).
