@@ -7,6 +7,7 @@ use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::value_range::{self, RangeAnalysisResult};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -46,6 +47,11 @@ pub struct Int34C {
     /// compile-time constant, pre-projected into the name set
     /// `const_eval::ConstantNameSets` wants.
     constant_returning_functions: RefCell<HashSet<String>>,
+    /// Project-wide typedef alias map, walked by
+    /// `overflow_helpers::resolve_typedef_chain` so a left operand declared
+    /// `vptr_t` reaches `unsigned long` and is measured at 64 bits, not the
+    /// 32-bit floor an unrecognized spelling falls back to (task 1119).
+    typedef_types: RefCell<HashMap<String, String>>,
 }
 
 impl Int34C {
@@ -61,6 +67,7 @@ impl Int34C {
             current_function_macros: RefCell::new(HashMap::new()),
             function_summaries: RefCell::new(HashMap::new()),
             constant_returning_functions: RefCell::new(HashSet::new()),
+            typedef_types: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -99,6 +106,7 @@ impl CertRule for Int34C {
             .filter(|(_, summary)| summary.returns_only_compile_time_constants)
             .map(|(name, _)| name.clone())
             .collect();
+        *self.typedef_types.borrow_mut() = context.typedef_types.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {
@@ -155,6 +163,12 @@ impl Int34C {
             let right_text = ast_utils::get_node_text(&right_node, source);
             let left_text = ast_utils::get_node_text(&left_node, source);
 
+            // The bound every range gate below compares against. C11 6.5.7p3
+            // makes the hazard relative to the LEFT operand's width, so a
+            // 64-bit operand shifted by [32, 63] is defined behaviour and
+            // must not be reported as if it were `uint32_t` (task 1119).
+            let width = self.operand_bit_width(&left_node, source);
+
             // If the shift amount is a non-negative integer literal the rule is
             // trivially satisfied: negative-shift cannot happen, and width-overflow
             // is a compiler-visible property of the constant (compilers warn on
@@ -193,7 +207,7 @@ impl Int34C {
 
             // The amount is a call whose pre-scanned return range is already
             // within any standard operand's width.
-            if self.shift_amount_bounded_by_callee_return(&right_node, source) {
+            if self.shift_amount_bounded_by_callee_return(&right_node, source, width) {
                 return;
             }
 
@@ -201,9 +215,9 @@ impl Int34C {
             if let Some(range) = self.eval_shift_range_via_vra(node, &right_node, source) {
                 // A compile-time constant shift (min == max, non-negative) is
                 // equivalent to a numeric literal — the compiler validates it and
-                // INT34-C adds nothing.  Variable shifts bounded to [0, 31] are
-                // also safe for 32-bit operands.
-                if range.min >= 0 && (range.min == range.max || range.max < 32) {
+                // INT34-C adds nothing.  Variable shifts bounded below the
+                // operand's width are also safe.
+                if Self::range_within_width(&range, width) {
                     return;
                 }
             }
@@ -217,8 +231,8 @@ impl Int34C {
                 if let Some(range) =
                     const_eval::try_evaluate_range(&right_node, source, &macros, &var_ranges)
                 {
-                    // Same logic: single-value constants and 32-bit-bounded variables are safe.
-                    if range.min >= 0 && (range.min == range.max || range.max < 32) {
+                    // Same logic: single-value constants and width-bounded variables are safe.
+                    if Self::range_within_width(&range, width) {
                         return;
                     }
                 }
@@ -232,7 +246,7 @@ impl Int34C {
             // that masks it, or that extraction parked in a local on the
             // line above -- and neither is reachable from the shift
             // expression alone.
-            if self.shift_amount_bounded_after_expansion(node, &right_node, source) {
+            if self.shift_amount_bounded_after_expansion(node, &right_node, source, width) {
                 return;
             }
 
@@ -246,7 +260,7 @@ impl Int34C {
             // to an unsigned `>>`. So both operators require validation
             // for both signed and unsigned operands.
             if self.is_likely_unsigned(left_text, &left_node, source) {
-                if !self.is_shift_amount_validated(node, &right_node, source) {
+                if !self.is_shift_amount_validated(node, &right_node, source, width) {
                     self.report_violation(
                         node,
                         left_text.to_string(),
@@ -257,7 +271,7 @@ impl Int34C {
                 }
             } else {
                 // For signed types or unknown types, require validation for both left and right shifts
-                if !self.is_shift_amount_validated(node, &right_node, source) {
+                if !self.is_shift_amount_validated(node, &right_node, source, width) {
                     self.report_violation(
                         node,
                         left_text.to_string(),
@@ -369,7 +383,7 @@ impl Int34C {
     ///
     /// Distinct from the constant case above: there the returns are fixed but
     /// unfoldable, here they fold to a range that may hold several values.
-    fn shift_amount_bounded_by_callee_return(&self, node: &Node, source: &str) -> bool {
+    fn shift_amount_bounded_by_callee_return(&self, node: &Node, source: &str, width: i64) -> bool {
         let node = if node.kind() == "parenthesized_expression" {
             match node.named_child(0) {
                 Some(inner) => inner,
@@ -392,7 +406,7 @@ impl Int34C {
             .borrow()
             .get(name)
             .and_then(|summary| summary.return_range)
-            .is_some_and(|range| range.min >= 0 && range.max < 32)
+            .is_some_and(|range| range.min >= 0 && range.max < width)
     }
 
     /// Returns true if the shift amount expression is bounded by a modulo operation
@@ -452,6 +466,139 @@ impl Int34C {
     }
 
     /// Check if the operand is likely an unsigned type
+    /// A shift amount range the operand can absorb: non-negative, and either
+    /// a single value (a compile-time constant the compiler already checks)
+    /// or entirely below `width`.
+    fn range_within_width(range: &const_eval::ValueRange, width: i64) -> bool {
+        range.min >= 0 && (range.min == range.max || range.max < width)
+    }
+
+    /// Bit width of the shift's left operand, as the bound every range gate
+    /// compares against: 64 when the operand resolves to a 64-bit integer,
+    /// otherwise 32.
+    ///
+    /// 32 is the floor, not a guess: an operand the rule cannot type (a
+    /// struct field, a call, an unknown typedef, a bare `long` whose width
+    /// is the data model's choice -- see `width_of_type_text`) keeps the
+    /// narrower bound, so widening is only ever the result of positive,
+    /// platform-independent evidence. The reverse default would assert
+    /// safety for `uint32_t x >> 40` (task 1119).
+    fn operand_bit_width(&self, left: &Node, source: &str) -> i64 {
+        match self.resolve_operand_width(left, source, 0) {
+            Some(w) if w >= 64 => 64,
+            _ => 32,
+        }
+    }
+
+    /// Declared width of the integer object `node` denotes, after peeling
+    /// `unwrap` pointer/array levels (`p[i]`, `*p`). `None` for anything the
+    /// rule cannot resolve to an integer scalar.
+    fn resolve_operand_width(&self, node: &Node, source: &str, unwrap: usize) -> Option<u32> {
+        match node.kind() {
+            "parenthesized_expression" => {
+                self.resolve_operand_width(&node.named_child(0)?, source, unwrap)
+            }
+            "cast_expression" => {
+                let ty = node.child_by_field_name("type")?;
+                let text = ast_utils::get_node_text(&ty, source);
+                if text.contains('*') {
+                    return None;
+                }
+                self.width_of_type_text(text)
+            }
+            "number_literal" => {
+                // `1ULL << n` / `1UL << n`: the suffix fixes the operand's type.
+                // An unsuffixed literal is `int` (or wider only by value), so
+                // it takes the floor.
+                let text = ast_utils::get_node_text(node, source);
+                let suffix: String = text
+                    .chars()
+                    .rev()
+                    .take_while(|c| matches!(c, 'u' | 'U' | 'l' | 'L'))
+                    .collect();
+                if suffix.contains(['l', 'L']) {
+                    Some(64)
+                } else {
+                    None
+                }
+            }
+            "identifier" => {
+                let name = ast_utils::get_node_text(node, source);
+                let (decl, mut declarator) =
+                    ast_utils::resolve_identifier_declarator(node, name, source)?;
+                for _ in 0..unwrap {
+                    if !matches!(declarator.kind(), "pointer_declarator" | "array_declarator") {
+                        return None;
+                    }
+                    declarator = declarator.child_by_field_name("declarator")?;
+                }
+                if declarator.kind() != "identifier" {
+                    return None;
+                }
+                self.width_of_type_text(&ast_utils::declaration_type_text(&decl, source))
+            }
+            "subscript_expression" => {
+                let arg = node.child_by_field_name("argument")?;
+                self.resolve_operand_width(&arg, source, unwrap + 1)
+            }
+            "pointer_expression" if ast_utils::is_dereference_expression(node, source) => {
+                let arg = node.child_by_field_name("argument")?;
+                self.resolve_operand_width(&arg, source, unwrap + 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// Width of a declared type spelling with qualifiers and storage class
+    /// dropped and typedefs followed project-wide.
+    ///
+    /// A bare `long` family spelling answers `None`, not 64: it is 64-bit on
+    /// LP64 and 32-bit on LLP64, and the corpus (curl) builds for both. The
+    /// same platform assumption INT30-C's `is_portable_64bit_unsigned`
+    /// declines to make is declined here for the same type -- a shift
+    /// safety claim has to be provable, not inferred from the target the
+    /// benchmark happens to run on. The types that are 64 bits under both
+    /// models (`uint64_t` and its family, `size_t`, `uintptr_t`, `long
+    /// long`) keep answering 64.
+    fn width_of_type_text(&self, text: &str) -> Option<u32> {
+        let base = text
+            .split_whitespace()
+            .filter(|t| {
+                !matches!(
+                    *t,
+                    "const"
+                        | "volatile"
+                        | "static"
+                        | "extern"
+                        | "register"
+                        | "_Atomic"
+                        | "restrict"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let resolved = resolve_typedef_chain(&base, &self.typedef_types.borrow());
+        if Self::is_platform_width_long(&resolved) {
+            return None;
+        }
+        ast_utils::integer_type_width(&resolved)
+    }
+
+    /// The `long` spellings whose width is a data-model choice (LP64 vs
+    /// LLP64) rather than a standard guarantee. `long long` is not among
+    /// them: C99 guarantees it at least 64 bits everywhere.
+    fn is_platform_width_long(base: &str) -> bool {
+        matches!(
+            base.trim(),
+            "long"
+                | "signed long"
+                | "unsigned long"
+                | "long int"
+                | "signed long int"
+                | "unsigned long int"
+        )
+    }
+
     fn is_likely_unsigned(&self, var_name: &str, node: &Node, source: &str) -> bool {
         // Check common naming conventions for unsigned variables
         if var_name.starts_with("ui_")
@@ -605,6 +752,7 @@ impl Int34C {
         shift_node: &Node,
         shift_amount: &Node,
         source: &str,
+        width: i64,
     ) -> bool {
         let shift_var = ast_utils::get_node_text(shift_amount, source);
 
@@ -635,7 +783,7 @@ impl Int34C {
                     // If the shift amount expression contains an identifier
                     // bounded by this loop condition to a small value, it's safe.
                     if let Some(condition) = node.child_by_field_name("condition") {
-                        if self.loop_bounds_shift_amount(&condition, shift_amount, source) {
+                        if self.loop_bounds_shift_amount(&condition, shift_amount, source, width) {
                             return true;
                         }
                     }
@@ -650,12 +798,13 @@ impl Int34C {
 
     /// Check if a loop condition bounds the shift amount to a safe range.
     /// Extracts identifiers from the shift amount and checks if the loop
-    /// condition constrains them to < 32.
+    /// condition constrains them below the operand's width.
     fn loop_bounds_shift_amount(
         &self,
         condition: &Node,
         shift_amount: &Node,
         source: &str,
+        width: i64,
     ) -> bool {
         // Collect identifiers from the shift amount expression
         let mut shift_vars = Vec::new();
@@ -675,7 +824,7 @@ impl Int34C {
         };
 
         // Check if any shift variable appears in a < or <= comparison with a small bound
-        if self.condition_bounds_var_small(&cond, &shift_vars, source) {
+        if self.condition_bounds_var_small(&cond, &shift_vars, source, width) {
             return true;
         }
 
@@ -697,8 +846,15 @@ impl Int34C {
         }
     }
 
-    /// Check if a condition bounds any of the given variables to less than 32.
-    fn condition_bounds_var_small(&self, cond: &Node, var_names: &[String], source: &str) -> bool {
+    /// Check if a condition bounds any of the given variables to less than
+    /// the operand's width.
+    fn condition_bounds_var_small(
+        &self,
+        cond: &Node,
+        var_names: &[String],
+        source: &str,
+        width: i64,
+    ) -> bool {
         if cond.kind() != "binary_expression" {
             return false;
         }
@@ -707,12 +863,12 @@ impl Int34C {
         // Handle && conditions
         if op == "&&" {
             if let Some(left) = cond.child_by_field_name("left") {
-                if self.condition_bounds_var_small(&left, var_names, source) {
+                if self.condition_bounds_var_small(&left, var_names, source, width) {
                     return true;
                 }
             }
             if let Some(right) = cond.child_by_field_name("right") {
-                if self.condition_bounds_var_small(&right, var_names, source) {
+                if self.condition_bounds_var_small(&right, var_names, source, width) {
                     return true;
                 }
             }
@@ -734,23 +890,23 @@ impl Int34C {
         if (op == "<" || op == "<=") && var_names.iter().any(|v| v == left_text) {
             // Try to parse the bound as a small number
             if let Ok(bound) = right_text.trim().parse::<i64>() {
-                return bound <= 32;
+                return bound <= width;
             }
             // Try to resolve macro
             let macros = self.current_macros.borrow();
             if let Some(val) = const_eval::try_evaluate_expr(&right, source, &macros) {
-                return val <= 32;
+                return val <= width;
             }
         }
 
         // BOUND > var or BOUND >= var
         if (op == ">" || op == ">=") && var_names.iter().any(|v| v == right_text) {
             if let Ok(bound) = left_text.trim().parse::<i64>() {
-                return bound <= 32;
+                return bound <= width;
             }
             let macros = self.current_macros.borrow();
             if let Some(val) = const_eval::try_evaluate_expr(&left, source, &macros) {
-                return val <= 32;
+                return val <= width;
             }
         }
 
@@ -1152,6 +1308,7 @@ impl Int34C {
         shift_node: &Node,
         amount: &Node,
         source: &str,
+        width: i64,
     ) -> bool {
         let fmacros = self.current_function_macros.borrow();
         let macros = self.current_macros.borrow();
@@ -1184,7 +1341,7 @@ impl Int34C {
         var_ranges.extend(resolved);
 
         const_eval::try_evaluate_range_expanding(amount, source, &macros, &var_ranges, &fmacros)
-            .is_some_and(|range| range.min >= 0 && (range.min == range.max || range.max < 32))
+            .is_some_and(|range| Self::range_within_width(&range, width))
     }
 
     /// Evaluate the shift amount's range using CFG-based VRA.

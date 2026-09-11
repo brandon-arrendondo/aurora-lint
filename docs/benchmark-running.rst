@@ -179,8 +179,11 @@ step, no polling.
 Supported tools: ``aurora-lint``, ``cppcheck``, ``clang-tidy``
 
 Supported codebases: ``libcrc``, ``sqlite``, ``mosquitto``, ``curl``, ``hostap``,
-``lua``, ``raylib``, ``pureftpd``, ``sel4`` (aurora-lint-only for the latter two —
-no cppcheck/clang-tidy baseline yet)
+``lua``, ``raylib``, ``pureftpd``, ``sel4``, ``mbedtls``, ``valkey``, ``ventoy``
+(aurora-lint-only for ``pureftpd``, ``sel4``, ``mbedtls`` and ``valkey`` — no
+cppcheck/clang-tidy baseline yet; ``ventoy`` is the Win32 oracle,
+``Ventoy2Disk/Ventoy2Disk/`` only, and ``<windows.h>`` is unresolved on a
+Linux node for every tool alike)
 
 .. note::
 

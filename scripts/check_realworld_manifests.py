@@ -29,7 +29,7 @@ Against the rule ids in ``rules_templates/rules-all.toml``:
 
 1. **Missing** -- a rule with no ``[rules.cert_c.<ID>]`` block in a real-world
    manifest. This is the defect above: adding a rule under ``src/rules/cert_c/``
-   fails this check until all nine manifests carry a decision for it, which is
+   fails this check until every manifest carries a decision for it, which is
    also how a new rule stops being silently dark on the real-world suite.
 2. **Stale** -- a block naming a rule that no longer exists in the base. It
    reads as a decision and decides nothing; a rename leaves one behind.
