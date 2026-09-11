@@ -336,6 +336,10 @@ hypothetical; see `Verifying the Pins`_ below.
      - https://github.com/Mbed-TLS/mbedtls.git
      - ``068ff080b369adfac81509f9b57b2afabaf82dc5``
      - detached
+   * - valkey
+     - https://github.com/valkey-io/valkey.git
+     - ``7f1dffedff6de73058b2c2a389422b6ecd56c8fb``
+     - detached
 
 .. important::
 
@@ -445,6 +449,11 @@ Manual fallback:
     # of library/ does not need it.
     git clone https://github.com/Mbed-TLS/mbedtls.git
     cd mbedtls && git checkout 068ff080b369adfac81509f9b57b2afabaf82dc5 && cd ..
+
+    # Do not build inside this checkout: `make` leaves a gitignored
+    # src/release.h that corpus-check will (correctly) refuse.
+    git clone https://github.com/valkey-io/valkey.git
+    cd valkey && git checkout 7f1dffedff6de73058b2c2a389422b6ecd56c8fb && cd ..
 
 Running Each Tool Manually
 --------------------------
