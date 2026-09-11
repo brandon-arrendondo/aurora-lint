@@ -19,7 +19,7 @@
 # <bench_root>/benchmarks/juliet-test-suite-c/compile_commands.json.
 #
 # Prerequisite: playbooks/setup-benchmark-repos.yml has already cloned and
-# pinned the 9 real-world checkouts (this playbook fails fast via
+# pinned every real-world checkout in data/benchmark_repos.json (this playbook fails fast via
 # corpus-check if they're missing or drifted) and installed its "Third-party
 # library headers" apt list. This playbook only adds the packages *on top
 # of* that list which its own project-specific builds need.
@@ -30,7 +30,7 @@
 #   ansible-playbook playbooks/setup-compile-commands.yml -i "localhost," -c local \
 #     --ask-become-pass -e bench_root=/data/toolchain
 #
-# sel4 IS handled (all 9 projects are). It was previously believed to need
+# sel4 IS handled (every registered project is). It was previously believed to need
 # the sel4test-manifest umbrella project; it does not. The `cmake -E touch:
 # failed to update .../generated_prune/**/*_gen.h` failure was the Makefile
 # generator, not the checkout -- seL4 touches nested outputs without creating
@@ -344,6 +344,48 @@
         dest: "{{ bench_root }}/sel4/compile_commands.json"
         remote_src: true
         mode: "0644"
+
+    # ── mbedtls (plain Makefile, in-tree; needs the framework submodule) ──
+    # The CMake route wants the framework submodule even with ENABLE_TESTING
+    # and ENABLE_PROGRAMS off (it imports framework/scripts at configure time),
+    # and library/Makefile reaches into it too: ssl_debug_helpers_generated.c
+    # is regenerated from framework/scripts/generate_ssl_debug_helpers.py, so
+    # `make -C library` stops at 101 of 109 TUs without it. The submodule is
+    # pinned by the parent commit, so initialising it is deterministic, and it
+    # lives entirely outside the library/ scan scope. `make -C library` alone
+    # (not the top-level `make`, which also builds programs/ and tests/) is
+    # exactly the library/** scope the sqc entry scans: 113 TUs, 111 under
+    # library/ plus the two 3rdparty/p256-m files the library links.
+    - name: mbedtls - fetch the framework submodule the build scripts import
+      command: git submodule update --init framework
+      args:
+        chdir: "{{ bench_root }}/mbedtls"
+        creates: "{{ bench_root }}/mbedtls/framework/scripts"
+
+    - name: mbedtls - build the library under bear to capture compile_commands.json
+      shell: |
+        set -e
+        make -C library clean
+        bear -- make -C library -j"$(nproc)"
+      args:
+        chdir: "{{ bench_root }}/mbedtls"
+        executable: /bin/bash
+        creates: "{{ bench_root }}/mbedtls/compile_commands.json"
+
+    # The build regenerates two tracked files byte-identically and leaves
+    # tests/seedfile plus python caches behind; all are gitignored, but
+    # corpus-check flags nothing only because none of them is .c/.h -- clean
+    # them anyway so the checkout is what the pin says it is.
+    - name: mbedtls - restore checkout to pristine (keep compile_commands.json)
+      shell: |
+        set -e
+        make -C library clean
+        rm -f tests/seedfile
+        find . -name __pycache__ -type d -prune -exec rm -rf {} +
+      args:
+        chdir: "{{ bench_root }}/mbedtls"
+        executable: /bin/bash
+      when: not ansible_check_mode
 
     # ── Juliet (synthesized -- no real build system; see the script) ──────
     - name: Juliet - synthesize compile_commands.json

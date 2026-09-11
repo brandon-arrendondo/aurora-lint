@@ -412,6 +412,39 @@ CODEBASES = {
             "source_dirs": ["{path}/src/"],
         },
     },
+    # Onboarded as the 10th real-world oracle: the suite's first dedicated
+    # crypto/TLS library. mbedtls_platform_zeroize is a purpose-fit
+    # sensitive-data-clearing idiom no earlier codebase offered MEM03-C (same
+    # "pick a codebase for one rule's first real signal" logic as pureftpd for
+    # CWE-89). mbedtls_calloc/mbedtls_free are #defines in
+    # include/mbedtls/platform.h resolving to calloc/free (or a pluggable
+    # allocator) -- the include/ prescan is what lets MEM30/31-C see through
+    # them, so keep it in -d.
+    "mbedtls": {
+        "path": BENCH_ROOT / "mbedtls",
+        "sqc": {
+            # Scope = library/ (the shipped library proper, 109 .c + 65 .h).
+            # include/mbedtls + include/psa are public headers only, excluded
+            # for the same reason curl excludes its include/; 3rdparty/ is
+            # vendored verified crypto (Project Everest); tests/, programs/,
+            # scripts/, configs/, visualc/ and the framework submodule are not
+            # library code. mbedtls_config.h / build_info.h are static
+            # checked-in headers, so no build step is needed to scan.
+            "scan_path": "{path}/library",
+            "manifest": "conf/realworld/mbedtls-rules.toml",
+            "includes": ["-I", "{path}/include", "-I", "{path}/library"],
+            "extra_args": ["-d", "{path}/library", "-d", "{path}/include"],
+        },
+        # Same library/-only scope as sqc above, for a fair cross-tool comparison.
+        "cppcheck": {
+            "includes": ["-I", "{path}/include", "-I", "{path}/library"],
+            "source_dirs": ["{path}/library/"],
+        },
+        "clang-tidy": {
+            "includes": ["-I", "{path}/include", "-I", "{path}/library"],
+            "source_dirs": ["{path}/library/"],
+        },
+    },
 }
 
 
@@ -800,7 +833,7 @@ def _count_sqc_scanned(cfg: dict) -> tuple[int, int]:
 # Both consume a compile_commands.json rather than a curated -I list, because
 # both need a real preprocess: that is the axis sqc deliberately does not
 # require, and pretending otherwise would compare them at a handicap. The
-# compile databases are provisioned for all nine checkouts by
+# compile databases are provisioned for every pinned checkout by
 # playbooks/setup-compile-commands.yml (task 767 -- sel4, hostap and pureftpd
 # included; the belief that three corpora were unbuildable predates that
 # playbook's sel4 Ninja fix).
