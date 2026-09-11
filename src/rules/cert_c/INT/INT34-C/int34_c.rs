@@ -478,15 +478,11 @@ impl Int34C {
     /// otherwise 32.
     ///
     /// 32 is the floor, not a guess: an operand the rule cannot type (a
-    /// struct field, a call, an unknown typedef) keeps the narrower bound, so
-    /// widening is only ever the result of positive evidence. The reverse
-    /// default would assert safety for `uint32_t x >> 40`. Widths follow
-    /// `ast_utils::integer_type_width`'s pinned LP64 model, which is what the
-    /// `sizeof` folding in `const_eval` already assumes; INT30-C's
-    /// `is_portable_64bit_unsigned` deliberately excludes `unsigned long` for
-    /// LLP64 targets and this rule does not, since a shift by [32, 63] of a
-    /// `long` is the author's LP64 assumption made explicit, not a wrap the
-    /// analysis is being asked to prove absent (task 1119).
+    /// struct field, a call, an unknown typedef, a bare `long` whose width
+    /// is the data model's choice -- see `width_of_type_text`) keeps the
+    /// narrower bound, so widening is only ever the result of positive,
+    /// platform-independent evidence. The reverse default would assert
+    /// safety for `uint32_t x >> 40` (task 1119).
     fn operand_bit_width(&self, left: &Node, source: &str) -> i64 {
         match self.resolve_operand_width(left, source, 0) {
             Some(w) if w >= 64 => 64,
@@ -555,6 +551,15 @@ impl Int34C {
 
     /// Width of a declared type spelling with qualifiers and storage class
     /// dropped and typedefs followed project-wide.
+    ///
+    /// A bare `long` family spelling answers `None`, not 64: it is 64-bit on
+    /// LP64 and 32-bit on LLP64, and the corpus (curl) builds for both. The
+    /// same platform assumption INT30-C's `is_portable_64bit_unsigned`
+    /// declines to make is declined here for the same type -- a shift
+    /// safety claim has to be provable, not inferred from the target the
+    /// benchmark happens to run on. The types that are 64 bits under both
+    /// models (`uint64_t` and its family, `size_t`, `uintptr_t`, `long
+    /// long`) keep answering 64.
     fn width_of_type_text(&self, text: &str) -> Option<u32> {
         let base = text
             .split_whitespace()
@@ -573,7 +578,25 @@ impl Int34C {
             .collect::<Vec<_>>()
             .join(" ");
         let resolved = resolve_typedef_chain(&base, &self.typedef_types.borrow());
+        if Self::is_platform_width_long(&resolved) {
+            return None;
+        }
         ast_utils::integer_type_width(&resolved)
+    }
+
+    /// The `long` spellings whose width is a data-model choice (LP64 vs
+    /// LLP64) rather than a standard guarantee. `long long` is not among
+    /// them: C99 guarantees it at least 64 bits everywhere.
+    fn is_platform_width_long(base: &str) -> bool {
+        matches!(
+            base.trim(),
+            "long"
+                | "signed long"
+                | "unsigned long"
+                | "long int"
+                | "signed long int"
+                | "unsigned long int"
+        )
     }
 
     fn is_likely_unsigned(&self, var_name: &str, node: &Node, source: &str) -> bool {
