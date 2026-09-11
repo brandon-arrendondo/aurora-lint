@@ -171,10 +171,21 @@ uses the parser's own failure signal.
 
 | Function | Signature | Description |
 |---|---|---|
-| `parse_with_recovery` | `(parser: &mut Parser, source: String) -> Option<(Tree, String)>` | Iteratively re-parses, and on each pass blanks out any single bare-identifier token tree-sitter isolated as its own leaf `ERROR` node (no children, text is exactly one identifier) — since that token was already unusable to every AST-based rule query, blanking it can only recover structure, never lose anything. Bounded iteration count so a pathological file can't spin forever. |
+| `parse_with_recovery` | `(parser: &mut Parser, source: String) -> Option<(Tree, String)>` | Iteratively re-parses, and on each pass blanks out any single bare-identifier token tree-sitter isolated as its own leaf `ERROR` node (no children, text is exactly one identifier) — since that token was already unusable to every AST-based rule query, blanking it can only recover structure, never lose anything. Bounded iteration count so a pathological file can't spin forever. Every tree walk inside is cursor-based (`query::find_first_descendant` / `find_descendants`), never a `node.child(i)` index loop: tree-sitter's `child(i)` restarts from the first child each call, so an index loop is O(n²) per node, and a NUL-strewn file parses to one root `ERROR` with a child per stray byte (56k on Ventoy2Disk's WinDialog.c mis-decoded as ISO-8859-1) — the shape that pegged a core for ten minutes with every rule disabled (task 1131). |
 
 **Wiring pattern:** Called from the parsing entry point as a recovery
 step, not from within a rule.
+
+**Input the parser never sees (task 1131):** `src/parser/mod.rs`'s
+`read_source_or_transcode` decides encoding by BOM, then by NUL layout.
+NUL on one byte parity only is BOM-less UTF-16 (decoded by the lit
+parity's endianness); any other NUL-bearing file is a binary blob with a
+C extension and is refused with `parser::NotSourceText`, which the scan
+loop reports as `Warning: <file>: not C source text (...); skipped`. The
+`child(i)` quadratic above is not confined to this module — every rule
+and prescan walk uses the idiom — so refusing the input is what actually
+bounds the run; a garbage file that still parses to a very wide `ERROR`
+root by some other route would hit the same wall.
 
 ## Preprocessor branch structure
 

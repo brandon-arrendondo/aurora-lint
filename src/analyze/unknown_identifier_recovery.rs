@@ -54,6 +54,7 @@
 //! contained defect was observed cascading into a file-spanning ERROR node
 //! on raylib's rlgl.h.
 
+use lang_parsing_substrate::query;
 use std::collections::HashSet;
 use tree_sitter::{Node, Parser, Tree};
 
@@ -131,6 +132,17 @@ fn is_bare_identifier(text: &str) -> bool {
 /// Depth-first search for the first leaf `ERROR` node whose trimmed text is
 /// a single bare identifier. Returns the exact (untrimmed-boundary) byte
 /// range to blank.
+///
+/// Walks with a cursor ([`query::find_first_descendant`]), never by
+/// `node.child(i)` in a loop (task 1131). tree-sitter's `child(i)` starts
+/// from the first child every call, so an index loop costs O(n²) per node
+/// -- invisible on a normal tree, but a NUL-interleaved (mis-decoded
+/// UTF-16, or binary) file parses to ONE root `ERROR` node with tens of
+/// thousands of direct children (56,175 on Ventoy2Disk's WinDialog.c), and
+/// that one loop ran for over ten minutes before being killed. Every walk
+/// in this module is cursor-based for the same reason: this pass runs
+/// before any rule and with every rule disabled, so it must stay linear on
+/// exactly the inputs the parser recovers worst from.
 fn find_blankable_identifier_error(node: &Node, source: &str) -> Option<(usize, usize)> {
     // Deliberately matched on the ERROR node's own text span, not its
     // internal child structure: tree-sitter sometimes wraps the offending
@@ -141,25 +153,18 @@ fn find_blankable_identifier_error(node: &Node, source: &str) -> Option<(usize, 
     // matters is only that the ERROR node's entire span is exactly one bare
     // identifier once trimmed, regardless of how many (or few) children it
     // has internally.
-    if node.kind() == "ERROR" {
-        let start = node.start_byte();
-        let end = node.end_byte();
-        let text = &source[start..end];
-        let trimmed = text.trim();
-        if !trimmed.is_empty() && is_bare_identifier(trimmed) {
-            let leading = text.len() - text.trim_start().len();
-            let trailing = text.len() - text.trim_end().len();
-            return Some((start + leading, end - trailing));
+    let found = query::find_first_descendant(*node, |n| {
+        n.kind() == "ERROR" && {
+            let trimmed = source[n.start_byte()..n.end_byte()].trim();
+            !trimmed.is_empty() && is_bare_identifier(trimmed)
         }
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if let Some(found) = find_blankable_identifier_error(&child, source) {
-                return Some(found);
-            }
-        }
-    }
-    None
+    })?;
+    let start = found.start_byte();
+    let end = found.end_byte();
+    let text = &source[start..end];
+    let leading = text.len() - text.trim_start().len();
+    let trailing = text.len() - text.trim_end().len();
+    Some((start + leading, end - trailing))
 }
 
 fn blank_range(source: &str, start: usize, end: usize) -> String {
@@ -297,13 +302,7 @@ fn line_is_preprocessor_directive(source: &str, byte: usize) -> bool {
 /// Number of `ERROR` and `MISSING` nodes in the tree -- the comparison used
 /// to decide between two candidate repairs of the same defect.
 fn error_node_count(node: &Node) -> usize {
-    let mut count = usize::from(node.is_error() || node.is_missing());
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            count += error_node_count(&child);
-        }
-    }
-    count
+    query::find_descendants(*node, |n| n.is_error() || n.is_missing()).len()
 }
 
 /// Depth-first search for a `preproc_if`/`preproc_ifdef`/`preproc_elif`-style
@@ -352,13 +351,26 @@ fn find_blankable_preproc_brace_error(
     node: &Node,
     source: &str,
 ) -> Option<((usize, usize), (usize, usize))> {
-    if matches!(
-        node.kind(),
-        "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef"
-    ) {
-        let children: Vec<Node> = (0..node.child_count())
-            .filter_map(|i| node.child(i))
-            .collect();
+    let conditionals = query::find_descendants_of_kinds(
+        *node,
+        &[
+            "preproc_if",
+            "preproc_ifdef",
+            "preproc_elif",
+            "preproc_elifdef",
+        ],
+    );
+    conditionals
+        .into_iter()
+        .find_map(|node| lone_brace_guard_ranges(&node, source))
+}
+
+/// The two ranges [`find_blankable_preproc_brace_error`] blanks when this
+/// one conditional's guarded content is a lone ERROR-wrapped brace.
+fn lone_brace_guard_ranges(node: &Node, source: &str) -> Option<((usize, usize), (usize, usize))> {
+    {
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.children(&mut cursor).collect();
         if let Some(endif_idx) = children
             .iter()
             .position(|c| !c.is_named() && c.kind() == "#endif")
@@ -392,13 +404,6 @@ fn find_blankable_preproc_brace_error(
                         children[endif_idx].end_byte(),
                     ),
                 ));
-            }
-        }
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if let Some(found) = find_blankable_preproc_brace_error(&child, source) {
-                return Some(found);
             }
         }
     }
