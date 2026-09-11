@@ -584,7 +584,7 @@ fn prescan_file_list(
     );
 
     function_summary::propagate_transitive_modifies(&mut function_summaries);
-    function_summary::propagate_transitive_frees(&mut function_summaries);
+    function_summary::propagate_transitive_frees(&mut function_summaries, &macro_aliases);
     function_summary::propagate_transitive_frees_param_fields(&mut function_summaries);
     function_summary::propagate_transitive_frees_param_pointees(&mut function_summaries);
     function_summary::propagate_transitive_closes(&mut function_summaries);
@@ -5328,6 +5328,16 @@ pub fn resolve_includes(
             context.packed_structs.insert(struct_name);
         }
     }
+
+    // The alias a pass-through edge needs may live only in a header resolved
+    // here (`#define mbedtls_free free` is in include/, while the wrapper
+    // that calls it is in library/), so the frees fixpoint runs once more
+    // over the now-complete alias map. Monotone, so a rerun is harmless
+    // when nothing new resolved (task 1128).
+    function_summary::propagate_transitive_frees(
+        &mut context.function_summaries,
+        &context.macro_aliases,
+    );
 
     if let Some(reporter) = progress {
         reporter.report_include_resolve_complete(resolved_set.len());
