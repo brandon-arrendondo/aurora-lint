@@ -510,6 +510,8 @@ preprocessor.
 |---|---|---|
 | `collect_macro_constants` | `(root: &Node, source: &str) -> MacroConstantMap` | Walks `preproc_def` nodes to collect `#define NAME value` constants (decimal/hex/octal/expressions/macro references), recursing into `#ifdef`/`#if`/`#ifndef` blocks; seeded with built-in C standard limits (`CHAR_MAX`, `INT_MAX`, etc., LP64 model). |
 | `collect_macro_aliases` | `(root: &Node, source: &str) -> HashMap<String, String>` | Collects `#define ALIAS func_name` patterns (single-identifier replacement) — macro aliases for function names (e.g. `#define SYSTEM system`). |
+| `merged_macro_aliases` | `(project, root, source) -> HashMap<String, String>` | `ProjectContext::macro_aliases` plus this file's own, per-file winning — the `set_project_context` + `check` idiom every alias-consuming rule uses. |
+| `resolve_macro_alias` | `(aliases, name: &str) -> &str` | Follows `#define ALIAS target` chains to the identifier they end at (`mbedtls_calloc` → `calloc`, `port_free` → `mbedtls_free` → `free`), bounded against cycles; a non-alias comes back unchanged. **Any rule that dispatches on a callee's name** (`free`, an allocator list, a summary lookup, a `*_free` name shape) should classify the resolved name, not the spelling: an object-like alias is the one renaming no other engine sees — `macro_expand` covers function-like macros only, and a bare-identifier body is not a constant. mbedtls's whole allocator API is this shape, and every `mbedtls_calloc` site was invisible to MEM31-C until it resolved (task 1128). MEM30-C, MEM31-C and `propagate_transitive_frees` read it. |
 | `collect_string_literal_macros` | `(root: &Node, source: &str) -> HashMap<String, String>` | Collects `#define NAME "string"` patterns, raw quoted value. |
 | `is_relative_command_macro` / `is_safe_command_macro` | `(string_macros, name: &str) -> bool` | Classifies a string-literal macro as a relative-path OS command (unsafe as a `strcpy`/`strcat` source) vs. an absolute path or argument fragment (safe). |
 | `try_evaluate_expr` | `(node: &Node, source: &str, macros: &MacroConstantMap) -> Option<i64>` | Evaluates an AST expression node to an exact integer constant. |
@@ -729,7 +731,7 @@ are private implementation detail behind the small public surface below.
 | `collect_param_names` | `(func_node: &Node, source: &str) -> Vec<String>` | Collects parameter names from a function declaration. |
 | `extract_function_name` | `(func_node: &Node, source: &str) -> Option<String>` | Extracts a function's name from its definition node. |
 | `infer_arg_null_state` | `(arg: &Node, source: &str) -> NullState` | Infers the null-state of a call argument expression. |
-| `propagate_transitive_frees` | `(summaries: &mut HashMap<String, FunctionSummary>)` | Propagates "frees param N" transitively through call chains (A calls B which frees param 0 of B, and A passes its own param through unconditionally → A also frees it). |
+| `propagate_transitive_frees` | `(summaries: &mut HashMap<String, FunctionSummary>, macro_aliases)` | Propagates "frees param N" transitively through call chains (A calls B which frees param 0 of B, and A passes its own param through unconditionally → A also frees it). Each pass-through edge's callee is resolved through the project alias map first (`resolve_macro_alias`), and an edge that lands on `free` itself counts as a free: `credit_frees_params` credits only a literal `free`, so a wrapper freeing through `mbedtls_free(p)` (aliased in a header its file never parses) gets its `frees_params` here or nowhere. Re-run once more at the end of `resolve_includes`, since that is where header-only aliases arrive (task 1128). |
 | `propagate_transitive_param_taint` | `(summaries: &mut ...)` | Same transitive propagation for tainted-parameter status. |
 | `propagate_transitive_closes` | `(summaries: &mut ...)` | Same transitive propagation for "closes param N" (fclose/close/CloseHandle). |
 | `propagate_transitive_frees_param_fields` | `(summaries: &mut ...)` | Same transitive propagation, but for field-level frees (`frees_param_fields`, e.g. `free(x->will)`). |
@@ -752,6 +754,17 @@ variable dies and an argument match by identifier never sees it),
 `closes_params`, `callsite_param_buffer_size`, `produces_param_buffer_size`,
 `distinct_object_param_pairs` (task 936), and several more callsite-specific
 maps.
+
+**A summary beats a name shape.** `ast_utils::is_deallocation_call_name`
+(`*_free`, `destroy_*`, ...) is a guess about a body nobody has seen. When
+the prescan HAS seen the body, `frees_params` / `frees_param_pointees` /
+`frees_param_fields` say what it releases and the guess has nothing to add:
+a `*_free` callee whose summary frees nothing it was handed must not mark
+its argument freed. mbedtls's `mbedtls_gcm_free(ctx)` zeroizes the members
+and frees no pointer, and every `*_ctx_free` destructor follows it with
+`mbedtls_free(ctx)` — 47 false double frees from the name guess alone
+(task 1128). MEM30-C (task 396) and MEM31-C both fall back to the name only
+for a callee with no summary.
 
 **Wiring pattern:** `compute_summaries` runs once (typically during
 prescan) over the whole translation unit, then the `propagate_transitive_*`

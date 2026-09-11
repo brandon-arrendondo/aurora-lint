@@ -170,28 +170,67 @@ impl Default for CParser {
     }
 }
 
-/// Read `file_path` as text, falling back to an ISO-8859-1 transcode if
-/// the bytes are not valid UTF-8. The prior `fs::read_to_string`-only
-/// path failed silently on any non-UTF-8 file, so pure-ftpd's 16
-/// ISO-8859-encoded `messages_*.h` translation headers have never been
-/// analysed by any rule despite being in scope per the corpus's README
-/// predicate (task 1061). No other pinned corpus contains a non-UTF-8
-/// `.c`/`.h` file.
+/// Read `file_path` as text and decode it by its byte-order mark, then
+/// by content: UTF-16 (either endianness) when the file opens with a
+/// UTF-16 BOM, UTF-8 otherwise (a UTF-8 BOM is dropped), with an
+/// ISO-8859-1 transcode as the fallback for bytes that are neither.
 ///
-/// ISO-8859-1 is a single-byte encoding whose codepoints 0x00-0xFF map
-/// one-to-one onto Unicode U+0000-U+00FF, so `b as char` for each byte
-/// is a lossless transcode: any byte sequence becomes a valid `String`.
+/// The prior `fs::read_to_string`-only path failed silently on any
+/// non-UTF-8 file, so pure-ftpd's 16 ISO-8859-encoded `messages_*.h`
+/// translation headers were never analysed by any rule despite being in
+/// scope per the corpus's README predicate (task 1061). ISO-8859-1 is a
+/// single-byte encoding whose codepoints 0x00-0xFF map one-to-one onto
+/// Unicode U+0000-U+00FF, so `b as char` for each byte is a lossless
+/// transcode: any byte sequence becomes a valid `String`.
+///
+/// UTF-16 came with the first Windows-native corpus (Ventoy2Disk, the
+/// suite's WIN*-C oracle): Visual Studio saves 4 of its 22 sources as
+/// UTF-16LE with a BOM and 2 more as UTF-8 with a BOM. Fed through the
+/// ISO-8859-1 fallback, a UTF-16 file becomes NUL-interleaved garbage
+/// (`i\0n\0t\0 \0`) that the rule-independent parse stage chews on for
+/// minutes -- WinDialog.c (2,434 lines) never finished -- and that no
+/// rule could have reported a real finding on anyway. Detection is
+/// BOM-only on purpose: a BOM-less UTF-16 file is indistinguishable from
+/// a binary blob without a heuristic, and the corpus that motivated this
+/// never omits it. A UTF-8 BOM is stripped rather than left as U+FEFF on
+/// line 1, where tree-sitter would otherwise open the file with an ERROR
+/// node ahead of the first declaration.
+///
 /// Byte offsets in the returned string are not the same as offsets in
-/// the file (high bytes expand to two UTF-8 bytes), but every downstream
-/// pass -- tree-sitter parsing, `get_node_text`, position reporting --
-/// works from the returned string, so consistency is what matters, not
-/// exact file-offset correspondence.
+/// the file (high bytes expand to two UTF-8 bytes, UTF-16 units shrink
+/// to one), but every downstream pass -- tree-sitter parsing,
+/// `get_node_text`, position reporting -- works from the returned
+/// string, so consistency is what matters, not exact file-offset
+/// correspondence.
 fn read_source_or_transcode(file_path: &str) -> Result<String> {
     let bytes =
         fs::read(file_path).with_context(|| format!("Failed to read file: {}", file_path))?;
-    match String::from_utf8(bytes) {
-        Ok(s) => Ok(s),
-        Err(e) => Ok(e.into_bytes().iter().map(|&b| b as char).collect()),
+    Ok(decode_source_bytes(bytes))
+}
+
+/// The decoding half of [`read_source_or_transcode`], split out so the
+/// three encodings can be tested without touching the filesystem.
+fn decode_source_bytes(bytes: Vec<u8>) -> String {
+    let utf16 = |payload: &[u8], unit: fn([u8; 2]) -> u16| -> String {
+        // An odd trailing byte is not half of anything; drop it rather
+        // than fail the whole file over one byte.
+        let units = payload.chunks_exact(2).map(|c| unit([c[0], c[1]]));
+        char::decode_utf16(units)
+            .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect()
+    };
+    match bytes.as_slice() {
+        [0xFF, 0xFE, payload @ ..] => utf16(payload, u16::from_le_bytes),
+        [0xFE, 0xFF, payload @ ..] => utf16(payload, u16::from_be_bytes),
+        _ => match String::from_utf8(bytes) {
+            Ok(mut s) => {
+                if s.starts_with('\u{FEFF}') {
+                    s.drain(..'\u{FEFF}'.len_utf8());
+                }
+                s
+            }
+            Err(e) => e.into_bytes().iter().map(|&b| b as char).collect(),
+        },
     }
 }
 
@@ -217,6 +256,42 @@ mod tests {
         // and re-parse it as UTF-8 unconditionally.
         assert!(s.is_char_boundary(s.len()));
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn decode_source_utf16le_bom_yields_the_text_not_nul_interleaved_bytes() {
+        // "int x;\n" as Visual Studio writes it: FF FE BOM, then one
+        // little-endian code unit per character.
+        let mut bytes = vec![0xFF, 0xFE];
+        for u in "int x;\n".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        assert_eq!(decode_source_bytes(bytes), "int x;\n");
+    }
+
+    #[test]
+    fn decode_source_utf16be_bom_is_honoured_too() {
+        let mut bytes = vec![0xFE, 0xFF];
+        for u in "int y;\n".encode_utf16() {
+            bytes.extend_from_slice(&u.to_be_bytes());
+        }
+        assert_eq!(decode_source_bytes(bytes), "int y;\n");
+    }
+
+    #[test]
+    fn decode_source_strips_a_utf8_bom() {
+        let bytes = b"\xEF\xBB\xBFint z;\n".to_vec();
+        assert_eq!(decode_source_bytes(bytes), "int z;\n");
+    }
+
+    #[test]
+    fn decode_source_utf16_odd_trailing_byte_is_dropped_not_fatal() {
+        let mut bytes = vec![0xFF, 0xFE];
+        for u in "ab".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        bytes.push(0x63); // half of a code unit
+        assert_eq!(decode_source_bytes(bytes), "ab");
     }
 
     #[test]
