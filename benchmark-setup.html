@@ -142,7 +142,7 @@ checkout. <code class="docutils literal notranslate"><span class="pre">bench/con
 read this from the <code class="docutils literal notranslate"><span class="pre">SQC_BENCH_ROOT</span></code> environment variable, or from a
 <code class="docutils literal notranslate"><span class="pre">.env</span></code> file at the repo root (copy <code class="docutils literal notranslate"><span class="pre">.env.example</span></code> – it’s gitignored, so
 each machine sets its own).</p>
-<p>To provision a fresh node, run the Ansible playbook (clones and pins all 9
+<p>To provision a fresh node, run the Ansible playbook (clones and pins every
 real-world codebases; does not fetch Juliet – see below):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-playbook<span class="w"> </span>playbooks/setup-benchmark-repos.yml<span class="w"> </span>-i<span class="w"> </span><span class="s2">&quot;localhost,&quot;</span><span class="w"> </span>-c<span class="w"> </span><span class="nb">local</span>
 <span class="c1"># Or a different root:</span>
@@ -467,6 +467,11 @@ hypothetical; see <a class="reference internal" href="#verifying-the-pins">Verif
 <td><p><code class="docutils literal notranslate"><span class="pre">1326364bc9135d9445d936ebc01e38a402c1f4c6</span></code></p></td>
 <td><p>detached</p></td>
 </tr>
+<tr class="row-odd"><td><p>mbedtls</p></td>
+<td><p><a class="reference external" href="https://github.com/Mbed-TLS/mbedtls.git">https://github.com/Mbed-TLS/mbedtls.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">068ff080b369adfac81509f9b57b2afabaf82dc5</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
 </tbody>
 </table>
 <div class="admonition important">
@@ -546,7 +551,7 @@ the <code class="docutils literal notranslate"><span class="pre">git</span> <spa
 <section id="clone-and-pin">
 <h3>Clone and Pin<a class="headerlink" href="#clone-and-pin" title="Link to this heading"></a></h3>
 <p>Preferred: run <code class="docutils literal notranslate"><span class="pre">playbooks/setup-benchmark-repos.yml</span></code> (see <a class="reference internal" href="#benchmark-host-layout">Benchmark Host
-Layout</a> above) – it clones, pins, and verifies all 9 checkouts in one pass,
+Layout</a> above) – it clones, pins, and verifies every pinned checkout in one pass,
 reading the pins from <code class="docutils literal notranslate"><span class="pre">data/benchmark_repos.json</span></code>.</p>
 <p>Manual fallback:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>-p<span class="w"> </span><span class="nv">$SQC_BENCH_ROOT</span><span class="w">   </span><span class="c1"># default: ~/toolchain</span>
@@ -580,6 +585,12 @@ git<span class="w"> </span>clone<span class="w"> </span>https://github.com/jedis
 <span class="c1"># NOTE: checkout dir must be lowercase &quot;sel4&quot; to match the registry key</span>
 git<span class="w"> </span>clone<span class="w"> </span>https://github.com/seL4/seL4.git<span class="w"> </span>sel4
 <span class="nb">cd</span><span class="w"> </span>sel4<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>1326364bc9135d9445d936ebc01e38a402c1f4c6<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+<span class="c1"># The framework submodule is only needed for the compile_commands.json</span>
+<span class="c1"># capture (playbooks/setup-compile-commands.yml); the aurora-lint scan</span>
+<span class="c1"># of library/ does not need it.</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Mbed-TLS/mbedtls.git
+<span class="nb">cd</span><span class="w"> </span>mbedtls<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>068ff080b369adfac81509f9b57b2afabaf82dc5<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
 </pre></div>
 </div>
 </section>
