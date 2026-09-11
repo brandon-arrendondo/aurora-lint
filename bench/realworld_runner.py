@@ -1,7 +1,7 @@
 """Real-world benchmark runner: sqc, cppcheck, clang-tidy, Infer and Frama-C
 against real open-source C codebases (libcrc, sqlite, mosquitto, curl, hostap,
-lua, raylib, pureftpd, sel4), scored against the ground-truth oracle in
-data/benchmarks.db.
+lua, raylib, pureftpd, sel4, mbedtls, valkey, ventoy), scored against the
+ground-truth oracle in data/benchmarks.db.
 
 The five tools split into two groups. sqc, cppcheck and clang-tidy read source
 as written and are pointed at a curated -I list. Infer and Frama-C need a real
@@ -505,6 +505,68 @@ CODEBASES = {
                          "-I", "{path}/deps/linenoise", "-I", "{path}/deps/lua/src"],
             "source_dirs": ["{path}/src/"],
             "exclude": ["*/unit/*", "*/modules/hello*"],
+        },
+    },
+    # Onboarded as the suite's first genuine Win32-API oracle. Every WIN*-C
+    # rule (WIN00-05, WIN30) had no true-positive-capable target across the
+    # eleven POSIX codebases -- curl's own Windows backend files sit outside
+    # its scan scope -- so the family had never been measured on real code.
+    # Ventoy2Disk/Ventoy2Disk/ is the Windows installer GUI+CLI of the Ventoy
+    # boot-USB tool: ~14.7K lines of first-party C (classic C-style COM via
+    # lpVtbl->Method(...), not C++), with direct call sites for every WIN*
+    # family: CreateFileA, DeviceIoControl, CreateProcessA, LoadLibraryA/W +
+    # GetProcAddress, RegOpenKeyExA, CreateThread. Nothing else in the repo
+    # (GRUB2/, IPXE/, BUSYBOX/, EDK2/, LinuxGUI/, Plugson/, VtoyTool/, shell
+    # and Python tooling) is relevant to a CERT-C scan, hence scan_path.
+    #
+    # Registry key is lowercase "ventoy" (checkout dir basename convention,
+    # same discipline as pureftpd/sel4). Four of the 22 sources are UTF-16LE
+    # with a BOM and two more UTF-8 with a BOM -- Visual Studio's doing --
+    # which is what made src/parser/mod.rs decode by byte-order mark.
+    "ventoy": {
+        "path": BENCH_ROOT / "ventoy",
+        "sqc": {
+            # Scope = the top-level .c/.h of the installer only. The three
+            # subdirectories are vendored third-party code of different
+            # provenance and licence (fat_io_lib/ GPL, ff14/ ChaN's FatFs,
+            # xz-embedded-20130513/ public domain) and are excluded from
+            # reporting, but the explicit `-d` keeps them in the prescan so
+            # the headers the installer includes from them (ff.h,
+            # fat_filelib.h, xz.h) still resolve. The explicit `-d` also
+            # matters on its own: the runner's default would prescan the
+            # whole checkout, i.e. all of GRUB2/BUSYBOX/EDK2, for context
+            # nothing in scope can use.
+            "scan_path": "{path}/Ventoy2Disk/Ventoy2Disk",
+            "manifest": "conf/realworld/ventoy-rules.toml",
+            # No -I: <windows.h> and the COM/VDS headers are not on a Linux
+            # node, and aurora-lint parses without them (same precedent as
+            # hostap's <netlink/*.h> gap on macOS).
+            "includes": [],
+            "extra_args": [
+                "-d", "{path}/Ventoy2Disk/Ventoy2Disk",
+                "--exclude", "fat_io_lib/**",
+                "--exclude", "ff14/**",
+                "--exclude", "xz-embedded-20130513/**",
+            ],
+        },
+        # Same top-level-only scope for the competitor tools. Neither can
+        # resolve <windows.h> on the benchmark node any more than aurora-lint
+        # can; cppcheck carries on regardless (missingIncludeSystem is
+        # suppressed suite-wide), clang-tidy reports the unresolved include
+        # per TU and analyses what it can parse past it.
+        "cppcheck": {
+            "includes": [],
+            "source_dirs": ["{path}/Ventoy2Disk/Ventoy2Disk/"],
+            "extra_args": [
+                "-i", "{path}/Ventoy2Disk/Ventoy2Disk/fat_io_lib",
+                "-i", "{path}/Ventoy2Disk/Ventoy2Disk/ff14",
+                "-i", "{path}/Ventoy2Disk/Ventoy2Disk/xz-embedded-20130513",
+            ],
+        },
+        "clang-tidy": {
+            "includes": [],
+            "source_dirs": ["{path}/Ventoy2Disk/Ventoy2Disk/"],
+            "exclude": ["*/fat_io_lib/*", "*/ff14/*", "*/xz-embedded-20130513/*"],
         },
     },
 }
