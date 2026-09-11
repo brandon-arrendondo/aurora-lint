@@ -1136,12 +1136,57 @@ pub fn macro_frees_param_indices(table: &HashMap<String, FunctionMacro>, name: &
     out
 }
 
+/// Parameter indices a function-like macro clears: after expansion the body
+/// calls one of `call_roles::MEMORY_CLEARING_FUNCS` with the (possibly
+/// wrapped) parameter as the FIRST argument -- the destination. hostap's
+/// `#define os_memset(s, c, n) memset(s, c, n)` is this shape; MEM03-C
+/// credits its callers with the clear the same way it credits a wrapper
+/// function's (task 1127).
+pub fn macro_clears_param_indices(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+) -> Vec<usize> {
+    let m = match table.get(name) {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+    if m.params.is_empty() {
+        return Vec::new();
+    }
+    let sentinels: Vec<String> = (0..m.params.len())
+        .map(|i| format!("__SQC_MCLEAR_{i}__"))
+        .collect();
+    let expanded = match expand_invocation(table, name, &sentinels) {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (i, sent) in sentinels.iter().enumerate() {
+        if calls_fn_with_arg(
+            &expanded,
+            crate::utility::cert_c::call_roles::MEMORY_CLEARING_FUNCS,
+            sent,
+            true,
+        ) {
+            out.push(i);
+        }
+    }
+    out
+}
+
 /// True if `text` contains a call to one of [`DEALLOC_FUNCTIONS`] with `ident`
 /// appearing as one of its arguments.
 fn calls_dealloc_fn_with_arg(text: &str, ident: &str) -> bool {
+    calls_fn_with_arg(text, DEALLOC_FUNCTIONS, ident, false)
+}
+
+/// True if `text` contains a call to one of `fns` with `ident` appearing as
+/// a whole token among its arguments -- in the first argument only when
+/// `first_arg_only`, anywhere in the argument list otherwise.
+fn calls_fn_with_arg(text: &str, fns: &[&str], ident: &str, first_arg_only: bool) -> bool {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
-    for &fn_name in DEALLOC_FUNCTIONS {
+    for &fn_name in fns {
         let fname: Vec<char> = fn_name.chars().collect();
         let flen = fname.len();
         let mut i = 0;
@@ -1175,7 +1220,12 @@ fn calls_dealloc_fn_with_arg(text: &str, ident: &str) -> bool {
                     }
                     if let Some(close) = close {
                         let arg_text: String = chars[j + 1..close].iter().collect();
-                        if contains_whole_ident(&arg_text, ident) {
+                        let scope = if first_arg_only {
+                            first_top_level_argument(&arg_text)
+                        } else {
+                            arg_text.as_str()
+                        };
+                        if contains_whole_ident(scope, ident) {
                             return true;
                         }
                     }
@@ -1185,6 +1235,21 @@ fn calls_dealloc_fn_with_arg(text: &str, ident: &str) -> bool {
         }
     }
     false
+}
+
+/// The text of the first comma-separated argument in `args`, respecting
+/// nested parentheses so `f((a, b), c)` yields `(a, b)`.
+fn first_top_level_argument(args: &str) -> &str {
+    let mut depth = 0i32;
+    for (i, c) in args.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => return &args[..i],
+            _ => {}
+        }
+    }
+    args
 }
 
 /// True if `ident` appears anywhere in `text` as a whole token (not a
@@ -1633,6 +1698,22 @@ mod tests {
     fn frees_param_unrelated_macro_is_empty() {
         let t = table("#define MIN(x,y) (((x) < (y)) ? (x) : (y))\n");
         assert!(macro_frees_param_indices(&t, "MIN").is_empty());
+    }
+
+    /// hostap's `os_memset` shape: the destination parameter, and only it,
+    /// is cleared. A parameter that is the fill value or the length, or one
+    /// handed to memset as anything but its first argument, is not
+    /// (task 1127).
+    #[test]
+    fn clears_param_only_the_destination() {
+        let t = table("#define os_memset(s, c, n) memset(s, c, n)\n");
+        assert_eq!(macro_clears_param_indices(&t, "os_memset"), vec![0]);
+        let t = table("#define ZERO_INTO(dst, src, n) memset((void *)(dst), 0, (n))\n");
+        assert_eq!(macro_clears_param_indices(&t, "ZERO_INTO"), vec![0]);
+        let t = table("#define COPY(dst, src, n) memcpy(dst, src, n)\n");
+        assert!(macro_clears_param_indices(&t, "COPY").is_empty());
+        let t = table("#define ZERO_LEN(buf, n) memset(scratch, 0, n)\n");
+        assert!(macro_clears_param_indices(&t, "ZERO_LEN").is_empty());
     }
 
     #[test]

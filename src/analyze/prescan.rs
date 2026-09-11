@@ -588,6 +588,7 @@ fn prescan_file_list(
     function_summary::propagate_transitive_frees_param_fields(&mut function_summaries);
     function_summary::propagate_transitive_frees_param_pointees(&mut function_summaries);
     function_summary::propagate_transitive_closes(&mut function_summaries);
+    function_summary::propagate_transitive_clears(&mut function_summaries, &macro_aliases);
     function_summary::propagate_return_taint(&mut function_summaries);
 
     // CON03-C/CON07-C reachability gate (task 608): needs the fully merged,
@@ -5335,6 +5336,10 @@ pub fn resolve_includes(
     // over the now-complete alias map. Monotone, so a rerun is harmless
     // when nothing new resolved (task 1128).
     function_summary::propagate_transitive_frees(
+        &mut context.function_summaries,
+        &context.macro_aliases,
+    );
+    function_summary::propagate_transitive_clears(
         &mut context.function_summaries,
         &context.macro_aliases,
     );
