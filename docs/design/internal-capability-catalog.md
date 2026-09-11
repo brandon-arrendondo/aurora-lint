@@ -541,6 +541,17 @@ actually consumes:
 - `wrap_unsigned_range` — corrects an all-negative VRA range for an
   unsigned-typed variable to reflect C's actual wraparound semantics (e.g.
   `unsigned int x = -2` stores `UINT_MAX - 1`, not `-2`).
+- **"No range" can mean "never runs".** A block whose every incoming edge
+  is dead — the branch condition contradicts the incoming value
+  (`data = 127; if (data < 127)`), or contradicts itself
+  (`x > 5 && x < 3`, or the else edge of `x < 3 || x >= 3`) — gets no
+  entry state at all, so a lookup there answers `None`. A consumer must
+  read that as *abstain*, never as "unconstrained, fall back to the
+  declared type's full range", or it will judge code that cannot execute.
+  Inside the engine an unsatisfiable constraint is carried as
+  `ValueRange::empty()` (the inverted `[MAX, MIN]`, absorbing under
+  intersect and the identity under join) rather than as the absence of a
+  constraint, which is what keeps the two meanings apart.
 
 **Wiring pattern:** Rules that want VRA-backed integer-fit checks should go
 through `const_eval.rs`'s `expression_fits_in_signed_vra`/
