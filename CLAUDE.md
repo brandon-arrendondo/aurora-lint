@@ -391,7 +391,7 @@ cargo fmt
 
 For each new rule: create `src/rules/cert_c/CATEGORY/RULE_ID/rule_id_c.rs`,
 register in `mod.rs`, enable in the TOML, then build and test — **and add a
-block for it to all nine `conf/realworld/*-rules.toml`**, which the
+block for it to every `conf/realworld/*-rules.toml`**, which the
 `check-realworld-manifests` hook requires before the commit lands. Those
 manifests are standalone (no `extends`), so a rule with no entry is silently
 dark on the whole real-world suite and can never reach the oracle. Say

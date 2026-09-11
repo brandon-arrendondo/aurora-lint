@@ -179,8 +179,8 @@ step, no polling.
 Supported tools: ``aurora-lint``, ``cppcheck``, ``clang-tidy``
 
 Supported codebases: ``libcrc``, ``sqlite``, ``mosquitto``, ``curl``, ``hostap``,
-``lua``, ``raylib``, ``pureftpd``, ``sel4`` (aurora-lint-only for the latter two —
-no cppcheck/clang-tidy baseline yet)
+``lua``, ``raylib``, ``pureftpd``, ``sel4``, ``mbedtls`` (aurora-lint-only for the
+latter three — no cppcheck/clang-tidy baseline yet)
 
 .. note::
 
