@@ -31,6 +31,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -50,7 +51,8 @@ impl Win30C {
                 return false;
             };
             let function_name = get_node_text(&function_node, source);
-            if function_name != "FormatMessage" {
+            // The macro or either entry point it expands to (task 1130).
+            if !call_roles::is_win32_api(function_name, "FormatMessage") {
                 return false;
             }
             let Some(args_node) = n.child_by_field_name("arguments") else {
