@@ -189,12 +189,27 @@ impl Default for CParser {
 /// ISO-8859-1 fallback, a UTF-16 file becomes NUL-interleaved garbage
 /// (`i\0n\0t\0 \0`) that the rule-independent parse stage chews on for
 /// minutes -- WinDialog.c (2,434 lines) never finished -- and that no
-/// rule could have reported a real finding on anyway. Detection is
-/// BOM-only on purpose: a BOM-less UTF-16 file is indistinguishable from
-/// a binary blob without a heuristic, and the corpus that motivated this
-/// never omits it. A UTF-8 BOM is stripped rather than left as U+FEFF on
-/// line 1, where tree-sitter would otherwise open the file with an ERROR
-/// node ahead of the first declaration.
+/// rule could have reported a real finding on anyway. A UTF-8 BOM is
+/// stripped rather than left as U+FEFF on line 1, where tree-sitter would
+/// otherwise open the file with an ERROR node ahead of the first
+/// declaration.
+///
+/// Without a BOM, the bytes themselves decide (task 1131). NUL never
+/// belongs in C source -- a compiler drops it with a warning -- so any NUL
+/// at all means the file is not the text its extension claims, and the
+/// only question is which kind of not-text. A NUL in (nearly) every
+/// other byte, all on one parity, is UTF-16 without its BOM: the high
+/// byte of every character below U+0100 is zero, so ASCII-dominated
+/// source lights up one parity and leaves the other dark, and the lit
+/// parity names the endianness. Anything else with NULs in it is treated
+/// as binary and refused with [`NotSourceText`], which the scan loop
+/// reports as a warning and skips. Refusing is the point: a NUL-strewn
+/// file parses to one flat `ERROR` root with a child per stray byte, and
+/// the `node.child(i)` walk every pass and rule uses is quadratic on that
+/// shape -- WinDialog.c, decoded as ISO-8859-1, pegged a core for over ten
+/// minutes with every rule disabled, and no finding it could have produced
+/// would have been real. Skipping with a diagnostic is strictly better
+/// than analysing garbage silently, which is what the run did before.
 ///
 /// Byte offsets in the returned string are not the same as offsets in
 /// the file (high bytes expand to two UTF-8 bytes, UTF-16 units shrink
@@ -205,12 +220,35 @@ impl Default for CParser {
 fn read_source_or_transcode(file_path: &str) -> Result<String> {
     let bytes =
         fs::read(file_path).with_context(|| format!("Failed to read file: {}", file_path))?;
-    Ok(decode_source_bytes(bytes))
+    Ok(decode_source_bytes(bytes)?)
 }
 
+/// A file [`read_source_or_transcode`] refused because its bytes contain
+/// NULs in no recognisable text layout -- a binary blob carrying a C
+/// extension. Its own type so the scan loop can tell "not text, skipped"
+/// (worth a warning) from an I/O failure. Carries the NUL count so the
+/// warning can say why the file was judged binary.
+#[derive(Debug)]
+pub struct NotSourceText {
+    /// How many NUL bytes the file held.
+    pub nul_bytes: usize,
+}
+
+impl std::fmt::Display for NotSourceText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "not C source text ({} NUL bytes with no UTF-16 layout); skipped",
+            self.nul_bytes
+        )
+    }
+}
+
+impl std::error::Error for NotSourceText {}
+
 /// The decoding half of [`read_source_or_transcode`], split out so the
-/// three encodings can be tested without touching the filesystem.
-fn decode_source_bytes(bytes: Vec<u8>) -> String {
+/// encodings can be tested without touching the filesystem.
+fn decode_source_bytes(bytes: Vec<u8>) -> std::result::Result<String, NotSourceText> {
     let utf16 = |payload: &[u8], unit: fn([u8; 2]) -> u16| -> String {
         // An odd trailing byte is not half of anything; drop it rather
         // than fail the whole file over one byte.
@@ -219,18 +257,72 @@ fn decode_source_bytes(bytes: Vec<u8>) -> String {
             .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
             .collect()
     };
-    match bytes.as_slice() {
+    Ok(match bytes.as_slice() {
         [0xFF, 0xFE, payload @ ..] => utf16(payload, u16::from_le_bytes),
         [0xFE, 0xFF, payload @ ..] => utf16(payload, u16::from_be_bytes),
-        _ => match String::from_utf8(bytes) {
-            Ok(mut s) => {
-                if s.starts_with('\u{FEFF}') {
-                    s.drain(..'\u{FEFF}'.len_utf8());
+        _ => match sniff_nul_layout(&bytes) {
+            NulLayout::None => match String::from_utf8(bytes) {
+                Ok(mut s) => {
+                    if s.starts_with('\u{FEFF}') {
+                        s.drain(..'\u{FEFF}'.len_utf8());
+                    }
+                    s
                 }
-                s
-            }
-            Err(e) => e.into_bytes().iter().map(|&b| b as char).collect(),
+                Err(e) => e.into_bytes().iter().map(|&b| b as char).collect(),
+            },
+            NulLayout::Utf16Le => utf16(&bytes, u16::from_le_bytes),
+            NulLayout::Utf16Be => utf16(&bytes, u16::from_be_bytes),
+            NulLayout::Scattered { nul_bytes } => return Err(NotSourceText { nul_bytes }),
         },
+    })
+}
+
+/// What the NUL bytes of a BOM-less file say about its encoding.
+#[derive(Debug, PartialEq, Eq)]
+enum NulLayout {
+    /// No NUL anywhere: ordinary single-byte or UTF-8 text.
+    None,
+    /// NULs sit on the odd bytes (the high half of little-endian units).
+    Utf16Le,
+    /// NULs sit on the even bytes (the high half of big-endian units).
+    Utf16Be,
+    /// NULs with no parity pattern: not text in any encoding this reads.
+    Scattered { nul_bytes: usize },
+}
+
+/// Classify `bytes` by where its NULs fall. UTF-16 needs the lit parity to
+/// be at least half NUL (every character below U+0100 contributes one, so
+/// this holds for any source whose text is at least half Latin) and the
+/// other parity almost never NUL (a character whose LOW byte is zero --
+/// U+0100, U+4E00 -- is one in 256 of the non-Latin ones, so 5% is well
+/// clear of real text and well short of a blob's uniform spread).
+fn sniff_nul_layout(bytes: &[u8]) -> NulLayout {
+    let (mut nul_even, mut nul_odd) = (0usize, 0usize);
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == 0 {
+            if i % 2 == 0 {
+                nul_even += 1;
+            } else {
+                nul_odd += 1;
+            }
+        }
+    }
+    if nul_even == 0 && nul_odd == 0 {
+        return NulLayout::None;
+    }
+    let even_slots = bytes.len().div_ceil(2);
+    let odd_slots = bytes.len() / 2;
+    let is_utf16 = |lit: usize, lit_slots: usize, dark: usize, dark_slots: usize| {
+        lit * 2 >= lit_slots && dark * 20 <= dark_slots
+    };
+    if is_utf16(nul_odd, odd_slots, nul_even, even_slots) {
+        NulLayout::Utf16Le
+    } else if is_utf16(nul_even, even_slots, nul_odd, odd_slots) {
+        NulLayout::Utf16Be
+    } else {
+        NulLayout::Scattered {
+            nul_bytes: nul_even + nul_odd,
+        }
     }
 }
 
@@ -266,7 +358,7 @@ mod tests {
         for u in "int x;\n".encode_utf16() {
             bytes.extend_from_slice(&u.to_le_bytes());
         }
-        assert_eq!(decode_source_bytes(bytes), "int x;\n");
+        assert_eq!(decode_source_bytes(bytes).unwrap(), "int x;\n");
     }
 
     #[test]
@@ -275,13 +367,13 @@ mod tests {
         for u in "int y;\n".encode_utf16() {
             bytes.extend_from_slice(&u.to_be_bytes());
         }
-        assert_eq!(decode_source_bytes(bytes), "int y;\n");
+        assert_eq!(decode_source_bytes(bytes).unwrap(), "int y;\n");
     }
 
     #[test]
     fn decode_source_strips_a_utf8_bom() {
         let bytes = b"\xEF\xBB\xBFint z;\n".to_vec();
-        assert_eq!(decode_source_bytes(bytes), "int z;\n");
+        assert_eq!(decode_source_bytes(bytes).unwrap(), "int z;\n");
     }
 
     #[test]
@@ -291,7 +383,64 @@ mod tests {
             bytes.extend_from_slice(&u.to_le_bytes());
         }
         bytes.push(0x63); // half of a code unit
-        assert_eq!(decode_source_bytes(bytes), "ab");
+        assert_eq!(decode_source_bytes(bytes).unwrap(), "ab");
+    }
+
+    #[test]
+    fn decode_source_bomless_utf16le_is_recognised_by_its_nul_parity() {
+        // WinDialog.c's shape minus the BOM: every character below U+0100
+        // puts a NUL on the odd byte and nothing on the even one.
+        let text = "int x = 1; /* 注释 */\nvoid f(void) {}\n";
+        let mut bytes = Vec::new();
+        for u in text.encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        assert_eq!(sniff_nul_layout(&bytes), NulLayout::Utf16Le);
+        assert_eq!(decode_source_bytes(bytes).unwrap(), text);
+    }
+
+    #[test]
+    fn decode_source_bomless_utf16be_is_recognised_too() {
+        let text = "int y;\n";
+        let mut bytes = Vec::new();
+        for u in text.encode_utf16() {
+            bytes.extend_from_slice(&u.to_be_bytes());
+        }
+        assert_eq!(sniff_nul_layout(&bytes), NulLayout::Utf16Be);
+        assert_eq!(decode_source_bytes(bytes).unwrap(), text);
+    }
+
+    #[test]
+    fn decode_source_refuses_scattered_nuls_as_binary() {
+        // A blob: NULs on both parities, no text layout.
+        let bytes = b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00int\x00".to_vec();
+        assert!(matches!(
+            sniff_nul_layout(&bytes),
+            NulLayout::Scattered { nul_bytes: 10 }
+        ));
+        let err = decode_source_bytes(bytes).unwrap_err();
+        assert_eq!(err.nul_bytes, 10);
+    }
+
+    #[test]
+    fn decode_source_a_single_stray_nul_in_text_is_still_not_utf16() {
+        // One NUL in otherwise plain UTF-8 lights neither parity enough to
+        // read as UTF-16, so it is refused rather than mis-decoded.
+        let bytes = b"int a;\x00int b;\n".to_vec();
+        assert!(matches!(
+            sniff_nul_layout(&bytes),
+            NulLayout::Scattered { nul_bytes: 1 }
+        ));
+        assert!(decode_source_bytes(bytes).is_err());
+    }
+
+    #[test]
+    fn decode_source_nul_free_bytes_take_the_utf8_path_unchanged() {
+        assert_eq!(sniff_nul_layout(b"int q;\n"), NulLayout::None);
+        assert_eq!(
+            decode_source_bytes(b"int q;\n".to_vec()).unwrap(),
+            "int q;\n"
+        );
     }
 
     #[test]
