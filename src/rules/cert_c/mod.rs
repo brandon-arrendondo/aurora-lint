@@ -1111,7 +1111,7 @@ impl RuleRegistry {
         registry.register(Box::new(mem00_c::Mem00C));
         registry.register(Box::new(mem01_c::Mem01C::new()));
         registry.register(Box::new(mem02_c::Mem02C));
-        registry.register(Box::new(mem03_c::Mem03C));
+        registry.register(Box::new(mem03_c::Mem03C::new()));
         registry.register(Box::new(mem04_c::Mem04C));
         registry.register(Box::new(mem05_c::Mem05C));
         registry.register(Box::new(mem06_c::Mem06C));

@@ -320,6 +320,25 @@ pub struct FunctionSummary {
     /// forwarding wrappers) is recognized as closed (task 146).
     #[serde(default)]
     pub closes_params: HashSet<usize>,
+    /// Parameter indices whose pointee this function overwrites: the body
+    /// hands the parameter, as the destination, to one of
+    /// `call_roles::MEMORY_CLEARING_FUNCS`, to a file-scope function pointer
+    /// initialised from one (`static void *(*const volatile memset_func)(...)
+    /// = memset;`, the volatile-pointer idiom that keeps the compiler from
+    /// eliding the store), or to another function that does either
+    /// (`propagate_transitive_clears`). A project's zeroize wrapper --
+    /// mbedtls's `mbedtls_platform_zeroize`, hostap's `forced_memzero` -- is
+    /// a clearer by this fact, not by name, and MEM03-C credits its callers
+    /// with clearing the buffer (task 1127).
+    ///
+    /// NOT gated on `function_definition_is_preproc_conditional`, unlike the
+    /// free facts: mbedtls's real zeroize is itself under
+    /// `#if !defined(MBEDTLS_PLATFORM_ZEROIZE_ALT)`, and a wrongly-withheld
+    /// "clears" costs a false finding on every default build, whereas a
+    /// wrongly-credited one costs a recommendation on a build that swapped
+    /// in a non-clearing alternate.
+    #[serde(default)]
+    pub clears_params: HashSet<usize>,
     /// Parameter indices where at least one call site within the project
     /// passes an argument recognized as tainted (a known user-input source,
     /// `argv`, or data traced back to one via a direct assignment/string-copy
@@ -509,6 +528,8 @@ pub fn compute_summaries(
 ) -> HashMap<String, FunctionSummary> {
     let mut summaries = HashMap::new();
 
+    let clearing_names = collect_clearing_names(root, source);
+
     collect_function_summaries(
         root,
         source,
@@ -517,10 +538,58 @@ pub fn compute_summaries(
         taint_source_aliases,
         string_macros,
         function_macros,
+        &clearing_names,
         &mut summaries,
     );
 
     summaries
+}
+
+/// The callee names that overwrite their first argument's pointee in this
+/// file: `call_roles::MEMORY_CLEARING_FUNCS` plus every file-scope
+/// declarator initialised from one of them -- the
+/// `static void *(*const volatile memset_func)(void *, int, size_t) = memset;`
+/// idiom (mbedtls `platform_util.c`, hostap `common.c`) that a zeroize
+/// wrapper calls INSTEAD of `memset` precisely so the call cannot be
+/// optimised away. Feeds `credit_clears_params` (task 1127).
+fn collect_clearing_names(root: &Node, source: &str) -> HashSet<String> {
+    use crate::utility::cert_c::{ast_utils, call_roles};
+    use lang_parsing_substrate::query;
+
+    let mut names: HashSet<String> = call_roles::MEMORY_CLEARING_FUNCS
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+    for decl in query::find_descendants_of_kind(*root, "declaration") {
+        if query::find_ancestor(decl, |a| a.kind() == "function_definition").is_some() {
+            continue;
+        }
+        let mut cursor = decl.walk();
+        for init in decl.children_by_field_name("declarator", &mut cursor) {
+            if init.kind() != "init_declarator" {
+                continue;
+            }
+            let (Some(declarator), Some(value)) = (
+                init.child_by_field_name("declarator"),
+                init.child_by_field_name("value"),
+            ) else {
+                continue;
+            };
+            let target = init_state::strip_arg_casts(&value);
+            if target.kind() != "identifier"
+                || !call_roles::is_memory_clearing_call(
+                    target.utf8_text(source.as_bytes()).unwrap_or(""),
+                )
+            {
+                continue;
+            }
+            let name = ast_utils::get_identifier_from_declarator(&declarator, source);
+            if !name.is_empty() {
+                names.insert(name);
+            }
+        }
+    }
+    names
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -532,6 +601,7 @@ fn collect_function_summaries(
     taint_source_aliases: &[String],
     string_macros: &HashMap<String, String>,
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    clearing_names: &HashSet<String>,
     summaries: &mut HashMap<String, FunctionSummary>,
 ) {
     // Iterative pre-order rather than recursion, and the order is the same one
@@ -558,6 +628,7 @@ fn collect_function_summaries(
                     taint_source_aliases,
                     string_macros,
                     function_macros,
+                    clearing_names,
                 );
                 // Two definitions of one name in a single translation unit --
                 // the `#ifdef FEATURE` real implementation beside the `#else`
@@ -709,6 +780,7 @@ fn function_definition_is_preproc_conditional(func_node: &Node) -> bool {
 /// `taint_source_aliases` names any macro identifier whose target resolves to
 /// a taint source (e.g. `#define GETENV getenv`) — treated as additional
 /// text-scan keywords when computing `has_env03_taint_source`.
+#[allow(clippy::too_many_arguments)]
 fn analyze_function(
     func_node: &Node,
     source: &str,
@@ -717,6 +789,7 @@ fn analyze_function(
     taint_source_aliases: &[String],
     string_macros: &HashMap<String, String>,
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    clearing_names: &HashSet<String>,
 ) -> FunctionSummary {
     // Internal linkage: `static` storage class at file scope. A direct-child
     // scan, not a text one, so a `static` in the body or in a parameter type
@@ -862,6 +935,7 @@ fn analyze_function(
             !function_definition_is_preproc_conditional(func_node),
             &mut summary,
         );
+        credit_clears_params(&body, source, &params, clearing_names, &mut summary);
 
         // Compute return value range for integer-returning functions (only when VRA is needed)
         if compute_return_ranges && !is_void_return && !is_pointer_return {
@@ -2177,6 +2251,7 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
         }
     }
     existing.closes_params.extend(summary.closes_params);
+    existing.clears_params.extend(summary.clears_params);
     for (idx, fields) in summary.frees_param_fields {
         existing
             .frees_param_fields
@@ -2352,6 +2427,49 @@ fn credit_modifies_params(
     for idx in conditional {
         if may_return_without_writing(body, source, &params[idx]) {
             summary.conditional_modifies_params.insert(idx);
+        }
+    }
+}
+
+/// Credit `summary.clears_params` for every call in `body` that hands a
+/// parameter, as the first argument (the destination), to one of
+/// `clearing_names` -- see `collect_clearing_names`. Casts and parentheses
+/// on the argument are transparent (`memset((void *) buf, 0, len)`), and a
+/// call under a preprocessor branch inside the body counts: mbedtls's
+/// zeroize reaches `explicit_bzero` / `memset_s` / `SecureZeroMemory` /
+/// `memset_func` through four `#if` arms, every one of which clears
+/// (task 1127).
+fn credit_clears_params(
+    body: &Node,
+    source: &str,
+    params: &[String],
+    clearing_names: &HashSet<String>,
+    summary: &mut FunctionSummary,
+) {
+    use lang_parsing_substrate::query;
+
+    for call in query::find_descendants_of_kind(*body, "call_expression") {
+        let Some(function) = call.child_by_field_name("function") else {
+            continue;
+        };
+        if function.kind() != "identifier"
+            || !clearing_names.contains(function.utf8_text(source.as_bytes()).unwrap_or(""))
+        {
+            continue;
+        }
+        let Some(arguments) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let Some(first) = arguments.named_child(0) else {
+            continue;
+        };
+        let target = init_state::strip_arg_casts(&first);
+        if target.kind() != "identifier" {
+            continue;
+        }
+        let arg_name = target.utf8_text(source.as_bytes()).unwrap_or("");
+        if let Some(idx) = params.iter().position(|p| !p.is_empty() && p == arg_name) {
+            summary.clears_params.insert(idx);
         }
     }
 }
@@ -3305,6 +3423,48 @@ pub fn propagate_transitive_closes(summaries: &mut HashMap<String, FunctionSumma
                             summary.closes_params.insert(*caller_idx);
                             changed = true;
                         }
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Propagate transitive clears through param pass-through chains.
+///
+/// Mirrors `propagate_transitive_closes` for `clears_params`: a wrapper that
+/// forwards its parameter to a clearer clears it too. Each edge's callee is
+/// resolved through `macro_aliases` first, and an edge landing on one of
+/// `call_roles::MEMORY_CLEARING_FUNCS` at argument 0 counts by itself, so
+/// `#define port_memset memset` and a wrapper-of-a-wrapper both reach the
+/// clear (task 1127).
+pub fn propagate_transitive_clears(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    macro_aliases: &HashMap<String, String>,
+) {
+    use crate::analyze::const_eval::resolve_macro_alias;
+    use crate::utility::cert_c::call_roles;
+
+    for _pass in 0..10 {
+        let mut changed = false;
+        let snapshot: HashMap<String, HashSet<usize>> = summaries
+            .iter()
+            .map(|(n, s)| (n.clone(), s.clears_params.clone()))
+            .collect();
+
+        for summary in summaries.values_mut() {
+            for (caller_idx, callees) in &summary.param_passthroughs {
+                for (callee_name, callee_idx) in callees {
+                    let callee = resolve_macro_alias(macro_aliases, callee_name);
+                    let clears = (*callee_idx == 0 && call_roles::is_memory_clearing_call(callee))
+                        || snapshot.get(callee).is_some_and(|c| c.contains(callee_idx));
+                    if clears && !summary.clears_params.contains(caller_idx) {
+                        summary.clears_params.insert(*caller_idx);
+                        changed = true;
                     }
                 }
             }
@@ -4588,5 +4748,74 @@ void *extra_leak_marker(void){
             .expect("extra_leak_marker should get its own summary entry");
         assert!(marker.returns_allocation);
         assert!(marker.never_returns);
+    }
+
+    /// mbedtls's `mbedtls_platform_zeroize` reaches memset only through a
+    /// volatile function pointer, under one of several `#if` arms, and is
+    /// itself under `#if !defined(..._ALT)`. It clears its first parameter
+    /// by every one of those routes, and nothing about its name may be
+    /// needed to know so (task 1127).
+    #[test]
+    fn clears_params_sees_through_volatile_pointer_and_preproc_arms() {
+        let code = r#"
+        #include <string.h>
+        static void *(*const volatile memset_func)(void *, int, size_t) = memset;
+        #if !defined(PLATFORM_ZEROIZE_ALT)
+        void platform_zeroize(void *buf, size_t len) {
+            if (len > 0) {
+        #if defined(HAS_EXPLICIT_BZERO)
+                explicit_bzero(buf, len);
+        #elif defined(_WIN32)
+                SecureZeroMemory(buf, len);
+        #else
+                memset_func(buf, 0, len);
+        #endif
+            }
+        }
+        #endif
+        void forced_memzero(void *ptr, size_t len) {
+            memset_func(ptr, 0, len);
+        }
+        void log_len(void *buf, size_t len) {
+            (void)buf;
+            (void)len;
+        }
+        void clears_other(void *buf, size_t len) {
+            static char scratch[8];
+            memset(scratch, 0, len);
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        assert!(summaries["platform_zeroize"].clears_params.contains(&0));
+        assert!(!summaries["platform_zeroize"].clears_params.contains(&1));
+        assert!(summaries["forced_memzero"].clears_params.contains(&0));
+        assert!(summaries["log_len"].clears_params.is_empty());
+        assert!(summaries["clears_other"].clears_params.is_empty());
+    }
+
+    /// A wrapper that forwards its buffer to a clearer clears it too, and
+    /// an object-like alias of a library clearer counts at the edge: the
+    /// alias map is the project's, so the `#define` need not be in this
+    /// file (task 1127).
+    #[test]
+    fn clears_params_propagates_through_forwarding_and_aliases() {
+        let code = r#"
+        void zeroize(void *buf, unsigned long len) { memset(buf, 0, len); }
+        void wipe(void *p, unsigned long n) { zeroize(p, n); }
+        void wipe_twice(void *p, unsigned long n) { wipe(p, n); }
+        void port_wipe(void *p, unsigned long n) { port_memset(p, 0, n); }
+        void wipe_second(void *a, void *b, unsigned long n) { zeroize(b, n); }
+        "#;
+        let mut summaries = parse_and_summarize(code);
+        let mut aliases = HashMap::new();
+        aliases.insert("port_memset".to_string(), "memset".to_string());
+        propagate_transitive_clears(&mut summaries, &aliases);
+        assert!(summaries["wipe"].clears_params.contains(&0));
+        assert!(summaries["wipe_twice"].clears_params.contains(&0));
+        assert!(summaries["port_wipe"].clears_params.contains(&0));
+        assert_eq!(
+            summaries["wipe_second"].clears_params,
+            HashSet::from([1usize])
+        );
     }
 }
