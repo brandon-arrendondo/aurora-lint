@@ -546,7 +546,19 @@ fn analyze_one_file(
     let mut file_violations = Vec::new();
     let mut file_suppressed = Vec::new();
 
-    if let Ok((tree, source)) = parser.parse_file(file_path) {
+    let parsed = match parser.parse_file(file_path) {
+        Ok(parsed) => Some(parsed),
+        Err(e) => {
+            // A file the directory walk listed but the parser would not
+            // take -- a binary blob with a C extension (task 1131), an
+            // unreadable path. Say so once here, at the one place each
+            // file is scanned; silently producing nothing for it is how a
+            // whole file used to vanish from a run unnoticed.
+            eprintln!("Warning: {}: {}", file_path, e.root_cause());
+            None
+        }
+    };
+    if let Some((tree, source)) = parsed {
         // A `.h` file is ambiguous between C and C++ by extension alone; a
         // header written entirely in C++ (a vendored C++ wrapper API
         // shipped alongside a C library, e.g. mosquitto's
