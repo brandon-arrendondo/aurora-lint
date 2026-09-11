@@ -18,6 +18,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -55,11 +56,17 @@ impl Win02C {
             if let Some(function) = call.child_by_field_name("function") {
                 let func_name = get_node_text(&function, source);
 
-                if func_name == "CreateProcess" {
+                // The macro and both entry points it expands to;
+                // `CreateProcessAsUser*` is the compliant form and does not
+                // match (task 1130).
+                if call_roles::is_win32_api(func_name, "CreateProcess") {
                     violations.push(RuleViolation {
                         rule_id: self.rule_id().to_string(),
                         severity: Severity::High,
-                        message: "CreateProcess() called - spawns child with inherited privileges".to_string(),
+                        message: format!(
+                            "{}() called - spawns child with inherited privileges",
+                            func_name
+                        ),
                         file_path: String::new(),
                         line: call.start_position().row + 1,
                         column: call.start_position().column + 1,
