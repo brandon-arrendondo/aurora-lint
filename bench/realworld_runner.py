@@ -445,6 +445,68 @@ CODEBASES = {
             "source_dirs": ["{path}/library/"],
         },
     },
+    # Onboarded as the 11th real-world oracle: a security-conscious in-memory
+    # database with real pthread concurrency (pthread_create in iothread.c,
+    # the legacy threads_mngr.c, the ae.c event loop, redisAtomic macros in
+    # atomicvar.h), so the existing pthread-vocabulary CON* rules apply with
+    # no prerequisite. Chosen over Redis for upstream responsiveness, since
+    # this project files real findings upstream (rationale in
+    # data/precision_audit/valkey/README.md). zmalloc/zfree/zcalloc/zrealloc
+    # are plain functions, not macros -- no macro_expand.rs work needed.
+    "valkey": {
+        "path": BENCH_ROOT / "valkey",
+        "sqc": {
+            # Scope = the shipped server: src/*.c + src/*.h, plus the two
+            # first-party subtrees the server build links -- src/trace/ (LTTng
+            # tracepoints) and src/modules/lua/ (the EVAL/FCALL scripting
+            # engine, a built-in module, not a sample). Excluded inside src/:
+            # modules/hello*.c (sample modules shipped for module authors, not
+            # the server) and unit/ (C++ unit tests; never dispatched anyway).
+            # commands/ holds only .json codegen specs. deps/ (vendored
+            # libvalkey, jemalloc, lua, linenoise, hdr_histogram, fast_float,
+            # fpconv) is outside the scan root by construction, same
+            # rationale as sqlite excluding its Tcl bindings; its headers are
+            # on -I so the types resolve. version.h, commands.def and
+            # fmtargs.h are TRACKED at this pin (not build-generated), so the
+            # bare clone scans without a build and corpus-check has nothing
+            # to flag. --exclude globs resolve relative to the scan root.
+            "scan_path": "{path}/src",
+            "manifest": "conf/realworld/valkey-rules.toml",
+            "includes": [
+                "-I", "/usr/include",                  # openssl
+                "-I", "{path}/src",
+                "-I", "{path}/deps/hdr_histogram",
+                "-I", "{path}/deps/fpconv",
+                "-I", "{path}/deps/libvalkey/include", # <valkey/*.h> (cli, benchmark)
+                "-I", "{path}/deps/linenoise",
+                "-I", "{path}/deps/lua/src",           # modules/lua
+            ],
+            "extra_args": [
+                "-d", "{path}/src",
+                "--exclude", "modules/hello*.c",
+                "--exclude", "unit/**",
+            ],
+        },
+        # Same scope as sqc above, for a fair cross-tool comparison.
+        "cppcheck": {
+            "includes": ["-I", "{path}/src", "-I", "{path}/deps/hdr_histogram",
+                         "-I", "{path}/deps/fpconv", "-I", "{path}/deps/libvalkey/include",
+                         "-I", "{path}/deps/linenoise", "-I", "{path}/deps/lua/src"],
+            "source_dirs": ["{path}/src/"],
+            "extra_args": ["-i", "{path}/src/unit", "-i", "{path}/src/modules/helloworld.c",
+                           "-i", "{path}/src/modules/helloacl.c", "-i", "{path}/src/modules/helloblock.c",
+                           "-i", "{path}/src/modules/hellocluster.c", "-i", "{path}/src/modules/hellodict.c",
+                           "-i", "{path}/src/modules/hellohook.c", "-i", "{path}/src/modules/hellotimer.c",
+                           "-i", "{path}/src/modules/hellotype.c"],
+        },
+        "clang-tidy": {
+            "includes": ["-I", "{path}/src", "-I", "{path}/deps/hdr_histogram",
+                         "-I", "{path}/deps/fpconv", "-I", "{path}/deps/libvalkey/include",
+                         "-I", "{path}/deps/linenoise", "-I", "{path}/deps/lua/src"],
+            "source_dirs": ["{path}/src/"],
+            "exclude": ["*/unit/*", "*/modules/hello*"],
+        },
+    },
 }
 
 
