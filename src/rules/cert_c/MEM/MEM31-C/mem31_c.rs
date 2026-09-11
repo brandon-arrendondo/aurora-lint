@@ -165,6 +165,14 @@ struct MemoryLeakAnalyzer<'a> {
     // with: `freed_memory` snapshotted at every visited `goto L`, intersected
     // across all of them. See `visit_labeled_statement`.
     goto_freed_states: HashMap<String, HashMap<String, (usize, usize)>>,
+    // The union of the same snapshots: what SOME `goto L` had freed. A free
+    // at the label of a pointer in here but not in the intersection is a
+    // double free on that path. See `visit_labeled_statement`.
+    goto_maybe_freed: HashMap<String, HashMap<String, (usize, usize)>>,
+    // Pointers freed on some, not every, path into the label the walk is
+    // currently below -- consulted only by the free handlers, never by the
+    // leak sweeps, which keep their must-freed reading of `freed_memory`.
+    maybe_freed: HashMap<String, (usize, usize)>,
     // Frees dropped from `freed_memory` on entry to a goto-only label,
     // re-credited by the end-of-function leak sweep. See
     // `visit_labeled_statement`.
@@ -262,6 +270,7 @@ struct AllocInfo {
 #[derive(Clone)]
 struct LeakBranchState {
     freed_memory: HashMap<String, (usize, usize)>,
+    maybe_freed: HashMap<String, (usize, usize)>,
     null_variables: HashSet<String>,
 }
 
@@ -269,12 +278,14 @@ impl LeakBranchState {
     fn fork(analyzer: &MemoryLeakAnalyzer) -> Self {
         Self {
             freed_memory: analyzer.freed_memory.clone(),
+            maybe_freed: analyzer.maybe_freed.clone(),
             null_variables: analyzer.null_variables.clone(),
         }
     }
 
     fn restore(&self, analyzer: &mut MemoryLeakAnalyzer) {
         analyzer.freed_memory = self.freed_memory.clone();
+        analyzer.maybe_freed = self.maybe_freed.clone();
         analyzer.null_variables = self.null_variables.clone();
     }
 }
@@ -358,6 +369,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             loop_depth: 0,
             label_frees: HashMap::new(),
             goto_freed_states: HashMap::new(),
+            goto_maybe_freed: HashMap::new(),
+            maybe_freed: HashMap::new(),
             discarded_label_frees: HashMap::new(),
             realloc_relations: HashMap::new(),
             signal_registered: false,
@@ -401,6 +414,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
             // Pre-analysis: collect what variables are freed at each label
             self.goto_freed_states.clear();
+            self.goto_maybe_freed.clear();
+            self.maybe_freed.clear();
             self.discarded_label_frees.clear();
             self.collect_label_frees(&body, source);
 
@@ -1062,10 +1077,28 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     ) {
         if let Some(label) = n.child(0).filter(|c| c.kind() == "statement_identifier") {
             let name = ast_utils::get_node_text_owned(&label, source);
-            if !self.fall_through_reaches(&n, source) {
+            let goto_only = !self.fall_through_reaches(&n, source);
+            if goto_only {
                 if let Some(entry_state) = self.goto_freed_states.get(&name).cloned() {
                     for (var, pos) in std::mem::replace(&mut self.freed_memory, entry_state) {
                         self.discarded_label_frees.entry(var).or_insert(pos);
+                    }
+                }
+                // Whatever was possibly freed above belongs to the path the
+                // preceding statement ended; the label's own possibilities
+                // are the gotos'.
+                self.maybe_freed.clear();
+            }
+            // The intersection above says what is freed on EVERY way in; the
+            // union says what is freed on SOME way in. A free at the label of
+            // a pointer only in the union is a double free on that path --
+            // the shape `free(p); goto out;` ... `out: if (p) free(p);` --
+            // and the intersection alone can never see it, because the other
+            // gotos (or the fall-through) vote it out.
+            if let Some(union) = self.goto_maybe_freed.get(&name).cloned() {
+                for (var, pos) in union {
+                    if !self.freed_memory.contains_key(&var) {
+                        self.maybe_freed.entry(var).or_insert(pos);
                     }
                 }
             }
@@ -1073,8 +1106,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         push_children(stack, &n);
     }
 
-    /// Fold the current `freed_memory` into the recorded entry state for
-    /// `target_label`, keeping only what every `goto` to it agrees is freed.
+    /// Fold the current `freed_memory` into the recorded entry states for
+    /// `target_label`: the intersection (`goto_freed_states`, what every
+    /// `goto` agrees is freed) and the union (`goto_maybe_freed`, what any
+    /// of them freed).
     fn record_goto_entry_state(&mut self, target_label: &str) {
         match self.goto_freed_states.get_mut(target_label) {
             Some(state) => state.retain(|var, _| self.freed_memory.contains_key(var)),
@@ -1083,6 +1118,43 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     .insert(target_label.to_string(), self.freed_memory.clone());
             }
         }
+        let union = self
+            .goto_maybe_freed
+            .entry(target_label.to_string())
+            .or_default();
+        for (var, pos) in &self.freed_memory {
+            union.entry(var.clone()).or_insert(*pos);
+        }
+    }
+
+    /// Report a free of `var_name` that is a double free on some, not every,
+    /// path into the current label; a must-freed pointer was reported by the
+    /// caller already. Either way the pointer is now freed on every path.
+    fn report_possible_double_free(
+        &mut self,
+        var_name: &str,
+        free_pos: tree_sitter::Point,
+        call_name: &str,
+    ) {
+        if let Some(&(freed_line, _)) = self.maybe_freed.get(var_name) {
+            self.double_free_violations.push(RuleViolation {
+                rule_id: "MEM31-C".to_string(),
+                severity: Severity::High,
+                message: format!(
+                    "Possible double free: '{}' was already freed at line {} on a path that jumps to this label",
+                    var_name, freed_line
+                ),
+                file_path: String::new(),
+                line: free_pos.row + 1,
+                column: free_pos.column + 1,
+                suggestion: Some(format!(
+                    "Set '{}' = NULL after the free at line {} or remove this duplicate {}() call",
+                    var_name, freed_line, call_name
+                )),
+                ..Default::default()
+            });
+        }
+        self.maybe_freed.remove(var_name);
     }
 
     /// True if control can fall out of the statement textually preceding
@@ -1146,17 +1218,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let non_null_check_var = self.get_non_null_check_variable(&n, source);
         let truthiness_var = self.get_truthiness_check_variable(&n, source);
 
-        let mut true_branch: Option<Node> = None;
-        let mut else_clause: Option<Node> = None;
-        for i in 0..n.child_count() {
-            if let Some(child) = n.child(i) {
-                if child.kind() == "compound_statement" && true_branch.is_none() {
-                    true_branch = Some(child);
-                } else if child.kind() == "else_clause" {
-                    else_clause = Some(child);
-                }
-            }
-        }
+        // The consequence is whatever statement follows the condition, braced
+        // or not. Matching only a `compound_statement` here left every
+        // braceless body unvisited: `if (p) free(p);` -- the standard cleanup
+        // idiom -- neither counted as a free for the leak sweep nor as one for
+        // double-free detection, while `if (p) { free(p); }` did both.
+        let true_branch: Option<Node> = n.child_by_field_name("consequence");
+        let else_clause: Option<Node> = (0..n.child_count())
+            .filter_map(|i| n.child(i))
+            .find(|child| child.kind() == "else_clause");
 
         let true_has_return = true_branch
             .as_ref()
@@ -1355,6 +1425,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 merged.entry(k).or_insert(v);
             }
             analyzer.freed_memory = merged;
+            let mut maybe = true_state.maybe_freed.clone();
+            for (k, v) in else_state.maybe_freed.clone() {
+                maybe.entry(k).or_insert(v);
+            }
+            analyzer.maybe_freed = maybe;
         }
         // else: no else clause - just keep current (true-branch) state
     }
@@ -1742,6 +1817,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
                 // New allocation clears freed status (variable now points to valid memory)
                 self.freed_memory.remove(&var_name);
+                self.maybe_freed.remove(&var_name);
 
                 let pos = right.start_position();
                 let alloc_type = self.get_allocation_type(&right, source);
@@ -1760,6 +1836,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // Assignment of one pointer to another clears the freed status
                 // (e.g., buffer = temp after realloc)
                 self.freed_memory.remove(&var_name);
+                self.maybe_freed.remove(&var_name);
 
                 if self.allocated_memory.contains_key(&right_var) {
                     // Transfer ownership
@@ -1892,7 +1969,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             let free_pos = node.start_position();
 
             // Check for double-free only for non-safe deallocators
-            if !is_safe_deallocator && self.freed_memory.contains_key(&var_name) {
+            if is_safe_deallocator {
+                self.maybe_freed.remove(&var_name);
+            } else if self.freed_memory.contains_key(&var_name) {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
                     severity: Severity::High,
@@ -1906,6 +1985,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     )),
                     ..Default::default()
                 });
+            } else {
+                self.report_possible_double_free(&var_name, free_pos, func_name);
             }
 
             // Mark as freed (for leak detection)
@@ -1970,6 +2051,8 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     )),
                     ..Default::default()
                 });
+            } else {
+                self.report_possible_double_free(&var_name, free_pos, "free");
             }
 
             // Mark as freed
