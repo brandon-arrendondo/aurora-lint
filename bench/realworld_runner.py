@@ -1,7 +1,7 @@
 """Real-world benchmark runner: sqc, cppcheck, clang-tidy, Infer and Frama-C
 against real open-source C codebases (libcrc, sqlite, mosquitto, curl, hostap,
-lua, raylib, pureftpd, sel4), scored against the ground-truth oracle in
-data/benchmarks.db.
+lua, raylib, pureftpd, sel4, mbedtls, valkey, ventoy), scored against the
+ground-truth oracle in data/benchmarks.db.
 
 The five tools split into two groups. sqc, cppcheck and clang-tidy read source
 as written and are pointed at a curated -I list. Infer and Frama-C need a real
@@ -412,6 +412,163 @@ CODEBASES = {
             "source_dirs": ["{path}/src/"],
         },
     },
+    # Onboarded as the 10th real-world oracle: the suite's first dedicated
+    # crypto/TLS library. mbedtls_platform_zeroize is a purpose-fit
+    # sensitive-data-clearing idiom no earlier codebase offered MEM03-C (same
+    # "pick a codebase for one rule's first real signal" logic as pureftpd for
+    # CWE-89). mbedtls_calloc/mbedtls_free are #defines in
+    # include/mbedtls/platform.h resolving to calloc/free (or a pluggable
+    # allocator) -- the include/ prescan is what lets MEM30/31-C see through
+    # them, so keep it in -d.
+    "mbedtls": {
+        "path": BENCH_ROOT / "mbedtls",
+        "sqc": {
+            # Scope = library/ (the shipped library proper, 109 .c + 65 .h).
+            # include/mbedtls + include/psa are public headers only, excluded
+            # for the same reason curl excludes its include/; 3rdparty/ is
+            # vendored verified crypto (Project Everest); tests/, programs/,
+            # scripts/, configs/, visualc/ and the framework submodule are not
+            # library code. mbedtls_config.h / build_info.h are static
+            # checked-in headers, so no build step is needed to scan.
+            "scan_path": "{path}/library",
+            "manifest": "conf/realworld/mbedtls-rules.toml",
+            "includes": ["-I", "{path}/include", "-I", "{path}/library"],
+            "extra_args": ["-d", "{path}/library", "-d", "{path}/include"],
+        },
+        # Same library/-only scope as sqc above, for a fair cross-tool comparison.
+        "cppcheck": {
+            "includes": ["-I", "{path}/include", "-I", "{path}/library"],
+            "source_dirs": ["{path}/library/"],
+        },
+        "clang-tidy": {
+            "includes": ["-I", "{path}/include", "-I", "{path}/library"],
+            "source_dirs": ["{path}/library/"],
+        },
+    },
+    # Onboarded as the 11th real-world oracle: a security-conscious in-memory
+    # database with real pthread concurrency (pthread_create in iothread.c,
+    # the legacy threads_mngr.c, the ae.c event loop, redisAtomic macros in
+    # atomicvar.h), so the existing pthread-vocabulary CON* rules apply with
+    # no prerequisite. Chosen over Redis for upstream responsiveness, since
+    # this project files real findings upstream (rationale in
+    # data/precision_audit/valkey/README.md). zmalloc/zfree/zcalloc/zrealloc
+    # are plain functions, not macros -- no macro_expand.rs work needed.
+    "valkey": {
+        "path": BENCH_ROOT / "valkey",
+        "sqc": {
+            # Scope = the shipped server: src/*.c + src/*.h, plus the two
+            # first-party subtrees the server build links -- src/trace/ (LTTng
+            # tracepoints) and src/modules/lua/ (the EVAL/FCALL scripting
+            # engine, a built-in module, not a sample). Excluded inside src/:
+            # modules/hello*.c (sample modules shipped for module authors, not
+            # the server) and unit/ (C++ unit tests; never dispatched anyway).
+            # commands/ holds only .json codegen specs. deps/ (vendored
+            # libvalkey, jemalloc, lua, linenoise, hdr_histogram, fast_float,
+            # fpconv) is outside the scan root by construction, same
+            # rationale as sqlite excluding its Tcl bindings; its headers are
+            # on -I so the types resolve. version.h, commands.def and
+            # fmtargs.h are TRACKED at this pin (not build-generated), so the
+            # bare clone scans without a build and corpus-check has nothing
+            # to flag. --exclude globs resolve relative to the scan root.
+            "scan_path": "{path}/src",
+            "manifest": "conf/realworld/valkey-rules.toml",
+            "includes": [
+                "-I", "/usr/include",                  # openssl
+                "-I", "{path}/src",
+                "-I", "{path}/deps/hdr_histogram",
+                "-I", "{path}/deps/fpconv",
+                "-I", "{path}/deps/libvalkey/include", # <valkey/*.h> (cli, benchmark)
+                "-I", "{path}/deps/linenoise",
+                "-I", "{path}/deps/lua/src",           # modules/lua
+            ],
+            "extra_args": [
+                "-d", "{path}/src",
+                "--exclude", "modules/hello*.c",
+                "--exclude", "unit/**",
+            ],
+        },
+        # Same scope as sqc above, for a fair cross-tool comparison.
+        "cppcheck": {
+            "includes": ["-I", "{path}/src", "-I", "{path}/deps/hdr_histogram",
+                         "-I", "{path}/deps/fpconv", "-I", "{path}/deps/libvalkey/include",
+                         "-I", "{path}/deps/linenoise", "-I", "{path}/deps/lua/src"],
+            "source_dirs": ["{path}/src/"],
+            "extra_args": ["-i", "{path}/src/unit", "-i", "{path}/src/modules/helloworld.c",
+                           "-i", "{path}/src/modules/helloacl.c", "-i", "{path}/src/modules/helloblock.c",
+                           "-i", "{path}/src/modules/hellocluster.c", "-i", "{path}/src/modules/hellodict.c",
+                           "-i", "{path}/src/modules/hellohook.c", "-i", "{path}/src/modules/hellotimer.c",
+                           "-i", "{path}/src/modules/hellotype.c"],
+        },
+        "clang-tidy": {
+            "includes": ["-I", "{path}/src", "-I", "{path}/deps/hdr_histogram",
+                         "-I", "{path}/deps/fpconv", "-I", "{path}/deps/libvalkey/include",
+                         "-I", "{path}/deps/linenoise", "-I", "{path}/deps/lua/src"],
+            "source_dirs": ["{path}/src/"],
+            "exclude": ["*/unit/*", "*/modules/hello*"],
+        },
+    },
+    # Onboarded as the suite's first genuine Win32-API oracle. Every WIN*-C
+    # rule (WIN00-05, WIN30) had no true-positive-capable target across the
+    # eleven POSIX codebases -- curl's own Windows backend files sit outside
+    # its scan scope -- so the family had never been measured on real code.
+    # Ventoy2Disk/Ventoy2Disk/ is the Windows installer GUI+CLI of the Ventoy
+    # boot-USB tool: ~14.7K lines of first-party C (classic C-style COM via
+    # lpVtbl->Method(...), not C++), with direct call sites for every WIN*
+    # family: CreateFileA, DeviceIoControl, CreateProcessA, LoadLibraryA/W +
+    # GetProcAddress, RegOpenKeyExA, CreateThread. Nothing else in the repo
+    # (GRUB2/, IPXE/, BUSYBOX/, EDK2/, LinuxGUI/, Plugson/, VtoyTool/, shell
+    # and Python tooling) is relevant to a CERT-C scan, hence scan_path.
+    #
+    # Registry key is lowercase "ventoy" (checkout dir basename convention,
+    # same discipline as pureftpd/sel4). Four of the 22 sources are UTF-16LE
+    # with a BOM and two more UTF-8 with a BOM -- Visual Studio's doing --
+    # which is what made src/parser/mod.rs decode by byte-order mark.
+    "ventoy": {
+        "path": BENCH_ROOT / "ventoy",
+        "sqc": {
+            # Scope = the top-level .c/.h of the installer only. The three
+            # subdirectories are vendored third-party code of different
+            # provenance and licence (fat_io_lib/ GPL, ff14/ ChaN's FatFs,
+            # xz-embedded-20130513/ public domain) and are excluded from
+            # reporting, but the explicit `-d` keeps them in the prescan so
+            # the headers the installer includes from them (ff.h,
+            # fat_filelib.h, xz.h) still resolve. The explicit `-d` also
+            # matters on its own: the runner's default would prescan the
+            # whole checkout, i.e. all of GRUB2/BUSYBOX/EDK2, for context
+            # nothing in scope can use.
+            "scan_path": "{path}/Ventoy2Disk/Ventoy2Disk",
+            "manifest": "conf/realworld/ventoy-rules.toml",
+            # No -I: <windows.h> and the COM/VDS headers are not on a Linux
+            # node, and aurora-lint parses without them (same precedent as
+            # hostap's <netlink/*.h> gap on macOS).
+            "includes": [],
+            "extra_args": [
+                "-d", "{path}/Ventoy2Disk/Ventoy2Disk",
+                "--exclude", "fat_io_lib/**",
+                "--exclude", "ff14/**",
+                "--exclude", "xz-embedded-20130513/**",
+            ],
+        },
+        # Same top-level-only scope for the competitor tools. Neither can
+        # resolve <windows.h> on the benchmark node any more than aurora-lint
+        # can; cppcheck carries on regardless (missingIncludeSystem is
+        # suppressed suite-wide), clang-tidy reports the unresolved include
+        # per TU and analyses what it can parse past it.
+        "cppcheck": {
+            "includes": [],
+            "source_dirs": ["{path}/Ventoy2Disk/Ventoy2Disk/"],
+            "extra_args": [
+                "-i", "{path}/Ventoy2Disk/Ventoy2Disk/fat_io_lib",
+                "-i", "{path}/Ventoy2Disk/Ventoy2Disk/ff14",
+                "-i", "{path}/Ventoy2Disk/Ventoy2Disk/xz-embedded-20130513",
+            ],
+        },
+        "clang-tidy": {
+            "includes": [],
+            "source_dirs": ["{path}/Ventoy2Disk/Ventoy2Disk/"],
+            "exclude": ["*/fat_io_lib/*", "*/ff14/*", "*/xz-embedded-20130513/*"],
+        },
+    },
 }
 
 
@@ -800,7 +957,7 @@ def _count_sqc_scanned(cfg: dict) -> tuple[int, int]:
 # Both consume a compile_commands.json rather than a curated -I list, because
 # both need a real preprocess: that is the axis sqc deliberately does not
 # require, and pretending otherwise would compare them at a handicap. The
-# compile databases are provisioned for all nine checkouts by
+# compile databases are provisioned for every pinned checkout by
 # playbooks/setup-compile-commands.yml (task 767 -- sel4, hostap and pureftpd
 # included; the belief that three corpora were unbuildable predates that
 # playbook's sel4 Ninja fix).

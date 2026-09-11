@@ -269,7 +269,7 @@ def report(bench_root=None, as_json=False):
           f"{'' if root.is_dir() else '   *** DOES NOT EXIST ***'}")
     if not root.is_dir():
         print("  Set SQC_BENCH_ROOT (see .env.example) to the directory "
-              "holding the 9 checkouts, or provision it with\n"
+              f"holding the {len(results)} checkouts, or provision it with\n"
               "  playbooks/setup-benchmark-repos.yml.")
     print()
     print(f"{'project':<11} {'status':<11} {'head':<13} {'expected':<13} notes")
@@ -301,8 +301,8 @@ def report(bench_root=None, as_json=False):
                   f"untracked_scanned={r['untracked_scanned']} "
                   f"gitignored_scanned={r['gitignored_scanned']}")
     if not bad and not contaminated:
-        print("\nAll 9 checkouts detached at their pinned commits, working "
-              "trees clean.")
+        print(f"\nAll {len(results)} checkouts detached at their pinned "
+              "commits, working trees clean.")
     else:
         print("\nFindings taken off a non-OK checkout are NOT comparable to "
               "ground_truth,\nwhich is keyed on project+commit+file+line+rule.")
