@@ -359,6 +359,7 @@ fn process_statement_for_null_state(
     // process_expression_null's assignment-only dispatch does.
     for call in query::find_descendants_of_kind(*node, "call_expression") {
         apply_cross_file_output_params_null(&call, source, state, summaries);
+        apply_cross_file_nulls_params_null(&call, source, state, summaries);
     }
 
     match node.kind() {
@@ -648,6 +649,55 @@ fn apply_cross_file_output_params_null(
             let var_name = extract_output_arg_var(&arg, source);
             if !var_name.is_empty() && state.contains_key(&var_name) {
                 state.insert(var_name, NullState::NotNull);
+            }
+        }
+        arg_idx += 1;
+    }
+}
+
+/// Mirror of `apply_cross_file_output_params_null` for the opposite fact:
+/// a call whose summary says it unconditionally nulls an argument
+/// (`FunctionSummary::nulls_params` — real functions never set this; it is
+/// synthesized per-file for "safe free" macros like `mosquitto_FREE`/
+/// `Curl_safefree`/`SAFE_FREE` via `macro_expand::macro_nulls_param_indices`,
+/// see EXP34-C's `set_project_context`/`check`) marks that argument
+/// `DefinitelyNull` going forward. Without this, a bare
+/// `mosquitto_FREE(auth_method);` statement is just an opaque call_expression
+/// to the dataflow — no `= NULL` assignment is visible in the unexpanded AST
+/// — so a null-pointer-dereference/misuse of `auth_method` right after the
+/// free (e.g. passed to a `%s` logging call) was never detected.
+fn apply_cross_file_nulls_params_null(
+    call: &Node,
+    source: &str,
+    state: &mut StateMap,
+    summaries: &HashMap<String, FunctionSummary>,
+) {
+    let Some(func) = call.child_by_field_name("function") else {
+        return;
+    };
+    if func.kind() != "identifier" {
+        return;
+    }
+    let func_name = get_text(&func, source);
+    let Some(summary) = summaries.get(&func_name) else {
+        return;
+    };
+    if summary.nulls_params.is_empty() {
+        return;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return;
+    };
+    let mut arg_idx: usize = 0;
+    for i in 0..args.child_count() {
+        let Some(arg) = args.child(i) else { continue };
+        if matches!(arg.kind(), "," | "(" | ")") {
+            continue;
+        }
+        if summary.nulls_params.contains(&arg_idx) {
+            let var_name = extract_output_arg_var(&arg, source);
+            if !var_name.is_empty() && state.contains_key(&var_name) {
+                state.insert(var_name, NullState::DefinitelyNull);
             }
         }
         arg_idx += 1;
@@ -1266,6 +1316,9 @@ pub fn analyze_null_states_with_globals(
     let (initial_state, mut declared_pointers) =
         seed_initial_null_state(func_node, source, summaries, global_states, func_name);
 
+    let proven_nonnull_params =
+        collect_proven_nonnull_params(func_node, source, summaries, func_name);
+
     let mut entry_states: HashMap<BlockId, StateMap> = HashMap::new();
     let mut exit_states: HashMap<BlockId, StateMap> = HashMap::new();
 
@@ -1295,6 +1348,7 @@ pub fn analyze_null_states_with_globals(
         &mut declared_pointers,
         &mut entry_states,
         &mut exit_states,
+        &proven_nonnull_params,
     );
 
     NullAnalysisResult {
@@ -1410,6 +1464,7 @@ fn run_null_state_worklist(
     declared_pointers: &mut HashSet<String>,
     entry_states: &mut HashMap<BlockId, StateMap>,
     exit_states: &mut HashMap<BlockId, StateMap>,
+    proven_nonnull_params: &HashSet<String>,
 ) {
     // Worklist — companion set for O(1) membership test instead of O(N) VecDeque::contains.
     let mut worklist: VecDeque<BlockId> = VecDeque::new();
@@ -1438,7 +1493,15 @@ fn run_null_state_worklist(
             let pred_exit = exit_states.get(pred_id).cloned().unwrap_or_default();
 
             // Apply edge refinement from condition
-            let refined = apply_edge_refinement(&pred_exit, *pred_id, edge_kind, cfg, body, source);
+            let refined = apply_edge_refinement(
+                &pred_exit,
+                *pred_id,
+                edge_kind,
+                cfg,
+                body,
+                source,
+                proven_nonnull_params,
+            );
 
             if first {
                 new_entry = refined;
@@ -1482,6 +1545,42 @@ fn run_null_state_worklist(
     }
 }
 
+/// Names of this function's parameters that every visible call site proves
+/// non-null.
+///
+/// Gated on internal linkage: for an externally-visible function a caller can
+/// live in a translation unit the prescan never saw, so "every call site we
+/// found" is not "every call site". (`aggregate_callsite_null_states` already
+/// pushes an implicit `Unknown` vector for header-declared functions, which
+/// breaks the proof independently; this gate also covers a non-static function
+/// that simply has no header declaration among the scanned files.)
+///
+/// Empty whenever anything is missing — no `func_name`, no summary, external
+/// linkage — so the caller keeps its existing conservative behaviour.
+fn collect_proven_nonnull_params(
+    func_node: &Node,
+    source: &str,
+    summaries: &HashMap<String, FunctionSummary>,
+    func_name: Option<&str>,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Some(summary) = func_name.and_then(|n| summaries.get(n)) else {
+        return out;
+    };
+    if !summary.has_internal_linkage || summary.callsite_param_proven_nonnull.is_empty() {
+        return out;
+    }
+    let params = crate::analyze::function_summary::collect_param_names(func_node, source);
+    for &idx in &summary.callsite_param_proven_nonnull {
+        if let Some(name) = params.get(idx) {
+            if !name.is_empty() {
+                out.insert(name.clone());
+            }
+        }
+    }
+    out
+}
+
 /// Apply edge refinement: given a predecessor's exit state and the edge type,
 /// refine the state based on the predecessor's condition.
 fn apply_edge_refinement(
@@ -1491,6 +1590,7 @@ fn apply_edge_refinement(
     cfg: &FunctionCfg,
     body: &Node,
     source: &str,
+    proven_nonnull_params: &HashSet<String>,
 ) -> StateMap {
     let mut state = pred_exit.clone();
 
@@ -1557,13 +1657,25 @@ fn apply_edge_refinement(
             new_state,
             NullState::DefinitelyNull | NullState::PossiblyNull
         );
+        //
+        // A parameter every visible call site proves non-null is the same
+        // argument one level out: the null disjunct cannot be what made the
+        // condition go this way, because no caller supplies a null. This is
+        // strictly the PROOF (`callsite_param_proven_nonnull`), never the
+        // majority vote in `callsite_param_null_states` -- the vote lets an
+        // `Unknown` caller abstain and can outvote a `PossiblyNull` one, so it
+        // cannot license discarding a disjunct. Without it, mosquitto's
+        // `if(!prefix || strlen(prefix) != 0)` joins to PossiblyNull even
+        // though `bridge__create_prefix` is static and both call sites are
+        // guarded by `if(local_prefix)` / `if(remote_prefix)`.
         if introduces_null
             && current != NullState::DefinitelyNull
-            && crate::utility::cert_c::guard_dominance::has_dominating_dereference(
-                &info.var_name,
-                &cond_node,
-                source,
-            )
+            && (proven_nonnull_params.contains(&info.var_name)
+                || crate::utility::cert_c::guard_dominance::has_dominating_dereference(
+                    &info.var_name,
+                    &cond_node,
+                    source,
+                ))
         {
             continue;
         }

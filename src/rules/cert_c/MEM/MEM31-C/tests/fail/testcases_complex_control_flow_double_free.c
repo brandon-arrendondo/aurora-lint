@@ -2,6 +2,18 @@
  * Rule: MEM31-C
  * Source: testcases
  * Status: FAIL - Should trigger MEM31-C violation
+ * Description: `free(buffer1)` at line 31 followed by `goto cleanup`, whose
+ * block frees `buffer1` again at line 44 -- and the same for `buffer2` via
+ * lines 36 and 45. The expected findings are those two double frees.
+ *
+ * For a long time this file passed for the wrong reason: the double frees
+ * were never detected (the label's `if (x) free(x);` bodies are braceless,
+ * and the walk skipped a braceless `if` consequence entirely), and the file
+ * stayed green only because the gotos tripped two "may not be freed due to
+ * goto" leak findings that are themselves wrong -- the cleanup block frees
+ * both buffers. Do not read those leak findings as this fixture's defect;
+ * when the goto-label prescan learns to see the label's later sibling
+ * statements they go away, and the double frees are what must remain.
  */
 
 #include <stdio.h>

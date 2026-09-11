@@ -118,6 +118,24 @@ pub struct FunctionSummary {
     pub checks_null_params: HashSet<usize>,
     /// Parameter indices that this function writes through (modifies via pointer).
     pub modifies_params: HashSet<usize>,
+    /// Parameter indices that this call unconditionally sets to NULL.
+    ///
+    /// Real functions never populate this (no AST pass derives it from a
+    /// function body) — it exists so a "safe free" function-like macro
+    /// invocation (`mosquitto_FREE(p)`, `Curl_safefree(p)`, `SAFE_FREE(p)`,
+    /// detected structurally by `macro_expand::macro_nulls_param_indices`,
+    /// not by name) can be synthesized into a one-off `FunctionSummary` entry
+    /// keyed by the macro's name, exactly as `modifies_params` already is for
+    /// write-through macros (see EXP34-C's `macro_write_params`/MEM30-C's
+    /// `macro_null_params`). `null_state.rs`'s
+    /// `apply_cross_file_nulls_params_null` reads it the same way
+    /// `apply_cross_file_output_params_null` reads `modifies_params`, so a
+    /// bare `mosquitto_FREE(auth_method);` statement (a plain call_expression
+    /// with no `= NULL` assignment visible to the parser) marks `auth_method`
+    /// `DefinitelyNull` for the rest of the CFG, the same as if the caller had
+    /// written `free(auth_method); auth_method = NULL;` by hand.
+    #[serde(default)]
+    pub nulls_params: HashSet<usize>,
     /// Parameter indices that this function dereferences in any way (read or write).
     /// Superset of modifies_params — includes `*param`, `param[i]`, `param->field`.
     pub dereferences_params: HashSet<usize>,
@@ -141,6 +159,24 @@ pub struct FunctionSummary {
     /// Aggregated null states of arguments at all call sites (populated by prescan second pass).
     /// Maps parameter index → joined NullState from all callers.
     pub callsite_param_null_states: HashMap<usize, NullState>,
+    /// Parameter indices every visible call site passes a provably non-null
+    /// argument at. Strictly stronger than a `NotNull` in
+    /// `callsite_param_null_states`, which is a majority VOTE:
+    /// `Unknown` callers there contribute nothing and a `PossiblyNull` caller
+    /// can be outvoted, so that map answers "what do callers mostly do?" and
+    /// this set answers "did every one of them prove it?". Only the latter can
+    /// license discarding a null disjunct.
+    ///
+    /// Sound as a proof of the parameter's entry state ONLY together with
+    /// [`Self::has_internal_linkage`]: for a non-static function, callers can
+    /// live in a translation unit the prescan never saw, so "every call site
+    /// we found" is not "every call site".
+    #[serde(default)]
+    pub callsite_param_proven_nonnull: HashSet<usize>,
+    /// `static` at file scope — every caller is in this translation unit, so
+    /// the prescanned call sites are provably all of them.
+    #[serde(default)]
+    pub has_internal_linkage: bool,
     /// Argument-position pairs `(lower, higher)` at which SOME call site
     /// anywhere in the pre-scanned project hands this function two named,
     /// DIFFERENT storage objects.
@@ -682,7 +718,19 @@ fn analyze_function(
     string_macros: &HashMap<String, String>,
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
 ) -> FunctionSummary {
-    let mut summary = FunctionSummary::default();
+    // Internal linkage: `static` storage class at file scope. A direct-child
+    // scan, not a text one, so a `static` in the body or in a parameter type
+    // cannot be mistaken for the function's own -- a `function_definition`
+    // carries the specifier in the same child position a `declaration` does,
+    // which is why the declaration-shaped helper is the right one here.
+    let has_internal_linkage = crate::utility::cert_c::ast_utils::declaration_has_storage_class(
+        func_node, "static", source,
+    );
+
+    let mut summary = FunctionSummary {
+        has_internal_linkage,
+        ..Default::default()
+    };
 
     // Collect parameter names
     let params = collect_param_names(func_node, source);
