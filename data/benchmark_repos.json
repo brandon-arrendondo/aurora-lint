@@ -137,6 +137,13 @@
       "repo": "https://github.com/Mbed-TLS/mbedtls.git",
       "version": "068ff080b369adfac81509f9b57b2afabaf82dc5",
       "scope_include": ["library/**"]
+    },
+    {
+      "name": "valkey",
+      "repo": "https://github.com/valkey-io/valkey.git",
+      "version": "7f1dffedff6de73058b2c2a389422b6ecd56c8fb",
+      "scope_include": ["src/*.c", "src/*.h", "src/trace/**", "src/modules/lua/**"],
+      "scope_exclude": ["src/modules/*.c", "src/unit/**"]
     }
   ]
 }
