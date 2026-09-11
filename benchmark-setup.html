@@ -472,6 +472,11 @@ hypothetical; see <a class="reference internal" href="#verifying-the-pins">Verif
 <td><p><code class="docutils literal notranslate"><span class="pre">068ff080b369adfac81509f9b57b2afabaf82dc5</span></code></p></td>
 <td><p>detached</p></td>
 </tr>
+<tr class="row-even"><td><p>valkey</p></td>
+<td><p><a class="reference external" href="https://github.com/valkey-io/valkey.git">https://github.com/valkey-io/valkey.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">7f1dffedff6de73058b2c2a389422b6ecd56c8fb</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
 </tbody>
 </table>
 <div class="admonition important">
@@ -591,6 +596,11 @@ git<span class="w"> </span>clone<span class="w"> </span>https://github.com/seL4/
 <span class="c1"># of library/ does not need it.</span>
 git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Mbed-TLS/mbedtls.git
 <span class="nb">cd</span><span class="w"> </span>mbedtls<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>068ff080b369adfac81509f9b57b2afabaf82dc5<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+<span class="c1"># Do not build inside this checkout: `make` leaves a gitignored</span>
+<span class="c1"># src/release.h that corpus-check will (correctly) refuse.</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/valkey-io/valkey.git
+<span class="nb">cd</span><span class="w"> </span>valkey<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>7f1dffedff6de73058b2c2a389422b6ecd56c8fb<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
 </pre></div>
 </div>
 </section>
