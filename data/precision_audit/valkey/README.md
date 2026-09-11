@@ -99,8 +99,11 @@ follow-up (match identifiers, not comment text). Had the detector been right,
 Exploratory run under the pre-disable manifest, local run #224: **35,106
 findings, 217 of 234 files, 186,822 LOC, 86.6 s**. Removing the 41 WIN*
 findings gives the shape the committed manifest produces (re-scan at the same
-tree: 35,065). The recorded first run at the onboarding commit is appended
-below.
+tree: 35,065).
+
+**Recorded first run at the onboarding commit (e51752fa), local run #225:
+35,065 findings, 217 of 234 files, 75.1 s, WIN* 0.** Everything below is
+unchanged by the WIN* disable.
 
 Top rules: EXP19-C 6,551 · API00-C 3,372 · EXP34-C 3,341 · MEM31-C 1,710 ·
 DCL15-C 1,662 · DCL13-C 1,050 · EXP12-C 1,009 · DCL19-C 988 · DCL06-C 824 ·
