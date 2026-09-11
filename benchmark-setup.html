@@ -477,6 +477,11 @@ hypothetical; see <a class="reference internal" href="#verifying-the-pins">Verif
 <td><p><code class="docutils literal notranslate"><span class="pre">7f1dffedff6de73058b2c2a389422b6ecd56c8fb</span></code></p></td>
 <td><p>detached</p></td>
 </tr>
+<tr class="row-odd"><td><p>ventoy</p></td>
+<td><p><a class="reference external" href="https://github.com/ventoy/Ventoy.git">https://github.com/ventoy/Ventoy.git</a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">7cbdc5cf69935bcf1f085ae67f40e70ea7e74bae</span></code></p></td>
+<td><p>detached</p></td>
+</tr>
 </tbody>
 </table>
 <div class="admonition important">
@@ -601,6 +606,12 @@ git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Mbed-
 <span class="c1"># src/release.h that corpus-check will (correctly) refuse.</span>
 git<span class="w"> </span>clone<span class="w"> </span>https://github.com/valkey-io/valkey.git
 <span class="nb">cd</span><span class="w"> </span>valkey<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>7f1dffedff6de73058b2c2a389422b6ecd56c8fb<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
+
+<span class="c1"># NOTE: checkout dir must be lowercase &quot;ventoy&quot; to match the registry key.</span>
+<span class="c1"># Only Ventoy2Disk/Ventoy2Disk/ is scanned; the rest of the repo is</span>
+<span class="c1"># Linux/GRUB/firmware code outside a CERT-C scan&#39;s interest.</span>
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/ventoy/Ventoy.git<span class="w"> </span>ventoy
+<span class="nb">cd</span><span class="w"> </span>ventoy<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>7cbdc5cf69935bcf1f085ae67f40e70ea7e74bae<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>..
 </pre></div>
 </div>
 </section>
