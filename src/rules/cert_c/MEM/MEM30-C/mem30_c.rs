@@ -1,4 +1,5 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::macro_expand::FunctionMacro;
@@ -23,6 +24,11 @@ pub struct Mem30C {
     /// (a pure counter, no free at all) and misattributes multi-arg frees to
     /// the wrong parameter (task 396).
     function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    /// Project-wide `#define ALIAS target` map, merged in `check` with this
+    /// file's own, so `mbedtls_free(p)` dispatches as the literal `free` it
+    /// expands to rather than through the name-contains-FREE guess
+    /// (task 1128).
+    project_aliases: RefCell<HashMap<String, String>>,
 }
 
 impl Mem30C {
@@ -55,6 +61,7 @@ impl CertRule for Mem30C {
     fn set_project_context(&self, context: &ProjectContext) {
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -98,11 +105,15 @@ impl CertRule for Mem30C {
         let mut union_typedef_names = HashSet::new();
         collect_union_typedef_names(node, source, &mut union_typedef_names);
 
+        let macro_aliases =
+            const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
+
         // Second pass: per-function analysis
         let mut analyzer = MemoryAnalyzer::new(
             macro_null_params,
             union_typedef_names,
             self.function_summaries.borrow().clone(),
+            macro_aliases,
         );
         analyzer.analyze_node(node, source, &mut violations);
 
@@ -1397,6 +1408,9 @@ struct MemoryAnalyzer {
     // `frees_params` is known, it overrides the name-based free heuristic
     // below (task 396) — see `process_call_expression`.
     function_summaries: HashMap<String, FunctionSummary>,
+    // `#define ALIAS target` map (project-wide plus this file); a callee is
+    // dispatched on the name its alias chain ends at (task 1128).
+    macro_aliases: HashMap<String, String>,
 }
 
 impl MemoryAnalyzer {
@@ -1404,6 +1418,7 @@ impl MemoryAnalyzer {
         macro_null_params: HashMap<String, Vec<usize>>,
         union_typedef_names: HashSet<String>,
         function_summaries: HashMap<String, FunctionSummary>,
+        macro_aliases: HashMap<String, String>,
     ) -> Self {
         Self {
             freed_vars: HashSet::new(),
@@ -1418,6 +1433,7 @@ impl MemoryAnalyzer {
             union_typedef_names,
             union_typed_vars: HashSet::new(),
             function_summaries,
+            macro_aliases,
         }
     }
 
@@ -1432,6 +1448,7 @@ impl MemoryAnalyzer {
                 self.macro_null_params.clone(),
                 self.union_typedef_names.clone(),
                 self.function_summaries.clone(),
+                self.macro_aliases.clone(),
             );
             func_analyzer.analyze_function(node, source, violations);
             return; // Don't recurse further - function handled completely
@@ -2423,7 +2440,11 @@ impl MemoryAnalyzer {
         violations: &mut Vec<RuleViolation>,
     ) -> HashSet<usize> {
         if let Some(function_node) = node.child_by_field_name("function") {
-            let function_name = get_node_text(&function_node, source);
+            // The spelling in the source keys the safe-free macro table
+            // (`macro_null_params`); everything else classifies the callee
+            // by the name its `#define` alias chain ends at (task 1128).
+            let spelled_name = get_node_text(&function_node, source);
+            let function_name = const_eval::resolve_macro_alias(&self.macro_aliases, spelled_name);
 
             match function_name {
                 "free" => {
@@ -2514,7 +2535,7 @@ impl MemoryAnalyzer {
                         // the macro engine flagged this macro as nulling a
                         // parameter, clear that argument's freed state, exactly
                         // as an explicit `p = NULL;` would. Phase 2c-iii.
-                        if let Some(indices) = self.macro_null_params.get(function_name).cloned() {
+                        if let Some(indices) = self.macro_null_params.get(spelled_name).cloned() {
                             self.clear_freed_for_nulled_args(node, source, &indices);
                         }
                         return freed_arg_ids;

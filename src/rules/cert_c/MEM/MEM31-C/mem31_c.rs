@@ -1,4 +1,5 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::{self, FunctionSummary};
 use crate::analyze::macro_expand::{self, FunctionMacro};
@@ -60,6 +61,11 @@ pub struct Mem31C {
     /// Cross-file noreturn function names from the prescan, unioned in
     /// `check` with the ones this file declares for itself (task 1076).
     noreturn_functions: RefCell<HashSet<String>>,
+    /// Project-wide `#define ALIAS target` map, merged in `check` with this
+    /// file's own. A callee is classified by the name the chain ends at, so
+    /// `mbedtls_calloc(...)` is an allocation and `mbedtls_free(...)` is a
+    /// literal `free`, not a `*_free`-shaped guess (task 1128).
+    project_aliases: RefCell<HashMap<String, String>>,
 }
 
 impl Mem31C {
@@ -72,6 +78,7 @@ impl Mem31C {
             known_functions: RefCell::new(HashSet::new()),
             function_macros: RefCell::new(HashMap::new()),
             noreturn_functions: RefCell::new(HashSet::new()),
+            project_aliases: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -105,6 +112,7 @@ impl CertRule for Mem31C {
         *self.known_functions.borrow_mut() = context.known_functions.clone();
         *self.function_macros.borrow_mut() = context.function_macros.clone();
         *self.noreturn_functions.borrow_mut() = context.noreturn_functions.clone();
+        *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -123,6 +131,8 @@ impl CertRule for Mem31C {
         noreturn_names.extend(crate::analyze::noreturn::collect_noreturn_function_names(
             node, source,
         ));
+        let macro_aliases =
+            const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
 
         // Analyze each function independently for memory leaks
         for func in query::find_descendants_of_kind(*node, "function_definition") {
@@ -134,6 +144,7 @@ impl CertRule for Mem31C {
                 &known_functions,
                 &function_macros,
                 &noreturn_names,
+                &macro_aliases,
             );
             analyzer.analyze_function(&func, source, &mut violations);
         }
@@ -256,6 +267,9 @@ struct MemoryLeakAnalyzer<'a> {
     // (headers included) unioned with this file's own declarations. A call to
     // one ends a branch the way `return` does (task 1076).
     noreturn_names: &'a HashSet<String>,
+    // `#define ALIAS target` map (project-wide plus this file); see
+    // `callee_name`.
+    macro_aliases: &'a HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -357,6 +371,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         known_functions: &'a HashSet<String>,
         function_macros: &'a HashMap<String, FunctionMacro>,
         noreturn_names: &'a HashSet<String>,
+        macro_aliases: &'a HashMap<String, String>,
     ) -> Self {
         Self {
             allocated_memory: HashMap::new(),
@@ -387,7 +402,20 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             known_functions,
             function_macros,
             noreturn_names,
+            macro_aliases,
         }
+    }
+
+    /// The name a call's callee resolves to once object-like aliases are
+    /// followed: `mbedtls_free` is `free` when the project says
+    /// `#define mbedtls_free free`. Every classification below (literal
+    /// free/realloc, allocator, summary lookup, deallocator name shape)
+    /// reads this, never the raw spelling, so a renamed allocator is seen by
+    /// what it is rather than by what its name happens to contain
+    /// (task 1128).
+    fn callee_name(&self, function: &Node, source: &str) -> String {
+        let raw = ast_utils::get_node_text(function, source);
+        const_eval::resolve_macro_alias(self.macro_aliases, raw).to_string()
     }
 
     fn analyze_function(
@@ -473,7 +501,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 let Some(function) = n.child_by_field_name("function") else {
                     return false;
                 };
-                if ast_utils::get_node_text_owned(&function, source) != "free" {
+                if self.callee_name(&function, source) != "free" {
                     return false;
                 }
                 let Some(arguments) = n.child_by_field_name("arguments") else {
@@ -890,15 +918,31 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 continue;
             }
             if let Some(function) = call.child_by_field_name("function") {
-                let func_name = ast_utils::get_node_text_owned(&function, source);
-                if func_name == "free" || self.is_deallocation_call(&func_name) {
+                let func_name = self.callee_name(&function, source);
+                if func_name == "free" || self.is_named_deallocator(&func_name) {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
+                        let mut param_idx = 0usize;
                         for i in 0..arguments.child_count() {
                             if let Some(arg) = arguments.child(i) {
+                                if matches!(arg.kind(), "," | "(" | ")") {
+                                    continue;
+                                }
+                                let this_param_idx = param_idx;
+                                param_idx += 1;
+                                let through_address_of = arg.kind() == "pointer_expression";
+                                if func_name != "free"
+                                    && !self.named_deallocator_releases_arg(
+                                        &func_name,
+                                        this_param_idx,
+                                        through_address_of,
+                                    )
+                                {
+                                    continue;
+                                }
                                 // `&var` reaches a deallocator that nulls its
                                 // out-parameter -- same spelling the walk
                                 // accepts.
-                                let inner = if arg.kind() == "pointer_expression" {
+                                let inner = if through_address_of {
                                     arg.child_by_field_name("argument")
                                 } else {
                                     Some(arg)
@@ -1879,7 +1923,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some(function) = node.child_by_field_name("function") else {
             return;
         };
-        let func_name = ast_utils::get_node_text_owned(&function, source);
+        let func_name = self.callee_name(&function, source);
 
         // Check for signal() registration - may lead to async termination
         if func_name == "signal" {
@@ -1896,7 +1940,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
 
         // Check for custom deallocation functions: destroy_*, free_*, delete_*, cleanup_*, release_*
-        if self.is_deallocation_call(&func_name) {
+        if self.is_named_deallocator(&func_name) {
             self.process_custom_deallocator(node, source, &func_name);
         }
 
@@ -1982,6 +2026,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             };
             let free_pos = node.start_position();
 
+            if !self.named_deallocator_releases_arg(
+                func_name,
+                this_param_idx,
+                arg.kind() == "pointer_expression",
+            ) {
+                self.credit_callee_freed_fields(func_name, this_param_idx, &var_name, free_pos);
+                continue;
+            }
+
             // Check for double-free only for non-safe deallocators
             if is_safe_deallocator {
                 self.maybe_freed.remove(&var_name);
@@ -2007,20 +2060,30 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             self.freed_memory
                 .insert(var_name.clone(), (free_pos.row + 1, free_pos.column + 1));
 
-            // If the callee's summary shows it frees specific struct fields
-            // off this parameter internally (e.g. `destroy_person(&p)` where
-            // `destroy_person` does `free((*p)->name); free(*p);`), credit
-            // those fields as freed here too — otherwise they read as leaks
-            // even though ownership was transferred to the deallocator
-            // (task 2: MEM31-C ownership model). `field` may itself be an
-            // arrow-joined chain (e.g. "will->topic") for nested structs.
-            if let Some(summary) = self.function_summaries.get(func_name) {
-                if let Some(fields) = summary.frees_param_fields.get(&this_param_idx) {
-                    for field in fields {
-                        let field_key = format!("{}->{}", var_name, field);
-                        self.freed_memory
-                            .insert(field_key, (free_pos.row + 1, free_pos.column + 1));
-                    }
+            self.credit_callee_freed_fields(func_name, this_param_idx, &var_name, free_pos);
+        }
+    }
+
+    /// If the callee's summary shows it frees specific struct fields off
+    /// this parameter internally (e.g. `destroy_person(&p)` where
+    /// `destroy_person` does `free((*p)->name); free(*p);`), credit those
+    /// fields as freed here too — otherwise they read as leaks even though
+    /// ownership was transferred to the deallocator (task 2: MEM31-C
+    /// ownership model). `field` may itself be an arrow-joined chain (e.g.
+    /// "will->topic") for nested structs.
+    fn credit_callee_freed_fields(
+        &mut self,
+        func_name: &str,
+        param_idx: usize,
+        var_name: &str,
+        free_pos: tree_sitter::Point,
+    ) {
+        if let Some(summary) = self.function_summaries.get(func_name) {
+            if let Some(fields) = summary.frees_param_fields.get(&param_idx) {
+                for field in fields {
+                    let field_key = format!("{}->{}", var_name, field);
+                    self.freed_memory
+                        .insert(field_key, (free_pos.row + 1, free_pos.column + 1));
                 }
             }
         }
@@ -2198,7 +2261,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         let Some(function) = call.child_by_field_name("function") else {
             return false;
         };
-        let func_name = ast_utils::get_node_text_owned(&function, source);
+        let func_name = self.callee_name(&function, source);
         let Some(arguments) = call.child_by_field_name("arguments") else {
             return false;
         };
@@ -2434,8 +2497,54 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     }
 
     /// Check if a function name suggests it's a deallocation function
-    fn is_deallocation_call(&self, func_name: &str) -> bool {
-        ast_utils::is_deallocation_call_name(func_name)
+    /// A deallocator recognised by its NAME (`*_free`, `destroy_*`, ...),
+    /// which is only a guess about what the body does. When the prescan saw
+    /// that body, the guess has nothing to add: the summary says whether any
+    /// parameter is released (`frees_params`, `frees_param_pointees`) or
+    /// only fields off one are (`frees_param_fields`), and a callee that
+    /// releases nothing it was handed -- mbedtls's `mbedtls_gcm_free(ctx)`
+    /// zeroizes the members and frees no pointer -- must not mark its
+    /// argument freed, or the `mbedtls_free(ctx)` that follows in every
+    /// `*_ctx_free` destructor reads as a double free. The name shape is
+    /// the fallback for a callee with no body in the scan (task 1128).
+    fn is_named_deallocator(&self, func_name: &str) -> bool {
+        if !ast_utils::is_deallocation_call_name(func_name) {
+            return false;
+        }
+        match self.function_summaries.get(func_name) {
+            Some(summary) => {
+                !summary.frees_params.is_empty()
+                    || !summary.frees_param_pointees.is_empty()
+                    || !summary.frees_param_fields.is_empty()
+            }
+            None => true,
+        }
+    }
+
+    /// Does a call to the named deallocator `func_name` release the object
+    /// its argument at `param_idx` names? With no summary the name shape
+    /// is all there is, so yes. With one, only when the body was seen to
+    /// free that parameter -- by value, or through the pointee when the
+    /// argument is `&var`. A callee whose summary shows it frees only
+    /// FIELDS off the parameter (`mbedtls_cipher_free(ctx)` releasing
+    /// `ctx->cipher_ctx`) leaves the parameter itself alive, and the fields
+    /// are credited separately (task 1128).
+    fn named_deallocator_releases_arg(
+        &self,
+        func_name: &str,
+        param_idx: usize,
+        through_address_of: bool,
+    ) -> bool {
+        match self.function_summaries.get(func_name) {
+            None => true,
+            Some(summary) => {
+                if through_address_of {
+                    summary.frees_param_pointees.contains(&param_idx)
+                } else {
+                    summary.frees_params.contains(&param_idx)
+                }
+            }
+        }
     }
 
     fn is_allocation_call(&self, node: &Node, source: &str) -> bool {
@@ -2448,7 +2557,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         if node.kind() == "call_expression" {
             if let Some(function) = node.child_by_field_name("function") {
-                let func_name = ast_utils::get_node_text_owned(&function, source);
+                let func_name = self.callee_name(&function, source);
 
                 // Standard allocation functions
                 if call_roles::is_allocator_call(&func_name) {
@@ -2501,7 +2610,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         if node.kind() == "call_expression" {
             if let Some(function) = node.child_by_field_name("function") {
-                return ast_utils::get_node_text_owned(&function, source);
+                return self.callee_name(&function, source);
             }
         }
         "unknown".to_string()

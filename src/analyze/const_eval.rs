@@ -439,6 +439,28 @@ pub fn collect_macro_aliases(root: &Node, source: &str) -> HashMap<String, Strin
     aliases
 }
 
+/// Follow `#define ALIAS target` chains from `name` to the identifier they
+/// end at: `mbedtls_calloc` -> `calloc`, or `name` itself when it is not an
+/// alias. Bounded, so a `#define a b` / `#define b a` pair terminates.
+///
+/// An object-like alias is the one way a project renames an allocator that
+/// no other engine sees: `macro_expand` handles function-like macros only,
+/// and a bare-identifier body is not a constant. A rule that dispatches on
+/// callee name (`free`, `calloc`, a summary lookup) should resolve through
+/// this first, or every `mbedtls_calloc(...)` in mbedtls is invisible to it
+/// while `mbedtls_free(...)` is caught only by a `*_free` name guess
+/// (task 1128).
+pub fn resolve_macro_alias<'a>(aliases: &'a HashMap<String, String>, name: &'a str) -> &'a str {
+    let mut current = name;
+    for _ in 0..8 {
+        match aliases.get(current) {
+            Some(target) if target != current => current = target.as_str(),
+            _ => break,
+        }
+    }
+    current
+}
+
 /// Merge cross-file macro aliases (`project`, from [`ProjectContext::macro_aliases`])
 /// with aliases collected from the current file, with per-file definitions
 /// winning on name collisions. This is the common `set_project_context` +
@@ -2986,6 +3008,24 @@ int f(unsigned long s) { return LINEBITS(s); }
         let merged = merged_macro_aliases(&project, &tree.root_node(), code);
         assert_eq!(merged.get("SYSTEM"), Some(&"system".to_string()));
         assert_eq!(merged.get("PROJECT_ONLY"), Some(&"exec".to_string()));
+    }
+
+    /// `#define mbedtls_calloc calloc` is the whole mbedtls allocator story
+    /// (task 1128): one hop, a chain, a non-alias, and a cycle must all
+    /// resolve without looping.
+    #[test]
+    fn test_resolve_macro_alias_follows_chains_and_stops_on_cycles() {
+        let mut aliases = HashMap::new();
+        aliases.insert("mbedtls_calloc".to_string(), "calloc".to_string());
+        aliases.insert("port_free".to_string(), "mbedtls_free".to_string());
+        aliases.insert("mbedtls_free".to_string(), "free".to_string());
+        aliases.insert("ping".to_string(), "pong".to_string());
+        aliases.insert("pong".to_string(), "ping".to_string());
+        assert_eq!(resolve_macro_alias(&aliases, "mbedtls_calloc"), "calloc");
+        assert_eq!(resolve_macro_alias(&aliases, "port_free"), "free");
+        assert_eq!(resolve_macro_alias(&aliases, "malloc"), "malloc");
+        let looped = resolve_macro_alias(&aliases, "ping");
+        assert!(looped == "ping" || looped == "pong");
     }
 
     #[test]
