@@ -3045,7 +3045,22 @@ fn collect_param_passthroughs(
 /// If function B passes param 0 to callee C at param 0, and C frees param 0,
 /// then B transitively frees param 0. Iterates to fixpoint for deep chains
 /// (e.g., A → B → C → D where D calls free).
-pub fn propagate_transitive_frees(summaries: &mut HashMap<String, FunctionSummary>) {
+///
+/// `macro_aliases` is the project-wide `#define ALIAS target` map: a
+/// pass-through edge names the callee as spelled, and `credit_frees_params`
+/// credits only a literal `free`, so a body that frees through
+/// `mbedtls_free(p)` (`#define mbedtls_free free`, in a header this file
+/// never parsed) is recorded as an edge to a callee that has no summary and
+/// never as a free. Resolving the edge's callee through the aliases here --
+/// the first point where every file's `#define`s are merged -- lets that
+/// edge reach `free` directly, or a real wrapper's summary through a renamed
+/// spelling (task 1128).
+pub fn propagate_transitive_frees(
+    summaries: &mut HashMap<String, FunctionSummary>,
+    macro_aliases: &HashMap<String, String>,
+) {
+    use crate::analyze::const_eval::resolve_macro_alias;
+
     for _pass in 0..10 {
         let mut changed = false;
         let frees_snapshot: HashMap<String, HashSet<usize>> = summaries
@@ -3056,13 +3071,14 @@ pub fn propagate_transitive_frees(summaries: &mut HashMap<String, FunctionSummar
         for summary in summaries.values_mut() {
             for (caller_idx, callees) in &summary.param_passthroughs {
                 for (callee_name, callee_idx) in callees {
-                    if let Some(callee_frees) = frees_snapshot.get(callee_name) {
-                        if callee_frees.contains(callee_idx)
-                            && !summary.frees_params.contains(caller_idx)
-                        {
-                            summary.frees_params.insert(*caller_idx);
-                            changed = true;
-                        }
+                    let callee = resolve_macro_alias(macro_aliases, callee_name);
+                    let callee_frees = (callee == "free" && *callee_idx == 0)
+                        || frees_snapshot
+                            .get(callee)
+                            .is_some_and(|f| f.contains(callee_idx));
+                    if callee_frees && !summary.frees_params.contains(caller_idx) {
+                        summary.frees_params.insert(*caller_idx);
+                        changed = true;
                     }
                 }
             }
@@ -3089,13 +3105,14 @@ pub fn propagate_transitive_frees(summaries: &mut HashMap<String, FunctionSummar
         for summary in summaries.values_mut() {
             for (caller_idx, callees) in &summary.unconditional_param_passthroughs {
                 for (callee_name, callee_idx) in callees {
-                    if let Some(callee_frees) = unconditional_snapshot.get(callee_name) {
-                        if callee_frees.contains(callee_idx)
-                            && !summary.unconditional_frees_params.contains(caller_idx)
-                        {
-                            summary.unconditional_frees_params.insert(*caller_idx);
-                            changed = true;
-                        }
+                    let callee = resolve_macro_alias(macro_aliases, callee_name);
+                    let callee_frees = (callee == "free" && *callee_idx == 0)
+                        || unconditional_snapshot
+                            .get(callee)
+                            .is_some_and(|f| f.contains(callee_idx));
+                    if callee_frees && !summary.unconditional_frees_params.contains(caller_idx) {
+                        summary.unconditional_frees_params.insert(*caller_idx);
+                        changed = true;
                     }
                 }
             }
