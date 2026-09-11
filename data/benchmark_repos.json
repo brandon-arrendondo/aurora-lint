@@ -137,6 +137,24 @@
       "repo": "https://github.com/Mbed-TLS/mbedtls.git",
       "version": "068ff080b369adfac81509f9b57b2afabaf82dc5",
       "scope_include": ["library/**"]
+    },
+    {
+      "name": "valkey",
+      "repo": "https://github.com/valkey-io/valkey.git",
+      "version": "7f1dffedff6de73058b2c2a389422b6ecd56c8fb",
+      "scope_include": ["src/*.c", "src/*.h", "src/trace/**", "src/modules/lua/**"],
+      "scope_exclude": ["src/modules/*.c", "src/unit/**"]
+    },
+    {
+      "name": "ventoy",
+      "repo": "https://github.com/ventoy/Ventoy.git",
+      "version": "7cbdc5cf69935bcf1f085ae67f40e70ea7e74bae",
+      "scope_include": ["Ventoy2Disk/Ventoy2Disk/*.c", "Ventoy2Disk/Ventoy2Disk/*.h"],
+      "scope_exclude": [
+        "Ventoy2Disk/Ventoy2Disk/fat_io_lib/**",
+        "Ventoy2Disk/Ventoy2Disk/ff14/**",
+        "Ventoy2Disk/Ventoy2Disk/xz-embedded-20130513/**"
+      ]
     }
   ]
 }
