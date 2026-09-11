@@ -60,6 +60,21 @@ const SCANF_FUNCS: &[&str] = &["scanf", "fscanf", "sscanf", "vscanf", "vfscanf",
 const RESOURCE_ACQUISITION_FUNCS: &[&str] =
     &["fopen", "malloc", "calloc", "realloc", "open", "socket"];
 
+/// Library functions that overwrite a buffer's contents through their FIRST
+/// argument: the plain `memset` plus the not-optimised-away spellings CERT
+/// MEM03-C recommends. A project's own zeroize wrapper is recognised by
+/// what its body does with these (`FunctionSummary::clears_params`), not
+/// by being listed here.
+pub const MEMORY_CLEARING_FUNCS: &[&str] = &[
+    "memset",
+    "memset_s",
+    "explicit_bzero",
+    "bzero",
+    "SecureZeroMemory",
+    "RtlSecureZeroMemory",
+    "explicit_memset",
+];
+
 /// A `void *`-returning heap allocator: `malloc`/`calloc`/`realloc`/
 /// `aligned_alloc`. Use this (not [`is_allocator_call`]) when the rule's
 /// concern is specifically the void-pointer-cast idiom.
@@ -77,6 +92,14 @@ pub fn is_string_duplicator(name: &str) -> bool {
 /// (leak/free/thread-lifetime checks) actually want.
 pub fn is_allocator_call(name: &str) -> bool {
     is_heap_allocator(name) || is_string_duplicator(name)
+}
+
+/// A call that overwrites the buffer its first argument points at -- one of
+/// [`MEMORY_CLEARING_FUNCS`]. The name-level half of MEM03-C's "was this
+/// sensitive buffer cleared" question; the wrapper half is
+/// `FunctionSummary::clears_params` (task 1127).
+pub fn is_memory_clearing_call(name: &str) -> bool {
+    MEMORY_CLEARING_FUNCS.contains(&name)
 }
 
 /// A printf-family formatted-output function.
