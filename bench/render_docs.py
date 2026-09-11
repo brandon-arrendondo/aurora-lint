@@ -106,6 +106,7 @@ TOOL_ORDER = ["sqc", "cppcheck", "clang-tidy"]
 PROJECT_DISPLAY_NAMES = {
     "pureftpd": "pure-ftpd",
     "sel4": "seL4",
+    "ventoy": "Ventoy",
 }
 
 

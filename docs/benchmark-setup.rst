@@ -336,6 +336,10 @@ hypothetical; see `Verifying the Pins`_ below.
      - https://github.com/Mbed-TLS/mbedtls.git
      - ``068ff080b369adfac81509f9b57b2afabaf82dc5``
      - detached
+   * - ventoy
+     - https://github.com/ventoy/Ventoy.git
+     - ``7cbdc5cf69935bcf1f085ae67f40e70ea7e74bae``
+     - detached
 
 .. important::
 
@@ -445,6 +449,12 @@ Manual fallback:
     # of library/ does not need it.
     git clone https://github.com/Mbed-TLS/mbedtls.git
     cd mbedtls && git checkout 068ff080b369adfac81509f9b57b2afabaf82dc5 && cd ..
+
+    # NOTE: checkout dir must be lowercase "ventoy" to match the registry key.
+    # Only Ventoy2Disk/Ventoy2Disk/ is scanned; the rest of the repo is
+    # Linux/GRUB/firmware code outside a CERT-C scan's interest.
+    git clone https://github.com/ventoy/Ventoy.git ventoy
+    cd ventoy && git checkout 7cbdc5cf69935bcf1f085ae67f40e70ea7e74bae && cd ..
 
 Running Each Tool Manually
 --------------------------

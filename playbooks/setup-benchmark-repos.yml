@@ -2,9 +2,9 @@
 # Ansible playbook: clone and pin every real-world benchmark codebase
 #
 # Provisions BENCH_ROOT (default ~/toolchain, override with -e bench_root=...
-# or by exporting SQC_BENCH_ROOT before running) with the 9 codebases in
-# mcp_servers/realworld_server.py's CODEBASES registry, each checked out at
-# the exact commit its ground-truth oracle was adjudicated against. Keep
+# or by exporting SQC_BENCH_ROOT before running) with every codebase in
+# bench/realworld_runner.py's CODEBASES registry, each checked out at the
+# exact commit its ground-truth oracle was adjudicated against. Keep
 # bench_root in sync with SQC_BENCH_ROOT in your .env (see .env.example) --
 # they must point at the same directory.
 #
