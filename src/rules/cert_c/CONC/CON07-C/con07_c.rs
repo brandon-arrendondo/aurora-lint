@@ -390,6 +390,16 @@ impl Con07C {
                     | "pthread_mutex_unlock"
                     | "stdThreadLockAcquire"
                     | "stdThreadLockRelease"
+                    // Zephyr RTOS: mutex, spinlock (the type is `struct
+                    // k_spinlock`, the calls are `k_spin_*`), and the
+                    // interrupt-masking critical section older Zephyr code
+                    // uses in place of either.
+                    | "k_mutex_lock"
+                    | "k_mutex_unlock"
+                    | "k_spin_lock"
+                    | "k_spin_unlock"
+                    | "irq_lock"
+                    | "irq_unlock"
             )
         })
         .is_some()

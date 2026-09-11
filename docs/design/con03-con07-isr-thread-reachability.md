@@ -157,6 +157,11 @@ fn collect_concurrency_roots(root: &Node, source: &str, out: &mut HashSet<String
     // (b) Thread-spawn entry points: pthread_create/thrd_create/CreateThread,
     //     direct or macro-forwarded (see section above) -- extract the
     //     start-routine argument (3rd/2nd/3rd positionally) as an identifier.
+    //     Since task 1094 (aurora_lint) the table also carries Zephyr's
+    //     k_thread_create (entry 4th of 10) and k_work_init /
+    //     k_work_init_delayable (handler 2nd of 2): a work handler runs on a
+    //     workqueue thread, never the submitter's. The exact list lives in
+    //     src/analyze/concurrency_roots.rs::THREAD_SPAWN_APIS, not here.
     // (c) Signal handlers: signal(SIG, handler) -- extract the 2nd argument.
 }
 ```
