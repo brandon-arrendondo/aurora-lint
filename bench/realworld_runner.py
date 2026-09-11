@@ -1048,17 +1048,20 @@ def _run_infer(cfg: dict, version_dir: Path, run_id: str,
     from an analysis failure in the log -- Infer exits 0 from `run` even when
     capture silently produced nothing.
 
-    Capture runs with --keep-going because a partial capture is the NORMAL
-    outcome on this corpus, not an error. `setup-compile-commands.yml` restores
-    each checkout to pristine after building it, which deletes the build's
-    generated headers while leaving the compile database that references them
-    -- libcrc's `tab/gentab32.inc` is the worked example, and 2 of its 9
-    in-scope TUs cannot be preprocessed as a result. Without --keep-going Infer
-    aborts the whole capture on the first such file and the run reports zero
-    findings for a codebase it could have analysed 78% of. What matters is that
-    the shortfall is RECORDED rather than silently absorbed, so `coverage`
-    below carries captured-vs-in-scope and any Infer row derived from a partial
-    capture is a floor, exactly as a Frama-C row is."""
+    Capture runs with --keep-going because a partial capture must survive
+    rather than abort the run. The historical cause: `setup-compile-commands.yml`
+    restores each checkout to pristine after building it, which deleted the
+    build's generated headers while leaving the compile database that
+    references them -- 2 of libcrc's 9 in-scope TUs, and 52 of pure-ftpd's 53,
+    could not be preprocessed. The playbook now stashes those headers outside
+    the checkout and points the database at them, so on a current database
+    every in-scope TU captures; a database from before that is the remaining
+    way to get here. Without --keep-going Infer aborts the whole capture on the
+    first such file and the run reports zero findings for a codebase it could
+    have analysed most of. What matters is that any shortfall is RECORDED
+    rather than silently absorbed, so `coverage` below carries
+    captured-vs-in-scope and any Infer row derived from a partial capture is a
+    floor, exactly as a Frama-C row is."""
     db_path = version_dir / f"{run_id}.compile_commands.json"
     filtered, kept, total = _filtered_compile_db(cfg, db_path)
     result_file = version_dir / f"{run_id}.infer.json"
@@ -1371,8 +1374,9 @@ def _run_framac(cfg: dict, version_dir: Path, run_id: str,
                 # know. Expected, cheap, and neither coverage nor a failure.
                 continue
             if proc.returncode != 0:
-                # Usually an unpreprocessable TU (a generated header the
-                # playbook's restore-to-pristine step removed). Not coverage.
+                # Usually an unpreprocessable TU (a generated header missing
+                # from a compile DB written before the playbook stashed
+                # them). Not coverage.
                 failures += 1
                 log_fh.write(f"FAILED rc={proc.returncode} {tu.name}:{entry}\n")
                 continue

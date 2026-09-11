@@ -43,6 +43,21 @@
 # scratch dir for the CMake-based ones) to force regeneration after a pin
 # bump or a build-flag change.
 #
+# Restoring a checkout to pristine deletes the headers its own build
+# generated, and the compile DB still #includes them: pure-ftpd's config.h,
+# sqlite's sqlite_cfg.h, valkey's jemalloc/jemalloc.h, libcrc's
+# tab/gentab*.inc. Left alone that silently cost the tools driven from the
+# DB (Infer, Frama-C, aurora-lint's --compile-commands mode) 222 of the
+# suite's 458 in-scope TUs -- 52 of pure-ftpd's 53 -- while the
+# source-reading tools saw nothing wrong.
+# Those files cannot stay in the checkout either (most are *.h, which
+# aurora-lint scans and corpus-check flags), so the in-tree projects that
+# generate one run scripts/stash_compile_db_headers.py between build and
+# restore: it copies the generated files to {{ gen_root }}/<project> and
+# prepends that directory's -I to every DB entry. Out-of-tree CMake projects
+# (mosquitto, curl, raylib, sel4) never had the problem -- their generated
+# headers live in the build directory the DB already points at.
+#
 # The CMake configure guards deliberately name the GENERATED BUILD SYSTEM
 # (Makefile, or build.ninja for sel4) and not CMakeCache.txt: cmake writes the
 # cache before it can fail, so a configure that dies partway leaves a cache
@@ -56,10 +71,12 @@
   vars:
     bench_root: "{{ lookup('env', 'SQC_BENCH_ROOT') | default(ansible_env.HOME + '/toolchain', true) }}"
     cc_build_root: "{{ bench_root }}/.cc_build"
+    gen_root: "{{ cc_build_root }}/generated"
+    stash_headers: "python3 {{ project_dir }}/scripts/stash_compile_db_headers.py"
     project_dir: "{{ playbook_dir }}/.."
 
   tasks:
-    - name: Verify all 9 real-world checkouts are present and pinned before touching them
+    - name: Verify every real-world checkout is present and pinned before touching them
       command: python3 -m bench corpus-check
       args:
         chdir: "{{ project_dir }}"
@@ -91,6 +108,30 @@
         state: directory
         mode: "0755"
 
+    # A node provisioned before the stash existed has the four DBs without
+    # their -I and no stash; the build guards on the DB, so nothing would
+    # ever repair them. Drop such a DB so its build (and the stash) re-runs.
+    - name: Find generated-header stashes (see the header comment)
+      stat:
+        path: "{{ gen_root }}/{{ item.project }}/{{ item.marker }}"
+      loop:
+        - { project: libcrc, marker: tab/gentab64.inc }
+        - { project: sqlite, marker: fts5parse.h }
+        - { project: pureftpd, marker: config.h }
+        - { project: valkey, marker: src/release.h }
+      loop_control:
+        label: "{{ item.project }}"
+      register: stash_markers
+
+    - name: Drop compile DBs written before their generated headers were stashed
+      file:
+        path: "{{ bench_root }}/{{ item.item.project }}/compile_commands.json"
+        state: absent
+      when: not item.stat.exists
+      loop: "{{ stash_markers.results }}"
+      loop_control:
+        label: "{{ item.item.project }}"
+
     # ── libcrc (plain Makefile, in-tree) ──────────────────────────────────
     - name: libcrc - build under bear to capture compile_commands.json
       shell: |
@@ -101,6 +142,17 @@
         chdir: "{{ bench_root }}/libcrc"
         executable: /bin/bash
         creates: "{{ bench_root }}/libcrc/compile_commands.json"
+      register: libcrc_build
+
+    # crc32.c/crc64.c include "../tab/gentab*.inc", tables the build generates
+    # with its own prc tool and `make clean` deletes. Not *.c/*.h, so they
+    # could stay, but stashing keeps every checkout the same kind of pristine.
+    - name: libcrc - stash the generated tables the compile DB references
+      command: >-
+        {{ stash_headers }} --checkout {{ bench_root }}/libcrc
+        --stash {{ gen_root }}/libcrc
+        src:../tab/gentab32.inc src:../tab/gentab64.inc
+      when: libcrc_build is changed
 
     - name: libcrc - restore checkout to pristine (keep compile_commands.json)
       command: make clean
@@ -185,6 +237,21 @@
         chdir: "{{ bench_root }}/sqlite"
         executable: /bin/bash
         creates: "{{ bench_root }}/sqlite/compile_commands.json"
+      register: sqlite_build
+
+    # The build writes its generated headers at the checkout root (the DB's
+    # -I.): sqlite_cfg.h from ./configure, sqlite3.h/sqlite3ext.h/
+    # sqlite3session.h from their .in templates, parse.h/opcodes.h/
+    # keywordhash.h/pragma.h from lemon and the mk* tools, fts5*.h for the
+    # extension. distclean removes them all; sqliteInt.h alone pulls in five,
+    # so without the stash 79 of the 80 in-scope TUs stop preprocessing.
+    - name: sqlite - stash the generated headers the compile DB references
+      command: >-
+        {{ stash_headers }} --checkout {{ bench_root }}/sqlite
+        --stash {{ gen_root }}/sqlite
+        .:sqlite_cfg.h .:sqlite3.h .:sqlite3ext.h .:sqlite3session.h
+        .:parse.h .:opcodes.h .:keywordhash.h .:pragma.h .:fts5.h .:fts5parse.h
+      when: sqlite_build is changed
 
     # distclean (not clean) -- the amalgamation-avoidance build still leaves
     # sqlite_cfg.h, an untracked *header* corpus-check would flag as scanned
@@ -282,6 +349,16 @@
         chdir: "{{ bench_root }}/pureftpd"
         executable: /bin/bash
         creates: "{{ bench_root }}/pureftpd/compile_commands.json"
+      register: pureftpd_build
+
+    # Every source starts with #include <config.h>, resolved through the
+    # DB's -I../.. to the checkout root where ./configure wrote it and
+    # distclean removes it: 52 of 53 in-scope TUs fail without the stash.
+    - name: pureftpd - stash the generated config header the compile DB references
+      command: >-
+        {{ stash_headers }} --checkout {{ bench_root }}/pureftpd
+        --stash {{ gen_root }}/pureftpd .:config.h
+      when: pureftpd_build is changed
 
     - name: pureftpd - restore checkout to pristine (keep compile_commands.json)
       command: make distclean
@@ -404,6 +481,18 @@
         chdir: "{{ bench_root }}/valkey"
         executable: /bin/bash
         creates: "{{ bench_root }}/valkey/compile_commands.json"
+      register: valkey_build
+
+    # zmalloc.h includes <jemalloc/jemalloc.h> (USE_JEMALLOC is the default
+    # allocator), a single public header jemalloc's configure generates under
+    # deps/jemalloc/include and distclean removes -- 89 of 131 in-scope TUs
+    # go with it. release.c's release.h is the other build-written header.
+    - name: valkey - stash the generated headers the compile DB references
+      command: >-
+        {{ stash_headers }} --checkout {{ bench_root }}/valkey
+        --stash {{ gen_root }}/valkey
+        deps/jemalloc/include:jemalloc/jemalloc.h src:release.h
+      when: valkey_build is changed
 
     # `make distclean` leaves the generated, gitignored src/release.h behind,
     # and a gitignored .h is exactly what corpus-check flags: aurora-lint

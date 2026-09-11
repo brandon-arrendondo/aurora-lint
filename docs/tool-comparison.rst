@@ -113,11 +113,12 @@ Coverage Is The Difference
    When those columns do land, **both are partial scans and must be labelled
    as such.**
 
-   *Infer* captures only what preprocesses.
-   ``setup-compile-commands.yml`` restores each checkout to pristine after
-   building it, which deletes generated headers the compile database still
-   references — 2 of libcrc's 9 in-scope translation units cannot be
-   captured for that reason.
+   *Infer* captures only what preprocesses, and reports what it could not
+   in each run's ``coverage`` block.  On a database
+   ``setup-compile-commands.yml`` generated with its generated-header stash
+   (see ``docs/benchmark-setup.rst``) that is the whole in-scope set;
+   a database from before the stash loses whole projects (52 of pure-ftpd's
+   53 translation units) and must be regenerated before the sweep.
 
    *Frama-C* is partial by construction: EVA analyses one entry point at a
    time and a real codebase has no single one, so the runner walks entry
