@@ -183,9 +183,13 @@ writes:
 
 - **Infer** captures whatever preprocesses.  ``setup-compile-commands.yml``
   restores each checkout to pristine after building it, which deletes the
-  build's generated headers while leaving the compile database that still
-  references them — libcrc's ``tab/gentab32.inc`` is the worked example, and
-  2 of its 9 in-scope translation units cannot be captured as a result.
+  build's generated headers; the playbook now stashes the ones the compile
+  database still references (pure-ftpd's ``config.h``, sqlite's
+  ``sqlite_cfg.h``, valkey's ``jemalloc/jemalloc.h``, libcrc's
+  ``tab/gentab*.inc``) under ``<bench_root>/.cc_build/generated/`` and points
+  the database there, so every in-scope translation unit preprocesses.  A
+  ``capture_failures`` list that is not empty means a database written
+  before that existed — re-run the playbook, which detects and rebuilds it.
 - **Frama-C** is partial by construction, because EVA analyses one entry
   point at a time and a real codebase has no single one.  Read
   ``docs/design/framac-realworld.md`` before quoting any Frama-C real-world

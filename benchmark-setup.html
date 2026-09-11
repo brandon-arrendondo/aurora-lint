@@ -290,9 +290,13 @@ writes:</p>
 <ul class="simple">
 <li><p><strong>Infer</strong> captures whatever preprocesses.  <code class="docutils literal notranslate"><span class="pre">setup-compile-commands.yml</span></code>
 restores each checkout to pristine after building it, which deletes the
-build’s generated headers while leaving the compile database that still
-references them — libcrc’s <code class="docutils literal notranslate"><span class="pre">tab/gentab32.inc</span></code> is the worked example, and
-2 of its 9 in-scope translation units cannot be captured as a result.</p></li>
+build’s generated headers; the playbook now stashes the ones the compile
+database still references (pure-ftpd’s <code class="docutils literal notranslate"><span class="pre">config.h</span></code>, sqlite’s
+<code class="docutils literal notranslate"><span class="pre">sqlite_cfg.h</span></code>, valkey’s <code class="docutils literal notranslate"><span class="pre">jemalloc/jemalloc.h</span></code>, libcrc’s
+<code class="docutils literal notranslate"><span class="pre">tab/gentab*.inc</span></code>) under <code class="docutils literal notranslate"><span class="pre">&lt;bench_root&gt;/.cc_build/generated/</span></code> and points
+the database there, so every in-scope translation unit preprocesses.  A
+<code class="docutils literal notranslate"><span class="pre">capture_failures</span></code> list that is not empty means a database written
+before that existed — re-run the playbook, which detects and rebuilds it.</p></li>
 <li><p><strong>Frama-C</strong> is partial by construction, because EVA analyses one entry
 point at a time and a real codebase has no single one.  Read
 <code class="docutils literal notranslate"><span class="pre">docs/design/framac-realworld.md</span></code> before quoting any Frama-C real-world

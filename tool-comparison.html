@@ -230,11 +230,12 @@ column, and neither does the Speed table below.</p>
 <p class="admonition-title">Warning</p>
 <p>When those columns do land, <strong>both are partial scans and must be labelled
 as such.</strong></p>
-<p><em>Infer</em> captures only what preprocesses.
-<code class="docutils literal notranslate"><span class="pre">setup-compile-commands.yml</span></code> restores each checkout to pristine after
-building it, which deletes generated headers the compile database still
-references — 2 of libcrc’s 9 in-scope translation units cannot be
-captured for that reason.</p>
+<p><em>Infer</em> captures only what preprocesses, and reports what it could not
+in each run’s <code class="docutils literal notranslate"><span class="pre">coverage</span></code> block.  On a database
+<code class="docutils literal notranslate"><span class="pre">setup-compile-commands.yml</span></code> generated with its generated-header stash
+(see <code class="docutils literal notranslate"><span class="pre">docs/benchmark-setup.rst</span></code>) that is the whole in-scope set;
+a database from before the stash loses whole projects (52 of pure-ftpd’s
+53 translation units) and must be regenerated before the sweep.</p>
 <p><em>Frama-C</em> is partial by construction: EVA analyses one entry point at a
 time and a real codebase has no single one, so the runner walks entry
 points round-robin across translation units under a wall-clock budget. A
