@@ -295,10 +295,22 @@ fn collect_declarations_transparent_to_preproc<'a>(scope: &Node<'a>, out: &mut V
 /// name;`) or an `init_declarator` (`T name = value;`), including
 /// comma-separated multi-declarator declarations.
 fn declaration_binds_name(decl_node: &Node, name: &str, source: &str) -> bool {
+    declaration_declarator_for(decl_node, name, source).is_some()
+}
+
+/// The specific declarator sub-node within a (possibly multi-declarator)
+/// `declaration` -- or a `parameter_declaration`, which has the same child
+/// shape -- that binds `name`, so its own node kind can be inspected: `int
+/// a, *b;` must not report `a` as a pointer just because `b` is one in the
+/// same declaration. An `init_declarator` is unwrapped to the declarator it
+/// carries. `None` when no declarator in the node binds `name`.
+pub fn declaration_declarator_for<'a>(
+    decl_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
     for i in 0..decl_node.child_count() {
-        let Some(child) = decl_node.child(i) else {
-            continue;
-        };
+        let child = decl_node.child(i)?;
         let declarator = match child.kind() {
             "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
             "identifier" | "pointer_declarator" | "array_declarator" | "function_declarator" => {
@@ -307,10 +319,54 @@ fn declaration_binds_name(decl_node: &Node, name: &str, source: &str) -> bool {
             _ => continue,
         };
         if get_identifier_from_declarator(&declarator, source) == name {
-            return true;
+            return Some(declarator);
         }
     }
-    false
+    None
+}
+
+/// The `parameter_declaration` node of `function_node` that binds `name`.
+/// Node-level counterpart of the `(name, type text)` pairs
+/// [`get_function_parameters`] returns, for callers that need the
+/// declarator's own kind rather than a textual type (a `*` in the text
+/// cannot say whether it belongs to this name or to a sibling).
+pub fn find_parameter_declaration<'a>(
+    function_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<Node<'a>> {
+    let declarator = find_function_declarator(function_node)?;
+    let params = declarator.child_by_field_name("parameters")?;
+    (0..params.child_count())
+        .filter_map(|i| params.child(i))
+        .filter(|p| p.kind() == "parameter_declaration")
+        .find(|p| declaration_declarator_for(p, name, source).is_some())
+}
+
+/// Resolve `ident_node` (an occurrence of `name`) to the node that declares
+/// it AND the declarator within that node which binds this name:
+/// `(declaration | parameter_declaration, declarator)`. Same three-way
+/// fallback as [`resolve_identifier_binding`] (nearest enclosing local
+/// declaration, else the containing function's parameter, else a file-scope
+/// global), but hands back nodes for the parameter case too, so a caller
+/// classifying the declared type can read the specifiers and the declarator
+/// kind by one code path regardless of where the name was bound. Reach for
+/// this over [`resolve_identifier_binding`] when the question is "what TYPE
+/// is this name declared with here" rather than "where is it bound".
+pub fn resolve_identifier_declarator<'a>(
+    ident_node: &Node<'a>,
+    name: &str,
+    source: &str,
+) -> Option<(Node<'a>, Node<'a>)> {
+    let decl = match resolve_identifier_binding(ident_node, name, source)? {
+        IdentifierBinding::Local(decl) | IdentifierBinding::Global(decl) => decl,
+        IdentifierBinding::Parameter(_) => {
+            let func = find_containing_function(ident_node)?;
+            find_parameter_declaration(&func, name, source)?
+        }
+    };
+    let declarator = declaration_declarator_for(&decl, name, source)?;
+    Some((decl, declarator))
 }
 
 /// Fallback for file-scope (global) declarations, which

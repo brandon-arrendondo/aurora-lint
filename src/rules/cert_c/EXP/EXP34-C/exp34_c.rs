@@ -794,7 +794,7 @@ fn identifier_is_declared_pointer(ident_node: &Node, name: &str, source: &str) -
     match ast_utils::resolve_identifier_binding(ident_node, name, source)? {
         ast_utils::IdentifierBinding::Parameter(ptype) => classify_type_text(&ptype),
         ast_utils::IdentifierBinding::Local(decl) | ast_utils::IdentifierBinding::Global(decl) => {
-            let declarator = declaration_declarator_for(&decl, name, source)?;
+            let declarator = ast_utils::declaration_declarator_for(&decl, name, source)?;
             if null_state::is_pointer_or_array_declarator(&declarator) {
                 return Some(true);
             }
@@ -871,31 +871,6 @@ fn declaration_prefix_type_text(decl_node: &Node, source: &str) -> String {
         }
     }
     parts.join(" ")
-}
-
-/// Find the specific declarator sub-node within a (possibly multi-declarator)
-/// `declaration` node that binds `name`, so its own node kind can be
-/// inspected (e.g. `int a, *b;` must not report `a` as a pointer just
-/// because `b` is one in the same declaration).
-fn declaration_declarator_for<'a>(
-    decl_node: &Node<'a>,
-    name: &str,
-    source: &str,
-) -> Option<Node<'a>> {
-    for i in 0..decl_node.child_count() {
-        let child = decl_node.child(i)?;
-        let declarator = match child.kind() {
-            "init_declarator" => child.child_by_field_name("declarator").unwrap_or(child),
-            "identifier" | "pointer_declarator" | "array_declarator" | "function_declarator" => {
-                child
-            }
-            _ => continue,
-        };
-        if ast_utils::get_identifier_from_declarator(&declarator, source) == name {
-            return Some(declarator);
-        }
-    }
-    None
 }
 
 /// True when `ident_node`'s occurrence of `name` provably resolves to a
