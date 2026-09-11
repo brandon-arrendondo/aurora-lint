@@ -189,6 +189,8 @@ impl Dcl06C {
                     // Only track literals in suspicious contexts
                     if self.is_suspicious_context(&context)
                         && !self.is_well_known_idiom(&value, &operator)
+                        && !self.value_echoed_in_sibling_identifier(&n, source)
+                        && !self.is_version_macro_comparison(&n, source)
                     {
                         let info = LiteralInfo {
                             value: value.clone(),
@@ -306,6 +308,107 @@ impl Dcl06C {
             "65535" => matches!(operator, "<" | "<=" | ">" | ">=" | "==" | "!="),
             _ => false,
         }
+    }
+
+    /// Structural exemption (bmdb task 757, rounds 181-184): a literal whose
+    /// exact hex value is echoed in the name of a SIBLING argument in the same
+    /// call is a mechanical table entry pairing a value with its own already-
+    /// descriptive identifier, e.g. `init_idt_entry(idt, 0x19, int_19)` --
+    /// confirmed FP in 48+ instances across seL4's x86 IDT vector-index
+    /// tables, always in this exact shape and with zero exceptions found.
+    ///
+    /// Deliberately narrow: requires the literal to be a direct, bare
+    /// argument_list child (a lone call argument, not nested in a further
+    /// expression) with a SIBLING argument whose identifier name ends in
+    /// `_<hex>` (case-insensitive) matching this literal's own hex digits.
+    /// An unrelated identifier coincidentally ending in the same hex suffix
+    /// as an adjacent, unrelated literal is not a shape this codebase's
+    /// audited corpora have ever produced.
+    fn value_echoed_in_sibling_identifier(&self, node: &Node, source: &str) -> bool {
+        let Some(parent) = node.parent() else {
+            return false;
+        };
+        if parent.kind() != "argument_list" {
+            return false;
+        }
+        let hex = Self::normalize_int_literal_hex(get_node_text(node, source));
+        let Some(hex) = hex else {
+            return false;
+        };
+        let suffix = format!("_{hex}");
+
+        let mut cursor = parent.walk();
+        for sibling in parent.children(&mut cursor) {
+            if sibling.id() == node.id() || sibling.kind() != "identifier" {
+                continue;
+            }
+            let name = get_node_text(&sibling, source).to_lowercase();
+            if name.ends_with(&suffix) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Lowercase hex digits of an integer literal (no `0x`/sign/suffix), or
+    /// `None` if it isn't an integer literal at all (floats, strings).
+    fn normalize_int_literal_hex(value: &str) -> Option<String> {
+        let trimmed = value.trim().trim_start_matches('-');
+        let stripped = trimmed.trim_end_matches(['u', 'U', 'l', 'L']);
+        if stripped.is_empty() || stripped.contains('.') {
+            return None;
+        }
+        if let Some(hex) = stripped
+            .strip_prefix("0x")
+            .or_else(|| stripped.strip_prefix("0X"))
+        {
+            return Some(hex.to_lowercase());
+        }
+        let n: u64 = stripped.parse().ok()?;
+        Some(format!("{n:x}"))
+    }
+
+    /// Structural exemption (bmdb task 757, rounds 181-184): a literal
+    /// compared directly against an identifier whose name is a well-known
+    /// library/platform version macro is a version-check idiom, not hidden
+    /// program logic -- confirmed FP in 19 instances spanning ARES_VERSION,
+    /// NGHTTP2_VERSION_NUM, LIBWOLFSSL_VERSION_HEX, GNUTLS_VERSION_NUMBER,
+    /// MBEDTLS_VERSION_NUMBER, OPENSSL_VERSION_NUMBER, OPENSSL_API_LEVEL,
+    /// LWS_LIBRARY_VERSION_NUMBER, CJSON_VERSION_FULL,
+    /// __IPHONE_OS_VERSION_MAX_ALLOWED, __MAC_OS_X_VERSION_MAX_ALLOWED and
+    /// _MSC_VER, across curl/hostap/mosquitto/raylib. Zero exceptions found.
+    fn is_version_macro_comparison(&self, node: &Node, source: &str) -> bool {
+        let Some(parent) = node.parent() else {
+            return false;
+        };
+        if parent.kind() != "binary_expression" {
+            return false;
+        }
+        let other = match (
+            parent.child_by_field_name("left"),
+            parent.child_by_field_name("right"),
+        ) {
+            (Some(left), Some(right)) if left.id() == node.id() => right,
+            (Some(left), Some(right)) if right.id() == node.id() => left,
+            _ => return false,
+        };
+        if other.kind() != "identifier" {
+            return false;
+        }
+        Self::is_version_macro_identifier(&get_node_text(&other, source).to_lowercase())
+    }
+
+    /// A handful of macros (OPENSSL_API_LEVEL) don't contain "version" or
+    /// end in "_ver" but are just as well-known a version-check idiom as
+    /// the ones that do -- named explicitly rather than pattern-matched, so
+    /// this exemption stays evidence-based rather than a guess at more
+    /// macros that might exist.
+    const NAMED_VERSION_MACROS: &'static [&'static str] = &["openssl_api_level"];
+
+    fn is_version_macro_identifier(name_lower: &str) -> bool {
+        name_lower.contains("version")
+            || name_lower.ends_with("_ver")
+            || Self::NAMED_VERSION_MACROS.contains(&name_lower)
     }
 
     /// Normalize an integer literal's text to its decimal value for comparison
