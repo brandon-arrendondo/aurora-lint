@@ -14,7 +14,7 @@ read this from the ``SQC_BENCH_ROOT`` environment variable, or from a
 ``.env`` file at the repo root (copy ``.env.example`` -- it's gitignored, so
 each machine sets its own).
 
-To provision a fresh node, run the Ansible playbook (clones and pins all 9
+To provision a fresh node, run the Ansible playbook (clones and pins every
 real-world codebases; does not fetch Juliet -- see below):
 
 .. code-block:: bash
@@ -332,6 +332,10 @@ hypothetical; see `Verifying the Pins`_ below.
      - https://github.com/seL4/seL4.git
      - ``1326364bc9135d9445d936ebc01e38a402c1f4c6``
      - detached
+   * - mbedtls
+     - https://github.com/Mbed-TLS/mbedtls.git
+     - ``068ff080b369adfac81509f9b57b2afabaf82dc5``
+     - detached
 
 .. important::
 
@@ -397,7 +401,7 @@ Clone and Pin
 ~~~~~~~~~~~~~
 
 Preferred: run ``playbooks/setup-benchmark-repos.yml`` (see `Benchmark Host
-Layout`_ above) -- it clones, pins, and verifies all 9 checkouts in one pass,
+Layout`_ above) -- it clones, pins, and verifies every pinned checkout in one pass,
 reading the pins from ``data/benchmark_repos.json``.
 
 Manual fallback:
@@ -435,6 +439,12 @@ Manual fallback:
     # NOTE: checkout dir must be lowercase "sel4" to match the registry key
     git clone https://github.com/seL4/seL4.git sel4
     cd sel4 && git checkout 1326364bc9135d9445d936ebc01e38a402c1f4c6 && cd ..
+
+    # The framework submodule is only needed for the compile_commands.json
+    # capture (playbooks/setup-compile-commands.yml); the aurora-lint scan
+    # of library/ does not need it.
+    git clone https://github.com/Mbed-TLS/mbedtls.git
+    cd mbedtls && git checkout 068ff080b369adfac81509f9b57b2afabaf82dc5 && cd ..
 
 Running Each Tool Manually
 --------------------------

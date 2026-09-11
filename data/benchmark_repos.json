@@ -131,6 +131,12 @@
       "repo": "https://github.com/seL4/seL4.git",
       "version": "1326364bc9135d9445d936ebc01e38a402c1f4c6",
       "scope_include": ["src/**"]
+    },
+    {
+      "name": "mbedtls",
+      "repo": "https://github.com/Mbed-TLS/mbedtls.git",
+      "version": "068ff080b369adfac81509f9b57b2afabaf82dc5",
+      "scope_include": ["library/**"]
     }
   ]
 }

@@ -301,8 +301,8 @@ def report(bench_root=None, as_json=False):
                   f"untracked_scanned={r['untracked_scanned']} "
                   f"gitignored_scanned={r['gitignored_scanned']}")
     if not bad and not contaminated:
-        print("\nAll 9 checkouts detached at their pinned commits, working "
-              "trees clean.")
+        print(f"\nAll {len(results)} checkouts detached at their pinned "
+              "commits, working trees clean.")
     else:
         print("\nFindings taken off a non-OK checkout are NOT comparable to "
               "ground_truth,\nwhich is keyed on project+commit+file+line+rule.")
