@@ -325,6 +325,14 @@ impl Con03C {
             "mtx_t",
             "cnd_t",
             "sem_t",
+            // Zephyr RTOS declares its primitives as bare structs, never
+            // through a typedef; matching `struct k_mutex` rather than
+            // `k_mutex` keeps a field named `mask_sem` or a `k_mutex_lock`
+            // call in the declaration text from counting.
+            "struct k_mutex",
+            "struct k_spinlock",
+            "struct k_sem",
+            "struct k_condvar",
         ];
         sync_types.iter().any(|t| decl_text.contains(t))
     }

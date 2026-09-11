@@ -38,6 +38,18 @@ const THREAD_SPAWN_APIS: &[(&str, usize, usize)] = &[
     ("thrd_create", 1, 3),
     // CreateThread(attrs, stackSize, lpStartAddress, param, flags, threadId)
     ("CreateThread", 2, 6),
+    // Zephyr RTOS. k_thread_create(thread, stack, stack_size, entry, p1, p2,
+    // p3, prio, options, delay) is the runtime spawn; the static
+    // `K_THREAD_DEFINE(...)` form is a file-scope macro invocation with no
+    // call node and is not resolved here (same limit as the AVR `ISR()`
+    // macro noted in the module docs).
+    ("k_thread_create", 3, 10),
+    // A work item's handler runs on a workqueue thread, never on the
+    // submitter's -- the same "entry point of another thread" relation the
+    // spawn APIs above express, registered one call earlier.
+    // k_work_init(work, handler) / k_work_init_delayable(dwork, handler)
+    ("k_work_init", 1, 2),
+    ("k_work_init_delayable", 1, 2),
 ];
 
 /// Collect every function name that seeds a concurrent-execution root: an
@@ -310,6 +322,38 @@ mod tests {
         assert_eq!(
             thread_entry_from_call("pthread_create", &args),
             Some("worker".to_string())
+        );
+    }
+
+    #[test]
+    fn thread_entry_zephyr_k_thread_create() {
+        let args: Vec<String> = [
+            "&tid",
+            "stack",
+            "STACK_SIZE",
+            "sensor_thread",
+            "NULL",
+            "NULL",
+            "NULL",
+            "7",
+            "0",
+            "K_NO_WAIT",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            thread_entry_from_call("k_thread_create", &args),
+            Some("sensor_thread".to_string())
+        );
+    }
+
+    #[test]
+    fn thread_entry_zephyr_k_work_init() {
+        let args = vec!["&work".to_string(), "work_handler".to_string()];
+        assert_eq!(
+            thread_entry_from_call("k_work_init", &args),
+            Some("work_handler".to_string())
         );
     }
 
