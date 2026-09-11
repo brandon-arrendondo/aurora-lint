@@ -387,6 +387,37 @@
         executable: /bin/bash
       when: not ansible_check_mode
 
+    # ── valkey (plain Makefile, in-tree; builds deps/ too) ────────────────
+    # Top-level `make` builds the vendored deps/ (jemalloc, lua, libvalkey,
+    # ...) and the server; the compile DB therefore carries deps/ entries the
+    # runner's scope derivation (cppcheck source_dirs minus excludes) drops.
+    # TLS is off so the capture does not depend on libssl-dev being present;
+    # tls.c is still in the scan scope (aurora-lint parses it regardless).
+    # The distclean step's "googletest not found" line is Makefile noise from
+    # the unit-test subdir and is ignored by make itself.
+    - name: valkey - build under bear to capture compile_commands.json
+      shell: |
+        set -e
+        make distclean >/dev/null 2>&1 || true
+        bear -- make -j"$(nproc)" BUILD_TLS=no
+      args:
+        chdir: "{{ bench_root }}/valkey"
+        executable: /bin/bash
+        creates: "{{ bench_root }}/valkey/compile_commands.json"
+
+    # `make distclean` leaves the generated, gitignored src/release.h behind,
+    # and a gitignored .h is exactly what corpus-check flags: aurora-lint
+    # dispatches on extension and never consults git, so it would be scanned.
+    - name: valkey - restore checkout to pristine (keep compile_commands.json)
+      shell: |
+        set -e
+        make distclean >/dev/null 2>&1 || true
+        rm -f src/release.h
+      args:
+        chdir: "{{ bench_root }}/valkey"
+        executable: /bin/bash
+      when: not ansible_check_mode
+
     # ── Juliet (synthesized -- no real build system; see the script) ──────
     - name: Juliet - synthesize compile_commands.json
       command: python3 scripts/generate_juliet_compile_commands.py
