@@ -45,7 +45,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::FunctionSummary;
-use crate::analyze::null_state::{condition_tests_null, NullState};
+use crate::analyze::null_state::condition_tests_null;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
     get_function_parameters, get_node_text, get_sanitized_node_text, integer_type_width,
@@ -257,31 +257,35 @@ impl Api00C {
             // Find validated parameters (those that appear in validation checks)
             let validated_params = self.find_validated_parameters(&body, &pointer_params, source);
 
-            // Look up callsite null states from prescan (if available)
-            let func_name = self.get_function_name(function_node, source);
             let summaries = self.function_summaries.borrow();
-            let summary = summaries.get(&func_name);
 
-            // Build param name → index mapping
-            let param_indices: HashMap<&str, usize> = params
-                .iter()
-                .enumerate()
-                .map(|(i, (name, _))| (name.as_str(), i))
-                .collect();
+            // No caller-derived evidence suppresses here -- not the majority
+            // vote in `FunctionSummary::callsite_param_null_states`, and not
+            // the stronger `callsite_param_proven_nonnull` either. A prior
+            // version skipped a parameter when every call site the prescan
+            // could see passed non-null. That is an observation over the
+            // callers currently in the scan set, not a proof about the
+            // function's contract: this rule evaluates only functions with
+            // external linkage (statics were skipped above), and for those a
+            // caller can live in a translation unit the prescan never saw, in
+            // a library that links against this one, or in code not yet
+            // written. The one caller-side fact that IS a proof -- every call
+            // site is visible because the function is `static` -- is
+            // exactly the population this rule does not judge, so no linkage
+            // gate can rescue the shortcut. Measured against ground_truth the
+            // vote silenced ~314 confirmed true positives. Suppression must be
+            // something the tool can demonstrate from the function itself: a
+            // validation in the body (`validated_params`), or a parameter NULL
+            // is a legitimate value for (the `void *` case below).
+            //
+            // Contrast EXP34-C, which reads the proof gated on
+            // `has_internal_linkage`, and the null-state dataflow, where the
+            // vote can only make a parameter MORE suspicious than its
+            // `NotNull` default -- evidence to report, never to suppress.
 
             // Check which pointer parameters are used without validation
             for param_name in &pointer_params {
                 if !validated_params.contains(param_name) {
-                    // Suppress if all callers pass NotNull for this parameter
-                    if let (Some(s), Some(&idx)) = (summary, param_indices.get(param_name.as_str()))
-                    {
-                        if let Some(&state) = s.callsite_param_null_states.get(&idx) {
-                            if state == NullState::NotNull {
-                                continue; // All callers pass non-null → skip
-                            }
-                        }
-                    }
-
                     // Suppress `void *` parameters that are never dereferenced
                     // locally and pass through only to null-safe sinks. Typical
                     // generic-container slot parameter (e.g., ArrayList_Append's
