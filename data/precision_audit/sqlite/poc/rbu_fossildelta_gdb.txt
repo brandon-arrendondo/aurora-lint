@@ -1,0 +1,9 @@
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+
+Program received signal SIGSEGV, Segmentation fault.
+rbuDeltaGetInt (pz=0x7fffffffdd98, pLen=0x7fffffffdd94) at /tmp/claude-1000/-home-brandon-data-enterprise-tools-sqc/16d2f33e-ffe0-4303-93c4-af978593766e/scratchpad/poc_1107/rbu_fossildelta_poc.c:30
+30	  while( (c = zValue[0x7f&*(z++)])>=0 ){
+#0  rbuDeltaGetInt (pz=0x7fffffffdd98, pLen=0x7fffffffdd94) at /tmp/claude-1000/-home-brandon-data-enterprise-tools-sqc/16d2f33e-ffe0-4303-93c4-af978593766e/scratchpad/poc_1107/rbu_fossildelta_poc.c:30
+#1  0x00005555555551fc in rbuDeltaOutputSize (zDelta=0x0, lenDelta=0) at /tmp/claude-1000/-home-brandon-data-enterprise-tools-sqc/16d2f33e-ffe0-4303-93c4-af978593766e/scratchpad/poc_1107/rbu_fossildelta_poc.c:42
+#2  0x0000555555555254 in main () at /tmp/claude-1000/-home-brandon-data-enterprise-tools-sqc/16d2f33e-ffe0-4303-93c4-af978593766e/scratchpad/poc_1107/rbu_fossildelta_poc.c:59

@@ -1,0 +1,28 @@
+P2P: Starting Listen timeout(0,307200) on freq=2462 based on callback
+P2P: Set timeout (state=SEARCH): 0.327200 sec
+Control interface recv command from: /tmp/wpa_ctrl_466135-1\x00
+wlan0: Control interface command 'P2P_CONNECT 02:00:00:00:00:11 12345670'
+wlan0: Direct P2P_CONNECT command to p2p-dev-wlan0
+ctrl_iface.c:6596:9: runtime error: null pointer passed as argument 1, which is declared to never be null
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==466093==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000 (pc 0x7f0e05cce23d bp 0x564da8ce2f40 sp 0x7fff7b2bee48 T0)
+==466093==The signal is caused by a READ memory access.
+==466093==Hint: address points to the zero page.
+    #0 0x7f0e05cce23d in __strstr_sse2_unaligned ../sysdeps/x86_64/multiarch/strstr-sse2-unaligned.S:41
+    #1 0x7f0e06ca99cf in __interceptor_strstr ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors.inc:595
+    #2 0x7f0e06ca99cf in __interceptor_strstr ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors.inc:590
+    #3 0x564da85f8794 in p2p_ctrl_connect /home/brandon/toolchain/hostap/wpa_supplicant/ctrl_iface.c:6596
+    #4 0x564da862519a in wpa_supplicant_ctrl_iface_process /home/brandon/toolchain/hostap/wpa_supplicant/ctrl_iface.c:13531
+    #5 0x564da8634995 in wpa_supplicant_ctrl_iface_receive /home/brandon/toolchain/hostap/wpa_supplicant/ctrl_iface_unix.c:184
+    #6 0x564da7c6eb72 in eloop_sock_table_dispatch ../src/utils/eloop.c:603
+    #7 0x564da7c726a3 in eloop_run ../src/utils/eloop.c:1237
+    #8 0x564da87b7ba7 in wpa_supplicant_run /home/brandon/toolchain/hostap/wpa_supplicant/wpa_supplicant.c:8751
+    #9 0x564da887105a in main /home/brandon/toolchain/hostap/wpa_supplicant/main.c:422
+    #10 0x7f0e05c45249 in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+    #11 0x7f0e05c45304 in __libc_start_main_impl ../csu/libc-start.c:360
+    #12 0x564da7bf2c90 in _start (/home/brandon/toolchain/hostap/wpa_supplicant/wpa_supplicant+0x1387c90)
+
+AddressSanitizer can not provide additional info.
+SUMMARY: AddressSanitizer: SEGV ../sysdeps/x86_64/multiarch/strstr-sse2-unaligned.S:41 in __strstr_sse2_unaligned
+==466093==ABORTING
