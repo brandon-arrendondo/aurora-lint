@@ -852,7 +852,35 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         true
     }
 
-    /// Pre-analyze function to find what variables are freed at each labeled statement
+    /// Pre-analyze function to find what variables are freed at each labeled
+    /// statement.
+    ///
+    /// A `labeled_statement` wraps exactly ONE statement, but a cleanup label
+    /// is nearly always written as a run of siblings:
+    ///
+    /// ```c
+    /// done:
+    ///     BN_free(x);
+    ///     EC_POINT_free(pub);
+    ///     return ret;
+    /// ```
+    ///
+    /// Only `BN_free(x)` is a descendant of the label; everything after it is
+    /// a sibling in the enclosing block. Scanning the label node alone saw the
+    /// first free and none of the rest, so every `goto done` reported the
+    /// later-freed pointers as leaked -- 6 residual false positives in
+    /// hostap's `crypto_openssl.c` alone, whose `done:` frees six pointers
+    /// across siblings. Keep walking siblings until one cannot fall through,
+    /// using `statement_falls_through` -- the same predicate the main walk
+    /// uses -- so the prescan and the walk agree on where a label's block ends.
+    ///
+    /// Falling through into a following label is deliberate: entering at
+    /// `done:` really does run a later `out:`'s frees too, and `out:` still
+    /// gets its own scan for the jumps that target it directly.
+    ///
+    /// This inherits, rather than introduces, the assumption that a
+    /// conditional free (`if (p) free(p);`) frees on every path into the
+    /// label -- scanning a braced label body already counted those.
     fn collect_label_frees(&mut self, node: &Node, source: &str) {
         for label in query::find_descendants_of_kind(*node, "labeled_statement") {
             // Get the label name
@@ -862,10 +890,39 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     // Collect all free() calls reachable from this label
                     let mut freed_vars = HashSet::new();
                     self.collect_frees_in_label(&label, source, &mut freed_vars);
+
+                    // The label's own statement is only the first on its path;
+                    // the rest of the cleanup block follows as siblings.
+                    if self.labeled_body_falls_through(&label, source) {
+                        let mut next = label.next_named_sibling();
+                        while let Some(sibling) = next {
+                            if sibling.kind() != "comment" {
+                                self.collect_frees_in_label(&sibling, source, &mut freed_vars);
+                                if !self.statement_falls_through(&sibling, source) {
+                                    break;
+                                }
+                            }
+                            next = sibling.next_named_sibling();
+                        }
+                    }
+
                     self.label_frees.insert(label_name, freed_vars);
                 }
             }
         }
+    }
+
+    /// True if control reaches the statement *after* a `labeled_statement`,
+    /// i.e. the single statement the label wraps is not itself a jump.
+    /// Asking `statement_falls_through` about the `labeled_statement` node
+    /// directly would always answer yes: its kind is neither a jump nor a
+    /// call, so `done: return -1;` would read as falling through into the
+    /// next label's frees.
+    fn labeled_body_falls_through(&self, label: &Node, source: &str) -> bool {
+        label
+            .named_child(label.named_child_count().saturating_sub(1))
+            .filter(|inner| inner.kind() != "statement_identifier")
+            .is_none_or(|inner| self.statement_falls_through(&inner, source))
     }
 
     /// Collect all free() calls reachable from a labeled statement. Calls
