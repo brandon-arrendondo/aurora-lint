@@ -10,25 +10,36 @@
 //! COMPLIANT:
 //! - memset/memset_s/explicit_bzero called before free()
 //! - Using calloc() for new allocations (initializes to zero)
+//! - A project's own clearing wrapper (mbedtls_platform_zeroize,
+//!   forced_memzero, an os_memset macro) -- recognised by what its body
+//!   does with the buffer, never by its name
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::const_eval;
+use crate::analyze::context::ProjectContext;
+use crate::analyze::function_summary::FunctionSummary;
+use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use tree_sitter::Node;
 
-pub struct Mem03C;
-
-const CLEAR_FUNCS: &[&str] = &[
-    "memset",
-    "memset_s",
-    "explicit_bzero",
-    "bzero",
-    "SecureZeroMemory",
-];
+#[derive(Default)]
+pub struct Mem03C {
+    /// Cross-file summaries: a callee whose `clears_params` names an
+    /// argument position overwrites that buffer, whatever it is called
+    /// (task 1127).
+    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    /// Function-like macros, for `macro_clears_param_indices`.
+    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    /// `#define ALIAS target` map; a callee is classified by the name its
+    /// alias chain ends at.
+    project_aliases: RefCell<HashMap<String, String>>,
+}
 
 impl CertRule for Mem03C {
     fn rule_id(&self) -> &'static str {
@@ -51,26 +62,103 @@ impl CertRule for Mem03C {
         "MEM03-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.function_summaries.borrow_mut() = context.function_summaries.clone();
+        *self.function_macros.borrow_mut() = context.function_macros.clone();
+        *self.project_aliases.borrow_mut() = context.macro_aliases.clone();
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_node(node, source, violations);
     }
 }
 
 impl Mem03C {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        let aliases =
+            const_eval::merged_macro_aliases(&self.project_aliases.borrow(), node, source);
         // Check function definitions for free/realloc patterns
         for func in query::find_descendants_of_kind(*node, "function_definition") {
-            self.check_function(&func, source, violations);
+            self.check_function(&func, source, &aliases, violations);
         }
     }
 
-    fn check_function(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    /// The argument positions a call to `spelled_name` overwrites, or an
+    /// empty list when it clears nothing the rule can see. Three sources, in
+    /// order: a library clearer by (alias-resolved) name, first argument; a
+    /// function-like macro whose expansion clears its parameter
+    /// (`macro_clears_param_indices`); a function whose summary says its
+    /// body clears the parameter (`clears_params`) -- the fact that makes
+    /// mbedtls's `mbedtls_platform_zeroize` a clearer without anyone naming
+    /// it (task 1127).
+    fn cleared_arg_indices(
+        &self,
+        spelled_name: &str,
+        aliases: &HashMap<String, String>,
+    ) -> Vec<usize> {
+        let name = const_eval::resolve_macro_alias(aliases, spelled_name);
+        if call_roles::is_memory_clearing_call(name) {
+            return vec![0];
+        }
+        let macros = self.function_macros.borrow();
+        let via_macro = macro_expand::macro_clears_param_indices(&macros, spelled_name);
+        if !via_macro.is_empty() {
+            return via_macro;
+        }
+        self.function_summaries
+            .borrow()
+            .get(name)
+            .map(|s| {
+                let mut v: Vec<usize> = s.clears_params.iter().copied().collect();
+                v.sort_unstable();
+                v
+            })
+            .unwrap_or_default()
+    }
+
+    /// Base pointers of the arguments a clearing call overwrites, or `None`
+    /// when `call` clears nothing.
+    fn cleared_base_ptrs(
+        &self,
+        call: &Node,
+        source: &str,
+        aliases: &HashMap<String, String>,
+    ) -> Option<Vec<String>> {
+        let func = call.child_by_field_name("function")?;
+        let indices = self.cleared_arg_indices(get_node_text(&func, source), aliases);
+        if indices.is_empty() {
+            return None;
+        }
+        let args = call.child_by_field_name("arguments")?;
+        let real: Vec<Node> = (0..args.child_count())
+            .filter_map(|i| args.child(i))
+            .filter(|a| !matches!(a.kind(), "(" | ")" | ","))
+            .collect();
+        let ptrs: Vec<String> = indices
+            .iter()
+            .filter_map(|&i| real.get(i))
+            .map(|a| self.extract_base_ptr(a, source))
+            .collect();
+        (!ptrs.is_empty()).then_some(ptrs)
+    }
+
+    fn check_function(
+        &self,
+        node: &Node,
+        source: &str,
+        aliases: &HashMap<String, String>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         // Get compound statement (function body)
         if let Some(body) = node.child_by_field_name("body") {
-            self.analyze_block(&body, source, violations, HashSet::new());
+            self.analyze_block(&body, source, aliases, violations, HashSet::new());
 
             // CWE-226: check for sensitive data buffers not cleared before function exit
-            self.check_sensitive_data_cleanup(&body, source, violations);
+            self.check_sensitive_data_cleanup(&body, source, aliases, violations);
         }
     }
 
@@ -96,6 +184,7 @@ impl Mem03C {
         &self,
         root: &Node,
         source: &str,
+        aliases: &HashMap<String, String>,
         violations: &mut Vec<RuleViolation>,
         initial_cleared: HashSet<String>,
     ) {
@@ -114,8 +203,8 @@ impl Mem03C {
 
                 // Check for memset/memset_s calls (clear operations)
                 if kind == "expression_statement" {
-                    if let Some(ptr) = self.get_clear_call_ptr(&stmt, source) {
-                        cleared.borrow_mut().insert(ptr);
+                    if let Some(ptrs) = self.get_clear_call_ptrs(&stmt, source, aliases) {
+                        cleared.borrow_mut().extend(ptrs);
                     }
                 }
 
@@ -208,27 +297,19 @@ impl Mem03C {
         }
     }
 
-    fn get_clear_call_ptr(&self, node: &Node, source: &str) -> Option<String> {
-        // Look for memset/memset_s/explicit_bzero calls
+    /// Base pointers cleared by a call directly under `node` (an expression
+    /// statement), if any.
+    fn get_clear_call_ptrs(
+        &self,
+        node: &Node,
+        source: &str,
+        aliases: &HashMap<String, String>,
+    ) -> Option<Vec<String>> {
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 if child.kind() == "call_expression" {
-                    if let Some(func) = child.child_by_field_name("function") {
-                        let func_name = get_node_text(&func, source);
-                        if CLEAR_FUNCS.contains(&func_name) {
-                            // Get the first argument (pointer being cleared)
-                            if let Some(args) = child.child_by_field_name("arguments") {
-                                for j in 0..args.child_count() {
-                                    if let Some(arg) = args.child(j) {
-                                        let arg_kind = arg.kind();
-                                        if arg_kind != "(" && arg_kind != ")" && arg_kind != "," {
-                                            // Extract the base pointer from the argument
-                                            return Some(self.extract_base_ptr(&arg, source));
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if let Some(ptrs) = self.cleared_base_ptrs(&child, source, aliases) {
+                        return Some(ptrs);
                     }
                 }
             }
@@ -325,12 +406,19 @@ impl Mem03C {
         &self,
         body: &Node,
         source: &str,
+        aliases: &HashMap<String, String>,
         violations: &mut Vec<RuleViolation>,
     ) {
         let mut sensitive_vars: Vec<(String, usize, usize)> = Vec::new();
         let mut cleared_vars: HashSet<String> = HashSet::new();
 
-        self.scan_sensitive_vars_and_clears(body, source, &mut sensitive_vars, &mut cleared_vars);
+        self.scan_sensitive_vars_and_clears(
+            body,
+            source,
+            aliases,
+            &mut sensitive_vars,
+            &mut cleared_vars,
+        );
 
         for (var_name, line, col) in &sensitive_vars {
             if !cleared_vars.contains(var_name) {
@@ -358,6 +446,7 @@ impl Mem03C {
         &self,
         node: &Node,
         source: &str,
+        aliases: &HashMap<String, String>,
         sensitive_vars: &mut Vec<(String, usize, usize)>,
         cleared_vars: &mut HashSet<String>,
     ) {
@@ -389,22 +478,8 @@ impl Mem03C {
                 }
                 "call_expression" => {
                     // Check for clearing functions
-                    if let Some(func) = node.child_by_field_name("function") {
-                        let func_name = get_node_text(&func, source);
-                        if CLEAR_FUNCS.contains(&func_name) {
-                            if let Some(args) = node.child_by_field_name("arguments") {
-                                for j in 0..args.child_count() {
-                                    if let Some(arg) = args.child(j) {
-                                        let kind = arg.kind();
-                                        if kind != "(" && kind != ")" && kind != "," {
-                                            let ptr = self.extract_base_ptr(&arg, source);
-                                            cleared_vars.insert(ptr);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if let Some(ptrs) = self.cleared_base_ptrs(&node, source, aliases) {
+                        cleared_vars.extend(ptrs);
                     }
                 }
                 _ => {}
