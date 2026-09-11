@@ -1857,6 +1857,20 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         self.allocated_memory.insert(leaked_name, old_alloc.clone());
                     }
                 }
+                // Either way the name now holds NULL, not an allocation: an
+                // unfreed one was just re-filed under its `name@line` alias
+                // above, a freed one is done with. Drop the name from every
+                // set, or the end-of-function sweep reads the still-listed
+                // allocation minus its freed mark as a leak. A later
+                // `free(p)` is `free(NULL)`, which does nothing, so it is
+                // neither a double free nor a leak site -- `free(p); p =
+                // NULL;` is the idiom this rule's own suggestion recommends,
+                // and it read as a double free at the next `if (p) free(p);`
+                // for as long as the freed mark survived the assignment.
+                self.allocated_memory.remove(&var_name);
+                self.freed_memory.remove(&var_name);
+                self.maybe_freed.remove(&var_name);
+                self.null_variables.insert(var_name);
             }
         }
     }
