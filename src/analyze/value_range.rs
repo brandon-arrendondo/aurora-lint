@@ -1224,7 +1224,15 @@ fn merge_compound_conditions(
         match (a, b) {
             (Some(a), Some(b)) => {
                 if conjunctive {
-                    intersect_range(&a, &b)
+                    // An empty intersection is a constraint, not the absence
+                    // of one: no value satisfies both operands, so the edge
+                    // is dead. `None` here would read downstream as
+                    // "unconstrained" and hand the incoming range to a block
+                    // that never runs -- and a later conjunct would then
+                    // resupply a live range over the top of it. Keep the
+                    // empty set as a range so the edge refinement's own
+                    // intersection prunes the edge (task 1102).
+                    Some(intersect_range(&a, &b).unwrap_or_else(ValueRange::empty))
                 } else {
                     Some(join_range(&a, &b))
                 }
@@ -2731,6 +2739,97 @@ void f(void) {
         assert_eq!(
             range_at_expr(code, "data", "data + 1"),
             Some(ValueRange::new(100, 100))
+        );
+    }
+
+    /// A conjunction whose operands contradict EACH OTHER is unsatisfiable
+    /// no matter what flows in. Intersecting the two constraints gives the
+    /// empty set, and an empty set must not degrade to "no constraint": that
+    /// hands the incoming value to a branch that never executes -- the same
+    /// failure 1014 fixed for a single contradicted comparison, one merge
+    /// further up (task 1102).
+    #[test]
+    fn self_contradictory_conjunction_reports_no_range() {
+        let code = "
+void f(void) {
+    int x = 10;
+    if (x > 5 && x < 3) {
+        int result = x + 1;
+    }
+}
+";
+        assert_eq!(range_at_expr(code, "x", "x + 1"), None);
+    }
+
+    /// A third conjunct must not resurrect an already-empty intersection.
+    /// `(a && b) && c` merges left-to-right, so an empty `a && b` that
+    /// collapsed to "unconstrained" would let `c` re-supply a live range
+    /// (task 1102).
+    #[test]
+    fn later_conjunct_does_not_resurrect_an_empty_intersection() {
+        let code = "
+void f(void) {
+    int x = 10;
+    if (x > 5 && x < 3 && x == 10) {
+        int result = x + 1;
+    }
+}
+";
+        assert_eq!(range_at_expr(code, "x", "x + 1"), None);
+    }
+
+    /// The `||` mirror: the false edge of `a || b` is `!a && !b`, so a
+    /// tautology's else-branch is the same unsatisfiable intersection
+    /// (task 1102).
+    #[test]
+    fn tautological_disjunction_false_edge_reports_no_range() {
+        let code = "
+void f(void) {
+    int x = 10;
+    if (x < 3 || x >= 3) {
+    } else {
+        int result = x + 1;
+    }
+}
+";
+        assert_eq!(range_at_expr(code, "x", "x + 1"), None);
+    }
+
+    /// An unsatisfiable conjunct disjoined with a live alternative leaves
+    /// exactly the alternative: the empty set is the identity of join, so it
+    /// must neither kill the edge nor widen the other operand's range
+    /// (task 1102).
+    #[test]
+    fn empty_conjunct_is_identity_under_disjunction() {
+        let code = "
+void f(void) {
+    int x = 10;
+    if ((x > 5 && x < 3) || x == 10) {
+        int result = x + 1;
+    }
+}
+";
+        assert_eq!(
+            range_at_expr(code, "x", "x + 1"),
+            Some(ValueRange::new(10, 10))
+        );
+    }
+
+    /// A satisfiable conjunction keeps intersecting normally -- the
+    /// empty-set rule must not disturb the ordinary narrowing case
+    /// (task 1102).
+    #[test]
+    fn satisfiable_conjunction_still_narrows() {
+        let code = "
+void f(int x) {
+    if (x > 5 && x < 20) {
+        int result = x + 1;
+    }
+}
+";
+        assert_eq!(
+            range_at_expr(code, "x", "x + 1"),
+            Some(ValueRange::new(6, 19))
         );
     }
 }

@@ -39,6 +39,21 @@ impl ValueRange {
         Self { min, max }
     }
 
+    /// The empty set, spelled as the inverted range `[MAX, MIN]`.
+    ///
+    /// This is the lattice bottom: intersecting anything with it stays
+    /// empty, and joining anything with it gives the other operand back
+    /// unchanged -- both fall out of the plain min/max arithmetic, so no
+    /// caller needs a special case. It exists so a condition that no value
+    /// can satisfy (`x > 5 && x < 3`) keeps a range of its own instead of
+    /// collapsing to "no constraint", which is the opposite claim (task 1102).
+    pub fn empty() -> Self {
+        Self {
+            min: i64::MAX,
+            max: i64::MIN,
+        }
+    }
+
     /// The range of `self + other`, or `None` on overflow.
     pub fn add(&self, other: &ValueRange) -> Option<Self> {
         let min = self.min.checked_add(other.min)?;
