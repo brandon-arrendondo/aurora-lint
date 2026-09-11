@@ -6,7 +6,6 @@ use crate::analyze::vra_access;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{get_node_text, integer_type_width, is_unsigned_type};
 use crate::utility::cert_c::float_typing::{self, StructFieldTypes};
-use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -290,6 +289,24 @@ impl Int08C {
     /// resolve to constants -- a range merely straddling the bound is a
     /// *possible* truncation and not this rule's claim. That is why the
     /// expected volume is low: this is recall work, not FP work.
+    ///
+    /// Whether the store is reachable is the range engine's answer, not this
+    /// rule's. Juliet's CWE-190 good sink stores inside a branch its own
+    /// condition contradicts:
+    ///
+    /// ```c
+    /// data = CHAR_MAX;
+    /// if (data < CHAR_MAX) { char result = data + 1; }   /* never runs */
+    /// ```
+    ///
+    /// VRA once carried `data` into that branch as `[127, 127]`, and this
+    /// check withdrew its claim whenever any operand had a dominating
+    /// comparison -- which also withdrew it from `if (data == CHAR_MAX)`,
+    /// where the guard PROVES the truncation (44 true positives in the same
+    /// cohort). Since task 1014 a contradicted branch has no range entry, so
+    /// `stored_value_range` returns `None` there and the store is never
+    /// judged; a satisfiable guard leaves the range it admits. No gate of
+    /// this rule's own is needed, and none is applied.
     fn check_truncating_stores(
         &self,
         node: &Node,
@@ -308,9 +325,6 @@ impl Int08C {
             let Some(width) = integer_type_width(var_type) else {
                 continue;
             };
-            if Self::operand_is_guarded(&value, source) {
-                continue;
-            }
             let Some(range) = self.stored_value_range(&value, source, macros) else {
                 continue;
             };
@@ -416,39 +430,6 @@ impl Int08C {
             macros,
         )?;
         const_eval::try_evaluate_range(value, source, macros, &var_ranges)
-    }
-
-    /// Has control flow tested any operand of the stored expression on the way
-    /// here?
-    ///
-    /// If so, the value that reaches the store is whatever the test admits,
-    /// and a definite claim is no longer available. Juliet's CWE-190 good sink
-    /// is exactly this:
-    ///
-    /// ```c
-    /// data = CHAR_MAX;
-    /// if (data < CHAR_MAX) { char result = data + 1; }   /* never runs */
-    /// ```
-    ///
-    /// VRA carries `data` into the branch as `[127, 127]` rather than applying
-    /// the contradictory constraint, so the range engine happily reports 128 in
-    /// a branch that cannot execute. Without this test, 373 of the 578 findings
-    /// on that cohort were the *fixed* function -- measured, not estimated.
-    ///
-    /// Deliberately broad (`ComparisonKind::Any`): the point is not which
-    /// bound the guard establishes but that the operand's value at the store is
-    /// no longer the one the unguarded dataflow computed.
-    fn operand_is_guarded(value: &Node, source: &str) -> bool {
-        query::find_descendants_of_kind(*value, "identifier")
-            .iter()
-            .any(|ident| {
-                guard_dominance::has_dominating_comparison(
-                    get_node_text(ident, source),
-                    value,
-                    source,
-                    guard_dominance::ComparisonKind::Any,
-                )
-            })
     }
 
     /// Does no value in `range` fit a `width`-bit integer of this signedness?
