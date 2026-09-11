@@ -50,6 +50,7 @@ substitution + recursive rescanning (C11 6.10.3).
 | `macro_nulls_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro **frees-and-nulls** (`(param) = NULL` after freeing) — the "safe free" idiom (`Curl_safefree`, `mosquitto_FREE`, `SAFE_FREE`). Feeds MEM30-C to clear freed-state as if the caller wrote `free(p); p = NULL;`. |
 | `macro_writes_param_indices` | `(table, name) -> Vec<usize>` | Superset of `macro_output_param_indices`: also covers writes *through* the pointer/array itself (`param->field = …`, `param[i] = …`, `*param = …`). Feeds EXP34-C (null-pointer) / ARR00-C (bounds) — a successful write through `param` proves it was non-null/in-bounds. |
 | `macro_frees_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro releases via `free`/`fclose`/`close`, without requiring the null-clearing signal `macro_nulls_param_indices` needs. Used by leak checks (e.g. MEM12-C early-return). |
+| `macro_clears_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro overwrites: after expansion, one of `call_roles::MEMORY_CLEARING_FUNCS` is called with the parameter as its FIRST argument (the destination — a fill or length parameter does not count). hostap's `#define os_memset(s, c, n) memset(s, c, n)`. The macro half of MEM03-C's clearer recognition; the function half is `FunctionSummary::clears_params` (task 1127). |
 | `collect_function_macro_alternatives` | `(source: &str) -> HashMap<String, Vec<FunctionMacro>>` | **All** definitions of each name, not just the first — for callers asking "could a call to this macro touch a variable named `x`?", where the mutually exclusive `#ifdef` alternatives cannot be collapsed to one (sqlite's `IdChar`, defined once for ASCII and once for EBCDIC, only the latter touching the caller's `c`). Textual scan only. Use `collect_function_macros` for anything that must *expand*; use this only to ask a question about every branch. |
 | `macro_references_free_identifier` | `(m: &FunctionMacro, var: &str) -> bool` | Whether one macro body names `var` as a *free* identifier — not one of its own parameters — so it binds to the caller's `var`. Whole-token (`c` ≠ `cnt`). Feeds MSC13-C: a variable used only inside an unexpanded macro body is used, in text an identifier walk never sees. |
 | `macro_free_identifier_reads` | `(m: &FunctionMacro) -> HashSet<String>` | The free identifiers the macro actually *reads* — every one except those appearing only as the left operand of a simple assignment. Liveness turns on reads, so MSC13-C's dead-store pass takes this set while the unused-variable question above keeps taking the union: a macro that only writes a caller's variable still *uses* it, but leaves the previously-active definition just as dead. |
@@ -276,6 +277,7 @@ the wide-character `wprintf` family). Filed and closed as task 487.
 | `is_scanf_family` | `(name: &str) -> bool` | scanf-family formatted-input functions. |
 | `is_format_function` | `(name: &str) -> bool` | `is_printf_family` or `is_scanf_family`. |
 | `is_sizeof_text` | `(expr: &str) -> bool` | Word-boundary-aware `sizeof` detection over an already-extracted text snippet (not an AST node), for rule files that operate on stringified sub-expressions rather than the AST directly. |
+| `is_memory_clearing_call` / `MEMORY_CLEARING_FUNCS` | `(name: &str) -> bool` | `memset`, `memset_s`, `explicit_bzero`, `bzero`, `SecureZeroMemory`, `RtlSecureZeroMemory`, `explicit_memset` — library calls that overwrite the buffer their FIRST argument points at. The name-level half of MEM03-C's "was this sensitive buffer cleared"; a project's own zeroize wrapper is never listed here, it is recognised by what its body does (`FunctionSummary::clears_params`, `macro_clears_param_indices`). |
 | `is_resource_acquisition_text` | `(expr: &str) -> bool` | Word-boundary-aware `fopen`/`malloc`/`calloc`/`realloc`/`open`/`socket` detection over an already-extracted text snippet — `MEM12-C`'s broader, cross-domain (file/memory/socket) "must release on every error path" concept, distinct from `is_allocator_call`'s heap-only scope. Migrated from a text-only `.contains("fopen(")`-style check (task 499); the word-boundary requirement is new (narrows out a hypothetical `myfopen(` false-match). |
 
 **Deliberately NOT folded in here** (as of task 499): `ARR30-C`'s
@@ -734,6 +736,7 @@ are private implementation detail behind the small public surface below.
 | `propagate_transitive_frees` | `(summaries: &mut HashMap<String, FunctionSummary>, macro_aliases)` | Propagates "frees param N" transitively through call chains (A calls B which frees param 0 of B, and A passes its own param through unconditionally → A also frees it). Each pass-through edge's callee is resolved through the project alias map first (`resolve_macro_alias`), and an edge that lands on `free` itself counts as a free: `credit_frees_params` credits only a literal `free`, so a wrapper freeing through `mbedtls_free(p)` (aliased in a header its file never parses) gets its `frees_params` here or nowhere. Re-run once more at the end of `resolve_includes`, since that is where header-only aliases arrive (task 1128). |
 | `propagate_transitive_param_taint` | `(summaries: &mut ...)` | Same transitive propagation for tainted-parameter status. |
 | `propagate_transitive_closes` | `(summaries: &mut ...)` | Same transitive propagation for "closes param N" (fclose/close/CloseHandle). |
+| `propagate_transitive_clears` | `(summaries: &mut ..., macro_aliases)` | Same for `clears_params`: a wrapper forwarding its buffer to a clearer clears it. Edges resolve through the alias map and an edge landing on a `MEMORY_CLEARING_FUNCS` name at argument 0 counts by itself. Re-run after `resolve_includes`, like `propagate_transitive_frees` (task 1127). |
 | `propagate_transitive_frees_param_fields` | `(summaries: &mut ...)` | Same transitive propagation, but for field-level frees (`frees_param_fields`, e.g. `free(x->will)`). |
 | `propagate_transitive_frees_param_pointees` | `(summaries: &mut ...)` | Same transitive propagation, but for pointee-level frees (`frees_param_pointees`, e.g. `free(*p)` reached through a forwarding wrapper). |
 | `propagate_return_taint` | `(summaries: &mut ...)` | Propagates "return value is tainted" through call chains. |
@@ -751,7 +754,14 @@ none of them folds — the fact `return_range` cannot carry),
 wrapper — `free(*param)`, called as `safe_free(&p)`, so the caller's own
 variable dies and an argument match by identifier never sees it),
 `has_env03_taint_source`, `returns_tainted`,
-`closes_params`, `callsite_param_buffer_size`, `produces_param_buffer_size`,
+`closes_params`, `clears_params` (the body overwrites the parameter's pointee:
+a `MEMORY_CLEARING_FUNCS` call, a file-scope function pointer initialised
+from one — mbedtls/hostap's `static void *(*const volatile memset_func)(...)
+= memset;` idiom, which exists precisely so the call is not spelled
+`memset` — or a forward to another clearer; every `#if` arm inside the
+body counts, and unlike the free facts it is NOT withheld for a
+`#if`-guarded definition, since mbedtls's real zeroize is one; task 1127),
+`callsite_param_buffer_size`, `produces_param_buffer_size`,
 `distinct_object_param_pairs` (task 936), and several more callsite-specific
 maps.
 
