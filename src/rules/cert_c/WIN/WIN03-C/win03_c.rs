@@ -28,6 +28,7 @@
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{get_node_text, get_sanitized_node_text};
+use crate::utility::cert_c::call_roles;
 use lang_parsing_substrate::query;
 use tree_sitter::Node;
 
@@ -47,10 +48,14 @@ impl Win03C {
         if let Some(function_node) = node.child_by_field_name("function") {
             let function_name = get_node_text(&function_node, source);
 
+            // `OpenMutex` is a <windows.h> macro over OpenMutexA/OpenMutexW;
+            // real code names either directly (task 1130).
+            if call_roles::is_win32_api(function_name, "OpenMutex") {
+                self.check_open_mutex_call(node, source, violations);
+                return;
+            }
+
             match function_name {
-                "OpenMutex" => {
-                    self.check_open_mutex_call(node, source, violations);
-                }
                 "fopen" => {
                     self.check_fopen_call(node, source, violations);
                 }

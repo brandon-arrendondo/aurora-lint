@@ -75,6 +75,18 @@ pub const MEMORY_CLEARING_FUNCS: &[&str] = &[
     "explicit_memset",
 ];
 
+/// True when `name` is the Win32 API `base` under any of its spellings:
+/// the `<windows.h>` macro (`CreateProcess`) or the ANSI/wide entry point
+/// it expands to (`CreateProcessA`, `CreateProcessW`). Real Win32 C names
+/// the variant directly at least as often as it uses the macro -- every
+/// `LoadLibrary`/`CreateProcess` in Ventoy2Disk is an `A` or `W` call --
+/// so a rule that compares against the bare macro name alone has no recall
+/// on real code (task 1130).
+pub fn is_win32_api(name: &str, base: &str) -> bool {
+    name.strip_prefix(base)
+        .is_some_and(|rest| rest.is_empty() || rest == "A" || rest == "W")
+}
+
 /// A `void *`-returning heap allocator: `malloc`/`calloc`/`realloc`/
 /// `aligned_alloc`. Use this (not [`is_allocator_call`]) when the rule's
 /// concern is specifically the void-pointer-cast idiom.
