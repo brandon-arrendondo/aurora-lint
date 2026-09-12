@@ -128,6 +128,8 @@ impl Exp02C {
     /// whose truth value controls whether the RHS runs. Recognized shapes:
     ///   * comparison:    a == b, a != b, a < b, a > b, a <= b, a >= b
     ///   * truthiness:    ident, !ident, ptr->field, obj.field
+    ///   * call: a predicate/accessor call with no mutation of its own, e.g.
+    ///     `ttisboolean(o)`, `cap_get_capType(cap)`, `step_a()`
     ///   * compound:      (guard) && (guard), (guard) || (guard)
     ///   * parenthesized: any of the above wrapped in parens
     fn is_guard_pattern(&self, node: &Node, source: &str) -> bool {
@@ -161,6 +163,14 @@ impl Exp02C {
             | "field_expression"
             | "pointer_expression"
             | "subscript_expression" => true,
+            // A call used as a guard is exactly as ordinary as a comparison —
+            // `ttisboolean(o) && bvalue(o)` and `step_a() || step_b()` are both
+            // the guard's whole point, not a missed side effect on the LHS
+            // itself (the LHS always runs regardless of short-circuiting; only
+            // the RHS's own mutation status, checked separately, matters).
+            // Excluded only when the call's own arguments hide a mutation
+            // (`record(x++)`), which is never an innocuous predicate.
+            "call_expression" => !self.has_mutation_side_effects(node, source),
             "parenthesized_expression" => {
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
