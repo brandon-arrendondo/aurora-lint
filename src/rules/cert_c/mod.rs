@@ -1178,7 +1178,7 @@ impl RuleRegistry {
         registry.register(Box::new(pre02_c::Pre02C::new()));
         registry.register(Box::new(pre04_c::Pre04C::new()));
         registry.register(Box::new(pre30_c::Pre30C));
-        registry.register(Box::new(pre31_c::Pre31C));
+        registry.register(Box::new(pre31_c::Pre31C::new()));
         registry.register(Box::new(pre07_c::PRE07C));
         registry.register(Box::new(pre08_c::Pre08C::new()));
         registry.register(Box::new(pre09_c::Pre09C));

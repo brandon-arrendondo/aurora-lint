@@ -1,12 +1,37 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use tree_sitter::Node;
 
-pub struct Pre31C;
+pub struct Pre31C {
+    /// Function-like macro definitions from the cross-file prescan
+    /// (`ProjectContext::function_macros`) — needed because an unsafe
+    /// macro's own `#define` usually lives in a header (curl's
+    /// `DEBUGF`/`CURL_UNCONST` in `curl_setup.h`), not the file a call site
+    /// sits in. A per-file-only `collect_function_macros` never saw those
+    /// bodies, so every single-evaluation-safe macro defined outside the
+    /// current file stayed (wrongly) flagged.
+    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+}
+
+impl Pre31C {
+    pub fn new() -> Self {
+        Self {
+            function_macros: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+impl Default for Pre31C {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CertRule for Pre31C {
     fn rule_id(&self) -> &'static str {
@@ -29,6 +54,10 @@ impl CertRule for Pre31C {
         "PRE31-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.function_macros.borrow_mut() = context.function_macros.clone();
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         // Real macro-body definitions (params + replacement text), collected the
         // same way every other macro-aware rule does (see
@@ -36,7 +65,14 @@ impl CertRule for Pre31C {
         // parameter is evaluated at most once — the do-while(0)/passthrough
         // idiom that the old _Generic/statement-expression-only check missed —
         // instead of guessing from the definition's raw suffix text.
-        let function_macros = macro_expand::collect_function_macros(node, source);
+        //
+        // Cross-file (prescan) definitions first, then this file's own
+        // `collect_function_macros` layered on top so a same-file
+        // `#define` wins over a stale/differently-`#ifdef`'d cross-file one
+        // — the same "project-wide plus this file's own, per-file winning"
+        // idiom `merged_macro_aliases` uses (see the capability catalog).
+        let mut function_macros = self.function_macros.borrow().clone();
+        function_macros.extend(macro_expand::collect_function_macros(node, source));
         self.check_node(node, source, &function_macros, violations);
     }
 }
