@@ -1012,7 +1012,7 @@ impl RuleRegistry {
         registry.register(Box::new(exp07_c::Exp07C));
         registry.register(Box::new(exp08_c::Exp08C));
         registry.register(Box::new(exp09_c::Exp09C));
-        registry.register(Box::new(exp14_c::Exp14C));
+        registry.register(Box::new(exp14_c::Exp14C::default()));
         registry.register(Box::new(exp15_c::Exp15C));
         registry.register(Box::new(exp19_c::Exp19C));
         registry.register(Box::new(exp20_c::Exp20C));
