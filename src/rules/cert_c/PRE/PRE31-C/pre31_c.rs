@@ -1,7 +1,9 @@
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
+use std::collections::HashMap;
 use tree_sitter::Node;
 
 pub struct Pre31C;
@@ -28,18 +30,37 @@ impl CertRule for Pre31C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        self.check_node(node, source, violations);
+        // Real macro-body definitions (params + replacement text), collected the
+        // same way every other macro-aware rule does (see
+        // docs/design/internal-capability-catalog.md). Lets us prove a specific
+        // parameter is evaluated at most once — the do-while(0)/passthrough
+        // idiom that the old _Generic/statement-expression-only check missed —
+        // instead of guessing from the definition's raw suffix text.
+        let function_macros = macro_expand::collect_function_macros(node, source);
+        self.check_node(node, source, &function_macros, violations);
     }
 }
 
 impl Pre31C {
-    fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_node(
+        &self,
+        node: &Node,
+        source: &str,
+        function_macros: &HashMap<String, FunctionMacro>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         for call_node in query::find_descendants_of_kind(*node, "call_expression") {
-            self.check_macro_call(&call_node, source, violations);
+            self.check_macro_call(&call_node, source, function_macros, violations);
         }
     }
 
-    fn check_macro_call(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+    fn check_macro_call(
+        &self,
+        node: &Node,
+        source: &str,
+        function_macros: &HashMap<String, FunctionMacro>,
+        violations: &mut Vec<RuleViolation>,
+    ) {
         if let Some(function_node) = node.child_by_field_name("function") {
             let function_name = get_node_text(&function_node, source);
 
@@ -50,6 +71,7 @@ impl Pre31C {
                     return;
                 }
 
+                let macro_def = function_macros.get(function_name);
                 let args = self.get_function_arguments(node, source);
 
                 // Check each argument for side effects
@@ -58,6 +80,33 @@ impl Pre31C {
                     let trimmed = arg.trim();
                     if trimmed.starts_with('"') && trimmed.ends_with('"') {
                         continue;
+                    }
+                    // A macro provably evaluates *this* parameter at most once
+                    // when its name appears 0 or 1 times (whole-token) in the
+                    // macro's own replacement text — the single-evaluation
+                    // passthrough / do-while(0)-wrapper idiom (e.g.
+                    // `#define DEBUGF(x) x`), which is the majority shape of
+                    // real-world "safe" macros and was previously only
+                    // recognized via the narrower _Generic/statement-expr check.
+                    // A parameter referenced twice (MAX/CLAMP-style) still
+                    // counts >1 and stays flagged, matching CERT's intent.
+                    //
+                    // Guarded to bodies with no `&&`/`||`/`?:` at all: CERT's
+                    // concern isn't only "evaluated more than once" but also
+                    // "evaluated an unpredictable number of times" — a
+                    // single textual occurrence sitting inside a short-circuit
+                    // or ternary branch may run zero times on some calls, which
+                    // is exactly as surprising to a caller as running twice
+                    // (`IS_VALID_RANGE(x, low, high) = (x)>=(low) && (x)<=(high)`
+                    // always evaluates `low` but only conditionally `high`).
+                    if let Some(def) = macro_def {
+                        if !body_has_conditional_evaluation(&def.body) {
+                            if let Some(param) = def.params.get(i) {
+                                if count_whole_ident_occurrences(&def.body, param) <= 1 {
+                                    continue;
+                                }
+                            }
+                        }
                     }
                     if self.has_side_effects(arg, node, source) {
                         let start_point = node.start_position();
@@ -275,10 +324,11 @@ impl Pre31C {
             "printf", "fprintf", "sprintf", "scanf", "fscanf", "sscanf", "malloc", "calloc",
             "realloc", "free", "fopen", "fclose", "fread", "fwrite", "fgetc", "fputc", "getchar",
             "putchar", "gets", "puts", "rand", "srand", "time", "exit", "abort", "system",
-            // String functions that may have side effects (modify errno, etc.)
-            "strlen", "strcmp", "strncmp", "strcpy", "strncpy", "strcat", "strncat", "strtok",
-            "strtol", "strtoul", "strtod", "atoi", "atol", "atof",
-            // Memory functions
+            // String functions that mutate a buffer or hold internal state.
+            // NOTE: strlen/strcmp/strncmp are deliberately NOT here — they only
+            // read their arguments and are listed as pure below instead.
+            "strcpy", "strncpy", "strcat", "strncat", "strtok", "strtol", "strtoul", "strtod",
+            "atoi", "atol", "atof", // Memory functions
             "memcpy", "memmove", "memset", "memcmp",
         ];
 
@@ -334,6 +384,9 @@ impl Pre31C {
                     // Pure functions that have no side effects (PRE31-C-EX1)
                     // These functions only compute a value from their inputs
                     let pure_functions = [
+                        "strlen",
+                        "strcmp",
+                        "strncmp",
                         "abs",
                         "labs",
                         "llabs",
@@ -416,11 +469,16 @@ impl Pre31C {
         arg_text: &str,
         source: &str,
     ) -> Option<Node<'a>> {
-        // Try to find the AST node corresponding to this argument
+        // Try to find the AST node corresponding to this argument. Only named
+        // nodes are real argument expressions — the `argument_list`'s own
+        // literal `(`/`)`/`,` tokens are anonymous children and must be
+        // skipped, not just `,` (an unfiltered `(`/`)` would otherwise count
+        // as a spurious extra "argument", shifting every real argument's
+        // index by one — see `get_function_arguments`).
         if let Some(arguments) = call_node.child_by_field_name("arguments") {
             for i in 0..arguments.child_count() {
                 if let Some(child) = arguments.child(i) {
-                    if child.kind() != "," {
+                    if child.is_named() {
                         let node_text = get_node_text(&child, source);
                         if node_text.trim() == arg_text.trim() {
                             return Some(child);
@@ -465,7 +523,13 @@ impl Pre31C {
         if let Some(arguments) = node.child_by_field_name("arguments") {
             for i in 0..arguments.child_count() {
                 if let Some(child) = arguments.child(i) {
-                    if child.kind() != "," {
+                    // Only named children are real argument expressions — the
+                    // `argument_list`'s own literal `(`/`)` tokens are
+                    // anonymous and were previously counted as spurious extra
+                    // "arguments" alongside `,` (an off-by-one that shifted
+                    // every real argument's reported index and broke
+                    // positional macro-parameter lookups).
+                    if child.is_named() {
                         let arg_text = get_node_text(&child, source).to_string();
                         args.push(arg_text.trim().to_string());
                     }
@@ -481,26 +545,25 @@ impl Pre31C {
         // Extract identifiers from the argument
         let identifiers = self.extract_identifiers(arg);
 
-        // Check if any identifier is declared as volatile in the source
+        // Look for "volatile [type] <id>" (or "<type> volatile <id>") with <id>
+        // ending on a real identifier boundary — a plain `source.contains(...)`
+        // substring check would (and did) match a short id like "i" inside an
+        // unrelated declaration's own trailing text, e.g. "volatile int i" is a
+        // substring of "volatile int in;".
+        const PREFIXES: &[&str] = &[
+            "volatile int ",
+            "volatile unsigned ",
+            "volatile char ",
+            "volatile short ",
+            "volatile long ",
+            "int volatile ",
+            "volatile ",
+        ];
         for id in identifiers {
-            // Look for volatile declaration of this variable
-            // Patterns: "volatile int name" or "volatile type name" or "type volatile name"
-            let _patterns = [
-                format!("volatile {} {};", id, ""), // At start
-                format!("volatile {}", id),         // Basic pattern
-                format!("{} volatile", id),         // Type after volatile
-            ];
-
-            // Simple check: look for "volatile" followed by the identifier or identifier preceded by volatile
-            if source.contains(&format!("volatile int {}", id))
-                || source.contains(&format!("volatile unsigned {}", id))
-                || source.contains(&format!("volatile char {}", id))
-                || source.contains(&format!("volatile short {}", id))
-                || source.contains(&format!("volatile long {}", id))
-                || source.contains(&format!("int volatile {}", id))
-                || source.contains(&format!("volatile {}", id))
-            {
-                return true;
+            for prefix in PREFIXES {
+                if contains_ident_after(source, prefix, &id) {
+                    return true;
+                }
             }
         }
         false
@@ -535,4 +598,64 @@ impl Pre31C {
         }
         identifiers
     }
+}
+
+/// Count occurrences of `ident` in `text` as a whole token (not a substring of
+/// a longer identifier) — used to prove a macro parameter is evaluated at most
+/// once from its own replacement text.
+fn count_whole_ident_occurrences(text: &str, ident: &str) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let id: Vec<char> = ident.chars().collect();
+    let (n, m) = (chars.len(), id.len());
+    if m == 0 {
+        return 0;
+    }
+    let mut count = 0;
+    let mut i = 0;
+    while i + m <= n {
+        if chars[i..i + m] == id[..] {
+            let prev_ok = i == 0 || !is_ident_char(chars[i - 1]);
+            let next_ok = i + m >= n || !is_ident_char(chars[i + m]);
+            if prev_ok && next_ok {
+                count += 1;
+            }
+        }
+        i += 1;
+    }
+    count
+}
+
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// True if a macro's replacement text contains a short-circuit (`&&`/`||`) or
+/// ternary (`?:`) operator anywhere — i.e. some part of the body is only
+/// conditionally evaluated, so a bare occurrence count can't prove a
+/// parameter always runs exactly once.
+fn body_has_conditional_evaluation(body: &str) -> bool {
+    body.contains("&&") || body.contains("||") || body.contains('?')
+}
+
+/// True if `source` contains `prefix` immediately followed by `id` ending on a
+/// real identifier boundary (not a prefix of a longer identifier).
+fn contains_ident_after(source: &str, prefix: &str, id: &str) -> bool {
+    let needle = format!("{prefix}{id}");
+    let mut search_start = 0;
+    while let Some(rel) = source[search_start..].find(needle.as_str()) {
+        let match_start = search_start + rel;
+        let after = match_start + needle.len();
+        let boundary_ok = source[after..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_ident_char(c));
+        if boundary_ok {
+            return true;
+        }
+        search_start = match_start + 1;
+        if search_start > source.len() {
+            break;
+        }
+    }
+    false
 }
