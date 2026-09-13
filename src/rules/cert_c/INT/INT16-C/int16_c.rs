@@ -363,12 +363,17 @@ impl Int16C {
                 if let Some(operator) = n.child_by_field_name("operator") {
                     let op_text = get_node_text(&operator, source);
 
-                    // Bitwise operators
-                    let is_bitwise_op =
-                        matches!(op_text, "&" | "|" | "^" | "<<" | ">>" | "&=" | "|=" | "^=");
-
-                    if is_bitwise_op {
-                        // Check left and right operands
+                    // For a shift, only the value being shifted (the left
+                    // operand) has representation-dependent risk -- the
+                    // shift count never does (`1 << i`, `val >> n`): its own
+                    // signedness has no bearing on how the SHIFTED value's
+                    // bits are interpreted. `&`/`|`/`^` genuinely operate on
+                    // both sides, so those still check both operands.
+                    if matches!(op_text, "<<" | ">>") {
+                        if let Some(left) = n.child_by_field_name("left") {
+                            self.check_operand_for_violation(&left, source, violations, op_text);
+                        }
+                    } else if matches!(op_text, "&" | "|" | "^") {
                         if let Some(left) = n.child_by_field_name("left") {
                             self.check_operand_for_violation(&left, source, violations, op_text);
                         }
@@ -404,6 +409,24 @@ impl Int16C {
         if operand.kind() == "identifier" {
             if self.is_signed_integer_here(operand, source) {
                 self.report_bitwise(operand, source, operator, violations);
+            }
+            return;
+        }
+
+        if operand.kind() == "subscript_expression" {
+            // The thing actually bitwise-operated on is the ARRAY ELEMENT
+            // (`arr[idx]`), not the index -- the generic "any identifier
+            // child" walk below wrongly caught a signed loop/array index
+            // that is itself never bitwise-operated on. Resolve the
+            // element's own signedness one declarator level down from the
+            // array/pointer identifier instead.
+            if let Some(arg) = operand.child_by_field_name("argument") {
+                if arg.kind() == "identifier" {
+                    let name = get_node_text(&arg, source);
+                    if self.declared_signedness(&arg, name, source, 1) == Some(Signedness::Signed) {
+                        self.report_bitwise(&arg, source, operator, violations);
+                    }
+                }
             }
             return;
         }
@@ -522,6 +545,15 @@ impl Int16C {
                 if let Some(child) = ret.child(i) {
                     if child.kind() == "identifier" && self.is_signed_integer_here(&child, source) {
                         let name = get_node_text(&child, source).to_string();
+                        // Same VRA gate `check_unsigned_assign_from_signed` already
+                        // has: a signed declaration says a sign CAN be there, but a
+                        // flag-OR/result-code/increment-only value provably
+                        // non-negative by local construction never actually loses
+                        // one -- without this, sqlite's WhereLoop.wsFlags-shaped
+                        // returns accounted for ~688 of 710 sqlite FPs here.
+                        if !self.right_operand_may_be_negative(&child, source, &name) {
+                            continue;
+                        }
                         if !self.has_non_negative_guard(&ret, &name, source) {
                             violations.push(RuleViolation {
                                 rule_id: self.rule_id().to_string(),
