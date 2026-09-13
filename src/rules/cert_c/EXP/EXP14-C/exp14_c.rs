@@ -32,6 +32,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils;
+use crate::utility::cert_c::ast_utils::resolve_field_expression_type;
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -50,6 +51,11 @@ pub struct Exp14C {
     /// would see it, rather than only recognizing `uint8_t`/`uint16_t` by
     /// literal spelling.
     typedef_types: RefCell<HashMap<String, String>>,
+    /// Cross-file struct field types (`ProjectContext::struct_field_types`),
+    /// needed to resolve a narrow struct-member operand (`s->flags`) --
+    /// otherwise a bitmask/capability field, which is how a narrow type
+    /// most often appears in real code, never resolves at all.
+    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
 }
 
 impl CertRule for Exp14C {
@@ -75,6 +81,7 @@ impl CertRule for Exp14C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
+        *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
@@ -267,8 +274,56 @@ impl Exp14C {
                 let arg = node.child_by_field_name("argument")?;
                 self.resolve_operand_width(&arg, source, unwrap + 1)
             }
+            "field_expression" if unwrap <= 1 => {
+                let field_type = self.field_type_text(node, source)?;
+                // unwrap==1 (one subscript into the field, `s->arr[i]`) is
+                // only safe when the field itself is an array: the recorded
+                // type is already the element type (struct_field_types
+                // drops array declarators the same way declaration_type_text
+                // does for a plain variable), so no further peeling is
+                // needed -- but a pointer-typed field (`s->ptr[i]`) would
+                // need one pointer level stripped, which isn't derivable
+                // from the field's type text alone, so decline rather than
+                // guess.
+                if unwrap == 1 && field_type.contains('*') {
+                    None
+                } else {
+                    self.width_of_type_text(&field_type)
+                }
+            }
             _ => None,
         }
+    }
+
+    /// The prescan-recorded type of the field `expr` (`s->count`, `a.b->c`)
+    /// denotes, resolved from the base identifier's declaration in scope --
+    /// same composition INT16-C's `field_type_text` uses, a one-entry type
+    /// map built from the scope-aware declarator lookup rather than a
+    /// file-wide flat map, which the capability catalog flags as
+    /// mis-attributing same-named locals across functions.
+    fn field_type_text(&self, expr: &Node, source: &str) -> Option<String> {
+        let mut base = expr.child_by_field_name("argument")?;
+        loop {
+            base = match base.kind() {
+                "identifier" => break,
+                "field_expression" | "pointer_expression" => {
+                    base.child_by_field_name("argument")?
+                }
+                "parenthesized_expression" => base.named_child(0)?,
+                _ => return None,
+            };
+        }
+        let base_name = ast_utils::get_node_text(&base, source);
+        let (decl, declarator) =
+            ast_utils::resolve_identifier_declarator(&base, base_name, source)?;
+        let mut base_type = ast_utils::declaration_type_text(&decl, source);
+        let mut d = declarator;
+        while d.kind() == "pointer_declarator" {
+            base_type.push_str(" *");
+            d = d.child_by_field_name("declarator")?;
+        }
+        let type_map = HashMap::from([(base_name.to_string(), base_type)]);
+        resolve_field_expression_type(expr, source, &type_map, &self.struct_field_types.borrow())
     }
 
     /// Width of a declared type spelling, qualifiers dropped and typedefs
