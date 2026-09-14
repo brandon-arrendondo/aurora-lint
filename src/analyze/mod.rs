@@ -18,6 +18,10 @@ pub mod context;
 /// synthesizes an empty consequence, which reads as an unbraced body.
 pub mod control_header_preproc_guard;
 pub mod dataflow;
+/// Preprocessor-dead line ranges under the assumed platform profile, for
+/// collectors that must keep one of several same-named conditional
+/// definitions (task 1142).
+pub mod dead_regions;
 pub mod embedded_js_blank;
 pub mod empty_macro_blank;
 pub mod function_summary;
