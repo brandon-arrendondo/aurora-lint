@@ -119,10 +119,17 @@ that emits *something* is an FP to count, not a family to hide.
 
 ## Adjudication status
 
-None yet. Every finding above is unlabeled; `ground_truth` has no `ventoy`
-rows. The first labelling pass belongs to `benchmarking_db` once the WIN
-recall follow-ups land — adjudicating the WIN family before then labels a
-sample two rules are about to change.
+Done (2026-09-14, `benchmarking_db` task 1134). All 22 in-scope files
+reviewed file-by-file against real-world run 255 — 2,463 `ground_truth`
+rows written (847 TP / 1,569 FP / 47 FN), **35.1% precision**. The WIN
+family was included in this pass rather than deferred: the two recall gaps
+this doc originally flagged (WIN00-C/WIN02-C's A/W-suffix blindness,
+WIN04-C's stored-`GetProcAddress` blindness) had already been fixed in
+aurora-lint by the time of this run — every site listed below as "missed"
+now fires correctly — so 14 of 15 WIN*-family findings adjudicated TP
+(93%). The one still-real gap, WIN05-C missing an HKLM value routed
+through a one-hop wrapper function (2 confirmed sites in `Utility.c`), is
+filed as its own follow-up in the tool's own backlog.
 
 ## Manifest
 
