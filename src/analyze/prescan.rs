@@ -1,6 +1,7 @@
 use super::argument_objects::{self, ObjectFrame};
 use super::const_eval;
 use super::context::ProjectContext;
+use super::dead_regions::DeadRegions;
 use super::function_summary::{self, FunctionSummary};
 use crate::analyze::null_state::NullState;
 use crate::parser::CParser;
@@ -4828,18 +4829,33 @@ fn collect_from_struct_tag_typedef(
 /// signedness chain a name like `word_t` or `paddr_t` actually walks (task
 /// 657 -- see `ProjectContext::typedef_types` and
 /// `overflow_helpers::typedef_chain_is_unsigned`).
+///
+/// A typedef inside a branch the assumed platform never compiles is skipped
+/// (`dead_regions`, task 1142): hostap redefines `u8`..`u64` under
+/// `_MSC_VER` and `__vxworks` before the real `#ifndef WPA_TYPES_DEFINED`
+/// arm, and first-wins used to keep the Windows spelling.
 fn collect_typedef_aliases(node: &Node, source: &str, typedef_types: &mut HashMap<String, String>) {
+    let dead = DeadRegions::of(source);
+    collect_typedef_aliases_rec(node, source, &dead, typedef_types);
+}
+
+fn collect_typedef_aliases_rec(
+    node: &Node,
+    source: &str,
+    dead: &DeadRegions,
+    typedef_types: &mut HashMap<String, String>,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
-                "type_definition" => {
+                "type_definition" if !dead.contains_node(&child) => {
                     collect_from_simple_typedef(&child, source, typedef_types);
                 }
                 kind if kind.starts_with("preproc_")
                     || kind == "linkage_specification"
                     || kind == "declaration_list" =>
                 {
-                    collect_typedef_aliases(&child, source, typedef_types);
+                    collect_typedef_aliases_rec(&child, source, dead, typedef_types);
                 }
                 _ => {}
             }
@@ -5519,6 +5535,61 @@ mod tests {
         parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    // -- typedef aliases under platform-conditional redefinition --
+
+    #[test]
+    fn typedef_aliases_skip_platform_dead_arms() {
+        // hostap src/utils/common.h, reduced: `u16` is defined under
+        // `_MSC_VER`, under `__vxworks`, and in the real `#ifndef
+        // WPA_TYPES_DEFINED` arm. First-wins kept `UINT16`, a Windows type
+        // nothing in a POSIX corpus defines, so every width-sensitive rule
+        // saw `u16` as unresolvable (task 1142). The `#define
+        // WPA_TYPES_DEFINED` inside each dead arm must not count as evidence
+        // against the live arm.
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-platform-typedef-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("common.h"),
+            "#ifdef _MSC_VER
+             typedef UINT16 u16;
+             #define WPA_TYPES_DEFINED
+             #endif
+             #ifdef __vxworks
+             typedef UINT16 u16;
+             #define WPA_TYPES_DEFINED
+             #endif
+             #ifndef WPA_TYPES_DEFINED
+             typedef uint16_t u16;
+             #define WPA_TYPES_DEFINED
+             #endif
+             #ifdef CONFIG_WIDE_HANDLE
+             typedef unsigned long handle_t;
+             #else
+             typedef unsigned int handle_t;
+             #endif
+             #ifdef _WIN32
+             typedef unsigned long DWORD_ALIAS;
+             #endif
+",
+        )
+        .unwrap();
+        std::fs::write(dir.join("use.c"), "#include \"common.h\"\nu16 v;\n").unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        assert_eq!(
+            ctx.typedef_types.get("u16").map(String::as_str),
+            Some("uint16_t")
+        );
+        // A build-config guard the profile cannot settle: first-wins as before.
+        assert_eq!(
+            ctx.typedef_types.get("handle_t").map(String::as_str),
+            Some("unsigned long")
+        );
+        // A name only the dead platform defines is absent, not misresolved.
+        assert!(!ctx.typedef_types.contains_key("DWORD_ALIAS"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -- function summary merging across variants --
