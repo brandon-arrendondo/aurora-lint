@@ -52,13 +52,32 @@
 //!
 //! ## What counts as side-effecting
 //!
-//! A call is a side effect unless its callee is a libc function known to be
-//! pure (`strlen`, `abs`, ...). Calls through pointers are always counted.
+//! A call is a side effect unless it can be shown pure:
+//!
+//! - a libc function known to be pure (`strlen`, `abs`, ...);
+//! - a project function-like macro whose expansion is a pure expression
+//!   (`#define BIT(n) (1ul << (n))`, `#define TCB_PTR(r) ((tcb_t *)(r))`,
+//!   every bitfield accessor and cast helper a kernel is written in). The
+//!   expansion comes from `analyze::macro_expand`, so a macro that wraps an
+//!   impure call (`#define READ(p) in8(p)`) stays impure and a macro whose
+//!   body cannot even be parsed as an expression is treated as impure;
+//! - a cast that tree-sitter mis-parsed as a call: `(u64)(x)` comes back as
+//!   a call to `u64` (`ast_utils::misparsed_cast_type_name`, task 675). The
+//!   name is accepted as a type when it is a known typedef, or when it is
+//!   not a known function at all -- `(name)(x)` on a real function is the
+//!   rare macro-suppression idiom `(free)(p)`, and a function-pointer
+//!   variable is called as `fp(x)` or `(*fp)(x)`, not `(fp)(x)`.
+//!   A macro parameter in that position (Lua's `#define cast(t, e) ((t)(e))`)
+//!   is resolved from the argument actually passed at each invocation.
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::ast_utils::{get_node_text, misparsed_cast_type_name};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 /// Expression nesting deeper than this is not walked. Recursion here is
@@ -94,12 +113,40 @@ const EXPR_KINDS: &[&str] = &[
     "offsetof_expression",
 ];
 
+/// How a function-like macro's expansion classifies, cached per macro name.
+#[derive(Clone, Debug)]
+enum MacroPurity {
+    /// The expansion is an expression with no side effects of its own.
+    Pure,
+    /// The expansion assigns, calls something impure, or is not an
+    /// expression at all.
+    Impure,
+    /// Pure except for `(param)(...)` shapes, which are casts when the
+    /// argument bound to `param` is a type and calls otherwise. Holds the
+    /// indices of the parameters used that way.
+    CastParams(Vec<usize>),
+}
+
 #[derive(Default)]
-pub struct Exp10C;
+pub struct Exp10C {
+    /// Function-like macro table: `ProjectContext::function_macros` with the
+    /// file under scan's own `#define`s laid over it. The file's definitions
+    /// are what the compiler sees in this translation unit, and the only
+    /// table there is when a single file is scanned without `-d`.
+    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    /// Simple typedef aliases, for confirming a mis-parsed cast's type name.
+    typedef_types: RefCell<HashMap<String, String>>,
+    /// `typedef struct Tag Alias;` names, same purpose.
+    struct_typedef_aliases: RefCell<HashMap<String, String>>,
+    /// Every function the prescan saw defined or declared.
+    known_functions: RefCell<HashSet<String>>,
+    /// Per-macro-name purity verdicts, computed on first use.
+    macro_purity: RefCell<HashMap<String, MacroPurity>>,
+}
 
 impl Exp10C {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 }
 
@@ -124,7 +171,20 @@ impl CertRule for Exp10C {
         "EXP10-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.function_macros.borrow_mut() = context.function_macros.clone();
+        *self.typedef_types.borrow_mut() = context.typedef_types.clone();
+        *self.struct_typedef_aliases.borrow_mut() = context.struct_typedef_aliases.clone();
+        *self.known_functions.borrow_mut() = context.known_functions.clone();
+        self.macro_purity.borrow_mut().clear();
+    }
+
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+        self.function_macros
+            .borrow_mut()
+            .extend(macro_expand::collect_function_macros(node, source));
+        self.macro_purity.borrow_mut().clear();
+
         // Expression roots: expression nodes whose parent is not one, i.e.
         // one per full expression (an `if` condition, an initializer, an
         // expression statement, each clause of a `for`). Found iteratively;
@@ -260,14 +320,16 @@ impl Exp10C {
             }
         }
 
+        // The call's own body runs after both the designator and the
+        // arguments are evaluated, so it is on neither side of that pair.
+        let unsequenced_pair = !designator_calls.is_empty() && !arg_calls.is_empty();
         let mut calls = designator_calls;
-        let designator_count = calls.len();
         calls.extend(arg_calls);
         if !self.call_is_pure(&node, source) {
             calls.push(node);
         }
 
-        if designator_count > 0 && calls.len() > designator_count {
+        if unsequenced_pair {
             let total = calls.len();
             return (
                 calls,
@@ -322,10 +384,185 @@ impl Exp10C {
     /// Whether this call expression has no side effects of its own (its
     /// arguments are judged separately).
     fn call_is_pure(&self, call: &Node, source: &str) -> bool {
-        call.child_by_field_name("function")
-            .filter(|f| f.kind() == "identifier")
-            .map(|f| Self::is_pure_function(get_node_text(&f, source)))
-            .unwrap_or(false)
+        let Some(function) = call.child_by_field_name("function") else {
+            return false;
+        };
+        // `(u64)(x)`: a cast tree-sitter could not tell from a call.
+        if let Some(name) = misparsed_cast_type_name(call, source) {
+            return self.is_type_name(name);
+        }
+        if function.kind() != "identifier" {
+            // `s->fn(x)`, `(*fp)(x)`, `(*pf[i])(x)`: a call through a
+            // pointer, whose target nothing here can see.
+            return false;
+        }
+        let name = get_node_text(&function, source);
+        if Self::is_pure_function(name) {
+            return true;
+        }
+        match self.macro_purity(name) {
+            Some(MacroPurity::Pure) => true,
+            Some(MacroPurity::CastParams(indices)) => {
+                let Some(args) = call.child_by_field_name("arguments") else {
+                    return false;
+                };
+                let mut cursor = args.walk();
+                let args: Vec<Node> = args.named_children(&mut cursor).collect();
+                indices.iter().all(|&i| {
+                    args.get(i)
+                        .map(|a| self.is_type_name(get_node_text(a, source).trim()))
+                        .unwrap_or(false)
+                })
+            }
+            Some(MacroPurity::Impure) | None => false,
+        }
+    }
+
+    /// Purity of a project function-like macro by name, from its expansion;
+    /// `None` if `name` is not a known macro.
+    fn macro_purity(&self, name: &str) -> Option<MacroPurity> {
+        if let Some(p) = self.macro_purity.borrow().get(name) {
+            return Some(p.clone());
+        }
+        let macros = self.function_macros.borrow();
+        let m = macros.get(name)?;
+        let verdict = self.classify_macro(&macros, name, m);
+        self.macro_purity
+            .borrow_mut()
+            .insert(name.to_string(), verdict.clone());
+        Some(verdict)
+    }
+
+    /// Expand `name` with its own parameter names as arguments (so nested
+    /// macros resolve but the parameters stay visible), parse the result as
+    /// an expression, and look for anything that could be a side effect.
+    fn classify_macro(
+        &self,
+        table: &HashMap<String, FunctionMacro>,
+        name: &str,
+        m: &FunctionMacro,
+    ) -> MacroPurity {
+        let Some(expanded) = macro_expand::expand_invocation(table, name, &m.params) else {
+            return MacroPurity::Impure;
+        };
+        let snippet = format!("int _sqc_exp10_expansion_ = ({expanded});");
+        let mut parser = tree_sitter::Parser::new();
+        if parser.set_language(&crate::parser::c_language()).is_err() {
+            return MacroPurity::Impure;
+        }
+        let Some(tree) = parser.parse(&snippet, None) else {
+            return MacroPurity::Impure;
+        };
+        let root = tree.root_node();
+        if root.has_error() {
+            // Statement-like bodies (`do { ... } while (0)`), token pasting,
+            // anything that is not one expression.
+            return MacroPurity::Impure;
+        }
+        let Some(value) = root
+            .named_child(0)
+            .and_then(|d| d.child_by_field_name("declarator"))
+            .and_then(|d| d.child_by_field_name("value"))
+        else {
+            return MacroPurity::Impure;
+        };
+
+        let mut cast_params = Vec::new();
+        for n in query::find_descendants(value, |_| true) {
+            match n.kind() {
+                "assignment_expression"
+                | "update_expression"
+                | "gnu_asm_expression"
+                | "compound_statement" => return MacroPurity::Impure,
+                "call_expression" => {
+                    if let Some(type_name) = misparsed_cast_type_name(&n, &snippet) {
+                        if let Some(i) = m.params.iter().position(|p| p == type_name) {
+                            cast_params.push(i);
+                            continue;
+                        }
+                        if self.is_type_name(type_name) {
+                            continue;
+                        }
+                        return MacroPurity::Impure;
+                    }
+                    let callee = n
+                        .child_by_field_name("function")
+                        .filter(|f| f.kind() == "identifier")
+                        .map(|f| get_node_text(&f, &snippet));
+                    // After `expand_invocation`'s rescan the only calls left
+                    // are real functions (or macros it could not expand);
+                    // only the libc pure list vouches for those.
+                    match callee {
+                        Some(c) if Self::is_pure_function(c) => {}
+                        _ => return MacroPurity::Impure,
+                    }
+                }
+                _ => {}
+            }
+        }
+        if cast_params.is_empty() {
+            MacroPurity::Pure
+        } else {
+            cast_params.sort_unstable();
+            cast_params.dedup();
+            MacroPurity::CastParams(cast_params)
+        }
+    }
+
+    /// Whether `text`, found where tree-sitter mis-parsed a cast as a call,
+    /// names a type. Known typedefs and anything spelled like a type qualify;
+    /// a bare identifier does unless the prescan knows it as a function.
+    fn is_type_name(&self, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() {
+            return false;
+        }
+        if self.typedef_types.borrow().contains_key(text)
+            || self.struct_typedef_aliases.borrow().contains_key(text)
+        {
+            return true;
+        }
+        if text.contains('*')
+            || text.starts_with("struct ")
+            || text.starts_with("union ")
+            || text.starts_with("enum ")
+            || text.starts_with("const ")
+            || text.starts_with("volatile ")
+        {
+            return true;
+        }
+        let first = text.split_whitespace().next().unwrap_or("");
+        if matches!(
+            first,
+            "void"
+                | "char"
+                | "short"
+                | "int"
+                | "long"
+                | "float"
+                | "double"
+                | "signed"
+                | "unsigned"
+                | "_Bool"
+                | "bool"
+                | "size_t"
+                | "ssize_t"
+                | "ptrdiff_t"
+                | "intptr_t"
+                | "uintptr_t"
+                | "int8_t"
+                | "int16_t"
+                | "int32_t"
+                | "int64_t"
+                | "uint8_t"
+                | "uint16_t"
+                | "uint32_t"
+                | "uint64_t"
+        ) {
+            return true;
+        }
+        text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !self.known_functions.borrow().contains(text)
     }
 
     /// Check if a function is known to be pure (no side effects).
