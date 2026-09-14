@@ -44,7 +44,7 @@ substitution + recursive rescanning (C11 6.10.3).
 
 | Function | Signature | Description |
 |---|---|---|
-| `collect_function_macros` | `(root: &Node, source: &str) -> HashMap<String, FunctionMacro>` | Collects `#define NAME(params) body` definitions: an AST pass over `preproc_function_def`, plus a textual error-recovery pass that recovers definitions tree-sitter buried in `ERROR` nodes (e.g. curl's `curlx_free`). |
+| `collect_function_macros` | `(root: &Node, source: &str) -> HashMap<String, FunctionMacro>` | Collects `#define NAME(params) body` definitions: an AST pass over `preproc_function_def`, plus a textual error-recovery pass that recovers definitions tree-sitter buried in `ERROR` nodes (e.g. curl's `curlx_free`). One body per name, first wins — after dropping any definition in a platform-dead branch (`dead_regions::DeadRegions`, task 1142), so hostap's `os_strdup` resolves to its `#else` `strdup(s)` rather than the `_MSC_VER` arm's `_strdup(s)`. |
 | `expand_invocation` | `(table, name: &str, args: &[String]) -> Option<String>` | Expands one invocation `name(args...)` against `table`, recursively rescanning the result. `None` if `name` isn't in `table` or arity mismatches. |
 | `macro_output_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro **assigns as a whole object** (`(param) = …`), e.g. curl's `CF_DATA_SAVE`. Feeds EXP33-C to recognize macro output arguments so they aren't flagged as reads of uninitialized memory. |
 | `macro_nulls_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro **frees-and-nulls** (`(param) = NULL` after freeing) — the "safe free" idiom (`Curl_safefree`, `mosquitto_FREE`, `SAFE_FREE`). Feeds MEM30-C to clear freed-state as if the caller wrote `free(p); p = NULL;`. |
@@ -214,6 +214,38 @@ to conclude a name is undeclared.
 **Wiring pattern:** collect once per translation unit and share it (ARR36-C
 holds it behind an `Rc` on the file-scope frame every function clones), then
 consult it wherever a positional lookup walks backwards.
+
+### `src/analyze/dead_regions.rs`
+**Problem solved:** which of several same-named conditional definitions a
+flat `name -> fact` collector should keep. With no preprocessor, every
+collector that builds a one-entry-per-name table (`typedef_types`,
+`function_macros`, `macro_constants`, `macro_aliases`) sees every
+`#ifdef`-arm's (re)definition and needs a tie-break; first-wins and
+last-wins are each a coin flip against a platform split. hostap's
+`common.h` defines `u16` under `_MSC_VER`, `__vxworks`, and the real
+`#ifndef WPA_TYPES_DEFINED` arm in that order, so first-wins resolved every
+narrow hostap type to a Windows name nothing in a POSIX corpus defines
+(task 1142: EXP14-C lost 59 of 62 labeled hostap TPs to it).
+
+| Item | Signature | Description |
+|---|---|---|
+| `platform_assumptions` | `() -> PlatformAssumptions` | The ONE platform profile every scan assumes: `lang_parsing_substrate::posix_default_assumptions()` (`_WIN32`/`_MSC_VER`/`__CYGWIN__`/`__vxworks` undefined, `__linux__`/`__unix__` defined). Single choke point so a future `--platform` or `compile_commands.json`-derived table changes one function. |
+| `DeadRegions::of` | `(source: &str) -> DeadRegions` | Line ranges the assumed platform's preprocessor would strip: `dead_code_ranges_with_assumptions` seeded with `platform_assumptions()`, so it also covers what the unseeded scanner already proves (`#if 0`, `__cplusplus`, locally-`#define`d guards). One line-oriented pass; build once per file per collector, not per node. |
+| `DeadRegions::contains_line` / `contains_node` | `(&self, line: usize) -> bool` / `(&self, node: &Node) -> bool` | Whether a 1-based line, or a node's first line, is inside a dead region. |
+
+**Wiring pattern:** compute at the collector's entry point and *skip* any
+definition landing in a dead region, keeping the collector's existing
+tie-break for the rest — a redefinition under a build-config macro the
+profile has no opinion about (`#ifdef WPA_TRACE`, `#if __BYTE_ORDER == ...`)
+stays Neutral and is picked exactly as before. Wired into
+`prescan::collect_typedef_aliases`, `macro_expand::collect_function_macros`
+(both passes) and `const_eval::collect_preproc_defs` (constants, aliases,
+string macros). Deliberately NOT wired into the struct-bodied collectors
+(ventoy's `process.h` wraps whole struct typedefs in `#if
+defined(_MSC_VER)` and no corpus file has a same-file conditional struct
+redefinition to arbitrate) nor into `suppression.rs`'s finding filter, which
+stays on the unseeded `dead_code_ranges` — silencing every finding inside an
+`#ifdef _WIN32` block corpus-wide is a separate policy decision.
 
 ## Declaration / type / declarator resolution
 
