@@ -601,6 +601,21 @@ impl Exp10C {
             | "toupper" | "tolower"
             | "atoi" | "atol" | "atoll" | "atof"
             | "strtol" | "strtoul" | "strtoll" | "strtoull" | "strtod"
+            // Evaluate-only intrinsics: their only effect is on their
+            // operand, which the walk judges at the call site anyway.
+            // `assert` matters because Lua's first `lua_assert` definition
+            // (and every `check_exp`-based accessor built on it) is
+            // `assert(c)`; `__builtin_expect` is behind every `likely()`.
+            | "assert" | "static_assert" | "_Static_assert"
+            | "__builtin_expect" | "__builtin_constant_p"
+            | "__builtin_types_compatible_p" | "__builtin_choose_expr"
+            | "__builtin_bswap16" | "__builtin_bswap32" | "__builtin_bswap64"
+            | "__builtin_clz" | "__builtin_clzl" | "__builtin_clzll"
+            | "__builtin_ctz" | "__builtin_ctzl" | "__builtin_ctzll"
+            | "__builtin_popcount" | "__builtin_popcountl" | "__builtin_popcountll"
+            | "__builtin_ffs" | "__builtin_ffsl" | "__builtin_ffsll"
+            | "__builtin_isnan" | "__builtin_isinf" | "__builtin_isfinite"
+            | "__builtin_huge_val" | "__builtin_inf" | "__builtin_nan"
         )
     }
 }
