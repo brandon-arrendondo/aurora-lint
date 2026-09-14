@@ -54,6 +54,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#methodology">Methodology</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#sqlite">SQLite</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#hostap-hostapd-wpa-supplicant">hostap (hostapd / wpa_supplicant)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#second-hostap-disclosure">Second hostap disclosure</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#combined-total">Combined total</a></li>
 </ul>
 </li>
@@ -98,9 +99,11 @@
 <p>Both of aurora-lint’s real-world benchmark projects that have gone through a
 full file-at-a-time adjudication audit (see
 <a class="reference internal" href="testing-methodology.html"><span class="doc">Testing Methodology</span></a>) have produced genuine defects, reported to each
-project’s maintainers. As of 2026-09-08, <strong>17 of 17 disclosed defects across
+project’s maintainers. As of 2026-09-14, <strong>27 of 27 disclosed defects across
 the two audits have been confirmed and fixed upstream</strong> — nine in SQLite,
-eight in hostapd/wpa_supplicant.</p>
+eighteen in hostapd/wpa_supplicant (eight from the initial 2026-08-25
+disclosure, ten more from a 2026-09-10 follow-up — see
+<a class="reference internal" href="#second-hostap-disclosure">Second hostap disclosure</a> below).</p>
 <p>A finding being disclosed here does not always mean aurora-lint detected it.
 Adjudicating a run means a reviewer reads every flagged site against source
 to label it TP/FP; that close reading regularly surfaces genuine defects the
@@ -321,12 +324,146 @@ and remain open: judged not reachable, so never filed. A sixteenth item
 positive) turned out to already be fixed upstream before the 2026-08-25
 filing, per w1.fi advisory 2026-3.</p>
 </section>
+<section id="second-hostap-disclosure">
+<h2>Second hostap disclosure<a class="headerlink" href="#second-hostap-disclosure" title="Link to this heading"></a></h2>
+<p>A follow-up EXP34-C delta-adjudication pass (ground-truth source tag
+<code class="docutils literal notranslate"><span class="pre">task1107_delta_exp34_hostap</span></code>) surfaced ten more genuine defects beyond
+the first audit — this time the majority (seven) were actual aurora-lint
+(EXP34-C) detections rather than audit read-throughs, a useful contrast
+with the first batch above. All ten were re-verified against current
+mainline before filing, disclosed privately to Jouni Malinen on
+2026-09-10, and <strong>all ten (eleven patches — one item split into two
+upstream commits, one squashed from three source files into one) were
+applied to hostap mainline the very next day, 2026-09-11.</strong></p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 26.0%" />
+<col style="width: 42.0%" />
+<col style="width: 14.0%" />
+<col style="width: 8.0%" />
+<col style="width: 10.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Site</p></th>
+<th class="head"><p>Defect</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>Fixed</p></th>
+<th class="head"><p>Commit</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ap/wnm_ap.c</span></code> — <code class="docutils literal notranslate"><span class="pre">ieee802_11_rx_bss_trans_mgmt_query()</span></code></p></td>
+<td><p>NULL <code class="docutils literal notranslate"><span class="pre">%s</span></code> argument: the raw <code class="docutils literal notranslate"><span class="pre">hex</span></code> pointer (NULL for an empty
+BSS-TM-candidate list) is passed unconditionally as a <code class="docutils literal notranslate"><span class="pre">%s</span></code> arg
+alongside its own ternary-guarded prefix text</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p>2026-09-11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">9f6ee4d90</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">wpa_supplicant/ctrl_iface.c</span></code> — <code class="docutils literal notranslate"><span class="pre">p2p_ctrl_connect()</span></code></p></td>
+<td><p>NULL pointer deref: the cursor past a bare, syntactically valid PIN
+with no trailing parameters is left NULL, then used unconditionally
+in <code class="docutils literal notranslate"><span class="pre">os_strstr(pos,</span> <span class="pre">&quot;bstrapmethod=&quot;)</span></code>; live-reproduced crash via a
+single <code class="docutils literal notranslate"><span class="pre">P2P_CONNECT</span></code> ctrl_iface command</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p>2026-09-11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">f3b1fc3b9</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">wpa_supplicant/dbus/dbus_new_handlers_p2p.c</span></code> —
+<code class="docutils literal notranslate"><span class="pre">wpas_dbus_handler_remove_persistent_group()</span></code></p></td>
+<td><p>Uninitialized stack read: <code class="docutils literal notranslate"><span class="pre">dbus_message_get_args()</span></code>’s return
+value is never checked, and a type-mismatched D-Bus argument
+leaves the out-parameter never written at all, not merely NULL;
+live-reproduced crash via a malformed <code class="docutils literal notranslate"><span class="pre">RemovePersistentGroup</span></code>
+D-Bus call</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p>2026-09-11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">563cfc960</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/crypto/tls_openssl_ocsp.c</span></code> — <code class="docutils literal notranslate"><span class="pre">ocsp_find_signer()</span></code></p></td>
+<td><p>Signed/unsigned loop-bound bug: <code class="docutils literal notranslate"><span class="pre">sk_X509_num()</span></code> returns <code class="docutils literal notranslate"><span class="pre">-1</span></code>
+for an empty cert stack, promoted to <code class="docutils literal notranslate"><span class="pre">UINT_MAX</span></code> against an
+unsigned loop index — a ~4.3-billion-iteration CPU-exhaustion DoS
+processing an OCSP response with an empty embedded cert list</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p>2026-09-11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">db1c8dfce</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/drivers/driver_nl80211_event.c</span></code> — <code class="docutils literal notranslate"><span class="pre">nl80211_vendor_event_brcm()</span></code></p></td>
+<td><p>NULL <code class="docutils literal notranslate"><span class="pre">%s</span></code> argument: a BRCM vendor netlink event omitting
+<code class="docutils literal notranslate"><span class="pre">NL80211_ATTR_VENDOR_DATA</span></code> leaves <code class="docutils literal notranslate"><span class="pre">data</span> <span class="pre">==</span> <span class="pre">NULL</span></code>, passed
+unconditionally as a <code class="docutils literal notranslate"><span class="pre">%s</span></code> argument; live-confirmed segfault
+under musl libc</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p>2026-09-11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">c0b203549</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/eap_server/eap_server_peap.c</span></code> — <code class="docutils literal notranslate"><span class="pre">eap_peap_build_phase2_term()</span></code></p></td>
+<td><p>NULL pointer deref: <code class="docutils literal notranslate"><span class="pre">eap_server_tls_encrypt()</span></code>’s documented
+NULL-return path is checked on one return path but not the
+TLS-1.3-resumed path, which reaches <code class="docutils literal notranslate"><span class="pre">wpabuf_len()</span></code> unconditionally</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p>2026-09-11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0da59aadc</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">wpa_supplicant/config_none.c</span></code> + <code class="docutils literal notranslate"><span class="pre">config_winreg.c</span></code> —
+<code class="docutils literal notranslate"><span class="pre">wpa_config_write()</span></code> (both non-default backends)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">name</span></code> (<code class="docutils literal notranslate"><span class="pre">wpa_s-&gt;confname</span></code>) used unconditionally, unlike
+<code class="docutils literal notranslate"><span class="pre">config_file.c</span></code> which already guards this exact case; live-
+reproduced literal <code class="docutils literal notranslate"><span class="pre">(null)</span></code> in a real daemon’s log via
+<code class="docutils literal notranslate"><span class="pre">SAVE_CONFIG</span></code> with no <code class="docutils literal notranslate"><span class="pre">-c</span></code> config file</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p>2026-09-11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">f9b9a68c2</span></code>, <code class="docutils literal notranslate"><span class="pre">536d71c0d</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">wpa_supplicant/dbus/dbus_new.c</span></code> — <code class="docutils literal notranslate"><span class="pre">wpas_dbus_get_group_obj_path()</span></code></p></td>
+<td><p>NULL pointer deref: <code class="docutils literal notranslate"><span class="pre">ssid</span></code> (<code class="docutils literal notranslate"><span class="pre">wpa_s-&gt;current_ssid</span></code>, legitimately
+NULL for a P2P group owner) dereferenced via
+<code class="docutils literal notranslate"><span class="pre">os_memcmp(ssid-&gt;ssid,</span> <span class="pre">...)</span></code> once <code class="docutils literal notranslate"><span class="pre">dbus_new_path</span></code> is set — the
+ordinary case for any build using the new-style D-Bus API</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p>2026-09-11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">47e523bf8</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">wpa_supplicant/wnm_sta.c</span></code> — <code class="docutils literal notranslate"><span class="pre">wnm_scan_process()</span></code> -&gt;
+<code class="docutils literal notranslate"><span class="pre">wpa_supplicant_need_to_roam_within_ess()</span></code></p></td>
+<td><p>NULL pointer deref: the post-scan “apply normal roaming rules”
+block dereferences a possibly-NULL <code class="docutils literal notranslate"><span class="pre">bss</span></code> candidate, unlike the
+sibling <code class="docutils literal notranslate"><span class="pre">pre_scan_check</span></code> branch a few lines above which already
+guards it</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p>2026-09-11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">e341c11d9</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/utils/browser-{android,system,wpadebug}.c</span></code> (3 files) —
+<code class="docutils literal notranslate"><span class="pre">http_req()</span></code></p></td>
+<td><p>NULL pointer deref: <code class="docutils literal notranslate"><span class="pre">url</span></code> used unconditionally in raw
+<code class="docutils literal notranslate"><span class="pre">os_strcmp()</span></code>/<code class="docutils literal notranslate"><span class="pre">os_strncmp()</span></code> calls — no NULL tolerance on any
+libc; live-reproduced SIGSEGV of the HS2.0 OSU loopback HTTP
+server via a single malformed TCP connection</p></td>
+<td><p>aurora-lint finding (EXP34-C)</p></td>
+<td><p>2026-09-11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">208c56a03</span></code></p></td>
+</tr>
+</tbody>
+</table>
+<p>Seven of the ten items were genuine aurora-lint EXP34-C detections,
+confirmed by hand against source before filing — the opposite mix from
+the first batch, where the tool’s rule set had missed every item. Three
+(the OCSP signed/unsigned loop bound, the BRCM vendor-event NULL <code class="docutils literal notranslate"><span class="pre">%s</span></code>,
+and the P2P group <code class="docutils literal notranslate"><span class="pre">ssid</span></code> NULL deref) were audit read-throughs, same
+honesty distinction as elsewhere in this document. This obsolete-Passpoint
+HS2.0 OSU functionality (item 10) and the low-severity <code class="docutils literal notranslate"><span class="pre">%s</span></code>-with-NULL
+class the maintainer judged non-reachable in some cases were still fixed
+by Jouni for repository hygiene, in his own words: “those might as well be
+addressed even if there is no real impact at the moment.”</p>
+</section>
 <section id="combined-total">
 <h2>Combined total<a class="headerlink" href="#combined-total" title="Link to this heading"></a></h2>
-<p>17 defects disclosed across the two audits, 17 fixed upstream — SQLite’s
+<p>27 defects disclosed across the two audits, 27 fixed upstream — SQLite’s
 nine the same day (most of them) or within days, hostap/wpa_supplicant’s
-eight within two weeks by the project’s original author and lead
-maintainer.</p>
+first eight within two weeks and the second ten the very next day, all by
+the project’s original author and lead maintainer, Jouni Malinen.</p>
 </section>
 </section>
 
