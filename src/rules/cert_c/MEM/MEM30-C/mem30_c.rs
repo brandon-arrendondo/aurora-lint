@@ -9,6 +9,7 @@ use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
@@ -16,19 +17,19 @@ pub struct Mem30C {
     /// Cross-file function-like macro definitions (from the prescan / macro
     /// engine). Used to recognize "safe free" macros that free AND null their
     /// argument (e.g. curl `Curl_safefree`).
-    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Cross-file function summaries from prescan. When a callee's `frees_params`
     /// is known from real analysis of its body, that's authoritative over the
     /// "does the function's NAME contain FREE" heuristic below — the name
     /// heuristic false-positives on functions like hostap's `plink_free_count`
     /// (a pure counter, no free at all) and misattributes multi-arg frees to
     /// the wrong parameter (task 396).
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Project-wide `#define ALIAS target` map, merged in `check` with this
     /// file's own, so `mbedtls_free(p)` dispatches as the literal `free` it
     /// expands to rather than through the name-contains-FREE guess
     /// (task 1128).
-    project_aliases: RefCell<HashMap<String, String>>,
+    project_aliases: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Mem30C {
@@ -79,25 +80,31 @@ impl CertRule for Mem30C {
         // macros that free AND null their argument (e.g. curl Curl_safefree).
         // MEM30 already treats them as a free (name contains FREE) but cannot
         // see the `= NULL`; this lets the analyzer clear the freed state.
-        // (Guarded by a non-empty table → zero cost without a macro prescan,
-        // e.g. on Juliet.) Phase 2c-iii of docs/design/macro-expansion.md.
+        // Phase 2c-iii of docs/design/macro-expansion.md.
+        //
+        // The table is the project prescan's merged with this file's own
+        // definitions (per-file wins, as INT34-C/PRE31-C do). A scan with no
+        // `-d` has no prescan table at all, so a macro defined in the scanned
+        // file itself was invisible and every later `free(p)` after
+        // `my_safefree(p)` was reported as a double-free (the follow-up to
+        // MEM31-C ownership task 1139). Collecting from the file is one AST
+        // walk; the old "skip when the prescan table is empty" shortcut is
+        // what hid the macro.
         let macro_null_params = {
-            let macros = self.function_macros.borrow();
-            if macros.is_empty() {
-                HashMap::new()
-            } else {
-                let mut invoked = HashSet::new();
-                collect_invoked_macro_names(node, source, &macros, &mut invoked);
-                let mut out: HashMap<String, Vec<usize>> = HashMap::new();
-                for name in invoked {
-                    let idx =
-                        crate::analyze::macro_expand::macro_nulls_param_indices(&macros, &name);
-                    if !idx.is_empty() {
-                        out.insert(name, idx);
-                    }
+            let mut macros = HashMap::clone(&self.function_macros.borrow());
+            macros.extend(crate::analyze::macro_expand::collect_function_macros(
+                node, source,
+            ));
+            let mut invoked = HashSet::new();
+            collect_invoked_macro_names(node, source, &macros, &mut invoked);
+            let mut out: HashMap<String, Vec<usize>> = HashMap::new();
+            for name in invoked {
+                let idx = crate::analyze::macro_expand::macro_nulls_param_indices(&macros, &name);
+                if !idx.is_empty() {
+                    out.insert(name, idx);
                 }
-                out
             }
+            out
         };
 
         // Names of union typedefs in this file, so the analyzer can restrict
@@ -1407,7 +1414,7 @@ struct MemoryAnalyzer {
     // Cross-file function summaries from prescan. When a callee's real
     // `frees_params` is known, it overrides the name-based free heuristic
     // below (task 396) — see `process_call_expression`.
-    function_summaries: HashMap<String, FunctionSummary>,
+    function_summaries: Arc<HashMap<String, FunctionSummary>>,
     // `#define ALIAS target` map (project-wide plus this file); a callee is
     // dispatched on the name its alias chain ends at (task 1128).
     macro_aliases: HashMap<String, String>,
@@ -1417,7 +1424,7 @@ impl MemoryAnalyzer {
     fn new(
         macro_null_params: HashMap<String, Vec<usize>>,
         union_typedef_names: HashSet<String>,
-        function_summaries: HashMap<String, FunctionSummary>,
+        function_summaries: Arc<HashMap<String, FunctionSummary>>,
         macro_aliases: HashMap<String, String>,
     ) -> Self {
         Self {

@@ -17,6 +17,7 @@ use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Width, in bits, at which C actually performs integer arithmetic on
@@ -26,27 +27,27 @@ use tree_sitter::Node;
 const PROMOTED_ARITH_BITS: u32 = 32;
 
 pub struct Int32C {
-    project_macros: RefCell<MacroConstantMap>,
+    project_macros: RefCell<Arc<MacroConstantMap>>,
     current_macros: RefCell<MacroConstantMap>,
-    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
+    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
     /// One-level typedef alias map (`word_t` -> `unsigned long`, `paddr_t` ->
     /// `word_t`, ...), populated project-wide by `set_project_context`.
     /// Resolved recursively by `overflow_helpers::typedef_chain_is_unsigned`
     /// in `classify_declared_type` (task 657).
-    typedef_types: RefCell<HashMap<String, String>>,
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// Function-like macro definitions, project-wide (task 676). Lets
     /// `infer_type` recognize a call-like operand (e.g. seL4's `BIT(n)`) as
     /// unsigned via `macro_yields_unsigned_constant` rather than falling
     /// through to "unknown" and flagging a signed-overflow FP on
     /// arithmetic that's actually unsigned.
-    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Globals known to be written by a tainted function (file → function name
     /// set). Used by the provenance gate to treat a global operand fed from an
     /// untrusted source as risky.
-    global_writers: RefCell<HashMap<String, HashSet<String>>>,
+    global_writers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Per-function memo of variable names fed from a risky source, keyed by the
     /// containing function's tree-sitter node id. Computed once per function by a
     /// single body walk (avoids re-walking the body for every arithmetic
@@ -55,7 +56,7 @@ pub struct Int32C {
     risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
     /// Reverse call graph: callee name → the functions that call it. Backs the
     /// parameter arm of the provenance gate (`int_provenance::ParamContext`).
-    callers: RefCell<HashMap<String, HashSet<String>>>,
+    callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Per-function memo of parameter names, keyed by function node id; cleared
     /// per file alongside `risky_vars_cache`.
     param_names_cache: RefCell<HashMap<usize, HashSet<String>>>,
@@ -75,17 +76,17 @@ pub struct Int32C {
 impl Int32C {
     pub fn new() -> Self {
         Self {
-            project_macros: RefCell::new(MacroConstantMap::new()),
+            project_macros: RefCell::new(Arc::new(MacroConstantMap::new())),
             current_macros: RefCell::new(MacroConstantMap::new()),
-            struct_field_types: RefCell::new(HashMap::new()),
-            typedef_types: RefCell::new(HashMap::new()),
-            function_macros: RefCell::new(HashMap::new()),
+            struct_field_types: RefCell::new(Arc::new(HashMap::new())),
+            typedef_types: RefCell::new(Arc::new(HashMap::new())),
+            function_macros: RefCell::new(Arc::new(HashMap::new())),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(HashMap::new()),
-            global_writers: RefCell::new(HashMap::new()),
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            global_writers: RefCell::new(Arc::new(HashMap::new())),
             risky_vars_cache: RefCell::new(HashMap::new()),
-            callers: RefCell::new(HashMap::new()),
+            callers: RefCell::default(),
             param_names_cache: RefCell::new(HashMap::new()),
             function_text_cache: RefCell::new(HashMap::new()),
             pointer_facts: RefCell::new(PointerFacts::default()),
@@ -171,16 +172,7 @@ impl CertRule for Int32C {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.global_writers.borrow_mut() = context.global_writers.clone();
 
-        let mut callers: HashMap<String, HashSet<String>> = HashMap::new();
-        for (caller, callees) in &context.call_graph {
-            for callee in callees {
-                callers
-                    .entry(callee.clone())
-                    .or_default()
-                    .insert(caller.clone());
-            }
-        }
-        *self.callers.borrow_mut() = callers;
+        *self.callers.borrow_mut() = context.callers.clone();
     }
 
     fn set_function_cfgs(&self, cfgs: &HashMap<usize, FunctionCfg>) {

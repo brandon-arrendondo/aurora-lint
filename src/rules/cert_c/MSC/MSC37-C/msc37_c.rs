@@ -52,10 +52,14 @@
 //! ```
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::{collect_function_macro_alternatives, FunctionMacro};
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Standard/POSIX functions that never return to their caller, so a call to
@@ -63,11 +67,56 @@ use tree_sitter::Node;
 /// way an explicit return would (control can't fall off the end).
 const STDLIB_NORETURN_FUNCTIONS: &[&str] = &["exit", "_Exit", "abort", "quick_exit", "longjmp"];
 
-pub struct Msc37C;
+pub struct Msc37C {
+    /// Function-like macros the prescan collected project-wide, so a
+    /// `RETURN`-style macro defined in a header is known when a file's
+    /// function ends with it.
+    project_function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
+}
 
 impl Msc37C {
     pub fn new() -> Self {
-        Self
+        Self {
+            project_function_macros: RefCell::default(),
+        }
+    }
+
+    /// Function-like macros whose replacement list contains a `return`:
+    /// `MBEDTLS_MPS_TRACE_RETURN(val)` is how every function in mbedtls's
+    /// mps_reader.c returns, and the body shows no `return_statement` at
+    /// all (task 1171). A call to one is a return for this rule's purposes.
+    /// This file's own definitions first, then the project's.
+    fn collect_returning_macros(&self, source: &str) -> HashSet<String> {
+        fn returns(body: &str) -> bool {
+            body.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|tok| tok == "return")
+        }
+        let mut names: HashSet<String> = collect_function_macro_alternatives(source)
+            .into_iter()
+            .filter(|(_, alts)| alts.iter().any(|m| returns(&m.body)))
+            .map(|(name, _)| name)
+            .collect();
+        for (name, m) in self.project_function_macros.borrow().iter() {
+            if returns(&m.body) {
+                names.insert(name.clone());
+            }
+        }
+        names
+    }
+
+    /// Whether the function body returns anywhere: a `return_statement`, or
+    /// a call to a macro that returns.
+    fn has_return(&self, body: &Node, source: &str, returning_macros: &HashSet<String>) -> bool {
+        if self.has_return_statement(body) {
+            return true;
+        }
+        !returning_macros.is_empty()
+            && query::find_first_descendant(*body, |n| {
+                n.kind() == "call_expression"
+                    && n.child_by_field_name("function")
+                        .is_some_and(|f| returning_macros.contains(get_node_text(&f, source)))
+            })
+            .is_some()
     }
 
     /// Check if a type is void
@@ -213,11 +262,6 @@ impl Msc37C {
     }
 
     fn stmt_returns(&self, root: &Node, source: &str, noreturn_names: &HashSet<String>) -> bool {
-        enum Op<'a> {
-            Eval(Node<'a>),
-            And,
-        }
-
         let mut ops: Vec<Op> = vec![Op::Eval(*root)];
         let mut values: Vec<bool> = Vec::new();
 
@@ -225,40 +269,15 @@ impl Msc37C {
             match op {
                 Op::Eval(node) => match node.kind() {
                     "return_statement" => values.push(true),
-                    "compound_statement" => {
-                        // Last non-brace, non-comment, non-preprocessor child.
-                        // Comments (e.g., `return val; // note`) and
-                        // preprocessor directives after a return would
-                        // otherwise become the "last child" and cause false
-                        // positives.
-                        let mut last_stmt = None;
-                        for i in 0..node.child_count() {
-                            if let Some(child) = node.child(i) {
-                                let kind = child.kind();
-                                if kind == "{"
-                                    || kind == "}"
-                                    || kind == "comment"
-                                    || kind.starts_with("preproc_")
-                                {
-                                    continue;
-                                }
-                                last_stmt = Some(child);
-                            }
+                    "compound_statement" => match last_statement_of_block(&node) {
+                        Some(stmt)
+                            if self.is_noreturn_call_statement(&stmt, source, noreturn_names) =>
+                        {
+                            values.push(true);
                         }
-                        match last_stmt {
-                            Some(stmt)
-                                if self.is_noreturn_call_statement(
-                                    &stmt,
-                                    source,
-                                    noreturn_names,
-                                ) =>
-                            {
-                                values.push(true);
-                            }
-                            Some(stmt) => ops.push(Op::Eval(stmt)),
-                            None => values.push(false),
-                        }
-                    }
+                        Some(stmt) => ops.push(Op::Eval(stmt)),
+                        None => values.push(false),
+                    },
                     "if_statement" => {
                         // Must have both consequence and alternative, both returning
                         match (
@@ -277,6 +296,34 @@ impl Msc37C {
                         // Basic check: has a return statement anywhere.
                         // This is a simplification - full analysis would be more complex
                         values.push(self.has_return_statement(&node));
+                    }
+                    // `cleanup: return ret;` -- the label's own statement
+                    // is its last named child, and it is what runs last.
+                    "labeled_statement" => {
+                        match node.named_child(node.named_child_count().saturating_sub(1)) {
+                            Some(inner) if inner.kind() != "statement_identifier" => {
+                                ops.push(Op::Eval(inner));
+                            }
+                            _ => values.push(false),
+                        }
+                    }
+                    // A function whose tail is `#if X ... return 0; #endif`
+                    // or an `#if`/`#else` pair whose arms both return does
+                    // return under every configuration it is written for
+                    // (mbedtls aes.c, task 1171). Each arm is the last
+                    // statement of that arm; an `#if` with no `#else` is
+                    // judged on the arm the author wrote.
+                    "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_else" => {
+                        match preproc_arm_tail(&node, source) {
+                            ArmTail::Both(stmt, alt) => {
+                                ops.push(Op::And);
+                                ops.push(Op::Eval(alt));
+                                ops.push(Op::Eval(stmt));
+                            }
+                            ArmTail::One(stmt) => ops.push(Op::Eval(stmt)),
+                            ArmTail::Returns => values.push(true),
+                            ArmTail::Empty => values.push(false),
+                        }
                     }
                     "else_clause" => {
                         // else_clause wraps the actual statement (compound_statement or single stmt)
@@ -356,7 +403,7 @@ impl Msc37C {
         };
 
         // Check if function has any return statement
-        if !self.has_return_statement(&body) {
+        if !self.has_return(&body, source, noreturn_names) {
             violations.push(RuleViolation {
                 rule_id: self.rule_id().to_string(),
                 severity: self.severity(),
@@ -390,6 +437,107 @@ impl Msc37C {
     }
 }
 
+/// Work item for `stmt_returns`'s explicit evaluation stack.
+enum Op<'a> {
+    Eval(Node<'a>),
+    And,
+}
+
+/// What a preprocessor arm contributes to `stmt_returns`.
+enum ArmTail<'a> {
+    /// `#if` arm's last statement and an `#else`/`#elif` to AND with.
+    Both(Node<'a>, Node<'a>),
+    /// A bare `#if` (or the final `#else`): its own last statement.
+    One(Node<'a>),
+    /// An `#error` arm with nothing else: that configuration cannot be
+    /// the built one, so it does not fall off the end.
+    Returns,
+    /// No statement at all.
+    Empty,
+}
+
+/// The last statement of a compound statement, ignoring braces, comments
+/// and bare directives, and ignoring a conditional block that holds no
+/// statement (only directives/comments after the real last statement).
+fn last_statement_of_block<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+    let mut last_stmt = None;
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        let kind = child.kind();
+        if matches!(
+            kind,
+            "{" | "}"
+                | "comment"
+                | "preproc_def"
+                | "preproc_function_def"
+                | "preproc_include"
+                | "preproc_call"
+        ) {
+            continue;
+        }
+        if kind.starts_with("preproc_") && !has_statement_child(&child) {
+            continue;
+        }
+        last_stmt = Some(child);
+    }
+    last_stmt
+}
+
+/// The tail of one preprocessor arm: its last statement (skipping the
+/// condition, comments and bare directives) and its `#else`/`#elif`.
+fn preproc_arm_tail<'a>(node: &Node<'a>, source: &str) -> ArmTail<'a> {
+    let condition = node.child_by_field_name("condition");
+    let mut last_stmt = None;
+    let mut alternative = None;
+    for i in 0..node.named_child_count() {
+        let Some(child) = node.named_child(i) else {
+            continue;
+        };
+        if Some(child) == condition {
+            continue;
+        }
+        match child.kind() {
+            "preproc_else" | "preproc_elif" => alternative = Some(child),
+            "comment"
+            | "preproc_call"
+            | "preproc_def"
+            | "preproc_function_def"
+            | "preproc_include" => {}
+            _ => last_stmt = Some(child),
+        }
+    }
+    match (last_stmt, alternative) {
+        (Some(stmt), Some(alt)) => ArmTail::Both(stmt, alt),
+        (Some(stmt), None) => ArmTail::One(stmt),
+        (None, Some(alt)) if is_error_directive_arm(node, source) => ArmTail::One(alt),
+        (None, None) if is_error_directive_arm(node, source) => ArmTail::Returns,
+        (None, _) => ArmTail::Empty,
+    }
+}
+
+/// Whether this preprocessor arm's own content is an `#error` directive.
+fn is_error_directive_arm(node: &Node, source: &str) -> bool {
+    (0..node.named_child_count())
+        .filter_map(|i| node.named_child(i))
+        .any(|c| {
+            c.kind() == "preproc_call"
+                && c.child_by_field_name("directive")
+                    .is_some_and(|d| get_node_text(&d, source) == "#error")
+        })
+}
+
+/// Whether a conditional preprocessor block holds at least one statement
+/// (directly or in an `#else`/`#elif` arm), as opposed to only directives
+/// and comments after the function's real last statement.
+fn has_statement_child(node: &Node) -> bool {
+    (0..node.named_child_count())
+        .filter_map(|i| node.named_child(i))
+        .any(|c| {
+            (c.kind().ends_with("_statement") || c.kind() == "declaration")
+                || (matches!(c.kind(), "preproc_else" | "preproc_elif") && has_statement_child(&c))
+        })
+}
+
 impl CertRule for Msc37C {
     fn rule_id(&self) -> &'static str {
         "MSC37-C"
@@ -414,11 +562,18 @@ impl CertRule for Msc37C {
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.check_node(node, source, violations);
     }
+
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.project_function_macros.borrow_mut() = context.function_macros.clone();
+    }
 }
 
 impl Msc37C {
     fn check_node(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        let noreturn_names = Self::collect_noreturn_function_names(node, source);
+        // Calls that end a path the way a return does: `_Noreturn`
+        // functions, and macros that return on the function's behalf.
+        let mut noreturn_names = Self::collect_noreturn_function_names(node, source);
+        noreturn_names.extend(self.collect_returning_macros(source));
         // Check function definitions
         for func in query::find_descendants_of_kind(*node, "function_definition") {
             self.check_function_definition(&func, source, &noreturn_names, violations);

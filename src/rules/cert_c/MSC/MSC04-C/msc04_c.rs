@@ -15,19 +15,20 @@ use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Debug)]
 pub struct Msc04C {
     call_graph: RefCell<HashMap<String, HashSet<String>>>,
-    ambiguous_call_targets: RefCell<HashSet<String>>,
+    ambiguous_call_targets: RefCell<Arc<HashSet<String>>>,
 }
 
 impl Msc04C {
     pub fn new() -> Self {
         Msc04C {
             call_graph: RefCell::new(HashMap::new()),
-            ambiguous_call_targets: RefCell::new(HashSet::new()),
+            ambiguous_call_targets: RefCell::new(Arc::new(HashSet::new())),
         }
     }
 

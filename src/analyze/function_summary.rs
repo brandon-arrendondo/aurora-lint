@@ -926,8 +926,10 @@ fn analyze_function(
         }
 
         // Analyze parameter usage
+        let sweep = BodySweep::of(&body);
         analyze_param_usage(
             &body,
+            &sweep,
             source,
             body_text,
             &params,
@@ -935,7 +937,7 @@ fn analyze_function(
             !function_definition_is_preproc_conditional(func_node),
             &mut summary,
         );
-        credit_clears_params(&body, source, &params, clearing_names, &mut summary);
+        credit_clears_params(&sweep.calls, source, &params, clearing_names, &mut summary);
 
         // Compute return value range for integer-returning functions (only when VRA is needed)
         if compute_return_ranges && !is_void_return && !is_pointer_return {
@@ -1611,11 +1613,56 @@ fn written_arg_root<'a>(arg: &Node<'a>) -> Option<Node<'a>> {
 fn library_written_names(body: &Node, source: &str) -> HashSet<String> {
     use lang_parsing_substrate::query;
 
-    query::find_descendants_of_kind(*body, "call_expression")
-        .into_iter()
-        .flat_map(|call| library_written_roots(&call, source))
+    library_written_names_in(
+        &query::find_descendants_of_kind(*body, "call_expression"),
+        source,
+    )
+}
+
+/// [`library_written_names`] over calls already collected from the body.
+fn library_written_names_in(calls: &[Node], source: &str) -> HashSet<String> {
+    calls
+        .iter()
+        .flat_map(|call| library_written_roots(call, source))
         .filter_map(|root| root.utf8_text(source.as_bytes()).ok().map(str::to_string))
         .collect()
+}
+
+/// The nodes of a function body that the per-parameter passes below keep
+/// asking for, each in pre-order, collected in one walk.
+///
+/// `analyze_param_usage` and the crediting passes it drives used to sweep the
+/// whole body once per question -- several times per parameter -- and on a
+/// corpus prescan those sweeps were a tenth of all the work.
+struct BodySweep<'a> {
+    calls: Vec<Node<'a>>,
+    assignments: Vec<Node<'a>>,
+    updates: Vec<Node<'a>>,
+}
+
+impl<'a> BodySweep<'a> {
+    fn of(body: &Node<'a>) -> Self {
+        use lang_parsing_substrate::query;
+
+        let mut sweep = BodySweep {
+            calls: Vec::new(),
+            assignments: Vec::new(),
+            updates: Vec::new(),
+        };
+        for node in query::find_descendants(*body, |n| {
+            matches!(
+                n.kind(),
+                "call_expression" | "assignment_expression" | "update_expression"
+            )
+        }) {
+            match node.kind() {
+                "call_expression" => sweep.calls.push(node),
+                "assignment_expression" => sweep.assignments.push(node),
+                _ => sweep.updates.push(node),
+            }
+        }
+        sweep
+    }
 }
 
 /// The `(callee, callee parameter index)` pairs a coverage answer is
@@ -2281,16 +2328,15 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
 /// from `modifies_params` instead of rebuilding it.
 fn credit_modifies_params(
     body: &Node,
+    sweep: &BodySweep,
     source: &str,
     params: &[String],
     summary: &mut FunctionSummary,
 ) {
-    use lang_parsing_substrate::query;
-
     // Every write through a parameter this pass can see, as (the node whose
     // position decides conditionality, the parameter-rooted identifier).
     let mut writes: Vec<(Node, Node)> = Vec::new();
-    for node in query::find_descendants_of_kind(*body, "assignment_expression") {
+    for &node in &sweep.assignments {
         if let Some(root) = node
             .child_by_field_name("left")
             .and_then(|left| deref_write_root(&left, false))
@@ -2299,7 +2345,7 @@ fn credit_modifies_params(
         }
     }
     // `(*p)++` and `++*p` write through p just as `*p = *p + 1` does.
-    for node in query::find_descendants_of_kind(*body, "update_expression") {
+    for &node in &sweep.updates {
         if let Some(root) = node
             .child_by_field_name("argument")
             .and_then(|argument| deref_write_root(&argument, false))
@@ -2314,7 +2360,7 @@ fn credit_modifies_params(
     // invisible (task 1026, tools_sqc). `library_written_roots` already
     // returns the root, so no `deref_write_root` here: a bare `out` handed to
     // the call is the dereference, and asking again would reject it.
-    for call in query::find_descendants_of_kind(*body, "call_expression") {
+    for &call in &sweep.calls {
         for root in library_written_roots(&call, source) {
             writes.push((call, root));
         }
@@ -2440,15 +2486,13 @@ fn credit_modifies_params(
 /// `memset_func` through four `#if` arms, every one of which clears
 /// (task 1127).
 fn credit_clears_params(
-    body: &Node,
+    calls: &[Node],
     source: &str,
     params: &[String],
     clearing_names: &HashSet<String>,
     summary: &mut FunctionSummary,
 ) {
-    use lang_parsing_substrate::query;
-
-    for call in query::find_descendants_of_kind(*body, "call_expression") {
+    for &call in calls {
         let Some(function) = call.child_by_field_name("function") else {
             continue;
         };
@@ -2475,14 +2519,13 @@ fn credit_clears_params(
 }
 
 fn credit_frees_params(
+    calls: &[Node],
     body: &Node,
     source: &str,
     params: &[String],
     summary: &mut FunctionSummary,
 ) {
-    use lang_parsing_substrate::query;
-
-    for call in query::find_descendants_of_kind(*body, "call_expression") {
+    for &call in calls {
         let Some(function) = call.child_by_field_name("function") else {
             continue;
         };
@@ -2515,8 +2558,10 @@ fn credit_frees_params(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn analyze_param_usage(
     body: &Node,
+    sweep: &BodySweep,
     source: &str,
     body_text: &str,
     params: &[String],
@@ -2530,11 +2575,11 @@ fn analyze_param_usage(
     // its free-related facts must not be unioned into the cross-file
     // summary as if they always held (task 654).
     if credit_frees {
-        credit_frees_params(body, source, params, summary);
+        credit_frees_params(&sweep.calls, body, source, params, summary);
     }
 
     // One walk for the whole body, not one per parameter.
-    let library_written = library_written_names(body, source);
+    let library_written = library_written_names_in(&sweep.calls, source);
 
     for (idx, param_name) in params.iter().enumerate() {
         if param_name.is_empty() {
@@ -2549,7 +2594,7 @@ fn analyze_param_usage(
         // contain the literal substring `fclose(data)`. Only the "closes
         // first" ordering is a real, provable close of the value the caller
         // handed in (task 146).
-        if closes_param_before_reassignment(body, source, param_name) {
+        if closes_param_before_reassignment(sweep, source, param_name) {
             summary.closes_params.insert(idx);
         }
 
@@ -2588,7 +2633,7 @@ fn analyze_param_usage(
         // line, mirroring ARR00-C's own write-vs-read line scan.
         if body_has_deref_write(body_text, param_name)
             || line_has_arrow_or_subscript_write(body_text, param_name)
-            || is_fd_set_macro_write(body, source, param_name)
+            || is_fd_set_macro_write(&sweep.calls, source, param_name)
             // `os_memset(elems, 0, sizeof(*elems))` writes the output with no
             // assignment operator anywhere (task 1026, tools_sqc).
             || library_written.contains(param_name)
@@ -2610,7 +2655,7 @@ fn analyze_param_usage(
 
     // Must run after the loop above: it refines `modifies_params` rather
     // than deriving its own write set.
-    credit_modifies_params(body, source, params, summary);
+    credit_modifies_params(body, sweep, source, params, summary);
 
     // Detect param pass-through: when a parameter is forwarded to a callee
     collect_param_passthroughs(body, body, source, params, summary);
@@ -2620,7 +2665,7 @@ fn analyze_param_usage(
     // `void destroy(T **param)` style destructors). Gated on `credit_frees`
     // for the same reason as `credit_frees_params` above.
     if credit_frees {
-        collect_frees_param_fields(body, source, params, function_macros, summary);
+        collect_frees_param_fields(&sweep.calls, source, params, function_macros, summary);
     }
 }
 
@@ -2633,10 +2678,10 @@ fn analyze_param_usage(
 /// writes its `fds` param purely through `FD_ZERO(fds)`/`FD_SET(sock, fds)`,
 /// leaving `fds` looking never-written to callers passing a malloc'd
 /// `fd_set *` bare, e.g. `eloop_sock_table_set_fds(&eloop.readers, rfds)`).
-fn is_fd_set_macro_write(body: &Node, source: &str, param_name: &str) -> bool {
+fn is_fd_set_macro_write(calls: &[Node], source: &str, param_name: &str) -> bool {
     use lang_parsing_substrate::query;
 
-    for call in query::find_descendants_of_kind(*body, "call_expression") {
+    for call in calls {
         let Some(func) = call.child_by_field_name("function") else {
             continue;
         };
@@ -2669,11 +2714,12 @@ fn is_fd_set_macro_write(body: &Node, source: &str, param_name: &str) -> bool {
 /// call site in `analyze_param_usage`): a body that reassigns before closing
 /// only ever closes the *new* value, never the one the caller passed in, so
 /// that shape must NOT be credited.
-fn closes_param_before_reassignment(body: &Node, source: &str, param_name: &str) -> bool {
+fn closes_param_before_reassignment(sweep: &BodySweep, source: &str, param_name: &str) -> bool {
     use lang_parsing_substrate::query;
 
-    let first_reassign = query::find_descendants_of_kind(*body, "assignment_expression")
-        .into_iter()
+    let first_reassign = sweep
+        .assignments
+        .iter()
         .filter(|n| {
             n.child_by_field_name("left")
                 .map(|l| {
@@ -2684,8 +2730,9 @@ fn closes_param_before_reassignment(body: &Node, source: &str, param_name: &str)
         .map(|n| n.start_byte())
         .min();
 
-    let first_close = query::find_descendants_of_kind(*body, "call_expression")
-        .into_iter()
+    let first_close = sweep
+        .calls
+        .iter()
         .filter(|call| {
             call.child_by_field_name("function")
                 .map(|f| {
@@ -2747,7 +2794,7 @@ fn closes_param_before_reassignment(body: &Node, source: &str, param_name: &str)
 /// the only AST evidence available that a free happened inside it (task 2:
 /// MEM31-C ownership model).
 fn collect_frees_param_fields(
-    body: &Node,
+    calls: &[Node],
     source: &str,
     params: &[String],
     function_macros: &HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
@@ -2756,7 +2803,6 @@ fn collect_frees_param_fields(
     use crate::analyze::macro_expand::macro_nulls_param_indices;
     use crate::analyze::points_to::LValue;
     use crate::utility::cert_c::ast_utils;
-    use lang_parsing_substrate::query;
 
     // Flatten a field-access chain into (root variable, arrow-joined field
     // path), e.g. `m->will->topic` -> ("m", "will->topic").
@@ -2798,7 +2844,7 @@ fn collect_frees_param_fields(
             .insert(fields.join("->"));
     };
 
-    for call in query::find_descendants_of_kind(*body, "call_expression") {
+    for &call in calls {
         let Some(function) = call.child_by_field_name("function") else {
             continue;
         };

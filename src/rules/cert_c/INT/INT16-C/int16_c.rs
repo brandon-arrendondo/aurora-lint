@@ -46,6 +46,7 @@ use crate::utility::cert_c::overflow_helpers::typedef_chain_is_unsigned;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// What a declaration says about an integer object's sign.
@@ -63,11 +64,11 @@ pub struct Int16C {
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
     /// `struct tag -> {field -> type text}` from the prescan, so the
     /// assignment check can read the declared type of `s->field`.
-    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
+    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
     /// One-level typedef alias map from the prescan, walked by
     /// `typedef_chain_is_unsigned` so a destination spelled `u32` or
     /// `lua_Unsigned` is recognized as the unsigned object it is.
-    typedef_types: RefCell<HashMap<String, String>>,
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl CertRule for Int16C {

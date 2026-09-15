@@ -14,6 +14,7 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
+use crate::analyze::macro_expand::FunctionMacro;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use crate::utility::cert_c::declarator_utils;
@@ -22,26 +23,34 @@ use crate::utility::cert_c::std_functions;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Debug)]
 pub struct Dcl31C {
     // Track declared functions to detect implicit declarations
     declared_functions: RefCell<HashSet<String>>,
-    // Functions known from pre-scanned directories (cross-file context)
-    cross_file_functions: RefCell<HashSet<String>>,
+    // Functions known from pre-scanned directories (cross-file context):
+    // definitions, header prototypes, and the macro names that expand to
+    // calls of them. Held as handles to the prescan's tables and consulted
+    // in turn by `is_cross_file_function`, rather than merged into one set
+    // per file.
+    cross_file_functions: RefCell<Arc<HashSet<String>>>,
+    cross_file_header_declared: RefCell<Arc<HashSet<String>>>,
+    cross_file_macro_aliases: RefCell<Arc<HashMap<String, String>>>,
+    cross_file_function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     // Object-macro names known from pre-scanned directories (cross-file context)
-    cross_file_macro_names: RefCell<HashSet<String>>,
+    cross_file_macro_names: RefCell<Arc<HashSet<String>>>,
     /// Cross-file typedef alias map, reached through the shared
     /// [`resolve_typedef_chain`] to answer "is this parameter's declared
     /// type a function-pointer typedef?" for the sqlite RecordCompare /
     /// sqlite3_callback shape whose typedef lives in `sqliteInt.h`, not
     /// in the .c file being checked (task 1054, second consumer of
     /// task 736's shared resolver).
-    typedef_types: RefCell<HashMap<String, String>>,
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// Names of typedefs whose declared type is a function pointer, from
     /// prescan. Consulted after the chain walker terminates.
-    function_pointer_typedef_names: RefCell<HashSet<String>>,
+    function_pointer_typedef_names: RefCell<Arc<HashSet<String>>>,
     // True when the project includes a header it doesn't ship (generated at
     // build time), so no set of declarations we can collect is complete.
     // See `declarations_are_incomplete`.
@@ -52,12 +61,25 @@ impl Dcl31C {
     pub fn new() -> Self {
         Dcl31C {
             declared_functions: RefCell::new(HashSet::new()),
-            cross_file_functions: RefCell::new(HashSet::new()),
-            cross_file_macro_names: RefCell::new(HashSet::new()),
-            typedef_types: RefCell::new(HashMap::new()),
-            function_pointer_typedef_names: RefCell::new(HashSet::new()),
+            cross_file_functions: RefCell::default(),
+            cross_file_header_declared: RefCell::default(),
+            cross_file_macro_aliases: RefCell::default(),
+            cross_file_function_macros: RefCell::default(),
+            cross_file_macro_names: RefCell::new(Arc::new(HashSet::new())),
+            typedef_types: RefCell::new(Arc::new(HashMap::new())),
+            function_pointer_typedef_names: RefCell::default(),
             incomplete_declarations: RefCell::new(false),
         }
+    }
+
+    /// A name the prescan knows as callable: a function definition, a header
+    /// prototype, an object-macro alias of a function, or a function-like
+    /// macro.
+    fn is_cross_file_function(&self, name: &str) -> bool {
+        self.cross_file_functions.borrow().contains(name)
+            || self.cross_file_header_declared.borrow().contains(name)
+            || self.cross_file_macro_aliases.borrow().contains_key(name)
+            || self.cross_file_function_macros.borrow().contains_key(name)
     }
 
     /// True if `name` is a known `#define`d macro, either in this file
@@ -302,7 +324,7 @@ impl Dcl31C {
                 }
 
                 // Skip if known from pre-scanned directories
-                if self.cross_file_functions.borrow().contains(func_name) {
+                if self.is_cross_file_function(func_name) {
                     return;
                 }
 
@@ -394,22 +416,17 @@ impl CertRule for Dcl31C {
     }
 
     fn set_project_context(&self, context: &ProjectContext) {
-        let mut funcs = context.known_functions.clone();
+        *self.cross_file_functions.borrow_mut() = context.known_functions.clone();
         // Header-declared functions (extern prototypes in .h files) are valid targets.
-        funcs.extend(context.header_declared_functions.clone());
-        for alias_name in context.macro_aliases.keys() {
-            funcs.insert(alias_name.clone());
-        }
+        *self.cross_file_header_declared.borrow_mut() = context.header_declared_functions.clone();
+        *self.cross_file_macro_aliases.borrow_mut() = context.macro_aliases.clone();
         // Function-like macro invocations are not undeclared-function calls: the
         // macro expands to calls of real, declared functions. The prescan
         // pre-pass collects these definitions cross-file (e.g. curl's
         // `curlx_free`/`curlx_calloc`, defined in `curl_setup.h`), which the
         // per-file `declared_functions` set cannot see. The in-file equivalent
         // is already handled by `track_function_declaration`.
-        for macro_name in context.function_macros.keys() {
-            funcs.insert(macro_name.clone());
-        }
-        *self.cross_file_functions.borrow_mut() = funcs;
+        *self.cross_file_function_macros.borrow_mut() = context.function_macros.clone();
         *self.cross_file_macro_names.borrow_mut() = context.defined_macro_names.clone();
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
         *self.function_pointer_typedef_names.borrow_mut() =

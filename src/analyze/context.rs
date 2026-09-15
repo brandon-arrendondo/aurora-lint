@@ -3,24 +3,39 @@ use super::macro_expand::FunctionMacro;
 use super::null_state::NullState;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
 /// Cross-file context gathered by pre-scanning additional directories.
 ///
 /// Holds function names found in `.c`/`.h` files so that rules like DCL31-C
 /// and DCL07-C can suppress false positives for project-internal functions
 /// defined in other translation units.
+///
+/// The tables are `Arc`-wrapped because every scanned file hands this context
+/// to a fresh set of rule instances, each of which keeps its own handle
+/// (`set_project_context`). A handle is a refcount bump; a deep copy of the
+/// function summaries of a few-thousand-file project, per rule, per file, was
+/// the dominant cost of a scan. Build the tables in full, then wrap; after
+/// that, mutate only through `Arc::make_mut` and only before rules see the
+/// context (`resolve_includes`, the compile-database merge).
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectContext {
     /// Every function name found in the pre-scanned `.c`/`.h` files.
-    pub known_functions: HashSet<String>,
+    pub known_functions: Arc<HashSet<String>>,
     /// Functions declared (prototyped) in `.h` header files.
     /// A function with a header prototype is public API and should not be
     /// flagged by DCL15-C/DCL19-C as needing `static`.
-    pub header_declared_functions: HashSet<String>,
+    pub header_declared_functions: Arc<HashSet<String>>,
     /// Function summaries computed during prescan for inter-procedural analysis.
-    pub function_summaries: HashMap<String, FunctionSummary>,
+    pub function_summaries: Arc<HashMap<String, FunctionSummary>>,
     /// Call graph: maps function name to the set of functions it calls.
-    pub call_graph: HashMap<String, HashSet<String>>,
+    pub call_graph: Arc<HashMap<String, HashSet<String>>>,
+    /// The inverse of `call_graph`: maps a function name to the set of
+    /// functions that call it. Computed once when the context is built, so
+    /// a rule asking "who calls this?" per file does not re-invert the whole
+    /// graph per file (six rules did, each on every file).
+    #[serde(default)]
+    pub callers: Arc<HashMap<String, HashSet<String>>>,
     /// Callee names that must never be resolved to a same-named function
     /// definition by name matching alone: names reached only through a
     /// `field_expression` call (`obj->cb(...)`) or through a plain
@@ -32,22 +47,22 @@ pub struct ProjectContext {
     /// through unresolved indirect calls should treat any callee in this
     /// set as opaque rather than chase it (task 562).
     #[serde(default)]
-    pub ambiguous_call_targets: HashSet<String>,
+    pub ambiguous_call_targets: Arc<HashSet<String>>,
     /// Macro constants collected from `#define` directives across all scanned files.
-    pub macro_constants: HashMap<String, i64>,
+    pub macro_constants: Arc<HashMap<String, i64>>,
     /// Macro aliases: `#define ALIAS identifier` patterns (e.g., `SYSTEM` → `system`).
     /// Used by rules to resolve function calls through macro indirection.
-    pub macro_aliases: HashMap<String, String>,
+    pub macro_aliases: Arc<HashMap<String, String>>,
     /// Struct field types: maps `struct_name -> field_name -> type_text`.
     /// Enables resolving types of `field_expression` nodes (e.g., `s->count` → "int").
-    pub struct_field_types: HashMap<String, HashMap<String, String>>,
+    pub struct_field_types: Arc<HashMap<String, HashMap<String, String>>>,
     /// Names of struct (and typedef-aliased) types declared
     /// `__attribute__((packed))` (directly or via a macro like
     /// `STRUCT_PACKED` whose `#define` expands to packed) across all scanned
     /// files, incl. headers. A packed struct's actual alignment is 1, so
     /// EXP36-C must not treat a cast into it as alignment-increasing.
     #[serde(default)]
-    pub packed_structs: HashSet<String>,
+    pub packed_structs: Arc<HashSet<String>>,
     /// Names of functions known never to return to their caller, collected
     /// across all scanned files (incl. headers) by
     /// [`crate::analyze::noreturn::collect_noreturn_function_names`]: the
@@ -59,7 +74,7 @@ pub struct ProjectContext {
     /// `__attribute__((noreturn))` in `ftpd.h` while every call site is in
     /// a `.c` file (task 1076).
     #[serde(default)]
-    pub noreturn_functions: HashSet<String>,
+    pub noreturn_functions: Arc<HashSet<String>>,
     /// Global constants: `[const] TYPE NAME = VALUE;` from across all scanned files.
     /// Used by init-state analysis for dead-branch elimination.
     #[serde(default)]
@@ -69,7 +84,7 @@ pub struct ProjectContext {
     /// Used by EXP34-C to resolve `extern` pointer globals declared in other
     /// translation units (Juliet CWE-476 variant 68 pattern).
     #[serde(default)]
-    pub global_var_null_states: HashMap<String, NullState>,
+    pub global_var_null_states: Arc<HashMap<String, NullState>>,
     /// File-scope `static` variable writers: maps static-variable name to the
     /// set of function names that assign to it. Used by ENV03-C (and other
     /// taint-aware rules) to decide whether a `char *data = g_static;` read
@@ -77,14 +92,14 @@ pub struct ProjectContext {
     /// is treated as clean. Targets Juliet CWE-78 variant 45 (goodG2BSink
     /// pattern).
     #[serde(default)]
-    pub global_writers: HashMap<String, HashSet<String>>,
+    pub global_writers: Arc<HashMap<String, HashSet<String>>>,
     /// Function-like macro definitions (`#define NAME(a,b) body`) collected
     /// across all scanned files (incl. headers) during the prescan pre-pass.
     /// Consumed by `macro_expand` to expand opaque macro invocations on demand
     /// (Phase 2 of docs/design/macro-expansion.md). Macros using `#`/`##` or
     /// variadics are intentionally excluded (see `macro_expand`).
     #[serde(default)]
-    pub function_macros: HashMap<String, FunctionMacro>,
+    pub function_macros: Arc<HashMap<String, FunctionMacro>>,
     /// Names of every `#define NAME ...` object-like macro collected across
     /// all scanned files (incl. headers), regardless of what they expand to.
     /// Used by DCL40-C to recognize a trailing bare identifier after a
@@ -93,7 +108,7 @@ pub struct ProjectContext {
     /// than a genuine object declaration — the `#define` commonly lives in a
     /// different file than the struct (task 432).
     #[serde(default)]
-    pub defined_macro_names: HashSet<String>,
+    pub defined_macro_names: Arc<HashSet<String>>,
     /// Names of every object-like `#define` whose replacement text is an
     /// unused-attribute annotation — `__attribute__((unused))`,
     /// `[[maybe_unused]]`, and the reserved spellings — collected across all
@@ -109,7 +124,7 @@ pub struct ProjectContext {
     /// what MSC13-C exists to respect, so a declaration carrying one is not
     /// reported at all.
     #[serde(default)]
-    pub unused_attribute_macros: HashSet<String>,
+    pub unused_attribute_macros: Arc<HashSet<String>>,
     /// Functions whose name appears as a bare value inside an aggregate
     /// initializer (e.g. `{ "mysql", pw_mysql_parse, pw_mysql_check,
     /// pw_mysql_exit }` or a designated `.check = pw_mysql_check`) — the
@@ -135,6 +150,28 @@ pub struct ProjectContext {
     /// produces part of it" (task 580).
     #[serde(default)]
     pub unresolved_project_headers: HashSet<String>,
+    /// Every place the macro-expansion engine declined or failed to see a
+    /// definition while building this context — skipped variadic / `#`/`##`
+    /// macros, platform-dead and ambiguous definitions, cross-file conflicts,
+    /// unresolvable `#include`s. Recorded unconditionally (it is a by-product
+    /// of scans that already run) and surfaced only by `--report-macro-gaps`;
+    /// nothing in analysis reads it (task 1180).
+    #[serde(default)]
+    pub macro_gaps: Vec<super::macro_gaps::MacroGap>,
+    /// `function name -> indices of its restrict-qualified parameters`, for
+    /// every function any scanned file defines or declares with at least one.
+    /// First definition seen wins. Lets EXP43-C confine its aliasing check
+    /// to callees whose contract actually forbids aliasing (task 1171).
+    #[serde(default)]
+    pub restrict_params: HashMap<String, Vec<usize>>,
+    /// `function name -> indices of the parameters whose doc comment states
+    /// a non-NULL precondition` ("must be initialized", "must not be NULL",
+    /// ...), from every definition and prototype any scanned file carries a
+    /// Doxygen comment for. The function's own published contract, which is
+    /// what lets API00-C and the EXP34-C parameter seeding honour a
+    /// caller-validates discipline the code documents (task 1171).
+    #[serde(default)]
+    pub documented_nonnull_params: HashMap<String, Vec<usize>>,
     /// Function names reachable (including the root itself) from a real
     /// concurrent-execution root: an ISR handler, a thread-spawn entry
     /// point (`pthread_create`/`thrd_create`/`CreateThread`, direct or
@@ -148,7 +185,7 @@ pub struct ProjectContext {
     /// rather than firing unconditionally (task 608; see
     /// `docs/design/con03-con07-isr-thread-reachability.md`).
     #[serde(default)]
-    pub concurrency_reachable: HashSet<String>,
+    pub concurrency_reachable: Arc<HashSet<String>>,
     /// Names of project-wide (file-scope, non-local) variables declared with
     /// a plain, non-pointer/non-array/non-function type -- across every
     /// scanned `.c` AND `.h` file, extern declarations included, since the
@@ -168,7 +205,7 @@ pub struct ProjectContext {
     /// declaration at all in that shape, so it needs this project-wide set
     /// instead (task 652).
     #[serde(default)]
-    pub value_only_globals: HashSet<String>,
+    pub value_only_globals: Arc<HashSet<String>>,
     /// Struct/union typedef aliases: `alias name -> the tag name its fields
     /// are filed under in `struct_field_types``, for every
     /// `typedef struct Tag Alias;` across the scanned files.
@@ -187,7 +224,7 @@ pub struct ProjectContext {
     /// ARR36-C fix; a consumer opts in by resolving through this map, which
     /// so far only ARR36-C does.
     #[serde(default)]
-    pub struct_typedef_aliases: HashMap<String, String>,
+    pub struct_typedef_aliases: Arc<HashMap<String, String>>,
     /// One-level `typedef` alias map: `alias name -> underlying type text as
     /// written` (e.g. `"paddr_t" -> "word_t"`, `"word_t" -> "unsigned long"`),
     /// collected across every scanned `.c`/`.h` file. Simple scalar aliases
@@ -204,7 +241,7 @@ pub struct ProjectContext {
     /// recursively (see `overflow_helpers::typedef_chain_is_unsigned`) and
     /// project-wide (task 657).
     #[serde(default)]
-    pub typedef_types: HashMap<String, String>,
+    pub typedef_types: Arc<HashMap<String, String>>,
     /// Names of typedefs whose declared type is a function pointer -- e.g.
     /// sqlite's `typedef int (*RecordCompare)(void *, int);` in
     /// `sqliteInt.h`. `collect_from_simple_typedef` filed under
@@ -215,7 +252,7 @@ pub struct ProjectContext {
     /// that type is directly callable (task 1054, second consumer of
     /// task 736's shared typedef-chain resolver).
     #[serde(default)]
-    pub function_pointer_typedef_names: HashSet<String>,
+    pub function_pointer_typedef_names: Arc<HashSet<String>>,
 }
 
 impl ProjectContext {

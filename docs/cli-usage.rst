@@ -47,6 +47,11 @@ Full Command Reference
                                        Off by default: it spawns a compiler. Usable with or
                                        without --compile-commands, which can never contain
                                        these paths
+          --report-macro-gaps[=FILE]   After the scan, report where the macro-expansion
+                                       engine was blind: definitions it skipped, #includes
+                                       it could not resolve, calls it could not attribute.
+                                       Summary on stdout; =FILE also writes every row as
+                                       JSON. Never changes a finding
       -v, --verbose                    Increase output verbosity (repeat for more detail;
                                        -v shows per-rule scanning progress)
           --save-prescan <FILE>        Save prescan context to a binary cache file
@@ -177,6 +182,68 @@ Two properties worth knowing:
 The compiler's own built-in system header directories are *not* in a compile
 database (they are implicit), so headers found only in ``/usr/include`` remain
 out of reach.
+
+Seeing Where the Engine Is Blind
+--------------------------------
+
+Everything above widens what the macro-expansion engine can see; nothing above
+tells you what it still cannot. Because aurora-lint runs without a preprocessor,
+the engine makes a handful of silent decisions on every scan — a variadic or
+``#``/``##`` macro is skipped, a definition under ``#ifdef _WIN32`` is dropped
+under the POSIX profile, the first of two ``#ifdef``-selected definitions wins,
+a header on no search path is never opened, a call to a name nothing defines
+stays opaque. Each is the right default; each is also a place a defect can
+hide with no finding saying so. ``--report-macro-gaps`` prints them::
+
+    aurora-lint src/ -d src/ -I include/ --report-macro-gaps
+    aurora-lint src/ -d src/ -I include/ --report-macro-gaps=macro-gaps.json
+
+The summary comes after the findings, as a per-kind count and up to 25 rows
+per kind; ``=FILE`` (the ``=`` is required, so the path is never mistaken for
+the scan target) writes every row as JSON with a ``kind`` from this list:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 72
+
+   * - ``kind``
+     - What it says
+   * - ``variadic-definition``, ``paste-definition``, ``malformed-definition``
+     - A function-like ``#define`` the collector will never expand, and why.
+   * - ``platform-dead-definition``
+     - Dropped because its branch never compiles under the assumed POSIX
+       profile (``_MSC_VER``, ``_WIN32``, ``__vxworks``, …). Noise on a POSIX
+       target; the whole story on any other.
+   * - ``ambiguous-definition``
+     - The same name is defined more than once in one file under conditions
+       the profile cannot settle (``#ifdef WITH_TLS``). The first is used; the
+       row names the others.
+   * - ``conflicting-definition``
+     - Defined differently in two scanned files — a project ``config.h``
+       overriding a vendored library's default, say. Scan order decides which
+       one every invocation gets.
+   * - ``unresolved-include``
+     - An ``#include`` that resolved to no file. One row per header
+       project-wide; a header the ``-d`` pre-scan already walked is not
+       reported even when no ``-I`` places it.
+   * - ``unexpandable-invocation``
+     - A call to one of the skipped definitions above: known to be a macro,
+       known to be opaque.
+   * - ``arity-mismatch``
+     - The call's argument count differs from the definition held — usually
+       the sign that a different ``#ifdef`` branch is live at this site.
+   * - ``unknown-callee``
+     - A call to a name no scanned file defines or declares and that is not a
+       C standard-library function. ``ALL_CAPS`` names are almost certainly
+       macros from an unscanned header; the rest are prototypes it never saw.
+
+The rows are the engine's own decisions, not a second opinion, so the report
+cannot disagree with the analysis it describes; and it is built from a
+parse-only pass, so it adds no findings and removes none. In CI the useful
+habit is to keep the JSON as a build artifact and watch the per-kind totals:
+a jump in ``unknown-callee`` after a dependency bump means a header stopped
+resolving, and ``conflicting-definition`` rows are worth reading once, since
+each one is a name whose meaning depends on scan order.
 
 
 File Exclusion

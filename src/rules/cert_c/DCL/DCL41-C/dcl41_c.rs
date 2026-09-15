@@ -18,6 +18,7 @@ use crate::manifest::{RuleCategory, Severity};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 #[derive(Default)]
@@ -26,7 +27,7 @@ pub struct Dcl41C {
     /// engine). Used to recognize macros like sqlite's `CASE(i,str)` that
     /// expand to a real `case i:` label aurora-lint's tree-sitter-based parse can't
     /// see directly — the invocation parses as an ordinary call expression.
-    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
 }
 
 impl Dcl41C {

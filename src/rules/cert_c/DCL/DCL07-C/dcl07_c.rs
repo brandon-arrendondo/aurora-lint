@@ -12,23 +12,15 @@
 // DCL31-C to avoid duplicate violations.
 
 use super::super::{CertRule, RuleViolation};
-use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
-use std::cell::RefCell;
-use std::collections::HashSet;
 use tree_sitter::Node;
 
-pub struct Dcl07C {
-    // Functions known from pre-scanned directories (cross-file context)
-    cross_file_functions: RefCell<HashSet<String>>,
-}
+pub struct Dcl07C;
 
 impl Dcl07C {
     pub fn new() -> Self {
-        Dcl07C {
-            cross_file_functions: RefCell::new(HashSet::new()),
-        }
+        Dcl07C
     }
 
     /// Check a node and all its descendants for violations
@@ -391,15 +383,6 @@ impl CertRule for Dcl07C {
 
     fn cert_id(&self) -> &'static str {
         "DCL07-C"
-    }
-
-    fn set_project_context(&self, context: &ProjectContext) {
-        let mut funcs = context.known_functions.clone();
-        funcs.extend(context.header_declared_functions.clone());
-        for alias_name in context.macro_aliases.keys() {
-            funcs.insert(alias_name.clone());
-        }
-        *self.cross_file_functions.borrow_mut() = funcs;
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
