@@ -49,6 +49,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#cross-file-analysis">Cross-File Analysis</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#using-a-compile-database">Using a Compile Database</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#reaching-the-compiler-s-own-headers">Reaching the Compiler’s Own Headers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#seeing-where-the-engine-is-blind">Seeing Where the Engine Is Blind</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#file-exclusion">File Exclusion</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#export-formats">Export Formats</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#severity-filtering">Severity Filtering</a></li>
@@ -145,6 +146,11 @@ Options:
                                    Off by default: it spawns a compiler. Usable with or
                                    without --compile-commands, which can never contain
                                    these paths
+      --report-macro-gaps[=FILE]   After the scan, report where the macro-expansion
+                                   engine was blind: definitions it skipped, #includes
+                                   it could not resolve, calls it could not attribute.
+                                   Summary on stdout; =FILE also writes every row as
+                                   JSON. Never changes a finding
   -v, --verbose                    Increase output verbosity (repeat for more detail;
                                    -v shows per-rule scanning progress)
       --save-prescan &lt;FILE&gt;        Save prescan context to a binary cache file
@@ -265,6 +271,80 @@ silently resolving nothing.</p></li>
 <p>The compiler’s own built-in system header directories are <em>not</em> in a compile
 database (they are implicit), so headers found only in <code class="docutils literal notranslate"><span class="pre">/usr/include</span></code> remain
 out of reach.</p>
+</section>
+<section id="seeing-where-the-engine-is-blind">
+<h2>Seeing Where the Engine Is Blind<a class="headerlink" href="#seeing-where-the-engine-is-blind" title="Link to this heading"></a></h2>
+<p>Everything above widens what the macro-expansion engine can see; nothing above
+tells you what it still cannot. Because aurora-lint runs without a preprocessor,
+the engine makes a handful of silent decisions on every scan — a variadic or
+<code class="docutils literal notranslate"><span class="pre">#</span></code>/<code class="docutils literal notranslate"><span class="pre">##</span></code> macro is skipped, a definition under <code class="docutils literal notranslate"><span class="pre">#ifdef</span> <span class="pre">_WIN32</span></code> is dropped
+under the POSIX profile, the first of two <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code>-selected definitions wins,
+a header on no search path is never opened, a call to a name nothing defines
+stays opaque. Each is the right default; each is also a place a defect can
+hide with no finding saying so. <code class="docutils literal notranslate"><span class="pre">--report-macro-gaps</span></code> prints them:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">I</span> <span class="n">include</span><span class="o">/</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">macro</span><span class="o">-</span><span class="n">gaps</span>
+<span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">d</span> <span class="n">src</span><span class="o">/</span> <span class="o">-</span><span class="n">I</span> <span class="n">include</span><span class="o">/</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">macro</span><span class="o">-</span><span class="n">gaps</span><span class="o">=</span><span class="n">macro</span><span class="o">-</span><span class="n">gaps</span><span class="o">.</span><span class="n">json</span>
+</pre></div>
+</div>
+<p>The summary comes after the findings, as a per-kind count and up to 25 rows
+per kind; <code class="docutils literal notranslate"><span class="pre">=FILE</span></code> (the <code class="docutils literal notranslate"><span class="pre">=</span></code> is required, so the path is never mistaken for
+the scan target) writes every row as JSON with a <code class="docutils literal notranslate"><span class="pre">kind</span></code> from this list:</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 28.0%" />
+<col style="width: 72.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><code class="docutils literal notranslate"><span class="pre">kind</span></code></p></th>
+<th class="head"><p>What it says</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">variadic-definition</span></code>, <code class="docutils literal notranslate"><span class="pre">paste-definition</span></code>, <code class="docutils literal notranslate"><span class="pre">malformed-definition</span></code></p></td>
+<td><p>A function-like <code class="docutils literal notranslate"><span class="pre">#define</span></code> the collector will never expand, and why.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">platform-dead-definition</span></code></p></td>
+<td><p>Dropped because its branch never compiles under the assumed POSIX
+profile (<code class="docutils literal notranslate"><span class="pre">_MSC_VER</span></code>, <code class="docutils literal notranslate"><span class="pre">_WIN32</span></code>, <code class="docutils literal notranslate"><span class="pre">__vxworks</span></code>, …). Noise on a POSIX
+target; the whole story on any other.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ambiguous-definition</span></code></p></td>
+<td><p>The same name is defined more than once in one file under conditions
+the profile cannot settle (<code class="docutils literal notranslate"><span class="pre">#ifdef</span> <span class="pre">WITH_TLS</span></code>). The first is used; the
+row names the others.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">conflicting-definition</span></code></p></td>
+<td><p>Defined differently in two scanned files — a project <code class="docutils literal notranslate"><span class="pre">config.h</span></code>
+overriding a vendored library’s default, say. Scan order decides which
+one every invocation gets.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unresolved-include</span></code></p></td>
+<td><p>An <code class="docutils literal notranslate"><span class="pre">#include</span></code> that resolved to no file. One row per header
+project-wide; a header the <code class="docutils literal notranslate"><span class="pre">-d</span></code> pre-scan already walked is not
+reported even when no <code class="docutils literal notranslate"><span class="pre">-I</span></code> places it.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unexpandable-invocation</span></code></p></td>
+<td><p>A call to one of the skipped definitions above: known to be a macro,
+known to be opaque.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">arity-mismatch</span></code></p></td>
+<td><p>The call’s argument count differs from the definition held — usually
+the sign that a different <code class="docutils literal notranslate"><span class="pre">#ifdef</span></code> branch is live at this site.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unknown-callee</span></code></p></td>
+<td><p>A call to a name no scanned file defines or declares and that is not a
+C standard-library function. <code class="docutils literal notranslate"><span class="pre">ALL_CAPS</span></code> names are almost certainly
+macros from an unscanned header; the rest are prototypes it never saw.</p></td>
+</tr>
+</tbody>
+</table>
+<p>The rows are the engine’s own decisions, not a second opinion, so the report
+cannot disagree with the analysis it describes; and it is built from a
+parse-only pass, so it adds no findings and removes none. In CI the useful
+habit is to keep the JSON as a build artifact and watch the per-kind totals:
+a jump in <code class="docutils literal notranslate"><span class="pre">unknown-callee</span></code> after a dependency bump means a header stopped
+resolving, and <code class="docutils literal notranslate"><span class="pre">conflicting-definition</span></code> rows are worth reading once, since
+each one is a name whose meaning depends on scan order.</p>
 </section>
 <section id="file-exclusion">
 <h2>File Exclusion<a class="headerlink" href="#file-exclusion" title="Link to this heading"></a></h2>

@@ -134,6 +134,22 @@ A ready-to-use Azure Pipelines configuration is provided at
 .. literalinclude:: azure-pipelines.yml
    :language: yaml
 
+Knowing What the Scan Could Not See
+-----------------------------------
+
+A clean scan of code the analyzer could not fully read is not the same as a
+clean scan. aurora-lint works without a preprocessor, so heavy macro use or a
+header it never found can leave parts of a tree opaque to the dataflow rules
+without any finding saying so. ``--report-macro-gaps=FILE`` writes where that
+happened as JSON (skipped macro definitions, unresolved ``#include``\s, calls
+it could not attribute) without changing a single finding; keep the file as a
+build artifact next to the SARIF, and treat a jump in its per-kind totals the
+way you would treat a jump in findings::
+
+    aurora-lint . -d . --export results.sarif --report-macro-gaps=macro-gaps.json
+
+The kinds and what each means are in :doc:`cli-usage`.
+
 SARIF Integration Tips
 ----------------------
 
