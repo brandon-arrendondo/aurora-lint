@@ -37,6 +37,9 @@ struct FilePrescanResult {
     /// to arbitrate, and the line of the definition it kept per name — the
     /// raw material for `--report-macro-gaps` (task 1180).
     macro_definition_audit: crate::analyze::macro_gaps::DefinitionAudit,
+    /// `function -> restrict-qualified parameter indices` for the functions
+    /// this file defines or declares with one (task 1171).
+    restrict_params: HashMap<String, Vec<usize>>,
     /// The file this result came from, header or not (`source_path` is
     /// `.c`-only by design), for naming the origin of a macro definition.
     display_path: String,
@@ -91,6 +94,7 @@ impl FilePrescanResult {
             macro_aliases: HashMap::new(),
             function_macros: HashMap::new(),
             macro_definition_audit: Default::default(),
+            restrict_params: HashMap::new(),
             display_path: String::new(),
             struct_field_types: HashMap::new(),
             struct_typedef_aliases: HashMap::new(),
@@ -168,6 +172,7 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
             crate::analyze::macro_expand::collect_function_macros(&root, &source);
         result.macro_definition_audit =
             crate::analyze::macro_gaps::audit_definitions(&source, &file_path.to_string_lossy());
+        result.restrict_params = ast_utils::restrict_parameter_indices(&root, &source);
 
         result.function_summaries = function_summary::compute_summaries(
             &root,
@@ -351,6 +356,7 @@ fn prescan_file_list(
     // rather than silently losing (task 1180).
     let mut function_macro_origin: HashMap<String, String> = HashMap::new();
     let mut macro_gaps: Vec<crate::analyze::macro_gaps::MacroGap> = Vec::new();
+    let mut restrict_params: HashMap<String, Vec<usize>> = HashMap::new();
     let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
@@ -457,6 +463,9 @@ fn prescan_file_list(
             }
         }
         macro_gaps.extend(r.macro_definition_audit.gaps);
+        for (name, indices) in r.restrict_params {
+            restrict_params.entry(name).or_insert(indices);
+        }
         struct_field_types.extend(r.struct_field_types);
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
@@ -706,6 +715,7 @@ fn prescan_file_list(
         // actually walks `#include` directives against the `-I` search path.
         unresolved_project_headers: HashSet::new(),
         macro_gaps,
+        restrict_params,
         concurrency_reachable,
         value_only_globals,
     })
@@ -5339,6 +5349,9 @@ pub fn resolve_includes(
                 context.macro_aliases.extend(header_aliases);
                 let header_audit =
                     crate::analyze::macro_gaps::audit_definitions(&hsource, &header_path);
+                for (name, indices) in ast_utils::restrict_parameter_indices(&root, &hsource) {
+                    context.restrict_params.entry(name).or_insert(indices);
+                }
                 for (name, m) in header_function_macros {
                     match context.function_macros.entry(name) {
                         std::collections::hash_map::Entry::Vacant(e) => {
