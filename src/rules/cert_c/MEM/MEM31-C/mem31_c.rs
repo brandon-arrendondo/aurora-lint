@@ -308,7 +308,7 @@ struct AllocInfo {
 
 /// The subset of `MemoryLeakAnalyzer`'s fields that are forked/reset/merged
 /// across `if`/`switch` branches.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct LeakBranchState {
     freed_memory: HashMap<String, (usize, usize)>,
     freed_via_alias: HashSet<String>,
@@ -353,6 +353,7 @@ enum Frame<'a> {
         if_node: Node<'a>,
         saved_state: LeakBranchState,
         saved_allocated: HashMap<String, AllocInfo>,
+        saved_escaped: HashSet<String>,
         true_has_return: bool,
         /// The branch's LAST statement leaves (return/goto/noreturn call),
         /// as opposed to `true_has_return`'s "a return somewhere inside".
@@ -397,7 +398,7 @@ enum Frame<'a> {
 /// The analyzer state one arm of a preprocessor conditional starts from and
 /// leaves behind: `LeakBranchState` plus what the goto/label machinery has
 /// recorded, since a label and its gotos can sit wholly inside one arm.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct PreprocArmState {
     branch: LeakBranchState,
     allocated_memory: HashMap<String, AllocInfo>,
@@ -1322,6 +1323,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     if_node,
                     saved_state,
                     saved_allocated,
+                    saved_escaped,
                     true_has_return,
                     true_ends_by_leaving,
                     else_has_return,
@@ -1332,6 +1334,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     if_node,
                     saved_state,
                     saved_allocated,
+                    saved_escaped,
                     true_has_return,
                     true_ends_by_leaving,
                     else_has_return,
@@ -1600,6 +1603,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     fn visit_if_statement<'n>(&mut self, n: Node<'n>, source: &str, stack: &mut Vec<Frame<'n>>) {
         let saved_state = LeakBranchState::fork(self);
         let saved_allocated = self.allocated_memory.clone();
+        let saved_escaped = self.escaped_memory.clone();
 
         let null_check_var = self.get_null_check_variable(&n, source);
         let non_null_check_var = self.get_non_null_check_variable(&n, source);
@@ -1637,6 +1641,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if_node: n,
             saved_state,
             saved_allocated,
+            saved_escaped,
             true_has_return,
             true_ends_by_leaving,
             else_has_return,
@@ -1692,6 +1697,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         if_node: Node<'n>,
         saved_state: LeakBranchState,
         saved_allocated: HashMap<String, AllocInfo>,
+        saved_escaped: HashSet<String>,
         true_has_return: bool,
         true_ends_by_leaving: bool,
         else_has_return: bool,
@@ -1740,9 +1746,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // branch's LAST statement leaves: `true_has_return` is also set
             // by a return nested somewhere inside, and a branch that
             // allocates and then only conditionally returns did allocate on
-            // the path that falls out of it.
+            // the path that falls out of it. What had escaped is part of
+            // the same record: `u->mosq = mosq; ... if (err) {
+            // mosquitto_FREE(mosq); return -1; }` disowns the name inside
+            // the branch, and mosquitto's websockets.c then reported
+            // `mosq` leaked at every later return.
             if true_ends_by_leaving {
                 self.allocated_memory = saved_allocated;
+                self.escaped_memory = saved_escaped;
             }
         }
     }
@@ -1789,9 +1800,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         arms.reverse();
         let first = arms.pop().expect("chain has at least two arms");
         let pre_state = Box::new(PreprocArmState::fork(self));
+        // The fold starts empty and is the union of what the arms end on.
+        // Every arm starts from `pre_state`, so an entry fact survives if
+        // any arm kept it -- and a name every arm dropped stays dropped:
+        // seeding with the entry state re-admitted `filename` after both
+        // arms of mosquitto's `#ifdef WIN32` had freed and nulled it.
         stack.push(Frame::PreprocNextArm {
             remaining_reversed: arms,
-            merged: pre_state.clone(),
+            merged: Box::default(),
             pre_state,
         });
         push_arm_children(stack, &first);
