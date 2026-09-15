@@ -369,6 +369,10 @@ fn load_project_context(
         )?;
     }
 
+    // Documented preconditions override the call-site vote for parameter
+    // null seeding; both the -d pre-scan and the -I header pass contribute.
+    prescan::apply_documented_preconditions(&mut context);
+
     // Fold in the build's `-D` macro state last, so that any macro the real
     // source already defined wins over a command-line flag of the same name
     // (see `compile_commands`' gap-filling invariant). Runs before the cache
