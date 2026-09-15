@@ -1574,6 +1574,17 @@ pub fn macro_expands_to_packed(name: &str, source: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// `#define NAME <body>` lines, compiled once. Group 1 is the macro name,
+/// group 2 the rest of the line. The three per-file `#define` sweeps below
+/// each ran on every prescanned file, and compiling a fresh `Regex` per call
+/// cost more than the matching itself.
+fn define_line_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r"(?m)^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b([^\n]*)$").unwrap()
+    })
+}
+
 /// Collect every `#define NAME ...` object-macro name in `source` whose
 /// replacement text contains "packed" (e.g. hostap's `#define STRUCT_PACKED
 /// __attribute__ ((packed))`). Plain regex over raw text, not AST-based —
@@ -1581,10 +1592,7 @@ pub fn macro_expands_to_packed(name: &str, source: &str) -> bool {
 /// can be merged project-wide and used to resolve `PackedSignal::MacroCandidate`s
 /// found in *other* files.
 pub fn collect_packed_macro_names(source: &str, out: &mut std::collections::HashSet<String>) {
-    let Ok(re) = regex::Regex::new(r"(?m)^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b.*$") else {
-        return;
-    };
-    for cap in re.captures_iter(source) {
+    for cap in define_line_re().captures_iter(source) {
         let line = cap.get(0).map(|m| m.as_str()).unwrap_or("");
         if line.contains("packed") {
             if let Some(name) = cap.get(1) {
@@ -1658,10 +1666,7 @@ pub fn is_likely_macro_constant(name: &str) -> bool {
 /// `common/ieee802_11_defs.h`). Generalizes `collect_packed_macro_names` to
 /// any macro name, not just packed-attribute ones — see `is_defined_macro_name`.
 pub fn collect_defined_macro_names(source: &str, out: &mut std::collections::HashSet<String>) {
-    let Ok(re) = regex::Regex::new(r"(?m)^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b") else {
-        return;
-    };
-    for cap in re.captures_iter(source) {
+    for cap in define_line_re().captures_iter(source) {
         if let Some(name) = cap.get(1) {
             out.insert(name.as_str().to_string());
         }
@@ -1818,11 +1823,7 @@ pub fn collect_unused_attribute_macro_names(
     source: &str,
     out: &mut std::collections::HashSet<String>,
 ) {
-    let Ok(re) = regex::Regex::new(r"(?m)^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\b([^\n]*)$")
-    else {
-        return;
-    };
-    for cap in re.captures_iter(source) {
+    for cap in define_line_re().captures_iter(source) {
         let body = cap.get(2).map(|m| m.as_str()).unwrap_or("");
         // A function-like macro (`#define UNUSED_PARAM(x) ...`) is not an
         // attribute annotation, so require the body to not open with `(`
