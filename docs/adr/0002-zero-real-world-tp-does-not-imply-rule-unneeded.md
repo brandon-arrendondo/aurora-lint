@@ -62,6 +62,13 @@ FP-reduction work — that's ADR-0001's territory. This ADR is specifically
 about the inference "0 TP found ⇒ this rule doesn't matter," which does not
 follow from the premise alone.
 
+**This does not excuse leaving a misfire in place.** A finding that names a
+construct not actually present in the code is a bug regardless of corpus
+maturity — see ADR-0005 for the distinction between that and a judgment
+false positive, which is what this ADR and ADR-0001 are actually about. Do
+not read "0% TP doesn't mean the rule is unneeded" as a reason to decline a
+real fix.
+
 ## Consequences
 
 - "This rule is 0% TP on our benchmarks" is not a valid opening move for a

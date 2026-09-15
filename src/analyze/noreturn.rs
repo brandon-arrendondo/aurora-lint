@@ -136,13 +136,21 @@ fn has_noreturn_qualifier_or_attribute(decl_or_def: &Node, source: &str) -> bool
 /// parameter says nothing about whether the function returns.
 fn has_declarator_noreturn_attribute(decl: &Node, func_declarator: &Node, source: &str) -> bool {
     let params = func_declarator.child_by_field_name("parameters");
-    query::find_descendants_of_kinds(*decl, &["attribute_specifier"])
-        .into_iter()
+    // A definition's attribute sits on its specifiers or declarator, never in
+    // the body -- and the body is nearly all of the subtree, so it is skipped
+    // rather than swept for every function in the file.
+    let body = decl.child_by_field_name("body");
+    let mut cursor = decl.walk();
+    let found = decl
+        .children(&mut cursor)
+        .filter(|child| body.is_none_or(|b| b.id() != child.id()))
+        .flat_map(|child| query::find_descendants_of_kinds(child, &["attribute_specifier"]))
         .filter(|a| match params {
             Some(p) => a.start_byte() < p.start_byte() || a.start_byte() >= p.end_byte(),
             None => true,
         })
-        .any(|a| get_node_text(&a, source).contains("noreturn"))
+        .any(|a| get_node_text(&a, source).contains("noreturn"));
+    found
 }
 
 /// Collect the names of every function in `root` recognized as noreturn by
@@ -199,17 +207,24 @@ const INFERENCE_MAX_ROUNDS: usize = 4;
 /// live across that wrapper from a real leak into a suppressed one, so the
 /// wrapper is deliberately left unrecognized: a miss, not a wrong answer.
 fn infer_terminating_definitions(root: &Node, source: &str, names: &mut HashSet<String>) {
+    // Only a definition whose body has no `return` and no `goto` can ever
+    // qualify (see `body_unconditionally_terminates`), and that does not
+    // change between rounds -- so the candidates are found once, and the
+    // rounds only re-ask which of them now call a known terminator.
+    let candidates: Vec<(Node, String)> =
+        query::find_descendants_of_kind(*root, "function_definition")
+            .into_iter()
+            .filter(|def| body_has_no_return_or_goto(def))
+            .filter_map(|def| definition_name(&def, source).map(|name| (def, name)))
+            .collect();
     for _ in 0..INFERENCE_MAX_ROUNDS {
         let mut added = false;
-        for def in query::find_descendants_of_kind(*root, "function_definition") {
-            let Some(name) = definition_name(&def, source) else {
-                continue;
-            };
-            if names.contains(&name) {
+        for (def, name) in &candidates {
+            if names.contains(name) {
                 continue;
             }
-            if body_unconditionally_terminates(&def, source, names) {
-                names.insert(name);
+            if body_unconditionally_terminates(def, source, names) {
+                names.insert(name.clone());
                 added = true;
             }
         }
@@ -217,6 +232,16 @@ fn infer_terminating_definitions(root: &Node, source: &str, names: &mut HashSet<
             break;
         }
     }
+}
+
+/// Whether `def`'s body contains no `return` and no `goto` anywhere.
+fn body_has_no_return_or_goto(def: &Node) -> bool {
+    def.child_by_field_name("body").is_some_and(|body| {
+        query::find_first_descendant(body, |n| {
+            matches!(n.kind(), "return_statement" | "goto_statement")
+        })
+        .is_none()
+    })
 }
 
 /// The declared name of a `function_definition`, or `None` when its
@@ -246,7 +271,7 @@ fn body_unconditionally_terminates(def: &Node, source: &str, names: &HashSet<Str
     let Some(body) = def.child_by_field_name("body") else {
         return false;
     };
-    if !query::find_descendants_of_kinds(body, &["return_statement", "goto_statement"]).is_empty() {
+    if !body_has_no_return_or_goto(def) {
         return false;
     }
     let mut cursor = body.walk();
