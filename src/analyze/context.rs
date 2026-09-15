@@ -149,6 +149,14 @@ pub struct ProjectContext {
     /// to callees whose contract actually forbids aliasing (task 1171).
     #[serde(default)]
     pub restrict_params: HashMap<String, Vec<usize>>,
+    /// `function name -> indices of the parameters whose doc comment states
+    /// a non-NULL precondition` ("must be initialized", "must not be NULL",
+    /// ...), from every definition and prototype any scanned file carries a
+    /// Doxygen comment for. The function's own published contract, which is
+    /// what lets API00-C and the EXP34-C parameter seeding honour a
+    /// caller-validates discipline the code documents (task 1171).
+    #[serde(default)]
+    pub documented_nonnull_params: HashMap<String, Vec<usize>>,
     /// Function names reachable (including the root itself) from a real
     /// concurrent-execution root: an ISR handler, a thread-spawn entry
     /// point (`pthread_create`/`thrd_create`/`CreateThread`, direct or
