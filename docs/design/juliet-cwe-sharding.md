@@ -170,6 +170,21 @@ The warm step is serial per CWE. That is fine: it costs one prescan where
 the status quo pays N of them, and it only applies to the handful of CWEs
 big enough to shard.
 
+**Outcome (2026-09-15).** Task 388 measured the prescan at ~0.8% of a big
+CWE's time and shipped sharding *without* the warm step, each shard
+repeating the full-CWE prescan. That held until the per-file scan got an
+order of magnitude cheaper (the Juliet wall-clock regression task,
+aurora_lint 1162, and its follow-ups): the repeated prescan then became
+most of a shard's time -- 11s of a 12s CWE-78 shard. `bench/runner.py`
+now runs the warm step as described here (`_warm_prescan`, an empty
+directory as PATH, `--save-prescan` into a per-run temp dir) and each
+shard loads it (`--load-prescan`, no `-d`); the acceptance gate in §6.3
+was re-run on three CWEs, sharded and unsharded, with and without
+`--compile-commands`: identical `violations` and `cwe_metrics` rows.
+A CWE's `duration_s` now counts its prescan once (warm step) plus its
+shards' scan time, so the summed `analysis_s` of a run drops for a real
+reason, not an accounting one.
+
 **[MEASURE]** The prescan fraction of a big CWE's `duration_s`. This is the
 number that decides whether the whole task is worth doing. Get it with
 `-v` (per-rule scanning progress) or by timing a `--save-prescan` warm run
