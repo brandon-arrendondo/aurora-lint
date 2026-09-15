@@ -34,6 +34,11 @@ impl Msc07C {
         violations: &mut Vec<RuleViolation>,
     ) {
         let mut seen_terminal: Option<(&str, usize)> = None; // (kind_label, line)
+                                                             // The previous sibling was a preprocessor block whose last token is
+                                                             // a dangling `else` -- `} else` / `#endif` / `return X;` (mbedtls
+                                                             // pkparse.c). The statement after it is that else's body, not an
+                                                             // unconditional statement, however tree-sitter had to recover it.
+        let mut after_dangling_else = false;
 
         for i in 0..compound.child_count() {
             let child = match compound.child(i) {
@@ -43,7 +48,17 @@ impl Msc07C {
 
             // Skip braces, comments, and preprocessor directives
             if is_skippable(&child) {
+                if ends_with_dangling_else(&child, source) {
+                    after_dangling_else = true;
+                }
                 continue;
+            }
+
+            // A label or a case is reachable by construction: control
+            // arrives by `goto` or by the switch dispatch, never from the
+            // statement above it (task 1171).
+            if matches!(child.kind(), "labeled_statement" | "case_statement") {
+                seen_terminal = None;
             }
 
             if let Some((terminal_kind, _)) = seen_terminal {
@@ -64,12 +79,37 @@ impl Msc07C {
                 break;
             }
 
-            // Check if this child is a terminal statement
-            if let Some(label) = terminal_label(&child, source) {
-                seen_terminal = Some((label, child.start_position().row + 1));
+            // Check if this child is a terminal statement. A label's own
+            // statement is its last named child (`error: goto done;`), and
+            // control does fall from it to the next sibling.
+            let stmt = if child.kind() == "labeled_statement" {
+                child.named_child(child.named_child_count().saturating_sub(1))
+            } else {
+                Some(child)
+            };
+            if let Some(label) = stmt.and_then(|n| terminal_label(&n, source)) {
+                if !after_dangling_else {
+                    seen_terminal = Some((label, child.start_position().row + 1));
+                }
             }
+            after_dangling_else = false;
         }
     }
+}
+
+/// A preprocessor block whose recovered tail is an `else` with no body:
+/// `} else` followed by `#endif` parses as an `ERROR` holding just `else`.
+fn ends_with_dangling_else(node: &Node, source: &str) -> bool {
+    if !node.kind().starts_with("preproc_") {
+        return false;
+    }
+    let Some(last) = node.named_child(node.named_child_count().saturating_sub(1)) else {
+        return false;
+    };
+    if last.kind() == "ERROR" {
+        return get_node_text(&last, source).trim_end().ends_with("else");
+    }
+    ends_with_dangling_else(&last, source)
 }
 
 /// Returns a human-readable label if the node is a terminal (control never
