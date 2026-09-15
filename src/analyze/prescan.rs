@@ -4979,7 +4979,11 @@ fn collect_from_struct_tag_typedef(
 /// (`dead_regions`, task 1142): hostap redefines `u8`..`u64` under
 /// `_MSC_VER` and `__vxworks` before the real `#ifndef WPA_TYPES_DEFINED`
 /// arm, and first-wins used to keep the Windows spelling.
-fn collect_typedef_aliases(node: &Node, source: &str, typedef_types: &mut HashMap<String, String>) {
+pub(crate) fn collect_typedef_aliases(
+    node: &Node,
+    source: &str,
+    typedef_types: &mut HashMap<String, String>,
+) {
     let dead = DeadRegions::of(source);
     collect_typedef_aliases_rec(node, source, &dead, typedef_types);
 }

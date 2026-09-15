@@ -1,14 +1,15 @@
 Upstream Disclosures
 =====================
 
-Both of aurora-lint's real-world benchmark projects that have gone through a
+Three of aurora-lint's real-world benchmark projects that have gone through a
 full file-at-a-time adjudication audit (see
 :doc:`testing-methodology`) have produced genuine defects, reported to each
-project's maintainers. As of 2026-09-14, **27 of 27 disclosed defects across
-the two audits have been confirmed and fixed upstream** — nine in SQLite,
+project's maintainers. As of 2026-09-15, **30 of 30 disclosed defects across
+the three audits have been confirmed and fixed upstream** — nine in SQLite,
 eighteen in hostapd/wpa_supplicant (eight from the initial 2026-08-25
 disclosure, ten more from a 2026-09-10 follow-up — see
-`Second hostap disclosure`_ below).
+`Second hostap disclosure`_ below), and three in raylib (see `raylib`_
+below).
 
 A finding being disclosed here does not always mean aurora-lint detected it.
 Adjudicating a run means a reviewer reads every flagged site against source
@@ -321,10 +322,75 @@ class the maintainer judged non-reachable in some cases were still fixed
 by Jouni for repository hygiene, in his own words: "those might as well be
 addressed even if there is no real impact at the moment."
 
+raylib
+------
+
+The raylib ground-truth audit (23 files in scope, commit ``962bbfc``,
+adjudicated to completion under task 227) surfaced three genuine public-API
+memory-safety bugs, independent of raylib's "load trusted assets only"
+threat model: each is reachable with ordinary caller input, each has a
+bounds-checking sibling function that already gets it right, and in one case
+the author's own guard is present but does not actually stop the write — so
+each reads as a clear oversight rather than a design tradeoff. All three
+were audit read-throughs (task 227's file-at-a-time review), not aurora-lint
+rule detections. Filed as three separate, minimal PRs per raylib's own
+``CONTRIBUTING.md`` (no CLA; small, one-bug-at-a-time changes preferred).
+**All three merged the same day, 2026-06-24.**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 46 12 18
+
+   * - Site
+     - Defect
+     - Source
+     - PR
+   * - ``src/rlgl.h`` — ``rlPushMatrix()``
+     - The ``RL_MAX_MATRIX_STACK_SIZE`` check logs an error but does not
+       return, so the matrix is still written to
+       ``RLGL.State.stack[stackCounter]`` once the stack is full —
+       an out-of-bounds write that corrupts adjacent ``RLGL.State``
+       fields and grows with each further push. The sibling
+       ``rlPopMatrix()`` already guards the symmetric underflow case.
+     - Audit read-through (false negative)
+     - `#5935 <https://github.com/raysan5/raylib/pull/5935>`__
+   * - ``src/rtext.c`` — ``TextReplaceBetween()``
+     - Three ``strncpy()`` calls into the 1024-byte
+       ``static char buffer[MAX_TEXT_BUFFER_LENGTH]`` are never clamped to
+       the buffer size, unlike the sibling ``TextReplace()``/
+       ``TextInsert()``, which already guard this exact case — overflows
+       for sufficiently long input.
+     - Audit read-through (false negative)
+     - `#5936 <https://github.com/raysan5/raylib/pull/5936>`__
+   * - ``src/rcore.c`` — ``GetGamepadAxisCount()`` / ``GetGamepadName()``
+     - Both public getters index ``CORE.Input.Gamepad.axisCount[gamepad]``/
+       ``.name[gamepad]`` with an unvalidated ``gamepad`` argument — an
+       out-of-bounds read for ``gamepad < 0`` or ``gamepad >= MAX_GAMEPADS``.
+       Every sibling gamepad accessor already guards the index.
+     - Audit read-through (false negative)
+     - `#5937 <https://github.com/raysan5/raylib/pull/5937>`__
+
+All three were audit-discovered false negatives, not aurora-lint detections
+— the same honesty distinction drawn for SQLite's and hostap's
+read-through items above. Full technical detail (proposed fix, ASan repro,
+before/after evidence, and the raylib-specific contribution requirements
+this filing followed) is in ``docs/design/raylib-upstream-bugfix-prs.md``.
+
+**A note on filing style specific to this project**: raylib's maintainer
+has asked that submissions avoid AI-generated descriptions, since raylib
+leans on being an approachable, educational codebase — PR text here was
+written in plain human language rather than the more detailed disclosure
+format used for SQLite/hostap/curl. Future raylib filings follow the same
+rule, and effort is reserved for defects that are either serious enough to
+clearly warrant the work regardless of writeup length, or simple enough
+that no elaborate description is needed in the first place — not the
+in-between case that would otherwise demand a long explanation.
+
 Combined total
 --------------
 
-27 defects disclosed across the two audits, 27 fixed upstream — SQLite's
+30 defects disclosed across the three audits, 30 fixed upstream — SQLite's
 nine the same day (most of them) or within days, hostap/wpa_supplicant's
-first eight within two weeks and the second ten the very next day, all by
-the project's original author and lead maintainer, Jouni Malinen.
+first eight within two weeks and the second ten the very next day (both by
+the project's original author and lead maintainer, Jouni Malinen), and
+raylib's three the same day they were opened.
