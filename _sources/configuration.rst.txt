@@ -73,6 +73,58 @@ Category    Count   Rules
 For the full list, see ``rules_templates/rules-all.toml`` or the rule source files
 in ``src/rules/cert_c/``.
 
+Strict vs. Relaxed Onboarding
+-----------------------------
+
+Dropping aurora-lint into CI/CD against an existing codebase for the first
+time can surface a large number of findings before you have had a chance to
+triage any of them — real-world precision varies a lot by codebase (see
+``docs/tool-comparison.rst`` and each project's own
+``data/precision_audit/<project>/README.md`` for measured figures). Two
+things help without writing a manifest at all:
+
+- ``--min-severity``/``--fail-on-severity`` (see `Getting Started
+  <../README.md#getting-started>`_ in the top-level README) filter what is
+  printed and what fails a build, independent of the manifest.
+- ``--exclude`` drops vendored code, generated files, and test harnesses
+  from the scan entirely — usually the single biggest volume reduction on a
+  first run.
+
+For a coarser starting point than either of those, build your own
+**relaxed** manifest the same way this project's own real-world benchmark
+suite builds one per codebase (``conf/realworld/*-rules.toml`` — read
+``conf/realworld/README.md`` for the full discipline, summarized here):
+
+1. Start from ``rules_templates/rules-all.toml`` (the **strict** default —
+   this is the same file aurora-lint embeds and ships) and copy it as your
+   starting point, rather than writing a manifest from scratch.
+2. Disable a rule wholesale only for one of two reasons, each recorded as a
+   comment on its ``enabled = false`` line: it is **categorically
+   inapplicable** to your codebase (a Windows-only rule on a POSIX-only
+   project, ``FIO*`` on a library with no file I/O), or you are
+   **deliberately deferring it** while your team builds up triage capacity,
+   with a plan to turn it back on.
+3. **Do not disable a rule just because it looks "advisory" or "style," and
+   do not disable one on a first impression of noise without measuring
+   it first.** This project shipped exactly that manifest once — thirteen
+   rules turned off across seven codebases on an "advisory/style" label —
+   and measuring the two codebases that kept them found six of the
+   thirteen were the *best-precision* rule group in the whole suite. All
+   thirteen run everywhere again. A rule that looks noisy on unfamiliar
+   code is common; a rule that is actually low-value on *your* code is a
+   claim worth checking against your own findings before it goes in a
+   manifest, not before.
+
+**There is no single relaxed manifest shipped today**, and that is a
+deliberate gap rather than an oversight: real-world noise is measurably
+project-dependent (that is the whole reason ``conf/realworld/*.toml`` files
+do not inherit from a shared base), so a one-size-fits-all "these rules are
+noisy" list would risk the exact mistake above on whichever project doesn't
+match its assumptions. A data-driven relaxed starter, generated from
+aggregate real-world precision across this project's own benchmark corpus
+rather than hand-picked, is tracked as a follow-up (aurora_lint task 1179's
+companion) rather than shipped speculatively here.
+
 Tracked but not implemented
 ----------------------------
 
