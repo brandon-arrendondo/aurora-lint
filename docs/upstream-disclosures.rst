@@ -4,9 +4,11 @@ Upstream Disclosures
 Both of aurora-lint's real-world benchmark projects that have gone through a
 full file-at-a-time adjudication audit (see
 :doc:`testing-methodology`) have produced genuine defects, reported to each
-project's maintainers. As of 2026-09-08, **17 of 17 disclosed defects across
+project's maintainers. As of 2026-09-14, **27 of 27 disclosed defects across
 the two audits have been confirmed and fixed upstream** — nine in SQLite,
-eight in hostapd/wpa_supplicant.
+eighteen in hostapd/wpa_supplicant (eight from the initial 2026-08-25
+disclosure, ten more from a 2026-09-10 follow-up — see
+`Second hostap disclosure`_ below).
 
 A finding being disclosed here does not always mean aurora-lint detected it.
 Adjudicating a run means a reviewer reads every flagged site against source
@@ -202,10 +204,127 @@ and remain open: judged not reachable, so never filed. A sixteenth item
 positive) turned out to already be fixed upstream before the 2026-08-25
 filing, per w1.fi advisory 2026-3.
 
+Second hostap disclosure
+-------------------------
+
+A follow-up EXP34-C delta-adjudication pass (ground-truth source tag
+``task1107_delta_exp34_hostap``) surfaced ten more genuine defects beyond
+the first audit — this time the majority (seven) were actual aurora-lint
+(EXP34-C) detections rather than audit read-throughs, a useful contrast
+with the first batch above. All ten were re-verified against current
+mainline before filing, disclosed privately to Jouni Malinen on
+2026-09-10, and **all ten (eleven patches — one item split into two
+upstream commits, one squashed from three source files into one) were
+applied to hostap mainline the very next day, 2026-09-11.**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 42 14 8 10
+
+   * - Site
+     - Defect
+     - Source
+     - Fixed
+     - Commit
+   * - ``src/ap/wnm_ap.c`` — ``ieee802_11_rx_bss_trans_mgmt_query()``
+     - NULL ``%s`` argument: the raw ``hex`` pointer (NULL for an empty
+       BSS-TM-candidate list) is passed unconditionally as a ``%s`` arg
+       alongside its own ternary-guarded prefix text
+     - aurora-lint finding (EXP34-C)
+     - 2026-09-11
+     - ``9f6ee4d90``
+   * - ``wpa_supplicant/ctrl_iface.c`` — ``p2p_ctrl_connect()``
+     - NULL pointer deref: the cursor past a bare, syntactically valid PIN
+       with no trailing parameters is left NULL, then used unconditionally
+       in ``os_strstr(pos, "bstrapmethod=")``; live-reproduced crash via a
+       single ``P2P_CONNECT`` ctrl_iface command
+     - aurora-lint finding (EXP34-C)
+     - 2026-09-11
+     - ``f3b1fc3b9``
+   * - ``wpa_supplicant/dbus/dbus_new_handlers_p2p.c`` —
+       ``wpas_dbus_handler_remove_persistent_group()``
+     - Uninitialized stack read: ``dbus_message_get_args()``'s return
+       value is never checked, and a type-mismatched D-Bus argument
+       leaves the out-parameter never written at all, not merely NULL;
+       live-reproduced crash via a malformed ``RemovePersistentGroup``
+       D-Bus call
+     - aurora-lint finding (EXP34-C)
+     - 2026-09-11
+     - ``563cfc960``
+   * - ``src/crypto/tls_openssl_ocsp.c`` — ``ocsp_find_signer()``
+     - Signed/unsigned loop-bound bug: ``sk_X509_num()`` returns ``-1``
+       for an empty cert stack, promoted to ``UINT_MAX`` against an
+       unsigned loop index — a ~4.3-billion-iteration CPU-exhaustion DoS
+       processing an OCSP response with an empty embedded cert list
+     - Audit read-through (false negative)
+     - 2026-09-11
+     - ``db1c8dfce``
+   * - ``src/drivers/driver_nl80211_event.c`` — ``nl80211_vendor_event_brcm()``
+     - NULL ``%s`` argument: a BRCM vendor netlink event omitting
+       ``NL80211_ATTR_VENDOR_DATA`` leaves ``data == NULL``, passed
+       unconditionally as a ``%s`` argument; live-confirmed segfault
+       under musl libc
+     - Audit read-through (false negative)
+     - 2026-09-11
+     - ``c0b203549``
+   * - ``src/eap_server/eap_server_peap.c`` — ``eap_peap_build_phase2_term()``
+     - NULL pointer deref: ``eap_server_tls_encrypt()``'s documented
+       NULL-return path is checked on one return path but not the
+       TLS-1.3-resumed path, which reaches ``wpabuf_len()`` unconditionally
+     - aurora-lint finding (EXP34-C)
+     - 2026-09-11
+     - ``0da59aadc``
+   * - ``wpa_supplicant/config_none.c`` + ``config_winreg.c`` —
+       ``wpa_config_write()`` (both non-default backends)
+     - ``name`` (``wpa_s->confname``) used unconditionally, unlike
+       ``config_file.c`` which already guards this exact case; live-
+       reproduced literal ``(null)`` in a real daemon's log via
+       ``SAVE_CONFIG`` with no ``-c`` config file
+     - aurora-lint finding (EXP34-C)
+     - 2026-09-11
+     - ``f9b9a68c2``, ``536d71c0d``
+   * - ``wpa_supplicant/dbus/dbus_new.c`` — ``wpas_dbus_get_group_obj_path()``
+     - NULL pointer deref: ``ssid`` (``wpa_s->current_ssid``, legitimately
+       NULL for a P2P group owner) dereferenced via
+       ``os_memcmp(ssid->ssid, ...)`` once ``dbus_new_path`` is set — the
+       ordinary case for any build using the new-style D-Bus API
+     - Audit read-through (false negative)
+     - 2026-09-11
+     - ``47e523bf8``
+   * - ``wpa_supplicant/wnm_sta.c`` — ``wnm_scan_process()`` ->
+       ``wpa_supplicant_need_to_roam_within_ess()``
+     - NULL pointer deref: the post-scan "apply normal roaming rules"
+       block dereferences a possibly-NULL ``bss`` candidate, unlike the
+       sibling ``pre_scan_check`` branch a few lines above which already
+       guards it
+     - aurora-lint finding (EXP34-C)
+     - 2026-09-11
+     - ``e341c11d9``
+   * - ``src/utils/browser-{android,system,wpadebug}.c`` (3 files) —
+       ``http_req()``
+     - NULL pointer deref: ``url`` used unconditionally in raw
+       ``os_strcmp()``/``os_strncmp()`` calls — no NULL tolerance on any
+       libc; live-reproduced SIGSEGV of the HS2.0 OSU loopback HTTP
+       server via a single malformed TCP connection
+     - aurora-lint finding (EXP34-C)
+     - 2026-09-11
+     - ``208c56a03``
+
+Seven of the ten items were genuine aurora-lint EXP34-C detections,
+confirmed by hand against source before filing — the opposite mix from
+the first batch, where the tool's rule set had missed every item. Three
+(the OCSP signed/unsigned loop bound, the BRCM vendor-event NULL ``%s``,
+and the P2P group ``ssid`` NULL deref) were audit read-throughs, same
+honesty distinction as elsewhere in this document. This obsolete-Passpoint
+HS2.0 OSU functionality (item 10) and the low-severity ``%s``-with-NULL
+class the maintainer judged non-reachable in some cases were still fixed
+by Jouni for repository hygiene, in his own words: "those might as well be
+addressed even if there is no real impact at the moment."
+
 Combined total
 --------------
 
-17 defects disclosed across the two audits, 17 fixed upstream — SQLite's
+27 defects disclosed across the two audits, 27 fixed upstream — SQLite's
 nine the same day (most of them) or within days, hostap/wpa_supplicant's
-eight within two weeks by the project's original author and lead
-maintainer.
+first eight within two weeks and the second ten the very next day, all by
+the project's original author and lead maintainer, Jouni Malinen.
