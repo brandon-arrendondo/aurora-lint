@@ -80,25 +80,31 @@ impl CertRule for Mem30C {
         // macros that free AND null their argument (e.g. curl Curl_safefree).
         // MEM30 already treats them as a free (name contains FREE) but cannot
         // see the `= NULL`; this lets the analyzer clear the freed state.
-        // (Guarded by a non-empty table → zero cost without a macro prescan,
-        // e.g. on Juliet.) Phase 2c-iii of docs/design/macro-expansion.md.
+        // Phase 2c-iii of docs/design/macro-expansion.md.
+        //
+        // The table is the project prescan's merged with this file's own
+        // definitions (per-file wins, as INT34-C/PRE31-C do). A scan with no
+        // `-d` has no prescan table at all, so a macro defined in the scanned
+        // file itself was invisible and every later `free(p)` after
+        // `my_safefree(p)` was reported as a double-free (the follow-up to
+        // MEM31-C ownership task 1139). Collecting from the file is one AST
+        // walk; the old "skip when the prescan table is empty" shortcut is
+        // what hid the macro.
         let macro_null_params = {
-            let macros = self.function_macros.borrow();
-            if macros.is_empty() {
-                HashMap::new()
-            } else {
-                let mut invoked = HashSet::new();
-                collect_invoked_macro_names(node, source, &macros, &mut invoked);
-                let mut out: HashMap<String, Vec<usize>> = HashMap::new();
-                for name in invoked {
-                    let idx =
-                        crate::analyze::macro_expand::macro_nulls_param_indices(&macros, &name);
-                    if !idx.is_empty() {
-                        out.insert(name, idx);
-                    }
+            let mut macros = HashMap::clone(&self.function_macros.borrow());
+            macros.extend(crate::analyze::macro_expand::collect_function_macros(
+                node, source,
+            ));
+            let mut invoked = HashSet::new();
+            collect_invoked_macro_names(node, source, &macros, &mut invoked);
+            let mut out: HashMap<String, Vec<usize>> = HashMap::new();
+            for name in invoked {
+                let idx = crate::analyze::macro_expand::macro_nulls_param_indices(&macros, &name);
+                if !idx.is_empty() {
+                    out.insert(name, idx);
                 }
-                out
             }
+            out
         };
 
         // Names of union typedefs in this file, so the analyzer can restrict
