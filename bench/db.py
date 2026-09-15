@@ -1040,6 +1040,12 @@ class BenchDB:
             },
             "top_tp_rules": [r for r in rules if r["tp_count"] > 0],
             "top_fp_rules": [r for r in rules if r["fp_count"] > 0],
+            # Unlike the two lists above (each filtered to tp/fp > 0), this
+            # counts every rule_cwe_breakdown row for the CWE regardless of
+            # count -- the only way to tell "no rule targets this CWE" from
+            # "a mapped rule ran and found nothing" when both filtered lists
+            # are empty (juliet_coverage.py's zero-detection table).
+            "rule_count": len(rules),
         }
 
         # CWE-aware metrics
