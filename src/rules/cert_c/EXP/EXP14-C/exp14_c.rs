@@ -37,6 +37,7 @@ use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Bit width at/above which integer promotion to `int` is a no-op (or the
@@ -50,12 +51,12 @@ pub struct Exp14C {
     /// kernel-style typedefs) to a builtin width the same way a real scan
     /// would see it, rather than only recognizing `uint8_t`/`uint16_t` by
     /// literal spelling.
-    typedef_types: RefCell<HashMap<String, String>>,
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// Cross-file struct field types (`ProjectContext::struct_field_types`),
     /// needed to resolve a narrow struct-member operand (`s->flags`) --
     /// otherwise a bitmask/capability field, which is how a narrow type
     /// most often appears in real code, never resolves at all.
-    struct_field_types: RefCell<HashMap<String, HashMap<String, String>>>,
+    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
 }
 
 impl CertRule for Exp14C {

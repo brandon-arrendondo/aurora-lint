@@ -16,6 +16,7 @@ use lang_parsing_substrate::query;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tree_sitter::Node;
 use walkdir::WalkDir;
 
@@ -33,6 +34,19 @@ struct FilePrescanResult {
     macro_constants: HashMap<String, i64>,
     macro_aliases: HashMap<String, String>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    /// Function-like `#define`s in this file the collector skipped or had
+    /// to arbitrate, and the line of the definition it kept per name — the
+    /// raw material for `--report-macro-gaps` (task 1180).
+    macro_definition_audit: crate::analyze::macro_gaps::DefinitionAudit,
+    /// `function -> restrict-qualified parameter indices` for the functions
+    /// this file defines or declares with one (task 1171).
+    restrict_params: HashMap<String, Vec<usize>>,
+    /// `function -> parameter indices with a documented non-NULL
+    /// precondition` for the functions this file documents (task 1171).
+    documented_nonnull_params: HashMap<String, Vec<usize>>,
+    /// The file this result came from, header or not (`source_path` is
+    /// `.c`-only by design), for naming the origin of a macro definition.
+    display_path: String,
     struct_field_types: HashMap<String, HashMap<String, String>>,
     struct_typedef_aliases: HashMap<String, String>,
     typedef_types: HashMap<String, String>,
@@ -83,6 +97,10 @@ impl FilePrescanResult {
             macro_constants: HashMap::new(),
             macro_aliases: HashMap::new(),
             function_macros: HashMap::new(),
+            macro_definition_audit: Default::default(),
+            restrict_params: HashMap::new(),
+            documented_nonnull_params: HashMap::new(),
+            display_path: String::new(),
             struct_field_types: HashMap::new(),
             struct_typedef_aliases: HashMap::new(),
             typedef_types: HashMap::new(),
@@ -115,6 +133,7 @@ impl FilePrescanResult {
 
 fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePrescanResult {
     let mut result = FilePrescanResult::empty();
+    result.display_path = file_path.to_string_lossy().to_string();
 
     let mut parser = match CParser::new() {
         Ok(p) => p,
@@ -156,6 +175,10 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
 
         result.function_macros =
             crate::analyze::macro_expand::collect_function_macros(&root, &source);
+        result.macro_definition_audit =
+            crate::analyze::macro_gaps::audit_definitions(&source, &file_path.to_string_lossy());
+        result.restrict_params = ast_utils::restrict_parameter_indices(&root, &source);
+        result.documented_nonnull_params = ast_utils::documented_nonnull_parameters(&root, &source);
 
         result.function_summaries = function_summary::compute_summaries(
             &root,
@@ -334,6 +357,13 @@ fn prescan_file_list(
     let mut macro_aliases: HashMap<String, String> = HashMap::new();
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
         HashMap::new();
+    // Which file's definition `function_macros` holds per name, so a later
+    // file defining the same name differently is recorded as a conflict
+    // rather than silently losing (task 1180).
+    let mut function_macro_origin: HashMap<String, String> = HashMap::new();
+    let mut macro_gaps: Vec<crate::analyze::macro_gaps::MacroGap> = Vec::new();
+    let mut restrict_params: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut documented_nonnull_params: HashMap<String, Vec<usize>> = HashMap::new();
     let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
@@ -412,9 +442,38 @@ fn prescan_file_list(
 
         macro_constants.extend(r.macro_constants);
         macro_aliases.extend(r.macro_aliases);
+        let file_display = r.display_path.clone();
         for (name, m) in r.function_macros {
-            function_macros.entry(name).or_insert(m);
+            match function_macros.entry(name) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    function_macro_origin.insert(e.key().clone(), file_display.clone());
+                    e.insert(m);
+                }
+                std::collections::hash_map::Entry::Occupied(e) if !e.get().same_expansion(&m) => {
+                    let line = r
+                        .macro_definition_audit
+                        .kept_lines
+                        .get(e.key())
+                        .copied()
+                        .unwrap_or(0);
+                    macro_gaps.push(crate::analyze::macro_gaps::conflicting_definition(
+                        e.key(),
+                        &file_display,
+                        line,
+                        function_macro_origin
+                            .get(e.key())
+                            .map(String::as_str)
+                            .unwrap_or("another file"),
+                    ));
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {}
+            }
         }
+        macro_gaps.extend(r.macro_definition_audit.gaps);
+        for (name, indices) in r.restrict_params {
+            restrict_params.entry(name).or_insert(indices);
+        }
+        merge_documented_params(&mut documented_nonnull_params, r.documented_nonnull_params);
         struct_field_types.extend(r.struct_field_types);
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
         typedef_types.extend(r.typedef_types);
@@ -639,33 +698,55 @@ fn prescan_file_list(
         reporter.report_prescan_complete(known_functions.len());
     }
 
+    let callers = invert_call_graph(&call_graph);
+
     Ok(ProjectContext {
-        known_functions,
-        header_declared_functions,
-        function_summaries,
-        call_graph,
-        ambiguous_call_targets,
-        macro_constants,
-        macro_aliases,
-        function_macros,
-        struct_field_types,
-        struct_typedef_aliases,
-        typedef_types,
-        function_pointer_typedef_names,
-        packed_structs,
-        noreturn_functions,
-        defined_macro_names,
-        unused_attribute_macros,
+        known_functions: Arc::new(known_functions),
+        header_declared_functions: Arc::new(header_declared_functions),
+        function_summaries: Arc::new(function_summaries),
+        call_graph: Arc::new(call_graph),
+        callers: Arc::new(callers),
+        ambiguous_call_targets: Arc::new(ambiguous_call_targets),
+        macro_constants: Arc::new(macro_constants),
+        macro_aliases: Arc::new(macro_aliases),
+        function_macros: Arc::new(function_macros),
+        struct_field_types: Arc::new(struct_field_types),
+        struct_typedef_aliases: Arc::new(struct_typedef_aliases),
+        typedef_types: Arc::new(typedef_types),
+        function_pointer_typedef_names: Arc::new(function_pointer_typedef_names),
+        packed_structs: Arc::new(packed_structs),
+        noreturn_functions: Arc::new(noreturn_functions),
+        defined_macro_names: Arc::new(defined_macro_names),
+        unused_attribute_macros: Arc::new(unused_attribute_macros),
         global_constants,
-        global_var_null_states,
-        global_writers,
+        global_var_null_states: Arc::new(global_var_null_states),
+        global_writers: Arc::new(global_writers),
         dispatch_table_callbacks,
         // Populated later by `resolve_includes`, which is the pass that
         // actually walks `#include` directives against the `-I` search path.
         unresolved_project_headers: HashSet::new(),
-        concurrency_reachable,
-        value_only_globals,
+        macro_gaps,
+        restrict_params,
+        documented_nonnull_params,
+        concurrency_reachable: Arc::new(concurrency_reachable),
+        value_only_globals: Arc::new(value_only_globals),
     })
+}
+
+/// `callee -> {callers}` for every edge in `call_graph`.
+fn invert_call_graph(
+    call_graph: &HashMap<String, HashSet<String>>,
+) -> HashMap<String, HashSet<String>> {
+    let mut callers: HashMap<String, HashSet<String>> = HashMap::new();
+    for (caller, callees) in call_graph {
+        for callee in callees {
+            callers
+                .entry(callee.clone())
+                .or_default()
+                .insert(caller.clone());
+        }
+    }
+    callers
 }
 
 /// Forward-reachability set from every concurrency root (an ISR handler, a
@@ -732,7 +813,7 @@ pub fn prescan_sibling_headers(parent_dir: &str) -> Result<ProjectContext> {
             collect_header_declarations(
                 &tree.root_node(),
                 &source,
-                &mut context.header_declared_functions,
+                Arc::make_mut(&mut context.header_declared_functions),
             );
         }
     }
@@ -774,6 +855,46 @@ fn collect_header_declarations(node: &Node, source: &str, names: &mut HashSet<St
                     collect_header_declarations(&child, source, names);
                 }
                 _ => {}
+            }
+        }
+    }
+}
+
+/// Union `more` into `into`: a parameter documented as non-NULL on either the
+/// prototype or the definition is documented.
+fn merge_documented_params(
+    into: &mut HashMap<String, Vec<usize>>,
+    more: HashMap<String, Vec<usize>>,
+) {
+    for (name, indices) in more {
+        let entry = into.entry(name).or_default();
+        for i in indices {
+            if !entry.contains(&i) {
+                entry.push(i);
+            }
+        }
+    }
+}
+
+/// Seed every parameter with a documented non-NULL precondition as
+/// `NotNull` for the null-state analysis of its function, overriding the
+/// call-site vote. The vote observes the callers in the scan set; the doc
+/// comment is the contract every caller, seen or not, signed up to. Run
+/// after the pre-scan and after `resolve_includes`, since header prototypes
+/// carry most of the documentation (task 1171).
+pub fn apply_documented_preconditions(context: &mut super::context::ProjectContext) {
+    if context.documented_nonnull_params.is_empty() {
+        return;
+    }
+    // Runs before any rule holds a handle on the table, so this copies
+    // nothing (`Arc::make_mut` on a refcount of one mutates in place).
+    let summaries = Arc::make_mut(&mut context.function_summaries);
+    for (name, indices) in &context.documented_nonnull_params {
+        if let Some(summary) = summaries.get_mut(name) {
+            for &idx in indices {
+                summary
+                    .callsite_param_null_states
+                    .insert(idx, NullState::NotNull);
             }
         }
     }
@@ -3454,17 +3575,26 @@ fn condition_true_implies_nonnull(condition: &Node, var: &str, source: &str) -> 
 /// agree on what counts as guarded, or the rule re-reports what the prescan
 /// already discounted.
 pub fn guarded_nonnull_at(site: &Node, var: &str, source: &str) -> bool {
-    guard_dominance::dominating_conditions(site)
-        .iter()
-        .any(
-            |cond| match guard_dominance::dominating_condition_branch(cond, site) {
-                Some(true) => condition_true_implies_nonnull(cond, var, source),
-                Some(false) => extract_null_checked_vars(cond, source)
-                    .iter()
-                    .any(|v| v == var),
-                None => false,
-            },
-        )
+    guarded_nonnull_in(
+        &guard_dominance::dominating_conditions_with_branches(site),
+        var,
+        source,
+    )
+}
+
+/// [`guarded_nonnull_at`] over a site's dominating conditions and their
+/// branches, already collected with
+/// [`guard_dominance::dominating_conditions_with_branches`]. The collection
+/// is the expensive half and depends only on the site, so the call-site
+/// collector below gathers it once per call and asks about each argument.
+fn guarded_nonnull_in(dominators: &[(Node, Option<bool>)], var: &str, source: &str) -> bool {
+    dominators.iter().any(|(cond, branch)| match branch {
+        Some(true) => condition_true_implies_nonnull(cond, var, source),
+        Some(false) => extract_null_checked_vars(cond, source)
+            .iter()
+            .any(|v| v == var),
+        None => false,
+    })
 }
 
 fn collect_assignments_recursive(
@@ -3785,6 +3915,11 @@ fn collect_call_expression_locals(
     let mut arg_pointee_states = Vec::new();
     let mut has_field_states = false;
     let mut has_pointee_states = false;
+    // The conditions dominating this call, collected once for all of its
+    // arguments and only if one of them asks (see `infer_call_arg_state`).
+    // Every argument sits inside the call, so the set is the same whichever
+    // argument is the site.
+    let mut dominators: Option<Vec<(Node, Option<bool>)>> = None;
     for i in 0..args_node.child_count() {
         let Some(arg) = args_node.child(i) else {
             continue;
@@ -3792,7 +3927,12 @@ fn collect_call_expression_locals(
         if matches!(arg.kind(), "," | "(" | ")") {
             continue;
         }
-        arg_states.push(infer_call_arg_state(&arg, source, local_states));
+        arg_states.push(infer_call_arg_state(
+            &arg,
+            source,
+            local_states,
+            &mut dominators,
+        ));
 
         // Collect struct field null states for this argument
         let fields = collect_arg_field_states(&arg, source, local_states);
@@ -3827,10 +3967,11 @@ fn collect_call_expression_locals(
 
 /// Infer a call argument's null state: literal-level inference first, then
 /// fall back to the local-variable state table for plain identifiers.
-fn infer_call_arg_state(
-    arg: &Node,
+fn infer_call_arg_state<'a>(
+    arg: &Node<'a>,
     source: &str,
     local_states: &HashMap<String, NullState>,
+    dominators: &mut Option<Vec<(Node<'a>, Option<bool>)>>,
 ) -> NullState {
     let state = function_summary::infer_arg_null_state(arg, source);
     if state != NullState::Unknown {
@@ -3846,8 +3987,12 @@ fn infer_call_arg_state(
         // so it cannot distinguish a guarded read from an unguarded one. Ask
         // at this argument's own position before letting a maybe-null table
         // entry vote.
-        if tabled != NullState::NotNull && guarded_nonnull_at(arg, name, source) {
-            return NullState::NotNull;
+        if tabled != NullState::NotNull {
+            let dominators = dominators
+                .get_or_insert_with(|| guard_dominance::dominating_conditions_with_branches(arg));
+            if guarded_nonnull_in(dominators, name, source) {
+                return NullState::NotNull;
+            }
         }
         return tabled;
     }
@@ -4834,7 +4979,11 @@ fn collect_from_struct_tag_typedef(
 /// (`dead_regions`, task 1142): hostap redefines `u8`..`u64` under
 /// `_MSC_VER` and `__vxworks` before the real `#ifndef WPA_TYPES_DEFINED`
 /// arm, and first-wins used to keep the Windows spelling.
-fn collect_typedef_aliases(node: &Node, source: &str, typedef_types: &mut HashMap<String, String>) {
+pub(crate) fn collect_typedef_aliases(
+    node: &Node,
+    source: &str,
+    typedef_types: &mut HashMap<String, String>,
+) {
     let dead = DeadRegions::of(source);
     collect_typedef_aliases_rec(node, source, &dead, typedef_types);
 }
@@ -5258,15 +5407,19 @@ pub fn resolve_includes(
             let header_path = resolved.to_string_lossy().to_string();
             if let Ok((htree, hsource)) = parser.parse_file(&header_path) {
                 let root = htree.root_node();
-                collect_function_names(&root, &hsource, &mut context.known_functions);
+                collect_function_names(
+                    &root,
+                    &hsource,
+                    Arc::make_mut(&mut context.known_functions),
+                );
                 collect_header_declarations(
                     &root,
                     &hsource,
-                    &mut context.header_declared_functions,
+                    Arc::make_mut(&mut context.header_declared_functions),
                 );
                 // Collect macro constants and aliases from resolved headers
                 let header_macros = const_eval::collect_macro_constants(&root, &hsource);
-                context.macro_constants.extend(header_macros.clone());
+                Arc::make_mut(&mut context.macro_constants).extend(header_macros.clone());
 
                 let header_aliases = const_eval::collect_macro_aliases(&root, &hsource);
                 let header_taint_aliases: Vec<String> = header_aliases
@@ -5291,19 +5444,51 @@ pub fn resolve_includes(
                     &header_function_macros,
                 );
                 for (name, summary) in file_summaries {
-                    context.function_summaries.insert(name, summary);
+                    Arc::make_mut(&mut context.function_summaries).insert(name, summary);
                 }
-                context.macro_aliases.extend(header_aliases);
+                Arc::make_mut(&mut context.macro_aliases).extend(header_aliases);
+                let header_audit =
+                    crate::analyze::macro_gaps::audit_definitions(&hsource, &header_path);
+                for (name, indices) in ast_utils::restrict_parameter_indices(&root, &hsource) {
+                    context.restrict_params.entry(name).or_insert(indices);
+                }
+                merge_documented_params(
+                    &mut context.documented_nonnull_params,
+                    ast_utils::documented_nonnull_parameters(&root, &hsource),
+                );
                 for (name, m) in header_function_macros {
-                    context.function_macros.entry(name).or_insert(m);
+                    match Arc::make_mut(&mut context.function_macros).entry(name) {
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(m);
+                        }
+                        std::collections::hash_map::Entry::Occupied(e)
+                            if !e.get().same_expansion(&m) =>
+                        {
+                            let line = header_audit.kept_lines.get(e.key()).copied().unwrap_or(0);
+                            context.macro_gaps.push(
+                                crate::analyze::macro_gaps::conflicting_definition(
+                                    e.key(),
+                                    &header_path,
+                                    line,
+                                    "a file scanned earlier",
+                                ),
+                            );
+                        }
+                        std::collections::hash_map::Entry::Occupied(_) => {}
+                    }
                 }
+                context.macro_gaps.extend(header_audit.gaps);
 
                 // Collect struct field types from resolved headers
-                collect_struct_definitions(&root, &hsource, &mut context.struct_field_types);
+                collect_struct_definitions(
+                    &root,
+                    &hsource,
+                    Arc::make_mut(&mut context.struct_field_types),
+                );
                 collect_packed_structs(
                     &root,
                     &hsource,
-                    &mut context.packed_structs,
+                    Arc::make_mut(&mut context.packed_structs),
                     &mut packed_struct_candidates,
                 );
                 crate::utility::cert_c::ast_utils::collect_packed_macro_names(
@@ -5312,11 +5497,11 @@ pub fn resolve_includes(
                 );
                 crate::utility::cert_c::ast_utils::collect_defined_macro_names(
                     &hsource,
-                    &mut context.defined_macro_names,
+                    Arc::make_mut(&mut context.defined_macro_names),
                 );
                 crate::utility::cert_c::ast_utils::collect_unused_attribute_macro_names(
                     &hsource,
-                    &mut context.unused_attribute_macros,
+                    Arc::make_mut(&mut context.unused_attribute_macros),
                 );
 
                 // Enqueue transitive includes from this header
@@ -5325,14 +5510,23 @@ pub fn resolve_includes(
                     queue.push((inc, header_dir.clone()));
                 }
             }
-        } else if unresolved_seen.insert((include_path.clone(), source_dir.clone()))
-            && is_missing_project_header(
+        } else if unresolved_seen.insert((include_path.clone(), source_dir.clone())) {
+            let project_header = is_missing_project_header(
                 &include_path,
                 source_dir.as_deref(),
                 &project_search_paths,
-            )
-        {
-            context.unresolved_project_headers.insert(include_path);
+            );
+            context
+                .macro_gaps
+                .push(crate::analyze::macro_gaps::unresolved_include(
+                    &include_path,
+                    None,
+                    source_dir.as_deref(),
+                    project_header,
+                ));
+            if project_header {
+                context.unresolved_project_headers.insert(include_path);
+            }
         }
     }
 
@@ -5342,7 +5536,7 @@ pub fn resolve_includes(
     // STRUCT_PACKED in utils/common.h vs. structs in common/ieee802_11_defs.h).
     for (struct_name, macro_name) in packed_struct_candidates {
         if packed_macro_names.contains(&macro_name) {
-            context.packed_structs.insert(struct_name);
+            Arc::make_mut(&mut context.packed_structs).insert(struct_name);
         }
     }
 
@@ -5352,11 +5546,11 @@ pub fn resolve_includes(
     // over the now-complete alias map. Monotone, so a rerun is harmless
     // when nothing new resolved (task 1128).
     function_summary::propagate_transitive_frees(
-        &mut context.function_summaries,
+        Arc::make_mut(&mut context.function_summaries),
         &context.macro_aliases,
     );
     function_summary::propagate_transitive_clears(
-        &mut context.function_summaries,
+        Arc::make_mut(&mut context.function_summaries),
         &context.macro_aliases,
     );
 
@@ -5372,7 +5566,7 @@ pub fn resolve_includes(
 /// Walks `preproc_include` nodes and extracts the path string, stripping
 /// both `"..."` and `<...>` delimiters. Recurses into `preproc_*` nodes
 /// to handle conditional includes.
-fn extract_include_directives(node: &Node, source: &str) -> Vec<String> {
+pub(crate) fn extract_include_directives(node: &Node, source: &str) -> Vec<String> {
     let mut directives = Vec::new();
     extract_includes_recursive(node, source, &mut directives);
     directives
@@ -5424,7 +5618,7 @@ fn extract_includes_recursive(node: &Node, source: &str, directives: &mut Vec<St
 ///
 /// Search order: (1) source file's directory (if available), (2) each `-I`
 /// path in order. Returns the first match where the candidate is a file.
-fn resolve_header(
+pub(crate) fn resolve_header(
     include_path: &str,
     source_dir: Option<&Path>,
     include_search_paths: &[String],
@@ -5507,7 +5701,7 @@ fn project_local_search_paths(include_paths: &[String], project_roots: &[String]
 /// Requiring a directory component is what keeps this conservative: a bare
 /// `#include <stdio.h>` or `#include "config.h"` would otherwise match every
 /// search root trivially.
-fn is_missing_project_header(
+pub(crate) fn is_missing_project_header(
     include_path: &str,
     source_dir: Option<&Path>,
     include_search_paths: &[String],

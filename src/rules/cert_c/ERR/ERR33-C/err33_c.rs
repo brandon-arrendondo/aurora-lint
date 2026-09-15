@@ -32,6 +32,7 @@ use crate::utility::cert_c::ast_utils::{
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Error return type categories for CWE-253 incorrect check detection
@@ -50,16 +51,16 @@ enum ErrorReturnKind {
 }
 
 pub struct Err33C {
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
-    project_aliases: RefCell<HashMap<String, String>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    project_aliases: RefCell<Arc<HashMap<String, String>>>,
     current_aliases: RefCell<HashMap<String, String>>,
 }
 
 impl Err33C {
     pub fn new() -> Self {
         Self {
-            function_summaries: RefCell::new(HashMap::new()),
-            project_aliases: RefCell::new(HashMap::new()),
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            project_aliases: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
         }
     }

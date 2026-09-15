@@ -27,6 +27,7 @@ use crate::utility::cert_c::ast_utils::{get_node_text, is_function_parameter};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Functions that read externally-controlled data into a variable.
@@ -86,18 +87,18 @@ const TAINT_SOURCES: &[&str] = &[
 ];
 
 pub struct Env03C {
-    project_aliases: RefCell<HashMap<String, String>>,
+    project_aliases: RefCell<Arc<HashMap<String, String>>>,
     current_aliases: RefCell<HashMap<String, String>>,
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Reverse call graph: callee_name → set of caller names. Built from
     /// ProjectContext's forward `call_graph`.
-    callers: RefCell<HashMap<String, HashSet<String>>>,
+    callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// File-scope static pointer writers from prescan: global_name → writer
     /// function names. A read like `char *data = g_static;` is treated as
     /// clean iff every writer's summary has `has_env03_taint_source == false`
     /// and `returns_tainted == false`. Targets Juliet CWE-78 variant 45
     /// (goodG2BSink pattern).
-    global_writers: RefCell<HashMap<String, HashSet<String>>>,
+    global_writers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Per-file `#define NAME "string"` map for checking whether a strcpy/strcat
     /// source macro expands to an absolute path (safe) vs. a relative command.
     file_string_macros: RefCell<HashMap<String, String>>,
@@ -106,11 +107,11 @@ pub struct Env03C {
 impl Env03C {
     pub fn new() -> Self {
         Self {
-            project_aliases: RefCell::new(HashMap::new()),
+            project_aliases: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(HashMap::new()),
-            callers: RefCell::new(HashMap::new()),
-            global_writers: RefCell::new(HashMap::new()),
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            callers: RefCell::default(),
+            global_writers: RefCell::new(Arc::new(HashMap::new())),
             file_string_macros: RefCell::new(HashMap::new()),
         }
     }
@@ -150,16 +151,7 @@ impl CertRule for Env03C {
 
         // Invert the forward call_graph (caller → callees) into a reverse
         // map (callee → callers) for fast lookup.
-        let mut callers: HashMap<String, HashSet<String>> = HashMap::new();
-        for (caller, callees) in &context.call_graph {
-            for callee in callees {
-                callers
-                    .entry(callee.clone())
-                    .or_default()
-                    .insert(caller.clone());
-            }
-        }
-        *self.callers.borrow_mut() = callers;
+        *self.callers.borrow_mut() = context.callers.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {

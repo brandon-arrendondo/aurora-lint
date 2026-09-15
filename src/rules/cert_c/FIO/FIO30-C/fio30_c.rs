@@ -28,6 +28,7 @@ use crate::utility::cert_c::ast_utils;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Upper bound on pre-scan taint-propagation passes. Taint facts grow
@@ -42,12 +43,12 @@ pub struct Fio30C {
     /// flow variants put a sink helper (`badSink`/`goodG2BSink`) in a
     /// different file than its single caller, so this is the only way to
     /// know whether that caller passed tainted or literal data (task 201).
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Project-wide macro aliases from prescan (e.g. `#define LOG_FMT printf`
     /// defined in a header), merged with per-file aliases in `check` so a
     /// format-string wrapper alias defined outside the file under scan is
     /// still resolved (task 617).
-    project_macro_aliases: RefCell<HashMap<String, String>>,
+    project_macro_aliases: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Fio30C {
@@ -166,7 +167,7 @@ struct FormatStringAnalyzer {
     // `callsite_param_tainted`/`callsite_param_taint_observed` let this
     // analyzer resolve whether ANY caller anywhere in the project (not just
     // this translation unit) passes tainted data to a given parameter.
-    function_summaries: HashMap<String, FunctionSummary>,
+    function_summaries: Arc<HashMap<String, FunctionSummary>>,
 }
 
 impl FormatStringAnalyzer {
@@ -183,7 +184,7 @@ impl FormatStringAnalyzer {
             tainted_globals: HashSet::new(),
             file_scope_constants: HashMap::new(),
             called_function_names: HashSet::new(),
-            function_summaries: HashMap::new(),
+            function_summaries: Arc::default(),
         }
     }
 

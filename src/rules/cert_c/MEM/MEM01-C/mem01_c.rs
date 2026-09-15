@@ -17,12 +17,13 @@ use crate::utility::cert_c::ast_utils::{self, get_node_text};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Mem01C {
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     /// Cross-file function summaries from prescan (task 324 follow-on to 320/321).
-    cross_file_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    cross_file_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
 }
 
 /// Per-callee parameter indices confirmed to be read-only-dereferenced,
@@ -40,7 +41,7 @@ impl Mem01C {
     pub fn new() -> Self {
         Self {
             function_cfgs: RefCell::new(HashMap::new()),
-            cross_file_summaries: RefCell::new(HashMap::new()),
+            cross_file_summaries: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 

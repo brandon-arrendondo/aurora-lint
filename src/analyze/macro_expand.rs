@@ -37,6 +37,27 @@ pub struct FunctionMacro {
     pub body: String,
 }
 
+impl FunctionMacro {
+    /// Whether two definitions expand every invocation identically: same
+    /// arity and the same body once parameter names are replaced by their
+    /// positions. `#define f(a, b)` and `#define f(x, y)` with empty bodies
+    /// (mosquitto's `metrics__int_inc` stubs in two files) are the same
+    /// macro, not a conflict.
+    pub fn same_expansion(&self, other: &FunctionMacro) -> bool {
+        self.params.len() == other.params.len() && self.positional_body() == other.positional_body()
+    }
+
+    fn positional_body(&self) -> String {
+        let map: HashMap<String, String> = self
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.clone(), format!("__param{i}__")))
+            .collect();
+        substitute_params(&self.body, &map)
+    }
+}
+
 /// Maximum recursive-rescan depth (defense against pathological input; real
 /// macro nesting is shallow).
 const MAX_EXPAND_DEPTH: usize = 32;
@@ -357,10 +378,86 @@ fn join_continuation(lines: &[&str], start: usize) -> (String, usize) {
     (buf, i)
 }
 
+/// Why the collector left a function-like `#define` out of the expansion
+/// table. Every invocation of such a macro stays opaque to dataflow, which
+/// is exactly what `--report-macro-gaps` exists to surface (task 1180); the
+/// variants are the module-doc "out of scope" list, one per reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum DefineSkip {
+    /// `#define M(a, ...)` — variadic; `__VA_ARGS__` needs real cpp semantics.
+    Variadic,
+    /// The replacement list uses `#` (stringize) or `##` (token paste).
+    PasteOrStringize,
+    /// The parameter list never closes on its logical line.
+    Malformed,
+}
+
+impl DefineSkip {
+    /// One-line explanation for a report.
+    pub fn describe(self) -> &'static str {
+        match self {
+            DefineSkip::Variadic => "variadic macro (`...`/`__VA_ARGS__`) — not expanded",
+            DefineSkip::PasteOrStringize => {
+                "uses `#` (stringize) or `##` (token paste) — not expanded"
+            }
+            DefineSkip::Malformed => "parameter list never closes — not expanded",
+        }
+    }
+}
+
+/// One function-like `#define` as the line-oriented scanner saw it, before
+/// any platform-dead filtering: the name, its first physical line (1-based),
+/// and either the definition the expander would use or why it was skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedDefine {
+    /// The macro name.
+    pub name: String,
+    /// First physical line of the directive, 1-based.
+    pub line: usize,
+    /// The definition the expander would hold, or why it holds none.
+    pub outcome: Result<FunctionMacro, DefineSkip>,
+}
+
+/// Every function-like `#define` in `source`, in file order, across every
+/// preprocessor branch, with the collector's own accept/skip verdict on each.
+///
+/// This is the same line scan [`collect_function_macros`] runs; it differs
+/// only in keeping the skipped definitions and their reasons, so a report can
+/// say "this macro exists but the engine will never expand it" from the same
+/// decision the engine actually made, rather than from a second heuristic.
+pub fn scan_function_macro_defines(source: &str) -> Vec<ScannedDefine> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let (logical, next) = join_continuation(&lines, i);
+        let line = i + 1;
+        i = next;
+        if let Some((name, outcome)) = classify_define_line(&logical) {
+            out.push(ScannedDefine {
+                name,
+                line,
+                outcome,
+            });
+        }
+    }
+    out
+}
+
 /// Parse one logical line as a function-like `#define`. Returns `None` for
 /// non-directives, object-like macros, variadic macros, and macros using
 /// `#`/`##`.
 fn parse_define_line(line: &str) -> Option<(String, FunctionMacro)> {
+    let (name, outcome) = classify_define_line(line)?;
+    outcome.ok().map(|m| (name, m))
+}
+
+/// Recognize one logical line as a function-like `#define`, returning the
+/// macro name and either its definition or the reason the collector skips
+/// it. `None` means the line is not a function-like `#define` at all
+/// (non-directive, or object-like — `#define NAME (x)` with a space is an
+/// object-like macro whose body is `(x)`).
+fn classify_define_line(line: &str) -> Option<(String, Result<FunctionMacro, DefineSkip>)> {
     let s = line.trim_start();
     let s = s.strip_prefix('#')?;
     let s = s.trim_start().strip_prefix("define")?;
@@ -389,20 +486,23 @@ fn parse_define_line(line: &str) -> Option<(String, FunctionMacro)> {
     }
 
     // Parse parameter list up to the matching ')'.
-    let (params, body_start) = parse_param_list(&chars, k)?;
+    let (params, body_start) = match parse_param_list(&chars, k) {
+        Ok(v) => v,
+        Err(skip) => return Some((name, Err(skip))),
+    };
     let body_raw: String = chars[body_start..].iter().collect();
     let body = strip_comments(&body_raw).trim().to_string();
 
     if body_uses_paste_or_stringize(&body) {
-        return None;
+        return Some((name, Err(DefineSkip::PasteOrStringize)));
     }
-    Some((name, FunctionMacro { params, body }))
+    Some((name, Ok(FunctionMacro { params, body })))
 }
 
 /// Parse `(p1, p2, …)` starting at `open` (an index of `'('`). Returns the
-/// parameter names and the index just past the closing `')'`. Bails on variadic
-/// (`...`) macros (`None`).
-fn parse_param_list(chars: &[char], open: usize) -> Option<(Vec<String>, usize)> {
+/// parameter names and the index just past the closing `')'`, or the reason
+/// the list cannot be used: variadic (`...`) or never closed.
+fn parse_param_list(chars: &[char], open: usize) -> Result<(Vec<String>, usize), DefineSkip> {
     debug_assert_eq!(chars[open], '(');
     let mut params = Vec::new();
     let mut cur = String::new();
@@ -423,9 +523,9 @@ fn parse_param_list(chars: &[char], open: usize) -> Option<(Vec<String>, usize)>
                     }
                     // Variadic param → unsupported.
                     if params.iter().any(|p| p.contains("...")) {
-                        return None;
+                        return Err(DefineSkip::Variadic);
                     }
-                    return Some((params, i + 1));
+                    return Ok((params, i + 1));
                 }
                 cur.push(')');
             }
@@ -437,7 +537,7 @@ fn parse_param_list(chars: &[char], open: usize) -> Option<(Vec<String>, usize)>
         }
         i += 1;
     }
-    None // unbalanced
+    Err(DefineSkip::Malformed) // unbalanced
 }
 
 /// Remove `/* … */` and `// …` comments from a macro replacement list, so the

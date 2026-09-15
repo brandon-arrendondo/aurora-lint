@@ -11,17 +11,18 @@ use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Dcl15C {
     /// Functions declared (prototyped) in header files — public API.
-    header_declared: RefCell<HashSet<String>>,
+    header_declared: RefCell<Arc<HashSet<String>>>,
 }
 
 impl Default for Dcl15C {
     fn default() -> Self {
         Self {
-            header_declared: RefCell::new(HashSet::new()),
+            header_declared: RefCell::new(Arc::new(HashSet::new())),
         }
     }
 }

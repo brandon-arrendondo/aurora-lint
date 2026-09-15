@@ -49,6 +49,7 @@ use crate::utility::cert_c::overflow_helpers;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Int10C {
@@ -58,13 +59,13 @@ pub struct Int10C {
     /// so a multi-level, cross-file typedef family is recognized as
     /// unsigned even though `type_map` only records the alias name as
     /// written (task 657).
-    typedef_types: RefCell<HashMap<String, String>>,
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// Project-wide compile-time constants (enum constants, `#define`s,
     /// file-scope `static const`), populated by `set_project_context` and
     /// merged with per-file constants in `check`. Lets a modulo operand
     /// that's an enum constant with a provably non-negative *value* clear
     /// the check even when its enum *type* is signed (task 673).
-    project_macros: RefCell<MacroConstantMap>,
+    project_macros: RefCell<Arc<MacroConstantMap>>,
     /// `project_macros` merged with the current file's own `#define`s, kept
     /// for the duration of `check` so the VRA range lookup can resolve
     /// macro-valued identifiers the same way the rest of the rule does.
@@ -80,8 +81,8 @@ pub struct Int10C {
 impl Int10C {
     pub fn new() -> Self {
         Self {
-            typedef_types: RefCell::new(HashMap::new()),
-            project_macros: RefCell::new(MacroConstantMap::new()),
+            typedef_types: RefCell::new(Arc::new(HashMap::new())),
+            project_macros: RefCell::new(Arc::new(MacroConstantMap::new())),
             current_macros: RefCell::new(MacroConstantMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),

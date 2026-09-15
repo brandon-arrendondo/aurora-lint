@@ -21,21 +21,22 @@ use crate::utility::cert_c::declarator_utils;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Int31C {
     /// Project-wide `#define` constants, for the value-based truncation
     /// channel; the other INT rules already carry these.
-    project_macros: RefCell<MacroConstantMap>,
+    project_macros: RefCell<Arc<MacroConstantMap>>,
     /// `project_macros` merged with the current file's own defines (file wins).
     current_macros: RefCell<MacroConstantMap>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     vra_results: RefCell<HashMap<usize, RangeAnalysisResult>>,
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Reverse call graph: callee_name → set of caller names.
-    callers: RefCell<HashMap<String, HashSet<String>>>,
+    callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Globals written by a tainted function — see the INT32-C provenance gate.
-    global_writers: RefCell<HashMap<String, HashSet<String>>>,
+    global_writers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Per-function memo of risky variable names, keyed by function node id;
     /// cleared per file.
     risky_vars_cache: RefCell<HashMap<usize, HashSet<String>>>,
@@ -49,22 +50,22 @@ pub struct Int31C {
     /// `long long int` (task 664 sample) resolves to a known width
     /// instead of falling through as `None` (task 1057, third consumer
     /// of task 736's shared resolver).
-    typedef_types: RefCell<HashMap<String, String>>,
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
 }
 
 impl Int31C {
     pub fn new() -> Self {
         Self {
-            project_macros: RefCell::new(MacroConstantMap::new()),
+            project_macros: RefCell::new(Arc::new(MacroConstantMap::new())),
             current_macros: RefCell::new(MacroConstantMap::new()),
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(HashMap::new()),
-            callers: RefCell::new(HashMap::new()),
-            global_writers: RefCell::new(HashMap::new()),
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            callers: RefCell::default(),
+            global_writers: RefCell::new(Arc::new(HashMap::new())),
             risky_vars_cache: RefCell::new(HashMap::new()),
             param_names_cache: RefCell::new(HashMap::new()),
-            typedef_types: RefCell::new(HashMap::new()),
+            typedef_types: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 
@@ -734,16 +735,7 @@ impl CertRule for Int31C {
         *self.global_writers.borrow_mut() = context.global_writers.clone();
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
 
-        let mut callers: HashMap<String, HashSet<String>> = HashMap::new();
-        for (caller, callees) in &context.call_graph {
-            for callee in callees {
-                callers
-                    .entry(callee.clone())
-                    .or_default()
-                    .insert(caller.clone());
-            }
-        }
-        *self.callers.borrow_mut() = callers;
+        *self.callers.borrow_mut() = context.callers.clone();
     }
 
     fn needs_vra(&self) -> bool {

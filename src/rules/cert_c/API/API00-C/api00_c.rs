@@ -48,8 +48,8 @@ use crate::analyze::function_summary::FunctionSummary;
 use crate::analyze::null_state::condition_tests_null;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::{
-    get_function_parameters, get_node_text, get_sanitized_node_text, integer_type_width,
-    is_pointer_type, is_unsigned_type,
+    documented_nonnull_parameters, get_function_parameters, get_node_text, get_sanitized_node_text,
+    integer_type_width, is_pointer_type, is_unsigned_type, ordered_parameter_names,
 };
 use crate::utility::cert_c::float_typing::StructFieldTypes;
 use crate::utility::cert_c::guard_dominance;
@@ -59,6 +59,7 @@ use crate::utility::cert_c::pointer_typing::{self, PointerFacts};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Everything [`pointer_typing`] needs to answer "is this operand a pointer?",
@@ -81,8 +82,8 @@ struct PointerTypes<'a> {
 }
 
 pub struct Api00C {
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
-    struct_field_types: RefCell<StructFieldTypes>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
+    struct_field_types: RefCell<Arc<StructFieldTypes>>,
     pointer_facts: RefCell<PointerFacts>,
     /// Cross-file typedef alias map, reached through the shared
     /// [`overflow_helpers::resolve_typedef_chain`] before the shift-
@@ -91,16 +92,21 @@ pub struct Api00C {
     /// instead of failing the "shift by literal < width" gate and
     /// leaving the shift as unchecked (task 1057, third consumer of
     /// task 736's shared resolver).
-    typedef_types: RefCell<HashMap<String, String>>,
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
+    /// `function -> parameter indices with a documented non-NULL
+    /// precondition`, from the project pre-scan (header prototypes carry
+    /// most of them) merged with the analysed file's own doc comments.
+    documented_nonnull_params: RefCell<HashMap<String, Vec<usize>>>,
 }
 
 impl Api00C {
     pub fn new() -> Self {
         Self {
-            function_summaries: RefCell::new(HashMap::new()),
-            struct_field_types: RefCell::new(StructFieldTypes::new()),
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            struct_field_types: RefCell::new(Arc::new(StructFieldTypes::new())),
             pointer_facts: RefCell::new(PointerFacts::default()),
-            typedef_types: RefCell::new(HashMap::new()),
+            typedef_types: RefCell::new(Arc::new(HashMap::new())),
+            documented_nonnull_params: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -130,11 +136,21 @@ impl CertRule for Api00C {
         *self.function_summaries.borrow_mut() = context.function_summaries.clone();
         *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
+        *self.documented_nonnull_params.borrow_mut() = context.documented_nonnull_params.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
         *self.pointer_facts.borrow_mut() = PointerFacts::collect(node, source);
+        let mut documented = self.documented_nonnull_params.borrow().clone();
+        for (name, indices) in documented_nonnull_parameters(node, source) {
+            let entry = documented.entry(name).or_default();
+            for i in indices {
+                if !entry.contains(&i) {
+                    entry.push(i);
+                }
+            }
+        }
         let type_map = overflow_helpers::collect_variable_types(node, source);
         let struct_field_types = self.struct_field_types.borrow();
         let facts = self.pointer_facts.borrow();
@@ -150,6 +166,7 @@ impl CertRule for Api00C {
                 &func,
                 source,
                 &pointer_types,
+                &documented,
                 &mut violations,
             );
         }
@@ -163,12 +180,33 @@ impl Api00C {
         function_node: &Node,
         source: &str,
         pointer_types: &PointerTypes,
+        documented: &HashMap<String, Vec<usize>>,
         violations: &mut Vec<RuleViolation>,
     ) {
         // Skip static functions — API00-C is about public API contracts
         if Self::is_static_function(function_node, source) {
             return;
         }
+
+        // A pointer parameter whose doc comment (on this definition or on a
+        // prototype the pre-scan read) states a non-NULL precondition has
+        // its validation placed on the caller by the published contract --
+        // the "validate on one side of the interface" discipline this
+        // recommendation describes, chosen and written down. This is the
+        // function's own statement, not an inference from its callers (the
+        // task 644 blind spot), and only explicit wording counts: mbedtls's
+        // "\p ctx must be initialized" does, "The AES context to use" does
+        // not (task 1171).
+        let documented_names: HashSet<String> = documented
+            .get(&self.get_function_name(function_node, source))
+            .map(|indices| {
+                let names = ordered_parameter_names(function_node, source);
+                indices
+                    .iter()
+                    .filter_map(|&i| names.get(i).cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // NOTE (task 628): a prior version of this rule exempted
         // dispatch-table-registered callbacks here (task 594, "reachable
@@ -222,11 +260,10 @@ impl Api00C {
         // Filter for pointer parameters, excluding debug parameters only if this is a debug function
         let pointer_params: Vec<String> = params
             .iter()
-            .filter(|(name, param_type)| {
-                is_pointer_type(param_type)
-                    && !(has_debug_params && self.is_debug_parameter(name))
-                    && !self.is_callback_context_parameter(name)
-            })
+            .filter(|(_, param_type)| is_pointer_type(param_type))
+            .filter(|(name, _)| !(has_debug_params && self.is_debug_parameter(name)))
+            .filter(|(name, _)| !self.is_callback_context_parameter(name))
+            .filter(|(name, _)| !documented_names.contains(name))
             .map(|(name, _)| name.clone())
             .collect();
 
