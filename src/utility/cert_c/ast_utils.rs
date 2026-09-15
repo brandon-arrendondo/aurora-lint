@@ -2,6 +2,7 @@
 // This module provides reusable functions for navigating and extracting information from the C AST
 
 use lang_parsing_substrate::query;
+use std::collections::HashMap;
 use tree_sitter::Node;
 
 // ============================================================================
@@ -786,6 +787,81 @@ pub fn get_function_parameters(
 ) -> Option<Vec<(String, String)>> {
     let declarator = find_function_declarator(function_node)?;
     extract_parameters(&declarator, source)
+}
+
+/// For every function this file defines or declares, the indices of its
+/// parameters that carry a `restrict` qualifier (`restrict`, `__restrict`
+/// or `__restrict__`, as a `type_qualifier` anywhere in the parameter's
+/// declarator chain, so `int *restrict p` and `char *const restrict s` both
+/// count). Functions with no restrict parameter are absent. Walks
+/// `function_definition` and prototype `declaration` nodes, recursing
+/// through preprocessor and linkage blocks; a name declared more than once
+/// keeps the first form seen. This is the only fact EXP43-C needs about a
+/// callee -- a call that repeats an argument is undefined only if the
+/// parameter it lands on is restrict-qualified (aurora_lint task 1171).
+pub fn restrict_parameter_indices(root: &Node, source: &str) -> HashMap<String, Vec<usize>> {
+    fn walk(node: &Node, source: &str, out: &mut HashMap<String, Vec<usize>>) {
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else { continue };
+            match child.kind() {
+                "function_definition" | "declaration" => {
+                    if let Some(declarator) = find_function_declarator(&child) {
+                        record_restrict_params(&declarator, source, out);
+                    }
+                }
+                kind if kind.starts_with("preproc_")
+                    || kind == "linkage_specification"
+                    || kind == "declaration_list"
+                    || kind == "ERROR" =>
+                {
+                    walk(&child, source, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    fn record_restrict_params(
+        declarator: &Node,
+        source: &str,
+        out: &mut HashMap<String, Vec<usize>>,
+    ) {
+        let Some(name_node) = declarator.child_by_field_name("declarator") else {
+            return;
+        };
+        let name = match name_node.kind() {
+            "identifier" => get_node_text(&name_node, source).to_string(),
+            "parenthesized_declarator" => get_identifier_from_declarator(&name_node, source),
+            _ => return,
+        };
+        if name.is_empty() {
+            return;
+        }
+        let Some(params) = declarator.child_by_field_name("parameters") else {
+            return;
+        };
+        let indices: Vec<usize> = (0..params.named_child_count())
+            .filter_map(|i| params.named_child(i))
+            .filter(|p| p.kind() == "parameter_declaration")
+            .enumerate()
+            .filter(|(_, p)| {
+                query::find_first_descendant(*p, |n| {
+                    n.kind() == "type_qualifier"
+                        && matches!(
+                            get_node_text(&n, source),
+                            "restrict" | "__restrict" | "__restrict__"
+                        )
+                })
+                .is_some()
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if !indices.is_empty() {
+            out.entry(name).or_insert(indices);
+        }
+    }
+    let mut out = HashMap::new();
+    walk(root, source, &mut out);
+    out
 }
 
 /// Find the `function_declarator` in a function's declarator subtree. For a
