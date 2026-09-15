@@ -7,6 +7,9 @@ Setup / Running Benchmarks). This file holds only what changes what you *do*.
 
 ## Benchmark Workflow (CRITICAL)
 
+Policy record: `docs/adr/0004-postgres-is-the-single-source-of-truth.md`.
+What follows is the mechanics.
+
 ### Where benchmark data lives
 
 **Every OFFICIAL number comes from the `sqc_bench` Postgres instance**, reached
@@ -324,6 +327,7 @@ Pre-2026-04-20 task IDs survive as `plan-id:NN` tags.
 |------|----------|
 | `README.md` | Tool overview, installation, usage, CLI reference |
 | `docs/index.rst` | Developer guide: advanced usage, CI/CD, benchmarks, testing, contributing |
+| `docs/adr/*.md` | Architectural Decision Records — settled policy questions, not in the Sphinx toctree. **Read before proposing to change a rule's core behavior, disable/deprioritize a rule off a benchmark result, or otherwise relitigate something already decided.** Unlike `docs/design/`, these don't go stale — read the index at `docs/adr/README.md` first. |
 | `docs/design/*.md` | Scoping docs, not in the Sphinx toctree — read directly. **Their "Status" headers go stale once work ships**; trust `todo-sqlite-cli show <task>` instead, and check whether the feature needs a mention in `docs/cli-usage.rst`/`docs/architecture.rst`. |
 | `docs/design/internal-capability-catalog.md` | Catalog of every reusable primitive in `src/utility/cert_c/*.rs` and `src/analyze/*.rs`. **Read before writing any new AST/text heuristic.** |
 | `docs/design/gate-status-sop.md` | Weekly read on distance to the maintenance-mode gate and a publishable paper. Run it *here* — its table says which check lives in which repo. |
@@ -372,6 +376,11 @@ detection" missed it. If the catalog does not cover it, try `dossier`/`search`
 with vocabulary close to an actual doc comment, then grep
 `src/utility/cert_c/` and `src/analyze/` by what the primitive *does*.
 
+**New reusable capability that doesn't exist yet defaults to this utility
+layer, not `lang_parsing_substrate`** — see
+`docs/adr/0003-utility-layer-vs-substrate.md` for the line between the two
+and when promotion to the substrate is worth it later.
+
 ## Build & Test
 
 ```bash
@@ -382,6 +391,13 @@ cargo fmt
 ```
 
 ## Rule Implementation
+
+**Before changing a rule's detection behavior to reduce noise, or proposing
+to disable/deprioritize a rule based on its benchmark numbers, read
+`docs/adr/0001` and `docs/adr/0002`.** Both questions come up repeatedly and
+are already settled: noise gets handled by suppression/config, not by
+softening detection logic (0001), and a low real-world TP rate alone doesn't
+mean a rule is broken or unneeded (0002).
 
 **NEVER add embedded unit tests in rule implementation files:**
 - ❌ NO `#[cfg(test)]` modules in `src/rules/cert_c/*/*/*.rs`
