@@ -2198,6 +2198,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // hand back a new one, so the old allocation never leaks.
                 if was_allocated
                     && !self.freed_memory.contains_key(&var_name)
+                    && !self.escaped_memory.contains(&var_name)
                     && !self.call_releases_var(&right, source, &var_name)
                 {
                     // The old allocation is now leaked - we need to create a unique identifier for it
@@ -2213,6 +2214,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // New allocation clears freed status (variable now points to valid memory)
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
+                // ... and escaped status: whatever the name handed away, this
+                // block is a fresh one the function owns again.
+                self.escaped_memory.remove(&var_name);
 
                 let pos = right.start_position();
                 let alloc_type = self.get_allocation_type(&right, source);
@@ -2290,8 +2294,19 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// `name@line:column` alias when `refile_leak` says the old block is
     /// provably dropped rather than possibly consumed by whatever produced
     /// the new value, so the end-of-function sweep still reports it.
+    ///
+    /// "Still owned" excludes a block that has escaped. `field = p; p =
+    /// NULL;` is the ownership-transfer idiom -- store, then disown the
+    /// local -- and re-filing `p` there reported the transfer itself as the
+    /// leak (mbedtls ssl_tls.c's `peer_cert = chain; chain = NULL;`).
+    /// `detect_leaks` skips escaped names, but the `name@line:column` alias
+    /// is not one of them, so the exclusion has to happen here.
     fn rebind_name(&mut self, var_name: &str, was_allocated: bool, refile_leak: bool) {
-        if refile_leak && was_allocated && !self.freed_memory.contains_key(var_name) {
+        if refile_leak
+            && was_allocated
+            && !self.freed_memory.contains_key(var_name)
+            && !self.escaped_memory.contains(var_name)
+        {
             if let Some(old_alloc) = self.allocated_memory.get(var_name).cloned() {
                 let leaked_name = format!("{}@{}:{}", var_name, old_alloc.line, old_alloc.column);
                 self.allocated_memory.insert(leaked_name, old_alloc);
@@ -2300,6 +2315,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         self.allocated_memory.remove(var_name);
         self.freed_memory.remove(var_name);
         self.maybe_freed.remove(var_name);
+        self.escaped_memory.remove(var_name);
     }
 
     fn process_call(&mut self, node: &Node, source: &str) {
