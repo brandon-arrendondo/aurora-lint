@@ -2729,15 +2729,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         // If returning allocated memory, it escapes and shouldn't be considered a leak
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                if child.kind() == "identifier" {
-                    let var_name = ast_utils::get_node_text_owned(&child, source);
-                    if self.allocated_memory.contains_key(&var_name) {
-                        self.mark_escaped_with_aliases(&var_name);
-                    }
-                } else if self.is_allocation_call(&child, source) {
-                    // Direct return of allocation is not a leak
-                    // We don't track it since it escapes immediately
-                }
+                self.escape_returned_block(&child, source);
             }
         }
 
@@ -2767,6 +2759,32 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 suggestion: Some(format!("Free '{}' before this return statement", var_name)),
                 ..Default::default()
             });
+        }
+    }
+
+    /// Mark the block a `return` expression hands to the caller as escaped,
+    /// with its field allocations and other names (`mark_escaped_with_aliases`).
+    ///
+    /// The expression is read through parentheses and casts, and through
+    /// both arms of a conditional: hostap writes every `crypto_ec_key *`
+    /// return as `return (struct crypto_ec_key *) pkey;`, and the walk saw
+    /// a `cast_expression` where it wanted an `identifier`, so the very
+    /// statement that gives the block away was reported as leaking it.
+    fn escape_returned_block(&mut self, expr: &Node, source: &str) {
+        if expr.kind() == "conditional_expression" {
+            for field in ["consequence", "alternative"] {
+                if let Some(arm) = expr.child_by_field_name(field) {
+                    self.escape_returned_block(&arm, source);
+                }
+            }
+            return;
+        }
+        let Some((returned, false)) = strip_call_argument(*expr) else {
+            return;
+        };
+        let var_name = ast_utils::get_node_text_owned(&returned, source);
+        if self.allocated_memory.contains_key(&var_name) {
+            self.mark_escaped_with_aliases(&var_name);
         }
     }
 
