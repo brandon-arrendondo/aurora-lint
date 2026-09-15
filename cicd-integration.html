@@ -51,6 +51,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#general-strategy">General Strategy</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#github-actions">GitHub Actions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#azure-devops">Azure DevOps</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#knowing-what-the-scan-could-not-see">Knowing What the Scan Could Not See</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#sarif-integration-tips">SARIF Integration Tips</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#ci-cd-readiness">CI/CD Readiness</a></li>
 </ul>
@@ -331,6 +332,21 @@ diff-only analysis, and SARIF output for code scanning integrations.</p>
 <span class="w">            </span><span class="nt">condition</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always()</span>
 </pre></div>
 </div>
+</section>
+<section id="knowing-what-the-scan-could-not-see">
+<h2>Knowing What the Scan Could Not See<a class="headerlink" href="#knowing-what-the-scan-could-not-see" title="Link to this heading"></a></h2>
+<p>A clean scan of code the analyzer could not fully read is not the same as a
+clean scan. aurora-lint works without a preprocessor, so heavy macro use or a
+header it never found can leave parts of a tree opaque to the dataflow rules
+without any finding saying so. <code class="docutils literal notranslate"><span class="pre">--report-macro-gaps=FILE</span></code> writes where that
+happened as JSON (skipped macro definitions, unresolved <code class="docutils literal notranslate"><span class="pre">#include</span></code>s, calls
+it could not attribute) without changing a single finding; keep the file as a
+build artifact next to the SARIF, and treat a jump in its per-kind totals the
+way you would treat a jump in findings:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">aurora</span><span class="o">-</span><span class="n">lint</span> <span class="o">.</span> <span class="o">-</span><span class="n">d</span> <span class="o">.</span> <span class="o">--</span><span class="n">export</span> <span class="n">results</span><span class="o">.</span><span class="n">sarif</span> <span class="o">--</span><span class="n">report</span><span class="o">-</span><span class="n">macro</span><span class="o">-</span><span class="n">gaps</span><span class="o">=</span><span class="n">macro</span><span class="o">-</span><span class="n">gaps</span><span class="o">.</span><span class="n">json</span>
+</pre></div>
+</div>
+<p>The kinds and what each means are in <a class="reference internal" href="cli-usage.html"><span class="doc">Advanced CLI Usage</span></a>.</p>
 </section>
 <section id="sarif-integration-tips">
 <h2>SARIF Integration Tips<a class="headerlink" href="#sarif-integration-tips" title="Link to this heading"></a></h2>
