@@ -55,6 +55,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#sqlite">SQLite</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#hostap-hostapd-wpa-supplicant">hostap (hostapd / wpa_supplicant)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#second-hostap-disclosure">Second hostap disclosure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#raylib">raylib</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#combined-total">Combined total</a></li>
 </ul>
 </li>
@@ -96,14 +97,15 @@
              
   <section id="upstream-disclosures">
 <h1>Upstream Disclosures<a class="headerlink" href="#upstream-disclosures" title="Link to this heading"></a></h1>
-<p>Both of aurora-lint’s real-world benchmark projects that have gone through a
+<p>Three of aurora-lint’s real-world benchmark projects that have gone through a
 full file-at-a-time adjudication audit (see
 <a class="reference internal" href="testing-methodology.html"><span class="doc">Testing Methodology</span></a>) have produced genuine defects, reported to each
-project’s maintainers. As of 2026-09-14, <strong>27 of 27 disclosed defects across
-the two audits have been confirmed and fixed upstream</strong> — nine in SQLite,
+project’s maintainers. As of 2026-09-15, <strong>30 of 30 disclosed defects across
+the three audits have been confirmed and fixed upstream</strong> — nine in SQLite,
 eighteen in hostapd/wpa_supplicant (eight from the initial 2026-08-25
 disclosure, ten more from a 2026-09-10 follow-up — see
-<a class="reference internal" href="#second-hostap-disclosure">Second hostap disclosure</a> below).</p>
+<a class="reference internal" href="#second-hostap-disclosure">Second hostap disclosure</a> below), and three in raylib (see <a class="reference internal" href="#raylib">raylib</a>
+below).</p>
 <p>A finding being disclosed here does not always mean aurora-lint detected it.
 Adjudicating a run means a reviewer reads every flagged site against source
 to label it TP/FP; that close reading regularly surfaces genuine defects the
@@ -458,12 +460,85 @@ class the maintainer judged non-reachable in some cases were still fixed
 by Jouni for repository hygiene, in his own words: “those might as well be
 addressed even if there is no real impact at the moment.”</p>
 </section>
+<section id="raylib">
+<h2>raylib<a class="headerlink" href="#raylib" title="Link to this heading"></a></h2>
+<p>The raylib ground-truth audit (23 files in scope, commit <code class="docutils literal notranslate"><span class="pre">962bbfc</span></code>,
+adjudicated to completion under task 227) surfaced three genuine public-API
+memory-safety bugs, independent of raylib’s “load trusted assets only”
+threat model: each is reachable with ordinary caller input, each has a
+bounds-checking sibling function that already gets it right, and in one case
+the author’s own guard is present but does not actually stop the write — so
+each reads as a clear oversight rather than a design tradeoff. All three
+were audit read-throughs (task 227’s file-at-a-time review), not aurora-lint
+rule detections. Filed as three separate, minimal PRs per raylib’s own
+<code class="docutils literal notranslate"><span class="pre">CONTRIBUTING.md</span></code> (no CLA; small, one-bug-at-a-time changes preferred).
+<strong>All three merged the same day, 2026-06-24.</strong></p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 24.0%" />
+<col style="width: 46.0%" />
+<col style="width: 12.0%" />
+<col style="width: 18.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Site</p></th>
+<th class="head"><p>Defect</p></th>
+<th class="head"><p>Source</p></th>
+<th class="head"><p>PR</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rlgl.h</span></code> — <code class="docutils literal notranslate"><span class="pre">rlPushMatrix()</span></code></p></td>
+<td><p>The <code class="docutils literal notranslate"><span class="pre">RL_MAX_MATRIX_STACK_SIZE</span></code> check logs an error but does not
+return, so the matrix is still written to
+<code class="docutils literal notranslate"><span class="pre">RLGL.State.stack[stackCounter]</span></code> once the stack is full —
+an out-of-bounds write that corrupts adjacent <code class="docutils literal notranslate"><span class="pre">RLGL.State</span></code>
+fields and grows with each further push. The sibling
+<code class="docutils literal notranslate"><span class="pre">rlPopMatrix()</span></code> already guards the symmetric underflow case.</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p><a class="reference external" href="https://github.com/raysan5/raylib/pull/5935">#5935</a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rtext.c</span></code> — <code class="docutils literal notranslate"><span class="pre">TextReplaceBetween()</span></code></p></td>
+<td><p>Three <code class="docutils literal notranslate"><span class="pre">strncpy()</span></code> calls into the 1024-byte
+<code class="docutils literal notranslate"><span class="pre">static</span> <span class="pre">char</span> <span class="pre">buffer[MAX_TEXT_BUFFER_LENGTH]</span></code> are never clamped to
+the buffer size, unlike the sibling <code class="docutils literal notranslate"><span class="pre">TextReplace()</span></code>/
+<code class="docutils literal notranslate"><span class="pre">TextInsert()</span></code>, which already guard this exact case — overflows
+for sufficiently long input.</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p><a class="reference external" href="https://github.com/raysan5/raylib/pull/5936">#5936</a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rcore.c</span></code> — <code class="docutils literal notranslate"><span class="pre">GetGamepadAxisCount()</span></code> / <code class="docutils literal notranslate"><span class="pre">GetGamepadName()</span></code></p></td>
+<td><p>Both public getters index <code class="docutils literal notranslate"><span class="pre">CORE.Input.Gamepad.axisCount[gamepad]</span></code>/
+<code class="docutils literal notranslate"><span class="pre">.name[gamepad]</span></code> with an unvalidated <code class="docutils literal notranslate"><span class="pre">gamepad</span></code> argument — an
+out-of-bounds read for <code class="docutils literal notranslate"><span class="pre">gamepad</span> <span class="pre">&lt;</span> <span class="pre">0</span></code> or <code class="docutils literal notranslate"><span class="pre">gamepad</span> <span class="pre">&gt;=</span> <span class="pre">MAX_GAMEPADS</span></code>.
+Every sibling gamepad accessor already guards the index.</p></td>
+<td><p>Audit read-through (false negative)</p></td>
+<td><p><a class="reference external" href="https://github.com/raysan5/raylib/pull/5937">#5937</a></p></td>
+</tr>
+</tbody>
+</table>
+<p>All three were audit-discovered false negatives, not aurora-lint detections
+— the same honesty distinction drawn for SQLite’s and hostap’s
+read-through items above. Full technical detail (proposed fix, ASan repro,
+before/after evidence, and the raylib-specific contribution requirements
+this filing followed) is in <code class="docutils literal notranslate"><span class="pre">docs/design/raylib-upstream-bugfix-prs.md</span></code>.</p>
+<p><strong>A note on filing style specific to this project</strong>: raylib’s maintainer
+has asked that submissions avoid AI-generated descriptions, since raylib
+leans on being an approachable, educational codebase — PR text here was
+written in plain human language rather than the more detailed disclosure
+format used for SQLite/hostap/curl. Future raylib filings follow the same
+rule, and effort is reserved for defects that are either serious enough to
+clearly warrant the work regardless of writeup length, or simple enough
+that no elaborate description is needed in the first place — not the
+in-between case that would otherwise demand a long explanation.</p>
+</section>
 <section id="combined-total">
 <h2>Combined total<a class="headerlink" href="#combined-total" title="Link to this heading"></a></h2>
-<p>27 defects disclosed across the two audits, 27 fixed upstream — SQLite’s
+<p>30 defects disclosed across the three audits, 30 fixed upstream — SQLite’s
 nine the same day (most of them) or within days, hostap/wpa_supplicant’s
-first eight within two weeks and the second ten the very next day, all by
-the project’s original author and lead maintainer, Jouni Malinen.</p>
+first eight within two weeks and the second ten the very next day (both by
+the project’s original author and lead maintainer, Jouni Malinen), and
+raylib’s three the same day they were opened.</p>
 </section>
 </section>
 
