@@ -864,6 +864,218 @@ pub fn restrict_parameter_indices(root: &Node, source: &str) -> HashMap<String, 
     out
 }
 
+/// For every function this file defines or declares under a doc comment,
+/// the indices of the pointer parameters that comment states a non-NULL
+/// precondition for: a `\param`/`@param` block saying the argument "must
+/// be initialized", "must not be NULL", "must point to a valid ...",
+/// "non-NULL" and the like (the exact wording set is `states_nonnull`).
+///
+/// This is the function's own published contract -- the one place a
+/// caller-side validation discipline is written down -- and the reason
+/// API00-C and EXP34-C stop reporting mbedtls's `ctx`/`operation` parameters
+/// (aurora_lint task 1171). Deliberately NOT a caller-behaviour inference
+/// (task 644 showed those wrong 87% of the time): a parameter whose doc
+/// merely describes it ("The AES context to use") is not covered.
+pub fn documented_nonnull_parameters(root: &Node, source: &str) -> HashMap<String, Vec<usize>> {
+    fn walk(node: &Node, source: &str, out: &mut HashMap<String, Vec<usize>>) {
+        let mut prev_comment: Option<Node> = None;
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else { continue };
+            match child.kind() {
+                "comment" => {
+                    prev_comment = Some(child);
+                    continue;
+                }
+                "function_definition" | "declaration" => {
+                    if let Some(comment) = prev_comment
+                        .filter(|c| c.end_position().row + 2 >= child.start_position().row)
+                    {
+                        record_documented_params(&child, &comment, source, out);
+                    }
+                }
+                kind if kind.starts_with("preproc_")
+                    || kind == "linkage_specification"
+                    || kind == "declaration_list" =>
+                {
+                    walk(&child, source, out);
+                }
+                _ => {}
+            }
+            prev_comment = None;
+        }
+    }
+    fn record_documented_params(
+        decl: &Node,
+        comment: &Node,
+        source: &str,
+        out: &mut HashMap<String, Vec<usize>>,
+    ) {
+        let Some(declarator) = find_function_declarator(decl) else {
+            return;
+        };
+        let Some(name_node) = declarator.child_by_field_name("declarator") else {
+            return;
+        };
+        let name = match name_node.kind() {
+            "identifier" => get_node_text(&name_node, source).to_string(),
+            "parenthesized_declarator" => get_identifier_from_declarator(&name_node, source),
+            _ => return,
+        };
+        let Some(params) = declarator.child_by_field_name("parameters") else {
+            return;
+        };
+        let text = get_node_text(comment, source);
+        if !text.starts_with("/**") && !text.starts_with("/*!") && !text.starts_with("///") {
+            return;
+        }
+        let blocks = doc_param_blocks(text);
+        if blocks.is_empty() {
+            return;
+        }
+        let indices: Vec<usize> = (0..params.named_child_count())
+            .filter_map(|i| params.named_child(i))
+            .filter(|p| p.kind() == "parameter_declaration")
+            .enumerate()
+            .filter(|(_, p)| {
+                p.child_by_field_name("declarator")
+                    .map(|d| get_identifier_from_declarator(&d, source))
+                    .filter(|n| !n.is_empty())
+                    .and_then(|n| blocks.get(&n))
+                    .is_some_and(|block| states_nonnull(block))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if !indices.is_empty() {
+            let entry = out.entry(name).or_default();
+            for i in indices {
+                if !entry.contains(&i) {
+                    entry.push(i);
+                }
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    walk(root, source, &mut out);
+    out
+}
+
+/// The `\param NAME text...` blocks of a Doxygen comment, keyed by NAME,
+/// each block running to the next Doxygen command. Comment-line decoration
+/// (`*` margins) is stripped and whitespace collapsed.
+fn doc_param_blocks(comment: &str) -> HashMap<String, String> {
+    let cleaned: String = comment
+        .lines()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches("/**")
+                .trim_start_matches("/*!")
+                .trim_start_matches("///")
+                .trim_start_matches('*')
+                .trim_end_matches("*/")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut blocks = HashMap::new();
+    let mut rest = cleaned.as_str();
+    while let Some(pos) = rest.find("param") {
+        let is_command = pos > 0 && matches!(rest.as_bytes()[pos - 1], b'\\' | b'@');
+        let after = &rest[pos + "param".len()..];
+        if !is_command {
+            rest = after;
+            continue;
+        }
+        // Optional `[in]`, `[out]`, `[in,out]`.
+        let after = after.trim_start();
+        let after = match after.strip_prefix('[') {
+            Some(t) => t.split_once(']').map(|(_, t)| t).unwrap_or(""),
+            None => after,
+        };
+        let after = after.trim_start();
+        let name_end = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(after.len());
+        let (name, body) = after.split_at(name_end);
+        // The block ends at the next Doxygen command other than the inline
+        // `\c` / `\p` formatting ones.
+        let end = body
+            .char_indices()
+            .find(|&(i, c)| {
+                if c != '\\' && c != '@' {
+                    return false;
+                }
+                let word: String = body[i + 1..]
+                    .chars()
+                    .take_while(|n| n.is_ascii_alphabetic())
+                    .collect();
+                !word.is_empty() && word != "c" && word != "p"
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(body.len());
+        if !name.is_empty() {
+            blocks
+                .entry(name.to_string())
+                .or_insert_with(|| body[..end].split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+        rest = &body[end..];
+    }
+    blocks
+}
+
+/// Whether a parameter's doc block states that the argument must be valid
+/// and non-NULL.
+fn states_nonnull(block: &str) -> bool {
+    let t = block
+        .to_ascii_lowercase()
+        .replace("\\c ", "")
+        .replace("\\p ", "")
+        .replace("@c ", "");
+    [
+        "must be initialized",
+        "must have been initialized",
+        "must be a valid",
+        "must be an initialized",
+        "must point to",
+        "must be non-null",
+        "must not be null",
+        "must be a non-null",
+        "must be a pointer to",
+        "must be the address of",
+        "must be a readable",
+        "must be a writable",
+        "must be a writeable",
+        "must be readable",
+        "must be writable",
+        "must be writeable",
+        "non-null",
+        "cannot be null",
+        "may not be null",
+        "shall not be null",
+    ]
+    .iter()
+    .any(|w| t.contains(w))
+}
+
+/// The declared names of a function's parameters in declaration order, an
+/// empty string where a parameter has no name -- the same enumeration
+/// [`restrict_parameter_indices`] and [`documented_nonnull_parameters`]
+/// index by, so an index from either maps back to a name through this.
+pub fn ordered_parameter_names(function_node: &Node, source: &str) -> Vec<String> {
+    let Some(params) =
+        find_function_declarator(function_node).and_then(|d| d.child_by_field_name("parameters"))
+    else {
+        return Vec::new();
+    };
+    (0..params.named_child_count())
+        .filter_map(|i| params.named_child(i))
+        .filter(|p| p.kind() == "parameter_declaration")
+        .map(|p| {
+            p.child_by_field_name("declarator")
+                .map(|d| get_identifier_from_declarator(&d, source))
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 /// Find the `function_declarator` in a function's declarator subtree. For a
 /// function returning a non-pointer type it is a direct child of the
 /// `function_definition`; for a pointer-returning function (`char *
@@ -1996,5 +2208,50 @@ mod tests {
             "expected the ifdef-nested declaration to resolve"
         );
         assert_eq!(resolved.unwrap().kind(), "declaration");
+    }
+}
+
+#[cfg(test)]
+mod documented_precondition_tests {
+    use super::*;
+    use tree_sitter::Parser;
+
+    fn parse(code: &str) -> tree_sitter::Tree {
+        let mut parser = Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        parser.parse(code, None).unwrap()
+    }
+
+    #[test]
+    fn prototype_under_attribute_macro_with_precondition() {
+        let code = r#"
+/**
+ * \brief x
+ * \param ctx    The context. It must point to a valid context.
+ * \param mode   The mode.
+ * \param key    The key. This must be a readable buffer of \p bits bits.
+ * \param out    The output buffer.
+ * \return 0
+ */
+MBEDTLS_CHECK_RETURN_TYPICAL
+int f(struct c *ctx, int mode, const unsigned char *key, unsigned char *out);
+
+/** \param p The pointer. */
+int g(int *p);
+"#;
+        let tree = parse(code);
+        let map = documented_nonnull_parameters(&tree.root_node(), code);
+        assert_eq!(map.get("f"), Some(&vec![0, 2]));
+        assert_eq!(map.get("g"), None);
+    }
+
+    #[test]
+    fn param_blocks_end_at_the_next_command() {
+        let blocks = doc_param_blocks(
+            "/** \\param a The a. \\param[in] b Must not be \\c NULL. \\return 0 */",
+        );
+        assert_eq!(blocks.get("a").map(String::as_str), Some("The a."));
+        assert!(states_nonnull(blocks.get("b").unwrap()));
+        assert!(!states_nonnull(blocks.get("a").unwrap()));
     }
 }
