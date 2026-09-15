@@ -4,7 +4,11 @@
 use super::super::{CertRule, RuleViolation};
 use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{get_node_text, resolve_identifier_declarator};
+use crate::utility::cert_c::ast_utils::{
+    find_containing_function, get_node_text, resolve_field_expression_type,
+    resolve_identifier_declarator,
+};
+use crate::utility::cert_c::float_typing::collect_variable_types;
 use crate::utility::cert_c::overflow_helpers::resolve_typedef_chain;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
@@ -24,6 +28,19 @@ pub struct Int02C {
     /// header sweep); a typedef declared in the translation unit being scanned
     /// has to resolve either way.
     visible_typedefs: RefCell<HashMap<String, String>>,
+    /// `struct tag -> {field -> type text}` from the prescan, so a field
+    /// operand (`hdr->length`) can be resolved to the type it is declared
+    /// with rather than skipped.
+    struct_field_types: RefCell<Arc<HashMap<String, HashMap<String, String>>>>,
+    /// The project's struct fields merged with this file's own, rebuilt per
+    /// file for the same reason as `visible_typedefs`: a struct declared in
+    /// the translation unit being scanned has to resolve whether or not a
+    /// prescan supplied one.
+    visible_struct_fields: RefCell<HashMap<String, HashMap<String, String>>>,
+    /// Per-function `name -> type` maps, keyed by the function node's id.
+    /// `resolve_field_expression_type` needs one, and rebuilding it for every
+    /// field operand in a large function would be quadratic.
+    function_type_maps: RefCell<HashMap<usize, HashMap<String, String>>>,
 }
 
 /// Integer conversion rank, coarse enough for the only two questions this
@@ -72,6 +89,7 @@ impl CertRule for Int02C {
 
     fn set_project_context(&self, context: &ProjectContext) {
         *self.typedef_types.borrow_mut() = context.typedef_types.clone();
+        *self.struct_field_types.borrow_mut() = context.struct_field_types.clone();
     }
 
     // Every question here is answered from the type the operand's own
@@ -91,6 +109,8 @@ impl CertRule for Int02C {
     // real-world findings ever adjudicated against that version were false.
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
         self.rebuild_visible_typedefs(node, source);
+        self.rebuild_visible_struct_fields(node, source);
+        self.function_type_maps.borrow_mut().clear();
 
         for expr in query::find_descendants_of_kind(*node, "binary_expression") {
             let Some(op) = expr.child_by_field_name("operator") else {
@@ -223,17 +243,37 @@ impl Int02C {
 /// this rule's previous false-positive population.
 impl Int02C {
     /// Project aliases plus this file's own, so a typedef is resolvable
-    /// whether or not a prescan supplied one. Project entries win: the prescan
-    /// resolves a name redefined across platform `#if` arms, which a
-    /// single-file view cannot.
+    /// whether or not a prescan supplied one.
+    ///
+    /// THIS FILE'S OWN DEFINITION WINS. The project map is keyed by NAME
+    /// across the whole tree, and a name is not a type: two translation units
+    /// may spell the same alias differently, and the one in scope here is the
+    /// one this file declares. The project map is the fallback, for a name
+    /// this file only receives through a header — headers are not expanded
+    /// when a file is parsed, so the collector cannot see those.
     fn rebuild_visible_typedefs(&self, node: &Node, source: &str) {
         let mut merged: HashMap<String, String> = (**self.typedef_types.borrow()).clone();
         let mut file_local = HashMap::new();
         crate::analyze::prescan::collect_typedef_aliases(node, source, &mut file_local);
-        for (name, target) in file_local {
-            merged.entry(name).or_insert(target);
-        }
+        merged.extend(file_local);
         *self.visible_typedefs.borrow_mut() = merged;
+    }
+
+    /// Project struct fields plus this file's own, this file's winning for the
+    /// same reason as its typedefs — and here the reason is demonstrable. The
+    /// prescan map is keyed by struct TAG across the whole tree, and a tag is
+    /// not a type: curl defines two different `struct h3_stream_ctx`, one per
+    /// QUIC backend, whose `id` field is `uint64_t` in one and `int64_t` in
+    /// the other. With the project map winning, the ngtcp2 definition answered
+    /// for the quiche file and produced a signed/unsigned comparison that is
+    /// not in the code.
+    fn rebuild_visible_struct_fields(&self, node: &Node, source: &str) {
+        let mut merged: HashMap<String, HashMap<String, String>> =
+            (**self.struct_field_types.borrow()).clone();
+        let mut file_local = HashMap::new();
+        crate::analyze::prescan::collect_struct_definitions(node, source, &mut file_local);
+        merged.extend(file_local);
+        *self.visible_struct_fields.borrow_mut() = merged;
     }
 
     fn operand_int_type(&self, node: &Option<Node>, source: &str) -> Option<IntType> {
@@ -241,10 +281,70 @@ impl Int02C {
         while node.kind() == "parenthesized_expression" {
             node = node.named_child(0)?;
         }
-        if node.kind() != "identifier" {
+        match node.kind() {
+            "identifier" => self.declared_int_type(&node, get_node_text(&node, source), source),
+            "field_expression" => self.field_int_type(&node, source),
+            "subscript_expression" => self.element_int_type(&node, source),
+            "call_expression" => self.call_result_int_type(&node, source),
+            // `sizeof x` is size_t by definition, whatever x is.
+            "sizeof_expression" => classify("size_t"),
+            // A cast states the conversion, which is what INT02-C asks for.
+            // A literal, a compound expression or anything else is not a type
+            // this rule can name, and guessing is what produced its previous
+            // false-positive population.
+            _ => None,
+        }
+    }
+
+    /// `hdr->length` — the type the struct field is declared with.
+    fn field_int_type(&self, node: &Node, source: &str) -> Option<IntType> {
+        let func = find_containing_function(node)?;
+        let key = func.id();
+        if !self.function_type_maps.borrow().contains_key(&key) {
+            let map = collect_variable_types(&func, source);
+            self.function_type_maps.borrow_mut().insert(key, map);
+        }
+        let maps = self.function_type_maps.borrow();
+        let type_map = maps.get(&key)?;
+        let text = resolve_field_expression_type(
+            node,
+            source,
+            type_map,
+            &self.visible_struct_fields.borrow(),
+        )?;
+        self.classify_spelling(&text)
+    }
+
+    /// `buf[i]` — the element type of the array or pointer being indexed,
+    /// which is the declaration's base type once the subscript is applied.
+    fn element_int_type(&self, node: &Node, source: &str) -> Option<IntType> {
+        let base = node.child_by_field_name("argument")?;
+        if base.kind() != "identifier" {
             return None;
         }
-        self.declared_int_type(&node, get_node_text(&node, source), source)
+        let name = get_node_text(&base, source);
+        let (decl, declarator) = resolve_identifier_declarator(&base, name, source)?;
+        if !matches!(declarator.kind(), "array_declarator" | "pointer_declarator") {
+            return None;
+        }
+        self.classify_spelling(&base_type_text(&decl, source)?)
+    }
+
+    /// The return type of a standard library function whose result type is
+    /// fixed by the standard. Only the size_t-returning ones are listed: they
+    /// are the ones that produce the classic `int i < strlen(s)` comparison.
+    /// A project-defined function is not guessed at.
+    fn call_result_int_type(&self, node: &Node, source: &str) -> Option<IntType> {
+        let function = node.child_by_field_name("function")?;
+        if function.kind() != "identifier" {
+            return None;
+        }
+        match get_node_text(&function, source) {
+            "strlen" | "strnlen" | "wcslen" | "strspn" | "strcspn" | "fread" | "fwrite" => {
+                classify("size_t")
+            }
+            _ => None,
+        }
     }
 
     /// The integer type the name is DECLARED with at this occurrence. `None`
