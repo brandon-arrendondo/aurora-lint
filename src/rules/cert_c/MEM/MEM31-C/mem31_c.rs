@@ -532,6 +532,14 @@ fn next_statement_sibling<'n>(node: &Node<'n>) -> Option<Node<'n>> {
     }
 }
 
+/// The label a `goto_statement` jumps to.
+fn goto_target(goto: &Node, source: &str) -> Option<String> {
+    (0..goto.child_count())
+        .filter_map(|i| goto.child(i))
+        .find(|child| child.kind() == "statement_identifier")
+        .map(|label| ast_utils::get_node_text_owned(&label, source))
+}
+
 fn push_children<'a>(stack: &mut Vec<Frame<'a>>, node: &Node<'a>) {
     let count = node.child_count();
     for i in (0..count).rev() {
@@ -1091,7 +1099,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// This inherits, rather than introduces, the assumption that a
     /// conditional free (`if (p) free(p);`) frees on every path into the
     /// label -- scanning a braced label body already counted those.
+    ///
+    /// A block that ends in a `goto` continues at that label: hostap's
+    /// `fail: EVP_PKEY_free(pkey); pkey = NULL; goto out;` runs `out:`'s
+    /// frees on every entry, so a jump to `fail:` reaches them too. The
+    /// jumps are resolved after every label has been scanned, since the
+    /// target may sit below the block that jumps to it.
     fn collect_label_frees(&mut self, node: &Node, source: &str) {
+        // (label, its offset, label it ends by jumping to)
+        let mut jumps: Vec<(String, usize, String)> = Vec::new();
         for label in query::find_descendants_of_kind(*node, "labeled_statement") {
             // Get the label name
             if let Some(label_node) = label.child(0) {
@@ -1103,11 +1119,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
                     // The label's own statement is only the first on its path;
                     // the rest of the cleanup block follows as siblings.
+                    let mut last = label
+                        .named_child(label.named_child_count().saturating_sub(1))
+                        .filter(|inner| inner.kind() != "statement_identifier");
                     if self.labeled_body_falls_through(&label, source) {
                         let mut next = next_statement_sibling(&label);
                         while let Some(sibling) = next {
                             if sibling.kind() != "comment" {
                                 self.collect_frees_in_label(&sibling, source, &mut freed_vars);
+                                last = Some(sibling);
                                 if !self.statement_falls_through(&sibling, source) {
                                     break;
                                 }
@@ -1115,12 +1135,42 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             next = next_statement_sibling(&sibling);
                         }
                     }
+                    if let Some(target) = last
+                        .filter(|stmt| stmt.kind() == "goto_statement")
+                        .and_then(|stmt| goto_target(&stmt, source))
+                    {
+                        jumps.push((label_name.clone(), label.start_byte(), target));
+                    }
 
                     self.label_frees
                         .entry(label_name)
                         .or_default()
                         .push((label.start_byte(), freed_vars));
                 }
+            }
+        }
+
+        // Resolve each jump to the frees of the block it lands in, following
+        // a chain of them. A bounded pass count stands in for a cycle check:
+        // `a: goto b; b: goto a;` is an infinite loop in the program too.
+        for _ in 0..jumps.len() {
+            let mut grew = false;
+            for (label, offset, target) in &jumps {
+                let Some(reached) = self.label_frees_for(target, *offset).cloned() else {
+                    continue;
+                };
+                if let Some((_, frees)) = self
+                    .label_frees
+                    .get_mut(label)
+                    .and_then(|blocks| blocks.iter_mut().find(|(at, _)| at == offset))
+                {
+                    let before = frees.len();
+                    frees.extend(reached);
+                    grew |= frees.len() != before;
+                }
+            }
+            if !grew {
+                break;
             }
         }
     }
@@ -1765,6 +1815,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             saved_state.restore(analyzer);
         } else if true_has_return {
             else_state.restore(analyzer);
+            // With no else, the fall-through path is the pre-branch path,
+            // and that includes what it held: `if (!ctx->ctx) { free(ctx);
+            // ctx = NULL; goto fail; }` dropped `ctx` from the allocation
+            // records for the rest of the function, so a later `return ctx`
+            // no longer escaped the fields hanging off it.
+            if !else_clause_present {
+                analyzer.allocated_memory = saved_allocated.clone();
+            }
         } else if else_has_return {
             true_state.restore(analyzer);
         } else if else_clause_present {
@@ -1847,15 +1905,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// freed at the target label.
     fn analyze_goto(&mut self, node: &Node, source: &str) {
         // First, find the target label
-        let mut target_label = String::new();
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "statement_identifier" {
-                    target_label = ast_utils::get_node_text_owned(&child, source);
-                    break;
-                }
-            }
-        }
+        let target_label = goto_target(node, source).unwrap_or_default();
 
         self.record_goto_entry_state(&target_label);
 
