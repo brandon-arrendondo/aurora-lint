@@ -874,12 +874,28 @@ fn analyze_function(
         // function whose body has no allocator call at all but a doc
         // comment merely *mentioning* one -- e.g. sqlite3_column_blob()'s
         // "might need to call malloc() to expand..." -- must not count.
-        let body_text_no_comments = strip_comments_multiline(body_text);
-        summary.returns_allocation = is_pointer_return
-            && (body_text_no_comments.contains("malloc(")
-                || body_text_no_comments.contains("calloc(")
-                || body_text_no_comments.contains("realloc(")
-                || body_text_no_comments.contains("aligned_alloc("));
+        //
+        // The flag is now derived from what the `return` expressions flow
+        // from, not from whether an allocator is spelled anywhere in the
+        // body (task 1217, aurora-lint). hostap's wpa_sm_write_assoc_resp_ies
+        // os_realloc()s a scratch buffer it frees on every path and returns
+        // `pos`, a cursor into the caller's buffer; the substring scan
+        // called it an allocator, and every caller's `p = ...(...)` cursor
+        // was then reported as leaked by MEM31-C. The text scan survives
+        // only as the fallback for a body whose parse recovered no `return`
+        // at all.
+        if is_pointer_return {
+            match body_returns_allocation(&body, source, text_end) {
+                Some(flows) => summary.returns_allocation = flows,
+                None => {
+                    let body_text_no_comments = strip_comments_multiline(body_text);
+                    summary.returns_allocation = body_text_no_comments.contains("malloc(")
+                        || body_text_no_comments.contains("calloc(")
+                        || body_text_no_comments.contains("realloc(")
+                        || body_text_no_comments.contains("aligned_alloc(");
+                }
+            }
+        }
 
         // Quick text scan for taint-source calls — used by ENV03-C to
         // classify callers as tainted/clean. Also matches any macro
@@ -1080,6 +1096,173 @@ fn collect_params_recursive(node: &Node, source: &str, params: &mut Vec<String>)
             }
         }
     }
+}
+/// Does some `return` in `body` hand back memory an allocator produced?
+///
+/// `Some(true)` when a returned expression, cast and parentheses
+/// peeled, is a call to an allocator or names something assigned from one
+/// (`p = malloc(n); ... return p;`, through plain identifier copies so
+/// `nbuf = realloc(p, n); p = nbuf; return p;` still counts, either arm of
+/// a `?:`, and an offset off the block -- `return a + 1`, hostap's traced
+/// os_malloc handing back the block past its bookkeeping header).
+/// `Some(false)` when every return flows from something else --
+/// a cursor into a caller's buffer, a parameter, a field of the argument --
+/// however many allocations the body makes and frees on the way. `None`
+/// when the body's parse recovered no `return` statement inside the
+/// boundary at all, which is the one case a text scan is still the better
+/// witness.
+///
+/// "Allocator" keeps the substring reach of the scan this replaces: any
+/// callee whose spelling contains `malloc`/`calloc`/`realloc`/
+/// `aligned_alloc`, so `os_realloc` and `curlx_calloc` qualify exactly as
+/// before. What changed is only that the call has to reach the return.
+///
+/// `text_end` is the same nested-function boundary the text scan honours:
+/// a sibling definition tree-sitter swallowed into this body stays
+/// outside, and a genuine nested `function_definition` node is never
+/// entered.
+fn body_returns_allocation(body: &Node, source: &str, text_end: usize) -> Option<bool> {
+    fn is_allocator_name(name: &str) -> bool {
+        name.contains("malloc")
+            || name.contains("calloc")
+            || name.contains("realloc")
+            || name.contains("aligned_alloc")
+    }
+    fn lvalue_name(node: &Node, source: &str) -> Option<String> {
+        // A declarator's `*` prefixes name nothing; peel to the identifier.
+        let mut n = *node;
+        while n.kind() == "pointer_declarator" || n.kind() == "parenthesized_declarator" {
+            n = n.child_by_field_name("declarator").or_else(|| n.child(1))?;
+        }
+        match n.kind() {
+            "identifier" | "field_expression" => {
+                Some(n.utf8_text(source.as_bytes()).ok()?.trim().to_string())
+            }
+            _ => None,
+        }
+    }
+    // One pass: every plain `lhs = rhs` and `T lhs = rhs`, plus every return.
+    fn collect<'a>(
+        node: Node<'a>,
+        source: &str,
+        text_end: usize,
+        pairs: &mut Vec<(String, Node<'a>)>,
+        returns: &mut Vec<Node<'a>>,
+    ) {
+        if node.start_byte() >= text_end || node.kind() == "function_definition" {
+            return;
+        }
+        match node.kind() {
+            "assignment_expression" => {
+                let plain = node
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "=");
+                if let (true, Some(l), Some(r)) = (
+                    plain,
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ) {
+                    if let Some(name) = lvalue_name(&l, source) {
+                        pairs.push((name, r));
+                    }
+                }
+            }
+            "init_declarator" => {
+                if let (Some(d), Some(v)) = (
+                    node.child_by_field_name("declarator"),
+                    node.child_by_field_name("value"),
+                ) {
+                    if let Some(name) = lvalue_name(&d, source) {
+                        pairs.push((name, v));
+                    }
+                }
+            }
+            "return_statement" => returns.push(node),
+            _ => {}
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect(child, source, text_end, pairs, returns);
+        }
+    }
+    let mut pairs: Vec<(String, Node)> = Vec::new();
+    let mut returns: Vec<Node> = Vec::new();
+    collect(*body, source, text_end, &mut pairs, &mut returns);
+    if returns.is_empty() {
+        return None;
+    }
+
+    /// The callees whose results `expr` may carry: the call itself; what a
+    /// name was assigned from; either arm of a `?:`; the left operand of an
+    /// offset. Casts and parentheses are peeled first.
+    fn expr_sources(
+        expr: &Node,
+        source: &str,
+        sources: &HashMap<String, HashSet<String>>,
+    ) -> HashSet<String> {
+        let e = init_state::strip_arg_casts(expr);
+        match e.kind() {
+            "call_expression" => e
+                .child_by_field_name("function")
+                .filter(|f| f.kind() == "identifier")
+                .map(|f| f.utf8_text(source.as_bytes()).unwrap_or("").to_string())
+                .into_iter()
+                .collect(),
+            "identifier" | "field_expression" => sources
+                .get(e.utf8_text(source.as_bytes()).unwrap_or("").trim())
+                .cloned()
+                .unwrap_or_default(),
+            "conditional_expression" => ["consequence", "alternative"]
+                .iter()
+                .filter_map(|f| e.child_by_field_name(f))
+                .flat_map(|a| expr_sources(&a, source, sources))
+                .collect(),
+            "binary_expression" => {
+                let op = e
+                    .child_by_field_name("operator")
+                    .map(|o| o.kind())
+                    .unwrap_or("");
+                match e.child_by_field_name("left") {
+                    Some(l) if op == "+" || op == "-" => expr_sources(&l, source, sources),
+                    _ => HashSet::new(),
+                }
+            }
+            _ => HashSet::new(),
+        }
+    }
+
+    // Which callees each name may hold the result of, through however many
+    // plain copies: `nbuf = realloc(p, n); p = nbuf;` and curl's
+    // `buf = (len < SIZE_MAX) ? curlx_malloc(len + 1) : NULL;` alike.
+    let mut sources: HashMap<String, HashSet<String>> = HashMap::new();
+    loop {
+        let mut grew = false;
+        for (name, rhs) in &pairs {
+            let found = expr_sources(rhs, source, &sources);
+            if found.is_empty() {
+                continue;
+            }
+            let entry = sources.entry(name.clone()).or_default();
+            let before = entry.len();
+            entry.extend(found);
+            grew |= entry.len() != before;
+        }
+        if !grew {
+            break;
+        }
+    }
+
+    let returned: HashSet<String> = returns
+        .iter()
+        .flat_map(|ret| {
+            (0..ret.child_count())
+                .filter_map(|i| ret.child(i))
+                .filter(|c| c.is_named())
+                .flat_map(|expr| expr_sources(&expr, source, &sources))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    Some(returned.iter().any(|c| is_allocator_name(c)))
 }
 
 /// Strip `/* ... */` and `// ...` comments from a (possibly multi-line)
@@ -2243,6 +2426,14 @@ pub fn merge_summary_variant(existing: &mut FunctionSummary, summary: FunctionSu
     // result without a check (hostap eap_teap.c:1387 recall
     // regression, task 1065 #2).
     existing.can_return_null |= summary.can_return_null;
+    // Same direction, same reason: if ANY definition linked under this name
+    // hands back a fresh block, a caller that drops the result may be
+    // leaking it, and only tracking the result can say. This was not merged
+    // at all before task 1217 (aurora-lint) -- first-inserted won -- so
+    // hostap's os_malloc was whichever of os_none.c's `return NULL` stub,
+    // os_internal.c's `return malloc(size)` and os_unix.c's traced variant
+    // the parallel walk reached first.
+    existing.returns_allocation |= summary.returns_allocation;
     existing
         .returns_from_callees
         .extend(summary.returns_from_callees);
@@ -4113,6 +4304,122 @@ mod tests {
         let summary = summaries.get("create_buffer").unwrap();
         assert!(summary.returns_allocation);
         assert!(summary.can_return_null);
+    }
+
+    /// hostap's wpa_sm_write_assoc_resp_ies shape (task 1217): a scratch
+    /// buffer is realloc()ed and freed inside, and what comes back is a
+    /// cursor into the caller's buffer. The substring scan called this an
+    /// allocator and every caller's cursor was then a "leak".
+    #[test]
+    fn test_returns_cursor_not_allocation_despite_internal_realloc() {
+        let code = r#"
+        unsigned char *write_ies(unsigned char *pos, size_t len) {
+            unsigned char *subelem = NULL;
+            unsigned char *nbuf;
+            nbuf = os_realloc(subelem, len);
+            if (!nbuf) { free(subelem); return NULL; }
+            subelem = nbuf;
+            memcpy(pos, subelem, len);
+            pos += len;
+            free(subelem);
+            return pos;
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        let summary = summaries.get("write_ies").unwrap();
+        assert!(
+            !summary.returns_allocation,
+            "returns a cursor into the caller's buffer, not the scratch block it freed"
+        );
+    }
+
+    /// The block reaches the return through a copy and a `?:`.
+    #[test]
+    fn test_returns_allocation_through_copy_and_ternary() {
+        let code = r#"
+        char *grow(char *p, size_t n, int ok) {
+            char *nbuf = realloc(p, n);
+            if (!nbuf) return NULL;
+            p = nbuf;
+            return ok ? p : NULL;
+        }
+        char *direct(size_t n) {
+            return (char *) xmalloc(n);
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        assert!(summaries.get("grow").unwrap().returns_allocation);
+        assert!(summaries.get("direct").unwrap().returns_allocation);
+    }
+
+    /// Allocating into an out-parameter and returning the input pointer is
+    /// the other common build-then-hand-off shape: the caller owns what
+    /// `*out` now points at, not what the function returned.
+    #[test]
+    fn test_returns_param_while_filling_out_param_is_not_allocation() {
+        let code = r#"
+        const char *fill(const char *name, char **out) {
+            *out = malloc(16);
+            return name;
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        assert!(!summaries.get("fill").unwrap().returns_allocation);
+    }
+
+    /// hostap's traced os_malloc: the block comes back offset past a
+    /// bookkeeping header. Still the block.
+    #[test]
+    fn test_returns_allocation_offset_past_header() {
+        let code = r#"
+        void *os_malloc(size_t size) {
+            struct trace *a = malloc(sizeof(*a) + size);
+            if (a == NULL) return NULL;
+            a->magic = 0x1234;
+            return a + 1;
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        assert!(summaries.get("os_malloc").unwrap().returns_allocation);
+    }
+
+    /// Two definitions of one name -- the `#else` stub that returns NULL
+    /// and the real one -- must union in the direction that keeps a
+    /// caller tracking the result.
+    #[test]
+    fn test_returns_allocation_unions_across_variants() {
+        let code = r#"
+        #ifdef CONFIG_NO_OS
+        void *os_malloc(size_t size) { return NULL; }
+        #else
+        void *os_malloc(size_t size) { return malloc(size); }
+        #endif
+        "#;
+        let summaries = parse_and_summarize(code);
+        assert!(summaries.get("os_malloc").unwrap().returns_allocation);
+        let mut stub = FunctionSummary::default();
+        let real = FunctionSummary {
+            returns_allocation: true,
+            ..Default::default()
+        };
+        merge_summary_variant(&mut stub, real);
+        assert!(stub.returns_allocation);
+    }
+
+    /// curl's curlx_memdup0: the allocation sits in one arm of the
+    /// initializer's `?:`.
+    #[test]
+    fn test_returns_allocation_from_ternary_initializer() {
+        let code = r#"
+        void *memdup0(const char *src, size_t length) {
+            char *buf = (length < SIZE_MAX) ? curlx_malloc(length + 1) : NULL;
+            if (!buf) return NULL;
+            buf[length] = 0;
+            return buf;
+        }
+        "#;
+        let summaries = parse_and_summarize(code);
+        assert!(summaries.get("memdup0").unwrap().returns_allocation);
     }
 
     #[test]

@@ -32,6 +32,38 @@ parameter, an unrelated identifier in a comment or string, or a
 completely different declaration in another scope — and only resolving the
 actual declaration at the specific occurrence distinguishes them.
 
+### The same defect one level up: a tag is not a type
+
+The three instances above are all *rule-local* name matching, and they look
+wrong on sight. The harder case is the same mistake made through shared
+infrastructure that looks authoritative.
+
+The prescan's `ProjectContext` maps — `struct_field_types`, `typedef_types` —
+are keyed by **name across the whole repository**: one entry per struct tag,
+one per typedef alias, for every translation unit merged together. C
+guarantees nothing of the sort. Two translation units may define entirely
+different types under the same tag, and each is correct in its own file.
+
+Found in INT02-C (aurora_lint 1213, item 3), which merged the project map
+over the file's own definitions and let the project entry win. curl defines
+two different `struct h3_stream_ctx`, one per QUIC backend, whose `id` field
+is `uint64_t` in the quiche one and `int64_t` in the ngtcp2 one. The ngtcp2
+definition answered for the quiche file, and the rule reported a
+signed/unsigned comparison between two `uint64_t` operands — a finding
+describing code that does not exist, which is exactly a misfire (ADR-0005).
+
+So: **the definition in the file being scanned wins.** The project map is the
+fallback for a tag or alias this file only receives through a header, which
+the collector cannot see because headers are not expanded when a file is
+parsed. A rule that merges these maps and lets the project side win has
+reintroduced the name-is-a-variable bug with a more respectable-looking
+source.
+
+Worth noting how it surfaced: not from a count, which looked entirely
+plausible, but from reading the individual findings against the source. A
+by-name map produces confident, well-formed, wrong answers — there is no
+volume signature to notice.
+
 ## Decision
 
 When a rule needs to know something about what an identifier occurrence
@@ -40,6 +72,11 @@ parameter vs. a local, whatever the rule needs — resolve the occurrence to
 its declaration. Never substitute a text/name match (`text.contains(name)`,
 "this spelling appeared earlier in the file," a file-wide name→fact map
 built without scope) for that resolution, even as a quick first pass.
+
+The same applies to a *type* a rule looks up by name. When consuming the
+prescan's by-name maps, the definition in the file being scanned takes
+precedence over the project-wide entry; the project map answers only for
+names the file does not define itself.
 
 If resolution is uncertain or the primitive to do it properly doesn't
 exist yet for the shape at hand, the correct behavior is to **report
@@ -70,8 +107,15 @@ three independent, costly instances of skipping it.
   neighbors from the start rather than a quick name check "for now" — all
   three instances here started as a plausible-looking shortcut and became
   a real bug that shipped for a long time before being caught.
+- Any rule consuming a prescan by-name map — `struct_field_types`,
+  `typedef_types`, and similarly-shaped tables — has the tag-is-not-a-type
+  exposure, not just the one where it was found. If a rule merges such a map
+  with the current file's own definitions, check which side wins: the file's
+  must, with the project map only a fallback for a name reached purely
+  through an included header.
 - This doesn't mean every rule needs full type inference before it can
   ship — it means the honest fallback for "I can't resolve this
   occurrence" is silence, not a guess keyed on spelling.
 - Credit: pattern identified by dev-180 across EXP05-C, INT02-C, and
-  INT16-C in the same session that produced ADR-0001/0002.
+  INT16-C in the same session that produced ADR-0001/0002; the tag-level
+  extension came out of INT02-C's recall work (1213) in the same session.

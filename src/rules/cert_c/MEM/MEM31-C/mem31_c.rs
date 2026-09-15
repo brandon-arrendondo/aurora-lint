@@ -354,6 +354,9 @@ enum Frame<'a> {
         saved_state: LeakBranchState,
         saved_allocated: HashMap<String, AllocInfo>,
         true_has_return: bool,
+        /// The branch's LAST statement leaves (return/goto/noreturn call),
+        /// as opposed to `true_has_return`'s "a return somewhere inside".
+        true_ends_by_leaving: bool,
         else_has_return: bool,
         else_clause: Option<Node<'a>>,
         truthiness_var: Option<String>,
@@ -530,6 +533,14 @@ fn next_statement_sibling<'n>(node: &Node<'n>) -> Option<Node<'n>> {
             }
         }
     }
+}
+
+/// The label a `goto_statement` jumps to.
+fn goto_target(goto: &Node, source: &str) -> Option<String> {
+    (0..goto.child_count())
+        .filter_map(|i| goto.child(i))
+        .find(|child| child.kind() == "statement_identifier")
+        .map(|label| ast_utils::get_node_text_owned(&label, source))
 }
 
 fn push_children<'a>(stack: &mut Vec<Frame<'a>>, node: &Node<'a>) {
@@ -1091,7 +1102,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// This inherits, rather than introduces, the assumption that a
     /// conditional free (`if (p) free(p);`) frees on every path into the
     /// label -- scanning a braced label body already counted those.
+    ///
+    /// A block that ends in a `goto` continues at that label: hostap's
+    /// `fail: EVP_PKEY_free(pkey); pkey = NULL; goto out;` runs `out:`'s
+    /// frees on every entry, so a jump to `fail:` reaches them too. The
+    /// jumps are resolved after every label has been scanned, since the
+    /// target may sit below the block that jumps to it.
     fn collect_label_frees(&mut self, node: &Node, source: &str) {
+        // (label, its offset, label it ends by jumping to)
+        let mut jumps: Vec<(String, usize, String)> = Vec::new();
         for label in query::find_descendants_of_kind(*node, "labeled_statement") {
             // Get the label name
             if let Some(label_node) = label.child(0) {
@@ -1103,11 +1122,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
                     // The label's own statement is only the first on its path;
                     // the rest of the cleanup block follows as siblings.
+                    let mut last = label
+                        .named_child(label.named_child_count().saturating_sub(1))
+                        .filter(|inner| inner.kind() != "statement_identifier");
                     if self.labeled_body_falls_through(&label, source) {
                         let mut next = next_statement_sibling(&label);
                         while let Some(sibling) = next {
                             if sibling.kind() != "comment" {
                                 self.collect_frees_in_label(&sibling, source, &mut freed_vars);
+                                last = Some(sibling);
                                 if !self.statement_falls_through(&sibling, source) {
                                     break;
                                 }
@@ -1115,12 +1138,42 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             next = next_statement_sibling(&sibling);
                         }
                     }
+                    if let Some(target) = last
+                        .filter(|stmt| stmt.kind() == "goto_statement")
+                        .and_then(|stmt| goto_target(&stmt, source))
+                    {
+                        jumps.push((label_name.clone(), label.start_byte(), target));
+                    }
 
                     self.label_frees
                         .entry(label_name)
                         .or_default()
                         .push((label.start_byte(), freed_vars));
                 }
+            }
+        }
+
+        // Resolve each jump to the frees of the block it lands in, following
+        // a chain of them. A bounded pass count stands in for a cycle check:
+        // `a: goto b; b: goto a;` is an infinite loop in the program too.
+        for _ in 0..jumps.len() {
+            let mut grew = false;
+            for (label, offset, target) in &jumps {
+                let Some(reached) = self.label_frees_for(target, *offset).cloned() else {
+                    continue;
+                };
+                if let Some((_, frees)) = self
+                    .label_frees
+                    .get_mut(label)
+                    .and_then(|blocks| blocks.iter_mut().find(|(at, _)| at == offset))
+                {
+                    let before = frees.len();
+                    frees.extend(reached);
+                    grew |= frees.len() != before;
+                }
+            }
+            if !grew {
+                break;
             }
         }
     }
@@ -1230,6 +1283,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     saved_state,
                     saved_allocated,
                     true_has_return,
+                    true_ends_by_leaving,
                     else_has_return,
                     else_clause,
                     truthiness_var,
@@ -1239,6 +1293,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     saved_state,
                     saved_allocated,
                     true_has_return,
+                    true_ends_by_leaving,
                     else_has_return,
                     else_clause,
                     truthiness_var,
@@ -1522,11 +1577,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         let true_has_return = true_branch
             .as_ref()
-            .map(|b| self.block_has_return(b, source))
+            .map(|b| self.branch_leaves_flow(b, source))
             .unwrap_or(false);
+        let true_ends_by_leaving = true_branch
+            .as_ref()
+            .is_some_and(|b| self.block_ends_by_leaving(b, source));
         let else_has_return = else_clause
             .as_ref()
-            .map(|e| self.block_has_return(e, source))
+            .map(|e| self.branch_leaves_flow(e, source))
             .unwrap_or(false);
 
         if let Some(ref var_name) = null_check_var {
@@ -1540,6 +1598,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             saved_state,
             saved_allocated,
             true_has_return,
+            true_ends_by_leaving,
             else_has_return,
             else_clause,
             truthiness_var,
@@ -1594,6 +1653,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         saved_state: LeakBranchState,
         saved_allocated: HashMap<String, AllocInfo>,
         true_has_return: bool,
+        true_ends_by_leaving: bool,
         else_has_return: bool,
         else_clause: Option<Node<'n>>,
         truthiness_var: Option<String>,
@@ -1632,6 +1692,18 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 &saved_state,
                 false,
             );
+            // The fall-through path is the pre-branch path, and that
+            // includes what it held: `if (!ctx->ctx) { free(ctx); ctx =
+            // NULL; goto fail; }` dropped `ctx` from the allocation records
+            // for the rest of the function, so a later `return ctx` no
+            // longer escaped the fields hanging off it. Only when the
+            // branch's LAST statement leaves: `true_has_return` is also set
+            // by a return nested somewhere inside, and a branch that
+            // allocates and then only conditionally returns did allocate on
+            // the path that falls out of it.
+            if true_ends_by_leaving {
+                self.allocated_memory = saved_allocated;
+            }
         }
     }
 
@@ -1847,15 +1919,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// freed at the target label.
     fn analyze_goto(&mut self, node: &Node, source: &str) {
         // First, find the target label
-        let mut target_label = String::new();
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "statement_identifier" {
-                    target_label = ast_utils::get_node_text_owned(&child, source);
-                    break;
-                }
-            }
-        }
+        let target_label = goto_target(node, source).unwrap_or_default();
 
         self.record_goto_entry_state(&target_label);
 
@@ -2092,6 +2156,42 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
+    /// A block stored somewhere other than a plain local -- through a
+    /// dereference (`*out = p`), into a field (`list->head = p`) or an
+    /// element (`slots[i] = p`) -- is now reachable from that place, so this
+    /// function is no longer the only owner and the walk must not report it
+    /// leaked at a later return.
+    ///
+    /// The dereference form is the out-parameter idiom -- hostap's
+    /// `*publ = pubkey; *priv = privkey; return dh;` -- and until this the
+    /// walk did not read it as an escape at all: `*out = malloc(...)` was
+    /// recorded for `record_deref_allocated_param`, and `*out = local` was
+    /// dropped on the floor. Most functions of that shape never showed the
+    /// resulting leak because the `if (!p) goto err;` guarding every such
+    /// pointer left `p` in `null_variables` for the rest of the function
+    /// (see `branch_leaves_flow`), which is the wrong reason to be right.
+    ///
+    /// The right-hand side is read through parentheses and casts:
+    /// `head->next = (struct node *) p` hands over the same block.
+    fn escape_stored_block(&mut self, left: &Node, right: &Node, source: &str) {
+        if left.kind() != "field_expression"
+            && left.kind() != "subscript_expression"
+            && left
+                .child_by_field_name("operator")
+                .map(|o| ast_utils::get_node_text(&o, source))
+                != Some("*")
+        {
+            return;
+        }
+        let Some((stored, false)) = strip_call_argument(*right) else {
+            return;
+        };
+        let stored = ast_utils::get_node_text_owned(&stored, source);
+        if self.allocated_memory.contains_key(&stored) {
+            self.mark_escaped_with_aliases(&stored);
+        }
+    }
+
     fn process_assignment(&mut self, node: &Node, source: &str) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
@@ -2104,6 +2204,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // pattern it exists to detect.
             if matches!(left.kind(), "unary_expression" | "pointer_expression") {
                 self.record_deref_allocated_param(&left, &right, source);
+                self.escape_stored_block(&left, &right, source);
                 return;
             }
 
@@ -2131,13 +2232,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             alloc_type,
                         },
                     );
-                } else if right.kind() == "identifier" {
+                } else {
                     // If right side is an allocated variable, mark it as escaped
                     // e.g., list->head = new_node (new_node escapes)
-                    let right_var = ast_utils::get_node_text_owned(&right, source);
-                    if self.allocated_memory.contains_key(&right_var) {
-                        self.mark_escaped_with_aliases(&right_var);
-                    }
+                    self.escape_stored_block(&left, &right, source);
                 }
                 return;
             }
@@ -2164,6 +2262,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // hand back a new one, so the old allocation never leaks.
                 if was_allocated
                     && !self.freed_memory.contains_key(&var_name)
+                    && !self.escaped_memory.contains(&var_name)
                     && !self.call_releases_var(&right, source, &var_name)
                 {
                     // The old allocation is now leaked - we need to create a unique identifier for it
@@ -2179,6 +2278,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // New allocation clears freed status (variable now points to valid memory)
                 self.freed_memory.remove(&var_name);
                 self.maybe_freed.remove(&var_name);
+                // ... and escaped status: whatever the name handed away, this
+                // block is a fresh one the function owns again.
+                self.escaped_memory.remove(&var_name);
 
                 let pos = right.start_position();
                 let alloc_type = self.get_allocation_type(&right, source);
@@ -2256,8 +2358,19 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// `name@line:column` alias when `refile_leak` says the old block is
     /// provably dropped rather than possibly consumed by whatever produced
     /// the new value, so the end-of-function sweep still reports it.
+    ///
+    /// "Still owned" excludes a block that has escaped. `field = p; p =
+    /// NULL;` is the ownership-transfer idiom -- store, then disown the
+    /// local -- and re-filing `p` there reported the transfer itself as the
+    /// leak (mbedtls ssl_tls.c's `peer_cert = chain; chain = NULL;`).
+    /// `detect_leaks` skips escaped names, but the `name@line:column` alias
+    /// is not one of them, so the exclusion has to happen here.
     fn rebind_name(&mut self, var_name: &str, was_allocated: bool, refile_leak: bool) {
-        if refile_leak && was_allocated && !self.freed_memory.contains_key(var_name) {
+        if refile_leak
+            && was_allocated
+            && !self.freed_memory.contains_key(var_name)
+            && !self.escaped_memory.contains(var_name)
+        {
             if let Some(old_alloc) = self.allocated_memory.get(var_name).cloned() {
                 let leaked_name = format!("{}@{}:{}", var_name, old_alloc.line, old_alloc.column);
                 self.allocated_memory.insert(leaked_name, old_alloc);
@@ -2266,6 +2379,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         self.allocated_memory.remove(var_name);
         self.freed_memory.remove(var_name);
         self.maybe_freed.remove(var_name);
+        self.escaped_memory.remove(var_name);
     }
 
     fn process_call(&mut self, node: &Node, source: &str) {
@@ -2695,15 +2809,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         // If returning allocated memory, it escapes and shouldn't be considered a leak
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                if child.kind() == "identifier" {
-                    let var_name = ast_utils::get_node_text_owned(&child, source);
-                    if self.allocated_memory.contains_key(&var_name) {
-                        self.mark_escaped_with_aliases(&var_name);
-                    }
-                } else if self.is_allocation_call(&child, source) {
-                    // Direct return of allocation is not a leak
-                    // We don't track it since it escapes immediately
-                }
+                self.escape_returned_block(&child, source);
             }
         }
 
@@ -2733,6 +2839,47 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 suggestion: Some(format!("Free '{}' before this return statement", var_name)),
                 ..Default::default()
             });
+        }
+    }
+
+    /// Mark the block a `return` expression hands to the caller as escaped,
+    /// with its field allocations and other names (`mark_escaped_with_aliases`).
+    ///
+    /// The expression is read through parentheses and casts, and through
+    /// both arms of a conditional: hostap writes every `crypto_ec_key *`
+    /// return as `return (struct crypto_ec_key *) pkey;`, and the walk saw
+    /// a `cast_expression` where it wanted an `identifier`, so the very
+    /// statement that gives the block away was reported as leaking it.
+    fn escape_returned_block(&mut self, expr: &Node, source: &str) {
+        if expr.kind() == "conditional_expression" {
+            for field in ["consequence", "alternative"] {
+                if let Some(arm) = expr.child_by_field_name(field) {
+                    self.escape_returned_block(&arm, source);
+                }
+            }
+            return;
+        }
+        // `return (char *) newptr + PREFIX_SIZE;` (valkey's zmalloc) hands
+        // out the block through an offset into it; the caller frees it
+        // through the matching subtraction.
+        if expr.kind() == "binary_expression"
+            && expr
+                .child_by_field_name("operator")
+                .is_some_and(|op| matches!(op.kind(), "+" | "-"))
+        {
+            for field in ["left", "right"] {
+                if let Some(operand) = expr.child_by_field_name(field) {
+                    self.escape_returned_block(&operand, source);
+                }
+            }
+            return;
+        }
+        let Some((returned, false)) = strip_call_argument(*expr) else {
+            return;
+        };
+        let var_name = ast_utils::get_node_text_owned(&returned, source);
+        if self.allocated_memory.contains_key(&var_name) {
+            self.mark_escaped_with_aliases(&var_name);
         }
     }
 
@@ -3098,6 +3245,58 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 )
         })
         .is_some()
+    }
+
+    /// True if an `if` branch never continues into the statement after the
+    /// `if`: it returns (`block_has_return`), or its last statement is a
+    /// `goto`.
+    ///
+    /// curl's wolfssl.c writes `if (result) { wolfSSL_SESSION_free(session);
+    /// goto out; }` with no else and frees `session` again below it, on the
+    /// path where `result` is zero. `finish_if` kept the branch's state as
+    /// the fall-through state because only a `return` counted as leaving,
+    /// so the second free read as a double free of a pointer the
+    /// fall-through path never freed. What the `goto` path itself freed is
+    /// not lost by restoring the pre-branch state: `analyze_goto` has already
+    /// folded it into the label's entry state.
+    ///
+    /// Only `goto` joins `return` here. A `break` or `continue` also ends the
+    /// branch, but the code after the loop is reached on that path too, so
+    /// its frees still belong to what follows.
+    fn branch_leaves_flow(&self, branch: &Node, source: &str) -> bool {
+        self.block_has_return(branch, source) || Self::block_ends_in_goto(branch)
+    }
+
+    /// Whether the last statement of `branch` -- an `else_clause`, a
+    /// `compound_statement`, or a single statement -- is a `goto`.
+    fn block_ends_in_goto(branch: &Node) -> bool {
+        Self::last_statement_of(branch).is_some_and(|last| last.kind() == "goto_statement")
+    }
+
+    /// Whether the last statement of `branch` leaves the flow: a `return`,
+    /// a `goto`, or a call that never returns.
+    fn block_ends_by_leaving(&self, branch: &Node, source: &str) -> bool {
+        Self::last_statement_of(branch).is_some_and(|last| {
+            matches!(last.kind(), "return_statement" | "goto_statement")
+                || crate::analyze::noreturn::is_noreturn_call_statement(
+                    &last,
+                    source,
+                    self.noreturn_names,
+                )
+        })
+    }
+
+    /// The last statement of a branch, looking inside an `else_clause` and
+    /// a `compound_statement`; a single unbraced statement is its own last.
+    fn last_statement_of<'n>(branch: &Node<'n>) -> Option<Node<'n>> {
+        let mut last = *branch;
+        while matches!(last.kind(), "else_clause" | "compound_statement") {
+            last = (0..last.named_child_count())
+                .rev()
+                .filter_map(|i| last.named_child(i))
+                .find(|child| child.kind() != "comment")?;
+        }
+        Some(last)
     }
 }
 
