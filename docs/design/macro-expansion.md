@@ -678,3 +678,46 @@ in the module docs, but sharper than that phrasing suggests: on a multi-target
 project the approximation crosses architectures, not just translation units.
 It is not a reason to avoid the flag on single-target projects; it is a reason
 not to read a multi-arch project's compile-DB delta as a straight improvement.
+
+---
+
+## 12. Surfacing the gaps (task 1180, 2026-09-15)
+
+External feedback: a user integrating aurora-lint into a strict CI pipeline had no
+way to know *where* the engine was silently blind — a variadic macro skipped,
+a definition dropped under `#ifdef _WIN32`, a header on no search path, an
+opaque call. Every one of those was a deliberate decision made somewhere in
+`macro_expand::collect_function_macros`, `DeadRegions`, or
+`prescan::resolve_includes`, and every one was discarded at the point it was
+made.
+
+`src/analyze/macro_gaps.rs` + `--report-macro-gaps[=FILE]` records them
+instead. Two design choices worth keeping:
+
+- **The report is the engine's own verdicts, not a second heuristic.**
+  `parse_define_line` was split so the line scanner returns
+  `Result<FunctionMacro, DefineSkip>` (`scan_function_macro_defines`); the
+  collector keeps the `Ok`s exactly as before and the audit keeps the `Err`s.
+  Ambiguous/conflicting definitions use `FunctionMacro::same_expansion`
+  (parameter-position-normalized bodies), so two empty stubs with different
+  parameter names are not a conflict. The invocation audit checks the same
+  tables the rules consult (`function_macros`, `macro_semantics`,
+  `known_functions`, `std_functions`, …), so a call it reports as unknown
+  really is unknown to every rule.
+- **Definition-side gaps are collected unconditionally, surfaced on demand.**
+  They are a by-product of the line scan prescan already runs, stored in
+  `ProjectContext::macro_gaps` (`serde(default)`, so cached contexts load).
+  The invocation-side audit is a separate parse-only pass over the analyzed
+  files that runs only with the flag. Nothing in analysis reads the field.
+
+What it showed on mosquitto (`-d src lib include deps`, `-I` for each):
+`config.h`'s `uthash_malloc`/`uthash_free` overrides lose to `uthash.h`'s
+defaults on scan order (a real misresolution nobody had noticed); every
+`#ifdef NO_DECLTYPE` `#else` arm in uthash/utlist is dropped as platform-dead
+because a `#define NO_DECLTYPE` in a *neutral* `#elif defined(__BORLANDC__)…`
+arm counts as evidence that it is defined (a `lang_parsing_substrate`
+question, not this repo's); and `UNUSED` was an unknown callee across the
+broker until `-I .` reached the root `config.h`. §9's open question about
+which `#if` branch is "live" is still open — this makes its cost visible per
+scan rather than answering it.
+

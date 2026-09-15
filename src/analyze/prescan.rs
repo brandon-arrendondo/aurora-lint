@@ -1,6 +1,7 @@
 use super::argument_objects::{self, ObjectFrame};
 use super::const_eval;
 use super::context::ProjectContext;
+use super::dead_regions::DeadRegions;
 use super::function_summary::{self, FunctionSummary};
 use crate::analyze::null_state::NullState;
 use crate::parser::CParser;
@@ -32,6 +33,16 @@ struct FilePrescanResult {
     macro_constants: HashMap<String, i64>,
     macro_aliases: HashMap<String, String>,
     function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro>,
+    /// Function-like `#define`s in this file the collector skipped or had
+    /// to arbitrate, and the line of the definition it kept per name — the
+    /// raw material for `--report-macro-gaps` (task 1180).
+    macro_definition_audit: crate::analyze::macro_gaps::DefinitionAudit,
+    /// `function -> restrict-qualified parameter indices` for the functions
+    /// this file defines or declares with one (task 1171).
+    restrict_params: HashMap<String, Vec<usize>>,
+    /// The file this result came from, header or not (`source_path` is
+    /// `.c`-only by design), for naming the origin of a macro definition.
+    display_path: String,
     struct_field_types: HashMap<String, HashMap<String, String>>,
     struct_typedef_aliases: HashMap<String, String>,
     typedef_types: HashMap<String, String>,
@@ -82,6 +93,9 @@ impl FilePrescanResult {
             macro_constants: HashMap::new(),
             macro_aliases: HashMap::new(),
             function_macros: HashMap::new(),
+            macro_definition_audit: Default::default(),
+            restrict_params: HashMap::new(),
+            display_path: String::new(),
             struct_field_types: HashMap::new(),
             struct_typedef_aliases: HashMap::new(),
             typedef_types: HashMap::new(),
@@ -114,6 +128,7 @@ impl FilePrescanResult {
 
 fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePrescanResult {
     let mut result = FilePrescanResult::empty();
+    result.display_path = file_path.to_string_lossy().to_string();
 
     let mut parser = match CParser::new() {
         Ok(p) => p,
@@ -155,6 +170,9 @@ fn process_file(file_path: &Path, is_header: bool, needs_vra: bool) -> FilePresc
 
         result.function_macros =
             crate::analyze::macro_expand::collect_function_macros(&root, &source);
+        result.macro_definition_audit =
+            crate::analyze::macro_gaps::audit_definitions(&source, &file_path.to_string_lossy());
+        result.restrict_params = ast_utils::restrict_parameter_indices(&root, &source);
 
         result.function_summaries = function_summary::compute_summaries(
             &root,
@@ -333,6 +351,12 @@ fn prescan_file_list(
     let mut macro_aliases: HashMap<String, String> = HashMap::new();
     let mut function_macros: HashMap<String, crate::analyze::macro_expand::FunctionMacro> =
         HashMap::new();
+    // Which file's definition `function_macros` holds per name, so a later
+    // file defining the same name differently is recorded as a conflict
+    // rather than silently losing (task 1180).
+    let mut function_macro_origin: HashMap<String, String> = HashMap::new();
+    let mut macro_gaps: Vec<crate::analyze::macro_gaps::MacroGap> = Vec::new();
+    let mut restrict_params: HashMap<String, Vec<usize>> = HashMap::new();
     let mut struct_field_types: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut struct_typedef_aliases: HashMap<String, String> = HashMap::new();
     let mut typedef_types: HashMap<String, String> = HashMap::new();
@@ -411,8 +435,36 @@ fn prescan_file_list(
 
         macro_constants.extend(r.macro_constants);
         macro_aliases.extend(r.macro_aliases);
+        let file_display = r.display_path.clone();
         for (name, m) in r.function_macros {
-            function_macros.entry(name).or_insert(m);
+            match function_macros.entry(name) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    function_macro_origin.insert(e.key().clone(), file_display.clone());
+                    e.insert(m);
+                }
+                std::collections::hash_map::Entry::Occupied(e) if !e.get().same_expansion(&m) => {
+                    let line = r
+                        .macro_definition_audit
+                        .kept_lines
+                        .get(e.key())
+                        .copied()
+                        .unwrap_or(0);
+                    macro_gaps.push(crate::analyze::macro_gaps::conflicting_definition(
+                        e.key(),
+                        &file_display,
+                        line,
+                        function_macro_origin
+                            .get(e.key())
+                            .map(String::as_str)
+                            .unwrap_or("another file"),
+                    ));
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {}
+            }
+        }
+        macro_gaps.extend(r.macro_definition_audit.gaps);
+        for (name, indices) in r.restrict_params {
+            restrict_params.entry(name).or_insert(indices);
         }
         struct_field_types.extend(r.struct_field_types);
         struct_typedef_aliases.extend(r.struct_typedef_aliases);
@@ -662,6 +714,8 @@ fn prescan_file_list(
         // Populated later by `resolve_includes`, which is the pass that
         // actually walks `#include` directives against the `-I` search path.
         unresolved_project_headers: HashSet::new(),
+        macro_gaps,
+        restrict_params,
         concurrency_reachable,
         value_only_globals,
     })
@@ -4828,18 +4882,33 @@ fn collect_from_struct_tag_typedef(
 /// signedness chain a name like `word_t` or `paddr_t` actually walks (task
 /// 657 -- see `ProjectContext::typedef_types` and
 /// `overflow_helpers::typedef_chain_is_unsigned`).
+///
+/// A typedef inside a branch the assumed platform never compiles is skipped
+/// (`dead_regions`, task 1142): hostap redefines `u8`..`u64` under
+/// `_MSC_VER` and `__vxworks` before the real `#ifndef WPA_TYPES_DEFINED`
+/// arm, and first-wins used to keep the Windows spelling.
 fn collect_typedef_aliases(node: &Node, source: &str, typedef_types: &mut HashMap<String, String>) {
+    let dead = DeadRegions::of(source);
+    collect_typedef_aliases_rec(node, source, &dead, typedef_types);
+}
+
+fn collect_typedef_aliases_rec(
+    node: &Node,
+    source: &str,
+    dead: &DeadRegions,
+    typedef_types: &mut HashMap<String, String>,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
-                "type_definition" => {
+                "type_definition" if !dead.contains_node(&child) => {
                     collect_from_simple_typedef(&child, source, typedef_types);
                 }
                 kind if kind.starts_with("preproc_")
                     || kind == "linkage_specification"
                     || kind == "declaration_list" =>
                 {
-                    collect_typedef_aliases(&child, source, typedef_types);
+                    collect_typedef_aliases_rec(&child, source, dead, typedef_types);
                 }
                 _ => {}
             }
@@ -5278,9 +5347,33 @@ pub fn resolve_includes(
                     context.function_summaries.insert(name, summary);
                 }
                 context.macro_aliases.extend(header_aliases);
-                for (name, m) in header_function_macros {
-                    context.function_macros.entry(name).or_insert(m);
+                let header_audit =
+                    crate::analyze::macro_gaps::audit_definitions(&hsource, &header_path);
+                for (name, indices) in ast_utils::restrict_parameter_indices(&root, &hsource) {
+                    context.restrict_params.entry(name).or_insert(indices);
                 }
+                for (name, m) in header_function_macros {
+                    match context.function_macros.entry(name) {
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(m);
+                        }
+                        std::collections::hash_map::Entry::Occupied(e)
+                            if !e.get().same_expansion(&m) =>
+                        {
+                            let line = header_audit.kept_lines.get(e.key()).copied().unwrap_or(0);
+                            context.macro_gaps.push(
+                                crate::analyze::macro_gaps::conflicting_definition(
+                                    e.key(),
+                                    &header_path,
+                                    line,
+                                    "a file scanned earlier",
+                                ),
+                            );
+                        }
+                        std::collections::hash_map::Entry::Occupied(_) => {}
+                    }
+                }
+                context.macro_gaps.extend(header_audit.gaps);
 
                 // Collect struct field types from resolved headers
                 collect_struct_definitions(&root, &hsource, &mut context.struct_field_types);
@@ -5309,14 +5402,23 @@ pub fn resolve_includes(
                     queue.push((inc, header_dir.clone()));
                 }
             }
-        } else if unresolved_seen.insert((include_path.clone(), source_dir.clone()))
-            && is_missing_project_header(
+        } else if unresolved_seen.insert((include_path.clone(), source_dir.clone())) {
+            let project_header = is_missing_project_header(
                 &include_path,
                 source_dir.as_deref(),
                 &project_search_paths,
-            )
-        {
-            context.unresolved_project_headers.insert(include_path);
+            );
+            context
+                .macro_gaps
+                .push(crate::analyze::macro_gaps::unresolved_include(
+                    &include_path,
+                    None,
+                    source_dir.as_deref(),
+                    project_header,
+                ));
+            if project_header {
+                context.unresolved_project_headers.insert(include_path);
+            }
         }
     }
 
@@ -5356,7 +5458,7 @@ pub fn resolve_includes(
 /// Walks `preproc_include` nodes and extracts the path string, stripping
 /// both `"..."` and `<...>` delimiters. Recurses into `preproc_*` nodes
 /// to handle conditional includes.
-fn extract_include_directives(node: &Node, source: &str) -> Vec<String> {
+pub(crate) fn extract_include_directives(node: &Node, source: &str) -> Vec<String> {
     let mut directives = Vec::new();
     extract_includes_recursive(node, source, &mut directives);
     directives
@@ -5408,7 +5510,7 @@ fn extract_includes_recursive(node: &Node, source: &str, directives: &mut Vec<St
 ///
 /// Search order: (1) source file's directory (if available), (2) each `-I`
 /// path in order. Returns the first match where the candidate is a file.
-fn resolve_header(
+pub(crate) fn resolve_header(
     include_path: &str,
     source_dir: Option<&Path>,
     include_search_paths: &[String],
@@ -5491,7 +5593,7 @@ fn project_local_search_paths(include_paths: &[String], project_roots: &[String]
 /// Requiring a directory component is what keeps this conservative: a bare
 /// `#include <stdio.h>` or `#include "config.h"` would otherwise match every
 /// search root trivially.
-fn is_missing_project_header(
+pub(crate) fn is_missing_project_header(
     include_path: &str,
     source_dir: Option<&Path>,
     include_search_paths: &[String],
@@ -5519,6 +5621,61 @@ mod tests {
         parser.set_language(&crate::parser::c_language()).unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    // -- typedef aliases under platform-conditional redefinition --
+
+    #[test]
+    fn typedef_aliases_skip_platform_dead_arms() {
+        // hostap src/utils/common.h, reduced: `u16` is defined under
+        // `_MSC_VER`, under `__vxworks`, and in the real `#ifndef
+        // WPA_TYPES_DEFINED` arm. First-wins kept `UINT16`, a Windows type
+        // nothing in a POSIX corpus defines, so every width-sensitive rule
+        // saw `u16` as unresolvable (task 1142). The `#define
+        // WPA_TYPES_DEFINED` inside each dead arm must not count as evidence
+        // against the live arm.
+        let dir = std::env::temp_dir().join("aurora-lint-prescan-platform-typedef-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("common.h"),
+            "#ifdef _MSC_VER
+             typedef UINT16 u16;
+             #define WPA_TYPES_DEFINED
+             #endif
+             #ifdef __vxworks
+             typedef UINT16 u16;
+             #define WPA_TYPES_DEFINED
+             #endif
+             #ifndef WPA_TYPES_DEFINED
+             typedef uint16_t u16;
+             #define WPA_TYPES_DEFINED
+             #endif
+             #ifdef CONFIG_WIDE_HANDLE
+             typedef unsigned long handle_t;
+             #else
+             typedef unsigned int handle_t;
+             #endif
+             #ifdef _WIN32
+             typedef unsigned long DWORD_ALIAS;
+             #endif
+",
+        )
+        .unwrap();
+        std::fs::write(dir.join("use.c"), "#include \"common.h\"\nu16 v;\n").unwrap();
+        let ctx = prescan_directories(&[dir.to_string_lossy().to_string()], None, false).unwrap();
+        assert_eq!(
+            ctx.typedef_types.get("u16").map(String::as_str),
+            Some("uint16_t")
+        );
+        // A build-config guard the profile cannot settle: first-wins as before.
+        assert_eq!(
+            ctx.typedef_types.get("handle_t").map(String::as_str),
+            Some("unsigned long")
+        );
+        // A name only the dead platform defines is absent, not misresolved.
+        assert!(!ctx.typedef_types.contains_key("DWORD_ALIAS"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -- function summary merging across variants --
