@@ -2092,6 +2092,42 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         }
     }
 
+    /// A block stored somewhere other than a plain local -- through a
+    /// dereference (`*out = p`), into a field (`list->head = p`) or an
+    /// element (`slots[i] = p`) -- is now reachable from that place, so this
+    /// function is no longer the only owner and the walk must not report it
+    /// leaked at a later return.
+    ///
+    /// The dereference form is the out-parameter idiom -- hostap's
+    /// `*publ = pubkey; *priv = privkey; return dh;` -- and until this the
+    /// walk did not read it as an escape at all: `*out = malloc(...)` was
+    /// recorded for `record_deref_allocated_param`, and `*out = local` was
+    /// dropped on the floor. Most functions of that shape never showed the
+    /// resulting leak because the `if (!p) goto err;` guarding every such
+    /// pointer left `p` in `null_variables` for the rest of the function
+    /// (see `branch_leaves_flow`), which is the wrong reason to be right.
+    ///
+    /// The right-hand side is read through parentheses and casts:
+    /// `head->next = (struct node *) p` hands over the same block.
+    fn escape_stored_block(&mut self, left: &Node, right: &Node, source: &str) {
+        if left.kind() != "field_expression"
+            && left.kind() != "subscript_expression"
+            && left
+                .child_by_field_name("operator")
+                .map(|o| ast_utils::get_node_text(&o, source))
+                != Some("*")
+        {
+            return;
+        }
+        let Some((stored, false)) = strip_call_argument(*right) else {
+            return;
+        };
+        let stored = ast_utils::get_node_text_owned(&stored, source);
+        if self.allocated_memory.contains_key(&stored) {
+            self.mark_escaped_with_aliases(&stored);
+        }
+    }
+
     fn process_assignment(&mut self, node: &Node, source: &str) {
         if let (Some(left), Some(right)) = (
             node.child_by_field_name("left"),
@@ -2104,6 +2140,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // pattern it exists to detect.
             if matches!(left.kind(), "unary_expression" | "pointer_expression") {
                 self.record_deref_allocated_param(&left, &right, source);
+                self.escape_stored_block(&left, &right, source);
                 return;
             }
 
@@ -2131,13 +2168,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                             alloc_type,
                         },
                     );
-                } else if right.kind() == "identifier" {
+                } else {
                     // If right side is an allocated variable, mark it as escaped
                     // e.g., list->head = new_node (new_node escapes)
-                    let right_var = ast_utils::get_node_text_owned(&right, source);
-                    if self.allocated_memory.contains_key(&right_var) {
-                        self.mark_escaped_with_aliases(&right_var);
-                    }
+                    self.escape_stored_block(&left, &right, source);
                 }
                 return;
             }
