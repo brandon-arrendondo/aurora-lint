@@ -372,11 +372,12 @@ enum Frame<'a> {
         else_has_return: bool,
         true_state: LeakBranchState,
     },
-    /// Reset to `pre_state` and walk the next `switch` case, once the
-    /// previous case's own subtree has fully drained.
+    /// Reset to `pre_state`/`pre_allocated` and walk the next `switch` case,
+    /// once the previous case's own subtree has fully drained.
     SwitchNextCase {
         remaining_reversed: Vec<Node<'a>>,
         pre_state: LeakBranchState,
+        pre_allocated: HashMap<String, AllocInfo>,
     },
     /// Decrement loop-nesting bookkeeping (and, for `for`, record the array
     /// alloc/free loop-condition pattern) once the loop body's own subtree
@@ -1324,7 +1325,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 Frame::SwitchNextCase {
                     remaining_reversed,
                     pre_state,
-                } => self.switch_next_case(remaining_reversed, pre_state, &mut stack),
+                    pre_allocated,
+                } => {
+                    self.switch_next_case(remaining_reversed, pre_state, pre_allocated, &mut stack)
+                }
                 Frame::ExitLoop { array_pattern } => self.exit_loop(array_pattern),
                 Frame::PreprocNextArm {
                     remaining_reversed,
@@ -1643,6 +1647,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         stack.push(Frame::SwitchNextCase {
             remaining_reversed: cases,
             pre_state: LeakBranchState::fork(self),
+            pre_allocated: self.allocated_memory.clone(),
         });
     }
 
@@ -1711,19 +1716,23 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         &mut self,
         mut remaining_reversed: Vec<Node<'n>>,
         pre_state: LeakBranchState,
+        pre_allocated: HashMap<String, AllocInfo>,
         stack: &mut Vec<Frame<'n>>,
     ) {
         if let Some(case) = remaining_reversed.pop() {
             pre_state.restore(self);
+            self.allocated_memory = pre_allocated.clone();
             stack.push(Frame::SwitchNextCase {
                 remaining_reversed,
                 pre_state: pre_state.clone(),
+                pre_allocated,
             });
             stack.push(Frame::Visit(case));
         }
         // else: no more cases - chain ends, self stays as whatever the last
         // case left it (pre-existing quirk, preserved: no merge/restore
-        // after the loop).
+        // after the loop) -- now true of allocated_memory too, consistent
+        // with LeakBranchState's own fields.
     }
 
     /// An `#if`/`#elif`/`#else` chain is not a sequence of statements: only
