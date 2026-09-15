@@ -354,6 +354,9 @@ enum Frame<'a> {
         saved_state: LeakBranchState,
         saved_allocated: HashMap<String, AllocInfo>,
         true_has_return: bool,
+        /// The branch's LAST statement leaves (return/goto/noreturn call),
+        /// as opposed to `true_has_return`'s "a return somewhere inside".
+        true_ends_by_leaving: bool,
         else_has_return: bool,
         else_clause: Option<Node<'a>>,
         truthiness_var: Option<String>,
@@ -1280,6 +1283,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     saved_state,
                     saved_allocated,
                     true_has_return,
+                    true_ends_by_leaving,
                     else_has_return,
                     else_clause,
                     truthiness_var,
@@ -1289,6 +1293,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     saved_state,
                     saved_allocated,
                     true_has_return,
+                    true_ends_by_leaving,
                     else_has_return,
                     else_clause,
                     truthiness_var,
@@ -1574,6 +1579,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             .as_ref()
             .map(|b| self.branch_leaves_flow(b, source))
             .unwrap_or(false);
+        let true_ends_by_leaving = true_branch
+            .as_ref()
+            .is_some_and(|b| self.block_ends_by_leaving(b, source));
         let else_has_return = else_clause
             .as_ref()
             .map(|e| self.branch_leaves_flow(e, source))
@@ -1590,6 +1598,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             saved_state,
             saved_allocated,
             true_has_return,
+            true_ends_by_leaving,
             else_has_return,
             else_clause,
             truthiness_var,
@@ -1644,6 +1653,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         saved_state: LeakBranchState,
         saved_allocated: HashMap<String, AllocInfo>,
         true_has_return: bool,
+        true_ends_by_leaving: bool,
         else_has_return: bool,
         else_clause: Option<Node<'n>>,
         truthiness_var: Option<String>,
@@ -1682,6 +1692,18 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 &saved_state,
                 false,
             );
+            // The fall-through path is the pre-branch path, and that
+            // includes what it held: `if (!ctx->ctx) { free(ctx); ctx =
+            // NULL; goto fail; }` dropped `ctx` from the allocation records
+            // for the rest of the function, so a later `return ctx` no
+            // longer escaped the fields hanging off it. Only when the
+            // branch's LAST statement leaves: `true_has_return` is also set
+            // by a return nested somewhere inside, and a branch that
+            // allocates and then only conditionally returns did allocate on
+            // the path that falls out of it.
+            if true_ends_by_leaving {
+                self.allocated_memory = saved_allocated;
+            }
         }
     }
 
@@ -1815,14 +1837,6 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             saved_state.restore(analyzer);
         } else if true_has_return {
             else_state.restore(analyzer);
-            // With no else, the fall-through path is the pre-branch path,
-            // and that includes what it held: `if (!ctx->ctx) { free(ctx);
-            // ctx = NULL; goto fail; }` dropped `ctx` from the allocation
-            // records for the rest of the function, so a later `return ctx`
-            // no longer escaped the fields hanging off it.
-            if !else_clause_present {
-                analyzer.allocated_memory = saved_allocated.clone();
-            }
         } else if else_has_return {
             true_state.restore(analyzer);
         } else if else_clause_present {
@@ -3256,18 +3270,33 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// Whether the last statement of `branch` -- an `else_clause`, a
     /// `compound_statement`, or a single statement -- is a `goto`.
     fn block_ends_in_goto(branch: &Node) -> bool {
+        Self::last_statement_of(branch).is_some_and(|last| last.kind() == "goto_statement")
+    }
+
+    /// Whether the last statement of `branch` leaves the flow: a `return`,
+    /// a `goto`, or a call that never returns.
+    fn block_ends_by_leaving(&self, branch: &Node, source: &str) -> bool {
+        Self::last_statement_of(branch).is_some_and(|last| {
+            matches!(last.kind(), "return_statement" | "goto_statement")
+                || crate::analyze::noreturn::is_noreturn_call_statement(
+                    &last,
+                    source,
+                    self.noreturn_names,
+                )
+        })
+    }
+
+    /// The last statement of a branch, looking inside an `else_clause` and
+    /// a `compound_statement`; a single unbraced statement is its own last.
+    fn last_statement_of<'n>(branch: &Node<'n>) -> Option<Node<'n>> {
         let mut last = *branch;
         while matches!(last.kind(), "else_clause" | "compound_statement") {
-            let Some(inner) = (0..last.named_child_count())
+            last = (0..last.named_child_count())
                 .rev()
                 .filter_map(|i| last.named_child(i))
-                .find(|child| child.kind() != "comment")
-            else {
-                return false;
-            };
-            last = inner;
+                .find(|child| child.kind() != "comment")?;
         }
-        last.kind() == "goto_statement"
+        Some(last)
     }
 }
 
