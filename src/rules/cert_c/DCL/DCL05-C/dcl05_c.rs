@@ -17,12 +17,50 @@
 //! - https://wiki.sei.cmu.edu/confluence/display/c/DCL05-C.+Use+typedefs+of+non-pointer+types+only
 
 use super::super::{CertRule, RuleViolation};
+use crate::analyze::context::ProjectContext;
 use crate::manifest::{RuleCategory, Severity};
 use crate::utility::cert_c::ast_utils::get_node_text;
+use crate::utility::cert_c::declarator_utils::{inner_declarator, pointer_typedef_names_in};
 use lang_parsing_substrate::query;
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::Arc;
 use tree_sitter::Node;
 
-pub struct Dcl05C;
+/// Win32 typedefs that are `T *` with no const on the pointee, from
+/// `<windef.h>`/`<winnt.h>`, which a scan almost never has on its include
+/// path. Facts about a named API, not a naming pattern: `LPCSTR` and the
+/// other `LPC*`/`PC*` spellings are pointer-to-const and so belong to the
+/// compliant side of the wiki's Windows example, and are left out.
+const WIN32_POINTER_TYPEDEFS: &[&str] = &[
+    "LPSTR", "LPWSTR", "LPTSTR", "PSTR", "PWSTR", "PTSTR", "PCHAR", "PWCHAR", "PUCHAR", "LPBYTE",
+    "PBYTE", "LPVOID", "PVOID", "LPWORD", "PWORD", "LPDWORD", "PDWORD", "LPLONG", "PLONG",
+    "PULONG", "LPINT", "PINT", "PUINT", "LPBOOL", "PBOOL", "PBOOLEAN", "LPHANDLE", "PHANDLE",
+    "PFLOAT", "LPPOINT", "PPOINT", "LPRECT", "PRECT", "LPSIZE", "PSIZE",
+];
+
+pub struct Dcl05C {
+    /// Names every scanned file's typedefs bind to a pointer type in this
+    /// rule's sense, from prescan (task 1188): the typedef usually lives in a
+    /// header, and `const LPPOINT pt` in a .c file is only recognisable as
+    /// "const on the pointer, not the pointee" if `LPPOINT` is known to be
+    /// one.
+    pointer_typedef_names: RefCell<Arc<HashSet<String>>>,
+}
+
+impl Dcl05C {
+    pub fn new() -> Self {
+        Self {
+            pointer_typedef_names: RefCell::default(),
+        }
+    }
+}
+
+impl Default for Dcl05C {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CertRule for Dcl05C {
     fn rule_id(&self) -> &'static str {
@@ -45,50 +83,37 @@ impl CertRule for Dcl05C {
         "DCL05-C"
     }
 
+    fn set_project_context(&self, context: &ProjectContext) {
+        *self.pointer_typedef_names.borrow_mut() = context.pointer_typedef_names.clone();
+    }
+
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {
         let mut violations = Vec::new();
 
-        // First pass: collect all pointer typedefs defined in this file
-        let mut pointer_typedefs = std::collections::HashSet::new();
-        collect_pointer_typedefs(node, source, &mut pointer_typedefs);
+        // Every pointer typedef this file can see: its own, the project's
+        // (prescan), and the Win32 ones no include path supplies.
+        let mut known_pointer_typedefs = HashSet::clone(&self.pointer_typedef_names.borrow());
+        known_pointer_typedefs.extend(WIN32_POINTER_TYPEDEFS.iter().map(|s| s.to_string()));
 
-        // Check typedef declarations
-        check_typedef_declarations(node, source, &mut violations);
-
-        // Check for usage of external pointer typedefs (from headers)
-        check_external_pointer_typedef_usage(node, source, &mut violations, &pointer_typedefs);
-
-        // Check complex function pointers
+        check_typedef_declarations(node, source, &mut violations, &mut known_pointer_typedefs);
+        check_const_qualified_pointer_typedef_use(
+            node,
+            source,
+            &mut violations,
+            &known_pointer_typedefs,
+        );
         check_complex_function_pointers(node, source, &mut violations);
 
         violations
     }
 }
 
-/// Collect every name a typedef in this file binds to a pointer type,
-/// const-qualified and function-pointer typedefs included (this is only the
-/// "defined here, so not external" set for the external-name check).
-fn collect_pointer_typedefs(
-    node: &Node,
-    source: &str,
-    pointer_typedefs: &mut std::collections::HashSet<String>,
-) {
-    for n in query::find_descendants_of_kind(*node, "type_definition") {
-        for d in typedef_declarators(&n) {
-            let shape = TypedefShape::of(&d, source);
-            if shape.is_pointer {
-                if let Some(name) = shape.name {
-                    pointer_typedefs.insert(name);
-                }
-            }
-        }
-    }
-}
-
 /// Flag `typedef T *Name;` -- a typedef that hides a pointer, so that
-/// `const Name x` const-qualifies the pointer rather than the pointee.
+/// `const Name x` const-qualifies the pointer rather than the pointee -- and
+/// add each such name to `known`.
 ///
-/// Only the typedef's own declarator chain is read. Recursing into the whole
+/// Only the typedef's own declarator chain is read
+/// ([`pointer_typedef_names_in`]). Recursing into the whole
 /// `type_definition` subtree, as this once did, reports `typedef struct s {
 /// struct s *next; } s_t;` because a struct MEMBER is a pointer, and names the
 /// first `type_identifier` it meets (the return type of a function-pointer
@@ -97,26 +122,14 @@ fn collect_pointer_typedefs(
 /// Exempt, per the wiki: a pointer to const (`typedef const POINT *LPCPOINT`,
 /// the const already sits on the pointee) and a function pointer type
 /// ("Function pointer types are an exception to this recommendation").
-fn check_typedef_declarations(node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
+fn check_typedef_declarations(
+    node: &Node,
+    source: &str,
+    violations: &mut Vec<RuleViolation>,
+    known: &mut HashSet<String>,
+) {
     for n in query::find_descendants_of_kind(*node, "type_definition") {
-        // `typedef BOOL (WINAPI *PF)(int)` with the calling-convention macro
-        // unresolved leaves an ERROR where the declarator should be; whatever
-        // it declares is not readable. An ERROR buried in a struct body is a
-        // different matter and does not disqualify the typedef's own name.
-        if has_direct_error_child(&n) {
-            continue;
-        }
-        let pointee_is_const = has_const_qualifier(&n);
-        for d in typedef_declarators(&n) {
-            if d.has_error() {
-                continue;
-            }
-            let shape = TypedefShape::of(&d, source);
-            if !shape.is_pointer || shape.is_function || pointee_is_const {
-                continue;
-            }
-            let typedef_name = shape.name.unwrap_or_else(|| "unknown".to_string());
-
+        for typedef_name in pointer_typedef_names_in(&n, source) {
             violations.push(RuleViolation {
                 rule_id: "DCL05-C".to_string(),
                 file_path: "".to_string(),
@@ -134,32 +147,88 @@ fn check_typedef_declarations(node: &Node, source: &str, violations: &mut Vec<Ru
                 suggestion: Some("Use typedef of non-pointer type and declare pointers explicitly at point of use".to_string()),
                 requires_manual_review: Some(false),
             });
+            known.insert(typedef_name);
         }
     }
 }
 
-/// The declarators a `type_definition` binds: one per name, so
-/// `typedef struct tagPOINT { ... } POINT, *LPPOINT;` yields both, and only
-/// `*LPPOINT` is a pointer.
-fn typedef_declarators<'a>(n: &Node<'a>) -> Vec<Node<'a>> {
-    let mut cursor = n.walk();
-    let found: Vec<Node<'a>> = n
-        .children_by_field_name("declarator", &mut cursor)
-        .collect();
-    found
+/// Flag `const Name x` where `Name` is a known pointer typedef: the wiki's
+/// Windows noncompliant example, `void func(const LPPOINT pt)`, where the
+/// `const` lands on the pointer and `pt->x = 0` still compiles.
+///
+/// This is the whole of what the wiki says about USING a pointer typedef.
+/// A bare `LPSTR lpBuffer` parameter is not called noncompliant anywhere on
+/// the page -- the recommendation is about what to typedef, and the Win32
+/// API's choices are not the caller's -- so it is not flagged. The earlier
+/// version of this check guessed pointer-ness from the NAME (`P` + capital,
+/// `LP`, `*PTR`) and flagged every use, const or not: on the real-world
+/// suite that was 113 FP to 7 TP, the FPs being struct typedefs (`PHY_DRIVE_INFO`,
+/// `PWInfo`, `PGconn`), integers (`LPARAM`, `ULONG_PTR`) and macros
+/// (`PATH_MAX`, `PAGE_BITS`) that merely start with P.
+///
+/// Only a declarator that is the bare name qualifies: in `const LPPOINT *pp`
+/// the const-qualified object is the pointee and the typedef is not hiding
+/// anything from the reader of that line.
+fn check_const_qualified_pointer_typedef_use(
+    node: &Node,
+    source: &str,
+    violations: &mut Vec<RuleViolation>,
+    known: &HashSet<String>,
+) {
+    for n in query::find_descendants_of_kinds(
+        *node,
+        &["parameter_declaration", "declaration", "field_declaration"],
+    ) {
+        let Some(type_node) = n.child_by_field_name("type") else {
+            continue;
+        };
+        if type_node.kind() != "type_identifier" {
+            continue;
+        }
+        let type_name = get_node_text(&type_node, source);
+        if !known.contains(type_name) || !has_direct_const_qualifier(&n) {
+            continue;
+        }
+        let mut cursor = n.walk();
+        let plain_declarator = n
+            .children_by_field_name("declarator", &mut cursor)
+            .any(|d| {
+                let bound = if d.kind() == "init_declarator" {
+                    inner_declarator(&d)
+                } else {
+                    Some(d)
+                };
+                matches!(
+                    bound.map(|b| b.kind()),
+                    Some("identifier") | Some("field_identifier")
+                )
+            });
+        if !plain_declarator {
+            continue;
+        }
+
+        violations.push(RuleViolation {
+            rule_id: "DCL05-C".to_string(),
+            file_path: "".to_string(),
+            message: format!(
+                "'const' applied to pointer typedef '{}' qualifies the pointer, not the object it points to",
+                type_name
+            ),
+            line: type_node.start_position().row + 1,
+            column: type_node.start_position().column,
+            severity: Severity::Medium,
+            suggestion: Some(
+                "Declare the pointee const explicitly (`const T *`), or define a pointer-to-const typedef such as `typedef const POINT *LPCPOINT;`"
+                    .to_string(),
+            ),
+            requires_manual_review: Some(false),
+        });
+    }
 }
 
-/// Is one of `n`'s own children an ERROR node?
-fn has_direct_error_child(n: &Node) -> bool {
-    let mut cursor = n.walk();
-    let found = n.children(&mut cursor).any(|c| c.is_error());
-    found
-}
-
-/// Does the typedef's specifier list carry `const` (the pointee is const)?
-/// Only direct children count: a `const` inside a struct body or a parameter
-/// list qualifies something else.
-fn has_const_qualifier(n: &Node) -> bool {
+/// Is `const` one of `n`'s own type qualifiers (not one inside a nested
+/// declarator or parameter list)?
+fn has_direct_const_qualifier(n: &Node) -> bool {
     let mut cursor = n.walk();
     let found = n.named_children(&mut cursor).any(|c| {
         c.kind() == "type_qualifier" && {
@@ -169,121 +238,6 @@ fn has_const_qualifier(n: &Node) -> bool {
         }
     });
     found
-}
-
-/// What one typedef declarator chain spells, read from the outside in.
-struct TypedefShape {
-    /// The chain contains a `pointer_declarator`.
-    is_pointer: bool,
-    /// The chain contains a `function_declarator`: a function or function
-    /// pointer type, which CERT exempts.
-    is_function: bool,
-    /// The `type_identifier` at the end of the chain -- the name defined.
-    name: Option<String>,
-}
-
-impl TypedefShape {
-    fn of(declarator: &Node, source: &str) -> Self {
-        let mut shape = TypedefShape {
-            is_pointer: false,
-            is_function: false,
-            name: None,
-        };
-        let mut cur = *declarator;
-        loop {
-            match cur.kind() {
-                "pointer_declarator" => shape.is_pointer = true,
-                "function_declarator" => shape.is_function = true,
-                "type_identifier" | "identifier" => {
-                    shape.name = Some(get_node_text(&cur, source).to_string());
-                    return shape;
-                }
-                _ => {}
-            }
-            match inner_declarator(&cur) {
-                Some(next) => cur = next,
-                None => return shape,
-            }
-        }
-    }
-}
-
-/// Check for usage of external pointer typedefs (from headers like Windows.h)
-/// These are pointer typedefs that are used but not defined in the current file
-fn check_external_pointer_typedef_usage(
-    node: &Node,
-    source: &str,
-    violations: &mut Vec<RuleViolation>,
-    defined_typedefs: &std::collections::HashSet<String>,
-) {
-    // Look for parameter declarations or variable declarations that use type identifiers
-    for n in query::find_descendants_of_kinds(*node, &["parameter_declaration", "declaration"]) {
-        // Find type_identifier nodes in parameters/declarations
-        if let Some(type_id_node) = find_first_type_identifier_node(&n) {
-            let type_name = get_node_text(&type_id_node, source);
-
-            // Check if this looks like a Windows-style pointer typedef (ends with P or LP prefix)
-            // Common patterns: LPPOINT, LPTSTR, PLONG, etc.
-            if is_likely_external_pointer_typedef(&type_name)
-                && !defined_typedefs.contains(type_name)
-            {
-                // This is likely an external pointer typedef being used
-                violations.push(RuleViolation {
-                    rule_id: "DCL05-C".to_string(),
-                    file_path: "".to_string(),
-                    message: format!(
-                        "Usage of external pointer typedef '{}' (likely from header). \
-                        Pointer typedefs can cause confusion with const-qualification",
-                        type_name
-                    ),
-                    line: type_id_node.start_position().row + 1,
-                    column: type_id_node.start_position().column,
-                    severity: Severity::Medium,
-                    suggestion: Some(
-                        "Avoid using pointer typedefs from external headers, or use const-qualified versions".to_string()
-                    ),
-                    requires_manual_review: Some(false),
-                });
-            }
-        }
-    }
-}
-
-/// Find the first type_identifier node (non-recursive, just direct children)
-#[allow(clippy::manual_find)]
-fn find_first_type_identifier_node<'a>(node: &'a Node) -> Option<Node<'a>> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "type_identifier" {
-            return Some(child);
-        }
-    }
-    None
-}
-
-/// Check if a type name looks like an external pointer typedef
-/// Common patterns: LP* (long pointer), P* (pointer), *PTR, etc.
-fn is_likely_external_pointer_typedef(type_name: &str) -> bool {
-    // Windows API patterns
-    if type_name.starts_with("LP") && type_name.len() > 2 {
-        // LPPOINT, LPTSTR, etc. but NOT LPCPOINT (const version is OK)
-        return !type_name.starts_with("LPC");
-    }
-
-    // P-prefix patterns (PLONG, PDWORD, etc.)
-    if type_name.starts_with('P')
-        && type_name.len() > 1
-        && type_name.chars().nth(1).unwrap().is_uppercase()
-    {
-        return true;
-    }
-
-    // PTR suffix patterns
-    if type_name.ends_with("PTR") || type_name.ends_with("Ptr") {
-        return true;
-    }
-
-    false
 }
 
 /// Kinds a function declarator can take (named and abstract).
@@ -414,19 +368,4 @@ fn declared_name(n: &Node, source: &str) -> Option<String> {
         }
         cur = inner_declarator(&cur)?;
     }
-}
-
-/// The declarator one level inside `n`. Pointer, array and function
-/// declarators name it as the `declarator` field; a parenthesized declarator
-/// has no field for it (`( declarator )`, possibly with an `ms_call_modifier`
-/// first), so fall back to the first named child that is a declarator.
-fn inner_declarator<'a>(n: &Node<'a>) -> Option<Node<'a>> {
-    if let Some(d) = n.child_by_field_name("declarator") {
-        return Some(d);
-    }
-    let mut cursor = n.walk();
-    let found = n
-        .named_children(&mut cursor)
-        .find(|c| c.kind().ends_with("declarator") || c.kind() == "identifier");
-    found
 }
