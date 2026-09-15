@@ -2,6 +2,7 @@ use super::super::{CertRule, RuleViolation};
 use crate::analyze::const_eval;
 use crate::analyze::context::ProjectContext;
 use crate::analyze::function_summary::{self, FunctionSummary};
+use crate::analyze::init_state;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::analyze::preproc_arms::PreprocArms;
 use crate::manifest::{RuleCategory, Severity};
@@ -171,6 +172,11 @@ struct MemoryLeakAnalyzer<'a> {
     allocated_memory: HashMap<String, AllocInfo>,
     // Track freed memory: var_name -> (line, column) of free call
     freed_memory: HashMap<String, (usize, usize)>,
+    // Names whose entry in `freed_memory` was credited from an ALIAS rather
+    // than written at that spelling. Enough to suppress a leak, not enough to
+    // call a later free of that name a double free -- see
+    // `mark_freed_with_aliases`.
+    freed_via_alias: HashSet<String>,
     // Track variables that are returned or stored globally
     escaped_memory: HashSet<String>,
     // Track variables known to be NULL in current scope (from NULL checks)
@@ -305,6 +311,7 @@ struct AllocInfo {
 #[derive(Clone)]
 struct LeakBranchState {
     freed_memory: HashMap<String, (usize, usize)>,
+    freed_via_alias: HashSet<String>,
     maybe_freed: HashMap<String, (usize, usize)>,
     null_variables: HashSet<String>,
 }
@@ -313,6 +320,7 @@ impl LeakBranchState {
     fn fork(analyzer: &MemoryLeakAnalyzer) -> Self {
         Self {
             freed_memory: analyzer.freed_memory.clone(),
+            freed_via_alias: analyzer.freed_via_alias.clone(),
             maybe_freed: analyzer.maybe_freed.clone(),
             null_variables: analyzer.null_variables.clone(),
         }
@@ -320,6 +328,7 @@ impl LeakBranchState {
 
     fn restore(&self, analyzer: &mut MemoryLeakAnalyzer) {
         analyzer.freed_memory = self.freed_memory.clone();
+        analyzer.freed_via_alias = self.freed_via_alias.clone();
         analyzer.maybe_freed = self.maybe_freed.clone();
         analyzer.null_variables = self.null_variables.clone();
     }
@@ -546,6 +555,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         Self {
             allocated_memory: HashMap::new(),
             freed_memory: HashMap::new(),
+            freed_via_alias: HashSet::new(),
             escaped_memory: HashSet::new(),
             null_variables: HashSet::new(),
             double_free_violations: Vec::new(),
@@ -1771,6 +1781,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 merged.entry(k).or_insert(v);
             }
             analyzer.freed_memory = merged;
+            analyzer.freed_via_alias = true_state
+                .freed_via_alias
+                .union(&else_state.freed_via_alias)
+                .cloned()
+                .collect();
             let mut maybe = true_state.maybe_freed.clone();
             for (k, v) in else_state.maybe_freed.clone() {
                 maybe.entry(k).or_insert(v);
@@ -1862,8 +1877,13 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
             // Check if this variable is freed at the target label
             // Also check for field expression variants (e.g., bundle->data matches bundle)
+            // and other names for the same block: a cleanup label that frees
+            // `buf` also releases the `eth = (struct ether_header *) buf`
+            // the body reads it through.
+            let aliases = self.block_aliases_of(var_name);
             let is_freed_at_label = label_freed_vars.as_ref().is_some_and(|freed| {
                 freed.contains(var_name)
+                    || aliases.iter().any(|a| freed.contains(a))
                     || freed
                         .iter()
                         .any(|f| f.starts_with(&format!("{}->", var_name)))
@@ -2116,18 +2136,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     // e.g., list->head = new_node (new_node escapes)
                     let right_var = ast_utils::get_node_text_owned(&right, source);
                     if self.allocated_memory.contains_key(&right_var) {
-                        self.escaped_memory.insert(right_var.clone());
-                        // Also mark any field allocations belonging to this container as escaped
-                        let field_prefix = format!("{}->", right_var);
-                        let fields_to_escape: Vec<String> = self
-                            .allocated_memory
-                            .keys()
-                            .filter(|k| k.starts_with(&field_prefix))
-                            .cloned()
-                            .collect();
-                        for field in fields_to_escape {
-                            self.escaped_memory.insert(field);
-                        }
+                        self.mark_escaped_with_aliases(&right_var);
                     }
                 }
                 return;
@@ -2142,6 +2151,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
             // Check if this variable was previously allocated
             let was_allocated = self.allocated_memory.contains_key(&var_name);
+
+            // The name a plain pointer-to-pointer assignment copies from, with
+            // casts and parentheses peeled off.
+            let aliased_identifier = init_state::strip_arg_casts(&right);
 
             // Check if assigning result of allocation
             if self.is_allocation_call(&right, source) {
@@ -2177,9 +2190,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                         alloc_type,
                     },
                 );
-            } else if right.kind() == "identifier" {
-                // Check if assigning allocated pointer to another variable
-                let right_var = ast_utils::get_node_text_owned(&right, source);
+            } else if aliased_identifier.kind() == "identifier" {
+                // Check if assigning allocated pointer to another variable.
+                // Casts and parentheses are transparent: `o = (PACKET_OID_DATA
+                // *) buf` binds `o` to the same block as `buf`, and reading it
+                // as an opaque right-hand side left `o` holding whatever
+                // allocation record it had before while the free of `buf` was
+                // credited only to `buf`.
+                let right_var = ast_utils::get_node_text_owned(&aliased_identifier, source);
 
                 // Assignment of one pointer to another clears the freed status
                 // (e.g., buffer = temp after realloc)
@@ -2369,7 +2387,9 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // Check for double-free only for non-safe deallocators
             if is_safe_deallocator {
                 self.maybe_freed.remove(&var_name);
-            } else if self.freed_memory.contains_key(&var_name) {
+            } else if self.freed_memory.contains_key(&var_name)
+                && !self.freed_via_alias.contains(&var_name)
+            {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
                     severity: Severity::High,
@@ -2444,8 +2464,12 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             let free_pos = node.start_position();
 
-            // Check for double-free: if already freed, report violation
-            if self.freed_memory.contains_key(&var_name) {
+            // Check for double-free: if already freed, report violation.
+            // A mark this name only inherited from an alias is not enough --
+            // see `mark_freed_with_aliases`.
+            if self.freed_memory.contains_key(&var_name)
+                && !self.freed_via_alias.contains(&var_name)
+            {
                 self.double_free_violations.push(RuleViolation {
                     rule_id: "MEM31-C".to_string(),
                     severity: Severity::High,
@@ -2463,31 +2487,70 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 self.report_possible_double_free(&var_name, free_pos, "free");
             }
 
-            // Mark as freed
-            self.freed_memory
-                .insert(var_name.clone(), (free_pos.row + 1, free_pos.column + 1));
+            self.mark_freed_with_aliases(&var_name, (free_pos.row + 1, free_pos.column + 1));
+        }
+    }
 
-            // Also mark any aliases as freed
-            let vars_to_free: Vec<String> = self
-                .allocated_memory
-                .iter()
-                .filter_map(|(k, v)| {
-                    if let Some(original) = self.allocated_memory.get(&var_name) {
-                        if v.line == original.line && v.column == original.column {
-                            Some(k.clone())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+    /// Every OTHER name currently holding the same block as `var_name`.
+    ///
+    /// Two names share a block when their `AllocInfo` points at the same
+    /// allocation site, which is how `process_assignment` records an alias
+    /// (`o = buf`, or `o = (T *) buf`). Whatever becomes true of the block —
+    /// it was freed, it escaped, the cleanup label releases it — is true
+    /// through every one of these spellings, and crediting only the spelling
+    /// that happens to be written reports the others as leaked.
+    fn block_aliases_of(&self, var_name: &str) -> Vec<String> {
+        let Some(original) = self.allocated_memory.get(var_name) else {
+            return Vec::new();
+        };
+        self.allocated_memory
+            .iter()
+            .filter(|(k, v)| {
+                k.as_str() != var_name && v.line == original.line && v.column == original.column
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
 
-            for v in vars_to_free {
-                self.freed_memory
-                    .insert(v, (free_pos.row + 1, free_pos.column + 1));
-            }
+    /// Mark `var_name` freed, and with it every other name holding the block.
+    ///
+    /// An alias-derived mark is remembered in `freed_via_alias`, because the
+    /// two directions are not equally safe. Suppressing a leak needs only
+    /// that the block died, which the alias record establishes. Accusing a
+    /// later `free(other_name)` of being a double free needs the two names to
+    /// denote the same block ON THAT PATH, which it does not: hostap's
+    /// `tls_init` aliases `tls_global = context` and then frees each under
+    /// `if (context != tls_global)`, a guard this walk does not read.
+    fn mark_freed_with_aliases(&mut self, var_name: &str, free_pos: (usize, usize)) {
+        self.freed_memory.insert(var_name.to_string(), free_pos);
+        self.freed_via_alias.remove(var_name);
+
+        for alias in self.block_aliases_of(var_name) {
+            self.freed_memory.insert(alias.clone(), free_pos);
+            self.freed_via_alias.insert(alias);
+        }
+    }
+
+    /// Mark `var_name` escaped, and with it the block's other names and any
+    /// allocations tracked as fields hanging off it.
+    ///
+    /// The field sweep is why returning a container does not report its
+    /// members as leaked; the alias sweep is the same reasoning one step
+    /// over. `return buf` where `rsnie = (struct rsn_ie_hdr *) buf` gives the
+    /// caller the whole block, `rsnie` included.
+    fn mark_escaped_with_aliases(&mut self, var_name: &str) {
+        self.escaped_memory.insert(var_name.to_string());
+
+        let field_prefix = format!("{}->", var_name);
+        let to_escape: Vec<String> = self
+            .allocated_memory
+            .keys()
+            .filter(|k| k.starts_with(&field_prefix))
+            .cloned()
+            .chain(self.block_aliases_of(var_name))
+            .collect();
+        for name in to_escape {
+            self.escaped_memory.insert(name);
         }
     }
 
@@ -2553,8 +2616,10 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     let var_name = ast_utils::get_node_text_owned(&target, source);
                     if frees && self.allocated_memory.contains_key(&var_name) {
                         let free_pos = node.start_position();
-                        self.freed_memory
-                            .insert(var_name, (free_pos.row + 1, free_pos.column + 1));
+                        self.mark_freed_with_aliases(
+                            &var_name,
+                            (free_pos.row + 1, free_pos.column + 1),
+                        );
                     }
                 }
                 param_idx += 1;
@@ -2633,19 +2698,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 if child.kind() == "identifier" {
                     let var_name = ast_utils::get_node_text_owned(&child, source);
                     if self.allocated_memory.contains_key(&var_name) {
-                        self.escaped_memory.insert(var_name.clone());
-                        // Also mark any field allocations belonging to this container as escaped
-                        // e.g., if returning "person", mark "person->name" and "person->email" as escaped
-                        let field_prefix = format!("{}->", var_name);
-                        let fields_to_escape: Vec<String> = self
-                            .allocated_memory
-                            .keys()
-                            .filter(|k| k.starts_with(&field_prefix))
-                            .cloned()
-                            .collect();
-                        for field in fields_to_escape {
-                            self.escaped_memory.insert(field);
-                        }
+                        self.mark_escaped_with_aliases(&var_name);
                     }
                 } else if self.is_allocation_call(&child, source) {
                     // Direct return of allocation is not a leak
