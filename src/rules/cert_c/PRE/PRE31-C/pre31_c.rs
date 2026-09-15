@@ -6,6 +6,7 @@ use crate::utility::cert_c::ast_utils::get_node_text;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Pre31C {
@@ -16,13 +17,13 @@ pub struct Pre31C {
     /// sits in. A per-file-only `collect_function_macros` never saw those
     /// bodies, so every single-evaluation-safe macro defined outside the
     /// current file stayed (wrongly) flagged.
-    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
 }
 
 impl Pre31C {
     pub fn new() -> Self {
         Self {
-            function_macros: RefCell::new(HashMap::new()),
+            function_macros: RefCell::new(Arc::new(HashMap::new())),
         }
     }
 }
@@ -71,7 +72,7 @@ impl CertRule for Pre31C {
         // `#define` wins over a stale/differently-`#ifdef`'d cross-file one
         // — the same "project-wide plus this file's own, per-file winning"
         // idiom `merged_macro_aliases` uses (see the capability catalog).
-        let mut function_macros = self.function_macros.borrow().clone();
+        let mut function_macros = HashMap::clone(&self.function_macros.borrow());
         function_macros.extend(macro_expand::collect_function_macros(node, source));
         self.check_node(node, source, &function_macros, violations);
     }

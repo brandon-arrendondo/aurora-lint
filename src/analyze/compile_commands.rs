@@ -62,6 +62,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::context::ProjectContext;
 use crate::parser::CParser;
@@ -270,14 +271,15 @@ impl CompileDb {
 
         for (name, value) in super::const_eval::collect_macro_constants(&root, &source) {
             if let std::collections::hash_map::Entry::Vacant(e) =
-                context.macro_constants.entry(name)
+                Arc::make_mut(&mut context.macro_constants).entry(name)
             {
                 e.insert(value);
                 added += 1;
             }
         }
         for (name, target) in super::const_eval::collect_macro_aliases(&root, &source) {
-            if let std::collections::hash_map::Entry::Vacant(e) = context.macro_aliases.entry(name)
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                Arc::make_mut(&mut context.macro_aliases).entry(name)
             {
                 e.insert(target);
                 added += 1;
@@ -285,7 +287,7 @@ impl CompileDb {
         }
         for (name, m) in super::macro_expand::collect_function_macros(&root, &source) {
             if let std::collections::hash_map::Entry::Vacant(e) =
-                context.function_macros.entry(name)
+                Arc::make_mut(&mut context.function_macros).entry(name)
             {
                 e.insert(m);
                 added += 1;
@@ -662,7 +664,7 @@ mod tests {
     #[test]
     fn merge_defines_does_not_override_source_derived_macros() {
         let mut ctx = ProjectContext::new();
-        ctx.macro_constants.insert("BUFSZ".into(), 64);
+        Arc::make_mut(&mut ctx.macro_constants).insert("BUFSZ".into(), 64);
 
         let db = CompileDb {
             defines: vec![

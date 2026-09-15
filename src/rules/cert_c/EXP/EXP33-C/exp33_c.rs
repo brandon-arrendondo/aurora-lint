@@ -15,6 +15,7 @@ use crate::utility::cert_c::guard_dominance;
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Exp33C {
@@ -27,12 +28,12 @@ pub struct Exp33C {
     /// Maps function name → set of pointer parameter indices that are conditional.
     conditionally_init_fns: RefCell<HashMap<String, HashSet<usize>>>,
     /// Cross-file function summaries from prescan (for inter-procedural init tracking).
-    cross_file_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    cross_file_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// File-scope constants for dead-branch elimination in init-state analysis.
     file_scope_constants: RefCell<HashMap<String, i64>>,
     /// Cross-file function-like macro definitions (from the prescan / macro
     /// engine). Used to recognize macro output arguments (e.g. `CF_DATA_SAVE`).
-    function_macros: RefCell<HashMap<String, crate::analyze::macro_expand::FunctionMacro>>,
+    function_macros: RefCell<Arc<HashMap<String, crate::analyze::macro_expand::FunctionMacro>>>,
     /// Output-parameter indices for macros actually invoked in the current file
     /// (computed once per file from `function_macros`). Feeds the init-state
     /// transfer and the read-checker so macro-written args are not flagged.
@@ -46,9 +47,9 @@ impl Exp33C {
             file_scope_statics: RefCell::new(InitStateMap::new()),
             realloc_wrapper_fns: RefCell::new(HashSet::new()),
             conditionally_init_fns: RefCell::new(HashMap::new()),
-            cross_file_summaries: RefCell::new(HashMap::new()),
+            cross_file_summaries: RefCell::new(Arc::new(HashMap::new())),
             file_scope_constants: RefCell::new(HashMap::new()),
-            function_macros: RefCell::new(HashMap::new()),
+            function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_output_params: RefCell::new(HashMap::new()),
         }
     }
@@ -160,7 +161,7 @@ impl CertRule for Exp33C {
             constants.entry(k.clone()).or_insert(*v);
         }
         // Also include prescan macro constants (from #define directives)
-        for (k, v) in &context.macro_constants {
+        for (k, v) in context.macro_constants.iter() {
             constants.entry(k.clone()).or_insert(*v);
         }
         drop(constants);
