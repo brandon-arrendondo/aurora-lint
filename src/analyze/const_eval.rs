@@ -7,6 +7,7 @@
 //! This is NOT a full CFG-based dataflow — it's syntactic constant folding
 //! plus loop-bound ancestor walks.
 
+use crate::analyze::dead_regions::DeadRegions;
 use crate::analyze::macro_expand::{self, FunctionMacro};
 use crate::utility::cert_c::ast_utils;
 use std::collections::{HashMap, HashSet};
@@ -527,12 +528,32 @@ pub fn merged_macro_constants(
     macros
 }
 
-/// Collect raw `#define NAME value` pairs from the AST.
+/// Collect raw `#define NAME value` pairs from the AST, in file order.
+///
+/// A definition inside a branch the assumed platform never compiles is
+/// skipped ([`DeadRegions`], task 1142): the callers otherwise take hostap's
+/// `#define close closesocket` (`_MSC_VER` arm of `common.h`) as an alias no
+/// POSIX build ever has, and whichever of a `#ifdef _WIN32` / `#else` pair
+/// their tie-break favours (aliases: last wins; constants: first wins) is
+/// the Windows value half the time.
 fn collect_preproc_defs(node: &Node, source: &str, defs: &mut Vec<(String, String)>) {
+    let dead = DeadRegions::of(source);
+    collect_preproc_defs_rec(node, source, &dead, defs);
+}
+
+fn collect_preproc_defs_rec(
+    node: &Node,
+    source: &str,
+    dead: &DeadRegions,
+    defs: &mut Vec<(String, String)>,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
                 "preproc_def" => {
+                    if dead.contains_node(&child) {
+                        continue;
+                    }
                     // preproc_def has children: name (identifier), value (preproc_arg)
                     let name = child
                         .child_by_field_name("name")
@@ -578,7 +599,7 @@ fn collect_preproc_defs(node: &Node, source: &str, defs: &mut Vec<(String, Strin
                     || kind == "linkage_specification"
                     || kind == "declaration_list" =>
                 {
-                    collect_preproc_defs(&child, source, defs);
+                    collect_preproc_defs_rec(&child, source, dead, defs);
                 }
                 _ => {}
             }
@@ -2967,6 +2988,37 @@ int f(unsigned long s) { return LINEBITS(s); }
         let macros = collect_macro_constants(&tree.root_node(), code);
         assert_eq!(macros.get("MY_CONST"), Some(&42));
         assert_eq!(macros.get("DOUBLE_CONST"), Some(&84));
+    }
+
+    #[test]
+    fn platform_dead_defines_are_not_collected() {
+        // hostap common.h's `_MSC_VER` arm: `#define close closesocket` is an
+        // alias no POSIX build has. And a `#ifndef _WIN32` / `#else` split
+        // used to hand last-wins the Windows value.
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&crate::parser::c_language()).unwrap();
+        let code = "#ifdef _MSC_VER
+                    #define close closesocket
+                    #endif
+                    #ifndef _WIN32
+                    #define PATH_MAX_LEN 4096
+                    #else
+                    #define PATH_MAX_LEN 260
+                    #endif
+                    #ifdef CONFIG_FOO
+                    #define TUNABLE 1
+                    #else
+                    #define TUNABLE 2
+                    #endif
+";
+        let tree = parser.parse(code, None).unwrap();
+        let aliases = collect_macro_aliases(&tree.root_node(), code);
+        assert!(!aliases.contains_key("close"), "{:?}", aliases);
+        let macros = collect_macro_constants(&tree.root_node(), code);
+        assert_eq!(macros.get("PATH_MAX_LEN"), Some(&4096));
+        // A build-config guard stays unsettled: the constant resolver's
+        // first-wins tie-break applies exactly as before.
+        assert_eq!(macros.get("TUNABLE"), Some(&1));
     }
 
     #[test]

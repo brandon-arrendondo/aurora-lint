@@ -44,7 +44,7 @@ substitution + recursive rescanning (C11 6.10.3).
 
 | Function | Signature | Description |
 |---|---|---|
-| `collect_function_macros` | `(root: &Node, source: &str) -> HashMap<String, FunctionMacro>` | Collects `#define NAME(params) body` definitions: an AST pass over `preproc_function_def`, plus a textual error-recovery pass that recovers definitions tree-sitter buried in `ERROR` nodes (e.g. curl's `curlx_free`). |
+| `collect_function_macros` | `(root: &Node, source: &str) -> HashMap<String, FunctionMacro>` | Collects `#define NAME(params) body` definitions: an AST pass over `preproc_function_def`, plus a textual error-recovery pass that recovers definitions tree-sitter buried in `ERROR` nodes (e.g. curl's `curlx_free`). One body per name, first wins — after dropping any definition in a platform-dead branch (`dead_regions::DeadRegions`, task 1142), so hostap's `os_strdup` resolves to its `#else` `strdup(s)` rather than the `_MSC_VER` arm's `_strdup(s)`. |
 | `expand_invocation` | `(table, name: &str, args: &[String]) -> Option<String>` | Expands one invocation `name(args...)` against `table`, recursively rescanning the result. `None` if `name` isn't in `table` or arity mismatches. |
 | `macro_output_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro **assigns as a whole object** (`(param) = …`), e.g. curl's `CF_DATA_SAVE`. Feeds EXP33-C to recognize macro output arguments so they aren't flagged as reads of uninitialized memory. |
 | `macro_nulls_param_indices` | `(table, name) -> Vec<usize>` | Parameter indices the macro **frees-and-nulls** (`(param) = NULL` after freeing) — the "safe free" idiom (`Curl_safefree`, `mosquitto_FREE`, `SAFE_FREE`). Feeds MEM30-C to clear freed-state as if the caller wrote `free(p); p = NULL;`. |
@@ -171,10 +171,21 @@ uses the parser's own failure signal.
 
 | Function | Signature | Description |
 |---|---|---|
-| `parse_with_recovery` | `(parser: &mut Parser, source: String) -> Option<(Tree, String)>` | Iteratively re-parses, and on each pass blanks out any single bare-identifier token tree-sitter isolated as its own leaf `ERROR` node (no children, text is exactly one identifier) — since that token was already unusable to every AST-based rule query, blanking it can only recover structure, never lose anything. Bounded iteration count so a pathological file can't spin forever. |
+| `parse_with_recovery` | `(parser: &mut Parser, source: String) -> Option<(Tree, String)>` | Iteratively re-parses, and on each pass blanks out any single bare-identifier token tree-sitter isolated as its own leaf `ERROR` node (no children, text is exactly one identifier) — since that token was already unusable to every AST-based rule query, blanking it can only recover structure, never lose anything. Bounded iteration count so a pathological file can't spin forever. Every tree walk inside is cursor-based (`query::find_first_descendant` / `find_descendants`), never a `node.child(i)` index loop: tree-sitter's `child(i)` restarts from the first child each call, so an index loop is O(n²) per node, and a NUL-strewn file parses to one root `ERROR` with a child per stray byte (56k on Ventoy2Disk's WinDialog.c mis-decoded as ISO-8859-1) — the shape that pegged a core for ten minutes with every rule disabled (task 1131). |
 
 **Wiring pattern:** Called from the parsing entry point as a recovery
 step, not from within a rule.
+
+**Input the parser never sees (task 1131):** `src/parser/mod.rs`'s
+`read_source_or_transcode` decides encoding by BOM, then by NUL layout.
+NUL on one byte parity only is BOM-less UTF-16 (decoded by the lit
+parity's endianness); any other NUL-bearing file is a binary blob with a
+C extension and is refused with `parser::NotSourceText`, which the scan
+loop reports as `Warning: <file>: not C source text (...); skipped`. The
+`child(i)` quadratic above is not confined to this module — every rule
+and prescan walk uses the idiom — so refusing the input is what actually
+bounds the run; a garbage file that still parses to a very wide `ERROR`
+root by some other route would hit the same wall.
 
 ## Preprocessor branch structure
 
@@ -203,6 +214,38 @@ to conclude a name is undeclared.
 **Wiring pattern:** collect once per translation unit and share it (ARR36-C
 holds it behind an `Rc` on the file-scope frame every function clones), then
 consult it wherever a positional lookup walks backwards.
+
+### `src/analyze/dead_regions.rs`
+**Problem solved:** which of several same-named conditional definitions a
+flat `name -> fact` collector should keep. With no preprocessor, every
+collector that builds a one-entry-per-name table (`typedef_types`,
+`function_macros`, `macro_constants`, `macro_aliases`) sees every
+`#ifdef`-arm's (re)definition and needs a tie-break; first-wins and
+last-wins are each a coin flip against a platform split. hostap's
+`common.h` defines `u16` under `_MSC_VER`, `__vxworks`, and the real
+`#ifndef WPA_TYPES_DEFINED` arm in that order, so first-wins resolved every
+narrow hostap type to a Windows name nothing in a POSIX corpus defines
+(task 1142: EXP14-C lost 59 of 62 labeled hostap TPs to it).
+
+| Item | Signature | Description |
+|---|---|---|
+| `platform_assumptions` | `() -> PlatformAssumptions` | The ONE platform profile every scan assumes: `lang_parsing_substrate::posix_default_assumptions()` (`_WIN32`/`_MSC_VER`/`__CYGWIN__`/`__vxworks` undefined, `__linux__`/`__unix__` defined). Single choke point so a future `--platform` or `compile_commands.json`-derived table changes one function. |
+| `DeadRegions::of` | `(source: &str) -> DeadRegions` | Line ranges the assumed platform's preprocessor would strip: `dead_code_ranges_with_assumptions` seeded with `platform_assumptions()`, so it also covers what the unseeded scanner already proves (`#if 0`, `__cplusplus`, locally-`#define`d guards). One line-oriented pass; build once per file per collector, not per node. |
+| `DeadRegions::contains_line` / `contains_node` | `(&self, line: usize) -> bool` / `(&self, node: &Node) -> bool` | Whether a 1-based line, or a node's first line, is inside a dead region. |
+
+**Wiring pattern:** compute at the collector's entry point and *skip* any
+definition landing in a dead region, keeping the collector's existing
+tie-break for the rest — a redefinition under a build-config macro the
+profile has no opinion about (`#ifdef WPA_TRACE`, `#if __BYTE_ORDER == ...`)
+stays Neutral and is picked exactly as before. Wired into
+`prescan::collect_typedef_aliases`, `macro_expand::collect_function_macros`
+(both passes) and `const_eval::collect_preproc_defs` (constants, aliases,
+string macros). Deliberately NOT wired into the struct-bodied collectors
+(ventoy's `process.h` wraps whole struct typedefs in `#if
+defined(_MSC_VER)` and no corpus file has a same-file conditional struct
+redefinition to arbitrate) nor into `suppression.rs`'s finding filter, which
+stays on the unseeded `dead_code_ranges` — silencing every finding inside an
+`#ifdef _WIN32` block corpus-wide is a separate policy decision.
 
 ## Declaration / type / declarator resolution
 
@@ -277,6 +320,7 @@ the wide-character `wprintf` family). Filed and closed as task 487.
 | `is_scanf_family` | `(name: &str) -> bool` | scanf-family formatted-input functions. |
 | `is_format_function` | `(name: &str) -> bool` | `is_printf_family` or `is_scanf_family`. |
 | `is_sizeof_text` | `(expr: &str) -> bool` | Word-boundary-aware `sizeof` detection over an already-extracted text snippet (not an AST node), for rule files that operate on stringified sub-expressions rather than the AST directly. |
+| `is_win32_api` | `(name: &str, base: &str) -> bool` | `name` is the Win32 API `base` under any spelling: the `<windows.h>` macro (`CreateProcess`) or the ANSI/wide entry point it expands to (`CreateProcessA`/`W`). Real Win32 C names the variant directly at least as often as the macro — every LoadLibrary/CreateProcess in Ventoy2Disk is an A/W call — so a `== "LoadLibrary"` comparison has no recall on real code. Exact suffix, so `CreateProcessAsUserW` does not match `CreateProcess`. WIN00/02/03/30-C (task 1130); WIN05-C keeps its own per-variant table because its argument positions differ by variant. |
 | `is_memory_clearing_call` / `MEMORY_CLEARING_FUNCS` | `(name: &str) -> bool` | `memset`, `memset_s`, `explicit_bzero`, `bzero`, `SecureZeroMemory`, `RtlSecureZeroMemory`, `explicit_memset` — library calls that overwrite the buffer their FIRST argument points at. The name-level half of MEM03-C's "was this sensitive buffer cleared"; a project's own zeroize wrapper is never listed here, it is recognised by what its body does (`FunctionSummary::clears_params`, `macro_clears_param_indices`). |
 | `is_resource_acquisition_text` | `(expr: &str) -> bool` | Word-boundary-aware `fopen`/`malloc`/`calloc`/`realloc`/`open`/`socket` detection over an already-extracted text snippet — `MEM12-C`'s broader, cross-domain (file/memory/socket) "must release on every error path" concept, distinct from `is_allocator_call`'s heap-only scope. Migrated from a text-only `.contains("fopen(")`-style check (task 499); the word-boundary requirement is new (narrows out a hypothetical `myfopen(` false-match). |
 
@@ -800,11 +844,22 @@ an unclosed parenthesized expression) and
 with a synthesized `(expression_statement (MISSING ";"))` consequence that
 reads as an unbraced body). All four are restricted to a conditional with NO
 `#else`/`#elif`: blanking a wrapper that has alternative arms would splice
-mutually exclusive text into one statement stream. A multi-arm chain whose
-arms each end in an incomplete fragment -- curl's `hostip4.c` mixes a bare
-`else` tail and an `if` header in one `#elif` chain -- is therefore
-unhandled by all of them, and wants a single multi-arm-aware pass rather
-than a fifth module. Each blanks the offending directive
+mutually exclusive text into one statement stream.
+
+`preproc_split_chain.rs` (task 1070) takes the multi-arm case those four
+refuse, for the chain shape where every arm ends in an incomplete fragment
+and they share one brace block after the `#endif`. It reads BOTH arm-ending
+shapes -- curl's `hostip4.c` mixes a bare `else` tail and an `if` header in
+one `#elif` chain, so a control-header-only repair would leave half of that
+one chain broken -- importing the predicates from the two passes that own
+them, so each has a single definition. It is a separate module rather than a
+relaxation of their `!has_branch` guard so that the ~470 single-arm chains
+in the corpus cannot regress: the repair here is a different one, keeping
+the last arm that ends incomplete and blanking the other arms' fragments,
+which discards code and is only worth it where the alternative is a spliced
+statement stream.
+
+Each blanks the offending directive
 lines, length-preserving, so the guarded code rejoins the construct it
 belongs to. All of them operate at parse time, not from within a rule — a rule
 encountering *residual* malformed-declaration debris (a `MISSING`/`ERROR`

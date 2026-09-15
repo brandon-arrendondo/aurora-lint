@@ -9,15 +9,16 @@ A static analysis tool for C code compliance with [SEI CERT C Coding Standards](
 ## Does It Find Real Bugs?
 
 Yes, in shipping software. Audits of SQLite and hostap (hostapd +
-wpa_supplicant) have produced 17 disclosed defects, reported to each
-project's maintainers — **17 of 17 confirmed and fixed upstream**: the
+wpa_supplicant) have produced 27 disclosed defects, reported to each
+project's maintainers — **27 of 27 confirmed and fixed upstream**: the
 SQLite team fixed all nine, most the same day they were filed; hostap's
-Jouni Malinen fixed all eight within two weeks. Defect-by-defect tables,
-which finding started as an aurora-lint detection versus an audit
-read-through, and the process used to find them:
+Jouni Malinen fixed all eighteen — eight from the first disclosure within
+two weeks, ten more from a follow-up disclosure the very next day.
+Defect-by-defect tables, which finding started as an aurora-lint detection
+versus an audit read-through, and the process used to find them:
 [`docs/upstream-disclosures.rst`](docs/upstream-disclosures.rst).
 
-All 17 came out of the same file-at-a-time adjudication audit behind the
+All 27 came out of the same file-at-a-time adjudication audit behind the
 real-world precision figure below. Methodology:
 [`docs/testing-methodology.rst`](docs/testing-methodology.rst).
 
