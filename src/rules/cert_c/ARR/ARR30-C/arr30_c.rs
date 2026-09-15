@@ -51,6 +51,7 @@ use crate::manifest::{RuleCategory, Severity};
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 // Import shared utility functions
@@ -70,7 +71,7 @@ pub struct Arr30C {
     /// Macro/enum/const constants gathered cross-file by the prescan
     /// (`context.macro_constants`). Merged with per-file constants so that
     /// buffer sizes defined in headers or other translation units resolve.
-    macro_constants: RefCell<HashMap<String, i64>>,
+    macro_constants: RefCell<Arc<HashMap<String, i64>>>,
     /// Per-function cache of blob/value-accessor-tainted pointer names, keyed by
     /// the function node's start byte. `check_unbounded_decode_loop` runs once
     /// per loop; memoizing keeps the taint scan O(functions) instead of
@@ -346,7 +347,7 @@ impl Arr30C {
         Self {
             function_cfgs: RefCell::new(HashMap::new()),
             vra_results: RefCell::new(HashMap::new()),
-            macro_constants: RefCell::new(HashMap::new()),
+            macro_constants: RefCell::new(Arc::new(HashMap::new())),
             decode_taint_cache: RefCell::new(HashMap::new()),
             param_decode_buf_cache: RefCell::new(HashMap::new()),
             param_decode_reported: RefCell::new(HashSet::new()),

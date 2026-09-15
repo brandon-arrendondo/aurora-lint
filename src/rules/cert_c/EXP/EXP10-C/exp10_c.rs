@@ -78,6 +78,7 @@ use crate::utility::cert_c::ast_utils::{get_node_text, misparsed_cast_type_name}
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Expression nesting deeper than this is not walked. Recursion here is
@@ -133,13 +134,13 @@ pub struct Exp10C {
     /// file under scan's own `#define`s laid over it. The file's definitions
     /// are what the compiler sees in this translation unit, and the only
     /// table there is when a single file is scanned without `-d`.
-    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Simple typedef aliases, for confirming a mis-parsed cast's type name.
-    typedef_types: RefCell<HashMap<String, String>>,
+    typedef_types: RefCell<Arc<HashMap<String, String>>>,
     /// `typedef struct Tag Alias;` names, same purpose.
-    struct_typedef_aliases: RefCell<HashMap<String, String>>,
+    struct_typedef_aliases: RefCell<Arc<HashMap<String, String>>>,
     /// Every function the prescan saw defined or declared.
-    known_functions: RefCell<HashSet<String>>,
+    known_functions: RefCell<Arc<HashSet<String>>>,
     /// Per-macro-name purity verdicts, computed on first use.
     macro_purity: RefCell<HashMap<String, MacroPurity>>,
 }
@@ -180,8 +181,7 @@ impl CertRule for Exp10C {
     }
 
     fn scan(&self, node: &Node, source: &str, violations: &mut Vec<RuleViolation>) {
-        self.function_macros
-            .borrow_mut()
+        Arc::make_mut(&mut *self.function_macros.borrow_mut())
             .extend(macro_expand::collect_function_macros(node, source));
         self.macro_purity.borrow_mut().clear();
 

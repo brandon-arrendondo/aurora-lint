@@ -104,6 +104,7 @@ use crate::utility::cert_c::ast_utils::{
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 /// Functions whose return values or output parameters introduce tainted data.
@@ -136,12 +137,12 @@ const TAINT_OVERWRITE_PROPAGATORS: &[&str] = &[
 ];
 
 pub struct Str02C {
-    project_aliases: RefCell<HashMap<String, String>>,
+    project_aliases: RefCell<Arc<HashMap<String, String>>>,
     current_aliases: RefCell<HashMap<String, String>>,
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     /// Reverse call graph: callee_name → set of caller names. Built from
     /// ProjectContext's forward `call_graph` in `set_project_context`.
-    callers: RefCell<HashMap<String, HashSet<String>>>,
+    callers: RefCell<Arc<HashMap<String, HashSet<String>>>>,
     /// Per-file (task 469): `static` function name → parameter indices
     /// where every in-file call site passed a string literal. Recomputed
     /// at the start of every `check()` call by
@@ -152,10 +153,10 @@ pub struct Str02C {
 impl Str02C {
     pub fn new() -> Self {
         Self {
-            project_aliases: RefCell::new(HashMap::new()),
+            project_aliases: RefCell::new(Arc::new(HashMap::new())),
             current_aliases: RefCell::new(HashMap::new()),
-            function_summaries: RefCell::new(HashMap::new()),
-            callers: RefCell::new(HashMap::new()),
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
+            callers: RefCell::default(),
             literal_only_params: RefCell::new(HashMap::new()),
         }
     }
@@ -1229,16 +1230,7 @@ impl CertRule for Str02C {
 
         // Invert the forward call_graph (caller → callees) into a reverse
         // map (callee → callers) for fast caller lookup.
-        let mut callers: HashMap<String, HashSet<String>> = HashMap::new();
-        for (caller, callees) in &context.call_graph {
-            for callee in callees {
-                callers
-                    .entry(callee.clone())
-                    .or_default()
-                    .insert(caller.clone());
-            }
-        }
-        *self.callers.borrow_mut() = callers;
+        *self.callers.borrow_mut() = context.callers.clone();
     }
 
     fn check(&self, node: &Node, source: &str) -> Vec<RuleViolation> {

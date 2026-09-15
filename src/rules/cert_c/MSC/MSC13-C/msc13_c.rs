@@ -39,6 +39,7 @@ use crate::utility::cert_c::ast_utils::{
 use lang_parsing_substrate::query;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Msc13C {
@@ -47,13 +48,13 @@ pub struct Msc13C {
     /// `ProjectContext::unused_attribute_macros`). The `#define` for seL4's
     /// `UNUSED` and friends lives in a header, so the per-file scan in
     /// `check()` alone cannot see it.
-    project_unused_attr_macros: RefCell<HashSet<String>>,
+    project_unused_attr_macros: RefCell<Arc<HashSet<String>>>,
 }
 
 impl Msc13C {
     pub fn new() -> Self {
         Self {
-            project_unused_attr_macros: RefCell::new(HashSet::new()),
+            project_unused_attr_macros: RefCell::new(Arc::new(HashSet::new())),
         }
     }
 
@@ -646,7 +647,7 @@ impl CertRule for Msc13C {
         // Object-like macros expanding to an unused-attribute annotation:
         // whatever the prescan found project-wide, plus this file's own
         // `#define`s so a single-file run still recognizes them.
-        let mut unused_attr_macros = self.project_unused_attr_macros.borrow().clone();
+        let mut unused_attr_macros = HashSet::clone(&self.project_unused_attr_macros.borrow());
         collect_unused_attribute_macro_names(source, &mut unused_attr_macros);
 
         // Walk all function definitions

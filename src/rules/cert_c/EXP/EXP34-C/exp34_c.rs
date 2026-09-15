@@ -11,19 +11,20 @@ use lang_parsing_substrate::query;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tree_sitter::Node;
 
 pub struct Exp34C {
-    function_summaries: RefCell<HashMap<String, FunctionSummary>>,
+    function_summaries: RefCell<Arc<HashMap<String, FunctionSummary>>>,
     function_cfgs: RefCell<HashMap<usize, FunctionCfg>>,
     /// Null states for file-scope (static/global) pointer variables,
     /// computed once per file by scanning all declarations and assignments.
     file_global_states: RefCell<StateMap>,
     /// Cross-file global pointer null states from prescan.
     /// Used to resolve `extern` pointer globals defined in other translation units.
-    prescan_global_var_states: RefCell<HashMap<String, NullState>>,
+    prescan_global_var_states: RefCell<Arc<HashMap<String, NullState>>>,
     /// Function-like macro definitions (for macro output-arg recognition).
-    function_macros: RefCell<HashMap<String, FunctionMacro>>,
+    function_macros: RefCell<Arc<HashMap<String, FunctionMacro>>>,
     /// Output-parameter indices (per `macro_expand::macro_writes_param_indices`)
     /// for the function-like macros actually invoked in the current file. Task
     /// 195 Part A: the macro analog of `FunctionSummary::modifies_params`.
@@ -42,11 +43,11 @@ pub struct Exp34C {
 impl Exp34C {
     pub fn new() -> Self {
         Self {
-            function_summaries: RefCell::new(HashMap::new()),
+            function_summaries: RefCell::new(Arc::new(HashMap::new())),
             function_cfgs: RefCell::new(HashMap::new()),
             file_global_states: RefCell::new(StateMap::new()),
-            prescan_global_var_states: RefCell::new(HashMap::new()),
-            function_macros: RefCell::new(HashMap::new()),
+            prescan_global_var_states: RefCell::new(Arc::new(HashMap::new())),
+            function_macros: RefCell::new(Arc::new(HashMap::new())),
             macro_write_params: RefCell::new(HashMap::new()),
             macro_null_params: RefCell::new(HashMap::new()),
         }
@@ -171,9 +172,9 @@ impl CertRule for Exp34C {
                     let macro_null_params = self.macro_null_params.borrow();
                     let effective_summaries: Cow<HashMap<String, FunctionSummary>> =
                         if macro_write_params.is_empty() && macro_null_params.is_empty() {
-                            Cow::Borrowed(&summaries)
+                            Cow::Borrowed(&**summaries)
                         } else {
-                            let mut merged = summaries.clone();
+                            let mut merged = HashMap::clone(&summaries);
                             for (name, idx) in macro_write_params.iter() {
                                 // Skip a name that is already a real function
                                 // summary (checked against the pre-merge map,

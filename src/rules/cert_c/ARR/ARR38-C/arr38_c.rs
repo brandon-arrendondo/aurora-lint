@@ -76,7 +76,7 @@ impl CertRule for Arr38C {
     fn set_project_context(&self, context: &ProjectContext) {
         let mut map = self.callsite_param_field_buffer_size.borrow_mut();
         map.clear();
-        for (name, summary) in &context.function_summaries {
+        for (name, summary) in context.function_summaries.iter() {
             if !summary.callsite_param_field_buffer_size.is_empty() {
                 map.insert(
                     name.clone(),
