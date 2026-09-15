@@ -40,3 +40,7 @@ outlive any one task.
   `lang_parsing_substrate` only when genuinely cross-language](0003-utility-layer-vs-substrate.md)
 - [0004 — Postgres is the single source of truth for published data; local
   storage is working data only](0004-postgres-is-the-single-source-of-truth.md)
+- [0005 — Distinguish misfires from judgment false positives; only the
+  former is always a rule bug](0005-misfires-vs-judgment-false-positives.md)
+- [0006 — Resolve an identifier to its declaration; a name is not a
+  variable](0006-resolve-identifiers-to-declarations.md)

@@ -394,10 +394,18 @@ cargo fmt
 
 **Before changing a rule's detection behavior to reduce noise, or proposing
 to disable/deprioritize a rule based on its benchmark numbers, read
-`docs/adr/0001` and `docs/adr/0002`.** Both questions come up repeatedly and
-are already settled: noise gets handled by suppression/config, not by
-softening detection logic (0001), and a low real-world TP rate alone doesn't
-mean a rule is broken or unneeded (0002).
+`docs/adr/0001`, `0002` and `0005`.** These come up repeatedly and are
+already settled: noise gets handled by suppression/config, not by softening
+detection logic (0001); a low real-world TP rate alone doesn't mean a rule
+is broken or unneeded (0002); and a misfire (the finding names a construct
+that isn't actually there) is always a bug to fix regardless of corpus —
+don't let 0001/0002 talk you out of fixing one (0005).
+
+**Before resolving what an identifier occurrence refers to — its type,
+qualifiers, or declaration — use `resolve_identifier_declarator` and its
+neighbors, never a text/name match.** `docs/adr/0006` has three independent
+rules that shipped real bugs by matching on spelling instead of resolving
+scope.
 
 **NEVER add embedded unit tests in rule implementation files:**
 - ❌ NO `#[cfg(test)]` modules in `src/rules/cert_c/*/*/*.rs`
