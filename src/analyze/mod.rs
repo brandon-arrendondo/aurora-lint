@@ -130,9 +130,7 @@ pub fn analyze_project(
     )?;
 
     if context.has_cross_file_data() {
-        for rule in registry.all_rules() {
-            rule.set_project_context(&context);
-        }
+        set_project_context_for_enabled(&registry, manifest, &context);
     }
 
     // The parse-repair pass consults the prescan's macro table to blank a
@@ -192,9 +190,7 @@ pub fn analyze_project(
                     parser.set_repair_macros(std::sync::Arc::clone(&repair_macros));
                     let file_registry = RuleRegistry::new();
                     if has_cross_file_data {
-                        for rule in file_registry.all_rules() {
-                            rule.set_project_context(&context);
-                        }
+                        set_project_context_for_enabled(&file_registry, manifest, &context);
                     }
                     let mut file_supp = suppression_manager.clone();
 
@@ -264,9 +260,7 @@ pub fn analyze_project(
         // Create fresh rule instances per file (matches parallel mode behavior)
         let file_registry = RuleRegistry::new();
         if has_cross_file_data {
-            for rule in file_registry.all_rules() {
-                rule.set_project_context(&context);
-            }
+            set_project_context_for_enabled(&file_registry, manifest, &context);
         }
 
         let (file_violations, file_suppressed) = analyze_one_file(
@@ -381,6 +375,29 @@ fn load_project_context(
     }
 
     Ok(context)
+}
+
+/// Hand the cross-file context to the rules this scan will actually run.
+///
+/// Every file gets a fresh registry (see the per-file loops above), and most
+/// rules take the context by deep-copying the parts they read -- function
+/// summaries, macro tables, an inverted call graph -- into their own cells.
+/// Offering it to all ~300 registered rules made that copy the dominant cost
+/// of a scan: on a Juliet CWE directory it outweighed parsing, CFG/VRA and
+/// the enabled rules' own checks combined by an order of magnitude, and it
+/// grew with every rule that learned to read a new context table. Only a
+/// rule the manifest enables is ever asked to check a file, so only those
+/// receive the context.
+fn set_project_context_for_enabled(
+    registry: &RuleRegistry,
+    manifest: &RuleManifest,
+    context: &context::ProjectContext,
+) {
+    for (rule_id, _) in manifest.enabled_rules() {
+        if let Some(rule) = registry.get_rule(rule_id) {
+            rule.set_project_context(context);
+        }
+    }
 }
 
 /// Warn about rules that are enabled in the manifest but have no implementation.
