@@ -97,3 +97,36 @@ class TestInScope(unittest.TestCase):
         with self._with_scope(["include/**"]):
             self.assertTrue(corpus.in_scope("proj", "include/mosquitto/libmosquitto.h"))
             self.assertFalse(corpus.in_scope("proj", "libmosquitto.h"))
+
+
+class TestScanExcludes(unittest.TestCase):
+    """Task 1218: an untracked/gitignored .c/.h that the real scan already
+    drops via --exclude is not contamination, so check_repo() must bucket it
+    separately rather than flagging it the same as a file that will actually
+    be scanned. This is a different mechanism from in_scope() above --
+    scope_include/scope_exclude filter findings after the scan; this filters
+    the fileset the scan itself walks, using the same --exclude globs
+    bench/realworld_runner.py passes to sqc (`_sqc_exclude_patterns`, kept in
+    lockstep with the Rust suppression::glob_to_regex the scanner actually
+    runs), not corpus.py's own `_match`/`_translate`."""
+
+    def test_unregistered_project_has_no_excludes(self):
+        with mock.patch("bench.realworld_runner.CODEBASES", {}):
+            self.assertEqual(corpus._scan_excludes("nonexistent"), [])
+
+    def test_excluded_file_is_recognized(self):
+        with mock.patch("bench.realworld_runner.CODEBASES",
+                        {"hostap": {"sqc": {"extra_args":
+                            ["--exclude", "tests/**"]}}}):
+            patterns = corpus._scan_excludes("hostap")
+            self.assertTrue(corpus._excluded(
+                "tests/fuzzing/ocsp-signedness/poc.c", patterns))
+            self.assertFalse(corpus._excluded(
+                "src/common/ieee802_11_common.c", patterns))
+
+    def test_no_extra_args_excludes_nothing(self):
+        with mock.patch("bench.realworld_runner.CODEBASES",
+                        {"libcrc": {"sqc": {"extra_args": []}}}):
+            patterns = corpus._scan_excludes("libcrc")
+            self.assertEqual(patterns, [])
+            self.assertFalse(corpus._excluded("anything.c", patterns))
