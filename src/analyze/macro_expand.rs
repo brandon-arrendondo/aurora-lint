@@ -1309,6 +1309,201 @@ pub fn macro_clears_param_indices(
     out
 }
 
+/// Parameter indices a function-like macro hands to a callee `releases`
+/// accepts, as an argument at any position. The fixed-list form
+/// ([`macro_frees_param_indices`]) knows `free`/`fclose`/`close` by
+/// spelling, which misses a project's own: curl's `Curl_safefree(ptr)`
+/// frees through `curlx_free`, and `mosquitto_FREE(A)` through
+/// `mosquitto_free`, each a free by name shape or by alias. A rule that
+/// already classifies a direct call by such a predicate passes the same
+/// one here, so a macro invocation and the call it expands to are read
+/// alike.
+///
+/// Expansion is one level at a time, asking `releases` about each callee
+/// BEFORE rescanning it, because the spelling that identifies a free can
+/// be an intermediate macro's name: curl's `curlx_free(ptr)` is itself a
+/// macro for `curl_dbg_free(ptr, __LINE__, __FILE__)`, whose body frees
+/// through a function pointer no summary can read, so a fully rescanned
+/// text would show only a callee the predicate cannot accept. A callee the
+/// predicate rejects that is a macro is recursed into and its released
+/// parameters mapped back onto the arguments it was given.
+pub fn macro_param_indices_released_by(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+    releases: impl Fn(&str) -> bool,
+) -> Vec<usize> {
+    let mut active = HashSet::new();
+    released_param_indices(table, name, &releases, &mut active, 0)
+}
+
+fn released_param_indices(
+    table: &HashMap<String, FunctionMacro>,
+    name: &str,
+    releases: &impl Fn(&str) -> bool,
+    active: &mut HashSet<String>,
+    depth: usize,
+) -> Vec<usize> {
+    if depth >= MAX_EXPAND_DEPTH || active.contains(name) {
+        return Vec::new();
+    }
+    let Some(m) = table.get(name) else {
+        return Vec::new();
+    };
+    if m.params.is_empty() {
+        return Vec::new();
+    }
+    let sentinels: Vec<String> = (0..m.params.len())
+        .map(|i| format!("__SQC_MREL_{i}__"))
+        .collect();
+    let map: HashMap<String, String> = m
+        .params
+        .iter()
+        .cloned()
+        .zip(sentinels.iter().cloned())
+        .collect();
+    let body = substitute_params(&m.body, &map);
+    // The argument must BE the parameter, not merely mention it: uthash's
+    // HASH_ADD frees `(add)->hh.tbl` on its out-of-memory path, which
+    // releases a table the element owns and not the element itself.
+    let sentinel_indices_in = |arg: &str| -> Vec<usize> {
+        let bare = strip_parens_and_casts(arg);
+        sentinels
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| bare == s.as_str())
+            .map(|(i, _)| i)
+            .collect()
+    };
+
+    active.insert(name.to_string());
+    let mut out = Vec::new();
+    for (callee, args) in calls_in(&body) {
+        if releases(&callee) {
+            for arg in &args {
+                out.extend(sentinel_indices_in(arg));
+            }
+        } else if table.contains_key(&callee) {
+            for j in released_param_indices(table, &callee, releases, active, depth + 1) {
+                if let Some(arg) = args.get(j) {
+                    out.extend(sentinel_indices_in(arg));
+                }
+            }
+        }
+    }
+    active.remove(name);
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Every `IDENT(args...)` in `text`, with the argument list split at
+/// top-level commas. Calls nested inside another call's arguments are
+/// listed too, in textual order.
+fn calls_in(text: &str) -> Vec<(String, Vec<String>)> {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if !is_ident_start(chars[i]) || (i > 0 && is_ident_char(chars[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && is_ident_char(chars[i]) {
+            i += 1;
+        }
+        let callee: String = chars[start..i].iter().collect();
+        let mut j = i;
+        while j < n && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j >= n || chars[j] != '(' {
+            continue;
+        }
+        let mut depth = 0i32;
+        let mut k = j;
+        while k < n {
+            match chars[k] {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            k += 1;
+        }
+        if k < n {
+            let arg_text: String = chars[j + 1..k].iter().collect();
+            out.push((callee, split_top_level_args(&arg_text)));
+        }
+    }
+    out
+}
+
+/// `expr` without surrounding whitespace, enclosing parentheses and
+/// leading casts: `(void *)(p)` and `((p))` both yield `p`. A cast is a
+/// parenthesized group that is followed by more expression; enclosing
+/// parentheses are a group that is the whole expression.
+fn strip_parens_and_casts(expr: &str) -> &str {
+    let mut e = expr.trim();
+    loop {
+        if !e.starts_with('(') {
+            return e;
+        }
+        let Some(close) = matching_close_paren(e) else {
+            return e;
+        };
+        let rest = e[close + 1..].trim();
+        e = if rest.is_empty() {
+            e[1..close].trim()
+        } else {
+            rest
+        };
+    }
+}
+
+/// Index of the `)` matching the `(` at the start of `s`, if any.
+fn matching_close_paren(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `args` split at commas outside any bracket, each piece trimmed.
+fn split_top_level_args(args: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut last = 0;
+    for (i, c) in args.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(args[last..i].trim().to_string());
+                last = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(args[last..].trim().to_string());
+    out
+}
+
 /// True if `text` contains a call to one of [`DEALLOC_FUNCTIONS`] with `ident`
 /// appearing as one of its arguments.
 fn calls_dealloc_fn_with_arg(text: &str, ident: &str) -> bool {
@@ -1833,6 +2028,45 @@ mod tests {
     fn frees_param_unrelated_macro_is_empty() {
         let t = table("#define MIN(x,y) (((x) < (y)) ? (x) : (y))\n");
         assert!(macro_frees_param_indices(&t, "MIN").is_empty());
+    }
+
+    /// curl's `Curl_safefree` frees through `curlx_free`, a name the fixed
+    /// list cannot know and itself a macro for a `curl_dbg_free` call whose
+    /// body no predicate would accept. The caller's predicate is asked
+    /// about `curlx_free` before it is rescanned away. Only the parameter
+    /// handed to the accepted callee is reported, through a macro that
+    /// merely forwards it too.
+    #[test]
+    fn released_by_predicate_sees_project_spelling() {
+        let t = table(
+            "#define curlx_free(ptr) curl_dbg_free(ptr, __LINE__, __FILE__)\n\
+             #define Curl_safefree(ptr) do { curlx_free(ptr); (ptr) = NULL; } while(0)\n\
+             #define PAIR_FREE(a, b) do { keep(a); Curl_safefree(b); } while(0)\n\
+             #define SWAP_FREE(a, b) PAIR_FREE(b, a)\n\
+             #define CAST_FREE(p) free((void *)(p))\n\
+             #define TABLE_FREE(e) do { free((e)->tbl); (e)->tbl = NULL; } while(0)\n",
+        );
+        let is_free = |name: &str| name == "curlx_free" || name == "free";
+        assert_eq!(
+            macro_param_indices_released_by(&t, "CAST_FREE", is_free),
+            vec![0]
+        );
+        assert!(macro_param_indices_released_by(&t, "TABLE_FREE", is_free).is_empty());
+        assert!(macro_frees_param_indices(&t, "Curl_safefree").is_empty());
+        assert_eq!(
+            macro_param_indices_released_by(&t, "Curl_safefree", is_free),
+            vec![0]
+        );
+        assert_eq!(
+            macro_param_indices_released_by(&t, "PAIR_FREE", is_free),
+            vec![1]
+        );
+        assert_eq!(
+            macro_param_indices_released_by(&t, "SWAP_FREE", is_free),
+            vec![0]
+        );
+        assert!(macro_param_indices_released_by(&t, "Curl_safefree", |_| false).is_empty());
+        assert!(macro_param_indices_released_by(&t, "NOPE", is_free).is_empty());
     }
 
     /// hostap's `os_memset` shape: the destination parameter, and only it,

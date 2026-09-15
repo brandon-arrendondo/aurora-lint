@@ -320,7 +320,7 @@ struct AllocInfo {
 
 /// The subset of `MemoryLeakAnalyzer`'s fields that are forked/reset/merged
 /// across `if`/`switch` branches.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct LeakBranchState {
     freed_memory: HashMap<String, (usize, usize)>,
     freed_via_alias: HashSet<String>,
@@ -365,6 +365,7 @@ enum Frame<'a> {
         if_node: Node<'a>,
         saved_state: LeakBranchState,
         saved_allocated: HashMap<String, AllocInfo>,
+        saved_escaped: HashSet<String>,
         true_has_return: bool,
         /// The branch's LAST statement leaves (return/goto/noreturn call),
         /// as opposed to `true_has_return`'s "a return somewhere inside".
@@ -410,7 +411,7 @@ enum Frame<'a> {
 /// The analyzer state one arm of a preprocessor conditional starts from and
 /// leaves behind: `LeakBranchState` plus what the goto/label machinery has
 /// recorded, since a label and its gotos can sit wholly inside one arm.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct PreprocArmState {
     branch: LeakBranchState,
     allocated_memory: HashMap<String, AllocInfo>,
@@ -622,6 +623,23 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     fn callee_name(&self, function: &Node, source: &str) -> String {
         let raw = ast_utils::get_node_text(function, source);
         const_eval::resolve_macro_alias(self.macro_aliases, raw).to_string()
+    }
+
+    /// Parameter indices the function-like macro `func_name` frees, by
+    /// expanding its body and reading each call in it the way the walk
+    /// reads a direct one: alias-resolved, then `free` or a name-shaped
+    /// deallocator. curl's `Curl_safefree(ptr)` frees through `curlx_free`,
+    /// an object-like alias of `free`, which the fixed-list
+    /// `macro_frees_param_indices` cannot see. Empty when `func_name` is
+    /// not a function-like macro at all.
+    fn macro_freed_param_indices(&self, func_name: &str) -> Vec<usize> {
+        if self.function_macros.is_empty() {
+            return Vec::new();
+        }
+        macro_expand::macro_param_indices_released_by(self.function_macros, func_name, |callee| {
+            let resolved = const_eval::resolve_macro_alias(self.macro_aliases, callee);
+            resolved == "free" || self.is_named_deallocator(resolved)
+        })
     }
 
     fn analyze_function(
@@ -1228,6 +1246,29 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             }
             if let Some(function) = call.child_by_field_name("function") {
                 let func_name = self.callee_name(&function, source);
+                // A freeing macro counts here as it does in the walk
+                // (`process_freeing_macro`): curl's cleanup labels free
+                // through `Curl_safefree`.
+                let macro_frees = self.macro_freed_param_indices(&func_name);
+                if !macro_frees.is_empty() {
+                    if let Some(arguments) = call.child_by_field_name("arguments") {
+                        let args: Vec<Node> = (0..arguments.child_count())
+                            .filter_map(|i| arguments.child(i))
+                            .filter(|a| !matches!(a.kind(), "," | "(" | ")"))
+                            .collect();
+                        for idx in macro_frees {
+                            if let Some(arg) = args.get(idx) {
+                                if matches!(
+                                    arg.kind(),
+                                    "identifier" | "field_expression" | "subscript_expression"
+                                ) {
+                                    freed_vars.insert(ast_utils::get_node_text_owned(arg, source));
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if func_name == "free" || self.is_named_deallocator(&func_name) {
                     if let Some(arguments) = call.child_by_field_name("arguments") {
                         let mut param_idx = 0usize;
@@ -1296,6 +1337,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     if_node,
                     saved_state,
                     saved_allocated,
+                    saved_escaped,
                     true_has_return,
                     true_ends_by_leaving,
                     else_has_return,
@@ -1306,6 +1348,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                     if_node,
                     saved_state,
                     saved_allocated,
+                    saved_escaped,
                     true_has_return,
                     true_ends_by_leaving,
                     else_has_return,
@@ -1577,6 +1620,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     fn visit_if_statement<'n>(&mut self, n: Node<'n>, source: &str, stack: &mut Vec<Frame<'n>>) {
         let saved_state = LeakBranchState::fork(self);
         let saved_allocated = self.allocated_memory.clone();
+        let saved_escaped = self.escaped_memory.clone();
 
         let null_check_var = self.get_null_check_variable(&n, source);
         let non_null_check_var = self.get_non_null_check_variable(&n, source);
@@ -1614,6 +1658,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             if_node: n,
             saved_state,
             saved_allocated,
+            saved_escaped,
             true_has_return,
             true_ends_by_leaving,
             else_has_return,
@@ -1670,6 +1715,7 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         if_node: Node<'n>,
         saved_state: LeakBranchState,
         saved_allocated: HashMap<String, AllocInfo>,
+        saved_escaped: HashSet<String>,
         true_has_return: bool,
         true_ends_by_leaving: bool,
         else_has_return: bool,
@@ -1718,9 +1764,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // branch's LAST statement leaves: `true_has_return` is also set
             // by a return nested somewhere inside, and a branch that
             // allocates and then only conditionally returns did allocate on
-            // the path that falls out of it.
+            // the path that falls out of it. What had escaped is part of
+            // the same record: `u->mosq = mosq; ... if (err) {
+            // mosquitto_FREE(mosq); return -1; }` disowns the name inside
+            // the branch, and mosquitto's websockets.c then reported
+            // `mosq` leaked at every later return.
             if true_ends_by_leaving {
                 self.allocated_memory = saved_allocated;
+                self.escaped_memory = saved_escaped;
             }
         }
     }
@@ -1771,9 +1822,14 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         arms.reverse();
         let first = arms.pop().expect("chain has at least two arms");
         let pre_state = Box::new(PreprocArmState::fork(self));
+        // The fold starts empty and is the union of what the arms end on.
+        // Every arm starts from `pre_state`, so an entry fact survives if
+        // any arm kept it -- and a name every arm dropped stays dropped:
+        // seeding with the entry state re-admitted `filename` after both
+        // arms of mosquitto's `#ifdef WIN32` had freed and nulled it.
         stack.push(Frame::PreprocNextArm {
             remaining_reversed: arms,
-            merged: pre_state.clone(),
+            merged: Box::default(),
             pre_state,
         });
         push_arm_children(stack, &first);
@@ -2259,6 +2315,27 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             // Handle field expressions on the left - track allocation if RHS is allocation
             // e.g., data->text = malloc(100) or array[i] = malloc(50)
             if left.kind() == "field_expression" || left.kind() == "subscript_expression" {
+                // A field is tracked under its full spelling, and the same
+                // rule that clears a bare name's freed mark on reassignment
+                // (the identifier arm below) applies: whatever `name->f`
+                // holds after `name->f = ...`, it is not the block that was
+                // freed under it. hostap's x509v3.c does `os_free(name->
+                // alt_email); name->alt_email = os_zalloc(len + 1);` and
+                // then frees it again on a later error path, which read as
+                // a double free for as long as the mark survived. And
+                // `free(oid.p); oid.p = NULL;` (mbedtls x509_create.c) leaves
+                // nothing under the name to report at the next return, so
+                // the freed block's tracking goes with the mark.
+                if is_plain_assignment(node, source) {
+                    let key = ast_utils::get_node_text_owned(&left, source);
+                    let was_freed = self.freed_memory.remove(&key).is_some();
+                    self.maybe_freed.remove(&key);
+                    let is_null = right.kind() == "null"
+                        || ast_utils::get_node_text_owned(&right, source) == "NULL";
+                    if was_freed && is_null {
+                        self.allocated_memory.remove(&key);
+                    }
+                }
                 // If right side is an allocation, track it with the full expression as key
                 if self.is_allocation_call(&right, source) {
                     if !self.is_this_function_owned_field_target(&left, source) {
@@ -2308,8 +2385,15 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 // -- unless the allocating call is the thing that released it.
                 // `p = realloc(p, n)` and its wrappers consume the old block and
                 // hand back a new one, so the old allocation never leaks.
+                // Nor is there a block to lose when the name is known NULL:
+                // `p = getenv_dup(a); if (!p) p = getenv_dup(b);` is the
+                // fallback idiom, and the first call is tracked as an
+                // allocation whether or not it produced one, so re-filing
+                // it reported curl's `detect_proxy` leaking six blocks that
+                // the `!proxy` guard says never existed.
                 if was_allocated
                     && !self.freed_memory.contains_key(&var_name)
+                    && !self.null_variables.contains(&var_name)
                     && !self.escaped_memory.contains(&var_name)
                     && !self.call_releases_var(&right, source, &var_name)
                 {
@@ -2461,6 +2545,16 @@ impl<'a> MemoryLeakAnalyzer<'a> {
             return;
         }
 
+        // A function-like macro whose body frees an argument is a free by
+        // what it expands to, whatever it is called. `free` and `realloc`
+        // keep their own handlers even where a project redefines them as
+        // macros (valkey's `#define free(ptr) je_free(ptr)`).
+        if !matches!(func_name.as_str(), "free" | "realloc")
+            && self.process_freeing_macro(node, source, &func_name)
+        {
+            return;
+        }
+
         // Check for custom deallocation functions: destroy_*, free_*, delete_*, cleanup_*, release_*
         if self.is_named_deallocator(&func_name) {
             self.process_custom_deallocator(node, source, &func_name);
@@ -2473,6 +2567,79 @@ impl<'a> MemoryLeakAnalyzer<'a> {
         } else {
             self.process_freeing_callee(node, source, &func_name);
         }
+    }
+
+    /// A call to a function-like macro whose expansion frees one of its
+    /// arguments: `Curl_safefree(p)`, `tool_safefree(p)`, mosquitto's
+    /// `mosquitto_FREE(p)`. Returns false when `func_name` is no such macro,
+    /// leaving the call to the ordinary dispatch.
+    ///
+    /// The walk recognized a free by three spellings -- literal `free`, a
+    /// summary that says the callee frees its parameter, and a name shaped
+    /// like a deallocator -- and a safe-free macro is none of them: it is a
+    /// macro, so no summary exists, and `curl_safefree` neither starts with
+    /// `free_` nor ends with `_free`. So `Curl_safefree(no_proxy)` at the
+    /// tail of curl's `create_conn_helper_init_proxy` released nothing as
+    /// far as this rule could see, and `no_proxy` was reported leaked at the
+    /// end of the function. The macro table already knows what the body
+    /// does -- which arguments it frees (`macro_freed_param_indices`) and
+    /// which it also nulls (`macro_nulls_param_indices`, the engine MEM30-C
+    /// reads); a free-and-null macro is `free(p); p = NULL;` in one call and
+    /// leaves the name exactly as that sequence does, so a second
+    /// `Curl_safefree(p)` is `free(NULL)` rather than a double free.
+    fn process_freeing_macro(&mut self, node: &Node, source: &str, func_name: &str) -> bool {
+        let frees = self.macro_freed_param_indices(func_name);
+        if frees.is_empty() {
+            return false;
+        }
+        let nulls = macro_expand::macro_nulls_param_indices(self.function_macros, func_name);
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return true;
+        };
+        let args: Vec<Node> = (0..arguments.child_count())
+            .filter_map(|i| arguments.child(i))
+            .filter(|a| !matches!(a.kind(), "," | "(" | ")"))
+            .collect();
+        let free_pos = node.start_position();
+        for idx in frees {
+            let Some(arg) = args.get(idx) else { continue };
+            if !matches!(
+                arg.kind(),
+                "identifier" | "field_expression" | "subscript_expression"
+            ) {
+                continue;
+            }
+            let var_name = ast_utils::get_node_text_owned(arg, source);
+            let nulled = nulls.contains(&idx);
+            if nulled {
+                self.maybe_freed.remove(&var_name);
+            } else if self.freed_memory.contains_key(&var_name) {
+                self.double_free_violations.push(RuleViolation {
+                    rule_id: "MEM31-C".to_string(),
+                    severity: Severity::High,
+                    message: format!("Double free detected: '{}' was already freed", var_name),
+                    file_path: String::new(),
+                    line: free_pos.row + 1,
+                    column: free_pos.column + 1,
+                    suggestion: Some(format!(
+                        "Remove this duplicate {}() call or set '{}' = NULL after first free",
+                        func_name, var_name
+                    )),
+                    ..Default::default()
+                });
+            } else {
+                self.report_possible_double_free(&var_name, free_pos, func_name);
+            }
+            self.mark_freed_with_aliases(&var_name, (free_pos.row + 1, free_pos.column + 1));
+            if nulled {
+                // Freed just above, so nothing is re-filed as leaked; the
+                // name simply stops meaning the block, as after `p = NULL`.
+                let was_allocated = self.allocated_memory.contains_key(&var_name);
+                self.rebind_name(&var_name, was_allocated, true);
+                self.null_variables.insert(var_name);
+            }
+        }
+        true
     }
 
     /// Report leaks of still-live allocations at a termination call (abort/exit/longjmp).
@@ -2968,66 +3135,82 @@ impl<'a> MemoryLeakAnalyzer<'a> {
     /// Check if an if_statement's condition is a NULL check (var == NULL)
     /// Returns the variable name if it's a NULL check
     fn get_null_check_variable(&self, if_node: &Node, source: &str) -> Option<String> {
-        // Look for the condition node
-        if let Some(condition) = if_node.child_by_field_name("condition") {
-            // Handle parenthesized expression
-            let cond = if condition.kind() == "parenthesized_expression" {
-                condition.child(1)?
-            } else {
-                condition
-            };
+        let condition = if_node.child_by_field_name("condition")?;
+        self.null_check_variable_in(&condition, source)
+    }
 
-            // Look for binary_expression with == NULL or != NULL
-            if cond.kind() == "binary_expression" {
-                let op_text = cond
-                    .child_by_field_name("operator")
-                    .map(|op| ast_utils::get_node_text_owned(&op, source))
-                    .unwrap_or_default();
+    /// The variable `cond` proves NULL when it is true: `p == NULL`, `!p`,
+    /// or either conjunct of an `&&` -- both hold in the true branch, so
+    /// `if (!proxy && !strequal(...))` is as much a NULL check on `proxy`
+    /// as `if (!proxy)`. Only this true-branch reading distributes over
+    /// `&&`; the non-NULL and truthiness checks say what holds in the
+    /// ELSE branch, and `!(a && b)` proves nothing about either operand.
+    fn null_check_variable_in(&self, condition: &Node, source: &str) -> Option<String> {
+        // Handle parenthesized expression
+        let cond = if condition.kind() == "parenthesized_expression" {
+            condition.child(1)?
+        } else {
+            *condition
+        };
 
-                // Only handle == (var is NULL in true branch)
-                if op_text == "==" {
-                    let left = cond.child_by_field_name("left")?;
-                    let right = cond.child_by_field_name("right")?;
+        // Look for binary_expression with == NULL or != NULL
+        if cond.kind() == "binary_expression" {
+            let op_text = cond
+                .child_by_field_name("operator")
+                .map(|op| ast_utils::get_node_text_owned(&op, source))
+                .unwrap_or_default();
 
-                    let left_text = ast_utils::get_node_text_owned(&left, source);
-                    let right_text = ast_utils::get_node_text_owned(&right, source);
+            if op_text == "&&" {
+                let left = cond.child_by_field_name("left")?;
+                let right = cond.child_by_field_name("right")?;
+                return self
+                    .null_check_variable_in(&left, source)
+                    .or_else(|| self.null_check_variable_in(&right, source));
+            }
 
-                    // Check for var == NULL or NULL == var
-                    // Handle identifier, field_expression, and subscript_expression
-                    if right_text == "NULL" || right_text == "0" || right.kind() == "null" {
-                        if matches!(
-                            left.kind(),
-                            "identifier" | "field_expression" | "subscript_expression"
-                        ) {
-                            return Some(left_text);
-                        }
+            // Only handle == (var is NULL in true branch)
+            if op_text == "==" {
+                let left = cond.child_by_field_name("left")?;
+                let right = cond.child_by_field_name("right")?;
+
+                let left_text = ast_utils::get_node_text_owned(&left, source);
+                let right_text = ast_utils::get_node_text_owned(&right, source);
+
+                // Check for var == NULL or NULL == var
+                // Handle identifier, field_expression, and subscript_expression
+                if right_text == "NULL" || right_text == "0" || right.kind() == "null" {
+                    if matches!(
+                        left.kind(),
+                        "identifier" | "field_expression" | "subscript_expression"
+                    ) {
+                        return Some(left_text);
                     }
-                    if left_text == "NULL" || left_text == "0" || left.kind() == "null" {
-                        if matches!(
-                            right.kind(),
-                            "identifier" | "field_expression" | "subscript_expression"
-                        ) {
-                            return Some(right_text);
-                        }
+                }
+                if left_text == "NULL" || left_text == "0" || left.kind() == "null" {
+                    if matches!(
+                        right.kind(),
+                        "identifier" | "field_expression" | "subscript_expression"
+                    ) {
+                        return Some(right_text);
                     }
                 }
             }
+        }
 
-            // Handle unary NOT: if (!ptr) means ptr is falsy (NULL) in true branch
-            if cond.kind() == "unary_expression" {
-                let op_text = cond
-                    .child_by_field_name("operator")
-                    .map(|op| ast_utils::get_node_text_owned(&op, source))
-                    .unwrap_or_default();
+        // Handle unary NOT: if (!ptr) means ptr is falsy (NULL) in true branch
+        if cond.kind() == "unary_expression" {
+            let op_text = cond
+                .child_by_field_name("operator")
+                .map(|op| ast_utils::get_node_text_owned(&op, source))
+                .unwrap_or_default();
 
-                if op_text == "!" {
-                    if let Some(arg) = cond.child_by_field_name("argument") {
-                        if matches!(
-                            arg.kind(),
-                            "identifier" | "field_expression" | "subscript_expression"
-                        ) {
-                            return Some(ast_utils::get_node_text_owned(&arg, source));
-                        }
+            if op_text == "!" {
+                if let Some(arg) = cond.child_by_field_name("argument") {
+                    if matches!(
+                        arg.kind(),
+                        "identifier" | "field_expression" | "subscript_expression"
+                    ) {
+                        return Some(ast_utils::get_node_text_owned(&arg, source));
                     }
                 }
             }
