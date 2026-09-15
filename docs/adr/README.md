@@ -43,4 +43,5 @@ outlive any one task.
 - [0005 — Distinguish misfires from judgment false positives; only the
   former is always a rule bug](0005-misfires-vs-judgment-false-positives.md)
 - [0006 — Resolve an identifier to its declaration; a name is not a
-  variable](0006-resolve-identifiers-to-declarations.md)
+  variable, and a struct tag is not a
+  type](0006-resolve-identifiers-to-declarations.md)

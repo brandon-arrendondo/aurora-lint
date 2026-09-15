@@ -543,7 +543,10 @@ read-uninitialised at the very call that fills it (task 1028, tools_sqc).
 by `init_state::extract_var_from_arg` /
 `init_state::process_unknown_function_call`,
 `null_state::extract_output_arg_var`, `function_summary`'s forwarding
-detection, and EXP33-C's `is_addressed_subobject_root`.
+detection, and EXP33-C's `is_addressed_subobject_root`. `strip_arg_casts`
+also reads the right-hand side of an assignment in MEM31-C, where
+`o = (T *) buf` has to alias like the bare `o = buf` it is — nothing about it
+is specific to an argument position.
 `variadic_output_from_index` is consumed anywhere
 `get_output_arg_indices` is — the two are always asked together, and an empty
 answer from one is only meaningful alongside the other.

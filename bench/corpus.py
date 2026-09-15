@@ -37,6 +37,16 @@ Independently of status, three contamination flags are reported:
               a build run inside a checkout: sqlite's build generates a
               gitignored sqlite3.c amalgamation, which would silently add
               ~250k lines to every sqlite scan.
+
+Both untracked and gitignored counts are run through the SAME --exclude globs
+`bench/realworld_runner.py`'s CODEBASES[...]["sqc"]["extra_args"] passes to the
+real scan (task 1218): a stray .c/.h sitting under an already-excluded tree
+(hostap's tests/fuzzing/, curl's tests/, ...) never reaches the scanner, so it
+is split into its own harmless bucket instead of being counted as
+contamination it cannot actually cause. This is a different mechanism from
+in_scope()/scope_include above -- that filters *findings* after the fact;
+this filters the *fileset the scan itself walks*, which is what "will this
+untracked file get scanned" actually depends on.
 """
 
 import json
@@ -159,6 +169,20 @@ def _match(relpath: str, pat: str) -> bool:
     return _matcher(pat).match(relpath) is not None
 
 
+def _scan_excludes(project):
+    """This project's compiled sqc --exclude patterns from
+    bench/realworld_runner.py's CODEBASES registry, or [] if the project
+    isn't registered there (data/benchmark_repos.json and CODEBASES are
+    expected to agree on names, but don't assume it)."""
+    from bench.realworld_runner import CODEBASES, _sqc_exclude_patterns
+    cfg = CODEBASES.get(project)
+    return _sqc_exclude_patterns(cfg) if cfg else []
+
+
+def _excluded(relpath, patterns):
+    return any(p.search(relpath) for p in patterns)
+
+
 def _git(path, *args):
     """Run a git command in `path`; return stripped stdout, or None on failure."""
     try:
@@ -180,7 +204,8 @@ def check_repo(entry, bench_root=None):
         "name": name, "path": str(path), "expected": pin,
         "head": None, "branch": None, "status": None,
         "dirty": 0, "untracked_scanned": 0, "untracked_ignored": 0,
-        "gitignored_scanned": 0,
+        "gitignored_scanned": 0, "untracked_scanned_but_excluded": 0,
+        "gitignored_scanned_but_excluded": 0,
     }
 
     if not path.is_dir():
@@ -206,14 +231,19 @@ def check_repo(entry, bench_root=None):
     else:
         res["status"] = "OK"
 
+    excludes = _scan_excludes(name)
+
     porcelain = _git(path, "status", "--porcelain") or ""
     for line in porcelain.splitlines():
         code, _, rel = line.partition(" ")
         rel = (rel or line[3:]).strip()
         if line.startswith("??"):
-            key = ("untracked_scanned" if rel.endswith(SCANNED_SUFFIXES)
-                   else "untracked_ignored")
-            res[key] += 1
+            if not rel.endswith(SCANNED_SUFFIXES):
+                res["untracked_ignored"] += 1
+            elif _excluded(rel, excludes):
+                res["untracked_scanned_but_excluded"] += 1
+            else:
+                res["untracked_scanned"] += 1
         else:
             res["dirty"] += 1
 
@@ -221,10 +251,14 @@ def check_repo(entry, bench_root=None):
     # extension and never consults git -- so a gitignored .c/.h is scanned.
     ignored = _git(path, "ls-files", "--others", "--ignored",
                    "--exclude-standard") or ""
-    res["gitignored_scanned"] = sum(
-        1 for line in ignored.splitlines()
-        if line.strip().endswith(SCANNED_SUFFIXES)
-    )
+    for line in ignored.splitlines():
+        rel = line.strip()
+        if not rel.endswith(SCANNED_SUFFIXES):
+            continue
+        if _excluded(rel, excludes):
+            res["gitignored_scanned_but_excluded"] += 1
+        else:
+            res["gitignored_scanned"] += 1
     return res
 
 
@@ -285,6 +319,12 @@ def report(bench_root=None, as_json=False):
             notes.append(f"{r['gitignored_scanned']} gitignored .c/.h WILL be scanned")
         if r["untracked_ignored"]:
             notes.append(f"{r['untracked_ignored']} untracked (not scanned)")
+        if r["untracked_scanned_but_excluded"]:
+            notes.append(f"{r['untracked_scanned_but_excluded']} untracked "
+                         "under a scan --exclude (harmless)")
+        if r["gitignored_scanned_but_excluded"]:
+            notes.append(f"{r['gitignored_scanned_but_excluded']} gitignored "
+                         "under a scan --exclude (harmless)")
         print(f"{r['name']:<11} {r['status']:<11} "
               f"{(r['head'] or '-')[:12]:<13} {r['expected'][:12]:<13} "
               f"{'; '.join(notes)}")
