@@ -61,6 +61,21 @@ three independent, costly instances of skipping it.
 
 ## Consequences
 
+- **The same principle applies one level up: a tag is not a type.** Found in
+  INT02-C's recall work (task 1213): the prescan's project-wide
+  `struct_field_types` map is keyed by struct *tag* across the whole tree,
+  so two unrelated definitions sharing a tag name collide — curl's two
+  distinct `struct h3_stream_ctx` (one per QUIC backend) have an `id` field
+  of a different signedness in each, and the wrong one answered for a file
+  that never included that backend's header, producing a comparison that
+  wasn't in the code. Any rule consuming a prescan by-name map
+  (`struct_field_types`, `typedef_types`, and similarly-shaped tables) has
+  the same exposure: a file's own local definition must win over the
+  project-wide map, with the project map only a fallback for a tag reached
+  purely through an included header. This one was caught only because the
+  new findings were hand-read rather than trusted by count — a reminder
+  that a raw finding-count delta doesn't surface this class of bug, reading
+  the actual new lines does.
 - A code review or rule-bug report that finds `.contains(name)`,
   `lines_before.contains(...)`, or any file-wide name→fact table being
   used to answer "what does this occurrence refer to" is very likely
