@@ -1522,11 +1522,11 @@ impl<'a> MemoryLeakAnalyzer<'a> {
 
         let true_has_return = true_branch
             .as_ref()
-            .map(|b| self.block_has_return(b, source))
+            .map(|b| self.branch_leaves_flow(b, source))
             .unwrap_or(false);
         let else_has_return = else_clause
             .as_ref()
-            .map(|e| self.block_has_return(e, source))
+            .map(|e| self.branch_leaves_flow(e, source))
             .unwrap_or(false);
 
         if let Some(ref var_name) = null_check_var {
@@ -3132,6 +3132,43 @@ impl<'a> MemoryLeakAnalyzer<'a> {
                 )
         })
         .is_some()
+    }
+
+    /// True if an `if` branch never continues into the statement after the
+    /// `if`: it returns (`block_has_return`), or its last statement is a
+    /// `goto`.
+    ///
+    /// curl's wolfssl.c writes `if (result) { wolfSSL_SESSION_free(session);
+    /// goto out; }` with no else and frees `session` again below it, on the
+    /// path where `result` is zero. `finish_if` kept the branch's state as
+    /// the fall-through state because only a `return` counted as leaving,
+    /// so the second free read as a double free of a pointer the
+    /// fall-through path never freed. What the `goto` path itself freed is
+    /// not lost by restoring the pre-branch state: `analyze_goto` has already
+    /// folded it into the label's entry state.
+    ///
+    /// Only `goto` joins `return` here. A `break` or `continue` also ends the
+    /// branch, but the code after the loop is reached on that path too, so
+    /// its frees still belong to what follows.
+    fn branch_leaves_flow(&self, branch: &Node, source: &str) -> bool {
+        self.block_has_return(branch, source) || Self::block_ends_in_goto(branch)
+    }
+
+    /// Whether the last statement of `branch` -- an `else_clause`, a
+    /// `compound_statement`, or a single statement -- is a `goto`.
+    fn block_ends_in_goto(branch: &Node) -> bool {
+        let mut last = *branch;
+        while matches!(last.kind(), "else_clause" | "compound_statement") {
+            let Some(inner) = (0..last.named_child_count())
+                .rev()
+                .filter_map(|i| last.named_child(i))
+                .find(|child| child.kind() != "comment")
+            else {
+                return false;
+            };
+            last = inner;
+        }
+        last.kind() == "goto_statement"
     }
 }
 
