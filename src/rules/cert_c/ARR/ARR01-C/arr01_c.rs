@@ -35,9 +35,12 @@
 
 use super::super::{CertRule, RuleViolation};
 use crate::manifest::{RuleCategory, Severity};
-use crate::utility::cert_c::ast_utils::{find_containing_function, get_node_text};
+use crate::utility::cert_c::ast_utils::{
+    extract_struct_name_from_type, find_containing_function, get_node_text,
+    resolve_identifier_declarator,
+};
 use lang_parsing_substrate::query;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub struct Arr01C;
@@ -73,6 +76,13 @@ impl CertRule for Arr01C {
         let mut incomplete_arrays = HashMap::new();
         self.collect_incomplete_arrays(node, source, &mut incomplete_arrays);
         self.check_sizeof_expressions(node, source, &incomplete_arrays, &mut violations);
+
+        // sizeof on a flexible array member, resolved against the structs
+        // this file defines rather than guessed from the member's name.
+        let flexible = FlexibleArrayMembers::collect(node, source);
+        if !flexible.is_empty() {
+            self.check_flexible_array_sizeof(node, source, &flexible, &mut violations);
+        }
 
         violations
     }
@@ -150,13 +160,14 @@ impl Arr01C {
         source: &str,
         array_params: &mut HashMap<String, usize>,
     ) {
-        // Check if this has an initializer
-        let has_initializer = node.child_by_field_name("value").is_some();
-
-        // Only process if no initializer (incomplete array)
-        if !has_initializer {
-            // Look for array declarators with no size
-            if let Some(declarator) = node.child_by_field_name("declarator") {
+        // Only process if no initializer (incomplete array). The initializer
+        // hangs off the `init_declarator`, not the `declaration`, so
+        // `static const T name[] = { ... }` is a complete array whose size
+        // the compiler infers -- sizeof on it is exactly right.
+        if let Some(declarator) = node.child_by_field_name("declarator") {
+            let has_initializer = declarator.kind() == "init_declarator";
+            if !has_initializer {
+                // Look for array declarators with no size
                 if self.is_incomplete_array_declarator(&declarator) {
                     if let Some(name) = self.extract_param_name(&declarator, source) {
                         let line = node.start_position().row + 1;
@@ -392,30 +403,13 @@ impl Arr01C {
     ) {
         // Get the operand of sizeof
         if let Some(value_node) = sizeof_node.child_by_field_name("value") {
-            // Check for flexible array member access (e.g., struct->member)
-            if self.is_flexible_array_member_access(&value_node, source) {
-                let start_point = sizeof_node.start_position();
-                let sizeof_text = get_node_text(sizeof_node, source);
-
-                violations.push(RuleViolation {
-                    rule_id: "ARR01-C".to_string(),
-                    severity: Severity::High,
-                    message: "sizeof applied to flexible array member".to_string(),
-                    file_path: String::new(),
-                    line: start_point.row + 1,
-                    column: start_point.column + 1,
-                    suggestion: Some(format!(
-                        "Do not use '{}' on flexible array members. \
-                        Flexible array members have indeterminate size.",
-                        sizeof_text
-                    )),
-                    ..Default::default()
-                });
+            // Only a bare parameter name measures the decayed pointer.
+            // `sizeof(*p)`, `sizeof(p->member)`, `sizeof(p[0])` all measure
+            // the pointee and are the idiomatic way to size through a pointer.
+            let Some(operand) = Self::bare_identifier_operand(&value_node) else {
                 return;
-            }
-
-            // Extract variable names from the operand
-            let var_names = self.extract_variable_names(&value_node, source);
+            };
+            let var_names = vec![get_node_text(&operand, source).to_string()];
 
             // Check if any of these variables are array parameters
             for var_name in &var_names {
@@ -553,52 +547,60 @@ impl Arr01C {
         false
     }
 
-    fn is_flexible_array_member_access(&self, node: &Node, source: &str) -> bool {
-        // Check if this is a field_expression (struct->member or struct.member)
-        if node.kind() == "field_expression" {
-            // Get the field name
-            if let Some(field_node) = node.child_by_field_name("field") {
-                let field_text = get_node_text(&field_node, source);
-                // Common flexible array member patterns: data, array, items, etc.
-                // But we need to check if it's actually a flexible array...
-                // For now, check if the field looks like an array access pattern
-                // This is a heuristic - a better approach would track struct definitions
-
-                // Check if the parent struct has an array member
-                // For simplicity, we'll check if field is named commonly for flexible arrays
-                // or if we can find the struct definition
-                return self.looks_like_flexible_array_field(field_text);
+    /// Report `sizeof(x->member)` / `sizeof(x.member)` where `member` is a
+    /// flexible array member of a struct defined in this file.
+    fn check_flexible_array_sizeof(
+        &self,
+        node: &Node,
+        source: &str,
+        flexible: &FlexibleArrayMembers,
+        violations: &mut Vec<RuleViolation>,
+    ) {
+        for sizeof_node in query::find_descendants_of_kind(*node, "sizeof_expression") {
+            let Some(value) = sizeof_node.child_by_field_name("value") else {
+                continue;
+            };
+            let mut operand = value;
+            while operand.kind() == "parenthesized_expression" {
+                match operand.named_child(0) {
+                    Some(inner) => operand = inner,
+                    None => break,
+                }
             }
-        }
-
-        false
-    }
-
-    fn looks_like_flexible_array_field(&self, field_name: &str) -> bool {
-        // Common names for flexible array members
-        matches!(
-            field_name,
-            "data" | "array" | "items" | "elements" | "buffer" | "payload"
-        )
-    }
-
-    fn extract_variable_names(&self, node: &Node, source: &str) -> Vec<String> {
-        let mut names = Vec::new();
-        self.extract_variable_names_recursive(node, source, &mut names);
-        names
-    }
-
-    fn extract_variable_names_recursive(&self, node: &Node, source: &str, names: &mut Vec<String>) {
-        if node.kind() == "identifier" {
-            names.push(get_node_text(node, source).to_string());
-        }
-
-        // Recursively search children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.extract_variable_names_recursive(&child, source, names);
+            if operand.kind() != "field_expression" {
+                continue;
             }
+            if !flexible.is_flexible_access(&operand, source) {
+                continue;
+            }
+            let start_point = sizeof_node.start_position();
+            let sizeof_text = get_node_text(&sizeof_node, source);
+            violations.push(RuleViolation {
+                rule_id: "ARR01-C".to_string(),
+                severity: Severity::High,
+                message: "sizeof applied to flexible array member".to_string(),
+                file_path: String::new(),
+                line: start_point.row + 1,
+                column: start_point.column + 1,
+                suggestion: Some(format!(
+                    "Do not use '{}' on flexible array members. \
+                    Flexible array members have indeterminate size.",
+                    sizeof_text
+                )),
+                ..Default::default()
+            });
         }
+    }
+
+    /// The identifier when the sizeof operand is a (possibly parenthesized)
+    /// bare identifier; `None` for any dereference, member access, subscript
+    /// or other expression, whose size is not the pointer's.
+    fn bare_identifier_operand<'a>(node: &Node<'a>) -> Option<Node<'a>> {
+        let mut cur = *node;
+        while cur.kind() == "parenthesized_expression" {
+            cur = cur.named_child(0)?;
+        }
+        (cur.kind() == "identifier").then_some(cur)
     }
 
     fn is_sizeof_in_same_function(
@@ -616,5 +618,142 @@ impl Arr01C {
         } else {
             false
         }
+    }
+}
+
+/// The flexible array members declared by the structs in one file: the last
+/// `field_declaration` of a struct body whose array declarator has no size.
+/// Keyed by struct tag and by every typedef alias of the same body.
+struct FlexibleArrayMembers {
+    by_struct: HashMap<String, HashSet<String>>,
+    /// Member names that are a flexible array in at least one struct here.
+    flexible_names: HashSet<String>,
+    /// Member names declared as anything else in at least one struct here.
+    other_names: HashSet<String>,
+}
+
+impl FlexibleArrayMembers {
+    fn collect(root: &Node, source: &str) -> Self {
+        let mut this = Self {
+            by_struct: HashMap::new(),
+            flexible_names: HashSet::new(),
+            other_names: HashSet::new(),
+        };
+        for spec in query::find_descendants_of_kind(*root, "struct_specifier") {
+            let Some(body) = spec.child_by_field_name("body") else {
+                continue;
+            };
+            let fields: Vec<Node> = (0..body.named_child_count())
+                .filter_map(|i| body.named_child(i))
+                .filter(|f| f.kind() == "field_declaration")
+                .collect();
+            let Some(last) = fields.last() else {
+                continue;
+            };
+            let flexible_member = Self::unsized_array_member(last, source);
+            for f in &fields[..fields.len() - 1] {
+                if let Some(name) = Self::member_name(f, source) {
+                    this.other_names.insert(name);
+                }
+            }
+            let Some(member) = flexible_member else {
+                if let Some(name) = Self::member_name(last, source) {
+                    this.other_names.insert(name);
+                }
+                continue;
+            };
+            this.flexible_names.insert(member.clone());
+            let mut names: Vec<String> = spec
+                .child_by_field_name("name")
+                .map(|n| get_node_text(&n, source).to_string())
+                .into_iter()
+                .collect();
+            // `typedef struct [tag] { ... } alias;` -- the aliases are the
+            // type_identifier children of the enclosing type_definition.
+            if let Some(parent) = spec.parent() {
+                if parent.kind() == "type_definition" {
+                    names.extend(
+                        (0..parent.named_child_count())
+                            .filter_map(|i| parent.named_child(i))
+                            .filter(|c| c.kind() == "type_identifier")
+                            .map(|c| get_node_text(&c, source).to_string()),
+                    );
+                }
+            }
+            for name in names {
+                this.by_struct
+                    .entry(name)
+                    .or_default()
+                    .insert(member.clone());
+            }
+        }
+        this
+    }
+
+    fn is_empty(&self) -> bool {
+        self.flexible_names.is_empty()
+    }
+
+    /// The member name if `field` is `T name[];` (an array declarator with no
+    /// size and no pointer in between).
+    fn unsized_array_member(field: &Node, source: &str) -> Option<String> {
+        let decl = field.child_by_field_name("declarator")?;
+        if decl.kind() != "array_declarator" || decl.child_by_field_name("size").is_some() {
+            return None;
+        }
+        let inner = decl.child_by_field_name("declarator")?;
+        (inner.kind() == "field_identifier").then(|| get_node_text(&inner, source).to_string())
+    }
+
+    fn member_name(field: &Node, source: &str) -> Option<String> {
+        let mut decl = field.child_by_field_name("declarator")?;
+        loop {
+            match decl.kind() {
+                "field_identifier" => return Some(get_node_text(&decl, source).to_string()),
+                "array_declarator"
+                | "pointer_declarator"
+                | "function_declarator"
+                | "parenthesized_declarator" => {
+                    decl = decl
+                        .child_by_field_name("declarator")
+                        .or_else(|| decl.named_child(0))?;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Whether `expr` (a `field_expression`) reads a flexible array member.
+    /// Resolves the base variable's declared struct type when it is a plain
+    /// identifier; otherwise falls back to the member name, which counts only
+    /// when no struct in this file declares a fixed member of that name.
+    fn is_flexible_access(&self, expr: &Node, source: &str) -> bool {
+        let Some(field) = expr.child_by_field_name("field") else {
+            return false;
+        };
+        let member = get_node_text(&field, source);
+        if !self.flexible_names.contains(member) {
+            return false;
+        }
+        if let Some(arg) = expr.child_by_field_name("argument") {
+            if arg.kind() == "identifier" {
+                let name = get_node_text(&arg, source);
+                if let Some((decl, _)) = resolve_identifier_declarator(&arg, name, source) {
+                    if let Some(ty) = decl.child_by_field_name("type") {
+                        let ty_text = get_node_text(&ty, source);
+                        return match extract_struct_name_from_type(ty_text)
+                            .or_else(|| Some(ty_text.trim()))
+                            .and_then(|s| self.by_struct.get(s))
+                        {
+                            Some(members) => members.contains(member),
+                            // A struct this file does not define: only the
+                            // name is left to go on.
+                            None => !self.other_names.contains(member),
+                        };
+                    }
+                }
+            }
+        }
+        !self.other_names.contains(member)
     }
 }
