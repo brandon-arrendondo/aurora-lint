@@ -30,6 +30,7 @@ pub mod init_state;
 /// block -- `tree-sitter-c`'s `labeled_statement` can't parse that shape.
 pub mod label_preproc_guard;
 pub mod macro_expand;
+pub mod macro_gaps;
 pub mod macro_semantics;
 /// Noreturn-function detection shared by CFG construction (task 648).
 pub mod noreturn;
@@ -84,6 +85,9 @@ pub struct AnalysisResults {
     pub violations: Vec<RuleViolation>,
     /// Violations suppressed by an inline comment or suppression file.
     pub suppressed: Vec<SuppressedViolation>,
+    /// Where the macro-expansion engine was blind during this scan; built
+    /// only when `report_macro_gaps` was requested (task 1180).
+    pub macro_gaps: Option<macro_gaps::MacroGapReport>,
 }
 
 /// Run every enabled rule over `project_source`, returning active and
@@ -93,6 +97,8 @@ pub struct AnalysisResults {
 /// runs; `jobs` bounds parallelism. `compile_db`, when supplied, contributes
 /// the build's `-D` macro state to the cross-file context (its include paths
 /// are expected to be already merged into `include_paths` by the caller).
+/// `report_macro_gaps` adds a parse-only audit pass that fills
+/// `AnalysisResults::macro_gaps`; it never changes a finding.
 pub fn analyze_project(
     project_source: &ProjectSource,
     manifest: &RuleManifest,
@@ -106,6 +112,7 @@ pub fn analyze_project(
     load_prescan: Option<&str>,
     compile_db: Option<&compile_commands::CompileDb>,
     jobs: usize,
+    report_macro_gaps: bool,
 ) -> Result<AnalysisResults> {
     let mut violations = Vec::new();
     let mut suppressed = Vec::new();
@@ -146,6 +153,11 @@ pub fn analyze_project(
     let c_files = collect_c_files(project_source, diff_only, excludes)?;
     let total_files = c_files.len();
     let mut suppression_manager = build_suppression_manager(suppress_file, project_source);
+
+    // Independent of the rules: it reads the same files and context, so it
+    // can run first and the findings loop below stays untouched.
+    let macro_gaps = report_macro_gaps
+        .then(|| macro_gaps::build_report(&c_files, &context, directories, include_paths));
 
     // Determine effective parallelism
     let effective_jobs = if jobs == 0 {
@@ -239,6 +251,7 @@ pub fn analyze_project(
         return Ok(AnalysisResults {
             violations,
             suppressed,
+            macro_gaps,
         });
     }
 
@@ -288,6 +301,7 @@ pub fn analyze_project(
     Ok(AnalysisResults {
         violations,
         suppressed,
+        macro_gaps,
     })
 }
 
@@ -1134,6 +1148,7 @@ mod tests {
         let results = AnalysisResults {
             violations: vec![],
             suppressed: vec![],
+            macro_gaps: None,
         };
         assert!(results.violations.is_empty());
         assert!(results.suppressed.is_empty());
